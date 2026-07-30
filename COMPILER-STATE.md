@@ -584,6 +584,30 @@ that the lifecycle tests exercise only through hand-built MIR at the emission la
 not close; failed `HandleOut` does not close; successful closes exactly once; move then drop closes
 only the destination; consuming close prevents a later implicit close).
 
+**CD-257 — slice 7's closure matrix is filled, and it refuses to over-claim.**
+
+`c78/closure-gate-slice7.md` separates frontend / HIR / MIR-lowered / native-runtime /
+cross-platform, per §5.7's requirement that a single "supported" column would reproduce the
+over-claiming C7.2 was corrected for. Every row cites evidence committed on `main`; a session's
+working tree is not evidence.
+
+That distinction immediately did work. **TCP's bind/accept/echo path exists and passes locally and
+is NOT claimed**, because it is uncommitted. TCP's *resource lifecycle* is claimed, because
+`c788_lifecycle_e2e` is committed and runs on all three platforms.
+
+`stark_net.native_e2e` moves `pending → implemented`, and the CI assertion moves with it — plus a
+new step that runs the test justifying the claim, so the record cannot say "implemented" while its
+evidence is absent or failing. The lifecycle set is recorded as `partially_observed`: four cases
+observed, one unreachable by construction, the rest defined-but-unrun.
+
+**The gate also records a methodology finding.** Six `MirTy` catch-alls silently swallowed
+`HostResource` (`dump_ty`, `emit_ty`, `default_value_expr`, both `is_copy` predicates,
+`ty_needs_drop`, `may_need_drop`). Each compiled cleanly; each was found downstream, one at a time.
+`ty_needs_drop`'s `_ => false` meant **no `Drop` was ever emitted for a resource — every resource
+leaked while every unit test on the close machinery passed** — and only a test inspecting generated
+code found it. Recommendation carried into the gate: remove `_ =>` fallbacks from the predicates that
+decide semantics, which would have made all six compile errors at CD-234.
+
 **SELECT-C (CD-253) — Core `File` remains entirely on the legacy MIR resource path.**
 
 `CoreType::File` lowers unconditionally to `MirTy::Core(File, ..)`, independent of capability

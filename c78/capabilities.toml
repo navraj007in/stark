@@ -15,4 +15,18 @@ native_e2e = "implemented"
 [stark_net]
 provider_metadata = "implemented"
 loopback_provider = "implemented"
-native_e2e = "pending"
+native_e2e = "implemented"
+source_build_e2e = "implemented"
+
+[closure_gate]
+slice7_matrix = "c78/closure-gate-slice7.md"
+# The five layers C7.8.7 requires the matrix to separate. "filled" means every capability row has a
+# value with committed evidence behind it, not merely that the column exists.
+frontend_supported_column = "filled"
+hir_supported_column = "filled"
+mir_lowered_column = "filled"
+native_runtime_supported_column = "filled"
+cross_platform_verified_column = "filled"
+# Four of CD-234's runtime cases are OBSERVED against a real provider; one is unreachable by
+# construction; the rest remain defined-but-unrun. Deliberately not "complete".
+lifecycle_set = "partially_observed"

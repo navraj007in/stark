@@ -67,7 +67,14 @@ jobs:
       - name: file-e2e implemented
         run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_file']['native_e2e']=='implemented'"
       - name: tcp-e2e pending
-        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='pending'"
+        run: |
+          python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='implemented'"
+          python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['source_build_e2e']=='implemented'"
+      - name: tcp resource lifecycle executes
+        # The evidence behind the two assertions above: a STARK program that connects and is closed
+        # by MIR's Drop, built through `starkc build` and run. Asserted here so the record cannot
+        # claim "implemented" while the test that justifies it is absent or failing.
+        run: cargo test --manifest-path starkc/Cargo.toml --test c788_lifecycle_e2e
       - name: c7.8-qualification-record
         run: python c78/qualification/make-record.py --platform "${{ matrix.name }}" --commit "${{ github.sha }}" --output "${{ runner.temp }}/c78/${{ matrix.name }}.json"
       - name: Upload C7.8 record

@@ -417,6 +417,20 @@ program calling a manifest-bound function with ordinary syntax, lowers it to `Ca
 links `stark-time-native`, executes it and asserts the printed monotonic reading is nonzero. The
 general blocker — `lower_program` emitting no provider call at all — is gone.
 
+**SLICE 7 MATRIX FILLED (2026-07-30).** `c78/closure-gate-slice7.md` carries all five layers this
+section requires, with committed evidence per row and a cross-platform column that means what it
+says: CI runs the whole workspace on macos-arm64, linux-x64 and windows-x64, so a committed test is
+verified on all three.
+
+Position against the claim above: **met for `clock`, `process.args`, `process.env`, and for `tcp`'s
+resource lifecycle.** `filesystem` reaches native execution through its legacy path by decision
+(SELECT-C, CD-253), not omission. **Not yet claimable: TCP's listener/stream surface**, which P1
+explicitly requires — the path works but is not on `main`, and the matrix refuses to count a working
+tree as evidence.
+
+So the precondition is **substantially** removed, and the residue is one commit plus the lifecycle
+cases still marked `defined`.
+
 Stated as precisely as this section's own correction demands: that path runs through the compiler
 **library**. `native_build.rs` still calls plain `lower_program` and never invokes synthesis, so
 `starkc build` on a package with a `provider_api` block does not yet work. Every component exists
