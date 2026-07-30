@@ -92,7 +92,7 @@ fn tcp_call(name: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
 }
 
 #[test]
-fn build_driver_still_refuses_resource_lifecycle_at_the_source_boundary() {
+fn the_build_driver_no_longer_refuses_a_resource_bearing_provider_api() {
     let root = fixture_root("driver-refusal");
     let _ = std::fs::remove_dir_all(&root);
     write_package(
@@ -118,22 +118,32 @@ fn build_driver_still_refuses_resource_lifecycle_at_the_source_boundary() {
         "fn main() { }\n",
     );
 
-    let error = build_current_package(
+    let result = build_current_package(
         &root,
         &BuildCommandOptions {
             no_build_cache: true,
             ..BuildCommandOptions::default()
         },
-    )
-    .expect_err("resource-bearing provider APIs must not pass the driver until lifecycle lands");
-    let rendered = format!("{error:?}");
-    assert!(
-        rendered.contains("resource-bearing provider signature"),
-        "{rendered}"
     );
+
+    // **Inverted (CD-250), and this is the SECOND of two tests that pinned the refusal.** CD-248
+    // lifted it and updated the one in `c788_starkc_build.rs`, missing this one -- the same failure
+    // as every other red in this stretch: changing behaviour without auditing what pinned the old
+    // behaviour.
+    //
+    // The refusal existed because a resource obtained through a build could never be released. The
+    // close arena and the Drop-terminator close both exist now (CD-237/CD-239/CD-240), and the
+    // driver selects a close for every bound resource (CD-248).
+    //
+    // Narrow on purpose: whatever else this build does, it must not fail BECAUSE the signature
+    // carries a resource. Executing the close is the lifecycle e2e's job, not a diagnostic's.
+    let rendered = match &result {
+        Ok(_) => String::new(),
+        Err(error) => format!("{error:?}"),
+    };
     assert!(
-        rendered.contains("close arena") && rendered.contains("Drop-terminator close"),
-        "the diagnostic must name the exact current lifecycle blockers: {rendered}"
+        !rendered.contains("resource-bearing provider signature"),
+        "the categorical resource refusal is gone; got:\n{rendered}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
