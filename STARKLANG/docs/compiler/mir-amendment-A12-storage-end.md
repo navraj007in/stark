@@ -5,9 +5,29 @@
 **Scope class:** **MIR shape change**, not a runtime-surface revision. §1 says why. It adds no
 `RuntimeFn`, so `MIR_RUNTIME_SURFACE` stays at `0.1-A10`.
 
-**This amendment is written after the fact.** It records a change that was implemented under a
-commissioned defect fix, not a proposal awaiting approval. §7 states the governance question that
-was decided by building rather than by ruling, so that it is visible rather than buried.
+**This amendment was written after the fact and approved retrospectively.** §8 records the
+governance question as it was put; the ruling below closed it.
+
+```text
+CE3 — APPROVED RETROSPECTIVELY
+
+MIR Amendment A12 is admitted as the minimal correct compiler-wide
+representation of storage becoming reusable after all ownership units
+have been accounted for.
+
+MIR_VERSION 0.3 is authoritative.
+MIR_RUNTIME_SURFACE remains 0.1-A10.
+C8 is notified of the new Statement variant and must preserve compatibility.
+```
+
+**The grounds are architectural, not procedural.** A12 is approved because MIR is the correct owner
+of the fact that a place's ownership units have all been accounted for — not because nothing
+happened to break. Lowering is the only layer that knows it; repairing this in the backend would
+mean inferring ownership facts MIR should state; and weakening the `ValueSlot` checks would convert
+a detectable compiler defect into a possible silent leak.
+
+The required coordination consequence — a permanent guard covering every MIR consumer — is
+`starkc/tests/mir_statement_consumers.rs`. See §6.
 
 ---
 

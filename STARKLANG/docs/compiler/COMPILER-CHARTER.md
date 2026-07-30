@@ -405,6 +405,37 @@ Selected strategy: <generated Rust/C | Cranelift | other approved option | none 
 
 (`GO`/`DEFER`/`STOP` are retired for this section — see §1.2 and §5.3 of this charter.)
 
+### 2.4a Repository-integrity control — staging in a shared checkout
+
+**This is a control, not a caution.** Two cross-session contaminations have been demonstrated, both
+by the same mechanism, and the second landed a half-finished MIR amendment on `main` and turned CI
+red across six targets.
+
+```text
+Parallel sessions must not use broad git add commands in a shared checkout.
+Each session must stage explicit paths or isolated hunks.
+Before commit, git diff --cached --name-status must be checked against
+the session's declared ownership set.
+```
+
+**Prefer separate worktrees for concurrent compiler changes.** A shared checkout makes another
+session's in-flight edits indistinguishable from your own, and no staging discipline fully removes
+that — it only narrows it.
+
+Two failure modes seen, both worth recognising by shape:
+
+1. **Sweeping in another session's work.** `git add starkc/src` while a second session is mid-edit
+   commits their partial change under your message. CD-243 and CD-246 came from this.
+2. **Committing a half-finished amendment.** `b99514d` and `5d3e76b` captured an incomplete A12 from
+   the shared tree — an added `Statement` variant without the consumer updates that make it
+   compile-correct — under a commit message about an unrelated package. The tree was red until the
+   owning session pushed the remainder.
+
+The second is worse than a merge conflict: it produces a commit that *looks* deliberate, attributes
+the work to the wrong change, and leaves the record wrong even after CI goes green. It also puts
+semantics changes under unrelated titles — `b99514d` altered Core pattern binding modes while
+titled as a JSON path, which is how a CE1-level language decision reached `main` unrecorded.
+
 ### 2.5 Definition-of-done defaults
 
 When a WP does not state stricter checks:
