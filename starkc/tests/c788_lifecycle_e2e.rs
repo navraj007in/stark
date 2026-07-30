@@ -55,6 +55,8 @@ fn manifest(name: &str) -> String {
       "TcpStream": {{ "capability": "tcp", "resource": "tcp_stream" }}
     }},
     "functions": {{
+      "tcp_listener_bind": {{ "capability": "tcp", "symbol": "stark_tcp_listener_bind" }},
+      "tcp_listener_accept": {{ "capability": "tcp", "symbol": "stark_tcp_listener_accept" }},
       "tcp_stream_connect": {{ "capability": "tcp", "symbol": "stark_tcp_stream_connect" }}
     }}
   }}
@@ -68,6 +70,15 @@ fn manifest(name: &str) -> String {
 /// provider aborts. The generated Rust is returned because a clean exit proves only that the close
 /// did not happen *twice*; showing it happens *at all* needs the emitted code.
 fn build_and_run(case: &str, source: &str) -> (String, String) {
+    build_and_run_with(case, source, || {})
+}
+
+/// `build_and_run`, with `before_run` invoked **after the build and before execution**.
+///
+/// The accept case needs a peer dialling the server, and the build takes seconds — a peer spawned
+/// before the build gives up long before the server binds, and the server then blocks in `accept`
+/// forever. Sequencing it here makes the race impossible rather than unlikely.
+fn build_and_run_with(case: &str, source: &str, before_run: impl FnOnce()) -> (String, String) {
     let root = fixture_root(case);
     let _ = std::fs::remove_dir_all(&root);
     let src = root.join("src");
@@ -92,6 +103,7 @@ fn build_and_run(case: &str, source: &str) -> (String, String) {
     )
     .unwrap_or_else(|e| panic!("{case}: build must succeed: {e:?}"));
 
+    before_run();
     let output = std::process::Command::new(&result.artifact_path)
         .output()
         .unwrap_or_else(|e| panic!("{case}: running the binary: {e}"));
@@ -236,5 +248,145 @@ fn move_then_drop_closes_only_the_destination() {
         ),
     );
     assert_eq!(out.trim(), "moved");
+    let _ = accepting.join();
+}
+
+// ---------------------------------- the remaining CD-234 lifecycle cases --
+
+/// **Accept/release: two resources, closed independently.**
+///
+/// A listener and the stream it accepts are *different* resources with *different* closes —
+/// `stark_tcp_listener_close` and `stark_tcp_stream_close` have identical shapes and differ only in
+/// the resource they name, which is the pairing `MIR-0030` exists to enforce. If either close were
+/// selected for the wrong resource, the provider's `validate(handle, RESOURCE_TYPE)` would reject the
+/// handle and abort.
+#[test]
+fn accept_and_release_close_two_resources_independently() {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe a free port");
+    let address = probe.local_addr().expect("addr").to_string();
+    drop(probe);
+
+    let connecting_address = address.clone();
+    let mut connector = None;
+
+    let (out, generated) = build_and_run_with(
+        "accept_release",
+        &format!(
+            "fn main() {{\n\
+             \x20   let address = \"{address}\".bytes();\n\
+             \x20   let listener: TcpListener;\n\
+             \x20   match tcp_listener_bind(address) {{\n\
+             \x20       Ok(l) => {{ listener = l; }}\n\
+             \x20       Err(_e) => {{ panic(\"bind failed\"); }}\n\
+             \x20   }}\n\
+             \x20   match tcp_listener_accept(&listener) {{\n\
+             \x20       Ok(_stream) => {{ println(\"accepted\"); }}\n\
+             \x20       Err(_e) => {{ panic(\"accept failed\"); }}\n\
+             \x20   }}\n\
+             }}\n"
+        ),
+        || {
+            // Spawned only now: the binary exists and is about to run, so the peer's retry window
+            // covers the server's bind rather than the compiler's build.
+            connector = Some(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    if let Ok(s) = std::net::TcpStream::connect(&connecting_address) {
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        drop(s);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }));
+        },
+    );
+    assert_eq!(out.trim(), "accepted");
+    if let Some(handle) = connector {
+        let _ = handle.join();
+    }
+
+    // Each resource is closed by ITS OWN provider function. A single close serving both would be the
+    // paired-resource confusion A11 §5 obligation 4 names, and no shape check would catch it.
+    assert!(
+        generated.contains("stark_tcp_listener_close(__v.as_raw())"),
+        "the listener must close through its own close:\n{generated}"
+    );
+    assert!(
+        generated.contains("stark_tcp_stream_close(__v.as_raw())"),
+        "the accepted stream must close through its own close:\n{generated}"
+    );
+}
+
+/// **An early return with a live resource still closes it.**
+///
+/// The resource is live when `return` executes, so the return path must run the `Drop` — a leak here
+/// would be invisible at runtime (the provider is never told), which is why this asserts on the
+/// generated code as well as on a clean exit.
+#[test]
+fn an_early_return_with_a_live_resource_closes_it() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let accepting = std::thread::spawn(move || {
+        let _ = listener.accept();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+
+    let (out, generated) = build_and_run(
+        "early_return",
+        &format!(
+            "fn hold(a: &[UInt8]) {{\n\
+             \x20   match tcp_stream_connect(a) {{\n\
+             \x20       Ok(_s) => {{ println(\"held\"); return; }}\n\
+             \x20       Err(_e) => {{ panic(\"connect failed\"); }}\n\
+             \x20   }}\n\
+             }}\n\
+             fn main() {{\n\
+             \x20   let address = \"{address}\".bytes();\n\
+             \x20   hold(address);\n\
+             \x20   println(\"done\");\n\
+             }}\n"
+        ),
+    );
+    assert_eq!(out.trim().lines().collect::<Vec<_>>(), vec!["held", "done"]);
+    assert!(
+        generated.contains("stark_tcp_stream_close(__v.as_raw())"),
+        "the early-return path must still close the live resource:\n{generated}"
+    );
+    let _ = accepting.join();
+}
+
+/// **A resource moved through a call transfers the close obligation to the callee.**
+///
+/// The caller's local is dead after the move, so exactly one close runs — in the callee's scope. If
+/// the move left the caller's slot live, both would close and the second would abort.
+#[test]
+fn a_resource_moved_through_a_call_closes_once_in_the_callee() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let accepting = std::thread::spawn(move || {
+        let _ = listener.accept();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+
+    let (out, _) = build_and_run(
+        "move_through_call",
+        &format!(
+            "fn consume(s: TcpStream) {{\n\
+             \x20   println(\"consumed\");\n\
+             }}\n\
+             fn main() {{\n\
+             \x20   let address = \"{address}\".bytes();\n\
+             \x20   match tcp_stream_connect(address) {{\n\
+             \x20       Ok(s) => {{ consume(s); println(\"after\"); }}\n\
+             \x20       Err(_e) => {{ panic(\"connect failed\"); }}\n\
+             \x20   }}\n\
+             }}\n"
+        ),
+    );
+    assert_eq!(
+        out.trim().lines().collect::<Vec<_>>(),
+        vec!["consumed", "after"],
+        "the callee runs, then the caller continues with a dead local"
+    );
     let _ = accepting.join();
 }

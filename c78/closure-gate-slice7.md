@@ -47,12 +47,12 @@ argued from the parts.
 | successful `HandleOut` closes exactly once | **observed** | `c788_lifecycle_e2e::a_successful_handle_out_closes_exactly_once` |
 | move then drop closes only the destination | **observed** | `c788_lifecycle_e2e::move_then_drop_closes_only_the_destination` |
 | explicit close then destructor path | **unreachable by construction** | A package may not bind a close (design §2) and `MIR-0033` rejects a direct call, so MIR owns the only close path. Pinned by `a11_host_resource`'s rule-4 tests |
+| accept/release (two resources, closed independently) | **observed** | `c788_lifecycle_e2e::accept_and_release_close_two_resources_independently` — asserts the listener closes through `stark_tcp_listener_close` and the accepted stream through `stark_tcp_stream_close`, the pairing `MIR-0030` enforces |
+| early return with a live resource | **observed** | `c788_lifecycle_e2e::an_early_return_with_a_live_resource_closes_it` |
+| resource moved through a **call** | **observed** | `c788_lifecycle_e2e::a_resource_moved_through_a_call_closes_once_in_the_callee` — the caller's local is dead after the move, so exactly one close runs, in the callee |
 | repeated connect/release | defined | Single connect/release is observed; the repeated form is not |
-| accept/release (two resources, closed independently) | defined | The TCP path is now committed, so this is writable; the existing test exercises accept but does not yet assert each resource's close independently |
 | repeated open/release (`filesystem`) | defined, **and blocked by SELECT-C** | `File` is not on the `HostResource` path, so it has no A11 close arena to exercise |
-| early return with a live resource | defined | |
 | `?` propagation with a live resource | defined | |
-| resource moved through a **call** | defined | Move *within* a scope is observed; through a call boundary is not |
 
 ### How the observed cases detect a violation
 
