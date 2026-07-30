@@ -1091,15 +1091,20 @@ mod tests {
     }
 
     #[test]
-    fn mir_02_is_part_of_the_build_key_input() {
+    fn the_mir_shape_revision_is_part_of_the_build_key_input() {
         let input = build_key_input(
             &trivial(),
             &versions(),
             &crate::layout::TargetLayout::default(),
         );
+        // Pinned against the constant, not a literal. A12 bumped this to 0.3 and the previous
+        // hard-coded `mir=0.2` failed — which proved the axis is wired up, and then had to be
+        // hand-edited to say so again. Reading the constant keeps the property under test (the
+        // revision reaches the key) without re-breaking on every future bump.
+        let expected = format!("mir={}", crate::mir::MIR_VERSION);
         assert!(
-            input.contains("mir=0.2"),
-            "A11's MIR 0.2 shape revision must be visible in cache-key input:\n{input}"
+            input.contains(&expected),
+            "the MIR shape revision ({expected}) must be visible in cache-key input:\n{input}"
         );
     }
 

@@ -338,8 +338,8 @@ fn emit_one_block(
                     emit_assignment(place, &value, env)?
                 ));
             }
-            Statement::StorageDead(place) => {
-                if let Some(line) = emit_storage_dead(place, env)? {
+            Statement::StorageDead(place, reason) => {
+                if let Some(line) = emit_storage_dead(place, *reason, env)? {
                     out.push_str(&format!("                {line}\n"));
                 }
             }
@@ -1460,20 +1460,28 @@ fn component_access(base: &MirTy, index: u32, value: &str) -> Result<String, Bac
     }
 }
 
-/// A12 / `DEFECT-C788-LOOP-TEMP`: end a local's storage — `_1.finish_partial();`.
+/// A12 / `DEFECT-C788-LOOP-TEMP`: end a local's storage.
 ///
 /// Only a **slot-backed** local has whole-storage liveness to end, so every other local emits
 /// nothing (`Ok(None)`) rather than a nop line: an ordinary `Copy` local is a plain Rust binding,
 /// and a stored-reference local is an `Option<&T>` whose reassignment is unconditional.
 ///
-/// `finish_partial` is the exact operation wanted, including its refusal: it accepts a partially
-/// moved slot **and** an already-dead one — the idempotence `Statement::StorageDead` promises — and
-/// rejects a `Whole` one, because a complete value that is still there needs a real drop or move,
-/// not a liveness reset. That refusal is what keeps this from becoming a blanket "make the slot
-/// writable again", which would silently abandon live resources; it is the check that caught
-/// `DEFECT-C788-LOOP-TEMP` in the first place, and it is not being weakened here.
+/// Each [`StorageEnd`] keeps its own check, and neither is a blanket "make the slot writable
+/// again":
+///
+/// - `Accounted` → **`finish_partial()`**, which accepts a partially moved slot and an already-dead
+///   one — the idempotence the statement promises — and *rejects a whole one*, because a complete
+///   value that is still there owes a real drop or move. That refusal is the check that surfaced
+///   `DEFECT-C788-LOOP-TEMP`, and it is not weakened here.
+/// - `OwnsNothing` → **`take()`**, discarded. The slot must be whole (`take` enforces it), the
+///   value owns nothing, and Rust's structural drop of the discarded value reclaims its storage
+///   without running any user destructor — generated nominal types implement no Rust `Drop` (§6.3),
+///   so this cannot become the second destruction schedule §7.1 forbids. It is the same structural
+///   reclaim `drop_with` performs as its last step, reached by the one operation that is legal when
+///   nothing is owed.
 pub(super) fn emit_storage_dead(
     place: &crate::mir::Place,
+    reason: crate::mir::StorageEnd,
     env: &TyEnv,
 ) -> Result<Option<String>, BackendDiagnostic> {
     if !place.projection.is_empty() {
@@ -1488,10 +1496,11 @@ pub(super) fn emit_storage_dead(
     {
         return Ok(None);
     }
-    Ok(Some(format!(
-        "{}.finish_partial();",
-        emit_places::local_name(place.local.0)
-    )))
+    let name = emit_places::local_name(place.local.0);
+    Ok(Some(match reason {
+        crate::mir::StorageEnd::Accounted => format!("{name}.finish_partial();"),
+        crate::mir::StorageEnd::OwnsNothing => format!("let _ = {name}.take();"),
+    }))
 }
 
 /// Emit one assignment statement, choosing the form the destination requires.

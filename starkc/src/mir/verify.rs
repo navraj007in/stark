@@ -455,7 +455,7 @@ impl<'a> BodyCx<'a> {
                 // models it does so per storage cell, and a projected place names part of one cell,
                 // not a cell of its own. Ending "part of" a local's storage is not a thing MIR can
                 // mean, so a projection here is a lowering defect rather than a shape to support.
-                Statement::StorageDead(place) => {
+                Statement::StorageDead(place, _) => {
                     if !place.projection.is_empty() {
                         self.err(
                             "MIR-0035",

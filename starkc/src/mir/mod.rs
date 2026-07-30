@@ -409,6 +409,32 @@ pub enum Rvalue {
     },
 }
 
+/// A12: why a [`Statement::StorageDead`] is entitled to end a local's storage.
+///
+/// The distinction is not bookkeeping — it decides which check the backend keeps. Collapsing the
+/// two into one unconditional "make this local writable again" would end storage over a live value
+/// without complaint, turning a lowering defect from a loud abort into a silent leak. That is the
+/// opposite of what `DEFECT-C788-LOOP-TEMP` taught: the whole-storage check is what surfaced the
+/// defect at all, and it is preserved here rather than relaxed to make the fix easier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StorageEnd {
+    /// The local's units were moved or dropped **one at a time**, so its storage is partially moved
+    /// — or already dead, if the last move took the whole value.
+    ///
+    /// It must NOT still be whole, and the backend enforces that: a complete value that is still
+    /// there owes a real drop or move, not a liveness reset.
+    Accounted,
+    /// The value **owns nothing**: this is a match arm whose active variant has an empty payload,
+    /// or one whose payload is entirely `Copy` (and `Copy` excludes `Drop`, so a `Copy` payload can
+    /// own nothing). The storage is therefore still whole, and ending it abandons nothing.
+    ///
+    /// This case may not *drop* the value instead. A drop would run the enum's whole-type glue,
+    /// which covers **every** variant — including ones holding a host resource that this arm never
+    /// had. That is precisely how the `Err` arm of a `Result<Resource, E>` broke when this reason
+    /// did not exist as a distinct case.
+    OwnsNothing,
+}
+
 /// The TOTAL statement set (contract §5/§6): assignments, nops, and storage ends. `Drop` is a
 /// terminator.
 #[derive(Clone, Debug)]
@@ -440,16 +466,16 @@ pub enum Statement {
     /// # Contract
     ///
     /// - The place is a **whole local** (no projection); `MIR-0035` enforces this.
-    /// - At this point every drop unit of that local is dead — moved out or dropped. Emitting this
-    ///   over a place that still owns something is a lowering defect, and the backend's storage
-    ///   refuses it (a complete value cannot be released, only dropped or moved).
-    /// - It is **idempotent and total**: a local whose storage is already dead is unaffected, which
-    ///   is what lets drop elaboration emit it unconditionally at the end of a local's sequence
-    ///   rather than proving which path it arrived on.
+    /// - At this point the local owns no live drop unit. The [`StorageEnd`] says *why*, and the
+    ///   two reasons are checked differently — see that type, which is where the safety argument
+    ///   for this statement actually lives.
+    /// - It is **idempotent** on an already-dead local, which is what lets drop elaboration emit it
+    ///   unconditionally at the end of a local's sequence rather than proving which path it arrived
+    ///   on.
     ///
     /// A backend with no partial-storage model — the reference interpreter — treats it as a nop,
     /// and that is not a gap: it has no state this could correct.
-    StorageDead(Place),
+    StorageDead(Place, StorageEnd),
 }
 
 // --------------------------------------------------------------- terminators --
@@ -1154,7 +1180,13 @@ fn dump_statement(stmt: &Statement) -> String {
             format!("{} = {}", dump_place(place), dump_rvalue(rvalue))
         }
         Statement::Nop => "nop".to_string(),
-        Statement::StorageDead(place) => format!("storage_dead {}", dump_place(place)),
+        Statement::StorageDead(place, reason) => {
+            let reason = match reason {
+                StorageEnd::Accounted => "accounted",
+                StorageEnd::OwnsNothing => "owns-nothing",
+            };
+            format!("storage_dead {} ({reason})", dump_place(place))
+        }
     }
 }
 

@@ -372,26 +372,25 @@ fn composite_vec_of_strings_empty() {
     );
 }
 
-/// A `Vec<Vec<Int32>>` renders fine as far as Display is concerned — the recursion nests a runtime
-/// loop inside a runtime loop and MIR verifies — but it is refused by an INDEPENDENT, pre-existing
-/// backend limitation: dropping the printed Vec (CD-120 Contract C) hits the C6.3b-era
-/// "destructor-in-runtime-collection" deferral on `Vec`-of-`Vec`.
+/// A `Vec<Vec<Int32>>` renders, and **now builds** — this test used to assert the opposite.
 ///
-/// Worth noting for whoever picks that up: the refusal looks OVER-BROAD against its own stated
-/// intent. Its comment lists "nested `Vec`/`Box`" among the element kinds that carry no user
-/// destructor and should pass, but the guard tests `DropPlan::is_noop()`, which is literally
-/// `matches!(self, Noop)` — and a `Vec<Int32>` element's plan is `VecElements { Int32 }`, non-`Noop`
-/// yet running no user destructor anywhere. The precise question is "does this plan run any USER
-/// destructor, recursively", not "is the plan empty". Left as a finding rather than fixed here:
-/// widening a drop-glue refusal is C6.3b's scope, not this formatting slice's.
+/// It was written as a refusal because dropping the printed Vec (CD-120 Contract C) hit the
+/// C6.3b-era "destructor-in-runtime-collection" deferral, and it recorded the reason that refusal
+/// looked over-broad against its own stated intent: the guard asked `DropPlan::is_noop()`, but a
+/// `Vec<Int32>` element's plan is `VecElements { Int32 }` — non-`Noop`, yet running no user
+/// destructor anywhere. The precise question is "does this plan run any USER destructor,
+/// recursively", not "is the plan empty".
+///
+/// `b99514d` made the guard ask exactly that (`drop_plan_has_custom_action`), so the finding is
+/// closed and the case is positive. The refusal still stands for a `Vec` whose element genuinely
+/// carries a user destructor, which is what the deferral was ever about.
 #[test]
-fn composite_vec_of_vecs_refused_by_drop_glue() {
-    refused_natively(
+fn composite_vec_of_vecs_renders() {
+    agree_out(
         "vec_vec",
         "fn main() { let mut a: Vec<Int32> = Vec::new(); a.push(1); a.push(2); \
          let mut b: Vec<Int32> = Vec::new(); b.push(3); \
          let mut v: Vec<Vec<Int32>> = Vec::new(); v.push(a); v.push(b); println(v); }",
-        "destructor-in-runtime-collection",
     );
 }
 

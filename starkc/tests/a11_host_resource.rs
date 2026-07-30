@@ -104,17 +104,22 @@ fn verify_codes(program: &MirProgram) -> Vec<String> {
 
 // ------------------------------------------------------- the version increment --
 
-/// **A11 §3: `MIR_VERSION` is `0.2`.** A `MirTy` variant flows through every part of the compiler
-/// that reasons about types, unlike A10's `Callee` variant which fails at one match site — so this is
-/// a shape change, not a surface revision.
+/// **A11 §3 bumped `MIR_VERSION` to `0.2`.** A `MirTy` variant flows through every part of the
+/// compiler that reasons about types, unlike A10's `Callee` variant which fails at one match site —
+/// so this is a shape change, not a surface revision.
 ///
 /// The increment invalidates every build key, which is the intent: a key that ignored a
 /// representation change would serve a cached artifact built under different type rules.
+///
+/// A12 (`DEFECT-C788-LOOP-TEMP`) has since taken it to `0.3` by widening the statement set. The pin
+/// moves with each amendment on purpose — that is what makes an unannounced shape change fail here
+/// rather than pass silently.
 #[test]
-fn mir_version_is_0_2_for_a11() {
-    assert_eq!(mir::MIR_VERSION, "0.2");
-    // `MIR_RUNTIME_SURFACE` deliberately does NOT move: A11 adds no `RuntimeFn`, because a close is a
-    // provider call through MIR's `Drop` terminator.
+fn the_mir_version_records_every_shape_amendment() {
+    assert_eq!(mir::MIR_VERSION, "0.3");
+    // `MIR_RUNTIME_SURFACE` deliberately does NOT move, for A11 or A12: neither adds a `RuntimeFn`.
+    // A11's close is a provider call through MIR's `Drop` terminator; A12's storage end is a
+    // statement the backend lowers itself, calling nothing.
     assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A10");
 }
 
@@ -310,8 +315,9 @@ fn the_dump_carries_provider_resource_and_nominal() {
         "{dumped}"
     );
     assert!(
-        dumped.contains("0.2"),
-        "the dump must record MIR 0.2: {dumped}"
+        dumped.contains(mir::MIR_VERSION),
+        "the dump must record the MIR shape revision ({}): {dumped}",
+        mir::MIR_VERSION
     );
 }
 

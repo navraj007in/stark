@@ -2424,9 +2424,9 @@ impl<'a> FnLowerer<'a> {
     /// That last case is the defect. A local whose field was moved out is left partially moved
     /// forever, which no straight-line program notices and which a loop back edge turns into an
     /// abort on the next iteration's assignment.
-    fn emit_storage_dead(&mut self, local: u32, span: Span) {
+    fn emit_storage_dead(&mut self, local: u32, reason: StorageEnd, span: Span) {
         self.emit(
-            Statement::StorageDead(Place::local(LocalId(local))),
+            Statement::StorageDead(Place::local(LocalId(local)), reason),
             self.synthetic(span, SyntheticKind::DropElaboration),
         );
     }
@@ -2452,7 +2452,7 @@ impl<'a> FnLowerer<'a> {
             for unit in &units {
                 self.emit_guarded_drop(local, unit, span);
             }
-            self.emit_storage_dead(local, span);
+            self.emit_storage_dead(local, StorageEnd::Accounted, span);
         }
     }
 
@@ -10283,20 +10283,22 @@ impl<'a> FnLowerer<'a> {
             // after the single-field one was fixed. (`use_tuple` implies at least one non-`Copy`
             // field, so this temp is never `Whole` here.)
             if use_tuple {
-                self.emit_storage_dead(source.local.0, span);
+                self.emit_storage_dead(source.local.0, StorageEnd::Accounted, span);
             }
             if payload_was_moved {
                 // Something non-`Copy` came out, so the storage is partially moved (or already
                 // emptied whole, by the C6.1c decomposition). Either way this ends it, and it is
                 // idempotent on the already-dead case.
-                self.emit_storage_dead(scrut.local.0, span);
+                self.emit_storage_dead(scrut.local.0, StorageEnd::Accounted, span);
             } else {
-                // Nothing came out: the whole value is still there. It must be dropped rather than
-                // released — releasing a complete value would abandon it, which is the leak the
-                // backend's storage check exists to refuse. Not droppable? Then the backend never
-                // checks this local's storage at all, and this is a no-op by construction.
-                let scrut_ty = MirTy::Enum(enum_ref, scrut_args.to_vec());
-                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &scrut_ty, span)?;
+                // Nothing came out, so the whole value is still in the temp — but this variant's
+                // payload is empty or entirely `Copy`, so it owns nothing and the storage can
+                // simply end. It must NOT be dropped instead: a whole-value drop runs the enum's
+                // glue for EVERY variant, including one holding a host resource this arm never
+                // had, which the backend rightly refuses ("must be emitted by the Drop terminator,
+                // not by generic drop glue"). That is the `Err` arm of every
+                // `Result<Resource, E>`.
+                self.emit_storage_dead(scrut.local.0, StorageEnd::OwnsNothing, span);
             }
         }
         Ok(())

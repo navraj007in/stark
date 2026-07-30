@@ -345,7 +345,7 @@ impl<'a> Interp<'a> {
                     // A12: this engine holds values in a map keyed by place, with no notion of
                     // partially moved storage, so there is no state for a storage end to correct.
                     // Deliberately inert rather than unimplemented — see `Statement::StorageDead`.
-                    Statement::StorageDead(_) => {}
+                    Statement::StorageDead(..) => {}
                 }
             }
             match &bb.terminator.0 {
