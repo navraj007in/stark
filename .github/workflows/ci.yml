@@ -40,7 +40,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-targets --all-features
+        # `--no-fail-fast` is load-bearing, not tidiness. Without it cargo stops at the FIRST
+        # failing test binary, so a run can only ever report one broken target -- which turned a
+        # single behaviour change into five serial push/CI round-trips, each surfacing the next
+        # stale test. With it, one run lists every failure across all three platforms at once.
+        run: cargo test --workspace --all-targets --all-features --no-fail-fast
       - name: Execution snapshot verification (C3-ENTRY baseline)
         run: cargo test --test exec_snapshots
       - name: Release package structure and installer tests

@@ -11,7 +11,7 @@ use starkc::provider_abi::ScalarTy;
 use starkc::provider_bind::StatusBinding;
 use starkc::provider_derive::{derive, DerivedSignature, DerivedTy};
 use starkc::provider_registry;
-use starkc::provider_synth::{synthesize, RESOURCE_SYNTHESIS_LIMIT};
+use starkc::provider_synth::synthesize;
 use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -202,8 +202,12 @@ fn buffer_and_slot_forms_reach_the_generated_source() {
 /// admit a value at a use site — and a host resource must not be. Emitting one anyway would let a
 /// program forge a handle no provider produced, and `from_raw_checked` would not catch it: the
 /// `resource_type` would be whatever the forger wrote.
+/// **Rewritten for CD-234/CD-235.** This asserted that ANY resource-bearing signature was refused,
+/// which was true while `RESOURCE_SYNTHESIS_LIMIT` had no answer. CD-234 gave it one — a zero-variant
+/// enum — so the refusal narrowed to a resource the package does not BIND, which is the case that
+/// would otherwise generate source naming a type that does not exist.
 #[test]
-fn a_signature_touching_a_resource_is_refused() {
+fn a_signature_touching_an_unbound_resource_is_refused() {
     let file_open = derive(
         "file::open_raw",
         "filesystem",
@@ -213,14 +217,17 @@ fn a_signature_touching_a_resource_is_refused() {
     )
     .expect("derives");
 
+    // No resource nominals bound, so `File` names nothing.
     let e = synthesize(&[file_open], &vocab(&[("filesystem", &[])]))
-        .expect_err("a resource result must be refused");
-    assert!(e.contains(RESOURCE_SYNTHESIS_LIMIT), "{e}");
+        .expect_err("a resource the package does not bind must be refused");
+    assert!(e.contains("File"), "{e}");
+    assert!(e.contains("does not bind"), "{e}");
     assert!(e.contains("file::open_raw"), "{e}");
 }
 
-/// A receiver is refused for the same reason: associated placement needs the nominal to exist, and
-/// emitting it as a free function would silently change the call shape a programmer writes.
+/// A receiver is still refused, but for a narrower reason than before: associated placement needs an
+/// `impl` block on the nominal, and emitting the item as a free function instead would silently
+/// change the call shape a programmer writes. The resource TYPE is no longer the problem (CD-234).
 #[test]
 fn a_signature_with_a_receiver_is_refused() {
     let read = derive(
@@ -234,7 +241,8 @@ fn a_signature_with_a_receiver_is_refused() {
 
     let e = synthesize(&[read], &vocab(&[("filesystem", &[])]))
         .expect_err("a receiver must be refused");
-    assert!(e.contains(RESOURCE_SYNTHESIS_LIMIT), "{e}");
+    assert!(e.contains("associated placement"), "{e}");
+    assert!(e.contains("File::read_raw"), "{e}");
 }
 
 /// Scalar-only signatures — the whole `clock` capability — are unaffected by the limit, which is
