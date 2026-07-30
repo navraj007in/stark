@@ -16,6 +16,21 @@ use std::sync::Arc;
 struct FlowState {
     initialized: HashSet<LocalId>,
     mutable: HashMap<LocalId, bool>,
+    /// **Whether this path DIVERGES** — `return`, `break`, or a call to a `!`-returning function.
+    ///
+    /// Definite assignment previously ignored divergence and intersected the initialised sets of
+    /// every `match` arm, including arms that can never reach the join. So:
+    ///
+    /// ```text
+    /// let s: TcpStream;
+    /// match connect(a) { Ok(v) => { s = v; } Err(_) => { panic("failed"); } }
+    /// use(s);                                  // E0401: "possibly uninitialized"
+    /// ```
+    ///
+    /// was rejected although the `Err` arm cannot fall through. That was tolerable while every type
+    /// had a default to pre-initialise with; a host resource has none (CD-234), so deferred
+    /// initialisation is the ONLY way to bind one and the gap became blocking.
+    diverged: bool,
 }
 
 pub fn check(
@@ -161,12 +176,28 @@ impl FlowChecker<'_> {
                 if let Some(expr) = expr {
                     self.visit_expr(*expr, state);
                 }
+                // Nothing after this statement is reachable, and no path through it reaches an
+                // enclosing join.
+                state.diverged = true;
             }
             hir::StmtKind::Item(_) => {}
         }
     }
 
     fn visit_expr(&mut self, expr_id: ExprId, state: &mut FlowState) {
+        // **An expression of type `!` diverges.** Tested on the TYPE rather than by naming `panic`,
+        // so every diverging form is covered by construction -- `panic`, a `!`-returning function, a
+        // `match` whose arms all diverge -- instead of a list that the next such form is forgotten
+        // from.
+        //
+        // Set BEFORE visiting: the divergence is a property of this expression, and visiting its
+        // parts must not clear it.
+        if matches!(
+            self.expr_types.get(&expr_id),
+            Some(crate::typecheck::Ty::Never)
+        ) {
+            state.diverged = true;
+        }
         let expr = self.hir.expr(expr_id);
         match &expr.kind {
             hir::ExprKind::Lit(_) | hir::ExprKind::Error => {}
@@ -246,14 +277,23 @@ impl FlowChecker<'_> {
                 self.visit_expr(*scrutinee, state);
                 let before = state.clone();
                 let mut exits = Vec::new();
+                let mut all_diverged = !arms.is_empty();
                 for arm in arms {
                     let mut arm_state = before.clone();
+                    arm_state.diverged = false;
                     let bindings = self.bind_pattern(arm.pat, &mut arm_state);
                     self.visit_expr(arm.body, &mut arm_state);
                     for local in bindings {
                         arm_state.initialized.remove(&local);
                         arm_state.mutable.remove(&local);
                     }
+                    // **A diverging arm contributes no path to the join.** Intersecting its
+                    // initialised set would let an arm that cannot be reached past decide whether a
+                    // variable is assigned afterwards.
+                    if arm_state.diverged {
+                        continue;
+                    }
+                    all_diverged = false;
                     exits.push(arm_state.initialized);
                 }
                 if let Some(first) = exits
@@ -261,6 +301,10 @@ impl FlowChecker<'_> {
                     .reduce(|left, right| left.intersection(&right).copied().collect())
                 {
                     state.initialized = first;
+                }
+                // Every arm diverging means the match itself does.
+                if all_diverged {
+                    state.diverged = true;
                 }
             }
             hir::ExprKind::Loop { body } => {

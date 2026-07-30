@@ -917,3 +917,75 @@ fn select_c_the_legacy_file_path_is_still_affine() {
          no backend benefit to trade against the identity invariant"
     );
 }
+
+// ------------- CD-254: definite assignment must understand divergence --
+
+/// **A diverging match arm contributes no path to the join.**
+///
+/// `flow.rs` had no notion of divergence: it intersected the initialised sets of every arm,
+/// including arms that cannot fall through. That was tolerable while every type had a default to
+/// pre-initialise with — but a host resource has none (CD-234 forbids it), so deferred
+/// initialisation is the ONLY way to bind one, and the gap made resources unusable from source.
+///
+/// Tested with an ordinary `UInt64`, not a resource: the rule is general definite-assignment
+/// behaviour that resources merely forced us to notice.
+#[test]
+fn a_diverging_arm_does_not_leave_a_variable_unassigned() {
+    let cases = [
+        // `panic` diverges, so the Err arm cannot reach the use of `v`.
+        "fn f(r: Result<UInt64, Bool>) -> UInt64 {\n\
+         \x20   let v: UInt64;\n\
+         \x20   match r { Ok(x) => { v = x; } Err(_e) => { panic(\"no\"); } }\n\
+         \x20   v\n\
+         }\nfn main() { }\n",
+        // `return` diverges too.
+        "fn f(r: Result<UInt64, Bool>) -> UInt64 {\n\
+         \x20   let v: UInt64;\n\
+         \x20   match r { Ok(x) => { v = x; } Err(_e) => { return 0; } }\n\
+         \x20   v\n\
+         }\nfn main() { }\n",
+    ];
+
+    for src in cases {
+        let file = Arc::new(SourceFile::new("diverge.stark", src.to_string()));
+        let (ast, pd) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
+        assert!(pd.is_empty(), "{pd:?}");
+        let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
+        assert!(rd.is_empty(), "{rd:?}");
+        let checked = starkc::typecheck::analyze(&hir, file);
+        let errors: Vec<_> = checked
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == starkc::diag::Severity::Error)
+            .map(|d| format!("{} {}", d.code.clone().unwrap_or_default(), d.message))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a diverging arm must not make `v` possibly-uninitialised:\n{src}\n{errors:#?}"
+        );
+    }
+}
+
+/// **The rule stays sound in the other direction**: an arm that does NOT diverge and does not assign
+/// still leaves the variable unassigned. Without this, the fix could have been "ignore all arms".
+#[test]
+fn a_non_diverging_arm_that_skips_the_assignment_still_reports_e0401() {
+    let src = "fn f(r: Result<UInt64, Bool>) -> UInt64 {\n\
+               \x20   let v: UInt64;\n\
+               \x20   match r { Ok(x) => { v = x; } Err(_e) => { } }\n\
+               \x20   v\n\
+               }\nfn main() { }\n";
+    let file = Arc::new(SourceFile::new("diverge2.stark", src.to_string()));
+    let (ast, pd) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = starkc::typecheck::analyze(&hir, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0401")),
+        "an arm that neither diverges nor assigns must still be reported"
+    );
+}
