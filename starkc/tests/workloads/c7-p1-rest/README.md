@@ -9,7 +9,7 @@ and `write_all` are STARK code.
 
 ```sh
 cd starkc/tests/workloads/c7-p1-rest
-../../../target/debug/stark build --no-build-cache
+../../../target/release/stark build --no-build-cache
 STARK_P1_BIND=127.0.0.1:39091 ./target/stark/debug/c7-p1-rest
 ```
 
@@ -59,12 +59,22 @@ the existing generated-Rust Drop path.
 
 ```sh
 python3 scripts/pure_tests.py
-../../../target/debug/stark build --no-build-cache --verbose
-python3 scripts/e2e.py
-python3 scripts/measure.py
+../../../target/release/stark build --no-build-cache --verbose
+python3 scripts/e2e.py --profile debug
+python3 scripts/measure.py --profile debug
+python3 scripts/measure.py --profile release
 ```
 
 The pure runner creates a temporary capability-free package and executes the seven byte, JSON, and
 HTTP tests through `stark test`. The raw-socket runner launches the native artifact, validates 24
 responses byte-for-byte, and verifies bounded clean shutdown. The measurement runner retains its
-machine-readable observations in `measurements/latest.json`.
+machine-readable observations in `measurements/<profile>.json`.
+
+**These commands are also the CI job** `C7 P1 REST workload`, which runs them on linux-x64,
+macos-arm64 and windows-x64 per push. The scripts resolve the compiler and the built artefact for
+whichever profile is present, including the Windows `.exe` suffix, so the local and CI invocations
+are the same commands rather than two arrangements that can drift.
+
+**On the measurements:** executable size is a valid profile comparison; `functional_run_seconds`
+is **not** a runtime measurement of this workload — it times the `e2e.py` subprocess. See
+`measurements/README.md`.

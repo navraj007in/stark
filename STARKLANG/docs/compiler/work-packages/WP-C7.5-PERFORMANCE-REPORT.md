@@ -39,9 +39,9 @@ ratio below is a single-workload figure and is labelled as one.
 | peak compiler memory | **measured** | 148.6–156.3 MB, essentially flat |
 | executable size | **measured** | debug 482–532 KB; release 443–447 KB |
 | startup time | **measured** | 1.55 ms (release), 2.2–2.3 ms (debug) |
-| steady-state runtime | **NOT MEASURABLE** | below resolution on every workload — §1; re-tested against P1 and still below resolution — §7 |
+| steady-state runtime | **NOT MEASURABLE** | §1 (micro-workloads: process-startup floor); §7 (P1 end-to-end: harness floor) |
 | interpreter/native ratio | **measured, one workload** | ≈115× against native debug — §4 |
-| debug/release ratio | **size measured; runtime NOT MEASURABLE** | size 1.09–1.19× (micro-workloads), 1.686× (P1); runtime undefined — §5, §7 |
+| debug/release ratio | **size MEASURED (closed); runtime NOT MEASURABLE** | size 1.09–1.19× (micro-workloads), **1.686× (P1)** — §5, §7 |
 | backend maintenance complexity | **measured** | §6 |
 
 ## 3. Compile time, memory and size
@@ -176,3 +176,69 @@ amortised across enough requests that a fixed floor stops mattering, and a reque
 frozen 24-accept lifecycle. Raising that count changes the workload P1 is qualified against, so it
 is an owner decision rather than a harness fix. Recorded in
 `starkc/tests/workloads/c7-p1-rest/measurements/README.md`.
+
+---
+
+## 8. CLOSING RECORD (CD-273, owner ruling)
+
+```text
+Executable-size profile effect:
+    MEASURED — release materially smaller than debug.
+
+Micro-workload runtime profile effect:
+    NOT MEASURABLE — dominated by process-startup floor.
+
+P1 REST end-to-end runtime profile effect:
+    NOT MEASURABLE — dominated by harness startup, deliberate delay,
+    process supervision and loopback exchanges.
+
+Backend steady-state runtime claim:
+    NONE.
+
+Future measurement:
+    requires a separate amortised or internally instrumented benchmark;
+    the frozen P1 qualification workload will not be modified.
+```
+
+**No throughput or speedup number from this workload may be quoted.** Specifically, the `321 req/s`
+and `66 ms` figures describe the `e2e.py` harness and must not be reported as STARK server
+throughput. They appear in `measurements/*.json` as raw observations, and
+`measurements/README.md` states what they are.
+
+**C7 does not wait on a performance instrument.** The gate closes with steady-state runtime
+explicitly not measured, and with no runtime claim attached. An honest absence beats a number
+produced by a harness already known to be invalid, and building the instrument is follow-on work
+rather than gate repair.
+
+### Why P1 is not extended to serve as the benchmark
+
+Raising P1's request count would fuse two purposes into one artefact: semantic and lifecycle
+qualification, and performance measurement. The qualification workload's identity would then depend
+on benchmark requirements, and its byte-exact 24-exchange corpus is what P1's Tier-1 evidence is
+defined against. **P1 stays frozen as the byte-exact functional workload.**
+
+### The follow-on instrument, specified so it is not redesigned from scratch
+
+A *separate, versioned* benchmark that extracts the computational request path rather than driving a
+server:
+
+```stark
+fn handle_request_bytes(request: &[UInt8]) -> Result<Vec<UInt8>, HttpError>
+```
+
+Replay the same 24 frozen request byte sequences in-process, many times. That measures parse → route
+→ JSON → response encoding, and excludes process startup, Python, TCP scheduling, deliberate sleeps,
+server spawn and client round trips — every term that dominates §7.
+
+Requirements:
+
+- identical source at one commit, built debug and release;
+- the same request corpus and iteration count for both;
+- enough accumulated work for **at least ~1 second per measured run**;
+- **at least five measured runs**, reporting median *and* dispersion;
+- low run-to-run variance required before any ratio is called measurable;
+- **response hashes verified**, so optimisation cannot delete the work being timed;
+- timing code outside the measured loop wherever possible.
+
+Optionally, a second measurement may instrument the real server internally — from receipt of a
+complete request to completion of response encoding — kept separate from end-to-end HTTP latency.

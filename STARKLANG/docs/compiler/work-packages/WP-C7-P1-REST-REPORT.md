@@ -2,10 +2,20 @@
 
 **Date:** 2026-07-30
 **Local qualification:** macOS arm64
-**Recommendation:** `P1 PARTIAL — Tier-1 cross-platform runs now execute in CI; awaiting first green run`
+**Recommendation:** `P1 TIER-1 QUALIFIED` — all six execution rows green (CD-273).
 
-**Update, CD-271.** The Tier-1 Linux and Windows rows were framed as manual runs and had stayed
-unrun. They are now a CI job, `C7 P1 REST workload`, on all three Tier-1 platforms — see §7.
+**Status history.** The Tier-1 Linux and Windows rows were framed as manual runs and had stayed
+unrun, holding Gate C7 open. CD-271 made them a CI job (`C7 P1 REST workload`, §7); CD-272 fixed the
+three path assumptions its first run exposed; the run at `d735b35` is green on all six rows:
+
+| platform | debug execution | release execution |
+| --- | --- | --- |
+| linux-x64 | **PASS** | **PASS** |
+| macos-arm64 | **PASS** | **PASS** |
+| windows-x64 | **PASS** | **PASS** |
+
+Each row is the artefact **executed** — 24 raw HTTP exchanges compared byte-for-byte, then a bounded
+clean exit — not merely built. Pure-STARK tests (7/7) also pass on all three.
 
 ## Implementation status
 
@@ -47,7 +57,7 @@ authority; it directly exposes subprocess stdout/stderr and raw socket failures.
 
 ## Local measurements
 
-Raw observations are retained in `measurements/latest.json`.
+Raw observations are retained in `measurements/debug.json` and `measurements/release.json`; what they do and do not support is stated in `measurements/README.md`.
 
 | Observation | macOS arm64 debug |
 |---|---:|
@@ -149,8 +159,15 @@ aborted immediately on a real compiler defect (`?` in a loop, CD-269). A build-o
 have reproduced that mistake on three platforms instead of one.
 
 Local dry-run of the exact sequence at `cd9405b` on macOS arm64: pure tests 7/7, debug 24/24,
-release 24/24, `fmt --check` clean. Linux and Windows are pending their first CI run — the rows move
-from PENDING to PASS on evidence, not on the job existing.
+release 24/24, `fmt --check` clean. The rows moved from PENDING to PASS on CI evidence at
+`d735b35`, not on the job existing.
+
+**The job's first run earned its keep** (CD-272): `pure_tests.py` hardcoded `target/debug/stark`
+while the job builds `--release`, so linux-x64 failed before running a test. Two sibling assumptions
+were fixed in the same pass — a relative `--compiler` read against a temporary working directory,
+and trusting each platform's shell to resolve `.../stark` to `stark.exe`. All three were path
+assumptions that held on the machine the scripts were written on, which is also why these rows had
+stayed unrun: not difficulty, just assumptions nothing had forced anyone to check.
 
 ## 8. Measurements
 
@@ -165,4 +182,13 @@ of **1.003×** is the proof: C7.5 measured 1.5× between profiles on startup alo
 — Python startup, a deliberate sleep, process spawn, 24 loopback round trips — dominates the
 microseconds of STARK compute. C7.5's two runtime dimensions therefore stay `NOT MEASURABLE`, now
 on two workloads' evidence. Detail in `measurements/README.md` and `WP-C7.5-PERFORMANCE-REPORT.md`
-§7.
+§7, §8.
+
+**Do not quote `321 req/s` or `66 ms` as server throughput** (CD-273). They describe the harness.
+
+**P1 is frozen at 24 exchanges and will not be extended to serve as a benchmark** (CD-273). Raising
+the request count would fuse functional qualification with performance measurement and make this
+workload's identity depend on benchmark requirements — and its byte-exact corpus is precisely what
+the Tier-1 evidence above is defined against. The performance instrument is a separate versioned
+artefact, specified in `WP-C7.5-PERFORMANCE-REPORT.md` §8, and is follow-on work rather than a C7
+prerequisite.

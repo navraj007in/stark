@@ -38,19 +38,31 @@ implemented.
 | native builds usable for admitted workload | **MET** |
 | native host capability exists | **MET** |
 | P1 implementation | **MET** |
-| P1 Tier-1 qualification | **PARTIAL** |
-| C7.5 deferred measurements | **OPEN** |
+| P1 Tier-1 qualification | **MET** — six execution rows green at `d735b35` (CD-273) |
+| C7.5 executable-size dimension | **MET** — 1.686× on P1 (CD-273) |
+| C7.5 steady-state runtime | **EXPLICITLY NOT MEASURED** — no claim attached (CD-273) |
 | native Core `File` support | **KNOWN LIMITATION / DEFERRED** |
 | `DEFECT-C788-LOOP-TEMP` | **DISCHARGED** — fixed by A12 (CD-265); it was an admitted non-blocking deviation under CD-264 |
 | **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
 
 ### Remaining critical path
 
-1. Linux x64 P1 run;
-2. Windows x64 P1 run;
-3. C7.5 steady-state runtime measurement;
-4. C7.5 debug/release runtime comparison;
-5. final evidence consolidation and closure ruling.
+Four of the five items are discharged (CD-273); one remains.
+
+| # | item | status |
+| --- | --- | --- |
+| 1 | Linux x64 P1 run | **DONE** — debug and release, executed, green |
+| 2 | Windows x64 P1 run | **DONE** — debug and release, executed, green |
+| 3 | C7.5 steady-state runtime measurement | **CLOSED AS NOT MEASURABLE** — no claim attached |
+| 4 | C7.5 debug/release comparison | **size MEASURED (1.686×); runtime NOT MEASURABLE** |
+| 5 | final evidence consolidation and closure ruling | **OPEN** |
+
+Items 3 and 4's runtime halves are closed by ruling, not by measurement, and deliberately so: the
+gate does not wait on a performance instrument. The `1.003×` ratio P1 produced is not evidence that
+the profiles perform alike — it is evidence that `functional_run_seconds` times the `e2e.py`
+harness. An honest absence of a runtime claim beats a number from a harness known to be invalid.
+Building the instrument is follow-on work (`WP-C7.5-PERFORMANCE-REPORT.md` §8), and **P1 stays
+frozen at 24 exchanges** rather than being extended to serve it.
 
 ### Closure wording
 

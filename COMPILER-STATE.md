@@ -881,6 +881,60 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## Gate C7 — RULING (CD-273): CLOSES WITHOUT A STEADY-STATE PERFORMANCE CLAIM
+
+**P1 is Tier-1 qualified.** All six execution rows are green at `d735b35` — linux-x64, macos-arm64
+and windows-x64, each in debug and release, each **executing** the artefact through 24 byte-exact
+HTTP exchanges and a bounded clean exit, not merely building it.
+
+**C7.5 closes with size measured and runtime explicitly not measured.**
+
+```text
+Executable-size profile effect:
+    MEASURED — release materially smaller than debug (1.686x on P1).
+
+Micro-workload runtime profile effect:
+    NOT MEASURABLE — dominated by process-startup floor.
+
+P1 REST end-to-end runtime profile effect:
+    NOT MEASURABLE — dominated by harness startup, deliberate delay,
+    process supervision and loopback exchanges.
+
+Backend steady-state runtime claim:
+    NONE.
+
+Future measurement:
+    requires a separate amortised or internally instrumented benchmark;
+    the frozen P1 qualification workload will not be modified.
+```
+
+**The gate does not wait on a performance instrument.** An honest absence of a runtime claim beats a
+number produced by a harness already known to be invalid. The `1.003x` debug/release ratio is not
+evidence that the profiles perform alike — it is evidence that the measurement was of the harness.
+`321 req/s` and `66 ms` must not be quoted as STARK server throughput.
+
+**P1 stays frozen at 24 exchanges.** Extending it would fuse functional qualification with
+performance measurement and make the workload's identity depend on benchmark requirements. The
+instrument is a separate versioned artefact — specified in `WP-C7.5-PERFORMANCE-REPORT.md` §8, which
+extracts `handle_request_bytes` and replays the frozen corpus in-process — and is **follow-on work,
+not gate repair**.
+
+### Gate state
+
+| condition | status |
+| --- | --- |
+| native builds usable for admitted workload | MET |
+| native host capability exists | MET |
+| P1 implementation | MET |
+| P1 Tier-1 qualification | **MET** — six execution rows green (CD-273) |
+| C7.5 executable-size dimension | **MET** |
+| C7.5 steady-state runtime | **EXPLICITLY NOT MEASURED** — no claim attached |
+| native Core `File` support | KNOWN LIMITATION / DEFERRED (SELECT-C) |
+| `DEFECT-C788-LOOP-TEMP` | DISCHARGED — fixed by A12 (CD-265) |
+| resource lifecycle matrix | COMPLETE — 9 observed, 1 unreachable |
+
+Remaining: final evidence consolidation and the closure ruling itself.
+
 ## DEFECT-C788-LOOP-TEMP — FIXED (CD-265, MIR amendment A12)
 
 **Closed.** `Statement::StorageDead(Place, StorageEnd)` ends a local's storage where lowering knows
