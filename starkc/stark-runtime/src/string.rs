@@ -55,6 +55,14 @@ pub fn as_str(s: &str) -> &str {
     s
 }
 
+/// `str::substring(start, end)` — byte-indexed slice, trapping on invalid UTF-8 boundaries.
+pub fn substring(s: &str, start: u64, end: u64) -> &str {
+    let start = start as usize;
+    let end = end as usize;
+    s.get(start..end)
+        .expect("String::substring range is not on valid UTF-8 boundaries")
+}
+
 /// `String::push_str(&mut self, s: &str)` — append in place.
 pub fn push_str(s: &mut String, suffix: &str) {
     s.push_str(suffix);
@@ -85,6 +93,11 @@ pub fn print_char(c: char) {
 pub fn println_char(c: char) {
     let mut buf = [0u8; 4];
     crate::output::stdout_line(c.encode_utf8(&mut buf).as_bytes());
+}
+
+/// `Char::from_u32(value)` — validated Unicode scalar construction.
+pub fn char_from_u32(value: u32) -> Option<char> {
+    char::from_u32(value)
 }
 
 /// `==` on `String`/`str` (V-STR-2 routes through here, never a structural comparison).

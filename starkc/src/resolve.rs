@@ -729,6 +729,7 @@ impl<'a> Resolver<'a> {
             "String::from" => return Res::Builtin(Builtin::StringFrom),
             "String::new" => return Res::Builtin(Builtin::StringNew),
             "String::with_capacity" => return Res::Builtin(Builtin::StringWithCapacity),
+            "Char::from_u32" => return Res::Builtin(Builtin::CharFromU32),
             "Vec::new" => return Res::Builtin(Builtin::VecNew),
             "Vec::with_capacity" => return Res::Builtin(Builtin::VecWithCapacity),
             "Box::new" => return Res::Builtin(Builtin::BoxNew),

@@ -1,7 +1,7 @@
 # stark-json v0.1
 
-`stark-json` is a pure-STARK JSON package partial implementation for the `STARK JSON v0.1`
-work package.
+`stark-json` is a pure-STARK JSON package implementation for the `STARK JSON v0.1`
+work package, qualified locally on macOS arm64.
 
 ## Scope
 
@@ -10,23 +10,24 @@ Implemented and checked under the current compiler:
 - package manifest with no dependencies;
 - frozen public type/function names, including `JsonValue::Bool` and `JsonValue::String`;
 - recursive `JsonValue` shape using ordered `Vec<JsonMember>` objects;
-- parser entry points `parse` and `parse_with_limits`;
+- parser entry points `parse` and `parse_with_limits(input, limits: JsonLimits)`;
 - byte-oriented recursive descent for primitives, numbers, arrays, objects, whitespace, duplicate
   checks, position tracking, and selected limits;
-- decoded string preservation for direct UTF-8 input, simple escapes, and ASCII `\u00XX` escapes;
+- decoded string preservation for direct UTF-8 input, simple escapes, BMP `\uXXXX` escapes, and
+  valid surrogate pairs;
+- deterministic compact encoder with borrowed, non-consuming traversal;
 - 17 valid fixtures and 32 invalid fixtures;
-- package-local tests and a sibling cross-package consumer.
+- 10 package-local tests and a sibling cross-package native consumer.
 
-Current compiler/runtime blockers prevent a complete compliant implementation:
+Compiler/runtime work completed for this package:
 
 - `JsonValue::Bool(Bool)` and `JsonValue::String(String)` now parse and check after the compiler
   accepts primitive type keywords as enum variant declaration names and path segments.
-- The compiler has no supported ref-binding pattern for non-Copy enum payloads, so
-  `encode(value: &JsonValue)` cannot inspect recursive `String`, `Vec`, or object payloads without
-  move errors. The function currently preserves the required signature but returns `null`.
-- There is no public scalar-from-codepoint constructor for decoding non-ASCII `\uXXXX` escapes into
-  actual Unicode scalar values. Non-ASCII Unicode escapes currently return `InvalidUtf8` rather than
-  silently producing the wrong string.
+- Borrowed matches over non-Copy enum payloads now bind payloads by reference, allowing
+  `encode(value: &JsonValue)` to inspect recursive strings, arrays, objects, and numbers without
+  consuming the input.
+- `Char::from_u32` is available for validated Unicode scalar construction, so non-ASCII
+  `\uXXXX` escapes and valid surrogate pairs decode to UTF-8 strings.
 
 ## API
 
@@ -57,4 +58,7 @@ Public items:
 
 ## Status
 
-Recommended status: `PARTIAL - WAITING_COMPILER_RUNTIME`.
+Recommended status: `PARTIAL - PLATFORM_QUALIFICATION_PENDING`.
+
+Local macOS arm64 package, formatter, compiler, and native consumer checks pass. Linux x64 and
+Windows x64 Tier-1 qualification has not been run in this workspace.

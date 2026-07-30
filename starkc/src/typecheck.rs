@@ -1053,6 +1053,13 @@ impl<'a> TypeChecker<'a> {
                 params: vec![Ty::Primitive(Primitive::UInt64)],
                 ret: Box::new(Ty::Primitive(Primitive::String)),
             },
+            Builtin::CharFromU32 => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::UInt32)],
+                ret: Box::new(Ty::Core(
+                    CoreType::Option,
+                    vec![Ty::Primitive(Primitive::Char)],
+                )),
+            },
             Builtin::VecNew => Ty::Fn {
                 params: Vec::new(),
                 ret: Box::new(Ty::Core(CoreType::Vec, vec![self.new_type_var()])),
@@ -5111,6 +5118,7 @@ impl<'a> TypeChecker<'a> {
             hir::ExprKind::Match { scrutinee, arms } => {
                 let scr_ty = self.check_expr(*scrutinee);
                 let ret_ty = self.new_type_var();
+                let bind_non_copy_by_ref = self.scrutinee_reads_through_ref(*scrutinee);
 
                 let mut matched_variants = HashSet::new();
                 let mut matched_bools = HashSet::new();
@@ -5135,7 +5143,8 @@ impl<'a> TypeChecker<'a> {
                 let mut preceding_patterns = Vec::new();
 
                 for arm in arms {
-                    let pat_ty = self.check_pat(arm.pat, scr_ty.clone());
+                    let pat_ty =
+                        self.check_pat_with_mode(arm.pat, scr_ty.clone(), bind_non_copy_by_ref);
                     let _ = self.unify(scr_ty.clone(), pat_ty, arm.pat.span(self.hir));
 
                     let pat = self.hir.pat(arm.pat);
@@ -5339,7 +5348,32 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
-    fn check_pat(&mut self, pat_id: PatId, expected: Ty) -> Ty {
+    fn is_copy_ty(&mut self, ty: &Ty) -> bool {
+        let resolved = self.resolve(ty);
+        let copy_types = copy_eligible_types(self.hir);
+        is_copy_with_impls(&resolved, &copy_types)
+    }
+
+    fn scrutinee_reads_through_ref(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Unary {
+                op: crate::ast::UnOp::Deref,
+                ..
+            } => true,
+            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
+                matches!(self.expr_types.get(base), Some(Ty::Ref { .. }))
+                    || self.scrutinee_reads_through_ref(*base)
+            }
+            _ => false,
+        }
+    }
+
+    fn check_pat_with_mode(
+        &mut self,
+        pat_id: PatId,
+        expected: Ty,
+        bind_non_copy_by_ref: bool,
+    ) -> Ty {
         let pat = self.hir.pat(pat_id);
         match &pat.kind {
             hir::PatKind::Lit(lit) => match lit {
@@ -5366,7 +5400,15 @@ impl<'a> TypeChecker<'a> {
             },
             hir::PatKind::Wild => expected,
             hir::PatKind::Binding { local, .. } => {
-                self.local_types.insert(*local, expected.clone());
+                let binding_ty = if bind_non_copy_by_ref && !self.is_copy_ty(&expected) {
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(expected.clone()),
+                    }
+                } else {
+                    expected.clone()
+                };
+                self.local_types.insert(*local, binding_ty);
                 expected
             }
             hir::PatKind::Path { res, .. } => match res {
@@ -5440,7 +5482,11 @@ impl<'a> TypeChecker<'a> {
                     if let Some(tys) = tys_opt {
                         for (p, expected_t) in pats.iter().zip(tys) {
                             let expected_t = self.instantiate_ty(&expected_t, &map);
-                            let p_ty = self.check_pat(*p, expected_t.clone());
+                            let p_ty = self.check_pat_with_mode(
+                                *p,
+                                expected_t.clone(),
+                                bind_non_copy_by_ref,
+                            );
                             let _ = self.unify(expected_t, p_ty, p.span(self.hir));
                         }
                     }
@@ -5454,7 +5500,11 @@ impl<'a> TypeChecker<'a> {
                         _ => None,
                     };
                     if let (Some(subpat), Some(payload)) = (pats.first(), payload) {
-                        let p_ty = self.check_pat(*subpat, payload.clone());
+                        let p_ty = self.check_pat_with_mode(
+                            *subpat,
+                            payload.clone(),
+                            bind_non_copy_by_ref,
+                        );
                         let _ = self.unify(payload, p_ty, subpat.span(self.hir));
                     }
                     resolved
@@ -5476,11 +5526,24 @@ impl<'a> TypeChecker<'a> {
                         if let Some(expected_f_ty) = expected_fields.get(f_name) {
                             if let Some(sub_pat) = field.pat {
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
-                                let p_ty = self.check_pat(sub_pat, expected_f_ty.clone());
+                                let p_ty = self.check_pat_with_mode(
+                                    sub_pat,
+                                    expected_f_ty.clone(),
+                                    bind_non_copy_by_ref,
+                                );
                                 let _ = self.unify(expected_f_ty, p_ty, field.name);
                             } else if let Some(local) = field.local {
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
-                                self.local_types.insert(local, expected_f_ty);
+                                let binding_ty =
+                                    if bind_non_copy_by_ref && !self.is_copy_ty(&expected_f_ty) {
+                                        Ty::Ref {
+                                            mutable: false,
+                                            inner: Box::new(expected_f_ty.clone()),
+                                        }
+                                    } else {
+                                        expected_f_ty.clone()
+                                    };
+                                self.local_types.insert(local, binding_ty);
                             }
                         }
                     }
@@ -5505,10 +5568,23 @@ impl<'a> TypeChecker<'a> {
                         if let Some(field_ty) = expected_fields.get(name) {
                             let field_ty = self.instantiate_ty(field_ty, &map);
                             if let Some(subpat) = field.pat {
-                                let pat_ty = self.check_pat(subpat, field_ty.clone());
+                                let pat_ty = self.check_pat_with_mode(
+                                    subpat,
+                                    field_ty.clone(),
+                                    bind_non_copy_by_ref,
+                                );
                                 let _ = self.unify(field_ty, pat_ty, field.name);
                             } else if let Some(local) = field.local {
-                                self.local_types.insert(local, field_ty);
+                                let binding_ty =
+                                    if bind_non_copy_by_ref && !self.is_copy_ty(&field_ty) {
+                                        Ty::Ref {
+                                            mutable: false,
+                                            inner: Box::new(field_ty.clone()),
+                                        }
+                                    } else {
+                                        field_ty.clone()
+                                    };
+                                self.local_types.insert(local, binding_ty);
                             }
                         }
                     }
@@ -5525,7 +5601,7 @@ impl<'a> TypeChecker<'a> {
                 let tys = elems
                     .iter()
                     .zip(expected_elems)
-                    .map(|(&p, ty)| self.check_pat(p, ty))
+                    .map(|(&p, ty)| self.check_pat_with_mode(p, ty, bind_non_copy_by_ref))
                     .collect();
                 Ty::Tuple(tys)
             }
@@ -5535,7 +5611,7 @@ impl<'a> TypeChecker<'a> {
                     _ => self.new_type_var(),
                 };
                 for &e in elems {
-                    let ety = self.check_pat(e, elem_ty.clone());
+                    let ety = self.check_pat_with_mode(e, elem_ty.clone(), bind_non_copy_by_ref);
                     let _ = self.unify(elem_ty.clone(), ety, pat.span);
                 }
                 Ty::Array(Box::new(elem_ty), elems.len() as u64)

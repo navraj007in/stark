@@ -569,9 +569,24 @@ fn walk_ty(ty: &MirTy, found: &mut std::collections::BTreeMap<String, MirTy>) {
 fn derives_for(ty: &MirTy, types: &TypeContext) -> Option<&'static str> {
     if mir_ty_is_copy(ty, types) {
         // `Clone` is required by Rust for `Copy`, not chosen independently.
-        Some("#[derive(Clone, Copy)]")
+        if ty_contains_ref(ty) {
+            Some("#[derive(Clone, Copy)]")
+        } else {
+            Some("#[derive(Clone, Copy, PartialEq)]")
+        }
     } else {
         None
+    }
+}
+
+fn ty_contains_ref(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Ref { .. } => true,
+        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Tuple(args) => {
+            args.iter().any(ty_contains_ref)
+        }
+        MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_contains_ref(elem),
+        _ => false,
     }
 }
 

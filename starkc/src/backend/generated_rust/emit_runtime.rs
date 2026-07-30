@@ -86,6 +86,12 @@ pub fn emit_runtime_call(
         StringLen | StrLen => format!("stark_runtime::string::len({})", arg(0)),
         StringIsEmpty | StrIsEmpty => format!("stark_runtime::string::is_empty({})", arg(0)),
         StrBytes => format!("{}.as_bytes()", arg(0)),
+        StrSubstring => format!(
+            "stark_runtime::string::substring({}, {}, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
         StringContains => format!("stark_runtime::string::contains({}, {})", arg(0), arg(1)),
         StrEq => format!("stark_runtime::string::eq({}, {})", arg(0), arg(1)),
         StrCmp => format!("stark_runtime::string::cmp({}, {})", arg(0), arg(1)),
@@ -103,6 +109,10 @@ pub fn emit_runtime_call(
         // --- Char output (the Char is a Copy `char` value) ---
         PrintlnChar => format!("stark_runtime::string::println_char({})", arg(0)),
         PrintChar => format!("stark_runtime::string::print_char({})", arg(0)),
+        CharFromU32 => wrap_option(
+            &format!("stark_runtime::string::char_from_u32({})", arg(0)),
+            dest_ty,
+        )?,
 
         // --- Vec value surface (WP-C6.3b). Owning, slot-backed; receivers arrive as
         // `&Vec`/`&mut Vec`. Trapping index/replace/remove and interior-ref get/iter/slice are

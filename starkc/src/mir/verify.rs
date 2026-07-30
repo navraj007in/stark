@@ -448,8 +448,26 @@ impl<'a> BodyCx<'a> {
 
         for (stmt, info) in &block.statements {
             self.verify_source(info, bi);
-            if let Statement::Assign(place, rvalue) = stmt {
-                self.verify_assign(place, rvalue, bi);
+            match stmt {
+                Statement::Assign(place, rvalue) => self.verify_assign(place, rvalue, bi),
+                Statement::Nop => {}
+                // MIR-0035 (A12). Storage liveness is a property of a whole local: a backend that
+                // models it does so per storage cell, and a projected place names part of one cell,
+                // not a cell of its own. Ending "part of" a local's storage is not a thing MIR can
+                // mean, so a projection here is a lowering defect rather than a shape to support.
+                Statement::StorageDead(place) => {
+                    if !place.projection.is_empty() {
+                        self.err(
+                            "MIR-0035",
+                            bi,
+                            format!(
+                                "storage_dead names the projected place _{}{:?}; storage liveness \
+                                 belongs to a whole local",
+                                place.local.0, place.projection
+                            ),
+                        );
+                    }
+                }
             }
         }
         let (term, info) = &block.terminator;
@@ -2784,10 +2802,15 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
                 inner: Box::new(MirTy::Slice(Box::new(MirTy::UInt8))),
             },
         ),
+        StrSubstring => (vec![str_ref(), MirTy::UInt64, MirTy::UInt64], str_ref()),
         StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
         // 0.1-A3 (f-3b): Char ops.
         PrintlnChar | PrintChar => (vec![MirTy::Char], MirTy::Unit),
+        CharFromU32 => (
+            vec![MirTy::UInt32],
+            MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),
+        ),
         StringPushChar => (vec![string_ref(true), MirTy::Char], MirTy::Unit),
         StringPopChar => (
             vec![string_ref(true)],

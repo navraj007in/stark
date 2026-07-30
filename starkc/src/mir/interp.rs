@@ -342,6 +342,10 @@ impl<'a> Interp<'a> {
                         self.write_place(here, place, value)?;
                     }
                     Statement::Nop => {}
+                    // A12: this engine holds values in a map keyed by place, with no notion of
+                    // partially moved storage, so there is no state for a storage end to correct.
+                    // Deliberately inert rather than unimplemented — see `Statement::StorageDead`.
+                    Statement::StorageDead(_) => {}
                 }
             }
             match &bb.terminator.0 {
@@ -1573,6 +1577,16 @@ impl<'a> Interp<'a> {
                 let s = self.as_str(&first)?;
                 Ok(MirValue::ByteSlice(std::rc::Rc::from(s.as_bytes())))
             }
+            StrSubstring => {
+                let s = self.as_str(&first)?;
+                let start = usize_of(&rest.next())?;
+                let end = usize_of(&rest.next())?;
+                let Some(slice) = s.get(start..end) else {
+                    return self
+                        .internal("String::substring range is not on valid UTF-8 boundaries");
+                };
+                Ok(MirValue::Str(std::rc::Rc::from(slice)))
+            }
             StringClone => {
                 let s = self.read_string_ref(&first)?;
                 Ok(MirValue::String(s))
@@ -1614,6 +1628,19 @@ impl<'a> Interp<'a> {
                     let _ = write!(self.output, "{c}");
                 }
                 Ok(MirValue::Unit)
+            }
+            CharFromU32 => {
+                let code = u32_of(&first)?;
+                Ok(match char::from_u32(code) {
+                    Some(ch) => MirValue::Enum {
+                        variant: 1,
+                        fields: vec![MirValue::Int(i128::from(u32::from(ch)))],
+                    },
+                    None => MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    },
+                })
             }
             StringPushChar => {
                 let c = char_of(&rest.next())?;
@@ -2537,6 +2564,26 @@ fn char_of(v: &Option<MirValue>) -> Result<char, MirRunError> {
             .ok_or_else(|| MirRunError::Internal(format!("invalid Char codepoint {cp}"))),
         other => Err(MirRunError::Internal(format!(
             "expected a Char argument, got {other:?}"
+        ))),
+    }
+}
+
+fn u32_of(v: &Option<MirValue>) -> Result<u32, MirRunError> {
+    match v {
+        Some(MirValue::Int(value)) => u32::try_from(*value)
+            .map_err(|_| MirRunError::Internal(format!("invalid UInt32 value {value}"))),
+        other => Err(MirRunError::Internal(format!(
+            "expected a UInt32 argument, got {other:?}"
+        ))),
+    }
+}
+
+fn usize_of(v: &Option<MirValue>) -> Result<usize, MirRunError> {
+    match v {
+        Some(MirValue::Int(value)) => usize::try_from(*value)
+            .map_err(|_| MirRunError::Internal(format!("invalid usize value {value}"))),
+        other => Err(MirRunError::Internal(format!(
+            "expected an integer argument, got {other:?}"
         ))),
     }
 }

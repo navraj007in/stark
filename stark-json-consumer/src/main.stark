@@ -1,13 +1,95 @@
 use stark_json::encode;
+use stark_json::member_key;
+use stark_json::member_value;
+use stark_json::number_raw;
 use stark_json::parse;
+use stark_json::parse_with_limits;
+use stark_json::JsonLimits;
+use stark_json::JsonValue;
+
+fn consumer_limits() -> JsonLimits {
+    JsonLimits {
+        max_input_bytes: 1024u64,
+        max_depth: 16u32,
+        max_string_bytes: 1024u64,
+        max_array_items: 32u64,
+        max_object_members: 32u64,
+        max_number_bytes: 64u64,
+    }
+}
 
 fn main() {
-    match parse("{\"a\":1}") {
+    match parse("{\"name\":\"stark\",\"items\":[1,true,null],\"unicode\":\"\\uD83D\\uDE00\"}") {
         Ok(value) => {
-            println(encode(&value).as_str());
+            let encoded = encode(&value);
+            if encoded.as_str() != "{\"name\":\"stark\",\"items\":[1,true,null],\"unicode\":\"\u{1f600}\"}" {
+                panic("canonical encode mismatch");
+            }
+            let value_ref = &value;
+            match *value_ref {
+                JsonValue::Object(members) => {
+                    if members.len() != 3u64 {
+                        panic("member count mismatch");
+                    }
+                    match members.get(0u64) {
+                        Some(member) => {
+                            if member_key(member) != "name" {
+                                panic("first key mismatch");
+                            }
+                        }
+                        None => {
+                            panic("missing first member");
+                        }
+                    }
+                    match members.get(1u64) {
+                        Some(member) => {
+                            let member_value_ref = member_value(member);
+                            match *member_value_ref {
+                                JsonValue::Array(items) => {
+                                    if items.len() != 3u64 {
+                                        panic("array count mismatch");
+                                    }
+                                }
+                                _ => {
+                                    panic("expected array member");
+                                }
+                            }
+                        }
+                        None => {
+                            panic("missing second member");
+                        }
+                    }
+                }
+                _ => {
+                    panic("expected object");
+                }
+            }
+            let encoded_again = encode(&value);
+            if encoded_again.as_str() != encoded.as_str() {
+                panic("encode consumed or changed value");
+            }
+            println(encoded_again.as_str());
         }
         Err(_) => {
             panic("consumer parse failed");
+        }
+    }
+
+    match parse_with_limits("-12.34e+56", consumer_limits()) {
+        Ok(value) => {
+            match value {
+                JsonValue::Number(number) => {
+                    if number_raw(&number) != "-12.34e+56" {
+                        panic("number raw mismatch");
+                    }
+                }
+                _ => {
+                    panic("expected number");
+                }
+            }
+        }
+        Err(_) => {
+            panic("consumer parse_with_limits failed");
         }
     }
 }

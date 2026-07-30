@@ -2413,24 +2413,46 @@ impl<'a> FnLowerer<'a> {
         );
     }
 
+    /// A12 / `DEFECT-C788-LOOP-TEMP`: every drop unit of `local` has now been accounted for, so
+    /// its storage is dead.
+    ///
+    /// Emitted at the END of a local's drop sequence, unconditionally, because at that point the
+    /// statement is true on **every** path into it and the operation is idempotent: the local was
+    /// either dropped whole (storage already dead), moved out whole (already dead), or emptied unit
+    /// by unit (partially moved, and this is the only thing that can finish it).
+    ///
+    /// That last case is the defect. A local whose field was moved out is left partially moved
+    /// forever, which no straight-line program notices and which a loop back edge turns into an
+    /// abort on the next iteration's assignment.
+    fn emit_storage_dead(&mut self, local: u32, span: Span) {
+        self.emit(
+            Statement::StorageDead(Place::local(LocalId(local))),
+            self.synthetic(span, SyntheticKind::DropElaboration),
+        );
+    }
+
     /// Emit flag-guarded drops for every scope at `from_depth` or deeper — innermost scope
     /// first, locals in reverse declaration order, units in reverse order. Does not pop the
     /// scope stack (early exits leave the stack intact for the code that follows).
+    ///
+    /// A12: each local's units are followed by one storage end, so a local emptied unit by unit
+    /// does not stay partially moved into the next iteration.
     fn emit_scope_drops_from(&mut self, from_depth: usize, span: Span) {
-        let plan: Vec<(u32, DropUnit)> = self.scopes[from_depth.min(self.scopes.len())..]
+        let plan: Vec<(u32, Vec<DropUnit>)> = self.scopes[from_depth.min(self.scopes.len())..]
             .iter()
             .rev()
             .flat_map(|scope| scope.iter().rev())
-            .flat_map(|local| {
+            .filter_map(|local| {
                 self.drop_info
                     .get(&local.0)
-                    .into_iter()
-                    .flat_map(|units| units.iter().rev())
-                    .map(|u| (local.0, u.clone()))
+                    .map(|units| (local.0, units.iter().rev().cloned().collect()))
             })
             .collect();
-        for (local, unit) in plan {
-            self.emit_guarded_drop(local, &unit, span);
+        for (local, units) in plan {
+            for unit in &units {
+                self.emit_guarded_drop(local, unit, span);
+            }
+            self.emit_storage_dead(local, span);
         }
     }
 
@@ -3682,7 +3704,15 @@ impl<'a> FnLowerer<'a> {
                 self.lower_call(expr, None)?;
                 Ok(())
             }
-            _ => unsupported("unit expression form (C4.5)", span),
+            hir::ExprKind::Try(_) => {
+                let _ = self.lower_expr_to_operand(expr)?;
+                Ok(())
+            }
+            hir::ExprKind::Tuple(elems) if elems.is_empty() => Ok(()),
+            other => unsupported(
+                format!("unit expression form (C4.5): {}", expr_kind_name(other)),
+                span,
+            ),
         }
     }
 
@@ -3702,10 +3732,14 @@ impl<'a> FnLowerer<'a> {
                 }
                 // A named function used as a function value (CD-021 item 16; generic fns
                 // monomorphise through the recorded instantiation, C4.5c / CD-021 item 21).
-                Res::Item(item) => {
-                    let instance = self.top_fn_instance(*item, expr, span)?;
-                    Ok(Operand::Const(Constant::FnPtr(instance)))
-                }
+                Res::Item(item) => match &self.hir.item(*item).kind {
+                    ItemKind::Const { value, .. } => self.lower_expr_to_operand(*value),
+                    ItemKind::Fn(_) => {
+                        let instance = self.top_fn_instance(*item, expr, span)?;
+                        Ok(Operand::Const(Constant::FnPtr(instance)))
+                    }
+                    _ => unsupported("path form in value position (C4.5)", span),
+                },
                 Res::Builtin(Builtin::None) => Ok(self.aggregate_to_temp(
                     expr,
                     AggKind::EnumVariant(EnumRef::CoreOption, 0),
@@ -4741,7 +4775,10 @@ impl<'a> FnLowerer<'a> {
                 place.projection.push(Projection::Deref);
                 Ok(place)
             }
-            _ => unsupported("place expression (C4.5)", span),
+            other => unsupported(
+                format!("place expression (C4.5): {}", expr_kind_name(other)),
+                span,
+            ),
         }
     }
 
@@ -5066,6 +5103,14 @@ impl<'a> FnLowerer<'a> {
                         .map(|&a| self.lower_expr_to_operand(a))
                         .collect::<Result<Vec<_>, _>>()?;
                     self.emit_runtime_call(RuntimeFn::StringFromStr, ops, dest, span);
+                    Ok(())
+                }
+                Res::Builtin(Builtin::CharFromU32) => {
+                    let ops = args
+                        .iter()
+                        .map(|&a| self.lower_expr_to_operand(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.emit_runtime_call(RuntimeFn::CharFromU32, ops, dest, span);
                     Ok(())
                 }
                 // A1 (CD-031), C4.5e-2: Vec construction.
@@ -6251,6 +6296,7 @@ impl<'a> FnLowerer<'a> {
             (false, "len") => (RuntimeFn::StrLen, None),
             (false, "is_empty") => (RuntimeFn::StrIsEmpty, None),
             (false, "to_string") => (RuntimeFn::StrToString, None),
+            (false, "substring") => (RuntimeFn::StrSubstring, None),
             _ => {
                 return unsupported(
                     format!("method {name} on {peeled_ty:?} (a later C4.5e sub-slice)"),
@@ -7850,6 +7896,18 @@ impl<'a> FnLowerer<'a> {
     /// Does `ty` transitively contain a USER `Drop` impl (as opposed to the unobservable
     /// String/Vec buffer glue)?
     fn ty_has_user_drop(&self, ty: &MirTy) -> bool {
+        let mut visited = std::collections::BTreeSet::new();
+        self.ty_has_user_drop_guarded(ty, &mut visited)
+    }
+
+    fn ty_has_user_drop_guarded(
+        &self,
+        ty: &MirTy,
+        visited: &mut std::collections::BTreeSet<MirTy>,
+    ) -> bool {
+        if !visited.insert(ty.clone()) {
+            return false;
+        }
         match ty {
             MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
                 if self.type_has_drop_impl(*item) {
@@ -7867,17 +7925,19 @@ impl<'a> FnLowerer<'a> {
                     },
                     self.providers,
                 ) {
-                    Ok(NominalFields::Struct(tys)) => tys.iter().any(|t| self.ty_has_user_drop(t)),
+                    Ok(NominalFields::Struct(tys)) => tys
+                        .iter()
+                        .any(|t| self.ty_has_user_drop_guarded(t, visited)),
                     Ok(NominalFields::Enum(vs)) => vs
                         .iter()
-                        .any(|v| v.iter().any(|t| self.ty_has_user_drop(t))),
+                        .any(|v| v.iter().any(|t| self.ty_has_user_drop_guarded(t, visited))),
                     Err(_) => true, // unresolvable: be conservative
                 }
             }
-            MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => {
-                args.iter().any(|t| self.ty_has_user_drop(t))
-            }
-            MirTy::Array(elem, _) => self.ty_has_user_drop(elem),
+            MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => args
+                .iter()
+                .any(|t| self.ty_has_user_drop_guarded(t, visited)),
+            MirTy::Array(elem, _) => self.ty_has_user_drop_guarded(elem, visited),
             _ => false,
         }
     }
@@ -9750,30 +9810,40 @@ impl<'a> FnLowerer<'a> {
         match &self.hir.pat(pat).kind {
             hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => Ok(()),
             hir::PatKind::Binding { name, local } => {
-                // DEV-072 CLOSED (WP-C4.7-5): borrowck now rejects this in the front end
-                // (E0101), using the SAME by-reference classification as `lower_match`, so a
-                // checked program can no longer reach here. The guard is kept deliberately as
-                // defense in depth — the charter's rule is that nothing unsupported reaches a
-                // backend silently, and a guard that is unreachable-by-construction costs
-                // nothing while a missing one would mislower a move out of a borrow.
-                if mode == MatchMode::ByRef && !self.is_copy(ty) {
-                    return unsupported(
-                        "binding a non-Copy payload through a shared reference (unreachable for checked programs since DEV-072; defense in depth)",
-                        pat_span,
-                    );
-                }
                 let (name, local) = (self.text(*name).to_string(), *local);
+                let bind_by_ref = mode == MatchMode::ByRef && !self.is_copy(ty);
+                let local_ty = if bind_by_ref {
+                    MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(ty.clone()),
+                    }
+                } else {
+                    ty.clone()
+                };
                 self.locals.push(LocalDecl {
-                    ty: ty.clone(),
+                    ty: local_ty,
                     kind: LocalKind::User(name),
                 });
                 let bound = LocalId((self.locals.len() - 1) as u32);
                 self.local_map.insert(local.0, bound);
-                let value = self.read_place(place.clone(), ty, span)?;
-                self.emit(
-                    Statement::Assign(Place::local(bound), Rvalue::Use(value)),
-                    self.synthetic(span, SyntheticKind::MatchDesugar),
-                );
+                if bind_by_ref {
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(bound),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: place.clone(),
+                            },
+                        ),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                } else {
+                    let value = self.read_place(place.clone(), ty, span)?;
+                    self.emit(
+                        Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                }
                 // WP-C4.7-8.3b: Consuming — the binding owns the moved-in value and drops at
                 // arm-scope end, exactly as the flat path's `bind_field_local` does.
                 if mode == MatchMode::Consuming {
@@ -10095,6 +10165,20 @@ impl<'a> FnLowerer<'a> {
         let use_tuple = mode == MatchMode::Consuming
             && payload_tys.len() > 1
             && payload_tys.iter().any(|t| !self.is_copy(t));
+        // A12 / `DEFECT-C788-LOOP-TEMP`. A consuming match empties the scrutinee temp, and how it
+        // empties it decides what the temp's storage looks like afterwards:
+        //
+        // - a non-`Copy` payload field is MOVED out, leaving the storage partially moved. Nothing
+        //   downstream ever finished it, so the temp stayed live forever — invisible in
+        //   straight-line code, fatal on the second iteration of a loop.
+        // - a payload that is empty or entirely `Copy` is not moved out at all, so the storage
+        //   still holds the whole value, and the same reassignment fails for the opposite reason.
+        //
+        // Both are handled below, after consumption. The two catch-all arms already reset the temp
+        // — a binding moves the whole value out, and `drop_whole_scrutinee_at_arm_end` reads it
+        // whole — which is why only the variant-payload path was affected.
+        let ends_storage = mode == MatchMode::Consuming && scrut.projection.is_empty();
+        let payload_was_moved = payload_tys.iter().any(|t| !self.is_copy(t));
         let source = if use_tuple {
             self.materialize_consumed_variant_payload(scrut.clone(), variant, &payload_tys, span)?
         } else {
@@ -10190,6 +10274,23 @@ impl<'a> FnLowerer<'a> {
             hir::PatKind::Path { .. } => {}
             _ => {}
         }
+
+        // A12: account for the scrutinee temp's STORAGE, now that its units are accounted for.
+        if ends_storage {
+            if payload_was_moved {
+                // Something non-`Copy` came out, so the storage is partially moved (or already
+                // emptied whole, by the C6.1c decomposition). Either way this ends it, and it is
+                // idempotent on the already-dead case.
+                self.emit_storage_dead(scrut.local.0, span);
+            } else {
+                // Nothing came out: the whole value is still there. It must be dropped rather than
+                // released — releasing a complete value would abandon it, which is the leak the
+                // backend's storage check exists to refuse. Not droppable? Then the backend never
+                // checks this local's storage at all, and this is a no-op by construction.
+                let scrut_ty = MirTy::Enum(enum_ref, scrut_args.to_vec());
+                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &scrut_ty, span)?;
+            }
+        }
         Ok(())
     }
 
@@ -10272,9 +10373,8 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Bind a variant payload field to a fresh binding local. Consuming: move it in and
-    /// register it to drop at arm end. ByRef: the field must be `Copy` (read by copy; a
-    /// non-Copy binding would move out of the borrow — a front-end move-out-of-borrow gap,
-    /// recorded, keeps such programs out of MIR).
+    /// register it to drop at arm end. ByRef: Copy fields are read by copy; non-Copy fields bind
+    /// as shared references to the payload.
     fn bind_field_local(
         &mut self,
         field_place: Place,
@@ -10284,23 +10384,39 @@ impl<'a> FnLowerer<'a> {
         field_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        if mode == MatchMode::ByRef && !self.is_copy(field_ty) {
-            return unsupported(
-                "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
-                span,
-            );
-        }
+        let bind_by_ref = mode == MatchMode::ByRef && !self.is_copy(field_ty);
+        let local_ty = if bind_by_ref {
+            MirTy::Ref {
+                mutable: false,
+                inner: Box::new(field_ty.clone()),
+            }
+        } else {
+            field_ty.clone()
+        };
         self.locals.push(LocalDecl {
-            ty: field_ty.clone(),
+            ty: local_ty,
             kind: LocalKind::User(name),
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(hir_local.0, bound);
-        let value = self.read_place(field_place, field_ty, span)?;
-        self.emit(
-            Statement::Assign(Place::local(bound), Rvalue::Use(value)),
-            self.synthetic(span, SyntheticKind::MatchDesugar),
-        );
+        if bind_by_ref {
+            self.emit(
+                Statement::Assign(
+                    Place::local(bound),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: field_place,
+                    },
+                ),
+                self.synthetic(span, SyntheticKind::MatchDesugar),
+            );
+        } else {
+            let value = self.read_place(field_place, field_ty, span)?;
+            self.emit(
+                Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                self.synthetic(span, SyntheticKind::MatchDesugar),
+            );
+        }
         // Consuming: the binding owns the moved-in value (flag true), drops at arm-scope end.
         if mode == MatchMode::Consuming {
             self.register_droppable_local(bound, field_ty, true, span)?;
@@ -10413,4 +10529,32 @@ enum PrintKind {
     Bool,
     Char,
     Float,
+}
+
+fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
+    match kind {
+        hir::ExprKind::Lit(_) => "Lit",
+        hir::ExprKind::Path { .. } => "Path",
+        hir::ExprKind::Unary { .. } => "Unary",
+        hir::ExprKind::Binary { .. } => "Binary",
+        hir::ExprKind::Call { .. } => "Call",
+        hir::ExprKind::Field { .. } => "Field",
+        hir::ExprKind::TupleField { .. } => "TupleField",
+        hir::ExprKind::Index { .. } => "Index",
+        hir::ExprKind::Tuple(_) => "Tuple",
+        hir::ExprKind::Array(_) => "Array",
+        hir::ExprKind::StructLit { .. } => "StructLit",
+        hir::ExprKind::If { .. } => "If",
+        hir::ExprKind::Match { .. } => "Match",
+        hir::ExprKind::Loop { .. } => "Loop",
+        hir::ExprKind::While { .. } => "While",
+        hir::ExprKind::For { .. } => "For",
+        hir::ExprKind::Block(_) => "Block",
+        hir::ExprKind::Assign { .. } => "Assign",
+        hir::ExprKind::Range { .. } => "Range",
+        hir::ExprKind::Try(_) => "Try",
+        hir::ExprKind::Cast { .. } => "Cast",
+        hir::ExprKind::Repeat { .. } => "Repeat",
+        hir::ExprKind::Error => "Error",
+    }
 }

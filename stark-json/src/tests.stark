@@ -1,5 +1,6 @@
 use super::parse;
 use super::parse_with_limits;
+use super::encode;
 use super::member_key;
 use super::number_raw;
 use super::JsonLimits;
@@ -122,11 +123,42 @@ fn test_invalid_positions() {
 
 fn test_unicode_and_duplicates_are_checked() {
     assert_ok("\"\\u0061\"");
-    assert_error_position("\"\\u00E9\"", 1u64, 1u64, 2u64);
+    assert_string("\"\\u00E9\"", "\u{00e9}");
+    assert_string("\"\\u20AC\"", "\u{20ac}");
+    assert_string("\"\\uD83D\\uDE00\"", "\u{1f600}");
     assert_error_position("\"\\uD800\"", 1u64, 1u64, 2u64);
     assert_error_position("\"\\uDC00\"", 1u64, 1u64, 2u64);
     assert_error_position("{\"a\":1,\"a\":2}", 7u64, 1u64, 8u64);
     assert_error_position("{\"a\":1,\"\\u0061\":2}", 7u64, 1u64, 8u64);
+}
+
+fn assert_encode(input: &str, expected: &str) {
+    match parse(input) {
+        Ok(value) => {
+            let first = encode(&value);
+            let second = encode(&value);
+            if first.as_str() != expected {
+                panic("encoded content mismatch");
+            }
+            if second.as_str() != expected {
+                panic("repeated encoding mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected parse success before encode");
+        }
+    }
+}
+
+fn test_encoder_outputs_canonical_json() {
+    assert_encode("null", "null");
+    assert_encode("true", "true");
+    assert_encode("false", "false");
+    assert_encode("-0.125e+2", "-0.125e+2");
+    assert_encode("\"a\\n\\t\\\"\\\\\"", "\"a\\n\\t\\\"\\\\\"");
+    assert_encode("\"\\u00E9\"", "\"\u{00e9}\"");
+    assert_encode("[1, true, null]", "[1,true,null]");
+    assert_encode("{\"b\":2,\"a\":[true,\"x\"]}", "{\"b\":2,\"a\":[true,\"x\"]}");
 }
 
 fn test_object_key_content_is_preserved_for_duplicate_detection() {
@@ -163,7 +195,7 @@ fn test_input_limit() {
         max_number_bytes: 1u64,
     };
 
-    match parse_with_limits("123", &limits) {
+    match parse_with_limits("123", limits) {
         Err(_) => {}
         Ok(_) => {
             panic("expected input limit error");
@@ -171,38 +203,40 @@ fn test_input_limit() {
     }
 }
 
-fn test_container_and_token_limits() {
-    let limits = JsonLimits {
+fn tiny_limits() -> JsonLimits {
+    JsonLimits {
         max_input_bytes: 100u64,
         max_depth: 1u32,
         max_string_bytes: 1u64,
         max_array_items: 1u64,
         max_object_members: 1u64,
         max_number_bytes: 1u64,
-    };
+    }
+}
 
-    match parse_with_limits("[[0]]", &limits) {
+fn test_container_and_token_limits() {
+    match parse_with_limits("[[0]]", tiny_limits()) {
         Err(_) => {}
         Ok(_) => {
             panic("expected depth limit error");
         }
     }
 
-    match parse_with_limits("[1,2]", &limits) {
+    match parse_with_limits("[1,2]", tiny_limits()) {
         Err(_) => {}
         Ok(_) => {
             panic("expected array item limit error");
         }
     }
 
-    match parse_with_limits("{\"a\":1,\"b\":2}", &limits) {
+    match parse_with_limits("{\"a\":1,\"b\":2}", tiny_limits()) {
         Err(_) => {}
         Ok(_) => {
             panic("expected object member limit error");
         }
     }
 
-    match parse_with_limits("12", &limits) {
+    match parse_with_limits("12", tiny_limits()) {
         Err(_) => {}
         Ok(_) => {
             panic("expected number length limit error");

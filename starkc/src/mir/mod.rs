@@ -35,7 +35,14 @@ use std::sync::Arc;
 /// reasons about types, so this is a shape change rather than a surface revision. The increment
 /// invalidates every build key, which is the point: a key that ignored a representation change
 /// would serve a cached artifact produced under different type rules.
-pub const MIR_VERSION: &str = "0.2";
+///
+/// `0.3` (A12, CD-265 — `DEFECT-C788-LOOP-TEMP`): adds [`Statement::StorageDead`]. The statement
+/// set had been closed at "assignments and nops only" since the contract was written, so widening
+/// it is a shape change by definition. It is additive and inert for a consumer with no
+/// partial-storage model, but the version still advances: a cached artifact produced before the
+/// statement existed was produced by a lowering that could not end a partially moved local's
+/// storage, and serving it would reintroduce the defect this amendment fixes.
+pub const MIR_VERSION: &str = "0.3";
 
 /// Runtime-surface revision (Amendment A1, CD-031). Additive `RuntimeFn`/String/Vec growth
 /// bumps this, not `MIR_VERSION`. Stamped onto every `MirProgram`; a consumer rejects a
@@ -402,11 +409,47 @@ pub enum Rvalue {
     },
 }
 
-/// The TOTAL statement set (contract §5/§6): assignments and nops only. `Drop` is a terminator.
+/// The TOTAL statement set (contract §5/§6): assignments, nops, and storage ends. `Drop` is a
+/// terminator.
 #[derive(Clone, Debug)]
 pub enum Statement {
     Assign(Place, Rvalue),
     Nop,
+    /// A12 (`DEFECT-C788-LOOP-TEMP`): **this local's storage holds no live drop unit and is now
+    /// dead.**
+    ///
+    /// # Why a statement was needed rather than more `Drop`s
+    ///
+    /// A backend that stores non-`Copy` locals in controlled storage (the generated-Rust backend's
+    /// `ValueSlot`) tracks *whole-storage* liveness — dead, whole, or partially moved — separately
+    /// from MIR's per-unit drop flags. Two MIR operations reset it: a whole-place `Drop` and a
+    /// whole-value move-out. Nothing else does, and in particular a place emptied **unit by unit**
+    /// — a sub-place move, a field-precise drop — leaves the storage partially moved forever.
+    ///
+    /// That is invisible in straight-line code, because such a place is never written again. Across
+    /// a **loop back edge** it is fatal: the next iteration's assignment finds storage that MIR
+    /// considers empty and the backend still considers live, and the backend refuses the write.
+    /// `DEFECT-C788-LOOP-TEMP` was exactly this, in two shapes — a `match` scrutinee temporary whose
+    /// payload the arm moved out, and a user local one of whose fields was moved out.
+    ///
+    /// The fix has to be expressible in MIR because only lowering knows *where* a place's units
+    /// have all been accounted for. Deriving it in the backend would mean guessing, and guessing
+    /// wrong in the permissive direction would silently leak the very resources the whole-slot
+    /// check exists to catch.
+    ///
+    /// # Contract
+    ///
+    /// - The place is a **whole local** (no projection); `MIR-0035` enforces this.
+    /// - At this point every drop unit of that local is dead — moved out or dropped. Emitting this
+    ///   over a place that still owns something is a lowering defect, and the backend's storage
+    ///   refuses it (a complete value cannot be released, only dropped or moved).
+    /// - It is **idempotent and total**: a local whose storage is already dead is unaffected, which
+    ///   is what lets drop elaboration emit it unconditionally at the end of a local's sequence
+    ///   rather than proving which path it arrived on.
+    ///
+    /// A backend with no partial-storage model — the reference interpreter — treats it as a nop,
+    /// and that is not a gap: it has no state this could correct.
+    StorageDead(Place),
 }
 
 // --------------------------------------------------------------- terminators --
@@ -502,6 +545,7 @@ pub enum RuntimeFn {
     StrIsEmpty,
     StrToString,
     StrBytes,
+    StrSubstring,
     StrEq,
     StrCmp,
     // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT
@@ -588,6 +632,7 @@ pub enum RuntimeFn {
     // --- 0.1-A3 (C4.5f-3b): the A1-approved Char ops, deferred from e-1 until Char lowered. ---
     PrintlnChar,
     PrintChar,
+    CharFromU32,
     StringPushChar,
     StringPopChar,
 }
@@ -1109,6 +1154,7 @@ fn dump_statement(stmt: &Statement) -> String {
             format!("{} = {}", dump_place(place), dump_rvalue(rvalue))
         }
         Statement::Nop => "nop".to_string(),
+        Statement::StorageDead(place) => format!("storage_dead {}", dump_place(place)),
     }
 }
 

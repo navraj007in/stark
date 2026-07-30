@@ -338,6 +338,11 @@ fn emit_one_block(
                     emit_assignment(place, &value, env)?
                 ));
             }
+            Statement::StorageDead(place) => {
+                if let Some(line) = emit_storage_dead(place, env)? {
+                    out.push_str(&format!("                {line}\n"));
+                }
+            }
         }
     }
     emit_terminator(
@@ -1368,7 +1373,7 @@ pub(super) fn emit_drop_plan(
         DropPlan::VecElements { elem } => {
             let elem_plan = drop_plan::plan_for(elem, types)
                 .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
-            if !elem_plan.is_noop() {
+            if drop_plan_has_custom_action(&elem_plan, types)? {
                 return Err(BackendDiagnostic::Unsupported(format!(
                     "native drop of a `Vec` whose element {elem:?} carries a user destructor is \
                      deferred (destructor-in-runtime-collection)"
@@ -1378,7 +1383,7 @@ pub(super) fn emit_drop_plan(
         DropPlan::BoxInner { inner } => {
             let inner_plan = drop_plan::plan_for(inner, types)
                 .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
-            if !inner_plan.is_noop() {
+            if drop_plan_has_custom_action(&inner_plan, types)? {
                 return Err(BackendDiagnostic::Unsupported(format!(
                     "native drop of a `Box` whose inner value {inner:?} carries a user destructor \
                      is deferred (destructor-in-runtime-collection)"
@@ -1387,6 +1392,58 @@ pub(super) fn emit_drop_plan(
         }
     }
     Ok(out)
+}
+
+fn drop_plan_has_custom_action(
+    plan: &DropPlan,
+    types: &TypeContext,
+) -> Result<bool, BackendDiagnostic> {
+    let mut visiting = std::collections::BTreeSet::new();
+    drop_plan_has_custom_action_inner(plan, types, &mut visiting)
+}
+
+fn drop_plan_has_custom_action_inner(
+    plan: &DropPlan,
+    types: &TypeContext,
+    visiting: &mut std::collections::BTreeSet<MirTy>,
+) -> Result<bool, BackendDiagnostic> {
+    Ok(match plan {
+        DropPlan::Noop => false,
+        DropPlan::Destructor { .. } | DropPlan::HostResourceClose { .. } => true,
+        DropPlan::Fields { fields, .. } => fields.iter().try_fold(false, |any, field| {
+            Ok(any || drop_plan_has_custom_action_inner(&field.plan, types, visiting)?)
+        })?,
+        DropPlan::Variants { variants, .. } => {
+            let mut any = false;
+            for variant in variants {
+                for field in &variant.fields {
+                    any = any || drop_plan_has_custom_action_inner(&field.plan, types, visiting)?;
+                }
+            }
+            any
+        }
+        DropPlan::Array { elem, .. } => drop_plan_has_custom_action_inner(elem, types, visiting)?,
+        DropPlan::VecElements { elem } => {
+            if !visiting.insert(elem.clone()) {
+                return Ok(false);
+            }
+            let nested = drop_plan::plan_for(elem, types)
+                .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+            let result = drop_plan_has_custom_action_inner(&nested, types, visiting)?;
+            visiting.remove(elem);
+            result
+        }
+        DropPlan::BoxInner { inner } => {
+            if !visiting.insert(inner.clone()) {
+                return Ok(false);
+            }
+            let nested = drop_plan::plan_for(inner, types)
+                .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+            let result = drop_plan_has_custom_action_inner(&nested, types, visiting)?;
+            visiting.remove(inner);
+            result
+        }
+    })
 }
 
 /// How to reach component `index` of an aggregate whose `&mut` expression is `value`.
@@ -1401,6 +1458,40 @@ fn component_access(base: &MirTy, index: u32, value: &str) -> Result<String, Bac
             "drop plan named a field of {other:?}, which has no component syntax"
         ))),
     }
+}
+
+/// A12 / `DEFECT-C788-LOOP-TEMP`: end a local's storage — `_1.finish_partial();`.
+///
+/// Only a **slot-backed** local has whole-storage liveness to end, so every other local emits
+/// nothing (`Ok(None)`) rather than a nop line: an ordinary `Copy` local is a plain Rust binding,
+/// and a stored-reference local is an `Option<&T>` whose reassignment is unconditional.
+///
+/// `finish_partial` is the exact operation wanted, including its refusal: it accepts a partially
+/// moved slot **and** an already-dead one — the idempotence `Statement::StorageDead` promises — and
+/// rejects a `Whole` one, because a complete value that is still there needs a real drop or move,
+/// not a liveness reset. That refusal is what keeps this from becoming a blanket "make the slot
+/// writable again", which would silently abandon live resources; it is the check that caught
+/// `DEFECT-C788-LOOP-TEMP` in the first place, and it is not being weakened here.
+pub(super) fn emit_storage_dead(
+    place: &crate::mir::Place,
+    env: &TyEnv,
+) -> Result<Option<String>, BackendDiagnostic> {
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "storage_dead names a projected place ({place:?}); storage liveness is a property of a \
+             whole local. MIR-0035 rejects this, so reaching the backend with one is a compiler \
+             defect"
+        )));
+    }
+    if emit_places::is_stored_ref_local(place.local.0, env)?
+        || !emit_places::is_slot_local(place.local.0, env)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{}.finish_partial();",
+        emit_places::local_name(place.local.0)
+    )))
 }
 
 /// Emit one assignment statement, choosing the form the destination requires.

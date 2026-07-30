@@ -87,10 +87,10 @@ pub fn default_limits() -> JsonLimits {
 }
 
 pub fn parse(input: &str) -> Result<JsonValue, JsonError> {
-    parse_with_limits(input, &default_limits())
+    parse_with_limits(input, default_limits())
 }
 
-pub fn parse_with_limits(input: &str, limits: &JsonLimits) -> Result<JsonValue, JsonError> {
+pub fn parse_with_limits(input: &str, limits: JsonLimits) -> Result<JsonValue, JsonError> {
     if input.len() > limits.max_input_bytes {
         return Err(error_at(JsonErrorKind::InputTooLarge, 0u64, 1u64, 1u64));
     }
@@ -98,7 +98,7 @@ pub fn parse_with_limits(input: &str, limits: &JsonLimits) -> Result<JsonValue, 
     let mut cursor = Cursor { input: String::from(input), offset: 0u64, line: 1u64, column: 1u64 };
 
     skip_whitespace(&mut cursor)?;
-    let value = parse_value(&mut cursor, limits, 0u32)?;
+    let value = parse_value(&mut cursor, &limits, 0u32)?;
     skip_whitespace(&mut cursor)?;
     if !is_eof(&cursor) {
         return Err(error_here(&cursor, JsonErrorKind::TrailingCharacters));
@@ -107,7 +107,20 @@ pub fn parse_with_limits(input: &str, limits: &JsonLimits) -> Result<JsonValue, 
 }
 
 pub fn encode(value: &JsonValue) -> String {
-    String::from("null")
+    match *value {
+        JsonValue::Null => String::from("null"),
+        JsonValue::Bool(flag) => {
+            if flag {
+                String::from("true")
+            } else {
+                String::from("false")
+            }
+        }
+        JsonValue::Number(number) => String::from(number.raw.as_str()),
+        JsonValue::String(text) => encode_string(text.as_str()),
+        JsonValue::Array(items) => encode_array(items),
+        JsonValue::Object(members) => encode_object(members),
+    }
 }
 
 pub fn number_raw(number: &JsonNumber) -> &str {
@@ -238,35 +251,35 @@ fn parse_array(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Resul
     let mut items: Vec<JsonValue> = Vec::new();
     if peek_byte(cursor) == Some(RBRACKET) {
         consume_byte(cursor)?;
-        return Ok(JsonValue::Array(items.clone()));
-    }
-
-    while true {
-        if items.len() >= limits.max_array_items {
-            return Err(error_here(cursor, JsonErrorKind::TooManyArrayItems));
-        }
-        let item = parse_value(cursor, limits, next_depth)?;
-        items.push(item);
-        skip_whitespace(cursor)?;
-        match peek_byte(cursor) {
-            None => {
-
-                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+    } else {
+        let mut done = false;
+        while !done {
+            if items.len() >= limits.max_array_items {
+                return Err(error_here(cursor, JsonErrorKind::TooManyArrayItems));
             }
-            Some(b) => {
-                if b == COMMA {
-                    consume_byte(cursor)?;
-                    skip_whitespace(cursor)?;
-                } else if b == RBRACKET {
-                    consume_byte(cursor)?;
-                    return Ok(JsonValue::Array(items.clone()));
-                } else {
-                    return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+            let item = parse_value(cursor, limits, next_depth)?;
+            items.push(item);
+            skip_whitespace(cursor)?;
+            match peek_byte(cursor) {
+                None => {
+
+                    return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+                }
+                Some(b) => {
+                    if b == COMMA {
+                        consume_byte(cursor)?;
+                        skip_whitespace(cursor)?;
+                    } else if b == RBRACKET {
+                        consume_byte(cursor)?;
+                        done = true;
+                    } else {
+                        return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+                    }
                 }
             }
         }
     }
-    Ok(JsonValue::Array(items.clone()))
+    Ok(JsonValue::Array(items))
 }
 
 fn parse_object(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Result<JsonValue, JsonError> {
@@ -277,64 +290,69 @@ fn parse_object(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Resu
     let mut members: Vec<JsonMember> = Vec::new();
     if peek_byte(cursor) == Some(RBRACE) {
         consume_byte(cursor)?;
-        return Ok(JsonValue::Object(members.clone()));
-    }
-
-    while true {
-        if peek_byte(cursor) != Some(QUOTE) {
-            return Err(error_here(cursor, JsonErrorKind::ExpectedValue));
-        }
-        if members.len() >= limits.max_object_members {
-            return Err(error_here(cursor, JsonErrorKind::TooManyObjectMembers));
-        }
-
-        let key_offset = cursor.offset;
-        let key_line = cursor.line;
-        let key_column = cursor.column;
-        let key = parse_string(cursor, limits)?;
-
-        if has_duplicate_key(&members, key.as_str()) {
-            return Err(
-                error_at(JsonErrorKind::DuplicateObjectKey, key_offset, key_line, key_column),
-            );
-        }
-
-        skip_whitespace(cursor)?;
-        if peek_byte(cursor) != Some(COLON) {
-            return Err(error_here(cursor, JsonErrorKind::ExpectedColon));
-        }
-        consume_byte(cursor)?;
-        skip_whitespace(cursor)?;
-        let value = parse_value(cursor, limits, next_depth)?;
-        members.push(JsonMember { key: key, value: value });
-        skip_whitespace(cursor)?;
-
-        match peek_byte(cursor) {
-            None => {
-
-                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+    } else {
+        let mut done = false;
+        while !done {
+            if peek_byte(cursor) != Some(QUOTE) {
+                return Err(error_here(cursor, JsonErrorKind::ExpectedValue));
             }
-            Some(b) => {
-                if b == COMMA {
-                    consume_byte(cursor)?;
-                    skip_whitespace(cursor)?;
-                } else if b == RBRACE {
-                    consume_byte(cursor)?;
-                    return Ok(JsonValue::Object(members.clone()));
-                } else {
-                    return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+            if members.len() >= limits.max_object_members {
+                return Err(error_here(cursor, JsonErrorKind::TooManyObjectMembers));
+            }
+
+            let key_offset = cursor.offset;
+            let key_line = cursor.line;
+            let key_column = cursor.column;
+            let key = parse_string(cursor, limits)?;
+
+            if has_duplicate_key(&members, key.as_str()) {
+                return Err(
+                    error_at(JsonErrorKind::DuplicateObjectKey, key_offset, key_line, key_column),
+                );
+            }
+
+            skip_whitespace(cursor)?;
+            if peek_byte(cursor) != Some(COLON) {
+                return Err(error_here(cursor, JsonErrorKind::ExpectedColon));
+            }
+            consume_byte(cursor)?;
+            skip_whitespace(cursor)?;
+            let value = parse_value(cursor, limits, next_depth)?;
+            members.push(JsonMember { key: key, value: value });
+            skip_whitespace(cursor)?;
+
+            match peek_byte(cursor) {
+                None => {
+
+                    return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+                }
+                Some(b) => {
+                    if b == COMMA {
+                        consume_byte(cursor)?;
+                        skip_whitespace(cursor)?;
+                    } else if b == RBRACE {
+                        consume_byte(cursor)?;
+                        done = true;
+                    } else {
+                        return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+                    }
                 }
             }
         }
     }
-    Ok(JsonValue::Object(members.clone()))
+    Ok(JsonValue::Object(members))
 }
 
 fn has_duplicate_key(members: &Vec<JsonMember>, key: &str) -> Bool {
     let mut i: UInt64 = 0u64;
     while i < members.len() {
-        if members[i].key.as_str() == key {
-            return true;
+        match members.get(i) {
+            Some(member) => {
+                if member.key.as_str() == key {
+                    return true;
+                }
+            }
+            None => {}
         }
         i = i + 1u64;
     }
@@ -466,8 +484,25 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                         ),
                                     );
                                 } else if code >= 0xD800u32 && code <= 0xDBFFu32 {
-                                    out_len = parse_low_surrogate_escape(
+                                    let scalar = parse_low_surrogate_escape(
                                         cursor,
+                                        start_offset,
+                                        start_line,
+                                        start_column,
+                                        code,
+                                    )?;
+                                    out_len = append_codepoint(
+                                        &mut out,
+                                        out_len,
+                                        limits,
+                                        start_offset,
+                                        start_line,
+                                        start_column,
+                                        scalar,
+                                    )?;
+                                } else {
+                                    out_len = append_codepoint(
+                                        &mut out,
                                         out_len,
                                         limits,
                                         start_offset,
@@ -475,26 +510,6 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                         start_column,
                                         code,
                                     )?;
-                                } else {
-                                    if code > 0x7Fu32 {
-                                        return Err(
-                                            error_at(
-                                                JsonErrorKind::InvalidUtf8,
-                                                start_offset,
-                                                start_line,
-                                                start_column,
-                                            ),
-                                        );
-                                    }
-                                    out_len = check_string_limit(
-                                        out_len,
-                                        1u64,
-                                        limits,
-                                        start_offset,
-                                        start_line,
-                                        start_column,
-                                    )?;
-                                    out.push(char_from_ascii(code as UInt8));
                                 }
                             } else {
                                 return Err(error_here(cursor, JsonErrorKind::InvalidEscape));
@@ -526,13 +541,11 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
 
 fn parse_low_surrogate_escape(
     cursor: &mut Cursor,
-    decoded_bytes: UInt64,
-    limits: &JsonLimits,
     start_offset: UInt64,
     start_line: UInt64,
     start_column: UInt64,
     high: UInt32,
-) -> Result<UInt64, JsonError> {
+) -> Result<UInt32, JsonError> {
     if peek_byte(cursor) != Some(BACKSLASH) {
         return Err(
             error_at(JsonErrorKind::LoneHighSurrogate, start_offset, start_line, start_column),
@@ -551,8 +564,7 @@ fn parse_low_surrogate_escape(
             error_at(JsonErrorKind::LoneHighSurrogate, start_offset, start_line, start_column),
         );
     }
-    let scalar = 0x10000u32 + (high - 0xD800u32 << 10u32) + (low - 0xDC00u32);
-    check_codepoint_limit(decoded_bytes, limits, start_offset, start_line, start_column, scalar)
+    Ok(0x10000u32 + (high - 0xD800u32 << 10u32) + (low - 0xDC00u32))
 }
 
 fn check_string_limit(
@@ -588,6 +600,18 @@ fn check_codepoint_limit(
         check_string_limit(current, 3u64, limits, source_offset, source_line, source_column)
     } else {
         check_string_limit(current, 4u64, limits, source_offset, source_line, source_column)
+    }
+}
+
+fn utf8_width(code: UInt32) -> UInt64 {
+    if code <= 0x7Fu32 {
+        1u64
+    } else if code <= 0x7FFu32 {
+        2u64
+    } else if code <= 0xFFFFu32 {
+        3u64
+    } else {
+        4u64
     }
 }
 
@@ -652,23 +676,21 @@ fn append_codepoint(
             source_column,
         )
     } else {
-        // Current Core v1 has no public scalar-from-codepoint constructor. Preserve validated
-        // non-ASCII escapes in a deterministic escaped form and record this in EVIDENCE.md.
-        let mut escaped = String::from("\\u");
-        escaped.push(hex_char((code >> 12u32 & 0xFu32) as UInt8));
-        escaped.push(hex_char((code >> 8u32 & 0xFu32) as UInt8));
-        escaped.push(hex_char((code >> 4u32 & 0xFu32) as UInt8));
-        escaped.push(hex_char((code & 0xFu32) as UInt8));
-        append_str_limit(
-            out,
-            escaped.as_str(),
-            current,
-            escaped.len(),
-            limits,
-            source_offset,
-            source_line,
-            source_column,
-        )
+        match Char::from_u32(code) {
+            Some(ch) => append_char_limit(
+                out,
+                ch,
+                current,
+                utf8_width(code),
+                limits,
+                source_offset,
+                source_line,
+                source_column,
+            ),
+            None => Err(
+                error_at(JsonErrorKind::InvalidUtf8, source_offset, source_line, source_column),
+            ),
+        }
     }
 }
 
@@ -891,6 +913,46 @@ fn encode_string(input: &str) -> String {
         out.push_str(input.substring(segment_start, bytes.len()));
     }
     out.push('"');
+    out
+}
+
+fn encode_array(items: &Vec<JsonValue>) -> String {
+    let mut out = String::from("[");
+    let mut i: UInt64 = 0u64;
+    while i < items.len() {
+        if i > 0u64 {
+            out.push(',');
+        }
+        match items.get(i) {
+            Some(item) => {
+                out.push_str(encode(item).as_str());
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out.push(']');
+    out
+}
+
+fn encode_object(members: &Vec<JsonMember>) -> String {
+    let mut out = String::from("{");
+    let mut i: UInt64 = 0u64;
+    while i < members.len() {
+        if i > 0u64 {
+            out.push(',');
+        }
+        match members.get(i) {
+            Some(member) => {
+                out.push_str(encode_string(member.key.as_str()).as_str());
+                out.push(':');
+                out.push_str(encode(&member.value).as_str());
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out.push('}');
     out
 }
 

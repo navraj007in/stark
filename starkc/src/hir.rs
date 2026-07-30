@@ -39,6 +39,7 @@ pub enum Builtin {
     StringFrom,
     StringNew,
     StringWithCapacity,
+    CharFromU32,
     VecNew,
     VecWithCapacity,
     BoxNew,

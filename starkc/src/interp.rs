@@ -2649,6 +2649,12 @@ impl<'a> Interpreter<'a> {
                 let capacity = usize_arg(args.pop(), span)?;
                 Ok(Value::String(String::with_capacity(capacity)))
             }
+            Builtin::CharFromU32 => {
+                let code = u32_arg(args.pop(), span)?;
+                Ok(Value::Option(
+                    char::from_u32(code).map(|ch| Box::new(Value::Char(ch))),
+                ))
+            }
             Builtin::VecNew => Ok(Value::Vec(Vec::new())),
             Builtin::VecWithCapacity => {
                 let capacity = usize_arg(args.pop(), span)?;
@@ -6264,6 +6270,15 @@ fn u64_arg(value: Option<Value>, span: Span) -> Result<u64, RuntimeError> {
     match value {
         Some(Value::Int(value)) => {
             u64::try_from(value).map_err(|_| RuntimeError::new("integer does not fit u64", span))
+        }
+        _ => Err(RuntimeError::new("expected integer argument", span)),
+    }
+}
+
+fn u32_arg(value: Option<Value>, span: Span) -> Result<u32, RuntimeError> {
+    match value {
+        Some(Value::Int(value)) => {
+            u32::try_from(value).map_err(|_| RuntimeError::new("integer does not fit u32", span))
         }
         _ => Err(RuntimeError::new("expected integer argument", span)),
     }
