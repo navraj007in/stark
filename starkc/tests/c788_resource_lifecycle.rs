@@ -394,7 +394,7 @@ fn host_resource_drop_emission_calls_the_selected_provider_close() {
     // through `is_copy`'s wildcard `Copy` arm. That is exactly what changed, so the boundary moved
     // and the assertion follows it.
     assert!(
-        emitted.contains("stark_tcp_stream_close(__v.take_raw())"),
+        emitted.contains("stark_tcp_stream_close(__v.as_raw())"),
         "the Drop must call the SELECTED close, consuming the handle:\n{emitted}"
     );
     assert!(

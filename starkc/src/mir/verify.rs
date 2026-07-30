@@ -2646,6 +2646,12 @@ fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {
 
 fn may_need_drop(ty: &MirTy) -> bool {
     match ty {
+        // A11 §5: a host resource's drop IS its provider close, so it always may need one. The SIXTH
+        // `MirTy` catch-all to swallow this variant -- and the second copy of "does this need
+        // dropping", after `lower::ty_needs_drop`. Two implementations of one rule, each corrected
+        // separately: lowering stopped emitting the `Drop`, and when that was fixed the verifier
+        // rejected the `Drop` it now emitted.
+        MirTy::HostResource(_) => true,
         MirTy::Struct(..) | MirTy::Enum(..) | MirTy::String | MirTy::Core(..) => true,
         MirTy::Tuple(elems) => elems.iter().any(may_need_drop),
         MirTy::Array(elem, _) => may_need_drop(elem),

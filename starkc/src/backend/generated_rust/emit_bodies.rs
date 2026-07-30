@@ -1233,10 +1233,18 @@ fn emit_host_resource_close(
         ))
     })?;
 
-    // The handle is CONSUMED (ABI §13.1), so it is taken out of the slot and passed by value. Taking
-    // rather than borrowing is what makes a second close impossible: the slot is dead afterwards.
+    // The handle is CONSUMED (ABI §13.1). `as_raw` rather than `into_raw` because `drop_with` yields
+    // `&mut T` -- and borrowing is sound here for two reasons that must both hold:
+    //
+    //   - `drop_with` marks the slot DEAD *before* running this glue (slot.rs §7.5), so nothing can
+    //     re-enter the value and close it again;
+    //   - `OwnedResourceHandle` has no Rust `Drop` (CE4 Amendment 1), so the `ManuallyDrop::drop`
+    //     that follows the glue is a no-op and cannot double-release.
+    //
+    // Exactly-once therefore comes from slot liveness, which is where A11 §5 puts it, rather than
+    // from moving a Rust value.
     Ok(format!(
-        "{}.drop_with(|__v| unsafe {{ {}(__v.take_raw()); }});",
+        "{}.drop_with(|__v| unsafe {{ {}(__v.as_raw()); }});",
         emit_places::local_name(place.local.0),
         call.symbol()
     ))

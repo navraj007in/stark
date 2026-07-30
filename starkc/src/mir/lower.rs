@@ -2025,6 +2025,19 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Core(crate::hir::CoreType::HashSet, _)
             | MirTy::Core(crate::hir::CoreType::KeysIter, _)
             | MirTy::Core(crate::hir::CoreType::Iter, _) => true,
+            // **A11 §5: a host resource ALWAYS needs drop — its drop IS its provider close.**
+            //
+            // The FIFTH `MirTy` catch-all to swallow this variant, after `dump_ty`, `emit_ty`,
+            // `default_value_expr`, `TypeContext::is_copy` and `FnLowerer::is_copy` -- and the most
+            // consequential, because it silently disabled the whole close mechanism: no drop unit,
+            // so no drop flag, so no `Drop` terminator, so no close. Every resource leaked, and
+            // nothing complained. `c788_lifecycle_e2e` found it by observing the generated code
+            // rather than trusting that the parts were wired together.
+            //
+            // Note that `Core(File, _)` is deliberately absent from this list too: SELECT-C keeps
+            // `File` on the legacy path, where `c784_file_e2e` closes it through explicit MIR rather
+            // than through drop elaboration.
+            MirTy::HostResource(_) => true,
             _ => false,
         })
     }
