@@ -189,6 +189,11 @@ fn an_unbound_resource_type_is_refused_in_every_form() {
 /// A **bound** resource type plans successfully — the framework is complete, only the binding is
 /// absent. This is what C7.8.4 will turn on by registering `file`, and it is proven now with a
 /// synthetic type so that landing `File` is a registration rather than new machinery.
+///
+/// **Updated for A11/CD-235.** The registry now holds a NOMINAL, and `plan` builds the `MirTy` from
+/// it plus the selected provider — a registry entry cannot carry a provider, because the provider is
+/// a property of the build. So a registered package resource plans as `MirTy::HostResource`, not as
+/// whatever placeholder the entry used to name.
 #[test]
 fn a_registered_resource_type_plans() {
     let mut registry = ResourceRegistry::builtin();
@@ -215,7 +220,7 @@ fn a_registered_resource_type_plans() {
             index: 0,
             resource_type: "synthetic-session".to_string(),
             type_id: 0,
-            mir_type: MirTy::UInt64,
+            mir_type: synthetic_session_ty(),
         }]
     );
     assert_eq!(
@@ -224,9 +229,22 @@ fn a_registered_resource_type_plans() {
             index: 1,
             resource_type: "synthetic-session".to_string(),
             type_id: 0,
-            mir_type: MirTy::UInt64,
+            mir_type: synthetic_session_ty(),
         }]
     );
+}
+
+/// The `HostResource` a registered `synthetic-session` plans to, under `call_with`'s provider.
+///
+/// Built from the same three identities `plan` uses, so the assertion states the *rule* — nominal
+/// from the registry, provider from the resolved call, resource name from the declaration — rather
+/// than restating a literal that could drift from it.
+fn synthetic_session_ty() -> MirTy {
+    MirTy::host_resource(
+        starkc::mir::HostResourceNominal::Item(starkc::hir::ItemId(101)),
+        "stark-std-time",
+        "synthetic-session",
+    )
 }
 
 /// Registering one resource type does not admit another. MIR-0024 outlives the empty registry:
