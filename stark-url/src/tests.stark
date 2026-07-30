@@ -70,11 +70,10 @@ fn kind_code(kind: UrlErrorKind) -> UInt8 {
     match kind {
         UrlErrorKind::InvalidPercentEscape => 1u8,
         UrlErrorKind::InvalidUtf8 => 2u8,
-        UrlErrorKind::PercentDecodedNonAsciiBlocked => 3u8,
-        UrlErrorKind::InvalidQueryPair => 4u8,
-        UrlErrorKind::TooManyQueryParameters => 5u8,
-        UrlErrorKind::InputTooLarge => 6u8,
-        UrlErrorKind::PositionOverflow => 7u8,
+        UrlErrorKind::InvalidQueryPair => 3u8,
+        UrlErrorKind::TooManyQueryParameters => 4u8,
+        UrlErrorKind::InputTooLarge => 5u8,
+        UrlErrorKind::PositionOverflow => 6u8,
     }
 }
 
@@ -127,7 +126,9 @@ fn test_percent_decode_strict_escapes() {
 }
 
 fn test_percent_decode_utf8() {
-    assert_decode_error_kind("caf%C3%A9", UrlErrorKind::PercentDecodedNonAsciiBlocked, 3u64);
+    assert_decode("caf%C3%A9", "café");
+    assert_decode("%E2%82%AC", "€");
+    assert_decode("%F0%9F%98%80", "😀");
     assert_decode_error_kind("%C0%AF", UrlErrorKind::InvalidUtf8, 0u64);
     assert_decode_error_kind("%E0%80%80", UrlErrorKind::InvalidUtf8, 0u64);
     assert_decode_error_kind("%ED%A0%80", UrlErrorKind::InvalidUtf8, 0u64);
@@ -227,7 +228,25 @@ fn test_request_target_error_offsets() {
     assert_target_error("/?a=x%G", UrlErrorKind::InvalidPercentEscape, 5u64);
     assert_target_error("/?missing", UrlErrorKind::InvalidQueryPair, 2u64);
     assert_target_error("/?a=%C0%AF", UrlErrorKind::InvalidUtf8, 4u64);
-    assert_target_error("/?a=%C3%A9", UrlErrorKind::PercentDecodedNonAsciiBlocked, 4u64);
+}
+
+fn test_percent_decoded_utf8_in_target() {
+    match parse_request_target("/caf%C3%A9?emoji=%F0%9F%98%80&currency=%E2%82%AC") {
+        Ok(target) => {
+            if target.path.as_str() != "/café" {
+                panic("decoded unicode path mismatch");
+            }
+            if target.query[0u64].value.as_str() != "😀" {
+                panic("decoded emoji query mismatch");
+            }
+            if target.query[1u64].value.as_str() != "€" {
+                panic("decoded currency query mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected unicode target parse success");
+        }
+    }
 }
 
 fn test_invalid_query_pair_and_limits() {

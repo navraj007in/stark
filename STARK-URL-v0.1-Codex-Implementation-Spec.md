@@ -29,7 +29,6 @@ The input is split into path and query before percent decoding. Structural separ
 pub enum UrlErrorKind {
     InvalidPercentEscape,
     InvalidUtf8,
-    PercentDecodedNonAsciiBlocked,
     InvalidQueryPair,
     TooManyQueryParameters,
     InputTooLarge,
@@ -94,12 +93,8 @@ All other UTF-8 bytes are encoded as uppercase `%HH`. This means `/`, `?`, `&`, 
 
 Direct UTF-8 input is accepted when valid. No normalization is performed.
 
-Implementation note: the current STARK package surface does not expose a stable way to construct
-a `String` from a validated UTF-8 byte vector or from a runtime Unicode scalar value. v0.1 source
-therefore validates percent-decoded UTF-8 but returns `PercentDecodedNonAsciiBlocked` for escaped
-non-ASCII decoded bytes until that compiler/runtime API lands. Direct non-ASCII input that does
-not require byte reconstruction is still valid UTF-8 input for the language, but this package's
-current decoder rebuilds output byte-by-byte and is constrained by the same blocker.
+Implementation note: percent-decoded UTF-8 is reconstructed by validating the byte stream and
+appending Unicode scalar values through `Char::from_u32`.
 
 The conceptual API used `&[QueryParameter]` for `encode_query`; the current compiler does not
 coerce `&Vec<QueryParameter>` to a slice at package call sites, so v0.1 freezes the implemented

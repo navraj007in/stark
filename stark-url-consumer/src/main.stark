@@ -1,23 +1,74 @@
 use stark_url::encode_query;
 use stark_url::parse_request_target;
+use stark_url::percent_decode;
+use stark_url::percent_encode_component;
 
 fn main() {
-    match parse_request_target("/search?q=stark%20url&tag=compiler&tag=language") {
+    if percent_encode_component("café/😀").as_str() != "caf%C3%A9%2F%F0%9F%98%80" {
+        panic("unicode component encode mismatch");
+    }
+
+    match percent_decode("caf%C3%A9%2F%F0%9F%98%80") {
+        Ok(decoded) => {
+            if decoded.as_str() != "café/😀" {
+                panic("unicode component decode mismatch");
+            }
+        }
+        Err(_) => {
+            panic("unicode component decode failed");
+        }
+    }
+
+    match parse_request_target(
+        "/caf%C3%A9?q=stark%20url&tag=compiler&tag=language&emoji=%F0%9F%98%80",
+    ) {
+
         Ok(target) => {
-            if target.path.as_str() != "/search" {
+            if target.path.as_str() != "/café" {
                 panic("path mismatch");
             }
-            if target.query.len() != 3u64 {
+            if target.query.len() != 4u64 {
                 panic("query length mismatch");
             }
-            if target.query[0u64].name.as_str() != "q" || target.query[0u64].value.as_str() != "stark url" {
-                panic("first query mismatch");
+            match target.query.get(0u64) {
+                Some(parameter) => {
+                    if parameter.name.as_str() != "q" || parameter.value.as_str() != "stark url" {
+                        panic("first query mismatch");
+                    }
+                }
+                None => {
+                    panic("first query missing");
+                }
             }
-            if target.query[1u64].name.as_str() != "tag" || target.query[1u64].value.as_str() != "compiler" {
-                panic("first tag mismatch");
+            match target.query.get(1u64) {
+                Some(parameter) => {
+                    if parameter.name.as_str() != "tag" || parameter.value.as_str() != "compiler" {
+                        panic("first tag mismatch");
+                    }
+                }
+                None => {
+                    panic("first tag missing");
+                }
             }
-            if target.query[2u64].name.as_str() != "tag" || target.query[2u64].value.as_str() != "language" {
-                panic("second tag mismatch");
+            match target.query.get(2u64) {
+                Some(parameter) => {
+                    if parameter.name.as_str() != "tag" || parameter.value.as_str() != "language" {
+                        panic("second tag mismatch");
+                    }
+                }
+                None => {
+                    panic("second tag missing");
+                }
+            }
+            match target.query.get(3u64) {
+                Some(parameter) => {
+                    if parameter.name.as_str() != "emoji" || parameter.value.as_str() != "😀" {
+                        panic("emoji query mismatch");
+                    }
+                }
+                None => {
+                    panic("emoji query missing");
+                }
             }
             println(encode_query(&target.query).as_str());
         }

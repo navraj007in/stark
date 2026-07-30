@@ -1,7 +1,6 @@
 pub enum UrlErrorKind {
     InvalidPercentEscape,
     InvalidUtf8,
-    PercentDecodedNonAsciiBlocked,
     InvalidQueryPair,
     TooManyQueryParameters,
     InputTooLarge,
@@ -95,10 +94,10 @@ pub fn parse_request_target_with_limits(input: &str, limits: &UrlLimits) -> Resu
             return Err(error_at(UrlErrorKind::PositionOverflow, query_start));
         }
         let start = query_start + 1u64;
-        parse_query_into(input, start, len, limits, &mut query)?;
+        query = parse_query(input, start, len, limits)?;
     }
 
-    Ok(RequestTarget { path: path, query: query.clone() })
+    Ok(RequestTarget { path: path, query: query })
 }
 
 pub fn encode_query(parameters: &Vec<QueryParameter>) -> String {
@@ -109,32 +108,37 @@ pub fn encode_query(parameters: &Vec<QueryParameter>) -> String {
         if i > 0u64 {
             out.push('&');
         }
-        out.push_str(percent_encode_component(parameters[i].name.as_str()).as_str());
-        out.push('=');
-        out.push_str(percent_encode_component(parameters[i].value.as_str()).as_str());
+        match parameters.get(i) {
+            Some(parameter) => {
+                out.push_str(percent_encode_component(parameter.name.as_str()).as_str());
+                out.push('=');
+                out.push_str(percent_encode_component(parameter.value.as_str()).as_str());
+            }
+            None => {
+                panic("query parameter index out of bounds");
+            }
+        }
         i = i + 1u64;
     }
 
     out
 }
 
-fn parse_query_into(
-    input: &str,
-    start: UInt64,
-    end: UInt64,
-    limits: &UrlLimits,
-    out: &mut Vec<QueryParameter>,
-) -> Result<(), UrlError> {
+fn parse_query(input: &str, start: UInt64, end: UInt64, limits: &UrlLimits) -> Result<Vec<QueryParameter>, UrlError> {
     let bytes = input.bytes();
+    let mut out: Vec<QueryParameter> = Vec::new();
     let mut pair_start = start;
     let mut i = start;
+    let mut count: UInt64 = 0u64;
 
     while i <= end {
         if i == end || bytes[i] == AMPERSAND {
-            if out.len() >= limits.max_query_parameters {
+            if count >= limits.max_query_parameters {
                 return Err(error_at(UrlErrorKind::TooManyQueryParameters, pair_start));
             }
-            parse_query_pair(input, pair_start, i, out)?;
+            let parameter = parse_query_pair(input, pair_start, i)?;
+            out.push(parameter);
+            count = count + 1u64;
             if i == U64_MAX {
                 return Err(error_at(UrlErrorKind::PositionOverflow, i));
             }
@@ -146,10 +150,10 @@ fn parse_query_into(
         i = i + 1u64;
     }
 
-    Ok(())
+    Ok(out)
 }
 
-fn parse_query_pair(input: &str, start: UInt64, end: UInt64, out: &mut Vec<QueryParameter>) -> Result<(), UrlError> {
+fn parse_query_pair(input: &str, start: UInt64, end: UInt64) -> Result<QueryParameter, UrlError> {
     let bytes = input.bytes();
     let mut equals_at = end;
     let mut i = start;
@@ -175,14 +179,12 @@ fn parse_query_pair(input: &str, start: UInt64, end: UInt64, out: &mut Vec<Query
     let value_raw = input.substring(equals_at + 1u64, end);
     let name = decode_component_at(name_raw, start)?;
     let value = decode_component_at(value_raw, equals_at + 1u64)?;
-    out.push(QueryParameter { name: name, value: value });
-    Ok(())
+    Ok(QueryParameter { name: name, value: value })
 }
 
 fn decode_component_at(input: &str, base_offset: UInt64) -> Result<String, UrlError> {
     let bytes = input.bytes();
     let mut decoded: Vec<UInt8> = Vec::new();
-    let mut out = String::new();
     let mut i: UInt64 = 0u64;
 
     while i < bytes.len() {
@@ -225,31 +227,27 @@ fn decode_component_at(input: &str, base_offset: UInt64) -> Result<String, UrlEr
         }
     }
 
-    validate_utf8(&decoded, base_offset)?;
-    let mut j: UInt64 = 0u64;
-    while j < decoded.len() {
-        if decoded[j] > 0x7Fu8 {
-            return Err(
-                error_at(UrlErrorKind::PercentDecodedNonAsciiBlocked, checked_add(base_offset, j)?),
-            );
-        }
-        out.push(char_from_ascii(decoded[j]));
-        j = j + 1u64;
-    }
-
-    Ok(out)
+    decode_valid_utf8(&decoded, base_offset)
 }
 
-fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError> {
+fn decode_valid_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<String, UrlError> {
+    let mut out = String::new();
     let mut i: UInt64 = 0u64;
     while i < bytes.len() {
         let b0 = bytes[i];
         if b0 <= 0x7Fu8 {
+            out.push(char_from_ascii(b0));
             i = i + 1u64;
         } else if b0 >= 0xC2u8 && b0 <= 0xDFu8 {
             if i + 1u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = codepoint_char(
+                u32_from_u8(b0 & 0x1Fu8) << 6u32 | u32_from_u8(bytes[i + 1u64] & 0x3Fu8),
+                base_offset,
+                i,
+            )?;
+            out.push(ch);
             i = i + 2u64;
         } else if b0 == 0xE0u8 {
             if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
@@ -257,6 +255,8 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = three_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 3u64;
         } else if b0 >= 0xE1u8 && b0 <= 0xECu8 || b0 >= 0xEEu8 && b0 <= 0xEFu8 {
             if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
@@ -264,6 +264,8 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = three_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 3u64;
         } else if b0 == 0xEDu8 {
             if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(
@@ -271,6 +273,8 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = three_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 3u64;
         } else if b0 == 0xF0u8 {
             if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
@@ -278,6 +282,8 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = four_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 4u64;
         } else if b0 >= 0xF1u8 && b0 <= 0xF3u8 {
             if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
@@ -285,6 +291,8 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = four_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 4u64;
         } else if b0 == 0xF4u8 {
             if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(
@@ -292,13 +300,46 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
+            let ch = four_byte_char(bytes, i, base_offset)?;
+            out.push(ch);
             i = i + 4u64;
         } else {
             return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
         }
     }
 
-    Ok(())
+    Ok(out)
+}
+
+fn three_byte_char(bytes: &Vec<UInt8>, i: UInt64, base_offset: UInt64) -> Result<Char, UrlError> {
+    codepoint_char(
+        u32_from_u8(bytes[i] & 0x0Fu8) << 12u32 | u32_from_u8(bytes[i + 1u64] & 0x3Fu8) << 6u32 | u32_from_u8(
+            bytes[i + 2u64] & 0x3Fu8,
+        ),
+        base_offset,
+        i,
+    )
+}
+
+fn four_byte_char(bytes: &Vec<UInt8>, i: UInt64, base_offset: UInt64) -> Result<Char, UrlError> {
+    codepoint_char(
+        u32_from_u8(bytes[i] & 0x07u8) << 18u32 | u32_from_u8(bytes[i + 1u64] & 0x3Fu8) << 12u32 | u32_from_u8(
+            bytes[i + 2u64] & 0x3Fu8,
+        ) << 6u32 | u32_from_u8(bytes[i + 3u64] & 0x3Fu8),
+        base_offset,
+        i,
+    )
+}
+
+fn codepoint_char(codepoint: UInt32, base_offset: UInt64, i: UInt64) -> Result<Char, UrlError> {
+    match Char::from_u32(codepoint) {
+        Some(ch) => Ok(ch),
+        None => Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?)),
+    }
+}
+
+fn u32_from_u8(value: UInt8) -> UInt32 {
+    value as UInt32
 }
 
 fn checked_add(a: UInt64, b: UInt64) -> Result<UInt64, UrlError> {

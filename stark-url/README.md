@@ -9,15 +9,11 @@ v0.1 source and tests are present, with the API frozen in
 browser URL standard and supports only authority-free request targets such as `/health`,
 `/users/123`, and `/search?q=stark&page=2`.
 
-Local ASCII interpreter qualification passes: `stark check` and `stark test` pass with 13 package
-tests covering component encoding, strict malformed `%HH`, ASCII control decoding, request-target
-path/query splitting, ordered repeated query parameters, canonical query encoding, and exact error
-offsets. The cross-package consumer checks and runs under `stark run`; native build is currently
-blocked by native lowering for `str.bytes()`.
-
-Known compiler/runtime blocker: percent-decoded non-ASCII UTF-8 is validated but currently returns
-`PercentDecodedNonAsciiBlocked`, because package source cannot yet construct a `String` from a
-validated runtime UTF-8 byte vector.
+Local native qualification passes: `stark check` and `stark test` pass with 14 package tests
+covering component encoding, strict malformed `%HH`, UTF-8 percent decoding, ASCII control
+decoding, request-target path/query splitting, ordered repeated query parameters, canonical query
+encoding, and exact error offsets. The cross-package consumer checks, runs under `stark run`,
+builds natively, and the generated native binary runs.
 
 ## Scope
 
@@ -25,7 +21,7 @@ Included:
 
 - RFC 3986-style component percent encoding.
 - Strict `%HH` decoding.
-- UTF-8 validation after decoding.
+- UTF-8 validation and Unicode scalar reconstruction after decoding.
 - Path plus optional query parsing.
 - Repeated query keys in deterministic order.
 - Empty query values.
