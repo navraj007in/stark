@@ -136,12 +136,7 @@ impl ResourceRegistry {
         // half-migrated state. Keyed by name, the map cannot hold both for one name -- so the check
         // that matters is across names mapping to the same Core type.
         let mut seen = std::collections::BTreeSet::new();
-        for c in legacy {
-            if !seen.insert(c) {
-                return Some(c);
-            }
-        }
-        None
+        legacy.into_iter().find(|&c| !seen.insert(c))
     }
 }
 

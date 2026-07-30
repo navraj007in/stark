@@ -670,7 +670,7 @@ impl<'a> BodyCx<'a> {
                 self.err(
                     "MIR-0027",
                     bi,
-                    &format!(
+                    format!(
                         "host resource names the Core nominal {core:?}, but Core resources are not \
                          migrated to HostResource yet (CD-235): they must stay entirely on the legacy \
                          MirTy::Core path or move entirely, never both in one program"

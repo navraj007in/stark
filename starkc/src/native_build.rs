@@ -146,10 +146,7 @@ fn provider_layer_for_build(
         });
     };
 
-    let mut overlays = HashMap::new();
-    let mut bindings = std::collections::BTreeMap::new();
-    let mut error_variants = std::collections::BTreeMap::new();
-    let mut error_ty_by_item = std::collections::BTreeMap::new();
+    let mut tables = ProviderLayerTables::default();
 
     let mut package_names: Vec<_> = graph.packages.keys().cloned().collect();
     package_names.sort();
@@ -212,19 +209,16 @@ fn provider_layer_for_build(
         merge_layer(
             &package_name,
             package.entry.clone(),
-            &mut overlays,
-            &mut bindings,
-            &mut error_variants,
-            &mut error_ty_by_item,
+            &mut tables,
             &signatures,
             layer,
         )?;
     }
 
     let lowering = ProviderLowering::build_with_errors(
-        &bindings,
-        &error_variants,
-        &error_ty_by_item,
+        &tables.bindings,
+        &tables.error_variants,
+        &tables.error_ty_by_item,
         |capability, symbol| {
             set.resolve(capability, symbol)
                 .map_err(|error| format!("{error:?}"))
@@ -232,7 +226,10 @@ fn provider_layer_for_build(
     )
     .map_err(BuildCommandError::Capability)?;
 
-    Ok(ProviderBuildLayer { overlays, lowering })
+    Ok(ProviderBuildLayer {
+        overlays: tables.overlays,
+        lowering,
+    })
 }
 
 fn reject_resource_signatures(
@@ -272,16 +269,31 @@ fn is_resource_abi_param(param: &crate::provider_abi::AbiParam) -> bool {
     )
 }
 
+/// The four tables a synthesized layer contributes to, bundled.
+///
+/// Threaded as one value rather than four `&mut` parameters: they are always passed together, always
+/// to the same place, and separating them only made the arity grow with each addition.
+#[derive(Default)]
+struct ProviderLayerTables {
+    overlays: HashMap<PathBuf, String>,
+    bindings: std::collections::BTreeMap<String, (String, String)>,
+    error_variants: std::collections::BTreeMap<String, std::collections::BTreeMap<u32, u32>>,
+    error_ty_by_item: std::collections::BTreeMap<String, String>,
+}
+
 fn merge_layer(
     package_name: &str,
     entry: PathBuf,
-    overlays: &mut HashMap<PathBuf, String>,
-    bindings: &mut std::collections::BTreeMap<String, (String, String)>,
-    error_variants: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<u32, u32>>,
-    error_ty_by_item: &mut std::collections::BTreeMap<String, String>,
+    tables: &mut ProviderLayerTables,
     signatures: &[DerivedSignature],
     layer: SynthesizedLayer,
 ) -> Result<(), BuildCommandError> {
+    let ProviderLayerTables {
+        overlays,
+        bindings,
+        error_variants,
+        error_ty_by_item,
+    } = tables;
     let original = std::fs::read_to_string(&entry).map_err(|error| BuildCommandError::Io {
         action: "reading package entry for provider synthesis".into(),
         path: Some(entry.clone()),

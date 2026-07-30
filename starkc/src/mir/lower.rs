@@ -1235,7 +1235,6 @@ impl<'a> FnLowerer<'a> {
         // Handle outputs join the result payload. They are appended after the scalar out-slots,
         // matching `provider_sig`'s derivation order, so a signature deriving
         // `Result<(UInt64, TcpStream), E>` and the MIR that produces it agree by construction.
-        let mut slots = slots;
         slots.extend(handle_outs.iter().cloned());
 
         // With an EMPTY vocabulary, every nonzero code is a contract violation the emitter aborts on
