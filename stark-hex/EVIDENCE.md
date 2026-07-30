@@ -4,10 +4,11 @@
 
 - Package: `stark-hex`
 - Package path: `/Users/nexper/Documents/GitHub/stark/stark-hex`
-- Compiler/repository head at latest qualification: `0c59c8044d8e1301c85f127aba619f5075b758bb`
+- Compiler/repository head at latest qualification: `159c7aa64c96e6ce7f7734ece3e0602f656fcd9c`
 - Platform: macOS host, `Australia/Sydney` local timezone
 - Toolchain: repository `starkc/target/debug/stark`
-- Precondition result: `INTERPRETER_READY`
+- Precondition result: `READY` for local package/native consumer execution; final baseline
+  qualification pending C6.5 freeze
 
 ## Prerequisites
 
@@ -24,7 +25,7 @@
 | `starkpkg.json` package entry | available | package check |
 | cross-package dependency aliases | available | `stark-hex-consumer` check/run |
 | package-local tests | available | `mod tests;` |
-| native compilation for consumer | blocked | `Vec::as_slice` native build gap |
+| native compilation for consumer | available | native build and generated binary run |
 
 ## Commands
 
@@ -34,7 +35,7 @@
 # result: stark-hex: OK
 
 ../starkc/target/debug/stark test
-# result: 10 passed; 0 failed; 0 ignored; 196ms total
+# result: 10 passed; 0 failed; 0 ignored; 333ms total
 
 ../starkc/target/debug/stark fmt --check
 # result: pass
@@ -53,7 +54,10 @@
 # result: pass
 
 ../starkc/target/debug/stark build
-# result: blocked: native build does not yet support this program: Vec::as_slice
+# result: Built stark-hex-consumer [debug] -> target/stark/debug/stark-hex-consumer
+
+./target/stark/debug/stark-hex-consumer
+# result stdout: 48656c6c6f
 ```
 
 ## Test Counts
@@ -77,38 +81,19 @@ I/O for pure Core tests.
 - HIR/package check: pass
 - Package test runner: pass
 - Formatter: pass
-- MIR: not separately exposed by the package CLI in this run
-- Native: blocked by `Vec::as_slice` in consumer; library native build also has no `main`
-- Cross-package: check pass; interpreter run pass; native build blocked
+- MIR: package CLI does not expose a separate final MIR evidence command in this run
+- Native: consumer native build pass; generated native binary run pass
+- Cross-package: check pass; interpreter run pass; native build pass; native binary output pass
 
 ## Known Blockers
 
-### BLOCKER HEX-NATIVE-001
+None remaining for the `stark-hex` check/test/run/build path exercised here.
 
-```text
-BLOCKER ID: HEX-NATIVE-001
-PACKAGE COMMIT: fd79de4186 plus uncommitted test/evidence hardening
-COMPILER COMMIT: 0c59c8044d8e1301c85f127aba619f5075b758bb
-EXECUTION ENGINE: native build
-MINIMISED STARK SOURCE:
-  use stark_hex::decode;
-  use stark_hex::encode_lower;
-  fn main() {
-      match decode("48656c6c6f") {
-          Ok(bytes) => println(encode_lower(bytes.as_slice()).as_str()),
-          Err(_) => panic("decode failed"),
-      }
-  }
-COMMAND: ../starkc/target/debug/stark build
-EXPECTED RESULT: native executable builds and prints 48656c6c6f when run
-ACTUAL RESULT: error: native build does not yet support this program: Vec::as_slice (a later C4.5e sub-slice)
-DIAGNOSTICS: native build refusal before executable generation
-REQUIRED CAPABILITY: native support for Vec::as_slice when calling a public &[UInt8] API
-NORMATIVE BASIS: STARK-HEX-v0.1 frozen API requires encode_lower(input: &[UInt8])
-WORKAROUND CONSIDERED: change public API to &Vec<UInt8>
-WHY WORKAROUND WAS REJECTED OR TEMPORARY: rejected because it weakens the frozen public API
-CLASS: NATIVE_BACKEND
-```
+Retired blockers during this qualification:
+
+- `Vec::as_slice` native lowering: implemented via existing `SliceNew(&Vec<T>, 0, len, false)`.
+- `str.bytes()` native lowering: implemented as `StrBytes(&str) -> &[UInt8]` and generated Rust
+  `.as_bytes()`.
 
 ## Deviations
 
@@ -121,4 +106,6 @@ The consumer still exercises `Result<Vec<UInt8>, HexError>` across the package b
 
 ## Final Status
 
-`IMPLEMENTATION COMPLETE — EXECUTION QUALIFICATION BLOCKED`
+`IMPLEMENTATION COMPLETE — LOCAL NATIVE QUALIFICATION PASS`
+
+Final exact-commit qualification should be re-run after the C6.5 compiler baseline freezes.

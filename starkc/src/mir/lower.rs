@@ -10277,6 +10277,14 @@ impl<'a> FnLowerer<'a> {
 
         // A12: account for the scrutinee temp's STORAGE, now that its units are accounted for.
         if ends_storage {
+            // The C6.1c decomposition temp is emptied field by field, so it is left partially moved
+            // exactly as the scrutinee would be — it is a second compiler-generated temporary on
+            // the same reassignment path, and missing it kept the multi-field payload case failing
+            // after the single-field one was fixed. (`use_tuple` implies at least one non-`Copy`
+            // field, so this temp is never `Whole` here.)
+            if use_tuple {
+                self.emit_storage_dead(source.local.0, span);
+            }
             if payload_was_moved {
                 // Something non-`Copy` came out, so the storage is partially moved (or already
                 // emptied whole, by the C6.1c decomposition). Either way this ends it, and it is

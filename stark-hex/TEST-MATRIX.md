@@ -23,5 +23,5 @@
 | IMM-001 | INPUT_IMMUTABILITY | reused Vec/String | unchanged inputs | none | n/a | test | pass |
 | FIX-001 | FIXTURES | checked-in valid/invalid files | mapped to tests | none | n/a | documentation | pass |
 | CROSS-001 | CROSS_PACKAGE | `stark-hex-consumer` | prints `48656c6c6f` | none | n/a | check/run | pass |
-| CROSS-002 | CROSS_PACKAGE_NATIVE | `stark-hex-consumer` | native executable | none | n/a | build | blocked: `Vec::as_slice` |
-| ENG-001 | THREE_ENGINE | package/consumer | observations agree | none | n/a | HIR/MIR/native | blocked: native build |
+| CROSS-002 | CROSS_PACKAGE_NATIVE | `stark-hex-consumer` | native executable | none | n/a | build/run binary | pass |
+| ENG-001 | THREE_ENGINE | package/consumer | observations agree | none | n/a | HIR/MIR/native | pass for package tests plus consumer native |

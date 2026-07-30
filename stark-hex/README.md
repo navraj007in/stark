@@ -44,10 +44,10 @@ implementation.
 
 ## Status
 
-`IMPLEMENTATION COMPLETE — EXECUTION QUALIFICATION BLOCKED`.
+`IMPLEMENTATION COMPLETE — LOCAL NATIVE QUALIFICATION PASS`.
 
 Package `stark check`, `stark test`, and `stark fmt --check` pass. The test suite covers all byte
-values for encoding/round-trip and every invalid ASCII byte for decoder rejection. The cross-package consumer checks
-and runs under `stark run`, printing `48656c6c6f`. Native build qualification is blocked in the
-current compiler by `Vec::as_slice`, which is required to call the frozen `&[UInt8]` encoder API on
-decoded `Vec<UInt8>` output. See `EVIDENCE.md`.
+values for encoding/round-trip and every invalid ASCII byte for decoder rejection. The
+cross-package consumer checks, runs under `stark run`, builds natively, and the generated native
+binary prints `48656c6c6f`. Final exact-commit package qualification should be re-run after the
+C6.5 compiler baseline freezes. See `EVIDENCE.md`.

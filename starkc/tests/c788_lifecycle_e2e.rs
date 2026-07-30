@@ -447,11 +447,12 @@ fn question_mark_propagation_closes_a_live_resource() {
 ///
 /// Each iteration's close must find its own handle in the provider's table; a stale or reused handle
 /// aborts.
+///
+/// This test found `DEFECT-C788-LOOP-TEMP` and was committed `#[ignore]`d with a classification
+/// (CD-263) rather than deleted. A12 (CD-265) fixed it — the scrutinee temporary's storage is now
+/// ended once its units are accounted for — and the ignore came off with the fix, which is what the
+/// classification said would happen. It is the primary regression test for that defect.
 #[test]
-#[ignore = "DEFECT-C788-LOOP-TEMP: a temporary holding Result<Resource, E> inside a loop body is \
-never dropped, so the second iteration writes to a live slot and the runtime aborts with \
-'write to a live slot (STARK compiler defect, not a program fault)'. Generated code contains exactly \
-one drop_with -- on the match binding -- and none for the scrutinee temp. Un-ignore with the fix."]
 fn repeated_connect_and_release_reuses_slot_state() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().expect("addr").to_string();
