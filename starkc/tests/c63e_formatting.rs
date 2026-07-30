@@ -18,11 +18,8 @@
 
 mod support;
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
-
 use starkc::diag::Severity;
 use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
@@ -392,55 +389,6 @@ fn composite_vec_of_vecs_renders() {
          let mut b: Vec<Int32> = Vec::new(); b.push(3); \
          let mut v: Vec<Vec<Int32>> = Vec::new(); v.push(a); v.push(b); println(v); }",
     );
-}
-
-/// Type-checks, lowers, and VERIFIES, but the native backend refuses it with a named limitation
-/// containing `expect` — a deterministic pre-rustc boundary, not a rustc error.
-fn refused_natively(tag: &str, src: &str, expect: &str) {
-    if !support::differential::rustc_available() {
-        return;
-    }
-    let file = Arc::new(SourceFile::new(
-        format!("c63e_{tag}.stark"),
-        src.to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let dir = std::env::temp_dir().join(format!("stark_c63e_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let result = emit_native_debug(
-        &verified,
-        &NativeBuildOptions {
-            target_dir: dir.clone(),
-            target_contract: "stark-64-v1".to_string(),
-            ..NativeBuildOptions::default()
-        },
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-    match result {
-        Err(e) => {
-            let text = format!("{e:?}");
-            assert!(
-                text.contains(expect),
-                "{tag}: expected a refusal mentioning {expect:?}, got: {text}"
-            );
-        }
-        Ok(_) => {
-            panic!("{tag}: this is expected to be refused; if it now builds, make it positive")
-        }
-    }
 }
 
 // ---- CD-136: a non-Copy AGGREGATE element inside a `Vec` ----
