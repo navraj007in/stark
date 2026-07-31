@@ -1,0 +1,20 @@
+use stark_path::extension;
+use stark_path::join;
+use stark_path::normalize;
+use stark_path::PathStyle;
+
+fn main() {
+    let path = join(PathStyle::Unix, "/usr", "local/../bin/stark.exe");
+    let normalized = normalize(PathStyle::Unix, path.as_str());
+    match extension(PathStyle::Unix, normalized.as_str()) {
+        Some(ext) => {
+            if ext.as_str() != "exe" {
+                panic("extension mismatch");
+            }
+        }
+        None => {
+            panic("missing extension");
+        }
+    }
+    println(normalized.as_str());
+}

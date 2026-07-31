@@ -1,0 +1,323 @@
+pub enum PathStyle {
+    Unix,
+    Windows,
+}
+
+pub fn separator(style: PathStyle) -> Char {
+    match style {
+        PathStyle::Unix => '/',
+        PathStyle::Windows => '\\',
+    }
+}
+
+pub fn is_absolute(style: PathStyle, path: &str) -> Bool {
+    let bytes = path.bytes();
+    if bytes.len() == 0u64 {
+        false
+    } else {
+        match style {
+            PathStyle::Unix => bytes[0u64] == 47u8,
+            PathStyle::Windows => {
+                if bytes[0u64] == 47u8 || bytes[0u64] == 92u8 {
+                    true
+                } else {
+                    bytes.len() >= 3u64 && is_ascii_alpha(bytes[0u64]) && bytes[1u64] == 58u8 && is_separator(
+                        style,
+                        bytes[2u64],
+                    )
+                }
+            }
+        }
+    }
+}
+
+pub fn join(style: PathStyle, base: &str, child: &str) -> String {
+    if child.len() == 0u64 {
+        return String::from(base);
+    }
+    if base.len() == 0u64 || is_absolute(style, child) {
+        return String::from(child);
+    }
+    let base_bytes = base.bytes();
+    let mut out = String::from(base);
+    if !is_separator(style, base_bytes[base_bytes.len() - 1u64]) {
+        out.push(separator(style));
+    }
+    out.push_str(child);
+    out
+}
+
+pub fn components(style: PathStyle, path: &str) -> Vec<String> {
+    let bytes = path.bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut start = root_end(style, path);
+    let mut i = start;
+    while i <= bytes.len() {
+        if i == bytes.len() || is_separator(style, bytes[i]) {
+            if i > start {
+                out.push(String::from(path.substring(start, i)));
+            }
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+pub fn parent(style: PathStyle, path: &str) -> Option<String> {
+    let end = trim_trailing_separators(style, path);
+    let root = root_end(style, path);
+    if end <= root {
+        return None;
+    }
+    let sep = last_separator_before(style, path, end);
+    if sep.is_some() {
+        let idx = sep.unwrap();
+        if idx < root {
+            Some(String::from(path.substring(0u64, root)))
+        } else if idx == root {
+            Some(String::from(path.substring(0u64, root)))
+        } else {
+            Some(
+                String::from(
+                    path.substring(0u64, trim_trailing_separators(style, path.substring(0u64, idx))),
+                ),
+            )
+        }
+    } else {
+        None
+    }
+}
+
+pub fn file_name(style: PathStyle, path: &str) -> Option<String> {
+    let end = trim_trailing_separators(style, path);
+    let root = root_end(style, path);
+    if end <= root {
+        return None;
+    }
+    let start = match last_separator_before(style, path, end) {
+        Some(idx) => idx + 1u64,
+        None => root,
+    };
+    if start >= end {
+        None
+    } else {
+        Some(String::from(path.substring(start, end)))
+    }
+}
+
+pub fn extension(style: PathStyle, path: &str) -> Option<String> {
+    match file_name(style, path) {
+        Some(name) => {
+            let dot = last_dot(name.as_str());
+            if dot.is_some() {
+                let idx = dot.unwrap();
+                if idx == 0u64 || idx + 1u64 >= name.len() {
+                    None
+                } else {
+                    Some(String::from(name.as_str().substring(idx + 1u64, name.len())))
+                }
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
+pub fn stem(style: PathStyle, path: &str) -> Option<String> {
+    match file_name(style, path) {
+        Some(name) => {
+            let dot = last_dot(name.as_str());
+            if dot.is_some() {
+                let idx = dot.unwrap();
+                if idx == 0u64 {
+                    Some(name)
+                } else {
+                    Some(String::from(name.as_str().substring(0u64, idx)))
+                }
+            } else {
+                Some(name)
+            }
+        }
+        None => None,
+    }
+}
+
+pub fn with_extension(style: PathStyle, path: &str, new_extension: &str) -> String {
+    let end = trim_trailing_separators(style, path);
+    let name_start = match last_separator_before(style, path, end) {
+        Some(idx) => idx + 1u64,
+        None => root_end(style, path),
+    };
+    let name = path.substring(name_start, end);
+    let dot = last_dot(name);
+    let replace_from = if dot.is_some() && dot.unwrap() != 0u64 {
+        name_start + dot.unwrap()
+    } else {
+        end
+    };
+    let mut out = String::from(path.substring(0u64, replace_from));
+    if new_extension.len() > 0u64 {
+        out.push('.');
+        out.push_str(new_extension);
+    }
+    out
+}
+
+pub fn normalize(style: PathStyle, path: &str) -> String {
+    let bytes = path.bytes();
+    let root = root_end(style, path);
+    let mut out = String::from(path.substring(0u64, root));
+    let mut start = root;
+    let mut i = root;
+    while i <= bytes.len() {
+        if i == bytes.len() || is_separator(style, bytes[i]) {
+            if i > start {
+                let part = String::from(path.substring(start, i));
+                if is_current_component(part.as_str()) {} else if is_parent_component(part.as_str()) {
+                    out = pop_component(style, out, root);
+                } else {
+                    out = append_component(style, out, part.as_str());
+                }
+            }
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+    if out.len() == 0u64 {
+        String::from(".")
+    } else {
+        String::from(out.as_str())
+    }
+}
+
+fn append_component(style: PathStyle, current: String, part: &str) -> String {
+    if current.len() == 0u64 || current.as_str() == "." {
+        String::from(part)
+    } else {
+        let mut out = String::from(current.as_str());
+        if !ends_with_separator(style, current.as_str()) {
+            out.push(separator(style));
+        }
+        out.push_str(part);
+        out
+    }
+}
+
+fn pop_component(style: PathStyle, current: String, root: UInt64) -> String {
+    if current.len() <= root {
+        if root == 0u64 {
+            String::from("..")
+        } else {
+            String::from(current.as_str())
+        }
+    } else if current.as_str() == ".." {
+        append_component(style, String::from(current.as_str()), "..")
+    } else {
+        let end = trim_trailing_separators(style, current.as_str());
+        let sep = last_separator_before(style, current.as_str(), end);
+        if sep.is_some() {
+            let idx = sep.unwrap();
+            if idx < root || idx == root {
+                String::from(current.as_str().substring(0u64, root))
+            } else {
+                String::from(current.as_str().substring(0u64, idx))
+            }
+        } else if root == 0u64 {
+            String::from(".")
+        } else {
+            String::from(current.as_str().substring(0u64, root))
+        }
+    }
+}
+
+fn is_current_component(part: &str) -> Bool {
+    part == "."
+}
+
+fn is_parent_component(part: &str) -> Bool {
+    part == ".."
+}
+
+fn root_end(style: PathStyle, path: &str) -> UInt64 {
+    let bytes = path.bytes();
+    if bytes.len() == 0u64 {
+        0u64
+    } else {
+        match style {
+            PathStyle::Unix => {
+                if bytes[0u64] == 47u8 {
+                    1u64
+                } else {
+                    0u64
+                }
+            }
+            PathStyle::Windows => {
+                if bytes.len() >= 3u64 && is_ascii_alpha(bytes[0u64]) && bytes[1u64] == 58u8 && is_separator(
+                    style,
+                    bytes[2u64],
+                ) {
+                    3u64
+                } else if is_separator(style, bytes[0u64]) {
+                    1u64
+                } else {
+                    0u64
+                }
+            }
+        }
+    }
+}
+
+fn trim_trailing_separators(style: PathStyle, path: &str) -> UInt64 {
+    let bytes = path.bytes();
+    let root = root_end(style, path);
+    let mut end = bytes.len();
+    while end > root && is_separator(style, bytes[end - 1u64]) {
+        end = end - 1u64;
+    }
+    end
+}
+
+fn last_separator_before(style: PathStyle, path: &str, end: UInt64) -> Option<UInt64> {
+    let bytes = path.bytes();
+    let root = root_end(style, path);
+    let mut i = end;
+    while i > root {
+        i = i - 1u64;
+        if is_separator(style, bytes[i]) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn last_dot(path: &str) -> Option<UInt64> {
+    let bytes = path.bytes();
+    let mut i = bytes.len();
+    while i > 0u64 {
+        i = i - 1u64;
+        if bytes[i] == 46u8 {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn ends_with_separator(style: PathStyle, path: &str) -> Bool {
+    let bytes = path.bytes();
+    bytes.len() > 0u64 && is_separator(style, bytes[bytes.len() - 1u64])
+}
+
+fn is_separator(style: PathStyle, byte: UInt8) -> Bool {
+    match style {
+        PathStyle::Unix => byte == 47u8,
+        PathStyle::Windows => byte == 47u8 || byte == 92u8,
+    }
+}
+
+fn is_ascii_alpha(byte: UInt8) -> Bool {
+    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
+}
+
+mod tests;

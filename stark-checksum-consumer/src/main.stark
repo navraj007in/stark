@@ -1,0 +1,29 @@
+use stark_checksum::adler32;
+use stark_checksum::crc32;
+use stark_hex::encode_lower;
+
+fn u32_bytes(value: UInt32) -> Vec<UInt8> {
+    let mut out = Vec::new();
+    out.push((value >> 24u32 & 0xFFu32) as UInt8);
+    out.push((value >> 16u32 & 0xFFu32) as UInt8);
+    out.push((value >> 8u32 & 0xFFu32) as UInt8);
+    out.push((value & 0xFFu32) as UInt8);
+    out
+}
+
+fn main() {
+    let mut data = Vec::new();
+    data.push(49u8);
+    data.push(50u8);
+    data.push(51u8);
+    data.push(52u8);
+    data.push(53u8);
+    data.push(54u8);
+    data.push(55u8);
+    data.push(56u8);
+    data.push(57u8);
+    let crc = u32_bytes(crc32(data.as_slice()));
+    let adler = u32_bytes(adler32(data.as_slice()));
+    println(encode_lower(crc.as_slice()).as_str());
+    println(encode_lower(adler.as_slice()).as_str());
+}

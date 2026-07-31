@@ -1,0 +1,9 @@
+{
+  "name": "stark-checksum-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_checksum": { "package": "stark-checksum", "path": "../stark-checksum", "version": "0.1.0" },
+    "stark_hex": { "package": "stark-hex", "path": "../stark-hex", "version": "0.1.0" }
+  }
+}

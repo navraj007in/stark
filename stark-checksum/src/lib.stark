@@ -1,0 +1,115 @@
+pub struct Crc32 { value: UInt32 }
+
+pub struct Adler32 { a: UInt32, b: UInt32 }
+
+pub fn crc32(input: &[UInt8]) -> UInt32 {
+    let mut state = crc32_new();
+    crc32_update(&mut state, input);
+    crc32_finish(&state)
+}
+
+pub fn crc32_new() -> Crc32 {
+    Crc32 { value: 0xFFFF_FFFFu32 }
+}
+
+pub fn crc32_update(state: &mut Crc32, input: &[UInt8]) {
+    let mut i: UInt64 = 0u64;
+    while i < input.len() {
+        let mut crc = state.value ^ input[i] as UInt32;
+        let mut bit: UInt64 = 0u64;
+        while bit < 8u64 {
+            if crc & 1u32 == 1u32 {
+                crc = crc >> 1u32 ^ 0xEDB8_8320u32;
+            } else {
+                crc = crc >> 1u32;
+            }
+            bit = bit + 1u64;
+        }
+        state.value = crc;
+        i = i + 1u64;
+    }
+}
+
+pub fn crc32_finish(state: &Crc32) -> UInt32 {
+    state.value ^ 0xFFFF_FFFFu32
+}
+
+pub fn adler32(input: &[UInt8]) -> UInt32 {
+    let mut state = adler32_new();
+    adler32_update(&mut state, input);
+    adler32_finish(&state)
+}
+
+pub fn adler32_new() -> Adler32 {
+    Adler32 { a: 1u32, b: 0u32 }
+}
+
+pub fn adler32_update(state: &mut Adler32, input: &[UInt8]) {
+    let mut i: UInt64 = 0u64;
+    while i < input.len() {
+        state.a = (state.a + input[i] as UInt32) % 65521u32;
+        state.b = (state.b + state.a) % 65521u32;
+        i = i + 1u64;
+    }
+}
+
+pub fn adler32_finish(state: &Adler32) -> UInt32 {
+    state.b << 16u32 | state.a
+}
+
+pub fn u32_hex_lower(value: UInt32) -> String {
+    let mut out = String::new();
+    out.push(lower_hex_char((value >> 28u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 24u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 20u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 16u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 12u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 8u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value >> 4u32 & 0x0Fu32) as UInt8));
+    out.push(lower_hex_char((value & 0x0Fu32) as UInt8));
+    out
+}
+
+fn lower_hex_char(nibble: UInt8) -> Char {
+    if nibble < 10u8 {
+        digit_char(nibble)
+    } else if nibble == 10u8 {
+        'a'
+    } else if nibble == 11u8 {
+        'b'
+    } else if nibble == 12u8 {
+        'c'
+    } else if nibble == 13u8 {
+        'd'
+    } else if nibble == 14u8 {
+        'e'
+    } else {
+        'f'
+    }
+}
+
+fn digit_char(nibble: UInt8) -> Char {
+    if nibble == 0u8 {
+        '0'
+    } else if nibble == 1u8 {
+        '1'
+    } else if nibble == 2u8 {
+        '2'
+    } else if nibble == 3u8 {
+        '3'
+    } else if nibble == 4u8 {
+        '4'
+    } else if nibble == 5u8 {
+        '5'
+    } else if nibble == 6u8 {
+        '6'
+    } else if nibble == 7u8 {
+        '7'
+    } else if nibble == 8u8 {
+        '8'
+    } else {
+        '9'
+    }
+}
+
+mod tests;

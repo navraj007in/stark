@@ -1,0 +1,151 @@
+use super::components;
+use super::extension;
+use super::file_name;
+use super::is_absolute;
+use super::join;
+use super::normalize;
+use super::parent;
+use super::stem;
+use super::with_extension;
+use super::PathStyle;
+
+fn assert_some(value: Option<String>, expected: &str) {
+    match value {
+        Some(actual) => {
+            if actual.as_str() != expected {
+                panic("option string mismatch");
+            }
+        }
+        None => {
+            panic("expected some string");
+        }
+    }
+}
+
+fn assert_none(value: Option<String>) {
+    match value {
+        Some(_) => {
+            panic("expected none");
+        }
+        None => {}
+    }
+}
+
+fn test_unix_join_and_absolute() {
+    if join(PathStyle::Unix, "/usr", "bin").as_str() != "/usr/bin" {
+        panic("unix join mismatch");
+    }
+    if join(PathStyle::Unix, "/usr/", "bin").as_str() != "/usr/bin" {
+        panic("unix join existing separator mismatch");
+    }
+    if join(PathStyle::Unix, "/usr", "/bin").as_str() != "/bin" {
+        panic("unix absolute child mismatch");
+    }
+    if !is_absolute(PathStyle::Unix, "/tmp") || is_absolute(PathStyle::Unix, "tmp") {
+        panic("unix absolute mismatch");
+    }
+}
+
+fn test_windows_join_and_absolute() {
+    if join(PathStyle::Windows, "C:\\Users", "stark").as_str() != "C:\\Users\\stark" {
+        panic("windows join mismatch");
+    }
+    if join(PathStyle::Windows, "C:\\Users\\", "stark").as_str() != "C:\\Users\\stark" {
+        panic("windows join existing separator mismatch");
+    }
+    if join(PathStyle::Windows, "C:\\Users", "D:\\Temp").as_str() != "D:\\Temp" {
+        panic("windows absolute child mismatch");
+    }
+    if !is_absolute(PathStyle::Windows, "C:\\Temp") || !is_absolute(PathStyle::Windows, "\\Temp") || is_absolute(
+        PathStyle::Windows,
+        "Temp",
+    ) {
+        panic("windows absolute mismatch");
+    }
+}
+
+fn test_components() {
+    let unix = components(PathStyle::Unix, "/usr/local/bin");
+    if unix.len() != 3u64 {
+        panic("unix components length mismatch");
+    }
+    match unix.get(0u64) {
+        Some(part) => {
+            if part.as_str() != "usr" {
+                panic("unix first component mismatch");
+            }
+        }
+        None => {
+            panic("missing unix first component");
+        }
+    }
+    match unix.get(2u64) {
+        Some(part) => {
+            if part.as_str() != "bin" {
+                panic("unix last component mismatch");
+            }
+        }
+        None => {
+            panic("missing unix last component");
+        }
+    }
+
+    let windows = components(PathStyle::Windows, "C:\\Users\\stark");
+    if windows.len() != 2u64 {
+        panic("windows components length mismatch");
+    }
+    match windows.get(1u64) {
+        Some(part) => {
+            if part.as_str() != "stark" {
+                panic("windows last component mismatch");
+            }
+        }
+        None => {
+            panic("missing windows last component");
+        }
+    }
+}
+
+fn test_parent_and_file_name() {
+    assert_some(parent(PathStyle::Unix, "/usr/local/bin"), "/usr/local");
+    assert_some(parent(PathStyle::Unix, "/usr/local/bin/"), "/usr/local");
+    assert_none(parent(PathStyle::Unix, "/"));
+    assert_some(file_name(PathStyle::Unix, "/usr/local/bin/"), "bin");
+    assert_none(file_name(PathStyle::Unix, "/"));
+
+    assert_some(parent(PathStyle::Windows, "C:\\Users\\stark\\file.txt"), "C:\\Users\\stark");
+    assert_some(file_name(PathStyle::Windows, "C:\\Users\\stark\\file.txt"), "file.txt");
+}
+
+fn test_stem_extension_and_with_extension() {
+    assert_some(stem(PathStyle::Unix, "/tmp/archive.tar.gz"), "archive.tar");
+    assert_some(extension(PathStyle::Unix, "/tmp/archive.tar.gz"), "gz");
+    assert_some(stem(PathStyle::Unix, "/tmp/.profile"), ".profile");
+    assert_none(extension(PathStyle::Unix, "/tmp/.profile"));
+    assert_none(extension(PathStyle::Unix, "/tmp/file."));
+
+    if with_extension(PathStyle::Unix, "/tmp/file.txt", "json").as_str() != "/tmp/file.json" {
+        panic("replace extension mismatch");
+    }
+    if with_extension(PathStyle::Unix, "/tmp/file.txt", "").as_str() != "/tmp/file" {
+        panic("remove extension mismatch");
+    }
+    if with_extension(PathStyle::Windows, "C:\\Temp\\file", "log").as_str() != "C:\\Temp\\file.log" {
+        panic("windows add extension mismatch");
+    }
+}
+
+fn test_normalize() {
+    if normalize(PathStyle::Unix, "/usr//local/./bin/../lib").as_str() != "/usr/local/lib" {
+        panic("unix normalize mismatch");
+    }
+    if normalize(PathStyle::Unix, "a/b/../../c").as_str() != "c" {
+        panic("relative normalize mismatch");
+    }
+    if normalize(PathStyle::Unix, "../a/./b").as_str() != "../a/b" {
+        panic("leading parent normalize mismatch");
+    }
+    if normalize(PathStyle::Windows, "C:\\Users\\\\stark\\.\\..\\Temp").as_str() != "C:\\Users\\Temp" {
+        panic("windows normalize mismatch");
+    }
+}

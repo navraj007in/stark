@@ -1,0 +1,85 @@
+use super::adler32;
+use super::adler32_finish;
+use super::adler32_new;
+use super::adler32_update;
+use super::crc32;
+use super::crc32_finish;
+use super::crc32_new;
+use super::crc32_update;
+use super::u32_hex_lower;
+
+fn assert_crc32(input: &[UInt8], expected: UInt32) {
+    let actual = crc32(input);
+    if actual != expected {
+        panic("crc32 mismatch");
+    }
+}
+
+fn assert_adler32(input: &[UInt8], expected: UInt32) {
+    let actual = adler32(input);
+    if actual != expected {
+        panic("adler32 mismatch");
+    }
+}
+
+fn test_standard_vectors() {
+    let empty: &[UInt8] = &[];
+    assert_crc32(empty, 0x0000_0000u32);
+    assert_adler32(empty, 0x0000_0001u32);
+
+    let nine: &[UInt8] = &[49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8, 56u8, 57u8];
+    assert_crc32(nine, 0xCBF4_3926u32);
+    assert_adler32(nine, 0x091E_01DEu32);
+}
+
+fn test_ascii_message_vectors() {
+    let hello: &[UInt8] = &[72u8, 101u8, 108u8, 108u8, 111u8];
+    assert_crc32(hello, 0xF7D1_8982u32);
+    assert_adler32(hello, 0x058C_01F5u32);
+
+    let stark: &[UInt8] = &[115u8, 116u8, 97u8, 114u8, 107u8];
+    assert_crc32(stark, 0x1271_587Au32);
+    assert_adler32(stark, 0x0686_0226u32);
+}
+
+fn test_chunked_crc32_matches_one_shot() {
+    let left: &[UInt8] = &[49u8, 50u8, 51u8];
+    let middle: &[UInt8] = &[52u8, 53u8, 54u8];
+    let right: &[UInt8] = &[55u8, 56u8, 57u8];
+    let all: &[UInt8] = &[49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8, 56u8, 57u8];
+
+    let mut state = crc32_new();
+    crc32_update(&mut state, left);
+    crc32_update(&mut state, middle);
+    crc32_update(&mut state, right);
+    if crc32_finish(&state) != crc32(all) {
+        panic("chunked crc32 mismatch");
+    }
+}
+
+fn test_chunked_adler32_matches_one_shot() {
+    let left: &[UInt8] = &[49u8, 50u8, 51u8];
+    let middle: &[UInt8] = &[52u8, 53u8, 54u8];
+    let right: &[UInt8] = &[55u8, 56u8, 57u8];
+    let all: &[UInt8] = &[49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8, 56u8, 57u8];
+
+    let mut state = adler32_new();
+    adler32_update(&mut state, left);
+    adler32_update(&mut state, middle);
+    adler32_update(&mut state, right);
+    if adler32_finish(&state) != adler32(all) {
+        panic("chunked adler32 mismatch");
+    }
+}
+
+fn test_u32_hex_lower() {
+    if u32_hex_lower(0u32).as_str() != "00000000" {
+        panic("zero hex mismatch");
+    }
+    if u32_hex_lower(0xCBF4_3926u32).as_str() != "cbf43926" {
+        panic("crc vector hex mismatch");
+    }
+    if u32_hex_lower(0x091E_01DEu32).as_str() != "091e01de" {
+        panic("adler vector hex mismatch");
+    }
+}

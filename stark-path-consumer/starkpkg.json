@@ -1,0 +1,8 @@
+{
+  "name": "stark-path-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_path": { "package": "stark-path", "path": "../stark-path", "version": "0.1.0" }
+  }
+}
