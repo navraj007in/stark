@@ -1,7 +1,8 @@
 # WP-C7.9 — closure record
 
-**Status:** qualification in progress; this record is complete for the implementation and is
-finalised by the Tier-1 CI run.
+**Status:** **CLOSED — 2026-07-31.** Qualified at `2da4b3d` (branch, 18/18 CI) and merged to `main`
+as `144ceee`, whose own CI run is **18/18 green on all three Tier-1 platforms**. §3 records the
+evidence; §7 states the claim it supports.
 **Parent gate:** C7 — **CLOSED at CD-274** while this work package was being implemented. WP-C7.9
 therefore appends to a closed gate: it does not reopen CD-274, and §6 states exactly what CD-274's
 claim did and did not cover.
@@ -171,8 +172,47 @@ outside this work package's authority.
 
 ## 3. Evidence
 
-Filled in at qualification close: local Q1–Q8 totals, the four-configuration corpus replay, and the
-Tier-1 CI matrix.
+**Qualifying commits.** `2da4b3d` (branch head) and `144ceee` (the merge on `main`). Both ran the
+full matrix; the merge run is the authoritative one, because it qualifies the tree that exists
+rather than the one proposed.
+
+### Local (macOS arm64), Q1–Q8
+
+| Step | Command | Result |
+| --- | --- | --- |
+| Q1 | `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features` | clean |
+| Q2 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | clean |
+| Q3 | the nine adversarial modules and every directly affected suite | green |
+| Q4 | `cargo test --workspace --all-targets --all-features --no-fail-fast` | **2047 passed, 0 failed**, exit 0 |
+| Q5 | `python3 tests/c6-corpus/generate.py --check` | generated corpus current |
+| Q6 | corpus replay, four configurations | **170 cases**, 0 divergences |
+| Q7 | release-profile checks | covered by Q6 — release is in the default differential path, so every admitted case ran it |
+| Q8 | `cargo test --test resource_exhaustion` (subprocess) | 6 passed; no runner process aborted |
+
+### Tier-1 CI — 18 of 18 jobs, on `144ceee`
+
+```text
+fmt, clippy, test          linux-x64 ✓   macos-arm64 ✓   windows-x64 ✓
+C6.4 tier-1 qualification  linux-x64 ✓   macos-arm64 ✓   windows tier-2 gap probe ✓
+C6.5 corpus replay         linux-x64 ✓   macos-arm64 ✓   corpus tier-1 agreement ✓
+C7 P1 REST workload        linux-x64 ✓   macos-arm64 ✓   windows-x64 ✓
+release package smoke      linux-x64 ✓   macos-arm64 ✓   windows-x64 ✓
+C6.5 mutation controls ✓   C6.4 tier-1 agreement ✓   spec fixture conformance ✓
+```
+
+`C7.8 Native Capabilities` passed separately on the same head.
+
+### Two defects the qualification phase itself found
+
+Recorded because they are evidence about the *process*, not only the product:
+
+1. **CD-276** — a guard test I wrote searched source for `"\n}\n"`, which a CRLF checkout spells
+   `"\r\n}\r\n"`. Green on macOS and Linux, red on Windows. Local qualification is
+   single-platform, so anything reading source or process bytes is only falsifiable in CI.
+2. **CD-277** — `c785_time_closeout` asserted `reading > 0` to mean "the provider wrote the slot",
+   while the body pre-filled that slot with `0` and the provider can legitimately return `0` on a
+   coarse clock. A latent unsoundness, not a flake. Fixed at the cause with a sentinel the provider
+   cannot produce; recorded separately per the directive's nearby-defect rule.
 
 ## 4. Deviations and deferrals retained
 
@@ -185,8 +225,11 @@ Tier-1 CI matrix.
 
 ## 5. What this does not claim
 
-Not that every type-correct STARK program behaves identically across engines. The bounded claim
-authorised by ruling D7 is stated in §6 once qualification is green.
+Not that every type-correct STARK program behaves identically across engines — the review's own
+framing, and still correct. Provider-backed execution is not three-engine qualified and cannot be
+(§ Packet H). The nine refused iterator surfaces are refused, not implemented. `WP-C7-Usage-Shape-
+Qualification` remains open, so "one valid invocation works" still does not mean "every usage shape
+works".
 
 ## 6. Relationship to CD-274 (Gate C7 closure)
 
@@ -199,3 +242,22 @@ here, so:
   that moment;
 - this work package's claim is therefore about the tree *after* it, and is stated separately rather
   than folded into C7's.
+
+
+## 7. The claim this qualifies (ruling D7)
+
+> At `144ceee`, every maintained admitted pure-Core conformance case agrees with an independently
+> pinned specification expectation across HIR, MIR, native debug and native release, on all three
+> Tier-1 platforms. Provider-backed capabilities remain verifier/ABI/native-qualified, and
+> intentionally unsupported iterator forms are rejected uniformly by the front end.
+
+Stated with its limits attached, because the limits are what make it worth stating:
+
+- **"independently pinned"** is the load-bearing phrase. Before this work package several suites
+  took the HIR oracle's own output as the expectation, which cannot fail when all three engines are
+  wrong together — the exact shape of DEV-118, where every engine accepted the same invalid
+  programs and agreed on their results.
+- **"maintained admitted"** excludes what the front end now refuses and what no engine below HIR
+  executes. That set is smaller than it was, and the audit says exactly what is in it.
+- It says nothing about programs outside the corpus. `WP-C7.9` closed the obstacles to a broader
+  claim and made the remaining distance measurable; it did not travel it.

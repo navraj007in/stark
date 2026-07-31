@@ -1,6 +1,18 @@
 # STARK Compiler STATE
 
-## WP-C7.9 — three-engine adversarial conformance correction (CD-275, 2026-07-31)
+## WP-C7.9 — three-engine adversarial conformance correction — **CLOSED** (CD-275…CD-278, 2026-07-31)
+
+**Qualified at `144ceee` on `main`: 18 of 18 CI jobs green across linux-x64, macos-arm64 and
+windows-x64.** Local: workspace 2047 passed / 0 failed; corpus replay 170 cases over four engine
+configurations; subprocess robustness 6/6. The claim this supports, and its limits, are in
+`WP-C7.9-CLOSURE.md` §7 — it is deliberately narrower than "every type-correct program agrees".
+
+Follow-on CDs from the qualification phase itself: **CD-276** (a guard test read line endings, so it
+was green on two platforms and red on the third) and **CD-277** (`c785_time_closeout` asserted
+`reading > 0` to mean "the slot was written", while `0` is a legitimate clock reading — a latent
+unsoundness, fixed at the cause with a sentinel the provider cannot produce). **CD-278** closed the
+`chars()` scalar/byte confusion that a feature-example suite found afterwards.
+
 
 **Corrective work on the tree Gate C7 closed over.** CD-274 closed C7; this landed after it, from
 two adversarial review passes. CD-274's ruling stands as written and is not amended — but three of
