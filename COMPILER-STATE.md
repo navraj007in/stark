@@ -850,6 +850,18 @@ component of that path now exists and is tested; what is missing is the driver w
 derive → synthesize → prepend to the compilation unit → resolve → lower-with-providers. That is
 the next slice, and it is integration rather than design.
 
+> **Superseded 2026-07-31 (CD-285): the driver wiring is BUILT.** `native_build.rs` calls
+> `synthesize_with_resources`, assembles the provider layer, and calls
+> `lower_program_with_providers`. Demonstrated rather than read: the `c7-p1-rest` workload — a real
+> `provider_api` package binding six TCP/env functions and two resource types — compiles, links and
+> produces a binary from `stark build`, both in-repo and from an installed toolchain under
+> `STARK_REQUIRE_INSTALLED_RUNTIME=1`.
+>
+> **Recorded because the paragraph above outlived its accuracy and cost a reader a wrong critical
+> path.** With parallel sessions landing slices, an append-only file states a position that the work
+> can overtake without anyone noticing; a POSITION entry is only as good as its most recent
+> correction. This one was found by re-testing a claim rather than re-reading it.
+
 **ONE refusal remains: a resource in any position (§3.1).**
 
 **Recoverable statuses now lower (2026-07-30).** A capability with a declared vocabulary gets a

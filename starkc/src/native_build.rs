@@ -431,10 +431,14 @@ fn provider_repo_root(package_root: &Path, runtime_crate: &Path) -> PathBuf {
 
 /// The provider root belonging to the same installation as `runtime_crate`.
 ///
-/// An installed runtime lives at `<prefix>/lib/stark/stark-runtime`, so its providers are at
-/// `<prefix>/lib/stark/providers`. A runtime resolved out of a checkout has no such sibling, and
-/// this returns `None` so the checkout walk decides — which keeps in-repo development on repo
-/// providers, as it was.
+/// **The canonical installed layout mirrors the repository**: the runtime sits at
+/// `<prefix>/lib/stark/starkc/stark-runtime`, so the providers are two levels up, beside
+/// `starkc/`, exactly where a checkout puts them. That is what lets one `stark-provider-abi`
+/// satisfy both the runtime's `../` dependency and each provider's `../../starkc/` one.
+///
+/// `<prefix>/lib/stark/providers` is accepted second, so an installation made before the mirror
+/// layout keeps working. A runtime resolved out of a checkout matches neither and returns `None`,
+/// leaving the checkout walk to decide — which keeps in-repo development on repo providers.
 fn provider_root_beside_runtime(runtime_crate: &Path) -> Option<PathBuf> {
     // An installed runtime lives at `<prefix>/lib/stark/starkc/stark-runtime`, in a root that
     // mirrors the repository — so the providers are two levels up, beside `starkc/`, exactly where
@@ -944,9 +948,51 @@ mod tests {
         std::fs::write(root.join("stark-time/native/Cargo.toml"), "").unwrap();
     }
 
-    /// The runtime's own tree wins, because Cargo cannot lockfile one package at two paths.
+    /// **The canonical installed layout**: the runtime under `starkc/`, providers beside it,
+    /// mirroring the repository.
+    ///
+    /// This is the arrangement `stark build` actually produces for an installed toolchain, and it
+    /// is the one that makes a single `stark-provider-abi` satisfy both relative paths. It was
+    /// previously covered only end-to-end; a targeted test means a layout regression fails here,
+    /// in milliseconds, rather than in a Cargo lockfile error at the end of a native build.
     #[test]
-    fn providers_follow_the_runtime_out_of_an_installed_prefix() {
+    fn providers_follow_a_mirrored_installed_runtime() {
+        let prefix = std::env::temp_dir().join(format!("stark_prov_mirror_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&prefix);
+        let lib = prefix.join("lib/stark");
+        // Repository-shaped: `starkc/stark-runtime` + `starkc/stark-provider-abi`, providers beside.
+        std::fs::create_dir_all(lib.join("starkc/stark-runtime")).unwrap();
+        std::fs::create_dir_all(lib.join("starkc/stark-provider-abi")).unwrap();
+        provider_layout_at(&lib);
+
+        let package = prefix.join("elsewhere/app");
+        std::fs::create_dir_all(&package).unwrap();
+
+        let chosen = provider_repo_root(&package, &lib.join("starkc/stark-runtime"));
+        assert_eq!(
+            chosen.canonicalize().unwrap(),
+            lib.canonicalize().unwrap(),
+            "a mirrored installation must resolve providers beside `starkc/`, so that the runtime's \
+             `../stark-provider-abi` and a provider's `../../starkc/stark-provider-abi` name ONE crate"
+        );
+
+        // The property that matters, stated as the paths Cargo will see.
+        let abi_from_runtime = lib.join("starkc/stark-runtime/../stark-provider-abi");
+        let abi_from_provider = chosen.join("stark-time/native/../../starkc/stark-provider-abi");
+        assert_eq!(
+            abi_from_runtime.canonicalize().unwrap(),
+            abi_from_provider.canonicalize().unwrap(),
+            "both relative paths must land on the same ABI crate; two copies is the lockfile \
+             collision this layout exists to prevent, and a symlink does not help because Cargo \
+             does not canonicalise symlinked path dependencies"
+        );
+        let _ = std::fs::remove_dir_all(&prefix);
+    }
+
+    /// The legacy flat installation stays supported: runtime at `lib/stark/stark-runtime`,
+    /// providers at `lib/stark/providers`. An existing install must not break on upgrade.
+    #[test]
+    fn legacy_flat_installation_remains_supported() {
         let prefix = std::env::temp_dir().join(format!("stark_prov_prefix_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&prefix);
         let lib = prefix.join("lib/stark");
