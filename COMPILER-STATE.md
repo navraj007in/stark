@@ -1,5 +1,40 @@
 # STARK Compiler STATE
 
+## DEV-012 — interactive editor validation, partially recorded (2026-07-31)
+
+The first interactive record this deviation has ever had. It has been open since Gate C1 with the
+text "VS Code extension UI never interactively verified", and what closed that gap is a person
+using the editor rather than another protocol test.
+
+**Setup.** Extension `starklang.stark-language@0.2.0`, built from this tree with esbuild, packaged
+and installed with `--force`. Compiler `662842c`, binaries installed to `~/.local/bin`
+(`stark`, `starkc`, `starkide`). VS Code 1.130.0 on macOS 26.5.2 arm64. Workspace
+`~/Desktop/stark-extension-test`, a real STARK package that checks and runs.
+
+**One thing worth carrying forward:** the extension defaults `stark.compiler.path` to `starkc`, and
+VS Code launched from Finder does not inherit a shell `PATH` — so a `~/.local/bin` install is
+invisible to it unless the setting is given an absolute path. The test workspace pins it. Anyone
+validating from a fresh install will hit this first.
+
+**Confirmed by the owner, interactively:**
+
+| Feature | Result |
+| --- | --- |
+| Hover | works |
+| Go-to-definition | works |
+| Find-references | works |
+
+**Not exercised, and therefore still unverified in an editor:** rename, diagnostics (on save and on
+type), formatting, completion, signature help, document symbols, semantic tokens. Each is covered by
+protocol tests only, which is what DEV-012 exists to distinguish from.
+
+**Gate C8 remains CANDIDATE-COMPLETE, and closing it is the owner's call.** Its exit report names
+missing interactive validation as the single reason it is not closed. That reason is now partly
+answered: the three core navigation queries are confirmed against real compiler analysis. Whether
+three of ten features is the record the gate's claim requires is a governance decision, not one this
+entry makes.
+
+
 ## WP-C7.9 — three-engine adversarial conformance correction — **CLOSED** (CD-275…CD-278, 2026-07-31)
 
 **Qualified at `144ceee` on `main`: 18 of 18 CI jobs green across linux-x64, macos-arm64 and
@@ -6680,7 +6715,11 @@ no open deviation belongs to the C4 track.**
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
   proposal.
-- DEV-012 — VS Code extension UI never interactively verified. Owner: post-C8 editor validation.
+- DEV-012 — VS Code extension UI interactively verified **in part** (2026-07-31). Hover,
+  go-to-definition and find-references were exercised by the owner in a real VS Code session and
+  behaved. **Rename, diagnostics-on-save/on-type, formatting, completion, signature help, document
+  symbols and semantic tokens were NOT exercised** and remain protocol-tested only. Open for that
+  remainder; owner: post-C8 editor validation.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014

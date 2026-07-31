@@ -10,6 +10,10 @@ Gate C8 provides compiler-backed semantic language services for the documented S
 
 This is candidate-complete rather than closed because real VS Code Extension Development Host validation has not been recorded.
 
+**Update, 2026-07-31 — partially recorded.** The owner exercised the extension interactively in VS Code 1.130.0 (macOS 26.5.2 arm64), extension `starklang.stark-language@0.2.0` built from commit `662842c`, against a real STARK package. **Hover, go-to-definition and find-references work.** Rename, diagnostics, formatting, completion, signature help, document symbols and semantic tokens were not exercised and remain protocol-tested only.
+
+So the reason this report gives for withholding closure is now partly answered rather than answered. Three of the ten advertised capabilities have an interactive record; the other seven do not. Whether that satisfies the claim above is a gate decision and is left to the owner — this report does not close itself. See `COMPILER-STATE.md` for the full record, including a setup trap worth knowing: VS Code launched from Finder does not inherit a shell `PATH`, so an installed `starkc` is invisible to it unless `stark.compiler.path` is absolute.
+
 ## Toolchain
 
 - `rustc 1.93.0 (254b59607 2026-01-19)`
