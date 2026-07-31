@@ -1,7 +1,13 @@
 // stark-io minimal native file I/O slice.
 //
-// `NativeFile` is synthesized from starkpkg.json provider_api as an opaque host-resource nominal bound to
-// the first-party filesystem provider resource `file`.
+// `NativeFile` is synthesized from starkpkg.json provider_api as an opaque host-resource nominal
+// bound to the first-party filesystem provider resource `io_file`.
+//
+// `io_file`, NOT `file`: `file` is Core-owned — the compiler binds it to `CoreType::File` on the
+// legacy path and CD-224 forbids a package from claiming it. `io_file` is this package's own
+// resource identity, wholly on the host-resource path, so a `NativeFile` is owned, moved and closed
+// exactly once by MIR with no compiler guard weakened. Core `File` is untouched and its own
+// migration remains open.
 
 pub enum FileError {
     NotFound,
@@ -250,11 +256,18 @@ pub fn file_flush(file: &NativeFile) -> Result<(), FileError> {
     }
 }
 
+// Taking `file` BY VALUE is the close. `NativeFile` is a host resource, so MIR owns its only
+// destruction path (A11 §5 rule 4): the handle is owned by this function, nothing moves it out, and
+// drop elaboration emits the provider close exactly once when it goes out of scope. Calling the
+// close symbol directly is rejected as a second destruction path — correctly, because both would
+// run.
+//
+// The consequence for this signature: a close error is not observable. A destructor has nowhere to
+// put a `Result`, which is why this returns `Ok` unconditionally rather than pretending to report
+// one. A program that must observe flush failure should call `file_flush` before dropping, where the
+// error IS returned.
 pub fn file_close(file: NativeFile) -> Result<(), FileError> {
-    match file_close_raw(file) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(map_io_error(error)),
-    }
+    Ok(())
 }
 
 pub fn file_write_all(file: &NativeFile, data: &[UInt8]) -> Result<(), FileError> {

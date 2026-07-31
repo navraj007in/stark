@@ -2,9 +2,14 @@
 
 Status values:
 
-- `blocked`: requires exact public `File` migration or provider surface not yet present.
+- `blocked`: provider surface not yet present — the native symbols do not exist.
 - `pending`: pure package test can be added after syntax/API checking is enabled for this package.
 - `covered`: exercised by `starkc/tests/c788_starkc_build.rs`.
+
+**No case is blocked on Core `File`'s migration any more.** `NativeFile` binds `io_file`, its own
+resource type, so the lifecycle is real: owned, moved, and closed exactly once from a `Drop`
+terminator. The two lifecycle rows below were `blocked` for that reason and are now ordinary
+`pending` work. What remains genuinely blocked is blocked on missing native symbols, nothing else.
 
 | Area | Case | Status |
 | --- | --- | --- |
@@ -20,9 +25,9 @@ Status values:
 | Reading | invalid UTF-8 maps to `InvalidData` | pending |
 | Writing | short write is observable | pending |
 | Writing | `write_all` retries until complete | covered |
-| Lifecycle | explicit close through `file_close` | covered |
-| Lifecycle | failed open does not close | blocked |
-| Lifecycle | moved file closes at final owner | blocked |
+| Lifecycle | explicit close through `file_close` (by-value; drop emits the close) | covered |
+| Lifecycle | failed open does not close | pending |
+| Lifecycle | moved file closes at final owner | pending |
 | Path | `join` rejects absolute child | pending |
-| Directory | bounded listing enforces `max_entries` | blocked |
-| Directory | recursive deletion enforces entry and depth bounds | blocked |
+| Directory | bounded listing enforces `max_entries` | blocked (no native symbol) |
+| Directory | recursive deletion enforces entry and depth bounds | blocked (no native symbol) |

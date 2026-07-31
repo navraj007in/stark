@@ -1,5 +1,50 @@
 # STARK Compiler STATE
 
+## CD-291 — file IO works, because the package stopped asking for Core's identity (2026-07-31)
+
+**`io_minimal_executes_from_source_through_stark_io_package` passes.** Ordinary STARK source opens,
+writes, reads and closes a real file through the first-party provider in a natively built binary.
+CD-290 shipped that test `#[ignore]`d; this removes the attribute rather than the guards.
+
+**The question was never "how do we let a package use Core `file`".** It was "why does a package
+need Core's resource identity at all", and the answer is that it does not. `stark-io`'s type is
+`NativeFile`, not `File`. The only thing binding it to `file` bought was the provider's existing
+symbols — and it cost every guard that protects Core `File`'s single destruction path.
+
+`stark-io` now binds **`io_file`**: a second resource type on the same provider, with its own
+symbols (`stark_iofile_*`) and its own handle tag. Consequences, none of them exemptions:
+
+| Guard | Why it passes now |
+| --- | --- |
+| CD-224 — a package may not claim a Core resource | `io_file` is absent from `ResourceRegistry::builtin()` |
+| MIR-0027 — a Core-owned resource may not be a `HostResource` | `io_file` is not `LegacyCore` |
+| A11 §5 rule 4 — MIR owns a resource's only close | `io_file` is wholly on the `HostResource` path |
+
+**The verifier caught the one real defect in this design, which is the point.** With `io_file` a
+genuine resource, `stark-io`'s `file_close` calling the provider close directly became MIR-0033: a
+second destruction path. Correct — drop elaboration already emits that close. `file_close(file:
+NativeFile)` now takes the handle by value and calls nothing; taking ownership IS the close. The
+signature keeps its `Result` but can only return `Ok`, because a destructor has nowhere to put an
+error — `file_flush` is where a flush failure is observable. That is a real API consequence and it
+is documented rather than papered over.
+
+**What this does NOT do:** migrate Core `File`. That remains open, and having traced it, it is a
+three-engine change — the reference interpreter implements `File` natively (`Builtin::FileOpen`,
+`FileCreate`), so checker, interpreter and backend must move together and be requalified for
+agreement. An earlier estimate of "a session or two" in this session's discussion was wrong. Nothing
+in `stark-io` waits on it any more; only the spelling `File` does.
+
+**Also fixes the CI failure CD-290 caused.** The C6.4 qualification harness rejects any `#[ignore]`
+not registered in `CLASSIFIED_IGNORES` — "either the observation is required, in which case fix the
+test, or classify it with a reason". CD-290's unclassified ignore failed `C6.4 tier-1 qualification`
+on both tier-1 platforms and the dependent agreement job, while all three `fmt, clippy, test` jobs
+passed, which is exactly the split that rule exists to produce. Taking the first branch — fixing the
+test — removes the deviation at its cause.
+
+EVIDENCE: `c788_starkc_build` **5 passed / 0 ignored** (was 4 + 1 ignored), `c788_provider_api_manifest`
+10/10, `a11_host_resource` 38/38, `stark-file/native` 8/8, provider suites green. fmt clean, clippy
+clean. No file under `starkc/src/mir/` or `package.rs` is touched by this change.
+
 ## CD-290 — WP-IO.1 lands with its guards intact; its e2e is blocked on Route B (2026-07-31)
 
 **The minimal native file-IO slice is committed. Its end-to-end test is `#[ignore]`d, deliberately,

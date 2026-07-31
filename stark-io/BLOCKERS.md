@@ -1,26 +1,39 @@
 # stark-io blockers
 
-## THE BLOCKER: Core `file` is still on the legacy path
+## RESOLVED: the package has its own resource identity
 
-**The minimal native slice is written but cannot execute, and this is the reason.**
+**The minimal native slice executes.** `io_minimal_executes_from_source_through_stark_io_package`
+opens, writes, reads and closes a real file from ordinary STARK source, through the first-party
+provider, in a natively built binary.
 
-`starkpkg.json` binds the nominal `NativeFile` to the provider resource `file`. That resource is
+It did not get there by migrating Core `File`, and the history is worth keeping because the wrong
+answer was tried first.
+
+`starkpkg.json` originally bound `NativeFile` to the provider resource **`file`**, which is
 Core-owned — `ResourceRegistry::builtin()` maps it to `LegacyCore(CoreType::File)` — and CD-224
-rejects a package that claims it.
+forbids a package from claiming it. The slice was made to run by deleting that guard and adding two
+string-keyed exemptions to the MIR verifier. That produced the state SELECT-C exists to refuse:
+`file` on the `HostResource` path for selected rules while Core `File` kept legacy direct-close
+semantics. One resource name, two MIR representations, two destruction paths. All three guards were
+restored and the end-to-end test was `#[ignore]`d for one commit.
 
-The slice was first made to run by removing three compiler guards: CD-224's manifest check, and two
-string-keyed exemptions in the MIR verifier (MIR-0027, and the rule that MIR owns a resource's only
-close). Together those put `file` on the `HostResource` path for selected rules while it kept legacy
-direct-close semantics — one resource name, two MIR representations, two destruction paths. That is
-precisely the half-migration SELECT-C exists to refuse, and it is what CD-235's
-`partially_migrated_core` guard was written to catch. The three guards are restored.
+**The actual fix was to notice the package never needed Core's identity.** `stark-io` now binds
+**`io_file`**: its own resource type, declared by the same provider under its own symbols
+(`stark_iofile_*`) and its own type tag. It is absent from the builtin registry, so CD-224 admits
+it; it is not `LegacyCore`, so MIR-0027 does not fire; it is wholly on the `HostResource` path, so
+MIR owns its only close and the A11 §5 rule 4 guard holds **with no exemption anywhere**. A
+`NativeFile` is owned, moved, and closed exactly once from a `Drop` terminator — the same lifecycle
+`tcp_stream` has.
 
-**What unblocks it:** migrating `file` off the legacy path WHOLLY — Route B's representation and
-lifecycle work. A complete migration is already permitted; only the partial one is refused. When it
-lands, remove the `#[ignore]` from `io_minimal_executes_from_source_through_stark_io_package` in
-`starkc/tests/c788_starkc_build.rs`. Nothing in this package needs to change.
+Two consequences worth knowing:
 
-Everything below is written and compiles. Only the end-to-end execution path is blocked.
+- **`file_close(file)` takes the handle by value and calls nothing.** Taking ownership *is* the
+  close; drop elaboration emits it. Calling the close symbol directly is rejected as a second
+  destruction path — correctly, since both would run. A close error is therefore not observable;
+  call `file_flush` first if you need to see one.
+- **Core `File` is untouched.** Its migration off the legacy `MirTy::Core` path remains open and is
+  a three-engine change (checker, reference interpreter, native backend). Nothing here depends on
+  it any more.
 
 ## Written in the minimal native slice
 
@@ -36,11 +49,9 @@ Surface written:
 - `file_write_all`, `file_write_str`;
 - whole-file `read`, `read_text`, `write`, `write_text`.
 
-The public nominal is `NativeFile` instead of the target `File` because the compiler still reserves
-Core `File` on the legacy path. Migrating the exact public name remains open — and note that
-choosing a different *nominal* does not avoid the blocker above, because the binding still claims
-Core's *resource identity*. The nominal and the resource are separate names, and it is the second
-one CD-224 governs.
+The public nominal is `NativeFile` rather than `File` because Core reserves `File`. That is now a
+naming question rather than a blocker: `NativeFile` is a fully working owned file handle, and the
+only thing the Core name would add is the spelling. Adopting it needs Core `File`'s own migration.
 
 ## Library package build mode
 

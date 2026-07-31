@@ -11,6 +11,23 @@ pub use stark_provider_abi::{
 
 pub const FILE_RESOURCE_TYPE: u32 = 0;
 
+/// **The package-facing file resource, distinct from Core `File`'s.**
+///
+/// `file` (type 0) is Core-owned: `ResourceRegistry::builtin()` binds it to `CoreType::File` on the
+/// legacy `MirTy::Core` path, and CD-224 forbids a package from claiming it. A package that wants a
+/// file handle it can own, move and have closed automatically therefore needs its own resource
+/// identity — not a share of Core's.
+///
+/// `io_file` is that identity. It is an ordinary A11 host resource: `stark-io` binds it, it lowers
+/// to `MirTy::HostResource`, and its close runs from a `Drop` terminator exactly as `tcp_stream`'s
+/// does. Nothing about Core `File` changes, no compiler guard is weakened, and the two never share
+/// a handle — the type tag is checked on every operation, so a `file` handle passed to an `io_file`
+/// entry point aborts rather than being reinterpreted.
+///
+/// The two share this crate's open-file table because they are the same OS objects; they differ in
+/// who owns the STARK-side identity, which is the only thing that was ever in dispute.
+pub const IO_FILE_RESOURCE_TYPE: u32 = 1;
+
 pub const STATUS_NOT_FOUND: ProviderStatus = ProviderStatus { code: 1 };
 pub const STATUS_PERMISSION_DENIED: ProviderStatus = ProviderStatus { code: 2 };
 pub const STATUS_INVALID_INPUT: ProviderStatus = ProviderStatus { code: 3 };
@@ -80,7 +97,7 @@ fn map_io_error(error: &std::io::Error) -> ProviderStatus {
     }
 }
 
-fn insert_file(file: File) -> RawResourceHandle {
+fn insert_file_as(file: File, resource_type: u32) -> RawResourceHandle {
     let mut table = table().lock().unwrap_or_else(|_| abort_contract());
     let id = table.next;
     table.next = table
@@ -88,16 +105,25 @@ fn insert_file(file: File) -> RawResourceHandle {
         .checked_add(1)
         .unwrap_or_else(|| abort_contract());
     table.files.insert(id, file);
-    RawResourceHandle {
-        id,
-        resource_type: FILE_RESOURCE_TYPE,
+    RawResourceHandle { id, resource_type }
+}
+
+fn insert_file(file: File) -> RawResourceHandle {
+    insert_file_as(file, FILE_RESOURCE_TYPE)
+}
+
+/// **Tag check, not a formality.** ABI §13's `from_raw_checked` compares a handle's `resource_type`
+/// against the provider's declared list; this is the provider side of the same guarantee. Passing a
+/// Core `file` handle to an `io_file` entry point (or the reverse) aborts here rather than being
+/// silently reinterpreted, which is what keeps the two identities from sharing a close path.
+fn validate_handle_of(handle: RawResourceHandle, expected: u32) {
+    if handle.resource_type != expected {
+        abort_contract();
     }
 }
 
 fn validate_file_handle(handle: RawResourceHandle) {
-    if handle.resource_type != FILE_RESOURCE_TYPE {
-        abort_contract();
-    }
+    validate_handle_of(handle, FILE_RESOURCE_TYPE);
 }
 
 #[no_mangle]
@@ -213,6 +239,140 @@ pub unsafe extern "C" fn stark_file_close(handle: RawResourceHandle) -> Provider
     ProviderStatus::SUCCESS
 }
 
+// ------------------------------------------------------------------------------------------
+// `io_file` — the package-facing resource
+//
+// Six entry points mirroring the `file` set above, tagging and checking `IO_FILE_RESOURCE_TYPE`.
+// Separate SYMBOLS because a `FunctionDecl` names one symbol and one resource type, so two
+// identities need two declarations; separate symbols are what let the two be declared without
+// either one shadowing the other.
+//
+// The bodies delegate to shared helpers rather than being copied: the OS behaviour is identical,
+// and only the identity differs.
+// ------------------------------------------------------------------------------------------
+
+fn open_impl(path: BorrowedBuffer, resource_type: u32) -> Result<RawResourceHandle, ProviderStatus> {
+    let path = path_from_buffer(path)?;
+    match File::open(path) {
+        Ok(file) => Ok(insert_file_as(file, resource_type)),
+        Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => Err(STATUS_IS_DIRECTORY),
+        Err(error) => Err(map_io_error(&error)),
+    }
+}
+
+fn create_impl(
+    path: BorrowedBuffer,
+    resource_type: u32,
+) -> Result<RawResourceHandle, ProviderStatus> {
+    let path = path_from_buffer(path)?;
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => Ok(insert_file_as(file, resource_type)),
+        Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => Err(STATUS_IS_DIRECTORY),
+        Err(error) => Err(map_io_error(&error)),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_open(
+    path: BorrowedBuffer,
+    out_handle: *mut RawResourceHandle,
+) -> ProviderStatus {
+    match open_impl(path, IO_FILE_RESOURCE_TYPE) {
+        Ok(handle) => {
+            unsafe { write_scalar(out_handle, handle) };
+            ProviderStatus::SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_create(
+    path: BorrowedBuffer,
+    out_handle: *mut RawResourceHandle,
+) -> ProviderStatus {
+    match create_impl(path, IO_FILE_RESOURCE_TYPE) {
+        Ok(handle) => {
+            unsafe { write_scalar(out_handle, handle) };
+            ProviderStatus::SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_read(
+    handle: RawResourceHandle,
+    out_buffer: BorrowedBufferMut,
+    out_written: *mut u64,
+    out_eof: *mut bool,
+) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    if out_buffer.len > 0 && out_buffer.ptr.is_null() {
+        abort_contract();
+    }
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    let slice = if out_buffer.len == 0 {
+        &mut []
+    } else {
+        unsafe { std::slice::from_raw_parts_mut(out_buffer.ptr, out_buffer.len) }
+    };
+    let read = match file.read(slice) {
+        Ok(read) => read,
+        Err(error) => return map_io_error(&error),
+    };
+    unsafe {
+        write_scalar(out_written, read as u64);
+        write_scalar(out_eof, read == 0);
+    }
+    ProviderStatus::SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_write(
+    handle: RawResourceHandle,
+    data: BorrowedBuffer,
+    out_accepted: *mut u64,
+) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let data = unsafe { read_buffer(data) };
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    let written = match file.write(data) {
+        Ok(written) => written,
+        Err(error) => return map_io_error(&error),
+    };
+    unsafe { write_scalar(out_accepted, written as u64) };
+    ProviderStatus::SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_complete(handle: RawResourceHandle) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    file.flush()
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_close(handle: RawResourceHandle) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    if table.files.remove(&handle.id).is_none() {
+        abort_contract();
+    }
+    ProviderStatus::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +391,7 @@ mod tests {
             AbiParam, FunctionDecl, ProviderIdentity, ProviderMetadata, ScalarTy,
         };
         let file = "file".to_string();
+        let io_file = "io_file".to_string();
         ProviderMetadata {
             identity: ProviderIdentity {
                 name: "stark-std-file".to_string(),
@@ -244,7 +405,7 @@ mod tests {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["filesystem".to_string()],
-            resource_types: vec![file.clone()],
+            resource_types: vec![file.clone(), io_file.clone()],
             functions: vec![
                 FunctionDecl {
                     name: "stark_file_open".to_string(),
@@ -312,7 +473,76 @@ mod tests {
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: file.clone(),
                     }],
-                    is_close_for: Some(file),
+                    is_close_for: Some(file.clone()),
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_open".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: io_file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_create".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: io_file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_read".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_write".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_complete".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleBorrowed {
+                        resource_type: io_file.clone(),
+                    }],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_close".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleConsumed {
+                        resource_type: io_file.clone(),
+                    }],
+                    is_close_for: Some(io_file),
                     may_block: true,
                 },
             ],
@@ -365,15 +595,32 @@ mod tests {
             "stark_file_write",
             "stark_file_complete",
             "stark_file_close",
+            "stark_iofile_open",
+            "stark_iofile_create",
+            "stark_iofile_read",
+            "stark_iofile_write",
+            "stark_iofile_complete",
+            "stark_iofile_close",
         ]);
         assert_eq!(declared, exported);
         assert!(declared.iter().all(|name| portable_c_identifier(name)));
-        assert_eq!(metadata.resource_types, vec!["file"]);
+        assert_eq!(metadata.resource_types, vec!["file", "io_file"]);
         assert_eq!(
             metadata
                 .functions
                 .iter()
                 .filter(|f| f.is_close_for.as_deref() == Some("file"))
+                .count(),
+            1
+        );
+        // **Exactly one close per resource type.** Two would give a resource two destruction paths,
+        // which is the defect A11 §5 rule 4 exists to prevent -- and the reason `io_file` needed its
+        // own close symbol rather than sharing `file`'s.
+        assert_eq!(
+            metadata
+                .functions
+                .iter()
+                .filter(|f| f.is_close_for.as_deref() == Some("io_file"))
                 .count(),
             1
         );

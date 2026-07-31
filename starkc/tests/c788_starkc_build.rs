@@ -446,27 +446,22 @@ fn a_resource_bearing_provider_api_is_no_longer_refused_categorically() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **BLOCKED ON ROUTE B, not on this test.** WP-IO.1's end-to-end: real STARK source opening,
+/// **WP-IO.1's end-to-end, running on its own resource identity.** Real STARK source opening,
 /// writing, reading and closing a file through the `stark-io` package and the first-party
 /// filesystem provider.
 ///
-/// It cannot pass while Core `File` stays on the legacy `MirTy::Core` path. `stark-io`'s manifest
-/// binds `NativeFile` to the Core-owned resource `file`, and CD-224 rejects that: a package may not
-/// claim a Core resource. The slice originally passed by deleting that guard and adding two
-/// string-keyed exemptions to the verifier, which produced exactly the hybrid SELECT-C forbids —
-/// `file` reachable as a `HostResource` for some rules while keeping legacy direct-close semantics.
-/// One resource name, two MIR representations, two destruction paths. Those three removals are
-/// restored; this test is ignored rather than kept green by keeping them out.
+/// This was `#[ignore]`d for one commit, and the reason is worth keeping. The slice originally bound
+/// `NativeFile` to the resource `file` — which is Core-owned, so CD-224 rejects it — and was made to
+/// run by deleting that guard plus two verifier guards. The result was the state SELECT-C exists to
+/// refuse: `file` reachable as a `HostResource` for some rules while Core `File` kept legacy
+/// direct-close semantics. One resource name, two MIR representations, two destruction paths.
 ///
-/// **What unblocks it:** migrating `file` off the legacy path WHOLLY — Route B's representation and
-/// lifecycle work. `partially_migrated_core` already permits a complete migration; it is the partial
-/// one that is refused. Nothing here needs to change when that lands: delete this attribute.
-///
-/// The rest of the slice is untouched and still exercised — the source, the provider surface, the
-/// manifest, and the other four tests in this file.
+/// The fix was not to migrate Core `File` (a three-engine change, still open) but to notice the
+/// package never needed Core's identity in the first place. `stark-io` now binds **`io_file`**: its
+/// own resource type, absent from the builtin registry, wholly on the `HostResource` path. Every
+/// guard is intact and unexempted — the handle is owned, moved and closed exactly once from a `Drop`
+/// terminator, exactly as `tcp_stream`'s is.
 #[test]
-#[ignore = "WP-IO.1 e2e requires Core `file` to migrate off the legacy path (Route B); \
-            passing it today needs the CD-224 and MIR-0027 guards removed"]
 fn io_minimal_executes_from_source_through_stark_io_package() {
     let root = fixture_root("io-minimal");
     let io_dir = root.join("io-data");

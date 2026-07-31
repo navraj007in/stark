@@ -11,33 +11,33 @@
     "resources": {
       "NativeFile": {
         "capability": "filesystem",
-        "resource": "file"
+        "resource": "io_file"
       }
     },
     "functions": {
       "file_open_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_open"
+        "symbol": "stark_iofile_open"
       },
       "file_create_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_create"
+        "symbol": "stark_iofile_create"
       },
       "file_read_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_read"
+        "symbol": "stark_iofile_read"
       },
       "file_write_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_write"
+        "symbol": "stark_iofile_write"
       },
       "file_flush_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_complete"
+        "symbol": "stark_iofile_complete"
       },
       "file_close_raw": {
         "capability": "filesystem",
-        "symbol": "stark_file_close"
+        "symbol": "stark_iofile_close"
       }
     }
   }

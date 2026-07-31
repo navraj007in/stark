@@ -216,6 +216,7 @@ fn stark_file() -> DeclaredProvider {
     status.declare(8, "IOError::Other");
 
     let file = "file".to_string();
+    let io_file = "io_file".to_string();
     DeclaredProvider {
         metadata: ProviderMetadata {
             identity: ProviderIdentity {
@@ -230,7 +231,7 @@ fn stark_file() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["filesystem".to_string()],
-            resource_types: vec![file.clone()],
+            resource_types: vec![file.clone(), io_file.clone()],
             functions: vec![
                 FunctionDecl {
                     name: "stark_file_open".to_string(),
@@ -298,7 +299,99 @@ fn stark_file() -> DeclaredProvider {
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: file.clone(),
                     }],
-                    is_close_for: Some(file),
+                    is_close_for: Some(file.clone()),
+                    may_block: true,
+                },
+                // --- `io_file`: the package-facing file resource ---
+                //
+                // `file` above is Core-owned — `ResourceRegistry::builtin()` binds it to
+                // `CoreType::File` on the legacy path, and CD-224 forbids a package from claiming
+                // it. That is correct and stays. But it left a STARK package with no way to own a
+                // file handle at all, and the first attempt to get one worked by deleting CD-224
+                // and two verifier guards, which produced the half-migrated state SELECT-C exists
+                // to refuse.
+                //
+                // A second resource identity answers the need without touching any of that.
+                // `io_file` is an ordinary A11 host resource: not in the builtin registry, so a
+                // package may declare it; not `LegacyCore`, so MIR-0027 does not fire; wholly on
+                // the `HostResource` path, so its close runs from a `Drop` terminator and the
+                // "MIR owns the only close" rule holds without an exemption.
+                //
+                // Distinct SYMBOLS, not a second binding of the same ones: a `FunctionDecl` names
+                // one symbol and one resource type, and the provider tags handles by type, so a
+                // `file` handle reaching an `io_file` entry point aborts instead of being
+                // reinterpreted.
+                //
+                // Core `File`'s migration off the legacy path is untouched by this and remains
+                // open. It is a three-engine change; this is not a substitute for it, only a way
+                // for packages to have working file IO that does not wait on it.
+                FunctionDecl {
+                    name: "stark_iofile_open".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: io_file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_create".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: io_file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_read".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_write".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_complete".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleBorrowed {
+                        resource_type: io_file.clone(),
+                    }],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_close".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleConsumed {
+                        resource_type: io_file.clone(),
+                    }],
+                    is_close_for: Some(io_file),
                     may_block: true,
                 },
             ],
