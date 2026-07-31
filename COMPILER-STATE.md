@@ -37,6 +37,15 @@ copies of "does this need dropping" that disagreed about resources — `may_need
 of this defect was found by an e2e observing generated code, after a leak; this one was found by
 making the match exhaustive, which is the entire argument for doing it.
 
+**WHAT IT GOVERNED IS NARROWER THAN THAT DISAGREEMENT SUGGESTS, and the first draft of this entry
+overstated it.** `mir_needs_drop` has exactly ONE consumer: V-COPY-1's rule that `VecClear` requires
+a non-droppable element type, because clearing discards elements without running their glue. It does
+not participate in the `Drop` terminator path at all — that path runs through `drop_plan::plan_for`
+and `may_need_drop`. So the wrong answer was **latent, not active**: reachable only through a
+`Vec<HostResource>`, where `clear()` would have discarded live handles without closing them, which
+is exactly the leak MIR-0016 exists to prevent. A real defect and the right fix, but it was not
+mislowering resource drops today, and this entry should not be read as saying it was.
+
 **A second behavioural fix:** `ty_contains_ref` did not recurse into `MirTy::Core`'s arguments, so a
 `Vec<&T>` was reported reference-free. Also surfaced by exhaustiveness.
 
@@ -64,14 +73,28 @@ is a design change and is deliberately NOT this one, but it now has a concrete c
 `resource_type` on `HandleOut`) reshapes `MirTy`. That is the exact event that has cost six silent
 leaks. This converts the seventh into a compile error before the variant is added, not after.
 
-**`mir_needs_drop`'s correction needs a behavioural test**, which this entry does not supply: the
-compiler now agrees the arm is answered, but nothing asserts the verifier accepts the `Drop` that
-lowering emits for a resource — the exact disagreement that was latent. `a11_host_resource.rs` is
-the place for it.
+**BEHAVIOURAL QUALIFICATION, per the owner's ruling that an implementation-predicate fix does not
+close a disagreement.** Two tests in `a11_host_resource.rs`, deliberately separate because they prove
+different things:
+- `vec_clear_on_a_host_resource_element_is_rejected` — the regression guard, placed at the corrected
+  arm's one real consumer. `VecClear` over `Vec<HostResource>` must raise MIR-0016. **This fails on
+  the pre-CD-287 code**, which is what makes it a regression test rather than a restatement.
+- `the_verifier_accepts_a_drop_emitted_for_a_host_resource` — the anchor the ruling asked for: with a
+  close recorded, a `Drop` terminator on a resource local is accepted by the real verifier, not
+  merely planned. It passes before AND after CD-287, because the `Drop` path never consults
+  `mir_needs_drop`. Its doc comment says so explicitly so it is not later mistaken for the guard.
+
+The inverse guard the ruling suggested already exists and was left alone:
+`dropping_a_resource_with_no_recorded_close_fails` (a resource with no close must not plan) and
+`rejects_vec_clear_on_droppable_element` in `mir_verify.rs` (the same rule for a user `Drop` type).
 
 EVIDENCE: `cargo check --lib` clean across all twelve sites — which for this change is the load-
-bearing check, since a missed variant is a compile error and nothing else would report one. Full
-workspace/clippy verification deferred to CI per the usual practice on this shared checkout.
+bearing check, since a missed variant is a compile error and nothing else would report one.
+`cargo test --test a11_host_resource`: **38 passed / 0 failed**, including both new tests. `cargo fmt
+--check` clean; `cargo clippy --test a11_host_resource` clean. Full workspace verification left to
+CI: the shared checkout currently holds a parallel session's in-flight WP-IO.1 edit that does not
+compile (`c788_provider_api_manifest.rs` calls an undefined `pkg`), so a workspace run right now
+would report their breakage, not this change's.
 FILES: starkc/src/mir/{mod,lower,verify,drop_plan}.rs,
 starkc/src/backend/generated_rust/emit_types.rs, starkc/tests/a11_host_resource.rs (its doc comment
 described the wildcard in the present tense), COMPILER-STATE.md.

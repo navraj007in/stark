@@ -1005,3 +1005,129 @@ fn a_non_diverging_arm_that_skips_the_assignment_still_reports_e0401() {
         "an arm that neither diverges nor assigns must still be reported"
     );
 }
+
+// ------------------- CD-287: the arm exhaustiveness found, and what it actually governed --
+
+/// **`verify::mir_needs_drop` classified a host resource as needing no drop.**
+///
+/// CD-287 made twelve property-asserting `MirTy` matches exhaustive, and the compiler immediately
+/// reported this one: `HostResource` was falling into `_ => false`. The verifier therefore held two
+/// answers to "does this need dropping" — `may_need_drop` said true, `mir_needs_drop` said false —
+/// and nothing in the suite distinguished them. Six earlier instances of this defect were each found
+/// by an e2e observing generated code, after a leak; this is the first the compiler found.
+///
+/// **What it governed is narrower than the disagreement suggests.** `mir_needs_drop` has exactly one
+/// consumer: V-COPY-1's rule that `VecClear` requires a non-droppable element, because clearing
+/// discards elements without running their glue. It never participates in the `Drop` terminator
+/// path. So the wrong answer was latent, not active — reachable only through a
+/// `Vec<HostResource>`, where it would have let `clear()` discard live handles without closing
+/// them, which is precisely the leak MIR-0016 exists to prevent.
+///
+/// This test pins the corrected arm at its one real consumer. It fails on the pre-CD-287 code.
+#[test]
+fn vec_clear_on_a_host_resource_element_is_rejected() {
+    let vec_of_resource = MirTy::Core(starkc::hir::CoreType::Vec, vec![resource_ty()]);
+    let vref = MirTy::Ref {
+        mutable: true,
+        inner: Box::new(vec_of_resource.clone()),
+    };
+    let mut program = body_assigning_ty(
+        Rvalue::RefOf {
+            mutable: true,
+            place: place(1),
+        },
+        MirTy::Unit,
+    );
+    let body = &mut program.bodies[0];
+    body.locals = vec![
+        LocalDecl {
+            ty: MirTy::Unit,
+            kind: LocalKind::Return,
+        },
+        LocalDecl {
+            ty: vec_of_resource,
+            kind: LocalKind::Temp,
+        },
+        LocalDecl {
+            ty: vref,
+            kind: LocalKind::Temp,
+        },
+        LocalDecl {
+            ty: MirTy::Unit,
+            kind: LocalKind::Temp,
+        },
+    ];
+    body.blocks = vec![
+        BasicBlock {
+            statements: vec![(
+                Statement::Assign(
+                    place(2),
+                    Rvalue::RefOf {
+                        mutable: true,
+                        place: place(1),
+                    },
+                ),
+                info(),
+            )],
+            terminator: (
+                Terminator::Call {
+                    callee: Callee::Runtime(mir::RuntimeFn::VecClear),
+                    args: vec![Operand::Copy(place(2))],
+                    dest: place(3),
+                    target: mir::BlockId(1),
+                },
+                info(),
+            ),
+        },
+        BasicBlock {
+            statements: Vec::new(),
+            terminator: (Terminator::Return, info()),
+        },
+    ];
+
+    assert!(
+        verify_codes(&program).contains(&"MIR-0016".to_string()),
+        "clearing a Vec of host resources discards live handles without closing them; \
+         V-COPY-1 must reject it"
+    );
+}
+
+/// **The behavioural anchor: a `Drop` on a host resource verifies, end to end.**
+///
+/// Deliberately separate from the test above, and it proves a different thing. The `Drop` path
+/// consults `drop_plan::plan_for` and `may_need_drop`, never `mir_needs_drop`, so this test passes
+/// both before and after CD-287 — it is NOT a regression guard for that correction and must not be
+/// read as one. What it does is pin the boundary the disagreement made hard to reason about: with a
+/// close recorded, lowering's `Drop` for a resource is accepted by the real verifier rather than
+/// merely planned.
+#[test]
+fn the_verifier_accepts_a_drop_emitted_for_a_host_resource() {
+    let mut program = body_assigning_ty(Rvalue::Use(Operand::Move(place(2))), resource_ty());
+    let body = &mut program.bodies[0];
+    body.blocks = vec![
+        BasicBlock {
+            statements: Vec::new(),
+            terminator: (
+                Terminator::Drop {
+                    place: place(1),
+                    target: mir::BlockId(1),
+                },
+                info(),
+            ),
+        },
+        BasicBlock {
+            statements: Vec::new(),
+            terminator: (Terminator::Return, info()),
+        },
+    ];
+    program
+        .types
+        .host_resource_closes
+        .insert(resource_ty(), mir::ProviderCallId(0));
+
+    let codes = verify_codes(&program);
+    assert!(
+        !codes.contains(&"MIR-0016".to_string()),
+        "a resource is droppable, so nothing may report it as needing no drop: {codes:?}"
+    );
+}
