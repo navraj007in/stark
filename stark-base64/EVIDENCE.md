@@ -6,12 +6,12 @@ COMPLETE
 
 ## Baseline
 
-- Repository commit: `23ea2fc08b04ce6d65d00dc2652703da5b7fba6a` (CD-099)
-- Date: 2026-07-24
+- Repository commit: `d3bd967188b961944bba0433826c55ac30764e07`
+- Date: 2026-07-31
 - STARK compiler version/commit: STARK Core v1 `starkc` v0.1.0
-- Host OS: macOS (Darwin x86_64/arm64)
+- Host OS: macOS
 - Host architecture: Apple Silicon / mac
-- Rust toolchain used by native backend: Rust 1.70+
+- Rust toolchain used by native backend: local Cargo/Rust toolchain
 
 ## Files created or modified
 
@@ -20,6 +20,7 @@ COMPLETE
 - `stark-base64/src/tests.stark`
 - `stark-base64/README.md`
 - `stark-base64/EVIDENCE.md`
+- `stark-base64/docs/`
 
 ## Public API audit
 
@@ -51,19 +52,22 @@ cargo run --manifest-path ../starkc/Cargo.toml --bin stark -- test
 
 Result and pass count:
 ```text
-running 9 tests
+running 12 tests
 
 test test_encode_rfc_vectors ... ok
 test test_encode_zeros_and_ones ... ok
 test test_decode_rfc_vectors ... ok
 test test_decode_alphabet_roundtrip ... ok
 test test_invalid_characters ... ok
+test test_invalid_character_required_bytes ... ok
 test test_invalid_length ... ok
 test test_invalid_padding ... ok
 test test_noncanonical_bits ... ok
-test test_full_byte_domain ... ok (51ms)
+test test_required_roundtrip_lengths ... ok (1127ms)
+test test_boundary_and_repeated_calls ... ok
+test test_full_byte_domain ... ok (41ms)
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 64ms total
+test result: ok. 12 passed; 0 failed; 0 ignored; 1188ms total
 ```
 
 ### Format
@@ -93,12 +97,13 @@ stark-base64: generated docs for 7 item(s) into /Users/nexper/Documents/GitHub/s
 ## Required corpus summary
 
 - RFC vectors: 7 positive encode, 5 positive decode vectors
-- Invalid characters: space, tab, LF, CR, '-', '_', '.', ':', non-ASCII bytes
+- Invalid characters: space, tab, LF, CR, '-', '_', '.', ':', non-ASCII first UTF-8 byte
 - Invalid lengths: 1, 2, 3, 5, 6, 7 byte lengths
 - Invalid padding: `=AAA`, `A=AA`, `AA=A`, `A===`, `====`, `AAAA====`, `AA==AAAA`, `AAAA=AAA`
-- Noncanonical trailing bits: `Zh==`, `Zm9=`, `AB==`, `AAB=`
-- Round-trip lengths: 0 to 1025 bytes verified
+- Noncanonical trailing bits: `Zh==`, `Zm9=`, `AB==`, `AAB=`, plus canonical counterparts `Zg==`, `Zm8=`, `AA==`, `AAA=`
+- Round-trip lengths: 0, 1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, and 1025 bytes verified
 - Full byte-domain: 256 bytes (`0x00`..`0xFF`) round-trip verified
+- Boundary regressions: exact quartet boundary, final one-byte group, final two-byte group, repeated encode, successful decode after failed decode
 
 ## Host-oracle differential
 

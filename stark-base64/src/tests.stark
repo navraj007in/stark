@@ -187,6 +187,74 @@ fn test_invalid_characters() {
     }
 }
 
+fn test_invalid_character_required_bytes() {
+    match decode("AA\tA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 9u8 {
+                panic("tab index/val error");
+            }
+        }
+        _ => {
+            panic("tab expected InvalidCharacter(2, 9)");
+        }
+    }
+
+    match decode("AA\nA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 10u8 {
+                panic("lf index/val error");
+            }
+        }
+        _ => {
+            panic("lf expected InvalidCharacter(2, 10)");
+        }
+    }
+
+    match decode("AA\rA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 13u8 {
+                panic("cr index/val error");
+            }
+        }
+        _ => {
+            panic("cr expected InvalidCharacter(2, 13)");
+        }
+    }
+
+    match decode("AA.A") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 46u8 {
+                panic("dot index/val error");
+            }
+        }
+        _ => {
+            panic("dot expected InvalidCharacter(2, 46)");
+        }
+    }
+
+    match decode("AA:A") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 58u8 {
+                panic("colon index/val error");
+            }
+        }
+        _ => {
+            panic("colon expected InvalidCharacter(2, 58)");
+        }
+    }
+
+    match decode("AAéA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 195u8 {
+                panic("non-ascii index/val error");
+            }
+        }
+        _ => {
+            panic("non-ascii expected InvalidCharacter(2, 195)");
+        }
+    }
+}
+
 fn test_invalid_length() {
     match decode("A") {
         Err(Base64Error::InvalidLength) => {}
@@ -213,6 +281,27 @@ fn test_invalid_length() {
         Err(Base64Error::InvalidLength) => {}
         _ => {
             panic("AAAAA expected InvalidLength");
+        }
+    }
+
+    match decode("AAAAAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAAAAA expected InvalidLength");
+        }
+    }
+
+    match decode("AAAAAAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAAAAAA expected InvalidLength");
+        }
+    }
+
+    match decode("AAA===") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAA=== expected InvalidLength");
         }
     }
 }
@@ -349,6 +438,144 @@ fn test_noncanonical_bits() {
         }
         _ => {
             panic("AAB= error expected");
+        }
+    }
+
+    match decode("Zg==") {
+        Ok(res) => {
+            if res.len() != 1u64 || res[0u64] != 102u8 {
+                panic("Zg== canonical failed");
+            }
+        }
+        Err(_) => {
+            panic("Zg== canonical error");
+        }
+    }
+
+    match decode("Zm8=") {
+        Ok(res) => {
+            if res.len() != 2u64 || res[0u64] != 102u8 || res[1u64] != 111u8 {
+                panic("Zm8= canonical failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm8= canonical error");
+        }
+    }
+
+    match decode("AA==") {
+        Ok(res) => {
+            if res.len() != 1u64 || res[0u64] != 0u8 {
+                panic("AA== canonical failed");
+            }
+        }
+        Err(_) => {
+            panic("AA== canonical error");
+        }
+    }
+
+    match decode("AAA=") {
+        Ok(res) => {
+            if res.len() != 2u64 || res[0u64] != 0u8 || res[1u64] != 0u8 {
+                panic("AAA= canonical failed");
+            }
+        }
+        Err(_) => {
+            panic("AAA= canonical error");
+        }
+    }
+}
+
+fn check_roundtrip_len(size: UInt64) {
+    let mut data = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < size {
+        let wide = (i * 73u64 + 19u64) % 256u64;
+        data.push(wide as UInt8);
+        i = i + 1u64;
+    }
+
+    let encoded = encode(data.as_slice());
+    match decode(encoded.as_str()) {
+        Ok(decoded) => {
+            if decoded.len() != size {
+                panic("roundtrip len mismatch");
+            }
+            let mut j: UInt64 = 0u64;
+            while j < size {
+                if decoded[j] != data[j] {
+                    panic("roundtrip byte mismatch");
+                }
+                j = j + 1u64;
+            }
+        }
+        Err(_) => {
+            panic("roundtrip decode error");
+        }
+    }
+}
+
+fn test_required_roundtrip_lengths() {
+    check_roundtrip_len(0u64);
+    check_roundtrip_len(1u64);
+    check_roundtrip_len(2u64);
+    check_roundtrip_len(3u64);
+    check_roundtrip_len(4u64);
+    check_roundtrip_len(5u64);
+    check_roundtrip_len(6u64);
+    check_roundtrip_len(7u64);
+    check_roundtrip_len(15u64);
+    check_roundtrip_len(16u64);
+    check_roundtrip_len(17u64);
+    check_roundtrip_len(31u64);
+    check_roundtrip_len(32u64);
+    check_roundtrip_len(33u64);
+    check_roundtrip_len(63u64);
+    check_roundtrip_len(64u64);
+    check_roundtrip_len(65u64);
+    check_roundtrip_len(255u64);
+    check_roundtrip_len(256u64);
+    check_roundtrip_len(257u64);
+    check_roundtrip_len(1023u64);
+    check_roundtrip_len(1024u64);
+    check_roundtrip_len(1025u64);
+}
+
+fn test_boundary_and_repeated_calls() {
+    let exact: &[UInt8] = &[1u8, 2u8, 3u8, 4u8, 5u8, 6u8];
+    if encode(exact).as_str() != "AQIDBAUG" {
+        panic("quartet boundary encode failed");
+    }
+
+    let one: &[UInt8] = &[1u8];
+    if encode(one).as_str() != "AQ==" {
+        panic("one-byte final group failed");
+    }
+
+    let two: &[UInt8] = &[1u8, 2u8];
+    if encode(two).as_str() != "AQI=" {
+        panic("two-byte final group failed");
+    }
+
+    if encode(exact).as_str() != "AQIDBAUG" {
+        panic("repeated encode changed");
+    }
+
+    match decode("AA_A") {
+        Err(Base64Error::InvalidCharacter(_, _)) => {}
+        _ => {
+            panic("expected invalid before success");
+        }
+    }
+
+    match decode("AQIDBAUG") {
+        Ok(res) => {
+            if res.len() != 6u64 || res[0u64] != 1u8 || res[5u64] != 6u8 {
+                panic("successful decode after error failed");
+            }
+        }
+        Err(_) => {
+            panic("decode after error returned error");
         }
     }
 }
