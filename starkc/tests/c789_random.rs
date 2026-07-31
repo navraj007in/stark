@@ -27,7 +27,7 @@ fn random_capability_resolves_to_first_party_provider() {
         .resolve("random", "stark_random_secure_fill")
         .expect("secure fill resolves");
     assert_eq!(call.function.params, vec![AbiParam::BufferInOut]);
-    assert_eq!(call.function.may_block, false);
+    assert!(!call.function.may_block);
     assert!(call.function.is_close_for.is_none());
 }
 
