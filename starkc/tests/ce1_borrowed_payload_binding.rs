@@ -170,12 +170,12 @@ fn a_tuple_pattern_through_a_reference_binds_by_reference() {
 /// So the rule does not compose implicitly. Each match decides its own mode from its own scrutinee;
 /// a by-reference binding does not carry "matched by reference" into the next match.
 ///
-/// **Front-end only**, deliberately: the reference interpreter cannot execute this program. See
-/// `the_reference_oracle_binds_by_value_not_by_reference` below for why, and for the divergence it
-/// records.
+/// **Executed on every engine since WP-C7.9 Packet C.** It was front-end-only while the reference
+/// interpreter could not execute it: see `the_oracle_now_binds_by_reference_like_the_other_engines`
+/// below, which is the case that used to pin that divergence.
 #[test]
 fn nested_matching_composes_through_an_explicit_deref() {
-    accepted(
+    agrees(
         "nested",
         "fn peek(w: &Wrap) -> Int32 { match *w { Wrap { h } => match *h { Holder::Val(s) => s.len() as Int32, Holder::Empty => 0, }, } }\n\
          fn main() { let w = Wrap { h: Holder::Val(String::from(\"abcde\")) }; println(peek(&w)); }",
@@ -253,50 +253,58 @@ fn a_box_recursive_enum_is_not_yet_walkable_through_a_reference() {
     );
 }
 
-// -------------------------------------------------- the three-engine divergence --
+// ----------------------------------- the divergence this file used to record (CLOSED) --
 
-/// **The reference interpreter does not implement this rule**, and that is the one place the three
-/// engines do not agree.
+/// **The divergence is closed (WP-C7.9 Packet C), and this case is what closed it.**
 ///
-/// `b99514d` changed the type checker. MIR already matched by reference (DEV-070) and so happened to
-/// follow. The HIR oracle was not touched: `match_pattern` binds `value.clone()` unconditionally, and
-/// its scrutinee is itself a clone of the referent, so a binding is a *value* where the other two
-/// engines have a `&T`.
+/// The history, because it is the reason the case exists rather than a footnote: `b99514d` changed
+/// the type checker, MIR already matched by reference (DEV-070) and so happened to follow, and the
+/// HIR oracle was not touched — `match_pattern` bound `value.clone()` unconditionally, and its
+/// scrutinee was itself a clone of the referent, so a binding was a *value* where the other two
+/// engines had a `&T`.
 ///
-/// For read-only use the two are observationally identical — which is why every `agrees` case above
-/// passes, and why this went unnoticed. They part company the moment the binding is used *as* a
-/// reference: dereferencing it fails in the oracle with `cannot dereference non-reference`, because
-/// there is no reference there to dereference.
+/// For read-only use the two are observationally identical, which is why every `agrees` case above
+/// passed and why this went unnoticed for a whole work package. They parted company the moment the
+/// binding was used *as* a reference: dereferencing it failed in the oracle with `cannot
+/// dereference non-reference`, because there was no reference there to dereference. CD-267 pinned
+/// that as a refusal-to-execute rather than leaving it as a mystery failure, and escalated it,
+/// because closing it meant teaching the oracle to match through a place.
 ///
-/// Pinned as a refusal-to-execute rather than left as a mystery failure. Closing it means teaching
-/// the oracle to match through a place — its `Value::Ref(Place)` already exists, but `match_pattern`
-/// receives a `&Value` and has no place to build one from, so it is a structural change to the
-/// reference execution engine, not a patch.
+/// Packet C did that (`PatternSource` / `match_pattern_borrowed`), so the case is now required to
+/// AGREE. It is kept rather than deleted: the program that proved the divergence is the right
+/// program to prove its absence.
 #[test]
-fn the_reference_oracle_binds_by_value_not_by_reference() {
-    let src = format!(
-        "{TYPES}fn peek(w: &Wrap) -> Int32 {{ match *w {{ Wrap {{ h }} => match *h {{ Holder::Val(s) => 1, Holder::Empty => 0, }}, }} }}\n\
-         fn main() {{ let w = Wrap {{ h: Holder::Empty }}; println(peek(&w)); }}\n"
+fn the_oracle_now_binds_by_reference_like_the_other_engines() {
+    // The same program the divergence was pinned on, now required to AGREE rather than to fail.
+    // The nested `match *h` is the operation that used to be impossible: `h` is a by-reference
+    // binding, so dereferencing it needs a real reference, and the oracle had bound a value.
+    agrees(
+        "oracle_divergence",
+        "fn peek(w: &Wrap) -> Int32 { match *w { Wrap { h } => match *h { Holder::Val(s) => 1, Holder::Empty => 0, }, } }\n\
+         fn main() { let w = Wrap { h: Holder::Empty }; println(peek(&w)); }",
     );
-    let file = Arc::new(SourceFile::new("oracle_divergence".to_string(), src));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    assert!(
-        !checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "the front end accepts this program"
+}
+
+/// The same nesting, reaching a payload that exists — so the borrowed projection is followed to a
+/// real referent rather than only through the `Empty` arm.
+#[test]
+fn nested_borrowed_projection_reaches_a_live_payload() {
+    agrees(
+        "oracle_divergence_live",
+        "fn peek(w: &Wrap) -> Int32 { match *w { Wrap { h } => match *h { Holder::Val(s) => s.len() as Int32, Holder::Empty => 0, }, } }\n\
+         fn main() { let w = Wrap { h: Holder::Val(String::from(\"abcde\")) }; println(peek(&w)); }",
     );
-    let outcome = starkc::interp::run(&hir, file, &checked.tables);
-    let message = format!("{outcome:?}");
-    assert!(
-        message.contains("cannot dereference non-reference"),
-        "the oracle is expected to refuse this program until it matches through a place; if it now \
-         runs, delete this test and make the nested case a three-engine `agrees`. Got: {message}"
+}
+
+/// The referent is the ORIGINAL storage, not a copy of it: the value is still readable after the
+/// match, and it is the same value the match saw. A binding that pointed at a temporary clone
+/// would pass every read-only case above and fail this one.
+#[test]
+fn the_borrowed_binding_observes_the_original_storage() {
+    agrees(
+        "same_storage",
+        "fn peek(h: &Holder) -> Int32 { match *h { Holder::Val(s) => s.len() as Int32, Holder::Empty => 0, } }\n\
+         fn main() { let h = Holder::Val(String::from(\"abcd\")); let first = peek(&h); let second = peek(&h); println(first + second); }",
     );
 }
 

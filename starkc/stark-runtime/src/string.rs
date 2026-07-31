@@ -95,6 +95,17 @@ pub fn println_char(c: char) {
     crate::output::stdout_line(c.encode_utf8(&mut buf).as_bytes());
 }
 
+/// WP-C7.9 Packet D: the same, to the stderr sink.
+pub fn eprint_char(c: char) {
+    let mut buf = [0u8; 4];
+    crate::output::stderr_bytes(c.encode_utf8(&mut buf).as_bytes());
+}
+
+pub fn eprintln_char(c: char) {
+    let mut buf = [0u8; 4];
+    crate::output::stderr_line(c.encode_utf8(&mut buf).as_bytes());
+}
+
 /// `Char::from_u32(value)` — validated Unicode scalar construction.
 pub fn char_from_u32(value: u32) -> Option<char> {
     char::from_u32(value)

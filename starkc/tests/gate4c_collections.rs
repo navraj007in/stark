@@ -213,73 +213,56 @@ fn test_collections_extend() {
     assert_eq!(output, "3\ntrue\ntrue\n");
 }
 
+/// **The `Iterator` combinator surface is refused by the front end (WP-C7.9 Packet E, `E0105`).**
+///
+/// This test used to execute `count`, `map`, `filter`, `fold`, `any`, `all`, `find` and `collect`
+/// through the HIR interpreter, and it passed. It passed because the HIR interpreter is the only
+/// engine that implements them: none has a MIR lowering, so every program here type-checked and
+/// ran in one engine while no compiler could build it.
+///
+/// That split is the defect Packet E closed, so the assertion is inverted rather than deleted. The
+/// combinators are not gone from the language's intent — implementing them needs MIR adapter types
+/// and is its own work package (`WP-C7.9-ACCEPTED-SURFACE-AUDIT.md`). When that lands, this test
+/// fails and becomes a three-engine case again, which is the right way for it to be noticed.
 #[test]
-fn test_iterator_combinators() {
-    let source = "
-        fn is_even(x: &Int32) -> Bool {
-            let val = *x;
-            val % 2 == 0
-        }
-        fn double(x: &Int32) -> Int32 {
-            let val = *x;
-            val * 2
-        }
-        fn add(acc: Int32, x: Int32) -> Int32 {
-            acc + x
-        }
-        fn is_greater_than_five(x: &Int32) -> Bool {
-            let val = *x;
-            val > 5
-        }
-        fn is_b(ch: &Char) -> Bool {
-            let val = *ch;
-            val == 'b'
-        }
-        fn is_odd(x: &Int32) -> Bool {
-            let val = *x;
-            val % 2 != 0
-        }
-
-        fn main() {
-            let mut set: HashSet<Int32> = HashSet::new();
-            set.insert(1);
-            set.insert(2);
-            set.insert(3);
-            set.insert(4);
-            set.insert(5);
-
-            // count
-            let mut it = set.iter();
-            println(it.count());
-
-            // map, filter, fold
-            let mut it2 = set.iter();
-            let mut mapped = it2.map(double);
-            let mut filtered = mapped.filter(is_greater_than_five);
-            let result = filtered.fold(0, add);
-            println(result); // 6 + 8 + 10 = 24
-
-            // any, all
-            let mut it3 = set.iter();
-            println(it3.any(is_odd)); // true
-            
-            let mut it4 = set.iter();
-            println(it4.all(is_odd)); // false
-
-            // find
-            let mut s = String::from(\"abc\");
-            let mut it5 = s.chars();
-            match it5.find(is_b) {
-                Some(val) => println(val),
-                None => println('x'),
-            } // b
-
-            // collect
-            let mut it6 = set.iter();
-            let mut vec: Vec<Int32> = it6.collect();
-            println(vec.len());
-        }
-    ";
-    let output = execute_snippet(source);
-    assert_eq!(output, "5\n24\ntrue\nfalse\nb\n5\n");
+fn test_iterator_combinators_are_refused_by_the_front_end() {
+    for (name, snippet) in [
+        ("count", "let mut it = set.iter(); println(it.count());"),
+        (
+            "map",
+            "let mut it = set.iter(); let mut m = it.map(double); println(m.count());",
+        ),
+        (
+            "filter",
+            "let mut it = set.iter(); let mut f = it.filter(is_odd); println(f.count());",
+        ),
+        ("fold", "let mut it = set.iter(); println(it.fold(0, add));"),
+        ("any", "let mut it = set.iter(); println(it.any(is_odd));"),
+        ("all", "let mut it = set.iter(); println(it.all(is_odd));"),
+        (
+            "collect",
+            "let mut it = set.iter(); let v: Vec<Int32> = it.collect(); println(v.len());",
+        ),
+    ] {
+        let source = format!(
+            "fn double(x: &Int32) -> Int32 {{ let val = *x; val * 2 }}\n\
+             fn add(acc: Int32, x: Int32) -> Int32 {{ acc + x }}\n\
+             fn is_odd(x: &Int32) -> Bool {{ let val = *x; val % 2 != 0 }}\n\
+             fn main() {{ let mut set: HashSet<Int32> = HashSet::new(); set.insert(1); {snippet} }}\n"
+        );
+        let file = Arc::new(SourceFile::new(format!("{name}.stark"), source));
+        let (ast, pd) = parse(&file, ParseMode::Program);
+        assert!(pd.is_empty(), "{name}: parse: {pd:?}");
+        let (hir, rd) = resolve(&ast, file.clone());
+        assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
+        let checked = typecheck::analyze(&hir, file);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("E0105")),
+            "{name}: expected an E0105 refusal, got {:?}",
+            checked.diagnostics
+        );
+    }
 }

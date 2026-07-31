@@ -52,6 +52,48 @@ pub fn print_f64(v: f64) {
     crate::output::stdout_bytes(canonical_float(v).as_bytes());
 }
 
+// ---- Stderr output (WP-C7.9 Packet D) ----
+//
+// The same renderers, submitted to the stderr sink. `eprint`/`eprintln` are normative
+// standard-library operations, but native emitted nothing for them at all: they had no MIR
+// lowering, so the backend never saw them. Rendering is shared with the stdout half above, so the
+// two channels cannot drift into formatting each other's values differently.
+
+pub fn eprintln_i64(v: i64) {
+    crate::output::stderr_line(itoa_i64(v).as_bytes());
+}
+pub fn eprint_i64(v: i64) {
+    crate::output::stderr_bytes(itoa_i64(v).as_bytes());
+}
+
+pub fn eprintln_u64(v: u64) {
+    crate::output::stderr_line(itoa_u64(v).as_bytes());
+}
+pub fn eprint_u64(v: u64) {
+    crate::output::stderr_bytes(itoa_u64(v).as_bytes());
+}
+
+pub fn eprintln_bool(b: bool) {
+    crate::output::stderr_line(bool_bytes(b));
+}
+pub fn eprint_bool(b: bool) {
+    crate::output::stderr_bytes(bool_bytes(b));
+}
+
+pub fn eprintln_f64(v: f64) {
+    crate::output::stderr_line(canonical_float(v).as_bytes());
+}
+pub fn eprint_f64(v: f64) {
+    crate::output::stderr_bytes(canonical_float(v).as_bytes());
+}
+
+pub fn eprintln_f32(v: f32) {
+    crate::output::stderr_line(canonical_float32(v).as_bytes());
+}
+pub fn eprint_f32(v: f32) {
+    crate::output::stderr_bytes(canonical_float32(v).as_bytes());
+}
+
 fn itoa_i64(v: i64) -> String {
     v.to_string()
 }

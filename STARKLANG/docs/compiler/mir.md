@@ -18,6 +18,29 @@ CD-036), **A5** (`Projection::ConstIndex` — recorded below, CD-038), **A6**
 (`MirBinOp::FloatDiv`/`FloatRem` — recorded below, CD-139). All are additive and
 remain MIR v0.1.
 
+**A13 trap-classification amendment (WP-C7.9 Packet A, owner-authorised under D1).** Generalises
+the category-override rule: **a checked operation's evaluation may override the terminator's
+category when the operation fails for a different normative cause.** Until now the only such cause
+was a bad shift count (`InvalidShift`); NUM-INT-DIV-001 supplies the second.
+
+`Div` and `Rem` have **two** normative failures, and a `Checked` terminator carries one category:
+
+| cause | category | mechanism |
+| --- | --- | --- |
+| divisor is zero | `DivideByZero` | the terminator's own (default) category — `CheckedOutcome::Trap(None)` |
+| signed `MIN / -1`, signed `MIN % -1` | `IntegerOverflow` | override — `CheckedOutcome::Trap(Some(IntegerOverflow))` |
+
+The identity follows the Core rule rather than the operator spelling: NUM-INT-DIV-001 says these
+two "trap because the intermediate quotient is not representable", which is an overflow. The
+minimum is taken from the **destination type's declared range**, never inferred from the `i128`
+evaluation carrier; unsigned types have no such failure and are unaffected.
+
+**This is not a shape change.** No new `Statement`, `Terminator`, `CheckedOp` or `TrapCategory` is
+added, nothing in the textual dump changes, and the override mechanism already existed. **`MIR_VERSION`
+therefore stays at `0.3` and `MIR_RUNTIME_SURFACE` at `0.1-A10`.** A backend must reproduce the
+override rule for `Div`/`Rem` exactly as it already must for `Shl`/`Shr`; the generated-Rust
+backend does so by guarding both causes before the widened checked operation.
+
 **A7 trap-identity amendment (WP-C6.5, CD-150/CD-164, owner-approved under CE3, 2026-07-27).**
 Adds one `TrapCategory`: **`InvalidExitStatus`**.
 
@@ -139,8 +162,9 @@ variants, all additive:
   result is out of range, so the two failure modes remain separately observable to a backend and
   to the differential comparator. Mechanically, a `Checked` terminator carries one category in
   its `TrapInfo`; the reference interpreter's `CheckedOutcome::Trap(Some(category))` **overrides**
-  it for this case, which is the only category override in the evaluator. A backend must
-  reproduce the same override rule for `Shl`/`Shr`.
+  it for this case. A backend must reproduce the same override rule for `Shl`/`Shr`. **A13 adds the
+  second override** — signed `MIN / -1` and `MIN % -1` report `IntegerOverflow` over the `Div`/`Rem`
+  terminator's `DivideByZero` default — so this is no longer the evaluator's only one.
 
 No runtime-surface identifier changes: A3 adds no `RuntimeFn`, so `MIR_RUNTIME_SURFACE` is
 untouched by this amendment.

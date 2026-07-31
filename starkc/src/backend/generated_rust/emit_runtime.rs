@@ -75,6 +75,24 @@ pub fn emit_runtime_call(
         PrintFloat32 => format!("stark_runtime::format::print_f32({} as f32)", arg(0)),
         PrintFloat64 => format!("stark_runtime::format::print_f64({} as f64)", arg(0)),
 
+        // --- 0.1-A13 (WP-C7.9 Packet D): stderr output. Same renderers, stderr sink. Before this
+        // the backend emitted NOTHING for `eprint`/`eprintln` — they never reached it, because
+        // lowering refused them — so a native binary silently dropped a normative operation. ---
+        EprintlnStr => format!("stark_runtime::output::stderr_line({}.as_bytes())", arg(0)),
+        EprintStr => format!("stark_runtime::output::stderr_bytes({}.as_bytes())", arg(0)),
+        EprintlnInt64 => format!("stark_runtime::format::eprintln_i64({} as i64)", arg(0)),
+        EprintInt64 => format!("stark_runtime::format::eprint_i64({} as i64)", arg(0)),
+        EprintlnUInt64 => format!("stark_runtime::format::eprintln_u64({} as u64)", arg(0)),
+        EprintUInt64 => format!("stark_runtime::format::eprint_u64({} as u64)", arg(0)),
+        EprintlnBool => format!("stark_runtime::format::eprintln_bool({})", arg(0)),
+        EprintBool => format!("stark_runtime::format::eprint_bool({})", arg(0)),
+        EprintlnFloat64 => format!("stark_runtime::format::eprintln_f64({} as f64)", arg(0)),
+        EprintFloat64 => format!("stark_runtime::format::eprint_f64({} as f64)", arg(0)),
+        EprintlnFloat32 => format!("stark_runtime::format::eprintln_f32({} as f32)", arg(0)),
+        EprintFloat32 => format!("stark_runtime::format::eprint_f32({} as f32)", arg(0)),
+        EprintlnChar => format!("stark_runtime::string::eprintln_char({})", arg(0)),
+        EprintChar => format!("stark_runtime::string::eprint_char({})", arg(0)),
+
         // --- String construction / conversion ---
         StringNew => "stark_runtime::string::new()".to_string(),
         StringFromStr => format!("stark_runtime::string::from_str({})", arg(0)),

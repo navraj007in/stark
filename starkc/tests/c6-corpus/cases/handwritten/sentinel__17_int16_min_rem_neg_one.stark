@@ -1,0 +1,18 @@
+// WP-C7.9 Packet A sentinel — signed `MIN % -1` traps with the OVERFLOW identity.
+//
+// NUM-INT-DIV-001: dividing the minimum signed value by `-1`, and taking its remainder by `-1`,
+// trap "because the intermediate quotient is not representable". That is an overflow, not a
+// division by zero, even though the operator is `%`.
+//
+// The LIKELY WRONG implementation this sentinel fails:
+// evaluating on a wider carrier and range-filtering the result. `MIN % -1` is
+// mathematically `0`, which is in range, so no trap fires at all and the
+// program COMPLETES where the specification requires a trap.
+//
+// The minimum is built as `-MAX - 1` because it is not writable as a literal at any width — which
+// is why this pair had no maintained coverage before Packet A.
+fn main() {
+    let base: Int16 = -32767i16;
+    let min: Int16 = base - 1i16;
+    println(min % -1i16);
+}

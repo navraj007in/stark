@@ -195,6 +195,7 @@ fn differential(name: &str, source: String) {
         (
             Err((oracle_err, oracle_partial)),
             Err(MirFailure {
+                stderr: _,
                 error:
                     MirRunError::Trap {
                         category,
@@ -205,7 +206,7 @@ fn differential(name: &str, source: String) {
             }),
         ) => {
             assert!(
-                oracle_err.is_trap,
+                oracle_err.is_trap(),
                 "{name}: oracle errored non-trap ({}) but MIR trapped {category:?}",
                 oracle_err.message
             );
@@ -259,12 +260,25 @@ fn differential(name: &str, source: String) {
         (
             Err((oracle_err, _)),
             Err(MirFailure {
+                stderr: _,
                 error: MirRunError::Internal(message),
                 ..
             }),
         ) => panic!(
             "{name}: MIR internal error ({message}) while oracle said: {}",
             oracle_err.message
+        ),
+        // WP-C7.9 Packet F: a host/process resource limit is not a language outcome, so it is not
+        // something the two engines can be compared on. Reported rather than normalised.
+        (
+            _,
+            Err(MirFailure {
+                error: MirRunError::HostResource(message),
+                ..
+            }),
+        ) => panic!(
+            "{name}: MIR reached a host/process resource limit ({message}). This is a \
+             LIMIT-RESOURCE-001 outcome, not a language outcome; see resource_exhaustion.rs."
         ),
     }
 }

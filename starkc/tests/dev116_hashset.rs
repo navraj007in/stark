@@ -27,32 +27,21 @@ mod support;
 
 use support::differential::{front_end, rustc_available, three_engine, Observation};
 
-/// A nominal element with no recorded `Eq` must be REFUSED, and this pins the phase it is refused
-/// at rather than assuming one.
+/// A nominal element with no `Eq` must be REFUSED, and this pins the phase it is refused at rather
+/// than assuming one.
 ///
-/// The phase is MIR **verification** (MIR-0018), which is where `HashMap` already refuses the same
-/// shape. Writing this first assumed type-check, because `impl<T: Hash + Eq> HashSet<T>` is a bound
-/// — and the assumption was wrong for both collections. The established rule is that a missing
-/// instance is a COMPILER defect (lowering failed to record the impl it selected) rather than a
-/// rejectable program, so verification is where it surfaces: ahead of either engine, instead of as
-/// a wrong answer in the interpreter and a refusal in the backend.
-fn refused_at_verification(tag: &str, source: &str) {
-    let front = front_end(&format!("dev116_{tag}.stark"), source);
-    let program = starkc::mir::lower::lower_program(&front.hir, &front.tables, front.file.clone())
-        .unwrap_or_else(|e| panic!("{tag}: expected lowering to succeed, got: {}", e.what));
-    let errors = starkc::mir::verify::verify_program(&program)
-        .err()
-        .unwrap_or_else(|| {
-            panic!(
-                "{tag}: a set element with no recorded `Eq` was ACCEPTED — its \
-                                   identity would fall back to structural comparison in the \
-                                   interpreter while the backend refused the same program"
-            )
-        });
-    assert!(
-        errors.iter().any(|e| e.code == "MIR-0018"),
-        "{tag}: expected MIR-0018, got: {errors:?}"
-    );
+/// **The phase moved with WP-C7.9 Packet I (DEV-118).** It used to be MIR *verification*
+/// (`MIR-0018`) — reached because nothing checked the declared bound, so an element type with no
+/// `Eq` got as far as lowering and was caught only when the verifier found no instance to call.
+/// The reasoning recorded at the time was that a missing instance is a compiler defect rather than
+/// a rejectable program; that was true of the SYMPTOM, and the cause was that `HashSet<T>`'s own
+/// `T: Hash + Eq` bound was never enforced anywhere.
+///
+/// It is enforced now, at type checking, where every other unsatisfied bound is rejected — so the
+/// program never reaches lowering at all and the verifier's guard becomes the defence in depth it
+/// was always meant to be.
+fn refused_at_type_checking(tag: &str, source: &str) {
+    support::differential::rejects_at_typecheck(&format!("dev116_{tag}.stark"), source, "E0500");
 }
 
 const TAG_WITHOUT: &str = "struct Tag { id: Int32 }\n";
@@ -61,7 +50,7 @@ const TAG_WITHOUT: &str = "struct Tag { id: Int32 }\n";
 /// `HashSet`, so a nominal element with no `Eq` was accepted everywhere.
 #[test]
 fn an_element_without_eq_is_refused() {
-    refused_at_verification(
+    refused_at_type_checking(
         "no_eq",
         &format!(
             "{TAG_WITHOUT}impl Hash for Tag {{ fn hash(&self) -> UInt64 {{ 1u64 }} }}\n\
@@ -72,7 +61,7 @@ fn an_element_without_eq_is_refused() {
 
 #[test]
 fn an_element_with_neither_eq_nor_hash_is_refused() {
-    refused_at_verification(
+    refused_at_type_checking(
         "neither",
         &format!(
             "{TAG_WITHOUT}fn main() {{ let mut s: HashSet<Tag> = HashSet::new(); s.insert(Tag {{ id: 1 }}); }}\n"
@@ -80,20 +69,20 @@ fn an_element_with_neither_eq_nor_hash_is_refused() {
     );
 }
 
-/// **DEV-118, recorded rather than fixed.** The `Hash` half of the `T: Hash + Eq` bound is NOT
-/// enforced: an element with `Eq` and no `Hash` compiles and runs in all three engines. This is a
-/// pre-existing gap shared with `HashMap` — the identical program over a `HashMap` key is equally
-/// accepted — so it is not something DEV-116 introduced, and fixing bound enforcement for
-/// collections generally is outside this change.
+/// **DEV-118 is FIXED (WP-C7.9 Packet I).** The `Hash` half of `T: Hash + Eq` is enforced for both
+/// collections, at type checking.
 ///
-/// It is benign TODAY for a specific reason worth writing down: CE4 (CD-132) chose an
-/// insertion-ordered vector scanned by `Eq`, and `Hash` is never consulted in storage at all. So a
-/// missing `Hash` cannot affect membership, ordering or any observation. It becomes a real defect
-/// the moment any engine starts narrowing candidates by hash.
+/// This test previously recorded the opposite, and said what would make it fail: *"the `Hash` bound
+/// is now enforced — DEV-118 is fixed, so update this test to require the refusal instead of
+/// recording its absence."* That is what happened, so it now requires the refusal.
 ///
-/// This test pins the CURRENT behaviour so the day that changes, it fails here.
+/// Why the omission mattered even while it was benign: CE4 (CD-132) chose an insertion-ordered
+/// vector scanned by `Eq`, and `Hash` is never consulted in storage — so a missing `Hash` could not
+/// affect membership, ordering, or any observation, and **all three engines agreed** on every
+/// invalid program. No differential could see it. It would have become a real divergence the moment
+/// one engine began narrowing candidates by hash.
 #[test]
-fn dev118_the_hash_bound_is_not_enforced_for_either_collection() {
+fn dev118_the_hash_bound_is_enforced_for_both_collections() {
     for (tag, source) in [
         (
             "set",
@@ -108,15 +97,7 @@ fn dev118_the_hash_bound_is_not_enforced_for_either_collection() {
              fn main() { let mut m: HashMap<Tag, Int32> = HashMap::new(); m.insert(Tag { id: 1 }, 2); }\n",
         ),
     ] {
-        let front = front_end(&format!("dev118_{tag}.stark"), source);
-        let program =
-            starkc::mir::lower::lower_program(&front.hir, &front.tables, front.file.clone())
-                .unwrap_or_else(|e| panic!("{tag}: lowering: {}", e.what));
-        assert!(
-            starkc::mir::verify::verify_program(&program).is_ok(),
-            "{tag}: the `Hash` bound is now enforced — DEV-118 is fixed, so update this test to \
-             require the refusal instead of recording its absence"
-        );
+        support::differential::rejects_at_typecheck(&format!("dev118_{tag}.stark"), source, "E0500");
     }
 }
 

@@ -44,6 +44,27 @@ impl TrapCategory {
     /// can normalise a native binary's stderr back into a category against THIS table rather
     /// than a second copy of it in a test file, which would drift the day a category's wording
     /// changed.
+    /// The category's STRUCTURAL name — the variant identifier, not its prose.
+    ///
+    /// WP-C7.9: the machine-readable trap record and the comparator both key on this, so trap
+    /// identity survives any rewording of [`Self::message`]. Deliberately not `Debug`: a derived
+    /// format is a debugging convenience that nothing promises to keep stable, and this is a
+    /// protocol field.
+    pub fn name(self) -> &'static str {
+        match self {
+            TrapCategory::IntegerOverflow => "IntegerOverflow",
+            TrapCategory::DivideByZero => "DivideByZero",
+            TrapCategory::IndexOutOfBounds => "IndexOutOfBounds",
+            TrapCategory::CastFailure => "CastFailure",
+            TrapCategory::Panic => "Panic",
+            TrapCategory::UnwrapNone => "UnwrapNone",
+            TrapCategory::UnwrapErr => "UnwrapErr",
+            TrapCategory::AssertFailure => "AssertFailure",
+            TrapCategory::InvalidShift => "InvalidShift",
+            TrapCategory::InvalidExitStatus => "InvalidExitStatus",
+        }
+    }
+
     pub fn message(self) -> &'static str {
         match self {
             TrapCategory::IntegerOverflow => "integer overflow",
@@ -78,9 +99,53 @@ pub fn abort(category: TrapCategory, file: &str, line: u32, column: u32) -> ! {
     // CD-120 Contract B: emit any buffered pre-trap output before aborting, so the observable
     // stdout prefix matches the HIR/MIR interpreters (which retain their captured prefix).
     crate::output::flush_stdout();
-    eprintln!("error: runtime trap: {}", category.message());
-    eprintln!("  --> {file}:{line}:{column}");
+    // WP-C7.9 Packet D: and the program's own stderr prefix, for the same reason and one more —
+    // the diagnostic below goes to the same stream, so an unflushed `eprint` prefix would appear
+    // after the trap record instead of before it.
+    crate::output::flush_stderr();
+    emit_trap_record(category, None, file, line, column);
     std::process::exit(101);
+}
+
+/// The separator that lets a differential runner tell a program's stderr from the runtime's own
+/// trap diagnostic, which share one host stream (WP-C7.9 Packet D).
+///
+/// A fixed delimiter would be forgeable: a STARK program can print any bytes it likes, so a case
+/// could produce something the comparator mistook for a trap record — accidentally or in a test
+/// designed to check exactly that. The runner therefore generates a fresh random token per run and
+/// passes it in this variable; a program that does not know the token cannot reproduce the record.
+///
+/// **When the variable is absent — every real invocation — output is unchanged**: production CLI
+/// formatting is what a user sees, and this protocol exists only for the harness.
+pub const TRAP_TOKEN_VAR: &str = "STARK_DIFFERENTIAL_TRAP_TOKEN";
+
+/// Writes the trap diagnostic: one machine-readable record under the harness protocol, or the
+/// ordinary human-readable form otherwise.
+fn emit_trap_record(
+    category: TrapCategory,
+    message: Option<&str>,
+    file: &str,
+    line: u32,
+    column: u32,
+) {
+    match std::env::var(TRAP_TOKEN_VAR) {
+        Ok(token) if !token.is_empty() => {
+            // One line, one record, machine-readable. `message` is last because it is the only
+            // field that can contain arbitrary user text.
+            eprintln!(
+                "{token} category={} file={file} line={line} column={column} message={}",
+                category.name(),
+                message.unwrap_or("")
+            );
+        }
+        _ => {
+            eprintln!("error: runtime trap: {}", category.message());
+            eprintln!("  --> {file}:{line}:{column}");
+            if let Some(message) = message {
+                eprintln!("  {message}");
+            }
+        }
+    }
 }
 
 /// WP-C6.3e: a trap carrying a user MESSAGE — `panic(msg)` and a failed `assert*`. The category
@@ -95,8 +160,7 @@ pub fn abort_with_message(
 ) -> ! {
     // CD-120 Contract B: flush buffered pre-trap output before aborting (see [`abort`]).
     crate::output::flush_stdout();
-    eprintln!("error: runtime trap: {}", category.message());
-    eprintln!("  --> {file}:{line}:{column}");
-    eprintln!("  {message}");
+    crate::output::flush_stderr();
+    emit_trap_record(category, Some(message), file, line, column);
     std::process::exit(101);
 }

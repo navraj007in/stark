@@ -97,3 +97,125 @@ fn rendering_round_trips_for_finite_values() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// WP-C7.9 G.5 — mutation coverage: proof that the tests above can FAIL.
+//
+// The compensating-control argument has a hole in it until this exists. `canonical_float` is shared
+// by the oracle and the MIR interpreter deliberately, so the differential cannot see a defect in
+// it — these golden cases are the only thing that can. But golden cases only compensate if they are
+// *sensitive*: a table of expectations that a wrong algorithm would also satisfy is not a control,
+// it is decoration.
+//
+// So each mutant below is a deliberately wrong renderer of the kind that could plausibly be written
+// — Rust's own `Display`, a fixed-precision format, dropped signed zero, the notation switch off by
+// one — and each is required to FAIL the same expectation table the real implementation passes. A
+// mutant that survives means the table has a blind spot at exactly that property.
+// ---------------------------------------------------------------------------------------------
+
+/// The specification-derived expectations, in one place so the real implementation and every mutant
+/// are judged against the same table.
+const EXPECTATIONS: &[(f64, &str)] = &[
+    (f64::INFINITY, "inf"),
+    (f64::NEG_INFINITY, "-inf"),
+    (0.0, "0.0"),
+    (-0.0, "-0.0"),
+    (12.0, "12.0"),
+    (-3.5, "-3.5"),
+    (0.1, "0.1"),
+    (1.0 / 3.0, "0.3333333333333333"),
+    (1e15, "1000000000000000.0"),
+    (1e16, "1e16"),
+    (0.0001, "0.0001"),
+    (0.00001, "1e-5"),
+    (5e-324, "5e-324"),
+];
+
+fn satisfies(render: impl Fn(f64) -> String) -> bool {
+    // NaN is checked separately: it is the one case where `==` on the input is useless.
+    if render(f64::NAN) != "NaN" {
+        return false;
+    }
+    EXPECTATIONS
+        .iter()
+        .all(|(value, expected)| render(*value) == *expected)
+}
+
+/// The real implementation satisfies the table — the baseline every mutant is measured against.
+#[test]
+fn the_shared_formatter_satisfies_the_table() {
+    assert!(
+        satisfies(canonical_float),
+        "canonical_float no longer satisfies its own specification table"
+    );
+}
+
+/// Rust's `Display`. The obvious wrong answer, and the one the codebase would drift toward if the
+/// shared formatter were ever "simplified": it renders `12` for `12.0`, `inf` for infinity but
+/// `NaN` for NaN, and `0.00001` positionally where the contract switches to e-notation.
+#[test]
+fn rust_display_does_not_satisfy_the_table() {
+    assert!(
+        !satisfies(|v: f64| format!("{v}")),
+        "Rust's Display satisfies the table — the table cannot be distinguishing STARK's \
+         formatting rules from Rust's"
+    );
+}
+
+/// Fixed precision. Round-trips nothing and loses the shortest-digits property.
+#[test]
+fn fixed_precision_does_not_satisfy_the_table() {
+    assert!(
+        !satisfies(|v: f64| format!("{v:.6}")),
+        "a fixed-precision renderer satisfies the table — the shortest-round-trip property is \
+         not being tested"
+    );
+}
+
+/// Signed zero dropped. A single case in the table catches it, and this proves that case is load
+/// bearing rather than incidental.
+#[test]
+fn dropping_signed_zero_does_not_satisfy_the_table() {
+    assert!(
+        !satisfies(|v: f64| {
+            if v == 0.0 {
+                "0.0".to_string()
+            } else {
+                canonical_float(v)
+            }
+        }),
+        "dropping the sign of -0.0 satisfies the table — signed zero is not being tested"
+    );
+}
+
+/// The notation switch, off by one at the upper boundary. This is the mutation most likely to occur
+/// for real, because the boundary is a `>=` versus `>` decision in the renderer.
+#[test]
+fn an_off_by_one_notation_boundary_does_not_satisfy_the_table() {
+    assert!(
+        !satisfies(|v: f64| {
+            if v == 1e15 {
+                "1e15".to_string()
+            } else {
+                canonical_float(v)
+            }
+        }),
+        "switching to e-notation one magnitude early satisfies the table — the positional/\
+         scientific boundary is not being tested at its exact limit"
+    );
+}
+
+/// Subnormals mishandled: flushed to zero, as a naive implementation might.
+#[test]
+fn flushing_subnormals_to_zero_does_not_satisfy_the_table() {
+    assert!(
+        !satisfies(|v: f64| {
+            if v != 0.0 && v.abs() < f64::MIN_POSITIVE {
+                "0.0".to_string()
+            } else {
+                canonical_float(v)
+            }
+        }),
+        "flushing subnormals to zero satisfies the table — subnormal rendering is not being tested"
+    );
+}

@@ -528,3 +528,121 @@ required_engines = ["hir", "mir", "native-debug"]
 required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 normative_rules = ["NUM-FLOAT-FORMAT-001"]
 expected_stdout = ["0.1|0.10000000149011612"]
+
+[[case]]
+case_id = "sentinel__14_int8_min_div_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__14_int8_min_div_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__15_int8_min_rem_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__15_int8_min_rem_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__16_int16_min_div_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__16_int16_min_div_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__17_int16_min_rem_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__17_int16_min_rem_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__18_int32_min_div_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__18_int32_min_div_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__19_int32_min_rem_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__19_int32_min_rem_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__20_int64_min_div_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__20_int64_min_div_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__21_int64_min_rem_neg_one"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X02", "X10"]
+sources = ["cases/handwritten/sentinel__21_int64_min_rem_neg_one.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "TRAP-CATEGORY-001"]
+
+[[case]]
+case_id = "sentinel__22_stderr_before_trap"
+kind = "handwritten"
+category = "traps"
+subcategories = ["X01", "X10", "X11"]
+sources = ["cases/handwritten/sentinel__22_stderr_before_trap.stark"]
+package_graph = "single-file"
+expected_outcome = "trap"
+expected_trap_category = "IntegerOverflow"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-DIV-001", "PROC-STREAM-001", "TRAP-CATEGORY-001"]
+expected_stdout = ["out", ""]

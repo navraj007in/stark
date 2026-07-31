@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "1.4.0"
+CORPUS_VERSION = "1.5.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -439,6 +439,13 @@ def build_lock() -> str:
         "# corpus_version 1.2.0 (2026-07-28, CD-176): DEV-116 FIXED -- `HashSet` lowers, verifies,",
         "# runs in the MIR interpreter and builds natively, as `StarkMap<T, ()>` in every engine so",
         "# STD-HASH-001 holds by construction. V19 moves from BLOCKED to covered. Four cases.",
+        "# corpus_version 1.5.0 (WP-C7.9 Packet A, 2026-07-31): eight sentinels for signed",
+        "# `MIN / -1` and `MIN % -1` at all four widths, each pinning `IntegerOverflow`. They",
+        "# cover the pair that had no maintained coverage at all: `MIN % -1` COMPLETED in MIR and",
+        "# native while the oracle trapped. Plus one Packet D sentinel writing BOTH streams before",
+        "# trapping — the corpus had no case with program stderr at all, because no engine could",
+        "# perform `eprintln`. Nine cases.",
+        "# Minor: new cases, no existing source or expectation changed.",
         "# corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted",
         "# to a permanent regression per \u00a711.11 step 6, and O14 (reinitialisation) moves from",
         "# BLOCKED to covered. Minor.",

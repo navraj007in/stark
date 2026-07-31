@@ -2215,6 +2215,13 @@ impl<'a> TypeChecker<'a> {
                             }
                         };
                         self.validate_generic_arity(expected, args.len(), node.span);
+                        // WP-C7.9 Packet I (DEV-118): the obligations the STANDARD LIBRARY imposes
+                        // on its own generic parameters, checked at the point of instantiation —
+                        // where a written bound would be checked. This is the general mechanism,
+                        // not a check bolted onto `insert`: a `HashMap<Float64, Int32>` is
+                        // ill-typed wherever it is written, including in a signature it is never
+                        // called through.
+                        self.check_builtin_type_bounds(*core, &args, node.span);
                         Ty::Core(*core, args)
                     }
                     _ => Ty::Error,
@@ -2892,6 +2899,10 @@ impl<'a> TypeChecker<'a> {
                 hir::ItemKind::Fn(def) => {
                     self.suppress_tensor_diagnostics = true;
                     let saved = self.enter_tensor_param_scope(&def.sig.generics);
+                    // WP-C7.9 Packet I: the function's generics are in scope for its own signature
+                    // types here too, so a bound check reached during conversion sees the bounds
+                    // the declaration actually wrote.
+                    let saved_generics = self.current_fn_generics.replace(def.sig.generics.clone());
                     let params = def
                         .sig
                         .params
@@ -2904,6 +2915,7 @@ impl<'a> TypeChecker<'a> {
                         hir::RetTy::Never(_) => Ty::Never,
                     };
                     self.exit_tensor_param_scope(saved);
+                    self.current_fn_generics = saved_generics;
                     self.suppress_tensor_diagnostics = false;
                     self.fn_sigs.insert(item_id, FnSigTy { params, ret });
                 }
@@ -2924,6 +2936,8 @@ impl<'a> TypeChecker<'a> {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
                             self.suppress_tensor_diagnostics = true;
                             let saved = self.enter_tensor_param_scope(&def.sig.generics);
+                            let saved_generics =
+                                self.current_fn_generics.replace(def.sig.generics.clone());
                             let _params: Vec<Ty> = def
                                 .sig
                                 .params
@@ -2936,6 +2950,7 @@ impl<'a> TypeChecker<'a> {
                                 hir::RetTy::Never(_) => Ty::Never,
                             };
                             self.exit_tensor_param_scope(saved);
+                            self.current_fn_generics = saved_generics;
                             self.suppress_tensor_diagnostics = false;
                         }
                     }
@@ -3599,6 +3614,44 @@ impl<'a> TypeChecker<'a> {
                             );
                         }
                     }
+
+                    // WP-C7.9 Packet B: duplicates. The membership checks above are set
+                    // differences, and a set cannot see that the same name was implemented twice —
+                    // so two `fn eq` bodies in one impl block reached name resolution with the
+                    // second silently shadowing or colliding with the first.
+                    let mut counts: HashMap<String, usize> = HashMap::new();
+                    for impl_item in items {
+                        if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            *counts
+                                .entry(self.text(def.sig.name).to_string())
+                                .or_insert(0) += 1;
+                        }
+                    }
+                    for impl_item in items {
+                        if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            let name = self.text(def.sig.name).to_string();
+                            if counts.get(&name).copied().unwrap_or(0) > 1 {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        format!(
+                                            "method '{name}' is implemented more than once in this \
+                                             implementation block"
+                                        ),
+                                        def.sig.span,
+                                    )
+                                    .with_code("E0500"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // WP-C7.9 Packet B: the same conformance obligation for a compiler-known trait, which
+            // has no HIR declaration item for the block above to compare against.
+            if let Some(trait_ref) = trait_ {
+                if let Res::CoreTrait(core_trait) = trait_ref.res {
+                    self.check_core_trait_impl(core_trait, trait_ref, &self_ty, items, item.span);
                 }
             }
 
@@ -3726,6 +3779,391 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => false,
             }
+    }
+
+    /// WP-C7.9 Packet B: a Core trait's implementation must conform before any body is executable.
+    ///
+    /// **What was missing.** A user-declared trait is an HIR item, so its declaration is available
+    /// to compare an impl against, and `trait_method_signature_matches` does exactly that. A
+    /// `CoreTrait` has no such item — every `impl Ord for T` writes its own signature and nothing
+    /// checked it. `fn cmp(&self, other: &Self) -> Bool` therefore type-checked, lowered, and only
+    /// failed at execution, differently in each engine.
+    ///
+    /// The contract now comes from one canonical table ([`core_trait_contract`]) rather than from
+    /// checks scattered through the operator paths, and it is compared with the same key machinery
+    /// the user-trait path uses — so `Self`, the written self type, associated types and the
+    /// trait's own arguments normalise identically for both trait kinds.
+    fn check_core_trait_impl(
+        &mut self,
+        core_trait: hir::CoreTrait,
+        trait_ref: &hir::TraitRef,
+        self_ty: &Ty,
+        items: &[hir::ImplItem],
+        impl_span: Span,
+    ) {
+        let Some(contract) = core_trait_contract(core_trait) else {
+            return;
+        };
+        let trait_name = core_trait_source_name(core_trait);
+        // `Self` in a signature resolves through `current_self_ty`, and converting a type without
+        // it both fails and reports a spurious "use of 'Self' outside impl or trait". The impl's
+        // own self type is exactly what it should be here.
+        let saved_self_ty = self.current_self_ty.replace(self_ty.clone());
+
+        let associated: HashMap<String, TypeId> = items
+            .iter()
+            .filter_map(|item| match item {
+                hir::ImplItem::AssocType { name, ty } => Some((self.text(*name).to_string(), *ty)),
+                _ => None,
+            })
+            .collect();
+        // The trait's own arguments, as written in `impl From<Celsius> for F`. A contract term
+        // `TraitArg(n)` is compared against the n-th of these.
+        let trait_args: Vec<TypeId> = trait_ref
+            .args
+            .as_ref()
+            .map(|args| {
+                args.args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        hir::GenericArg::Type(ty) => Some(*ty),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // ---- item membership: missing, extra, duplicate ----
+
+        let mut seen_methods: HashMap<String, usize> = HashMap::new();
+        for item in items {
+            if let hir::ImplItem::Fn { def, .. } = item {
+                *seen_methods
+                    .entry(self.text(def.sig.name).to_string())
+                    .or_insert(0) += 1;
+            }
+        }
+        let mut seen_assoc: HashMap<String, usize> = HashMap::new();
+        for item in items {
+            if let hir::ImplItem::AssocType { name, .. } = item {
+                *seen_assoc.entry(self.text(*name).to_string()).or_insert(0) += 1;
+            }
+        }
+
+        for method in contract.methods {
+            if !seen_methods.contains_key(method.name) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "implementation of '{trait_name}' is missing method '{}'",
+                            method.name
+                        ),
+                        impl_span,
+                    )
+                    .with_code("E0500")
+                    .with_note(format!(
+                        "'{trait_name}' declares {}",
+                        self.core_method_source(trait_name, method)
+                    )),
+                );
+            }
+        }
+        for assoc in contract.assoc_types {
+            if !seen_assoc.contains_key(*assoc) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "implementation of '{trait_name}' is missing associated type '{assoc}'"
+                        ),
+                        impl_span,
+                    )
+                    .with_code("E0500"),
+                );
+            }
+        }
+        for item in items {
+            match item {
+                hir::ImplItem::Fn { def, .. } => {
+                    let name = self.text(def.sig.name).to_string();
+                    if !contract.methods.iter().any(|m| m.name == name) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("method '{name}' is not declared by '{trait_name}'"),
+                                def.sig.span,
+                            )
+                            .with_code("E0500"),
+                        );
+                    } else if seen_methods.get(&name).copied().unwrap_or(0) > 1 {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "method '{name}' is implemented more than once for \
+                                     '{trait_name}'"
+                                ),
+                                def.sig.span,
+                            )
+                            .with_code("E0500"),
+                        );
+                    }
+                }
+                hir::ImplItem::AssocType { name, .. } => {
+                    let text = self.text(*name).to_string();
+                    if !contract.assoc_types.contains(&text.as_str()) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "associated type '{text}' is not declared by '{trait_name}'"
+                                ),
+                                *name,
+                            )
+                            .with_code("E0500"),
+                        );
+                    } else if seen_assoc.get(&text).copied().unwrap_or(0) > 1 {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "associated type '{text}' is declared more than once for \
+                                     '{trait_name}'"
+                                ),
+                                *name,
+                            )
+                            .with_code("E0500"),
+                        );
+                    }
+                }
+            }
+        }
+
+        // ---- signature conformance, per declared method ----
+
+        for method in contract.methods {
+            let Some(sig) = items.iter().find_map(|item| match item {
+                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == method.name => {
+                    Some(&def.sig)
+                }
+                _ => None,
+            }) else {
+                continue; // already reported as missing
+            };
+
+            if sig.receiver != method.receiver {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "method '{}' of '{trait_name}' must take {}, but this implementation \
+                             takes {}",
+                            method.name,
+                            receiver_source(method.receiver),
+                            receiver_source(sig.receiver)
+                        ),
+                        sig.span,
+                    )
+                    .with_code("E0500"),
+                );
+            }
+
+            if !sig.generics.is_empty() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "method '{}' of '{trait_name}' declares no type parameters, but this \
+                             implementation declares {}",
+                            method.name,
+                            sig.generics.len()
+                        ),
+                        sig.span,
+                    )
+                    .with_code("E0500"),
+                );
+            }
+
+            if sig.params.len() != method.params.len() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "method '{}' of '{trait_name}' takes {} parameter(s) after the \
+                             receiver, but this implementation takes {}",
+                            method.name,
+                            method.params.len(),
+                            sig.params.len()
+                        ),
+                        sig.span,
+                    )
+                    .with_code("E0500")
+                    .with_note(format!(
+                        "'{trait_name}' declares {}",
+                        self.core_method_source(trait_name, method)
+                    )),
+                );
+            } else {
+                for (position, (expected, param)) in
+                    method.params.iter().zip(&sig.params).enumerate()
+                {
+                    let expected_ty =
+                        self.contract_ty(*expected, self_ty, &associated, &trait_args);
+                    let actual_ty = self.convert_hir_type(param.ty);
+                    // `Ty::Error` on either side means something else already failed; blaming the
+                    // signature too would be a second diagnostic for one cause.
+                    if !matches!(expected_ty, Ty::Error)
+                        && !matches!(actual_ty, Ty::Error)
+                        && self.ty_signature_key(&expected_ty) != self.ty_signature_key(&actual_ty)
+                    {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "parameter {} of '{}' must have type '{}', but this \
+                                     implementation writes '{}'",
+                                    position + 1,
+                                    method.name,
+                                    contract_ty_source(*expected),
+                                    self.text(self.hir.ty(param.ty).span)
+                                ),
+                                self.hir.ty(param.ty).span,
+                            )
+                            .with_code("E0500"),
+                        );
+                    }
+                }
+            }
+
+            match (method.ret, sig.ret) {
+                (None, hir::RetTy::Unit) => {}
+                (None, _) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "method '{}' of '{trait_name}' returns Unit, but this \
+                                 implementation declares a return type",
+                                method.name
+                            ),
+                            sig.span,
+                        )
+                        .with_code("E0500"),
+                    );
+                }
+                (Some(expected), hir::RetTy::Ty(actual)) => {
+                    let expected_ty = self.contract_ty(expected, self_ty, &associated, &trait_args);
+                    let actual_ty = self.convert_hir_type(actual);
+                    // Two spellings, two normalisations. `Self` and the written self type are
+                    // reconciled by converting both to a `Ty`; `Self::Item` is not — it is resolved
+                    // by `signature_type_key`, through the impl's own associated declarations,
+                    // which is how the user-trait path has always compared it. A signature is
+                    // conformant if either normalisation says so, because the two spellings mean
+                    // the same thing and an impl may write either (WP-C6.2b-F6's rule, extended).
+                    let self_key = self.ty_signature_key(self_ty);
+                    let written_key =
+                        self.signature_type_key(actual, &self_key, &associated, &HashMap::new());
+                    let contract_key = match expected {
+                        ContractTy::OptionAssoc(name) => {
+                            let inner = associated.get(name).map_or_else(
+                                || format!("assoc:{name}"),
+                                |ty| {
+                                    self.signature_type_key(
+                                        *ty,
+                                        &self_key,
+                                        &associated,
+                                        &HashMap::new(),
+                                    )
+                                },
+                            );
+                            format!("core:{:?}<{inner}>", CoreType::Option)
+                        }
+                        _ => String::new(),
+                    };
+                    let assoc_spelling_matches =
+                        !contract_key.is_empty() && contract_key == written_key;
+                    if !assoc_spelling_matches
+                        && !matches!(expected_ty, Ty::Error)
+                        && !matches!(actual_ty, Ty::Error)
+                        && self.ty_signature_key(&expected_ty) != self.ty_signature_key(&actual_ty)
+                    {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "method '{}' of '{trait_name}' must return '{}', but this \
+                                     implementation returns '{}'",
+                                    method.name,
+                                    contract_ty_source(expected),
+                                    self.text(self.hir.ty(actual).span)
+                                ),
+                                self.hir.ty(actual).span,
+                            )
+                            .with_code("E0500"),
+                        );
+                    }
+                }
+                (Some(expected), _) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "method '{}' of '{trait_name}' must return '{}', but this \
+                                 implementation returns Unit",
+                                method.name,
+                                contract_ty_source(expected)
+                            ),
+                            sig.span,
+                        )
+                        .with_code("E0500"),
+                    );
+                }
+            }
+        }
+        self.current_self_ty = saved_self_ty;
+    }
+
+    /// The `Ty` a contract term denotes for this implementation.
+    ///
+    /// Both sides of every comparison are converted to a `Ty` and keyed with the SAME function
+    /// (`ty_signature_key`). Keying the expected side as a string and the actual side through
+    /// `signature_type_key` looked equivalent and was not: a generic impl (`impl<T> Eq for W<T>`)
+    /// renders its own parameter as `param:T` on one path and `g:0` on the other, so a correct
+    /// `fn eq(&self, other: &W<T>) -> Bool` was rejected with "must have type '&Self', but this
+    /// implementation writes '&W<T>'" — the two spellings the rule exists to treat as one.
+    fn contract_ty(
+        &mut self,
+        ty: ContractTy,
+        self_ty: &Ty,
+        associated: &HashMap<String, TypeId>,
+        trait_args: &[TypeId],
+    ) -> Ty {
+        match ty {
+            ContractTy::SelfTy => self_ty.clone(),
+            ContractTy::RefSelf => Ty::Ref {
+                mutable: false,
+                inner: Box::new(self_ty.clone()),
+            },
+            ContractTy::Bool => Ty::Primitive(Primitive::Bool),
+            ContractTy::UInt64 => Ty::Primitive(Primitive::UInt64),
+            ContractTy::StringTy => Ty::Primitive(Primitive::String),
+            ContractTy::Ordering => Ty::Core(CoreType::Ordering, Vec::new()),
+            ContractTy::OptionAssoc(name) => {
+                let item = associated
+                    .get(name)
+                    .map(|ty| self.convert_hir_type(*ty))
+                    .unwrap_or(Ty::Error);
+                Ty::Core(CoreType::Option, vec![item])
+            }
+            ContractTy::TraitArg(index) => trait_args
+                .get(index)
+                .map(|ty| self.convert_hir_type(*ty))
+                .unwrap_or(Ty::Error),
+        }
+    }
+
+    /// The trait's declaration of `method`, as a source-shaped line for a diagnostic note.
+    fn core_method_source(&self, trait_name: &str, method: &CoreTraitMethod) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(receiver) = method.receiver {
+            parts.push(receiver_source(Some(receiver)).to_string());
+        }
+        for param in method.params {
+            parts.push(contract_ty_source(*param));
+        }
+        let ret = match method.ret {
+            None => String::new(),
+            Some(ty) => format!(" -> {}", contract_ty_source(ty)),
+        };
+        format!("'{trait_name}::{}({}){ret}'", method.name, parts.join(", "))
     }
 
     /// WP-C6.2b-F6: a `Ty`'s key in the exact format `signature_type_key` produces for the same
@@ -3856,6 +4294,13 @@ impl<'a> TypeChecker<'a> {
         // the body (tensor extension §3.1). No-op for Core-only functions.
         let saved_dims = self.enter_tensor_param_scope(&sig.generics);
 
+        // WP-C7.9 Packet I: the function's own generics are in scope for its SIGNATURE types, not
+        // only for its body. This used to be installed after the return type was converted, which
+        // was invisible until a check needed to ask whether a type parameter satisfied a bound
+        // while converting a signature: `fn build<T: Hash + Eq>() -> HashMap<T, Int32>` would then
+        // see `T` with no declared bounds at all and reject its own return type.
+        self.current_fn_generics = Some(sig.generics.clone());
+
         let expected_ret = match sig.ret {
             hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
             hir::RetTy::Ty(t) => self.convert_hir_type(t),
@@ -3868,7 +4313,6 @@ impl<'a> TypeChecker<'a> {
             );
         }
         self.current_fn_ret = Some(expected_ret.clone());
-        self.current_fn_generics = Some(sig.generics.clone());
 
         // Parameters in local_types
         let mut state = HashSet::new();
@@ -5286,6 +5730,21 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let iter_ty = self.check_expr(*iter);
                 let resolved_iter_ty = self.resolve(&iter_ty);
+                // WP-C7.9 Packet E: by-VALUE `Vec` iteration is refused here rather than left to
+                // be accepted and then refused by lowering. It type-checked and ran in the
+                // reference interpreter while no compiler could build it — an accepted program no
+                // engine below HIR could execute. Iterating a borrow (`v.iter()`) is supported and
+                // is what the diagnostic points at.
+                if matches!(resolved_iter_ty, Ty::Core(CoreType::Vec, _)) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "by-value iteration over Vec<T> is not supported by this compiler; \
+                             iterate over a borrow with 'v.iter()'",
+                            self.hir.expr(*iter).span,
+                        )
+                        .with_code("E0105"),
+                    );
+                }
                 let elem_ty = match resolved_iter_ty.clone() {
                     Ty::Range(elem) | Ty::Array(elem, _) | Ty::Slice(elem) => *elem,
                     Ty::Core(CoreType::Vec, args) => args.first().cloned().unwrap_or(Ty::Error),
@@ -7222,7 +7681,7 @@ impl<'a> TypeChecker<'a> {
 
             ret_ty
         } else if let Some((params_ty, ret_ty, needs_mut)) =
-            self.core_method_signature(&receiver_ty, &name_str)
+            self.core_method_signature(&receiver_ty, &name_str, name_span)
         {
             if needs_mut && !self.is_mutable_place(base_expr) {
                 self.diags.push(
@@ -7438,7 +7897,12 @@ impl<'a> TypeChecker<'a> {
         Some(self.instantiate_ty(&item_ty, &map))
     }
 
-    fn core_method_signature(&mut self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
+    fn core_method_signature(
+        &mut self,
+        receiver: &Ty,
+        name: &str,
+        span: Span,
+    ) -> Option<(Vec<Ty>, Ty, bool)> {
         let unit = Ty::Primitive(Primitive::Unit);
         let bool_ty = Ty::Primitive(Primitive::Bool);
         let u64_ty = Ty::Primitive(Primitive::UInt64);
@@ -7538,6 +8002,34 @@ impl<'a> TypeChecker<'a> {
         }
         if self.is_iterator_type(receiver) {
             let item_ty = self.iterator_item_type(receiver);
+            // WP-C7.9 Packet E: the `Iterator` COMBINATOR surface is refused by the front end.
+            //
+            // The audit that this list came from is the whole block below: every one of these
+            // type-checked and ran in the reference interpreter, and NONE of them has a MIR
+            // lowering — `map` and `filter` have no MIR representation for their adapter types,
+            // and the rest are method calls on a non-nominal receiver that lowering does not
+            // perform. So each was an accepted program that no compiler could build, which is the
+            // split this packet closes. `next` is unaffected and is what `for` loops use, so
+            // ordinary iteration over a borrow keeps working.
+            //
+            // Refusal rather than implementation is a scope decision (D3), not a judgement that
+            // these should not exist: implementing them needs MIR adapter types and is its own
+            // work package.
+            if matches!(
+                name,
+                "count" | "collect" | "map" | "filter" | "fold" | "reduce" | "any" | "all" | "find"
+            ) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "iterator method '{name}' is not supported by this compiler; use a \
+                             'for' loop over the iterator instead"
+                        ),
+                        span,
+                    )
+                    .with_code("E0105"),
+                );
+            }
             match name {
                 "count" => return Some((Vec::new(), u64_ty, true)),
                 "collect" => {
@@ -8354,9 +8846,79 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The bounds the standard library declares on its own generic types (WP-C7.9 Packet I).
+    ///
+    /// `06-Standard-Library.md` writes `HashMap<K: Hash + Eq, V>` and `HashSet<T: Hash + Eq>`.
+    /// **DEV-118 was that neither half was enforced** — and specifically that all three engines
+    /// accepted the same invalid instantiations, because the current storage scans by `Eq` and
+    /// never consults a hash. That is the most dangerous shape of omission this project has: the
+    /// engines agree, so no differential can see it, and it becomes a live divergence the moment
+    /// one implementation starts hashing. Consistency is not conformance.
+    ///
+    /// Returns, per parameter position, the trait names that position must satisfy.
+    fn builtin_type_bounds(core: CoreType) -> &'static [(usize, &'static [&'static str])] {
+        match core {
+            // `K` is hashed and compared; `V` is neither.
+            CoreType::HashMap => &[(0, &["Hash", "Eq"])],
+            CoreType::HashSet => &[(0, &["Hash", "Eq"])],
+            _ => &[],
+        }
+    }
+
+    fn check_builtin_type_bounds(&mut self, core: CoreType, args: &[Ty], span: Span) {
+        for (position, required) in Self::builtin_type_bounds(core) {
+            let Some(arg) = args.get(*position) else {
+                continue;
+            };
+            // An inference variable is not yet a type; requiring a bound of it here would reject
+            // programs whose key type is perfectly valid but not yet known.
+            let resolved = self.resolve(arg);
+            if matches!(resolved, Ty::Error | Ty::Infer(_)) {
+                continue;
+            }
+            for bound in *required {
+                if !self.satisfies_bound_parts(&resolved, bound, None, None) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "type '{}' does not satisfy the bound '{bound}' required by \
+                                 '{}' parameter {}",
+                                self.ty_to_string(&resolved),
+                                self.ty_to_string(&Ty::Core(core, Vec::new())),
+                                position + 1
+                            ),
+                            span,
+                        )
+                        .with_code("E0500"),
+                    );
+                }
+            }
+        }
+    }
+
     fn satisfies_bound(&mut self, ty: &Ty, bound: &hir::TraitRef) -> bool {
-        let ty = self.resolve(ty);
         let bound_name = self.text(bound.path.span).to_string();
+        self.satisfies_bound_parts(ty, &bound_name, Some(bound.res), bound.args.clone())
+    }
+
+    /// WP-C7.9 Packet I: bound satisfaction, addressable by NAME rather than only by a written
+    /// `TraitRef`.
+    ///
+    /// The obligations the *implementation itself* imposes — `HashMap<K, V>` requiring
+    /// `K: Hash + Eq`, for instance — have no trait reference in the source to check against:
+    /// nobody wrote them, the standard library declares them. Before this, that meant they were not
+    /// checked at all (DEV-118). Splitting the name out of the reference lets one mechanism serve
+    /// both: a written bound passes its own name, and a built-in obligation passes the name the
+    /// specification states.
+    fn satisfies_bound_parts(
+        &mut self,
+        ty: &Ty,
+        bound_name: &str,
+        bound_res: Option<Res>,
+        bound_args: Option<hir::GenericArgs>,
+    ) -> bool {
+        let ty = self.resolve(ty);
+        let bound_name = bound_name.to_string();
 
         match &ty {
             Ty::Ref { mutable: _, inner } => {
@@ -8366,7 +8928,7 @@ impl<'a> TypeChecker<'a> {
                     || bound_name == "Hash"
                     || bound_name == "Display"
                 {
-                    self.satisfies_bound(inner, bound)
+                    self.satisfies_bound_parts(inner, &bound_name, bound_res, bound_args.clone())
                 } else {
                     false
                 }
@@ -8392,13 +8954,17 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Core(core_type, args) => {
                 if bound_name == "Clone" {
-                    args.iter().all(|arg| self.satisfies_bound(arg, bound))
+                    args.clone().iter().all(|arg| {
+                        self.satisfies_bound_parts(arg, &bound_name, bound_res, bound_args.clone())
+                    })
                 } else if bound_name == "Display" {
                     standard_display_type(&ty)
                 } else if bound_name == "Hash" {
                     standard_hash_type(&ty)
                 } else if bound_name == "Eq" || bound_name == "Ord" {
-                    args.iter().all(|arg| self.satisfies_bound(arg, bound))
+                    args.clone().iter().all(|arg| {
+                        self.satisfies_bound_parts(arg, &bound_name, bound_res, bound_args.clone())
+                    })
                 } else if bound_name == "Default" {
                     *core_type == CoreType::Vec
                         || *core_type == CoreType::Option
@@ -8433,7 +8999,7 @@ impl<'a> TypeChecker<'a> {
                         hir::TypeKind::Path { res: Res::Item(id), .. } if id == struct_id
                     );
                     if !same_nominal
-                        || (trait_ref.res != bound.res
+                        || (Some(trait_ref.res) != bound_res
                             && self.text(trait_ref.path.span) != bound_name)
                     {
                         return None;
@@ -8453,7 +9019,7 @@ impl<'a> TypeChecker<'a> {
                 let Some(associated) = associated else {
                     return false;
                 };
-                let bindings_match = bound.args.as_ref().is_none_or(|args| {
+                let bindings_match = bound_args.as_ref().is_none_or(|args| {
                     args.args.iter().all(|arg| match arg {
                         hir::GenericArg::Type(_) => true,
                         hir::GenericArg::Const(_) => true,
@@ -8550,6 +9116,200 @@ fn core_trait_source_name(core_trait: hir::CoreTrait) -> &'static str {
         hir::CoreTrait::IndexMut => "IndexMut",
         hir::CoreTrait::Iterator => "Iterator",
         hir::CoreTrait::FromIterator => "FromIterator",
+    }
+}
+
+// ------------------------------------------- WP-C7.9 Packet B: Core-trait implementation contracts --
+
+/// One type position in a Core trait's declared signature.
+///
+/// These are the *contract's* terms, not the implementation's. Each is rendered into the same key
+/// format `signature_type_key` produces for a written type, so one comparison serves both a
+/// user-declared trait (whose declaration is an HIR item) and a Core trait (which has none).
+#[derive(Clone, Copy)]
+enum ContractTy {
+    /// `Self` — the implementing type.
+    SelfTy,
+    /// `&Self`.
+    RefSelf,
+    Bool,
+    UInt64,
+    /// The prelude `String`.
+    StringTy,
+    /// The prelude `Ordering`.
+    Ordering,
+    /// `Option<Self::Name>` — the associated type the impl declared.
+    OptionAssoc(&'static str),
+    /// The trait's own generic argument at this position, as written in `impl Trait<..> for T`.
+    TraitArg(usize),
+}
+
+/// A Core trait method's required shape. Core v1 declares no method-level generics on any of
+/// these, so an impl that introduces one is malformed by construction.
+struct CoreTraitMethod {
+    name: &'static str,
+    receiver: Option<hir::Receiver>,
+    params: &'static [ContractTy],
+    /// `None` is a `Unit` return (`06-Standard-Library.md`: `fn drop(&mut self);`).
+    ret: Option<ContractTy>,
+}
+
+/// A Core trait's complete implementation contract.
+struct CoreTraitContract {
+    /// Every method the trait declares. All are required — no Core trait has a defaulted method.
+    methods: &'static [CoreTraitMethod],
+    /// Associated types the implementation must declare.
+    assoc_types: &'static [&'static str],
+}
+
+/// The contract for `core_trait`, or `None` when this trait's implementation shape is not modelled.
+///
+/// **`None` is a scope statement, not an oversight.** `Index`/`IndexMut`/`TryFrom`/`Error`/
+/// `FromIterator` declare signatures over associated types *and* method-level generics
+/// (`fn from_iter<I: Iterator<Item = T>>(iter: I) -> Self`), and no user implementation of them is
+/// supported anywhere in the compiler today. Writing a contract for them here would assert a
+/// support level that does not exist, and would be checked against nothing. `Num` is excluded for
+/// the opposite reason: implementing it at all is already rejected outright, before this check.
+///
+/// Every trait a user can implement in practice — the seven fixed-signature traits, `Iterator`,
+/// `From` and `Into` — is modelled.
+fn core_trait_contract(core_trait: hir::CoreTrait) -> Option<CoreTraitContract> {
+    use hir::CoreTrait as CT;
+    use hir::Receiver::{Ref, RefMut, Value};
+    let contract = match core_trait {
+        // Markers: no items at all, so any item in the block is an extra one.
+        CT::Copy => CoreTraitContract {
+            methods: &[],
+            assoc_types: &[],
+        },
+        // `fn drop(&mut self);`
+        CT::Drop => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "drop",
+                receiver: Some(RefMut),
+                params: &[],
+                ret: None,
+            }],
+            assoc_types: &[],
+        },
+        // `fn eq(&self, other: &Self) -> Bool;`
+        CT::Eq => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "eq",
+                receiver: Some(Ref),
+                params: &[ContractTy::RefSelf],
+                ret: Some(ContractTy::Bool),
+            }],
+            assoc_types: &[],
+        },
+        // `fn cmp(&self, other: &Self) -> Ordering;`
+        CT::Ord => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "cmp",
+                receiver: Some(Ref),
+                params: &[ContractTy::RefSelf],
+                ret: Some(ContractTy::Ordering),
+            }],
+            assoc_types: &[],
+        },
+        // `fn clone(&self) -> Self;`
+        CT::Clone => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "clone",
+                receiver: Some(Ref),
+                params: &[],
+                ret: Some(ContractTy::SelfTy),
+            }],
+            assoc_types: &[],
+        },
+        // `fn hash(&self) -> UInt64;`
+        CT::Hash => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "hash",
+                receiver: Some(Ref),
+                params: &[],
+                ret: Some(ContractTy::UInt64),
+            }],
+            assoc_types: &[],
+        },
+        // `fn default() -> Self;` — no receiver.
+        CT::Default => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "default",
+                receiver: None,
+                params: &[],
+                ret: Some(ContractTy::SelfTy),
+            }],
+            assoc_types: &[],
+        },
+        // `fn fmt(&self) -> String;`
+        CT::Display => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "fmt",
+                receiver: Some(Ref),
+                params: &[],
+                ret: Some(ContractTy::StringTy),
+            }],
+            assoc_types: &[],
+        },
+        // `type Item; fn next(&mut self) -> Option<Self::Item>;`
+        CT::Iterator => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "next",
+                receiver: Some(RefMut),
+                params: &[],
+                ret: Some(ContractTy::OptionAssoc("Item")),
+            }],
+            assoc_types: &["Item"],
+        },
+        // `fn from(value: T) -> Self;` — `T` is the trait's own argument.
+        CT::From => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "from",
+                receiver: None,
+                params: &[ContractTy::TraitArg(0)],
+                ret: Some(ContractTy::SelfTy),
+            }],
+            assoc_types: &[],
+        },
+        // `fn into(self) -> T;`
+        CT::Into => CoreTraitContract {
+            methods: &[CoreTraitMethod {
+                name: "into",
+                receiver: Some(Value),
+                params: &[],
+                ret: Some(ContractTy::TraitArg(0)),
+            }],
+            assoc_types: &[],
+        },
+        CT::Num | CT::Error | CT::TryFrom | CT::Index | CT::IndexMut | CT::FromIterator => {
+            return None
+        }
+    };
+    Some(contract)
+}
+
+/// How a contract term reads in a diagnostic — the *expected* half of "expected X, found Y".
+fn contract_ty_source(ty: ContractTy) -> String {
+    match ty {
+        ContractTy::SelfTy => "Self".to_string(),
+        ContractTy::RefSelf => "&Self".to_string(),
+        ContractTy::Bool => "Bool".to_string(),
+        ContractTy::UInt64 => "UInt64".to_string(),
+        ContractTy::StringTy => "String".to_string(),
+        ContractTy::Ordering => "Ordering".to_string(),
+        ContractTy::OptionAssoc(name) => format!("Option<Self::{name}>"),
+        ContractTy::TraitArg(index) => format!("the trait's type argument #{}", index + 1),
+    }
+}
+
+/// How a receiver form reads in a diagnostic.
+fn receiver_source(receiver: Option<hir::Receiver>) -> &'static str {
+    match receiver {
+        None => "no receiver",
+        Some(hir::Receiver::Value) => "self",
+        Some(hir::Receiver::Ref) => "&self",
+        Some(hir::Receiver::RefMut) => "&mut self",
     }
 }
 

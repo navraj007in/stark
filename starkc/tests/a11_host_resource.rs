@@ -117,10 +117,14 @@ fn verify_codes(program: &MirProgram) -> Vec<String> {
 #[test]
 fn the_mir_version_records_every_shape_amendment() {
     assert_eq!(mir::MIR_VERSION, "0.3");
-    // `MIR_RUNTIME_SURFACE` deliberately does NOT move, for A11 or A12: neither adds a `RuntimeFn`.
-    // A11's close is a provider call through MIR's `Drop` terminator; A12's storage end is a
-    // statement the backend lowers itself, calling nothing.
-    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A10");
+    // `MIR_RUNTIME_SURFACE` did NOT move for A11 or A12: neither adds a `RuntimeFn`. A11's close is
+    // a provider call through MIR's `Drop` terminator; A12's storage end is a statement the backend
+    // lowers itself, calling nothing.
+    //
+    // **A13 (WP-C7.9 Packet D) does move it**, to `0.1-A13`: the stderr half of the output surface
+    // is fourteen new `RuntimeFn` members. `MIR_VERSION` stays at `0.3` because A13 adds no shape —
+    // no statement, terminator, or type — which is the distinction these two constants draw.
+    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A13");
 }
 
 // ------------------------------------------------- nothing may manufacture one --

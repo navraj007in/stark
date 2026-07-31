@@ -1945,6 +1945,12 @@ fn emit_abort_with_message_call(
     )
 }
 
+/// Signedness of an integer MIR type. Mirrors `mir::interp::is_signed_int`: only signed types
+/// have a `MIN / -1` / `MIN % -1` failure, since the unsigned minimum is zero.
+fn is_signed_int(ty: &MirTy) -> bool {
+    matches!(ty, MirTy::Int8 | MirTy::Int16 | MirTy::Int32 | MirTy::Int64)
+}
+
 fn int_bounds_tokens(ty: &MirTy) -> Result<(&'static str, &'static str), BackendDiagnostic> {
     Ok(match ty {
         MirTy::Int8 => ("(i8::MIN as i128)", "(i8::MAX as i128)"),
@@ -2017,6 +2023,10 @@ fn int_width_tokens(ty: &MirTy) -> Result<&'static str, BackendDiagnostic> {
 /// result does not fit. The `i128`-widen-then-filter approach is used uniformly for all of
 /// these rather than optimizing the ones where it isn't required, to stay a provable match
 /// against the oracle rather than a "should be equivalent" argument re-derived per operator.
+///
+/// WP-C7.9 Packet A: `Div`/`Rem` additionally classify their own failure cause, because
+/// NUM-INT-DIV-001 gives them two — a zero divisor (`DivideByZero`, the terminator's default) and
+/// the signed `MIN op -1` pair (`IntegerOverflow`). The guard order here matches the oracle's.
 fn emit_checked_expr(
     files: &[Arc<SourceFile>],
     op: CheckedOp,
@@ -2032,6 +2042,37 @@ fn emit_checked_expr(
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
             let (min, max) = int_bounds_tokens(dest_ty)?;
             let a = emit_operand(&args[0], env)?;
+            // NUM-INT-DIV-001 gives `/` and `%` two distinct failures, and the terminator carries
+            // only the `DivideByZero` default. This mirrors `eval_checked`'s guard order exactly:
+            // read each operand ONCE into a temporary, trap `DivideByZero` on a zero divisor, then
+            // trap `IntegerOverflow` on the signed `MIN op -1` pair (whose intermediate quotient is
+            // not representable). Emitting the operand expressions once is load-bearing -- a
+            // repeated emission would evaluate a call operand twice.
+            if matches!(op, Div | Rem) {
+                let b = emit_operand(&args[1], env)?;
+                let overflow_abort =
+                    emit_abort_call(files, TrapCategory::IntegerOverflow, &trap.source);
+                let checked_call = if matches!(op, Div) {
+                    "checked_div"
+                } else {
+                    "checked_rem"
+                };
+                // Unsigned types have no negative minimum, so the pair is unreachable for them
+                // and no guard is emitted at all.
+                let min_guard = if is_signed_int(dest_ty) {
+                    format!("if __a == {min} && __b == -1i128 {{ {overflow_abort}; }} ")
+                } else {
+                    String::new()
+                };
+                return Ok(format!(
+                    "{{ let __a = ({a}) as i128; let __b = ({b}) as i128; \
+                     if __b == 0i128 {{ {default_abort}; }} \
+                     {min_guard}\
+                     match __a.{checked_call}(__b) {{ \
+                     Some(__v) if __v >= {min} && __v <= {max} => __v as {dest_rust_ty}, \
+                     _ => {overflow_abort} }} }}"
+                ));
+            }
             let checked = match op {
                 Add => format!(
                     "(({a}) as i128).checked_add(({}) as i128)",
@@ -2045,14 +2086,7 @@ fn emit_checked_expr(
                     "(({a}) as i128).checked_mul(({}) as i128)",
                     emit_operand(&args[1], env)?
                 ),
-                Div => format!(
-                    "(({a}) as i128).checked_div(({}) as i128)",
-                    emit_operand(&args[1], env)?
-                ),
-                Rem => format!(
-                    "(({a}) as i128).checked_rem(({}) as i128)",
-                    emit_operand(&args[1], env)?
-                ),
+                // `Div`/`Rem` returned above with their own guarded emission.
                 Neg => format!("(({a}) as i128).checked_neg()"),
                 // A5: exponent must be nonnegative and fit in u32 (NUM-INT-ARITH-001);
                 // `u32::try_from` rejects both a negative exponent and one wider than u32.

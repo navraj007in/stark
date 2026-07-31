@@ -31,6 +31,15 @@ pub fn stderr_bytes(bytes: &[u8]) {
     let _ = err.write_all(bytes);
 }
 
+/// Flush any buffered stderr bytes (WP-C7.9 Packet D).
+///
+/// The stderr counterpart of [`flush_stdout`], and needed for the same reason plus one more: the
+/// trap ABI writes its own diagnostic to this stream, so a program's unterminated `eprint` prefix
+/// must reach the stream *before* that diagnostic or the two would interleave in the wrong order.
+pub fn flush_stderr() {
+    let _ = std::io::stderr().lock().flush();
+}
+
 pub fn stderr_line(bytes: &[u8]) {
     let mut err = std::io::stderr().lock();
     let _ = err.write_all(bytes);

@@ -158,19 +158,35 @@ fn main() -> ExitCode {
                 ExitCode::from(execution.status)
             }
             Err(error) => {
-                let mut diagnostic = starkc::diag::Diagnostic::error(
-                    if error.is_trap {
-                        format!("runtime error: {}", error.message)
-                    } else {
-                        format!("executable target error: {}", error.message)
-                    },
-                    error.span,
-                );
-                if !error.is_trap {
-                    diagnostic.code = Some("E0214".to_string());
-                }
+                // WP-C7.9 Packet F: three outcomes, three renderings and three statuses. A
+                // host/process resource limit (`LIMIT-RESOURCE-001`) is neither a language trap nor
+                // a compiler rejection: the program was valid and the machine ran out, so it must
+                // not be reported with a trap category and must not exit 101, which is the status
+                // TRAP-ABORT-001 reserves for traps.
+                let (headline, code, status) = match error.class {
+                    starkc::interp::FailureClass::Trap => {
+                        (format!("runtime error: {}", error.message), None, 101u8)
+                    }
+                    starkc::interp::FailureClass::Entry => (
+                        format!("executable target error: {}", error.message),
+                        Some("E0214"),
+                        1,
+                    ),
+                    starkc::interp::FailureClass::HostResource => (
+                        format!("resource limit reached: {}", error.message),
+                        None,
+                        2,
+                    ),
+                    starkc::interp::FailureClass::InternalInvariant => (
+                        format!("internal compiler error: {}", error.message),
+                        None,
+                        70,
+                    ),
+                };
+                let mut diagnostic = starkc::diag::Diagnostic::error(headline, error.span);
+                diagnostic.code = code.map(str::to_string);
                 eprint!("{}", diagnostic.render(&root_file));
-                ExitCode::from(if error.is_trap { 101 } else { 1 })
+                ExitCode::from(status)
             }
         };
     }

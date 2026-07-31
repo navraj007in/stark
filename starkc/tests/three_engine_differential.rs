@@ -2217,6 +2217,7 @@ mod comparator_rules {
                 None => TrapMessageClass::CategoryOnly,
             },
             stdout_before_trap: stdout_before.as_bytes().to_vec(),
+            stderr_before_trap: Vec::new(),
             stderr_observation: TrapStderrObservation {
                 category_text: "runtime trap".to_string(),
                 user_message: message,

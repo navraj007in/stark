@@ -455,9 +455,10 @@ fn fold_checked(body: &mut MirBody) -> OptStats {
                 }
                 CheckedOutcome::Trap(override_category) => {
                     let mut info = *trap;
-                    // A5 shifts report `InvalidShift` rather than the terminator's own category;
-                    // the interpreter applies that override, so the fold must apply it identically
-                    // or a folded shift would report a different category from an executed one.
+                    // A5 shifts report `InvalidShift`, and signed `MIN / -1` / `MIN % -1` report
+                    // `IntegerOverflow`, rather than the terminator's own category; the
+                    // interpreter applies those overrides, so the fold must apply them identically
+                    // or a folded operation would report a different category from an executed one.
                     if let Some(category) = override_category {
                         info.category = category;
                     }

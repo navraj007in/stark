@@ -890,7 +890,7 @@ fn genrust_spike_matches_interpreter_on_frozen_corpus() {
                     }
                     Err(ref trap) => {
                         assert!(
-                            trap.is_trap,
+                            trap.is_trap(),
                             "{name}: oracle errored but not a trap: {trap:?}"
                         );
                         assert_ne!(

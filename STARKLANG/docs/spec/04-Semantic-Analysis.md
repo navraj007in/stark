@@ -488,6 +488,12 @@ line | source code line
 - E0104: By-value iteration over a fixed-length array with a non-`Copy` element type is not yet
   supported (deferred feature — consuming each element moves it out of a place named by a
   runtime loop index; iterate over a borrow instead. `Copy` arrays iterate normally.)
+- E0105: Iteration form not supported by this implementation (deferred feature). Covers by-value
+  iteration over `Vec<T>` and the `Iterator` combinator methods (`map`, `filter`, `count`,
+  `collect`, `fold`, `reduce`, `any`, `all`, `find`). Iterating a borrow (`v.iter()`) and driving
+  an iterator with a `for` loop are supported. An implementation that supports these forms does
+  not raise E0105; one that does not MUST raise it during semantic analysis rather than accepting
+  the program and failing later, so that acceptance and executability agree.
 
 #### Name Resolution Errors (E0200-E0299)
 - E0200: Undefined variable

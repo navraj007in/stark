@@ -937,7 +937,7 @@ fn cranelift_spike_matches_interpreter_on_frozen_corpus() {
                         supported.push((name, ran.build_ms, "match/normal"));
                     }
                     Err(ref trap) => {
-                        assert!(trap.is_trap, "{name}: oracle errored, not a trap");
+                        assert!(trap.is_trap(), "{name}: oracle errored, not a trap");
                         assert_ne!(
                             ran.exit_code,
                             Some(0),

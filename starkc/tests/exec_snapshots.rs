@@ -288,7 +288,7 @@ fn render_execution(result: Result<interp::Execution, interp::RuntimeError>) -> 
             "STATUS: {}\n--- stdout ---\n{}--- stderr ---\n{}",
             execution.status, execution.output, execution.stderr
         ),
-        Err(error) => format!("TRAP (is_trap={}): {}\n", error.is_trap, error.message),
+        Err(error) => format!("TRAP (is_trap={}): {}\n", error.is_trap(), error.message),
     }
 }
 
