@@ -2,9 +2,9 @@
 
 ## Gate C9 — OPEN (2026-07-31)
 
-Active WP: C9.0 baseline and governance.
+Active WP: C9 Part A closeout.
 
-Part A is authorised: C9.0 baseline/governance, C9.1 extension-isolation conformance, and C9.2
+Part A is complete for C9.0 baseline/governance, C9.1 extension-isolation conformance, and C9.2
 tensor/ONNX provider map. Part B is blocked pending second-artifact evidence; no provider
 generalisation is authorised from ONNX alone.
 

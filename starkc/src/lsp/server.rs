@@ -1610,6 +1610,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn package_lsp_sessions_keep_tensor_extension_isolated() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "stark-lsp-extension-package-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = package_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            package_dir.join("starkpkg.json"),
+            r#"{"name":"app","version":"0.1.0","entry":"src/main.stark"}"#,
+        )
+        .unwrap();
+        let main_path = src_dir.join("main.stark");
+        let tensor_source = "model Resnet50V17<N: Dim> {\n    input data: Tensor<Float32, [N, 3, 224, 224]>;\n    output scores: Tensor<Float32, [N, 1000]>;\n}\n";
+        std::fs::write(&main_path, tensor_source).unwrap();
+        let uri = path_to_file_uri(&main_path);
+
+        let mut core = Server::new();
+        let response = core.handle_initialize(1, &JsonValue::Object(HashMap::new()));
+        assert!(response.error.is_none());
+        core.state
+            .open_document(uri.clone(), 1, tensor_source.to_string());
+        core.compile_document(&uri);
+        let core_messages: Vec<String> = core.state.compilation_cache[&uri]
+            .analysis
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect();
+        assert!(
+            core_messages
+                .iter()
+                .any(|message| message.contains("extension `tensor`")),
+            "{core_messages:?}"
+        );
+
+        let mut tensor = Server::new();
+        let response =
+            tensor.handle_initialize(2, &initialize_params_with_extensions(vec!["tensor"]));
+        assert!(response.error.is_none());
+        tensor
+            .state
+            .open_document(uri.clone(), 2, tensor_source.to_string());
+        tensor.compile_document(&uri);
+        let tensor_messages: Vec<String> = tensor.state.compilation_cache[&uri]
+            .analysis
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect();
+        assert!(
+            !tensor_messages
+                .iter()
+                .any(|message| message.contains("extension `tensor`")),
+            "{tensor_messages:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(package_dir);
+    }
+
     /// A package build names its sources `<package>/<path in package>` — an identity token, not
     /// a location. Every URI the server hands back must still be one the client can open, and
     /// every source lookup must resolve a client URI that will never match those names. Both

@@ -4,7 +4,7 @@ Date: 2026-07-31
 
 ## Status
 
-Part A is in progress. Part B is blocked pending second-artifact evidence.
+Part A is complete for C9.0-C9.2. Part B is blocked pending second-artifact evidence.
 
 ## Implemented Evidence
 
@@ -12,7 +12,10 @@ Part A is in progress. Part B is blocked pending second-artifact evidence.
   matching CLI/internal option policy.
 - LSP shutdown clears language options back to Core-only.
 - `c91_extension_isolation` proves Core-only default rejection, explicit tensor acceptance,
-  sequential session isolation, parallel analysis isolation, and CLI invalid configuration refusal.
+  sequential session isolation, parallel analysis isolation, CLI invalid configuration refusal,
+  fixed-Core package/format/doc behavior, and package-module isolation.
+- LSP package-mode tests prove separate Core-only and tensor-enabled server sessions do not share
+  extension state.
 
 ## Commands
 

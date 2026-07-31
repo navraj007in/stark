@@ -32,6 +32,35 @@ fn messages(analysis: &starkc::analysis::ProjectAnalysis) -> Vec<String> {
         .collect()
 }
 
+fn temp_package(name: &str, main_source: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(format!(
+            "temp_c91_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time must be after epoch")
+                .as_nanos()
+        ));
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create temp package src");
+    std::fs::write(
+        root.join("starkpkg.json"),
+        r#"{"name":"c91_app","version":"0.1.0","entry":"src/main.stark"}"#,
+    )
+    .expect("write manifest");
+    std::fs::write(src.join("main.stark"), main_source).expect("write main");
+    root
+}
+
+fn command_output(bin: &str, args: &[&str], cwd: &std::path::Path) -> std::process::Output {
+    Command::new(bin)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap_or_else(|error| panic!("run {bin} {args:?}: {error}"))
+}
+
 #[test]
 fn c91_core_default_rejects_tensor_constructs_and_tensor_accepts_them() {
     let core = analyze(TENSOR_DECL, LanguageOptions::CORE);
@@ -119,4 +148,78 @@ fn c91_cli_extension_config_rejects_unknown_and_duplicates() {
             "{stderr}"
         );
     }
+}
+
+#[test]
+fn c91_package_and_tool_entry_points_are_core_only_without_extension_surface() {
+    let root = temp_package("tool_core", TENSOR_DECL);
+
+    let stark = env!("CARGO_BIN_EXE_stark");
+    for (args, expected_code, expected_message) in [
+        (
+            vec!["check"],
+            Some(1),
+            "`model` declarations require extension `tensor`",
+        ),
+        (
+            vec!["run"],
+            Some(1),
+            "`model` declarations require extension `tensor`",
+        ),
+        (
+            vec!["fmt", "--check"],
+            Some(1),
+            "`model` declarations require extension `tensor`",
+        ),
+        (
+            vec!["doc"],
+            Some(1),
+            "`model` declarations require extension `tensor`",
+        ),
+        (vec!["check", "--extension", "tensor"], Some(2), "Usage:"),
+        (vec!["run", "--extension", "tensor"], Some(2), "Usage:"),
+        (vec!["build", "--extension", "tensor"], Some(2), "Usage:"),
+    ] {
+        let output = command_output(stark, &args, &root);
+        assert_eq!(
+            output.status.code(),
+            expected_code,
+            "stark {args:?} stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined.contains(expected_message),
+            "stark {args:?} did not contain {expected_message:?}: {combined}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn c91_package_modules_do_not_leak_tensor_enablement_from_other_sessions() {
+    let root = temp_package("module_core", "mod tensor_mod;\nfn main() { }\n");
+    std::fs::write(root.join("src/tensor_mod.stark"), TENSOR_DECL).expect("write module");
+    let manifest = starkc::package::find_package_root(&root).expect("find manifest");
+    let graph = starkc::package::PackageGraph::load_from_root(&manifest).expect("load package");
+
+    let tensor_single = analyze(TENSOR_DECL, LanguageOptions::with_tensor());
+    assert!(messages(&tensor_single).is_empty());
+
+    let package_core = analyze_project(ProjectInput::package(graph), LanguageOptions::CORE);
+    let package_messages = messages(&package_core);
+    assert!(
+        package_messages
+            .iter()
+            .any(|message| message.contains("`model` declarations require extension `tensor`")),
+        "{package_messages:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }
