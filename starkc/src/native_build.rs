@@ -383,24 +383,53 @@ fn select_provider_closes(
 
 /// Where first-party provider crates live relative to a package being built.
 ///
-/// Walks up from the package looking for the checkout that contains them. Deliberately a *search
-/// for a known layout* rather than an environment variable: Packet 5 forbids implicit discovery,
-/// and an env-var override would be exactly that — a way for the environment, rather than the
-/// program's declarations, to decide which code gets linked.
+/// Two locations, tried in this order:
+///
+/// 1. **A checkout containing them**, found by walking up from the package. This is how in-repo
+///    development works and is unchanged.
+/// 2. **The installed toolchain's own provider root**, `<exe>/../lib/stark/providers`. This is what
+///    makes provider-backed capabilities usable by a package that lives anywhere on the machine;
+///    without it, an installed `stark` could compile pure Core programs and nothing that reads a
+///    clock, a file, the environment or a socket.
+///
+/// **Still not implicit discovery, which is the constraint that shaped this.** Packet 5 forbids the
+/// *environment* deciding which code gets linked, and this deliberately remains an environment-free
+/// search: no variable is consulted, and the second location is a fixed path inside the toolchain
+/// that the compiler binary is part of — the same mechanism, and the same reasoning, as
+/// `native_toolchain::discover_runtime`'s `<exe>/../lib/stark/stark-runtime`. A user cannot point
+/// it somewhere else without replacing the installation.
+///
+/// The installed root mirrors the repository's shape (`<root>/stark-time/native`, and a
+/// `<root>/starkc/stark-provider-abi` for the `../../` dependency each provider manifest writes),
+/// so [`crate::provider_registry::crate_location`] needs no knowledge of which of the two it got.
 fn provider_repo_root(package_root: &Path) -> PathBuf {
     let mut current = Some(package_root);
     while let Some(dir) = current {
-        if dir
-            .join("stark-time")
-            .join("native")
-            .join("Cargo.toml")
-            .is_file()
-        {
+        if has_provider_layout(dir) {
             return dir.to_path_buf();
         }
         current = dir.parent();
     }
+    if let Some(installed) = installed_provider_root() {
+        return installed;
+    }
     package_root.to_path_buf()
+}
+
+/// Whether `dir` is a root holding first-party provider crates in the layout
+/// `crate_location` expects.
+fn has_provider_layout(dir: &Path) -> bool {
+    dir.join("stark-time")
+        .join("native")
+        .join("Cargo.toml")
+        .is_file()
+}
+
+/// `<exe>/../lib/stark/providers`, when the running compiler has one.
+fn installed_provider_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let root = exe.parent()?.join("../lib/stark/providers");
+    has_provider_layout(&root).then(|| root.canonicalize().unwrap_or(root))
 }
 
 /// Renders selection failures with the remediation Packet 5's diagnostic requirement names.
@@ -868,5 +897,59 @@ mod tests {
             binary_filename("demo", Path::new("stark_program.exe")),
             "demo.exe"
         );
+    }
+
+    /// Builds a directory holding first-party providers in the layout `crate_location` expects.
+    fn provider_layout_at(root: &Path) {
+        std::fs::create_dir_all(root.join("stark-time/native")).unwrap();
+        std::fs::write(root.join("stark-time/native/Cargo.toml"), "").unwrap();
+    }
+
+    /// A package inside a checkout resolves providers from that checkout — the in-repo path,
+    /// which must keep working exactly as before.
+    #[test]
+    fn a_package_inside_a_checkout_uses_the_checkout() {
+        let root = std::env::temp_dir().join(format!("stark_prov_repo_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        provider_layout_at(&root);
+        let package = root.join("examples/demo");
+        std::fs::create_dir_all(&package).unwrap();
+
+        assert_eq!(
+            provider_repo_root(&package).canonicalize().unwrap(),
+            root.canonicalize().unwrap(),
+            "the enclosing checkout must win: an in-repo build links the checkout's own providers"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A package with no checkout above it falls back to the package root only when the running
+    /// compiler has no installed provider root either.
+    ///
+    /// The installed half cannot be exercised here without relocating the test binary, so what is
+    /// pinned is the SHAPE both halves share: `has_provider_layout` is the single predicate that
+    /// decides whether a candidate root is usable, and `crate_location` reads the same layout from
+    /// whichever root it is given.
+    #[test]
+    fn a_root_is_usable_only_when_it_has_the_provider_layout() {
+        let root = std::env::temp_dir().join(format!("stark_prov_empty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            !has_provider_layout(&root),
+            "an empty directory is not a provider root"
+        );
+
+        provider_layout_at(&root);
+        assert!(
+            has_provider_layout(&root),
+            "a directory holding stark-time/native/Cargo.toml is one"
+        );
+        assert_eq!(
+            crate::provider_registry::crate_location("stark-time-native", &root),
+            Some(root.join("stark-time").join("native")),
+            "the installed root mirrors the repository shape, so one locator serves both"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
