@@ -500,3 +500,99 @@ fn deref_scrutinee_binds_copy_by_value_and_owning_by_reference() {
          let s = E::S(String::from(\"abcd\")); assert_eq(describe(&s), 4u64); }",
     );
 }
+
+// ---- CD-305: a shared slice view is Copy however it was produced ----
+
+/// **`String::bytes()` returned a value that was not `Copy`, so passing it consumed the caller's
+/// binding.** Accepted-but-traps: the checker allowed it, MIR emitted `copy` for the argument, and
+/// only the HIR interpreter destroyed the local — "use of unavailable value" at run time.
+///
+/// `bytes()` is `&[UInt8]`, a shared reference, which is `Copy`. It shared an implementation arm
+/// with `into_bytes()` — `Vec<UInt8>`, genuinely owned — and both produced `Value::Vec`. So two
+/// representations claimed to be `&[UInt8]` and only one obeyed the ownership contract.
+///
+/// This is DEV-087 in a second producer: that fix classified `Value::Slice` as `Copy` after the
+/// identical symptom, but `bytes()` never produced a `Value::Slice` to classify.
+///
+/// Three engines, because the failure existed in exactly one of them.
+#[test]
+fn bytes_view_survives_being_passed_to_a_function() {
+    agree_out(
+        "bytesviewtwice",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let a = use_len(bytes); let b = use_len(bytes); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// Passing then indexing — the discriminator that showed the CALL was what consumed the view,
+/// rather than "two calls" being the problem.
+#[test]
+fn bytes_view_is_indexable_after_being_passed() {
+    agree_out(
+        "bytesviewthenindex",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let a = use_len(bytes); let b = bytes[0u64]; assert_eq(a, 4u64); assert_eq(b, 97u8); }",
+    );
+}
+
+/// The same view reached through `as_str()`, which is how `stark-percent` spells it.
+#[test]
+fn as_str_bytes_view_survives_being_passed() {
+    agree_out(
+        "asstrbytesview",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.as_str().bytes(); \
+         let a = use_len(bytes); let b = use_len(bytes); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// A slice built the ordinary way already worked; pinned so the two producers cannot diverge again.
+#[test]
+fn array_slice_survives_being_passed() {
+    agree_out(
+        "arrayslicetwice",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let array: [UInt8; 4] = [97u8, 98u8, 99u8, 100u8]; \
+         let slice = &array[0u64..4u64]; \
+         let a = use_len(slice); let b = use_len(slice); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// Aliasing the view and using both — a `Copy` value may be bound again without consuming the
+/// original.
+#[test]
+fn bytes_view_may_be_aliased() {
+    agree_out(
+        "bytesviewalias",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let alias = bytes; let a = use_len(bytes); let b = use_len(alias); \
+         assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// **The control.** Without this, a repair that made every call argument a `Copy` read would pass
+/// all five tests above while silently destroying move semantics. `into_bytes()` is an OWNED
+/// `Vec<UInt8>`: passing it consumes it, and a second use is a compile-time move error.
+#[test]
+fn owned_vec_argument_still_moves() {
+    let src = "fn consume(v: Vec<UInt8>) -> UInt64 { v.len() } \
+               fn main() { let input = String::from(\"abcd\"); let owned = input.into_bytes(); \
+               let a = consume(owned); let b = consume(owned); println(a + b); }";
+    let file = Arc::new(SourceFile::new("ownedmove.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0100")),
+        "passing an owned Vec must still move it: {:?}",
+        checked.diagnostics
+    );
+}

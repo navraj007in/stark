@@ -4615,7 +4615,37 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Str(string[start..end].to_string()))
                 }
                 "chars" => Ok(Value::CharsIter(string.clone(), 0)),
-                "bytes" | "into_bytes" => {
+                // **`bytes` and `into_bytes` have DIFFERENT types and must have different runtime
+                // representations.** They shared this arm, and both produced `Value::Vec`.
+                //
+                //   bytes()       -> `&[UInt8]`      a SHARED SLICE, and shared references are Copy
+                //   into_bytes()  -> `Vec<UInt8>`    an OWNED vector, correctly not Copy
+                //
+                // `Value::Vec` is classified non-`Copy` — rightly, it owns its elements. So the
+                // view returned by `bytes()` was CONSUMED when passed to a function, and any later
+                // use of the caller's binding read an emptied slot: "use of unavailable value", at
+                // run time, on a program the checker and MIR both accept.
+                //
+                // This is DEV-087's defect in a second producer. That fix classified
+                // `Value::Slice` as `Copy` and its comment describes this exact symptom —
+                // `total(shared); shared[0]` failing in the oracle alone. The classification was
+                // right; `bytes()` simply never produced the classified thing. Two representations
+                // claimed to be `&[UInt8]` and only one obeyed the ownership contract.
+                //
+                // Found in `stark-mime`, whose `slice_to_string(bytes, ..)` passes the view;
+                // `stark-percent` only ever indexed it, which is why one package worked and the
+                // other did not for what looked like an unrelated reason.
+                "bytes" => {
+                    let elements: Vec<Option<Value>> = string
+                        .bytes()
+                        .map(|b| Some(Value::Int(b as i128)))
+                        .collect();
+                    // The receiver borrow ends here, before the frame is touched.
+                    let len = elements.len();
+                    let place = self.promote_to_temp_place(Value::Vec(elements), span)?;
+                    Ok(Value::Slice(place, 0, len))
+                }
+                "into_bytes" => {
                     let bytes_val = string
                         .bytes()
                         .map(|b| Some(Value::Int(b as i128)))
