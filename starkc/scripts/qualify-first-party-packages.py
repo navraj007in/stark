@@ -53,6 +53,7 @@ def run(cmd: list[str], cwd: Path, expected_stdout: str | None = None) -> None:
             cmd,
             cwd=cwd,
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
