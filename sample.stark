@@ -1,0 +1,63 @@
+// sample.stark
+// Demonstrates STARK Core language features: Enums, Structs, Traits, Generics, and Control Flow
+
+// 1. Enums and Pattern Matching
+enum Shape {
+    Point,
+    Rect(Int32, Int32),
+}
+
+// 2. Traits and Methods
+trait Area {
+    fn area(&self) -> Int32;
+}
+
+// 3. Implementing traits for an enum
+impl Area for Shape {
+    fn area(&self) -> Int32 {
+        match *self {
+            Shape::Point => 0,
+            Shape::Rect(w, h) => w * h,
+        }
+    }
+}
+
+// 4. Structs and Generics
+struct Container<T> {
+    value: T,
+}
+
+impl<T> Container<T> {
+    fn new(value: T) -> Container<T> {
+        Container { value: value }
+    }
+    
+    fn get(&self) -> &T {
+        &self.value
+    }
+}
+
+// 5. Functions and Control Flow
+fn factorial(n: Int32) -> Int32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+
+fn main() {
+    let n = 5;
+    let fact = factorial(n);
+    println(fact);
+
+    let rect = Shape::Rect(4, 5);
+    let circ = Shape::Point;
+    
+    println(rect.area());
+    println(circ.area());
+
+    // Wait, let's use the explicit type since inference might not be perfect
+    let box = Container::new(rect);
+    println(box.get().area());
+}
