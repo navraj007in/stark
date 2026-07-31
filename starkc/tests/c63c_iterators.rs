@@ -390,3 +390,113 @@ fn vec_index_borrow_out_of_bounds_traps() {
         1,
     );
 }
+
+// ---- CD-303: PAT-BIND-001 diagnostic enforcement ----
+
+/// **A reference-typed scrutinee with constructor patterns is REJECTED, and the message says how.**
+///
+/// PAT-BIND-001: "a struct/variant path must name the scrutinee's normalized nominal type, and `&T`
+/// is not a nominal type, so `match r { E::V(x) => .. }` for `r: &E` is a type error. This is why
+/// the rule is stated over the place read, not over the scrutinee's type."
+///
+/// It was not enforced. `Ty::Ref` fell through every classifier, and the result was the worst
+/// available combination: the exhaustiveness check demanded a wildcard (E0303) on a match that
+/// already covered every variant, and the wildcard added to satisfy it then absorbed every case at
+/// run time — a function returning the wildcard's answer for every input, silently.
+///
+/// The diagnostic names the fix rather than the symptom, because the symptom (E0303) pointed at
+/// the wrong problem and its obvious remedy made things worse.
+#[test]
+fn ref_scrutinee_with_constructor_patterns_is_rejected() {
+    let src = "enum E { A(UInt64), B } \
+               fn classify(e: &E) -> UInt64 { match e { E::A(n) => n, E::B => 900u64 } } \
+               fn main() { let v = E::A(7u64); println(classify(&v)); }";
+    let file = Arc::new(SourceFile::new("refscrut.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("reference-typed scrutinee"))
+        .unwrap_or_else(|| {
+            panic!(
+                "a reference-typed scrutinee with constructor patterns must be rejected; got {:?}",
+                checked.diagnostics
+            )
+        });
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(
+        diag.helps.iter().any(|h| h.contains("match *r")),
+        "the diagnostic must recommend dereferencing: {:?}",
+        diag.helps
+    );
+}
+
+/// A wildcard or plain binding names no constructor, so it is NOT what the rule forbids and stays
+/// accepted. Without this, the check above would be free to over-reject.
+#[test]
+fn ref_scrutinee_without_constructor_patterns_is_accepted() {
+    let src = "enum E { A(UInt64), B } \
+               fn is_something(e: &E) -> UInt64 { match e { _ => 1u64 } } \
+               fn main() { let v = E::B; println(is_something(&v)); }";
+    let file = Arc::new(SourceFile::new("refscrutwild.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    assert!(
+        !checked
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("reference-typed scrutinee")),
+        "a wildcard arm names no constructor and must not be rejected: {:?}",
+        checked.diagnostics
+    );
+}
+
+/// **`match *r` is the working form, and it selects the right arm in every engine.**
+///
+/// The positive half of the rule. Three-engine, because the runtime behaviour is the part that was
+/// wrong: with the old code no arm matched, so this program would have trapped or taken a wildcard.
+#[test]
+fn deref_scrutinee_match_selects_the_right_arm() {
+    agree_out(
+        "derefscrutarm",
+        "enum E { A(UInt64), B, C } \
+         fn classify(e: &E) -> UInt64 { match *e { E::A(n) => n, E::B => 900u64, E::C => 901u64 } } \
+         fn main() { let a = E::A(7u64); let b = E::B; let c = E::C; \
+         assert_eq(classify(&a), 7u64); assert_eq(classify(&b), 900u64); assert_eq(classify(&c), 901u64); }",
+    );
+}
+
+/// `match *r` covering every variant is exhaustive and needs no wildcard — the deref form was never
+/// the thing E0303 was complaining about, and must not start complaining now.
+#[test]
+fn deref_scrutinee_match_is_exhaustive_without_a_wildcard() {
+    agree_out(
+        "derefscrutexh",
+        "enum E { A(UInt64), B, C } \
+         fn classify(e: &E) -> UInt64 { match *e { E::A(n) => n, E::B => 900u64, E::C => 901u64 } } \
+         fn main() { let v = E::C; assert_eq(classify(&v), 901u64); }",
+    );
+}
+
+/// **PAT-BIND-001's binding rule, pinned by use.** A `Copy` payload binds BY VALUE (`n` is a
+/// `UInt64`, added directly); a non-`Copy` payload binds BY REFERENCE (`s` is a `&String`, read in
+/// place and never moved out of the referent). Rust would bind both by reference; that difference
+/// is deliberate, and treating Rust's ergonomics as a separate proposal is why this test states the
+/// current rule explicitly rather than leaving it to be inferred.
+#[test]
+fn deref_scrutinee_binds_copy_by_value_and_owning_by_reference() {
+    agree_out(
+        "derefscrutbind",
+        "enum E { N(UInt64), S(String) } \
+         fn describe(e: &E) -> UInt64 { match *e { E::N(n) => n + 1u64, E::S(s) => s.len() } } \
+         fn main() { let n = E::N(41u64); assert_eq(describe(&n), 42u64); \
+         let s = E::S(String::from(\"abcd\")); assert_eq(describe(&s), 4u64); }",
+    );
+}

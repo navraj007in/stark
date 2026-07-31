@@ -1,0 +1,102 @@
+use super::decode;
+use super::encode;
+use super::PercentEncodeSet;
+use super::PercentError;
+
+fn test_encode_sets() {
+    let input: &[UInt8] = &[102u8, 111u8, 111u8, 47u8, 98u8, 97u8, 114u8, 63u8, 97u8, 61u8, 66u8, 38u8, 99u8, 61u8, 43u8];
+    
+    let seg = encode(input, PercentEncodeSet::PathSegment);
+    if seg.as_str() != "foo%2Fbar%3Fa%3DB%26c%3D%2B" {
+        panic("PathSegment encode mismatch");
+    }
+
+    let path = encode(input, PercentEncodeSet::Path);
+    if path.as_str() != "foo/bar%3Fa%3DB%26c%3D%2B" {
+        panic("Path encode mismatch");
+    }
+
+    let query = encode(input, PercentEncodeSet::QueryComponent);
+    if query.as_str() != "foo%2Fbar%3Fa%3DB%26c%3D+" {
+        panic("QueryComponent encode mismatch");
+    }
+}
+
+fn test_decode_valid() {
+    let input = String::from("foo%2Fbar%3Fa%3DB+123%20test");
+    match decode(&input) {
+        Ok(bytes) => {
+            // 20 bytes: f o o / b a r ? a = B + 1 2 3 ␠ t e s t
+            //
+            // This expected 21, with a second `32` between `43` (`+`) and `49` (`1`) — it wanted
+            // `+` to yield BOTH a plus and a space. Percent-decoding leaves `+` alone; mapping it
+            // to a space is `application/x-www-form-urlencoded` decoding, which is `stark-form`'s
+            // job. The single `32` here is the `%20` near the end, decoded correctly.
+            let expected: &[UInt8] = &[102u8, 111u8, 111u8, 47u8, 98u8, 97u8, 114u8, 63u8, 97u8, 61u8, 66u8, 43u8, 49u8, 50u8, 51u8, 32u8, 116u8, 101u8, 115u8, 116u8];
+            assert_vec_matches_slice(&bytes, expected);
+        }
+        Err(_) => {
+            panic("valid decode failed");
+        }
+    }
+}
+
+fn test_decode_errors() {
+    let incomplete1 = String::from("foo%");
+    if !is_incomplete_escape(&decode(&incomplete1), 3u64) {
+        panic("incomplete escape offset mismatch");
+    }
+
+    let incomplete2 = String::from("foo%2");
+    if !is_incomplete_escape(&decode(&incomplete2), 3u64) {
+        panic("incomplete escape offset 2 mismatch");
+    }
+
+    let invalid_hex1 = String::from("foo%G1");
+    if !is_invalid_hex(&decode(&invalid_hex1), 4u64, 71u8) {
+        panic("invalid hex digit 1 mismatch");
+    }
+
+    let invalid_hex2 = String::from("foo%1G");
+    if !is_invalid_hex(&decode(&invalid_hex2), 5u64, 71u8) {
+        panic("invalid hex digit 2 mismatch");
+    }
+}
+
+// **`match *res`, not `match res`.** PAT-BIND-001: a constructor path names a nominal type, and
+// `&Result<..>` is not one, so a reference-typed scrutinee is a type error. Dereferencing makes it a
+// read THROUGH a reference, which is the form the rule is stated over.
+//
+// These were `match res` and returned `false` for every input — the arms never matched, so `_`
+// answered everything. `is_incomplete_escape` reported "not an incomplete escape" for an incomplete
+// escape it had just been handed, and the test that failed as a result looked like a decoder bug.
+// The decoder was correct throughout.
+//
+// `off` and `byte`, not `*off` and `*byte`: under PAT-BIND-001 a `Copy` payload binds BY VALUE, and
+// only a non-`Copy` one binds by reference — copying a `UInt64` takes nothing from the referent.
+fn is_incomplete_escape(res: &Result<Vec<UInt8>, PercentError>, expected_off: UInt64) -> Bool {
+    match *res {
+        Err(PercentError::IncompleteEscape(off)) => off == expected_off,
+        _ => false,
+    }
+}
+
+fn is_invalid_hex(res: &Result<Vec<UInt8>, PercentError>, expected_off: UInt64, expected_byte: UInt8) -> Bool {
+    match *res {
+        Err(PercentError::InvalidHexDigit(off, byte)) => off == expected_off && byte == expected_byte,
+        _ => false,
+    }
+}
+
+fn assert_vec_matches_slice(actual: &Vec<UInt8>, expected: &[UInt8]) {
+    if actual.len() != expected.len() {
+        panic("byte vector length mismatch");
+    }
+    let mut i: UInt64 = 0u64;
+    while i < expected.len() {
+        if actual[i] != expected[i] {
+            panic("byte vector content mismatch");
+        }
+        i = i + 1u64;
+    }
+}
