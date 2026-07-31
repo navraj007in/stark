@@ -269,6 +269,12 @@ agrees across HIR, MIR and native on both Tier-1 targets. NOT every specified li
 non-blocking, owned by WP-C6.3. It is an enforcement omission, not a differential defect: all three
 engines accept the same programs, so it cannot threaten the agreement claim.
 
+> **Superseded 2026-07-31 (CD-275, WP-C7.9 Packet I): DEV-118 is CLOSED.** The bound is enforced at
+> type instantiation for both collections. The reasoning above stands as the reason it was
+> *survivable* at C6 closure — and it is also the reason nothing found it: an omission every engine
+> shares is invisible to a differential, which is why the comparator now pins expectations against
+> the specification rather than against engine agreement.
+
 **Seven defects found and fixed**, each by closing a coverage gap rather than by inspection:
 DEV-111, DEV-112, DEV-113, DEV-114, DEV-115, DEV-116 (incl. `HashSet::iter`), DEV-117. Three
 FABRICATION classes were also found and machine-checked shut: 69 invented rule IDs (CD-154), 36

@@ -10,5 +10,5 @@ minimal file-handle slice.
 The attached v0.1 spec names the required capability `file`; this checkout's first-party registry
 currently exposes the same provider under `filesystem`, so the manifest uses `filesystem`.
 
-See `../STARK-IO-v0.1-Codex-Implementation-Spec.md` for the implementation target and current
+See `../STARKLANG/docs/packages/STARK-IO-v0.1-Codex-Implementation-Spec.md` for the implementation target and current
 compiler boundary.
