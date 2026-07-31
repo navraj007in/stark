@@ -1,0 +1,122 @@
+// stark-io v0.1 API shape.
+//
+// Host-backed operations trap in this source package until ordinary STARK package APIs can bind
+// resource-carrying Native Provider ABI calls. See ../BLOCKERS.md.
+
+pub enum IOError {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    InvalidData,
+    IsDirectory,
+    NotDirectory,
+    DirectoryNotEmpty,
+    ReadOnlyFilesystem,
+    TooManyOpenFiles,
+    FileTooLarge,
+    LimitExceeded,
+    Interrupted,
+    WouldBlock,
+    Unsupported,
+    UnexpectedEnd,
+    Other(String),
+}
+
+pub enum SeekFrom {
+    Start(UInt64),
+    Current(Int64),
+    End(Int64),
+}
+
+pub enum FileType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+pub struct FileMetadata {
+    pub file_type: FileType,
+    pub length: UInt64,
+    pub readonly: Bool,
+    pub modified_seconds: Option<Int64>,
+    pub accessed_seconds: Option<Int64>,
+    pub created_seconds: Option<Int64>,
+}
+
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: String,
+    pub file_type: FileType,
+}
+
+pub struct OpenOptions {
+    pub read: Bool,
+    pub write: Bool,
+    pub append: Bool,
+    pub truncate: Bool,
+    pub create: Bool,
+    pub create_new: Bool,
+}
+
+pub struct File {
+    _opaque: UInt64,
+}
+
+pub fn default_open_options() -> OpenOptions {
+    OpenOptions {
+        read: false,
+        write: false,
+        append: false,
+        truncate: false,
+        create: false,
+        create_new: false,
+    }
+}
+
+pub fn open_options_are_valid(options: &OpenOptions) -> Bool {
+    let can_access = options.read || options.write || options.append;
+    if !can_access {
+        return false;
+    }
+    if options.truncate && !options.write {
+        return false;
+    }
+    if options.create && !options.write && !options.append {
+        return false;
+    }
+    if options.create_new && !options.write && !options.append {
+        return false;
+    }
+    true
+}
+
+pub fn path_is_valid(path: &str) -> Bool {
+    if path.len() == 0u64 {
+        return false;
+    }
+    let bytes = path.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 0u8 {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn path_is_absolute(path: &str) -> Bool {
+    if path.len() == 0u64 {
+        return false;
+    }
+    let bytes = path.bytes();
+    if bytes[0u64] == 47u8 {
+        return true;
+    }
+    if path.len() >= 3u64 && bytes[1u64] == 58u8 && (bytes[2u64] == 47u8 || bytes[2u64] == 92u8) {
+        return true;
+    }
+    false
+}
