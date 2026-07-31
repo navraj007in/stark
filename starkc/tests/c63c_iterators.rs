@@ -291,19 +291,24 @@ fn vec_for_over_borrow_empty() {
     );
 }
 
-/// **`v[i]` on a non-`Copy` element is refused, and the message says what to write instead.**
+/// **`v[i]` on a non-`Copy` element is refused BY THE BORROW CHECKER, and always was.**
 ///
-/// Refusing is correct: `v[i]` reads by value, which would move the element out of a place the Vec
-/// still owns. CD-293 moved the refusal into semantic analysis as E0106, on the E0105 precedent
-/// that acceptance and executability should agree. **CD-294 reverted that**, and the reason is the
-/// useful part: the front end sees only the syntax `v[i]`, while the by-value path is one of
-/// several ways to index. A method receiver (`v[i].push(x)`), an assignment target (`v[i] = e`), a
-/// borrow (`&v[i]`) and an auto-borrowed comparison operand all index a Vec and none of them move
-/// anything. Refusing on the syntax broke three working programs.
+/// CD-293 added E0106 for this in semantic analysis, on the belief that it was otherwise an
+/// accepted-but-unbuildable program caught only at MIR verification. CD-294 reverted it after it
+/// broke three working programs. **This test records why the whole exercise was unnecessary**:
+/// E0100 already refuses it, at the right layer, with a label naming the fix —
+/// "cannot move a non-Copy value out of an indexed place / use an ownership-transferring
+/// collection method instead".
 ///
-/// So the refusal stays where it can tell the two apart, and carries the help instead.
+/// And E0100 is right where E0106 was wrong. It fires on the MOVE — the semantic event — not on
+/// the syntax `v[i]`. That is precisely why `v[i].push(x)`, `v[i] = e`, `&v[i]` and an
+/// auto-borrowed comparison operand all pass it and all failed E0106: none of them moves anything.
+///
+/// The premise of the original change was never checked against the compiler's actual behaviour.
+/// It was reasoned from a MIR message (`MIR-0016 VecIndexGet requires a Copy element type`) that a
+/// source program cannot in fact reach by this route.
 #[test]
-fn vec_index_non_copy_is_refused_with_a_message_naming_the_alternatives() {
+fn vec_index_non_copy_is_refused_by_the_borrow_checker() {
     let src = "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); \
                let s = v[0u64]; println(s.len()); }";
     let file = Arc::new(SourceFile::new("vecindexnoncopy.stark", src.to_string()));
@@ -311,32 +316,28 @@ fn vec_index_non_copy_is_refused_with_a_message_naming_the_alternatives() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir, file);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some("E0100"))
+        .unwrap_or_else(|| {
+            panic!(
+                "moving a non-Copy element out of a Vec index must be refused in semantic \
+                 analysis; got {:?}",
+                checked.diagnostics
+            )
+        });
+    assert_eq!(diag.severity, Severity::Error);
     assert!(
-        !checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "the front end accepts it -- distinguishing a value read from a place needs analysis it \
-         does not have: {:?}",
-        checked.diagnostics
+        diag.message.contains("indexed place"),
+        "the message must name what is wrong: {}",
+        diag.message
     );
-    let program = match starkc::mir::lower::lower_program(&hir, &checked.tables, file) {
-        Ok(program) => program,
-        Err(e) => panic!(
-            "lowering itself succeeds; the refusal is in verification: {}",
-            e.what
-        ),
-    };
-    let errors = starkc::mir::verify::verify_program(&program)
-        .err()
-        .expect("verification must refuse a by-value read of a non-Copy element");
-    let msg = &errors[0].message;
     assert!(
-        msg.contains("v.get(i)"),
-        "must name the borrowing read: {msg}"
+        !diag.label.is_empty(),
+        "the diagnostic must carry a label naming the way out"
     );
-    assert!(msg.contains("for x in &v"), "must name iteration: {msg}");
 }
 
 /// A `Copy` element still indexes normally — the refusal is about ownership, not about `Vec`.

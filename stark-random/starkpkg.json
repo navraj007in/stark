@@ -1,0 +1,18 @@
+{
+  "name": "stark-random",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "capabilities": ["random"],
+  "provider_api": {
+    "errors": {
+      "random": "RawRandomError"
+    },
+    "functions": {
+      "secure_fill_raw": {
+        "capability": "random",
+        "symbol": "stark_random_secure_fill"
+      }
+    }
+  },
+  "dependencies": {}
+}

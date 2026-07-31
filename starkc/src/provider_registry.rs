@@ -44,7 +44,13 @@ pub fn known_capabilities() -> Vec<String> {
 /// that "which providers can this compiler link?" has one answer in one place rather than being a
 /// property of the filesystem it runs on.
 pub fn first_party() -> Vec<DeclaredProvider> {
-    vec![stark_time(), stark_env(), stark_file(), stark_net()]
+    vec![
+        stark_time(),
+        stark_env(),
+        stark_file(),
+        stark_net(),
+        stark_random(),
+    ]
 }
 
 /// Resolves a provider crate name to its location on this machine.
@@ -59,6 +65,7 @@ pub fn crate_location(crate_name: &str, repo_root: &std::path::Path) -> Option<P
         "stark-env-native" => Some(repo_root.join("stark-env").join("native")),
         "stark-file-native" => Some(repo_root.join("stark-file").join("native")),
         "stark-net-native" => Some(repo_root.join("stark-net").join("native")),
+        "stark-random-native" => Some(repo_root.join("stark-random").join("native")),
         _ => None,
     }
 }
@@ -684,6 +691,46 @@ fn stark_net() -> DeclaredProvider {
         },
         crate_name: "stark-net-native".to_string(),
         origin: "stark-net/native/Cargo.toml".to_string(),
+        status_binding: status,
+    }
+}
+
+/// `stark-random` — OS-backed secure randomness.
+///
+/// This is deliberately function-shaped: the program supplies a mutable byte buffer, the provider
+/// either fills the entire buffer or reports failure. There is no partial-success value and no
+/// deterministic fallback behind the secure API.
+fn stark_random() -> DeclaredProvider {
+    let mut status = StatusBinding::new();
+    status.declare(1, "RandomError::Unavailable");
+    status.declare(2, "RandomError::LimitExceeded");
+    status.declare(3, "RandomError::Other");
+
+    DeclaredProvider {
+        metadata: ProviderMetadata {
+            identity: ProviderIdentity {
+                name: "stark-std-random".to_string(),
+                semver: (0, 1, 0),
+                abi_version: crate::provider_abi::ABI_VERSION.to_string(),
+            },
+            target_triples: vec![
+                "aarch64-apple-darwin".to_string(),
+                "x86_64-apple-darwin".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-pc-windows-msvc".to_string(),
+            ],
+            capabilities: vec!["random".to_string()],
+            resource_types: vec![],
+            functions: vec![FunctionDecl {
+                name: "stark_random_secure_fill".to_string(),
+                capability: "random".to_string(),
+                params: vec![AbiParam::BufferInOut],
+                is_close_for: None,
+                may_block: false,
+            }],
+        },
+        crate_name: "stark-random-native".to_string(),
+        origin: "stark-random/native/Cargo.toml".to_string(),
         status_binding: status,
     }
 }

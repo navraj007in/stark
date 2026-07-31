@@ -1,0 +1,48 @@
+// Package unit tests, run by `stark test` from this package's root.
+//
+// **Naming, not attributes.** STARK has no `#[test]`: `#` is not in the lexer's vocabulary at all,
+// so an attribute here is a lex error and takes the whole module — and therefore the whole package,
+// since `lib.stark` declares `mod tests;` — down with it. `test_runner::discover_tests` selects a
+// function by the `test_` NAME PREFIX, requiring no parameters and no receiver. That is the
+// convention, and it is why these are named the way they are.
+//
+// `stark test` does not need a `main`. A library package can run its own tests; what it cannot do
+// is be NATIVELY qualified without an entrypoint, which is a different gap and still open.
+
+// NAME-RESOLVE-001: an unqualified name never implicitly searches the parent module, so a
+// submodule must import what it uses. Without these every reference below is E0200 — which is what
+// the package's first version of this file would have hit had its `#[test]` attributes lexed.
+use super::RandomError;
+use super::deterministic;
+use super::secure_bytes;
+
+fn test_deterministic_sequence_is_seeded_and_reproducible() {
+    let mut left = deterministic(42u64);
+    let mut right = deterministic(42u64);
+
+    assert(left.next_u64() == right.next_u64());
+    assert(left.next_u64() == right.next_u64());
+    assert(left.next_u64() == right.next_u64());
+}
+
+// Reproducibility alone is satisfied by a generator that ignores its seed entirely, so this is the
+// assertion that gives the one above its meaning.
+fn test_deterministic_distinct_seeds_diverge() {
+    let mut a = deterministic(1u64);
+    let mut b = deterministic(2u64);
+    assert(a.next_u64() != b.next_u64());
+}
+
+// xorshift64 has a fixed point at zero and stays there forever, so `deterministic`'s normalisation
+// of seed 0 is load-bearing rather than cosmetic.
+fn test_deterministic_zero_seed_is_normalized() {
+    let mut rng = deterministic(0u64);
+    assert(rng.next_u64() != 0u64);
+}
+
+fn test_secure_bytes_rejects_package_limit_before_provider_call() {
+    match secure_bytes(4097u64) {
+        Err(RandomError::LimitExceeded) => {}
+        _ => assert(false),
+    }
+}

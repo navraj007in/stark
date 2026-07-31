@@ -1,0 +1,101 @@
+pub enum RandomError {
+    Unavailable,
+    LimitExceeded,
+    Other,
+}
+
+const MAX_SECURE_BYTES: UInt64 = 4096u64;
+
+pub fn secure_bytes(count: UInt64) -> Result<Vec<UInt8>, RandomError> {
+    if count > MAX_SECURE_BYTES {
+        return Err(RandomError::LimitExceeded);
+    }
+
+    let mut buffer: [UInt8; 4096] = [0u8; 4096];
+    {
+        let out = &mut buffer[0u64..count];
+        match secure_fill_raw(out) {
+            Ok(_) => {}
+            Err(error) => {
+                return Err(map_raw_error(error));
+            }
+        }
+    }
+
+    let mut bytes: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < count {
+        bytes.push(buffer[i]);
+        i = i + 1u64;
+    }
+    Ok(bytes)
+}
+
+pub struct XorShift64 {
+    state: UInt64,
+}
+
+pub fn deterministic(seed: UInt64) -> XorShift64 {
+    let state = if seed == 0u64 {
+        0x9E3779B97F4A7C15u64
+    } else {
+        seed
+    };
+    XorShift64 { state }
+}
+
+impl XorShift64 {
+    // **The masks are the algorithm, not defensive noise.**
+    //
+    // xorshift64 relies on a WRAPPING left shift: `x << 13` is defined to discard the 13 high bits.
+    // STARK traps on integer overflow in every build mode, and a shift that drops set bits is an
+    // overflow — so a bare `x << 13u64` traps as soon as any of those bits is set, which for a
+    // 64-bit state is almost immediately. This function trapped on its second call.
+    //
+    // Masking the operand first is the faithful rewrite: keeping the low `64 - n` bits before
+    // shifting left by `n` produces exactly the value a wrapping shift would, with the discard made
+    // explicit instead of implicit. `0x0007FFFFFFFFFFFF` is the low 51 bits (for `<< 13`);
+    // `0x00007FFFFFFFFFFF` is the low 47 (for `<< 17`). The right shift needs no mask — it discards
+    // low bits, which is not an overflow.
+    pub fn next_u64(&mut self) -> UInt64 {
+        let mut x = self.state;
+        x = x ^ ((x & 0x0007FFFFFFFFFFFFu64) << 13u64);
+        x = x ^ (x >> 7u64);
+        x = x ^ ((x & 0x00007FFFFFFFFFFFu64) << 17u64);
+        self.state = x;
+        x
+    }
+
+    // `len` is read once, deliberately. Written as `while i < output.len()`, the call in the
+    // condition holds a borrow of `output` that is still live across the assignment in the body,
+    // and E0101 rejects it: "cannot assign to variable 'output[i]' because it is borrowed". The
+    // length of a slice cannot change under us, so hoisting it is a faithful rewrite rather than a
+    // workaround.
+    //
+    // This function had never compiled. No test executed a line of this package until
+    // `random_secure_and_deterministic_execute_from_source` existed, and the declaration-level
+    // tests could not have caught it.
+    pub fn fill_bytes(&mut self, output: &mut [UInt8]) {
+        let len = output.len();
+        let mut i: UInt64 = 0u64;
+        while i < len {
+            let value = self.next_u64();
+            let mut shift: UInt64 = 0u64;
+            while shift < 64u64 && i < len {
+                output[i] = ((value >> shift) & 0xFFu64) as UInt8;
+                shift = shift + 8u64;
+                i = i + 1u64;
+            }
+        }
+    }
+}
+
+fn map_raw_error(error: RawRandomError) -> RandomError {
+    match error {
+        RawRandomError::Unavailable => RandomError::Unavailable,
+        RawRandomError::LimitExceeded => RandomError::LimitExceeded,
+        RawRandomError::Other => RandomError::Other,
+    }
+}
+
+mod tests;
