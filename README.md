@@ -8,7 +8,20 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, and an early native deployment pipeline.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, and compiler-backed language services.
+
+### Where the compiler actually is
+
+Two gate sequences run in this repository and they answer different questions. The **Gate 1–7** table further down covers the original tensor/deployment track, whose Gate 6 and Gate 7 decisions (*REVISE*, *RETAIN AS RESEARCH*) still stand. The **Gate C0–C10** track is a separate, evidence-first re-closure of Core v1 conformance and execution, and it is where current work happens:
+
+| Track gate | Position |
+| --- | --- |
+| C0–C6 | Closed. C6 closed with a *qualified* native subset — 59 of 87 audited standard-library methods have a verified invocation, 28 explicitly refused or excluded |
+| **C7** | **Closed.** Native compilation with debug and release profiles, build cache, MIR optimiser, and an HTTP/JSON REST workload qualified on Linux, macOS and Windows |
+| **C8** | **Candidate-complete.** Compiler-backed language services (LSP + VS Code extension). Held open by interactive editor validation: hover, go-to-definition and find-references are confirmed in a real session; the other seven capabilities are protocol-tested only |
+| **C9** | Open. Extension isolation, and a conditionally authorised artifact-provider generalisation whose second half is blocked pending evidence from a second artifact format |
+
+Programs are compared across four execution configurations — the HIR reference interpreter, the MIR interpreter, native debug and native release — with each case's expected result pinned against the specification rather than against another engine's output. `COMPILER-STATE.md` is the authoritative position; this table is a summary and can lag it.
 
 ## Why STARK?
 
@@ -192,6 +205,51 @@ Run the test suite:
 cargo test
 ```
 
+### Installing the compiler
+
+To use STARK outside this checkout, install the binaries **and the crates the native backend
+links against**. The compiler finds those by a fixed layout relative to its own executable, so
+the directory structure below is not a suggestion — it is what `stark build` looks for.
+
+```bash
+# From starkc/
+cargo build --release --bins
+
+PREFIX="$HOME/.local"                       # must be on PATH
+install -m 755 target/release/stark    "$PREFIX/bin/"
+install -m 755 target/release/starkc   "$PREFIX/bin/"
+install -m 755 target/release/starkide "$PREFIX/bin/"
+
+# The runtime every generated binary links, plus its own path dependency.
+rsync -a --exclude target stark-runtime/       "$PREFIX/lib/stark/stark-runtime/"
+rsync -a --exclude target stark-provider-abi/  "$PREFIX/lib/stark/stark-provider-abi/"
+```
+
+Three binaries, not one: `stark` is the package driver, `starkc` the single-file CLI and language
+server, `starkide` the terminal IDE. The VS Code extension defaults to `starkc`.
+
+**Provider-backed capabilities** — clock, filesystem, environment and TCP — need their provider
+crates too, in a root that mirrors the repository's shape:
+
+```bash
+PROV="$PREFIX/lib/stark/providers"
+rsync -a --exclude target stark-provider-abi/ "$PROV/starkc/stark-provider-abi/"   # from starkc/
+for p in stark-time stark-env stark-file stark-net; do
+  rsync -a --exclude target "../$p/native/" "$PROV/$p/native/"
+done
+```
+
+Without that root, a package declaring a capability builds only from inside a checkout. Discovery
+is deliberately environment-free: no variable is consulted, and the search is the enclosing
+checkout first, then the installed toolchain's own directory.
+
+To depend on a first-party STARK package from anywhere, install its sources and point at them
+with an absolute path:
+
+```json
+{ "dependencies": { "stark_time": { "package": "stark-time", "path": "/absolute/path/stark-time" } } }
+```
+
 ### Single-file workflow
 
 Parse a program:
@@ -299,7 +357,31 @@ for macOS, Linux, and Windows include the `stark`, `starkc`, and `starkide`
 binaries, that runtime, and platform installers; see
 [`starkc/README.md`](starkc/README.md#release-binaries).
 
-## Terminal IDE
+## Editor support
+
+### Language server and VS Code extension
+
+`starkc lsp` speaks LSP over stdio, backed by the compiler's own analysis rather than a parallel
+model of the language — hover reads the compiler's symbol table, and navigation uses resolved
+symbol identity. The extension lives in [`editors/vscode/`](editors/vscode/):
+
+```bash
+cd editors/vscode
+npm run compile
+npx @vscode/vsce package -o stark-language.vsix
+code --install-extension stark-language.vsix
+```
+
+**Confirmed in a real editor session:** hover, go-to-definition, find-references. Rename,
+diagnostics, formatting, completion, signature help, document symbols and semantic tokens are
+advertised and protocol-tested, but have no interactive record yet — which is why Gate C8 is
+candidate-complete rather than closed.
+
+One setup trap worth knowing: the extension defaults `stark.compiler.path` to `starkc` on `PATH`,
+and a VS Code launched from a desktop environment does not inherit a shell `PATH`. If the server
+does not start, set that setting to an absolute path.
+
+### Terminal IDE
 
 The repository also includes `starkide`, a dependency-free terminal workbench inspired by classic Turbo-style development environments.
 
@@ -359,16 +441,28 @@ The following areas are working:
 * ONNX signature import and verification (Gate 4);
 * symbolic shape arithmetic and value-range semantics (Gate 7);
 * native inference deployment with ONNX Runtime (Gate 5);
+* native compilation of ordinary Core programs, debug and release, on Linux, macOS and Windows
+  (Gate C7) — over a *qualified* subset: Gate C6 audited 87 standard-library methods and verified
+  an invocation for 59, and makes no claim of full Core or standard-library native conformance;
+* compiler-backed language services over LSP (Gate C8, candidate-complete);
 * lock files (`stark.lock`) with SHA-256 content hashing;
 * offline and locked build modes.
 
 The following areas remain incomplete or intentionally deferred:
 
-* production native code generation for ordinary Core programs (Phase 6);
 * a complete standard library (Phase 4 started; Phase 4+ ongoing);
+* **iterator combinators and by-value `Vec` iteration** — `map`, `filter`, `count`, `collect`,
+  `fold`, `reduce`, `any`, `all` and `find` are **refused by the front end** with `E0105`. They
+  ran in the reference interpreter while no compiler could lower them, and a program the language
+  accepts but no engine can build is worse than one it refuses. Iterate a borrow (`v.iter()`) in a
+  `for` loop; implementing the combinators needs MIR adapter types and is scheduled work, not a
+  rejection of the feature;
 * networking libraries;
 * public package registry (Phase 3+ defined; not yet implemented);
-* full LSP and mainstream editor integrations;
+* interactive editor validation beyond hover, definition and references (Gate C8's open item);
+* editor integrations beyond VS Code;
+* qualification of every *usage shape* of a supported library method — an audited method has at
+  least one verified invocation, which is not the same as every valid use of it working;
 * stable debugging and profiling tools;
 * mature FFI;
 * capturing closures (deferred, not in Core v1);
@@ -383,6 +477,12 @@ Expect breaking changes.
 ## Delivery gates
 
 STARK development is organised around evidence-based gates.
+
+**This table is the original tensor/deployment track and stops at its Gate 7 decision.** It is not
+the project's current position: the Gate C0–C10 compiler track has continued past it and is
+summarised in [Where the compiler actually is](#where-the-compiler-actually-is), with
+[`COMPILER-STATE.md`](COMPILER-STATE.md) as the authority. Both are live records — they answer
+different questions, and neither supersedes the other.
 
 | Gate   | Scope                                              | Status      |
 | ------ | -------------------------------------------------- | ----------- |
