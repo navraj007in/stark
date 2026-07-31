@@ -2510,10 +2510,16 @@ line | source code line
   runtime loop index; iterate over a borrow instead. `Copy` arrays iterate normally.)
 - E0105: Iteration form not supported by this implementation (deferred feature). Covers by-value
   iteration over `Vec<T>` and the `Iterator` combinator methods (`map`, `filter`, `count`,
-  `collect`, `fold`, `reduce`, `any`, `all`, `find`). Iterating a borrow (`v.iter()`) and driving
-  an iterator with a `for` loop are supported. An implementation that supports these forms does
+  `collect`, `fold`, `reduce`, `any`, `all`, `find`). Iterating a borrow — either `for x in &v` or
+  `for x in v.iter()`, which are the same iteration and both yield `&T` — and driving an iterator
+  with a `for` loop are supported. An implementation that supports these forms does
   not raise E0105; one that does not MUST raise it during semantic analysis rather than accepting
   the program and failing later, so that acceptance and executability agree.
+- E0106: `v[i]` on a `Vec<T>` whose element type `T` is not `Copy`. Indexing reads the element **by
+  value**, which would move it out of a place the `Vec` still owns — the same restriction as
+  "no moves out of indexed places". An owning element is read through a borrow instead:
+  `v.get(i)` yields `Option<&T>`, and `for x in &v` yields `&T`. Like E0105, this MUST be raised
+  during semantic analysis rather than accepting the program and refusing it in a later phase.
 
 #### Name Resolution Errors (E0200-E0299)
 - E0200: Undefined variable

@@ -765,13 +765,10 @@ fn main() {{
         Ok(entries) => {{
             let mut files: UInt64 = 0u64;
             let mut dirs: UInt64 = 0u64;
-            // Iteration, not indexing, and spelled WITHOUT `&`. `entries[i]` is refused whatever
-            // you do with the result: `VecIndexGet` requires a Copy element, `DirectoryEntry` owns
-            // two `String`s, and borrowing the indexed place does not change that. `&entries` is
-            // not iterable either, and by-value `for x in entries` is refused with a diagnostic
-            // naming the fix: `.iter()`. That cursor is the only way to read a non-Copy element in
-            // place.
-            for entry in entries.iter() {{
+            // `for x in &v` — the natural spelling, and it works. It was E0001 until CD-293;
+            // `.iter()` remains equivalent. Indexing (`entries[i]`) is still refused for a
+            // non-Copy element, which is why iteration is the way to read one in place.
+            for entry in &entries {{
                 match entry.file_type {{
                     FileType::Directory => {{ dirs = dirs + 1u64; }}
                     _ => {{ files = files + 1u64; }}

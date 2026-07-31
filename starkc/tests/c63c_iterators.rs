@@ -225,3 +225,163 @@ fn count_and_collect_are_refused() {
          let w: Vec<Int32> = it.collect(); assert_eq(w.len(), 1u64); }",
     );
 }
+
+// ---- CD-293: `for x in &v`, the spelling that used to be refused ----
+
+/// **`for x in &v` iterates the borrow, identically to `v.iter()`.**
+///
+/// This was E0001 "for-loop requires an iterable value, found '&Vec<Int32>'" — an unhelpful
+/// refusal, because the value is iterable and the borrow is precisely what Vec iteration wants.
+/// It lowers to the same `VecIterNew`/`VecIterNext` cursor, so the item is `&T` and `*x` reads it.
+///
+/// Three-engine, because the two spellings must agree in the HIR oracle as well as through MIR.
+#[test]
+fn vec_for_over_borrow() {
+    agree_out(
+        "vecforborrow",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.push(2); v.push(3); \
+         let mut s: Int32 = 0; for x in &v { s = s + *x; print(*x); } assert_eq(s, 6); println(\"\"); }",
+    );
+}
+
+/// The two spellings are the same iteration, asserted inside the program rather than by comparing
+/// two runs: sum via `&v` and sum via `v.iter()` must be equal in one execution.
+#[test]
+fn vec_for_over_borrow_matches_iter() {
+    agree_out(
+        "vecforborroweq",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(4); v.push(5); v.push(6); \
+         let mut a: Int32 = 0; for x in &v { a = a + *x; } \
+         let mut b: Int32 = 0; for x in v.iter() { b = b + *x; } \
+         assert_eq(a, b); assert_eq(a, 15); }",
+    );
+}
+
+/// **The case that motivated the change: a NON-`Copy` element.**
+///
+/// `v[i]` is refused for such an element (`VecIndexGet` requires `Copy`), and borrowing the indexed
+/// place does not help — so iteration is the only way to read one in place. When `&v` was also
+/// refused, a `Vec<String>` was reachable by exactly one spelling out of three.
+#[test]
+fn vec_for_over_borrow_non_copy_element() {
+    agree_out(
+        "vecforborrownoncopy",
+        "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); v.push(String::from(\"bb\")); \
+         let mut n: UInt64 = 0u64; for s in &v { n = n + s.len(); } assert_eq(n, 3u64); }",
+    );
+}
+
+/// `break` through the borrow form leaves the cursor unfinished, as it does through `.iter()`.
+#[test]
+fn vec_for_over_borrow_early_break() {
+    agree_out(
+        "vecforborrowbreak",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.push(2); v.push(3); \
+         let mut seen: Int32 = 0; for x in &v { if *x == 2 { break; } seen = seen + 1; } \
+         assert_eq(seen, 1); }",
+    );
+}
+
+/// Empty source: `None` on the first `next`, no iterations.
+#[test]
+fn vec_for_over_borrow_empty() {
+    agree_out(
+        "vecforborrowempty",
+        "fn main() { let v: Vec<Int32> = Vec::new(); let mut n: Int32 = 0; for x in &v { n = n + 1; } assert_eq(n, 0); }",
+    );
+}
+
+/// **E0106: `v[i]` on a non-`Copy` element is refused in SEMANTIC ANALYSIS, not later.**
+///
+/// Indexing reads by value, which would move the element out of a place the Vec still owns. The
+/// refusal is correct; where it happened was not. This type-checked, ran in the HIR oracle, and was
+/// then refused by MIR with `MIR-0016 VecIndexGet requires a Copy element type` — an accepted
+/// program no compiler could build, and an internal-sounding error at the wrong layer. That is
+/// precisely the defect WP-C7.9 Packet E fixed for by-value `Vec` iteration (E0105) and left
+/// unfixed for indexing.
+///
+/// The diagnostic names both borrowing reads, because there are two and neither is guessable from
+/// "requires a Copy element".
+#[test]
+fn vec_index_non_copy_is_refused_in_semantic_analysis() {
+    let src = "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); \
+               let s = v[0u64]; }";
+    let file = Arc::new(SourceFile::new("vecindexnoncopy.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some("E0106"))
+        .unwrap_or_else(|| {
+            panic!(
+                "indexing a Vec<String> must be refused during semantic analysis; got {:?}",
+                checked.diagnostics
+            )
+        });
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(
+        diag.message.contains("not Copy"),
+        "the message must say why: {}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("v.get(i)")),
+        "the help must name the borrowing read: {:?}",
+        diag.helps
+    );
+}
+
+/// A `Copy` element still indexes normally — the refusal is about ownership, not about `Vec`.
+#[test]
+fn vec_index_copy_element_still_works() {
+    agree_out(
+        "vecindexcopy",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(7); v.push(8); \
+         assert_eq(v[1u64], 8); }",
+    );
+}
+
+// ---- CD-293: `&v[i]` — borrowing a Vec element ----
+
+/// **`&v[i]` borrows the element instead of reading it by value.**
+///
+/// A Vec is an opaque runtime type, not a projectable place, so this could not be written at all
+/// while `&a[i]` on an ARRAY always could. With `v[i]` by value refused for an owning element
+/// (E0106, correctly — it would move out of the Vec), the borrow form is what makes such an
+/// element reachable by index at all.
+#[test]
+fn vec_index_borrow_non_copy() {
+    agree_out(
+        "vecindexborrow",
+        "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"alpha\")); \
+         v.push(String::from(\"be\")); let s = &v[1u64]; assert_eq(s.len(), 2u64); }",
+    );
+}
+
+/// The borrow reads the same element the by-value form would, for a `Copy` element where both are
+/// legal — so the two forms cannot disagree about WHICH element.
+#[test]
+fn vec_index_borrow_matches_value_read() {
+    agree_out(
+        "vecindexborroweq",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(10); v.push(20); v.push(30); \
+         let r = &v[2u64]; assert_eq(*r, v[2u64]); assert_eq(*r, 30); }",
+    );
+}
+
+/// **Out of bounds traps, in the same category as `v[i]`.** The `None` arm of `VecGetRef` IS the
+/// out-of-bounds case; routing it to a trap is what keeps the borrow form's observable behaviour
+/// identical to the by-value form's rather than quietly yielding an `Option`.
+#[test]
+fn vec_index_borrow_out_of_bounds_traps() {
+    support::differential::agree_trapping_available_engines(
+        "vecindexborrowoob",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let r = &v[5u64]; println(*r); }",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
+        1,
+    );
+}

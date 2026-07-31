@@ -212,20 +212,50 @@ fn the_status_vocabulary_is_per_provider() {
 
 // ------------------------------------------------------- trust boundary --
 
-/// **Packet 5: read-only.** No environment-mutating function may be declared. Asserted against the
-/// registry rather than left as prose, so adding one fails here rather than in review.
+/// **Packet 5: the environment is read-only, and no provider executes a process.**
+///
+/// Two rules with different scopes, which this used to conflate by applying one substring list to
+/// every provider:
+///
+/// - **Process execution is forbidden everywhere.** No provider may spawn or exec, whatever it is
+///   for. That is a whole-registry rule and stays one.
+/// - **Mutation is forbidden for the PROCESS capabilities**, which is what "the environment is
+///   read-only" means. It was never a whole-registry rule: `stark-std-file` has declared
+///   `stark_file_write` and `stark_file_create` since C7.8.4, and a filesystem provider that
+///   cannot write is not a filesystem provider.
+///
+/// Applied globally, the mutation list was a NAME filter standing in for a semantic rule — it
+/// passed `write` and `create` (which mutate) while it would reject `set_len` and `remove` (which
+/// mutate no more). CD-292's expanded file surface is what surfaced the inconsistency: the guard
+/// failed on `stark_iofile_set_len` while the equally-mutating `stark_iofile_write` beside it went
+/// through. Scoped to the capabilities the rule is actually about, it tests the rule again.
 #[test]
 fn no_environment_mutating_function_is_declared() {
     for provider in provider_registry::first_party() {
         for f in &provider.metadata.functions {
             let name = f.name.to_ascii_lowercase();
-            for forbidden in ["set", "put", "unset", "remove", "clear", "exec", "spawn"] {
+            // Whole-registry: nothing runs a process.
+            for forbidden in ["exec", "spawn"] {
                 assert!(
                     !name.contains(forbidden),
-                    "{} declares `{}`, which looks like a mutating or process-executing operation; \
-                     Packet 5 admits neither in C7.8",
+                    "{} declares `{}`, which looks like a process-executing operation; Packet 5 \
+                     admits none in C7.8, from any provider",
                     provider.metadata.identity.name,
                     f.name
+                );
+            }
+            // Process capabilities only: the environment is observed, never altered.
+            if !f.capability.starts_with("process.") {
+                continue;
+            }
+            for forbidden in ["set", "put", "unset", "remove", "clear"] {
+                assert!(
+                    !name.contains(forbidden),
+                    "{} declares `{}` under capability `{}`, which looks like a mutating \
+                     operation; Packet 5 makes the process environment read-only in C7.8",
+                    provider.metadata.identity.name,
+                    f.name,
+                    f.capability
                 );
             }
         }

@@ -1932,6 +1932,21 @@ impl<'a> Interpreter<'a> {
                 local, iter, body, ..
             } => {
                 let iterable = self.expect_value(*iter)?;
+                // **`for x in &v` is `for x in v.iter()`, in this engine too.**
+                //
+                // The borrow form evaluates to a `Ref` at the Vec's place, and `v.iter()` evaluates
+                // to `VecIter` at that same place — so building the cursor here makes the two one
+                // iteration rather than two implementations that must be kept in step. MIR lowers
+                // both to `VecIterNew`/`VecIterNext` for the same reason.
+                //
+                // Unconditional on `Ref` because the front end admits no other reference as an
+                // iterable: a `&Vec<T>` type-checks and every other `&T` is E0001. A `Ref` to
+                // something else would fail in `iterator_step` with its own diagnostic rather than
+                // being silently iterated as something it is not.
+                let iterable = match iterable {
+                    Value::Ref(place) => Value::VecIter(place, 0),
+                    other => other,
+                };
                 match iterable {
                     Value::Range { .. } | Value::Array(_) | Value::Vec(_) | Value::Slice(..) => {
                         let mut remaining = self.iter_values(iterable, expr.span)?.into_iter();

@@ -3625,7 +3625,34 @@ impl<'a> FnLowerer<'a> {
                                 elem_ref,
                                 next_rt,
                                 span,
+                                false,
                             );
+                        }
+                        // `for x in &v`: the expression is a BORROW of the Vec, not a cursor, so
+                        // the cursor is built from it here. Identical lowering to `v.iter()` from
+                        // this point on — same `VecIterNew`, same `VecIterNext`, same `&T` item —
+                        // because it is the same iteration; only the spelling differed.
+                        if let MirTy::Ref { inner, .. } = &iter_ty {
+                            if let MirTy::Core(crate::hir::CoreType::Vec, args) = inner.as_ref() {
+                                let elem = args.first().cloned().unwrap_or(MirTy::Unit);
+                                let elem_ref = MirTy::Ref {
+                                    mutable: false,
+                                    inner: Box::new(elem.clone()),
+                                };
+                                let cursor_ty =
+                                    MirTy::Core(crate::hir::CoreType::VecIter, vec![elem]);
+                                return self.lower_for_over_iter(
+                                    *var,
+                                    *local,
+                                    *iter,
+                                    *body,
+                                    cursor_ty,
+                                    elem_ref,
+                                    RuntimeFn::VecIterNext,
+                                    span,
+                                    true,
+                                );
+                            }
                         }
                         // 0.1-A5 (C4.6 A4-2d): `for c in s.chars()` — `Char` by VALUE (not a
                         // reference). The iterator is a borrowed snapshot over the string's
@@ -3640,6 +3667,7 @@ impl<'a> FnLowerer<'a> {
                                 MirTy::Char,
                                 RuntimeFn::CharsIterNext,
                                 span,
+                                false,
                             );
                         }
                         // A1: `for x in it` over a USER Iterator impl — desugar to repeated
@@ -3914,6 +3942,32 @@ impl<'a> FnLowerer<'a> {
                         if matches!(self.tables.expr_types.get(index), Some(Ty::Range(_))) {
                             let index_span = self.hir.expr(*operand).span;
                             return self.lower_make_slice(*base, *index, *mutable, index_span);
+                        }
+                        // **`&v[i]` on a Vec — a borrow of the element, not a value read.**
+                        //
+                        // A Vec is an opaque runtime type, not a projectable place: there is no
+                        // `Projection::Index` into one, which is why `&v[i]` could not be written
+                        // at all while `&a[i]` on an ARRAY has always worked. Reading by value
+                        // (`v[i]`) is separately refused for a non-`Copy` element by E0106, since
+                        // that would move out of the Vec — so without this form an owning element
+                        // was reachable only through `v.get(i)` or iteration.
+                        //
+                        // `VecGetRef` already yields `Option<&T>` and never traps; the bounds
+                        // failure becomes the `None` arm, and indexing traps on out-of-bounds, so
+                        // that arm raises `IndexOutOfBounds` — the same category and the same
+                        // observable behaviour as `v[i]`, reached by a different route.
+                        let (peeled, _) = Self::peel_refs(self.expr_mir_ty(*base)?);
+                        if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled {
+                            let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+                            // Trap provenance is the ENCLOSING `&…` span, not the index
+                            // expression's — the opposite of the range/slice case just above, and
+                            // not a matter of taste: the oracle reaches this through `expr_place`
+                            // under `UnOp::Ref` and reports the borrow, so a differential run
+                            // disagreed by exactly one column until this matched it. Three-engine
+                            // agreement is the authority on provenance; either span would have
+                            // been defensible alone.
+                            return self
+                                .lower_vec_index_borrow(*base, *index, elem, *mutable, span);
                         }
                     }
                     // C4.5b-2: `&expr` / `&mut expr` — borrow of a place, NOT a value read.
@@ -7167,6 +7221,70 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    /// `&v[i]` / `&mut v[i]`: borrow a Vec element.
+    ///
+    /// A Vec element is not a MIR place, so this cannot be a `RefOf`. `VecGetRef`/`VecGetMutRef`
+    /// yield `Option<&T>`, and the `None` arm — which is exactly the out-of-bounds case — raises
+    /// `IndexOutOfBounds`, matching what `v[i]` does for a `Copy` element. The `Some` payload is
+    /// reached through a trailing `VariantField`, which CD-126 made borrowable.
+    fn lower_vec_index_borrow(
+        &mut self,
+        base: ExprId,
+        index: ExprId,
+        elem: MirTy,
+        mutable: bool,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let recv = self.borrow_vec_receiver(base, mutable, elem.clone(), span)?;
+        let idx = self.lower_expr_to_operand(index)?;
+        let idx = self.widen_index_to_u64(idx, index, span)?;
+        let elem_ref_ty = MirTy::Ref {
+            mutable,
+            inner: Box::new(elem),
+        };
+        let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref_ty.clone()]);
+        let opt = self.new_temp(opt_ty);
+        let rt = if mutable {
+            RuntimeFn::VecGetMutRef
+        } else {
+            RuntimeFn::VecGetRef
+        };
+        self.emit_runtime_call(rt, vec![recv, idx], Place::local(opt), span);
+
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(Place::local(opt))),
+            self.info(span),
+        );
+        let some_blk = self.new_block();
+        let oob_blk = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(1, some_blk)],
+                otherwise: oob_blk,
+            },
+            self.info(span),
+            oob_blk,
+        );
+        // `None` is the out-of-bounds case, and indexing traps on it.
+        let info = self.info(span);
+        self.terminate(
+            Terminator::Trap {
+                info: TrapInfo {
+                    category: TrapCategory::IndexOutOfBounds,
+                    source: info,
+                },
+                message: None,
+            },
+            info,
+            some_blk,
+        );
+        let mut payload = Place::local(opt);
+        payload.projection.push(Projection::VariantField(1, 0));
+        self.read_place(payload, &elem_ref_ty, span)
+    }
+
     /// 0.1-A2 (C4.5f-2): `for value in v.iter() { body }`. Desugar:
     /// ```text
     /// it = <iter expr>            // VecIterNew(&v) via the method-call lowering
@@ -7777,6 +7895,7 @@ impl<'a> FnLowerer<'a> {
         elem_ref: MirTy,
         next_rt: RuntimeFn,
         span: Span,
+        build_cursor_from_borrow: bool,
     ) -> Result<(), LowerError> {
         // `elem_ref` is the type the loop variable binds to and the `Next` Option's payload:
         // `&T` for Vec/HashMap iteration, `Char` (by value) for `chars()`.
@@ -7791,7 +7910,25 @@ impl<'a> FnLowerer<'a> {
         self.scopes.push(Vec::new());
 
         // Materialize the iterator into a registered droppable local.
-        let it_op = self.lower_expr_to_operand(iter)?;
+        //
+        // `build_cursor_from_borrow` is the `for x in &v` form: the expression is a borrow of the
+        // Vec, not a cursor, so the cursor is constructed here from it — the same `VecIterNew` the
+        // `.iter()` method call emits. Built INSIDE the iterator scope, so the cursor's lifetime is
+        // the loop's exactly as in the `.iter()` spelling; the two forms differ in what the user
+        // wrote and in nothing else.
+        let it_op = if build_cursor_from_borrow {
+            let vec_ref = self.lower_expr_to_operand(iter)?;
+            let cursor = self.new_temp(iter_ty.clone());
+            self.emit_runtime_call(
+                RuntimeFn::VecIterNew,
+                vec![vec_ref],
+                Place::local(cursor),
+                span,
+            );
+            Operand::Move(Place::local(cursor))
+        } else {
+            self.lower_expr_to_operand(iter)?
+        };
         self.locals.push(LocalDecl {
             ty: iter_ty.clone(),
             kind: LocalKind::Temp,

@@ -1,5 +1,54 @@
 # STARK Compiler STATE
 
+## CD-293 — the three Vec ergonomics edges, and the guard that was a name filter (2026-07-31)
+
+**Found by writing CD-292's file surface against the real API, not by review.** Reading a
+`Vec<DirectoryEntry>` — a Vec of owning structs, which is the shape of most real data — failed
+three ways in a row, and only the fourth spelling worked.
+
+| Spelling | Was | Now |
+| --- | --- | --- |
+| `for x in &v` | E0001 "requires an iterable value" | **works** — same cursor as `v.iter()` |
+| `for x in v` | E0105, names `.iter()` | unchanged (by-value moves elements out) |
+| `v[i]`, non-`Copy` | **MIR-0016 at verification** | **E0106 in semantic analysis**, with a help |
+| `&v[i]` | unrepresentable | **works** — `VecGetRef`, `None` arm traps |
+
+**`for x in &v`** was not an architectural limit — it was a missing arm, in three engines: the type
+checker, MIR lowering (builds the cursor with the same `VecIterNew` the method call emits), and the
+HIR oracle (builds `Value::VecIter` at the same place). The differential harness caught the oracle
+half; a two-engine change would have shipped a divergence.
+
+**`v[i]` on a non-`Copy` element is correctly refused** — it would move the element out of a place
+the Vec still owns. What was wrong was WHERE: it type-checked, ran in the oracle, and died at MIR
+verification. **An accepted program no compiler could build** — precisely the defect class WP-C7.9
+Packet E fixed for by-value `Vec` iteration (E0105) and left unfixed for indexing. E0106 now raises
+during semantic analysis and its help names both borrowing reads, because there are two and neither
+is guessable from "requires a Copy element type". Added to the normative spec; compiled spec
+regenerated.
+
+**`&v[i]` was unrepresentable, and that part IS architectural.** A Vec is `MirTy::Core` — an opaque
+runtime type, not a projectable place — so there is no `Projection::Index` to borrow, which is why
+`&a[i]` on an ARRAY always worked and `&v[i]` never did. Closing it needed no representation change:
+`VecGetRef` already yields `Option<&T>`, and the `None` arm IS the out-of-bounds case, so it raises
+`IndexOutOfBounds` — same category, same observable behaviour as `v[i]`, reached by another route.
+
+**One column of disagreement, caught by the harness.** MIR blamed the index expression, the oracle
+blamed the enclosing `&`. Same category, same line. MIR now matches the oracle: three-engine
+agreement is the authority on provenance, and either span alone would have been defensible.
+
+**CD-292's CI failure: a name filter standing in for a semantic rule.**
+`no_environment_mutating_function_is_declared` scanned EVERY first-party provider for
+`set|put|unset|remove|clear|exec|spawn`. It failed on `stark_iofile_set_len` and `stark_iofile_remove`
+while `stark_iofile_write` and `stark_file_create` — which mutate no less — sat beside them and
+passed, because their names miss the list. Packet 5's rule is that the **process environment** is
+read-only, not that no provider mutates anything; a filesystem provider that cannot write is not a
+filesystem provider. Split accordingly: `exec`/`spawn` stay whole-registry (nothing runs a process),
+the mutation list applies to `process.*` capabilities. The guard tests the rule again instead of the
+spelling.
+
+EVIDENCE: `c63c_iterators` **22/22** three-engine, including the out-of-bounds trap case.
+`c783_args_env` 9/9, `c788_starkc_build` 6/6, `c784_file` 11/11. fmt clean.
+
 ## CD-292 — the rest of the file surface, executed rather than declared (2026-07-31)
 
 **`stark-io` had four types with nothing behind them.** `OpenOptions`, `SeekFrom`, `FileMetadata`
