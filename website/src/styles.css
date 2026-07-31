@@ -1,0 +1,263 @@
+/*
+ * STARK — starklang.com
+ *
+ * Palette taken from the VS Code extension's icon so the site and the editor look like one
+ * product: a near-black ground (#101827 -> #05080F) under a cyan-to-indigo mark
+ * (#62F6FF -> #22C8F6 -> #6D7CFF).
+ *
+ * Dark by default and light on request. A compiler homepage is read mostly by people who keep
+ * their editor dark, and the mark was designed against a dark ground — inverting it by default
+ * would misrepresent the brand.
+ */
+
+:root {
+  --ground: #05080f;
+  --ground-2: #0b1220;
+  --ground-3: #101827;
+  --line: #1e2a3f;
+  --ink: #e8eef7;
+  --ink-dim: #97a6bd;
+  --ink-faint: #6b7c96;
+
+  --cyan: #62f6ff;
+  --blue: #22c8f6;
+  --indigo: #6d7cff;
+
+  --tok-key: #6d7cff;
+  --tok-type: #62f6ff;
+  --tok-str: #7ee2a8;
+  --tok-num: #ffc978;
+  --tok-fn: #8fb8ff;
+  --tok-com: #5c6b85;
+
+  --radius: 14px;
+  --wrap: 1080px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #ffffff;
+    --ground-2: #f6f8fc;
+    --ground-3: #eef2f9;
+    --line: #d9e1ee;
+    --ink: #0d1420;
+    --ink-dim: #47566d;
+    --ink-faint: #6b7c96;
+    --tok-key: #4b46d8;
+    --tok-type: #0b7a92;
+    --tok-str: #0f7b46;
+    --tok-num: #9a5b00;
+    --tok-fn: #2a5fbf;
+    --tok-com: #7b8798;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation: none !important; transition: none !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { width: 100%; max-width: var(--wrap); margin-inline: auto; padding-inline: 24px; }
+
+a { color: inherit; }
+
+.skip {
+  position: absolute; left: -9999px;
+  background: var(--blue); color: #001018; padding: 10px 16px; border-radius: 8px; z-index: 100;
+}
+.skip:focus { left: 16px; top: 16px; }
+
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+
+/* ------------------------------------------------------------------ header -- */
+
+.site-header {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--ground) 82%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.site-header__inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; height: 62px; }
+
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 700; letter-spacing: 0.14em; }
+.brand__word { font-size: 15px; }
+.mark { display: block; border-radius: 8px; }
+
+.nav { display: flex; align-items: center; gap: 22px; font-size: 14.5px; }
+.nav a { color: var(--ink-dim); text-decoration: none; }
+.nav a:hover { color: var(--ink); }
+.nav__cta {
+  color: var(--ink) !important; border: 1px solid var(--line);
+  padding: 6px 14px; border-radius: 999px;
+}
+.nav__cta:hover { border-color: var(--blue); }
+
+@media (max-width: 760px) {
+  .nav a:not(.nav__cta) { display: none; }
+}
+
+/* -------------------------------------------------------------------- hero -- */
+
+.hero {
+  padding: 84px 0 64px;
+  background:
+    radial-gradient(900px 420px at 50% -160px, color-mix(in srgb, var(--indigo) 22%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--ground-3), var(--ground));
+  border-bottom: 1px solid var(--line);
+}
+.hero__inner { display: flex; flex-direction: column; align-items: center; text-align: center; }
+
+.badge {
+  margin: 0 0 22px; font-size: 12.5px; letter-spacing: 0.06em;
+  color: var(--ink-dim); border: 1px solid var(--line);
+  padding: 5px 14px; border-radius: 999px; background: var(--ground-2);
+}
+
+.hero__title {
+  margin: 0; font-size: clamp(2rem, 5.2vw, 3.4rem); line-height: 1.1; letter-spacing: -0.022em;
+  font-weight: 720; max-width: 18ch;
+  background: linear-gradient(120deg, var(--ink) 30%, var(--cyan));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero__lede { margin: 22px 0 0; max-width: 62ch; color: var(--ink-dim); font-size: 1.06rem; }
+
+.hero__actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin: 30px 0 46px; }
+
+.btn {
+  display: inline-block; padding: 11px 22px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--ground-2); color: var(--ink);
+  text-decoration: none; font-size: 15px; font-weight: 560;
+}
+.btn:hover { border-color: var(--blue); }
+.btn--primary {
+  background: linear-gradient(120deg, var(--blue), var(--indigo));
+  border-color: transparent; color: #04121c;
+}
+.btn--primary:hover { filter: brightness(1.08); }
+
+/* ---------------------------------------------------------------- sections -- */
+
+.section { padding: 76px 0; border-bottom: 1px solid var(--line); }
+.section--alt { background: var(--ground-2); }
+
+.section__title {
+  margin: 0 0 14px; font-size: clamp(1.5rem, 3vw, 2.1rem); letter-spacing: -0.018em; font-weight: 680;
+}
+.section__lede { margin: 0 0 30px; max-width: 72ch; color: var(--ink-dim); }
+.section__after { margin: 26px 0 0; max-width: 72ch; color: var(--ink-faint); font-size: 15px; }
+
+/* ---------------------------------------------------------------- failures -- */
+
+.failures { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.failures__item {
+  padding: 13px 16px 13px 40px; position: relative;
+  background: var(--ground-2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--ink-dim); font-size: 15px;
+}
+.section--alt .failures__item { background: var(--ground-3); }
+.failures__item::before {
+  content: "✕"; position: absolute; left: 15px; top: 12px;
+  color: #ff7a86; font-size: 13px; font-weight: 700;
+}
+
+/* -------------------------------------------------------------------- grid -- */
+
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 36px; }
+.card { padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--ground); }
+.section--alt .card { background: var(--ground); }
+.card__title { margin: 0 0 8px; font-size: 1.04rem; font-weight: 640; }
+.card__body { margin: 0; color: var(--ink-dim); font-size: 15px; }
+
+/* ------------------------------------------------------------- conformance -- */
+
+.engines { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 28px; }
+.engine {
+  display: inline-flex; align-items: center; gap: 9px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px;
+  font-size: 14px; color: var(--ink-dim); background: var(--ground-2);
+}
+.engine__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: linear-gradient(120deg, var(--cyan), var(--indigo));
+}
+
+.pull {
+  margin: 0; padding: 20px 24px;
+  border-left: 3px solid var(--blue); border-radius: 0 10px 10px 0;
+  background: var(--ground-2); color: var(--ink); font-size: 1.02rem;
+}
+
+/* ------------------------------------------------------------------- steps -- */
+
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 22px; }
+.step__head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.step__num {
+  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  background: linear-gradient(120deg, var(--blue), var(--indigo));
+  color: #04121c; font-size: 13px; font-weight: 700; flex: none;
+}
+.step__label { margin: 0; font-size: 1rem; font-weight: 620; }
+
+/* ------------------------------------------------------------------ status -- */
+
+.status { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.status__col { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; background: var(--ground-2); }
+.status__head { margin: 0 0 12px; font-size: 0.94rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.status__head--yes { color: #7ee2a8; }
+.status__head--no { color: #ffb27a; }
+.status__list { margin: 0; padding-left: 18px; color: var(--ink-dim); font-size: 15px; display: grid; gap: 7px; }
+
+/* -------------------------------------------------------------------- code -- */
+
+.code { margin: 0; width: 100%; }
+.hero .code { margin-top: 8px; text-align: left; }
+.section .code { margin-top: 20px; }
+
+.code__caption {
+  font-size: 12.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-faint); padding: 0 4px 8px;
+}
+.code__pre {
+  margin: 0; padding: 20px 22px; overflow-x: auto;
+  background: var(--ground-2); border: 1px solid var(--line); border-radius: var(--radius);
+  font-family: var(--mono); font-size: 13.5px; line-height: 1.75; tab-size: 4;
+}
+.section--alt .code__pre { background: var(--ground); }
+.code__pre code { font: inherit; color: var(--ink); }
+
+.tok--keyword { color: var(--tok-key); font-weight: 600; }
+.tok--type    { color: var(--tok-type); }
+.tok--string  { color: var(--tok-str); }
+.tok--number  { color: var(--tok-num); }
+.tok--function{ color: var(--tok-fn); }
+.tok--comment { color: var(--tok-com); font-style: italic; }
+.tok--punct   { color: var(--ink-faint); }
+
+/* ------------------------------------------------------------------ footer -- */
+
+.site-footer { padding: 44px 0; background: var(--ground-2); }
+.site-footer__inner { display: flex; flex-wrap: wrap; gap: 32px; justify-content: space-between; }
+.site-footer__brand { display: flex; align-items: center; gap: 12px; }
+.site-footer__word { margin: 0; font-weight: 700; letter-spacing: 0.14em; font-size: 14px; }
+.site-footer__note { margin: 2px 0 0; color: var(--ink-faint); font-size: 13px; }
+
+.site-footer__links { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); flex: 1 1 460px; }
+.site-footer__links li { display: flex; flex-direction: column; }
+.site-footer__links a { font-size: 14.5px; text-decoration: none; font-weight: 560; }
+.site-footer__links a:hover { color: var(--blue); }
+.site-footer__links span { color: var(--ink-faint); font-size: 12.5px; }

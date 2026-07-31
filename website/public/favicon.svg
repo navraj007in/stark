@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">STARK VS Code Extension Icon</title>
+  <desc id="desc">A modern dark icon with a cyan angular S mark inspired by code brackets and compiler pipelines.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101827"/>
+      <stop offset="1" stop-color="#05080F"/>
+    </linearGradient>
+
+    <linearGradient id="mark" x1="136" y1="128" x2="390" y2="388" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#62F6FF"/>
+      <stop offset="0.52" stop-color="#22C8F6"/>
+      <stop offset="1" stop-color="#6D7CFF"/>
+    </linearGradient>
+
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feColorMatrix in="blur" type="matrix"
+        values="0 0 0 0 0.13
+                0 0 0 0 0.79
+                0 0 0 0 0.96
+                0 0 0 0.55 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <clipPath id="rounded">
+      <rect x="24" y="24" width="464" height="464" rx="104"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)"/>
+
+    <g opacity="0.12" stroke="#8DEBFF" stroke-width="1">
+      <path d="M24 128H488M24 256H488M24 384H488"/>
+      <path d="M128 24V488M256 24V488M384 24V488"/>
+    </g>
+
+    <circle cx="170" cy="130" r="190" fill="#1ED7FF" opacity="0.08"/>
+    <circle cx="390" cy="410" r="180" fill="#6C6BFF" opacity="0.08"/>
+
+    <path d="M154 144L92 256L154 368"
+          fill="none" stroke="#9CEFFF" stroke-width="24"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+
+    <path d="M358 144L420 256L358 368"
+          fill="none" stroke="#8394FF" stroke-width="24"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+
+    <path d="M335 132H205L164 188L214 246H299L325 278L292 324H177L141 380H307L372 294L316 226H232L208 197L232 164H312Z"
+          fill="url(#mark)" filter="url(#glow)"/>
+
+    <path d="M223 252H304L326 279L304 308H252L278 274Z"
+          fill="#07101A" opacity="0.88"/>
+
+    <rect x="295" y="344" width="64" height="14" rx="7" fill="#B9F7FF" opacity="0.95"/>
+  </g>
+
+  <rect x="24.75" y="24.75" width="462.5" height="462.5" rx="103.25"
+        fill="none" stroke="#A7F5FF" stroke-opacity="0.16" stroke-width="1.5"/>
+</svg>
