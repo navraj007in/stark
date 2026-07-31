@@ -240,6 +240,7 @@ fn a_diverging_pair_identifies_its_first_differing_field() {
             column: 5,
             message_class: TrapMessageClass::CategoryOnly,
             stdout_before_trap: b"before".to_vec(),
+            stderr_before_trap: Vec::new(),
             stderr_observation: TrapStderrObservation {
                 category_text: "integer overflow".to_string(),
                 user_message: None,

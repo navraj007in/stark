@@ -62,7 +62,7 @@ pub const MIR_VERSION: &str = "0.3";
 /// own amendment document rather than a rev. 14 of the A1 string/collection surface. The constant
 /// still advances because a consumer that cannot represent provider calls must reject an A10
 /// program before consuming any body (V-SURFACE-1).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A10";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A13";
 
 // ------------------------------------------------------------------ identity --
 
@@ -661,6 +661,33 @@ pub enum RuntimeFn {
     CharFromU32,
     StringPushChar,
     StringPopChar,
+    // --- 0.1-A13 (WP-C7.9 Packet D): the STDERR half of the output surface. ---
+    //
+    // `eprint`/`eprintln` are normative standard-library operations (06-Standard-Library.md) that
+    // had NO lowering at all: the front end accepted them, the HIR oracle wrote them straight to
+    // the host process, MIR refused them, and native emitted nothing. A program's stderr was
+    // therefore unobservable to every comparator, which is how a case could "agree" while the
+    // operation it was testing was never performed by two of the three engines.
+    //
+    // One mirrored operation per stdout operation, rather than a channel parameter on the existing
+    // ones: `RuntimeFn` identity is the contract every engine dispatches on, and adding an operand
+    // to fourteen existing operations would change the arity of every call already emitted. The
+    // RENDERING is shared with the stdout half in `stark_runtime::format`, so the two channels
+    // cannot drift into formatting the same value differently.
+    EprintlnStr,
+    EprintStr,
+    EprintlnInt64,
+    EprintInt64,
+    EprintlnUInt64,
+    EprintUInt64,
+    EprintlnBool,
+    EprintBool,
+    EprintlnFloat64,
+    EprintFloat64,
+    EprintlnFloat32,
+    EprintFloat32,
+    EprintlnChar,
+    EprintChar,
 }
 
 #[derive(Clone, Debug)]

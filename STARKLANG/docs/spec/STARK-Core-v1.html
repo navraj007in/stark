@@ -2520,6 +2520,17 @@ non-<code>Copy</code> element type is not yet supported (deferred
 feature — consuming each element moves it out of a place named by a
 runtime loop index; iterate over a borrow instead. <code>Copy</code>
 arrays iterate normally.)</li>
+<li>E0105: Iteration form not supported by this implementation (deferred
+feature). Covers by-value iteration over <code>Vec&lt;T&gt;</code> and
+the <code>Iterator</code> combinator methods (<code>map</code>,
+<code>filter</code>, <code>count</code>, <code>collect</code>,
+<code>fold</code>, <code>reduce</code>, <code>any</code>,
+<code>all</code>, <code>find</code>). Iterating a borrow
+(<code>v.iter()</code>) and driving an iterator with a <code>for</code>
+loop are supported. An implementation that supports these forms does not
+raise E0105; one that does not MUST raise it during semantic analysis
+rather than accepting the program and failing later, so that acceptance
+and executability agree.</li>
 </ul>
 <h4 id="name-resolution-errors-e0200-e0299">Name Resolution Errors
 (E0200-E0299)</h4>

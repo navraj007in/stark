@@ -2807,6 +2807,15 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
         // 0.1-A3 (f-3b): Char ops.
         PrintlnChar | PrintChar => (vec![MirTy::Char], MirTy::Unit),
+        // 0.1-A13 (WP-C7.9 Packet D): the stderr half takes exactly the operand shapes its stdout
+        // counterpart takes — same values, different sink.
+        EprintlnInt64 | EprintInt64 => (vec![MirTy::Int64], MirTy::Unit),
+        EprintlnUInt64 | EprintUInt64 => (vec![MirTy::UInt64], MirTy::Unit),
+        EprintlnBool | EprintBool => (vec![MirTy::Bool], MirTy::Unit),
+        EprintlnFloat64 | EprintFloat64 => (vec![MirTy::Float64], MirTy::Unit),
+        EprintlnFloat32 | EprintFloat32 => (vec![MirTy::Float32], MirTy::Unit),
+        EprintlnStr | EprintStr => (vec![str_ref()], MirTy::Unit),
+        EprintlnChar | EprintChar => (vec![MirTy::Char], MirTy::Unit),
         CharFromU32 => (
             vec![MirTy::UInt32],
             MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),

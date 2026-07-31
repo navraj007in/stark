@@ -1,0 +1,19 @@
+// WP-C7.9 Packet D sentinel — the program's OWN stderr, written before a trap, survives it.
+//
+// Both streams carry bytes before the trap, and the trap's diagnostic is the runtime's, not the
+// program's. Three separate things have to hold for this case to pass, and each failed somewhere
+// before Packet D:
+//
+//   - the oracle must CAPTURE eprintln rather than writing it to the host process;
+//   - MIR must LOWER it (it had no lowering at all, so this program was refused outright);
+//   - the comparator must SEPARATE program stderr from the runtime's trap record.
+//
+// The LIKELY WRONG implementation this sentinel fails: any engine that reports empty stderr, or a
+// comparator that attributes "error: runtime trap: integer overflow" to the program.
+fn main() {
+    println("out");
+    eprintln("about to fail");
+    let base: Int32 = -2147483647i32;
+    let min: Int32 = base - 1i32;
+    println(min / -1i32);
+}

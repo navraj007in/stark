@@ -1095,6 +1095,10 @@ struct FnLowerer<'a> {
     current: BlockId,
     current_statements: Vec<(Statement, SourceInfo)>,
     loops: Vec<LoopTargets>,
+    /// 0.1-A13 (WP-C7.9 Packet D): which stream the output operation being lowered right now
+    /// writes to. Set for the duration of one `eprint`/`eprintln` call and restored afterwards;
+    /// `Stdout` everywhere else, including inside any function body those calls invoke.
+    out_channel: OutChannel,
     discovered_callees: Vec<FnKey>,
     /// C4.5d: drop units per droppable user/param local, keyed by MIR local index.
     drop_info: HashMap<u32, Vec<DropUnit>>,
@@ -1140,6 +1144,7 @@ impl<'a> FnLowerer<'a> {
             current: BlockId(0),
             current_statements: Vec::new(),
             loops: Vec::new(),
+            out_channel: OutChannel::Stdout,
             discovered_callees: Vec::new(),
             drop_info: HashMap::new(),
             scopes: Vec::new(),
@@ -4599,6 +4604,9 @@ impl<'a> FnLowerer<'a> {
             BinOp::Add => (CheckedOp::Add, TrapCategory::IntegerOverflow),
             BinOp::Sub => (CheckedOp::Sub, TrapCategory::IntegerOverflow),
             BinOp::Mul => (CheckedOp::Mul, TrapCategory::IntegerOverflow),
+            // The terminator carries the DEFAULT category only. NUM-INT-DIV-001 gives `/` and `%`
+            // a second failure — signed `MIN op -1` — which the checked evaluation overrides to
+            // `IntegerOverflow`, exactly as a bad shift count overrides to `InvalidShift` below.
             BinOp::Div => (CheckedOp::Div, TrapCategory::DivideByZero),
             BinOp::Rem => (CheckedOp::Rem, TrapCategory::DivideByZero),
             // A5: shifts trap on an invalid count / non-representable left shift; `**` traps on
@@ -5009,107 +5017,31 @@ impl<'a> FnLowerer<'a> {
 
         match &self.hir.expr(callee).kind {
             hir::ExprKind::Path { res, .. } => match res {
-                Res::Builtin(builtin @ (Builtin::Println | Builtin::Print)) => {
+                // 0.1-A13 (WP-C7.9 Packet D): `eprint`/`eprintln` join this arm rather than getting
+                // one of their own. They are the same operation on a different stream — same
+                // arity, same type dispatch, same `Display` invocation, same composite
+                // decomposition — and the channel is applied where an operation becomes a call
+                // (`on_current_channel`). Before this they had no lowering at all, so MIR refused
+                // every program that used them and native emitted nothing.
+                Res::Builtin(
+                    builtin @ (Builtin::Println
+                    | Builtin::Print
+                    | Builtin::Eprintln
+                    | Builtin::Eprint),
+                ) => {
                     if args.len() != 1 {
                         return unsupported("print/println arity", span);
                     }
                     let arg_ty = self.expr_mir_ty(args[0])?;
-                    let is_println = matches!(builtin, Builtin::Println);
-                    // A1 (CD-031): printing a `&str` / `String` routes to Print(ln)Str, after
-                    // an implicit `as_str` for an owned/borrowed String.
-                    let peeled = Self::peel_refs(arg_ty.clone()).0;
-                    if matches!(peeled, MirTy::Str | MirTy::String) {
-                        let str_op = if matches!(peeled, MirTy::String) {
-                            let recv = self.borrow_string_receiver(args[0], false, span)?;
-                            let str_ty = MirTy::Ref {
-                                mutable: false,
-                                inner: Box::new(MirTy::Str),
-                            };
-                            let tmp = self.new_temp(str_ty.clone());
-                            self.emit_runtime_call(
-                                RuntimeFn::StringAsStr,
-                                vec![recv],
-                                Place::local(tmp),
-                                span,
-                            );
-                            self.read_place(Place::local(tmp), &str_ty, span)?
-                        } else {
-                            self.lower_expr_to_operand(args[0])?
-                        };
-                        let rt = if is_println {
-                            RuntimeFn::PrintlnStr
-                        } else {
-                            RuntimeFn::PrintStr
-                        };
-                        self.emit_runtime_call(rt, vec![str_op], dest, span);
-                        return Ok(());
-                    }
-                    // A4: `println(Ordering)` (Display, deferred from Amendment A2). No runtime
-                    // op — a discriminant switch prints the variant name via `Print(ln)Str`.
-                    if matches!(peeled, MirTy::Enum(EnumRef::CoreOrdering, _)) {
-                        return self.lower_print_ordering(args[0], is_println, dest, span);
-                    }
-                    // DEV-089: a user nominal (struct/enum) with its own `Display` impl prints
-                    // through that impl — an ordinary static call to the selected `Display::fmt`,
-                    // whose returned `String` is what is printed. The checker's E0500 guarantees
-                    // any non-standard type reaching here has such an impl.
-                    if matches!(peeled, MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _)) {
-                        return self.lower_print_display(args[0], &arg_ty, is_println, dest, span);
-                    }
-                    // WP-C6.3e: a displayable COMPOSITE (tuple/array of primitive elements in this
-                    // slice) is rendered as a SEQUENCE of primitive print ops matching the
-                    // interpreter's `Display for Value` — no runtime-surface change.
-                    if matches!(
-                        peeled,
-                        MirTy::Tuple(_)
-                            | MirTy::Array(..)
-                            | MirTy::Enum(EnumRef::CoreOption, _)
-                            | MirTy::Enum(EnumRef::CoreResult, _)
-                            | MirTy::Core(crate::hir::CoreType::Vec, _)
-                    ) {
-                        return self
-                            .lower_print_composite(args[0], &arg_ty, is_println, dest, span);
-                    }
-                    // DEV-105: a `Float32` keeps its DECLARED width — widening first would print
-                    // the shortest round-trip of the f64 it became, not of the f32 that was
-                    // written. It is the one primitive that must not pass through
-                    // `widen_for_print`.
-                    if matches!(peeled, MirTy::Float32) {
-                        let value = self.lower_expr_to_operand(args[0])?;
-                        let rt = if is_println {
-                            RuntimeFn::PrintlnFloat32
-                        } else {
-                            RuntimeFn::PrintFloat32
-                        };
-                        self.emit_runtime_call(rt, vec![value], dest, span);
-                        return Ok(());
-                    }
-                    let value = self.lower_expr_to_operand(args[0])?;
-                    let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
-                    let runtime = match (runtime, is_println) {
-                        (PrintKind::Int, true) => RuntimeFn::PrintlnInt64,
-                        (PrintKind::Int, false) => RuntimeFn::PrintInt64,
-                        (PrintKind::UInt, true) => RuntimeFn::PrintlnUInt64,
-                        (PrintKind::UInt, false) => RuntimeFn::PrintUInt64,
-                        (PrintKind::Bool, true) => RuntimeFn::PrintlnBool,
-                        (PrintKind::Bool, false) => RuntimeFn::PrintBool,
-                        (PrintKind::Float, true) => RuntimeFn::PrintlnFloat64,
-                        (PrintKind::Float, false) => RuntimeFn::PrintFloat64,
-                        (PrintKind::Char, true) => RuntimeFn::PrintlnChar,
-                        (PrintKind::Char, false) => RuntimeFn::PrintChar,
+                    let is_println = matches!(builtin, Builtin::Println | Builtin::Eprintln);
+                    let restore = self.out_channel;
+                    self.out_channel = match builtin {
+                        Builtin::Eprint | Builtin::Eprintln => OutChannel::Stderr,
+                        _ => OutChannel::Stdout,
                     };
-                    let after = self.new_block();
-                    self.terminate(
-                        Terminator::Call {
-                            callee: Callee::Runtime(runtime),
-                            args: vec![widened],
-                            dest,
-                            target: after,
-                        },
-                        self.info(span),
-                        after,
-                    );
-                    Ok(())
+                    let lowered = self.lower_output_call(args[0], arg_ty, is_println, dest, span);
+                    self.out_channel = restore;
+                    lowered
                 }
                 Res::Builtin(ctor @ (Builtin::Some | Builtin::Ok | Builtin::Err)) => {
                     let (enum_ref, variant) = match ctor {
@@ -8147,8 +8079,119 @@ impl<'a> FnLowerer<'a> {
         self.read_place(Place::local(temp), &ref_ty, span)
     }
 
+    /// 0.1-A13 (WP-C7.9 Packet D): `print`/`println`/`eprint`/`eprintln`.
+    ///
+    /// One lowering for all four. They differ only in which stream the selected operation
+    /// writes to, which `on_current_channel` applies where an operation becomes a call — so the
+    /// type dispatch below (str, `Ordering`, a user `Display` impl, composites, `Float32`, the
+    /// widened primitives) is written once and cannot drift between the two channels.
+    fn lower_output_call(
+        &mut self,
+        arg: ExprId,
+        arg_ty: MirTy,
+        is_println: bool,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let args = [arg];
+        // A1 (CD-031): printing a `&str` / `String` routes to Print(ln)Str, after
+        // an implicit `as_str` for an owned/borrowed String.
+        let peeled = Self::peel_refs(arg_ty.clone()).0;
+        if matches!(peeled, MirTy::Str | MirTy::String) {
+            let str_op = if matches!(peeled, MirTy::String) {
+                let recv = self.borrow_string_receiver(args[0], false, span)?;
+                let str_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                };
+                let tmp = self.new_temp(str_ty.clone());
+                self.emit_runtime_call(RuntimeFn::StringAsStr, vec![recv], Place::local(tmp), span);
+                self.read_place(Place::local(tmp), &str_ty, span)?
+            } else {
+                self.lower_expr_to_operand(args[0])?
+            };
+            let rt = if is_println {
+                RuntimeFn::PrintlnStr
+            } else {
+                RuntimeFn::PrintStr
+            };
+            self.emit_runtime_call(rt, vec![str_op], dest, span);
+            return Ok(());
+        }
+        // A4: `println(Ordering)` (Display, deferred from Amendment A2). No runtime
+        // op — a discriminant switch prints the variant name via `Print(ln)Str`.
+        if matches!(peeled, MirTy::Enum(EnumRef::CoreOrdering, _)) {
+            return self.lower_print_ordering(args[0], is_println, dest, span);
+        }
+        // DEV-089: a user nominal (struct/enum) with its own `Display` impl prints
+        // through that impl — an ordinary static call to the selected `Display::fmt`,
+        // whose returned `String` is what is printed. The checker's E0500 guarantees
+        // any non-standard type reaching here has such an impl.
+        if matches!(peeled, MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _)) {
+            return self.lower_print_display(args[0], &arg_ty, is_println, dest, span);
+        }
+        // WP-C6.3e: a displayable COMPOSITE (tuple/array of primitive elements in this
+        // slice) is rendered as a SEQUENCE of primitive print ops matching the
+        // interpreter's `Display for Value` — no runtime-surface change.
+        if matches!(
+            peeled,
+            MirTy::Tuple(_)
+                | MirTy::Array(..)
+                | MirTy::Enum(EnumRef::CoreOption, _)
+                | MirTy::Enum(EnumRef::CoreResult, _)
+                | MirTy::Core(crate::hir::CoreType::Vec, _)
+        ) {
+            return self.lower_print_composite(args[0], &arg_ty, is_println, dest, span);
+        }
+        // DEV-105: a `Float32` keeps its DECLARED width — widening first would print
+        // the shortest round-trip of the f64 it became, not of the f32 that was
+        // written. It is the one primitive that must not pass through
+        // `widen_for_print`.
+        if matches!(peeled, MirTy::Float32) {
+            let value = self.lower_expr_to_operand(args[0])?;
+            let rt = if is_println {
+                RuntimeFn::PrintlnFloat32
+            } else {
+                RuntimeFn::PrintFloat32
+            };
+            self.emit_runtime_call(rt, vec![value], dest, span);
+            return Ok(());
+        }
+        let value = self.lower_expr_to_operand(args[0])?;
+        let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
+        // This site builds its terminator directly rather than through `emit_runtime_call`, so the
+        // channel redirect is applied explicitly — it is the one output operation that would
+        // otherwise always write to stdout.
+        let runtime = match (runtime, is_println) {
+            (PrintKind::Int, true) => RuntimeFn::PrintlnInt64,
+            (PrintKind::Int, false) => RuntimeFn::PrintInt64,
+            (PrintKind::UInt, true) => RuntimeFn::PrintlnUInt64,
+            (PrintKind::UInt, false) => RuntimeFn::PrintUInt64,
+            (PrintKind::Bool, true) => RuntimeFn::PrintlnBool,
+            (PrintKind::Bool, false) => RuntimeFn::PrintBool,
+            (PrintKind::Float, true) => RuntimeFn::PrintlnFloat64,
+            (PrintKind::Float, false) => RuntimeFn::PrintFloat64,
+            (PrintKind::Char, true) => RuntimeFn::PrintlnChar,
+            (PrintKind::Char, false) => RuntimeFn::PrintChar,
+        };
+        let runtime = self.on_current_channel(runtime);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Runtime(runtime),
+                args: vec![widened],
+                dest,
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        Ok(())
+    }
+
     /// Emit a `Call` to a runtime op with a fresh successor block.
     fn emit_runtime_call(&mut self, rt: RuntimeFn, ops: Vec<Operand>, dest: Place, span: Span) {
+        let rt = self.on_current_channel(rt);
         let after = self.new_block();
         self.terminate(
             Terminator::Call {
@@ -8160,6 +8203,40 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
             after,
         );
+    }
+
+    /// 0.1-A13 (WP-C7.9 Packet D): an output operation, redirected to whichever channel is being
+    /// lowered right now.
+    ///
+    /// `eprint`/`eprintln` differ from `print`/`println` in exactly one respect — the sink — and in
+    /// nothing else: the same argument types dispatch the same way, `Ordering` prints its variant
+    /// name the same way, a user `Display` impl is invoked the same way, and a composite is
+    /// decomposed the same way. Threading a channel argument through all of that dispatch would
+    /// have meant editing every site that selects an output operation and hoping none was missed.
+    /// Redirecting at the single point where an operation becomes a call cannot miss one.
+    ///
+    /// Every non-output operation passes through untouched.
+    fn on_current_channel(&self, rt: RuntimeFn) -> RuntimeFn {
+        if self.out_channel == OutChannel::Stdout {
+            return rt;
+        }
+        match rt {
+            RuntimeFn::PrintlnStr => RuntimeFn::EprintlnStr,
+            RuntimeFn::PrintStr => RuntimeFn::EprintStr,
+            RuntimeFn::PrintlnInt64 => RuntimeFn::EprintlnInt64,
+            RuntimeFn::PrintInt64 => RuntimeFn::EprintInt64,
+            RuntimeFn::PrintlnUInt64 => RuntimeFn::EprintlnUInt64,
+            RuntimeFn::PrintUInt64 => RuntimeFn::EprintUInt64,
+            RuntimeFn::PrintlnBool => RuntimeFn::EprintlnBool,
+            RuntimeFn::PrintBool => RuntimeFn::EprintBool,
+            RuntimeFn::PrintlnFloat64 => RuntimeFn::EprintlnFloat64,
+            RuntimeFn::PrintFloat64 => RuntimeFn::EprintFloat64,
+            RuntimeFn::PrintlnFloat32 => RuntimeFn::EprintlnFloat32,
+            RuntimeFn::PrintFloat32 => RuntimeFn::EprintFloat32,
+            RuntimeFn::PrintlnChar => RuntimeFn::EprintlnChar,
+            RuntimeFn::PrintChar => RuntimeFn::EprintChar,
+            other => other,
+        }
     }
 
     /// A4: `print`/`println` of an `Ordering` value — a discriminant switch that prints the
@@ -10599,6 +10676,17 @@ enum PrintKind {
     Bool,
     Char,
     Float,
+}
+
+/// 0.1-A13 (WP-C7.9 Packet D): which stream an output operation writes to.
+///
+/// PROC-STREAM-001 gives a program two independent streams; before Packet D the compiler could
+/// only lower one of them, so `eprint`/`eprintln` were accepted by the front end and executable by
+/// no engine below it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutChannel {
+    Stdout,
+    Stderr,
 }
 
 fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {

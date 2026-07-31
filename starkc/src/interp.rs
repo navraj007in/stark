@@ -19,9 +19,16 @@ use std::sync::Arc;
 pub struct RuntimeError {
     pub message: String,
     pub span: Span,
-    /// False for executable-target selection failures detected before the
-    /// entrypoint starts. Those are compiler errors, not language traps.
-    pub is_trap: bool,
+    /// WP-C7.9 (Packets F and G.3): WHAT KIND of failure this is.
+    ///
+    /// This used to be a `bool` named `is_trap`, which could express only "a language trap" versus
+    /// "something else" — and "something else" had to hold entrypoint-selection errors, interpreter
+    /// invariant violations, and host resource exhaustion all at once. They are not the same thing:
+    /// the first is a compiler rejection, the second is a compiler DEFECT, and the third is a
+    /// property of the machine the program ran on (`LIMIT-RESOURCE-001`). A comparator that cannot
+    /// tell them apart either treats a stack overflow as a language outcome or treats a real trap
+    /// as noise.
+    pub class: FailureClass,
     /// DEV-106 (CD-136): the trap category when the interpreter KNOWS it, rather than leaving it to
     /// be recovered by matching this error's prose.
     ///
@@ -43,13 +50,82 @@ pub struct RuntimeError {
     pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
+/// This implementation's call-depth capacity (WP-C7.9 Packet F, `LIMIT-RESOURCE-001`).
+///
+/// **Implementation-defined, and declared rather than discovered.** LIMIT-RESOURCE-001 leaves exact
+/// capacities to the implementation and requires only that exhaustion be prevented from becoming
+/// host undefined behaviour and be reported. This number is chosen against the *host* stack, not
+/// against a language rule: each STARK call consumes several Rust frames
+/// (`call_callable` → `eval_block` → `eval_stmt` → `eval_expr` → …), and a Rust test thread's
+/// stack is far smaller than the main thread's. A capacity that fits comfortably inside the
+/// smallest stack the project runs on is what keeps a deep recursion a *reported* failure on every
+/// host rather than an abort on some of them.
+///
+/// It is deliberately not generous. Ordinary programs — including recursive-descent parsing over
+/// realistically nested data — sit far below it; a program that reaches it is recursing without a
+/// base case, which is the case this exists to report.
+///
+/// The MIR interpreter shares this constant, because the two interpreters have equivalent host
+/// stack behaviour and a program should not become executable by changing engines.
+pub const MAX_CALL_DEPTH: usize = 512;
+
+/// What kind of failure ended a run (WP-C7.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    /// A language trap: a failure the specification defines, with a category and provenance. The
+    /// only class the engines are required to agree on.
+    Trap,
+    /// Executable-target selection, detected before the entrypoint starts. A compiler rejection.
+    Entry,
+    /// A host or process resource limit — `LIMIT-RESOURCE-001` names allocation, stack, call depth,
+    /// file descriptors and streams, and classifies their exhaustion as a host/process failure
+    /// "unless an API returns a specified `Result`". **Never a trap**: capacities are
+    /// implementation- and target-defined, so requiring engines to agree on them would be requiring
+    /// them to agree on the machine.
+    HostResource,
+    /// An interpreter invariant that should be unreachable — a defect in the compiler, never in the
+    /// program. Surfaced so a harness fails loudly instead of classifying it as a language outcome.
+    InternalInvariant,
+}
+
 impl RuntimeError {
+    /// Whether this is a language trap. Kept as a predicate so the four-way classification has one
+    /// definition rather than being re-derived at each call site.
+    pub fn is_trap(&self) -> bool {
+        matches!(self.class, FailureClass::Trap)
+    }
+
     /// A trap whose category is recovered from its prose by the consumer.
     fn new(message: impl Into<String>, span: Span) -> Self {
         Self {
             message: message.into(),
             span,
-            is_trap: true,
+            class: FailureClass::Trap,
+            trap_category: None,
+            file: None,
+        }
+    }
+
+    /// WP-C7.9 G.3: an interpreter invariant that should be unreachable. A compiler defect, never a
+    /// program outcome — a harness must fail loudly on it rather than classify it as a trap.
+    fn internal(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            class: FailureClass::InternalInvariant,
+            trap_category: None,
+            file: None,
+        }
+    }
+
+    /// WP-C7.9 Packet F: a host/process resource limit was reached. Not a trap, and deliberately
+    /// carries no `TrapCategory` — there is no category for it, because it is not a language
+    /// outcome.
+    fn host_resource(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            class: FailureClass::HostResource,
             trap_category: None,
             file: None,
         }
@@ -64,7 +140,7 @@ impl RuntimeError {
         Self {
             message: message.into(),
             span,
-            is_trap: true,
+            class: FailureClass::Trap,
             trap_category: Some(category),
             file: None,
         }
@@ -74,7 +150,7 @@ impl RuntimeError {
         Self {
             message: message.into(),
             span,
-            is_trap: false,
+            class: FailureClass::Entry,
             trap_category: None,
             file: None,
         }
@@ -86,8 +162,25 @@ pub struct Execution {
     pub output: String,
     /// Core process status produced by normal entrypoint completion.
     pub status: u8,
-    /// Bytes destined for the Core stderr stream on normal `Err` completion.
+    /// The program's stderr: every `eprint`/`eprintln` byte it wrote, followed by the
+    /// `Err(message)` bytes PROC-EXIT-001 owes on a failing entrypoint completion.
+    ///
+    /// WP-C7.9 Packet D: `eprint`/`eprintln` used to bypass this field entirely and write straight
+    /// to the host process, so this carried only the `Err` completion bytes and the comparator
+    /// compared empty-to-empty for every other program.
     pub stderr: String,
+}
+
+/// A run's complete observation, including the streams written *before* a failure.
+///
+/// [`run_with_partial_output`] returns the pre-trap stdout but has no room for the pre-trap
+/// stderr, and widening its `Err` tuple would edit a dozen call sites that do not want the third
+/// field. This is the superset entry point the comparator uses; that one is now a wrapper over it.
+pub struct ExecutionOutcome {
+    pub output: String,
+    pub stderr: String,
+    /// The exit status on normal completion, or the failure that ended the run.
+    pub result: Result<u8, RuntimeError>,
 }
 
 /// Evaluate every declared constant before execution. This uses the same
@@ -793,10 +886,19 @@ enum Projection {
 /// DEV-065: an out-of-range `Index` projection is the language's index-out-of-bounds TRAP
 /// (CORE-V1-ABSTRACT-MACHINE), not a moved-field condition — the generic message was
 /// misleading for the most common trap a user can hit.
-fn projection_failure_message(projection: &Projection) -> &'static str {
+fn projection_failure(projection: &Projection, span: Span) -> RuntimeError {
     match projection {
-        Projection::Index(_) | Projection::MapIndex(_) => "index out of bounds",
-        Projection::Field(_) => "use of moved or invalid field",
+        // WP-C7.9 G.3: an out-of-range projection IS the language's index trap, so it states its
+        // category here rather than leaving a downstream normaliser to recognise the words
+        // "index out of bounds".
+        Projection::Index(_) | Projection::MapIndex(_) => RuntimeError::with_category(
+            "index out of bounds",
+            span,
+            crate::mir::TrapCategory::IndexOutOfBounds,
+        ),
+        // Not a language trap: reaching a moved-out field means the compiler let something through
+        // that it should have rejected, or the interpreter lost track of a move.
+        Projection::Field(_) => RuntimeError::internal("use of moved or invalid field", span),
     }
 }
 
@@ -820,6 +922,23 @@ impl Frame {
         }
         self.values.insert(local, value);
     }
+}
+
+/// WP-C7.9 Packet C — what a `match` is matching against, decided once per `match` from its own
+/// scrutinee (PAT-BIND-001).
+///
+/// Before this existed, `match_pattern` took a `&Value` and had no place to build a reference
+/// from, so every binding was a clone of the referent. That was observationally identical for
+/// read-only use — which is why 17 of the rule's 19 cases agreed across all three engines — and
+/// wrong the moment a binding was used AS a reference: the oracle failed with "cannot dereference
+/// non-reference" where the type checker, MIR and native all said `&String`.
+enum PatternSource {
+    /// The scrutinee was read as a value: bindings move or copy, exactly as before.
+    Owned(Value),
+    /// The scrutinee is a place read THROUGH a reference. Non-`Copy` components bind as references
+    /// to the original storage; `Copy` components still bind by value, because a `Copy` read moves
+    /// nothing.
+    Borrowed(Place),
 }
 
 enum Flow {
@@ -890,18 +1009,95 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
     }
 }
 
+/// The host stack the interpreter is given to work in (WP-C7.9 Packet F).
+///
+/// **Why this exists at all.** The reference interpreter is a tree-walker: one STARK call consumes
+/// a chain of Rust frames (`call_callable` → `eval_block` → `eval_stmt` → `eval_expr` → …), and
+/// those frames are large in a debug build. Measured on the default 8 MiB main-thread stack, an
+/// ordinary recursive function overflowed the process at roughly a hundred STARK frames — a depth
+/// real programs reach, and one no language rule says anything about.
+///
+/// A depth CAP alone cannot fix that: a cap low enough to be safe on a default stack would reject
+/// programs the language accepts. So the capacity is made real instead — execution runs on a thread
+/// with a stack sized for `MAX_CALL_DEPTH` frames, and the cap then reports exhaustion *before* the
+/// host runs out (`LIMIT-RESOURCE-001`: prevent host undefined behaviour, report the classified
+/// failure). The reservation is virtual; only touched pages are committed.
+pub const INTERPRETER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Runs `body` on a thread with [`INTERPRETER_STACK_BYTES`] of stack.
+///
+/// Scoped, so the caller's borrowed HIR and tables need no `'static` bound.
+pub fn on_interpreter_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_BYTES)
+            .spawn_scoped(scope, body)
+            .expect("spawning the interpreter thread failed")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+}
+
 pub fn run(
     hir: &Hir,
     file: Arc<SourceFile>,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
+    on_interpreter_stack(move || run_here(hir, file, tables))
+}
+
+/// [`run`] without the stack switch, for a caller that is already on a suitable stack.
+fn run_here(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    tables: &TypeTables,
+) -> Result<Execution, RuntimeError> {
     let mut interpreter = Interpreter::new(hir, file, tables);
-    let (status, stderr) = interpreter.run_main()?;
+    let (status, exit_stderr) = interpreter.run_main()?;
+    // Program stderr first, then the entrypoint's `Err` bytes: the program wrote its own output
+    // while running, and the completion message is by definition produced at the end.
+    let stderr = format!("{}{exit_stderr}", interpreter.stderr);
     Ok(Execution {
         output: interpreter.output,
         status,
         stderr,
     })
+}
+
+impl ExecutionOutcome {
+    /// The same outcome in [`run_with_partial_output`]'s shape, for callers that want the older
+    /// two-way split. The stderr is preserved separately by the caller when it needs it.
+    pub fn into_result(self) -> Result<Execution, (RuntimeError, String)> {
+        match self.result {
+            Ok(status) => Ok(Execution {
+                output: self.output,
+                status,
+                stderr: self.stderr,
+            }),
+            Err(error) => Err((error, self.output)),
+        }
+    }
+}
+
+/// Run `main`, keeping both streams whatever the outcome. See [`ExecutionOutcome`].
+pub fn run_capturing(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+    on_interpreter_stack(move || run_capturing_here(hir, file, tables))
+}
+
+fn run_capturing_here(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+    let mut interpreter = Interpreter::new(hir, file, tables);
+    match interpreter.run_main() {
+        Ok((status, exit_stderr)) => ExecutionOutcome {
+            output: interpreter.output,
+            stderr: format!("{}{exit_stderr}", interpreter.stderr),
+            result: Ok(status),
+        },
+        Err(error) => ExecutionOutcome {
+            output: interpreter.output,
+            stderr: interpreter.stderr,
+            result: Err(error),
+        },
+    }
 }
 
 /// Like [`run`], but a failure also carries the stdout accumulated before it. The MIR
@@ -912,14 +1108,21 @@ pub fn run_with_partial_output(
     file: Arc<SourceFile>,
     tables: &TypeTables,
 ) -> Result<Execution, (RuntimeError, String)> {
-    let mut interpreter = Interpreter::new(hir, file, tables);
-    match interpreter.run_main() {
-        Ok((status, stderr)) => Ok(Execution {
-            output: interpreter.output,
+    match run_capturing(hir, file, tables) {
+        ExecutionOutcome {
+            output,
+            stderr,
+            result: Ok(status),
+        } => Ok(Execution {
+            output,
             status,
             stderr,
         }),
-        Err(error) => Err((error, interpreter.output)),
+        ExecutionOutcome {
+            output,
+            result: Err(error),
+            ..
+        } => Err((error, output)),
     }
 }
 
@@ -927,6 +1130,15 @@ pub fn run_with_partial_output(
 /// program entry point instead of `main` — used by the test runner
 /// (`test_runner::run_test`) to invoke each discovered `test_*` function.
 pub fn run_item(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    tables: &TypeTables,
+    item: ItemId,
+) -> Result<Execution, RuntimeError> {
+    on_interpreter_stack(move || run_item_here(hir, file, tables, item))
+}
+
+fn run_item_here(
     hir: &Hir,
     file: Arc<SourceFile>,
     tables: &TypeTables,
@@ -941,7 +1153,8 @@ pub fn run_item(
     Ok(Execution {
         output: interpreter.output,
         status: 0,
-        stderr: String::new(),
+        // A test function has no entrypoint completion, so this is the program's own stderr only.
+        stderr: interpreter.stderr,
     })
 }
 
@@ -951,6 +1164,10 @@ struct Interpreter<'a> {
     tables: &'a TypeTables,
     frames: Vec<Frame>,
     output: String,
+    /// WP-C7.9 Packet D: the program's own stderr, captured rather than written through to the
+    /// host. Ordered independently of `output` — each stream preserves its own order, which is all
+    /// PROC-STREAM-001 requires of two separate streams.
+    stderr: String,
     copy_items: HashSet<ItemId>,
     pending_propagation: Option<Value>,
     const_cache: HashMap<ItemId, Value>,
@@ -1096,6 +1313,7 @@ impl<'a> Interpreter<'a> {
             tables,
             frames: Vec::new(),
             output: String::new(),
+            stderr: String::new(),
             copy_items,
             pending_propagation: None,
             const_cache: HashMap::new(),
@@ -1267,6 +1485,22 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, RuntimeError> {
         if args.len() != callable.params.len() {
             return Err(RuntimeError::new("runtime argument count mismatch", span));
+        }
+        // WP-C7.9 Packet F: the interpreter's own call-depth capacity, checked BEFORE the frame is
+        // pushed. Without it, a deeply recursive STARK program consumed the host's Rust stack and
+        // the process aborted — taking the test runner with it, with no classification and no way
+        // for a harness to tell "the program recursed too deeply" from "the interpreter crashed".
+        // `LIMIT-RESOURCE-001` already names call depth and already says what this is: a
+        // host/process failure, reported rather than crashed into, with an implementation-defined
+        // capacity.
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(RuntimeError::host_resource(
+                format!(
+                    "call depth limit reached ({MAX_CALL_DEPTH} frames): the program exceeded this \
+                     implementation's call-depth capacity"
+                ),
+                span,
+            ));
         }
         let mut frame = Frame::default();
         if let (Some((_, local)), Some(value)) = (callable.receiver, receiver) {
@@ -1510,11 +1744,20 @@ impl<'a> Interpreter<'a> {
                     let current = self.take_place(&place, expr.span)?;
                     // Compound-assignment operators (`+=`, `-=`, ...) never desugar to `Eq`/`Ord`
                     // dispatch (there is no `==`-assignment form), so no operand place is needed.
+                    //
+                    // **WP-C7.9 Packet A: the type-carrying expression is the LHS, not the
+                    // assignment.** `eval_binary` range-checks its result against the width the
+                    // type tables give the expression it is passed, and an assignment expression's
+                    // type is `Unit` — which has no width, so `fits_target_integer_width` returned
+                    // `true` and the check passed vacuously. `acc /= -1` on `Int32::MIN` therefore
+                    // COMPLETED in the oracle, storing 2147483648 in an `Int32`, while MIR trapped.
+                    // Found by this packet's compound-assignment case; no maintained case had ever
+                    // overflowed through a compound assignment.
                     self.eval_binary(
                         assign_binop(*op),
                         (current, None),
                         (right, None),
-                        expr_id,
+                        *lhs,
                         expr.span,
                     )?
                 };
@@ -1618,13 +1861,27 @@ impl<'a> Interpreter<'a> {
                 }
             }
             hir::ExprKind::Match { scrutinee, arms } => {
-                let value = self.expect_value(*scrutinee)?;
-                if let Some(propagated) = self.pending_propagation.take() {
-                    return Ok(Flow::Propagate(propagated));
-                }
+                // WP-C7.9 Packet C / PAT-BIND-001: the binding mode is decided ONCE, here, from
+                // this match's own scrutinee — not per pattern and not inherited. A scrutinee that
+                // is a place read through a reference keeps its place, so a non-`Copy` component
+                // can bind as a reference to the ORIGINAL storage; every other scrutinee is read
+                // as an owned value exactly as before.
+                let source = if self.scrutinee_reads_through_ref(*scrutinee) {
+                    let place = self.expr_place(*scrutinee)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    PatternSource::Borrowed(place)
+                } else {
+                    let value = self.expect_value(*scrutinee)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    PatternSource::Owned(value)
+                };
                 for arm in arms {
                     let mut bindings = Vec::new();
-                    if self.match_pattern(arm.pat, &value, &mut bindings)? {
+                    if self.match_source(arm.pat, &source, &mut bindings)? {
                         for (local, value) in &bindings {
                             self.frame_mut().insert(*local, Some(value.clone()));
                         }
@@ -1635,7 +1892,13 @@ impl<'a> Interpreter<'a> {
                         // matched pattern did not bind must still be dropped exactly once.
                         // Runs after the arm body and after the bindings' own cleanup,
                         // mirroring "the scrutinee temporary outlives the arm" scoping.
-                        self.drop_unbound(arm.pat, value)?;
+                        //
+                        // PAT-BIND-001: a BORROWED read consumes nothing — the referent is still
+                        // owned by whoever owned it before the match — so there is nothing to
+                        // drop, and dropping here would destroy a live value.
+                        if let PatternSource::Owned(value) = source {
+                            self.drop_unbound(arm.pat, value)?;
+                        }
                         return Ok(flow);
                     }
                 }
@@ -1918,7 +2181,13 @@ impl<'a> Interpreter<'a> {
             (UnOp::Neg, Value::Int(value)) => value
                 .checked_neg()
                 .map(Value::Int)
-                .ok_or_else(|| RuntimeError::new("integer overflow", span))
+                .ok_or_else(|| {
+                    RuntimeError::with_category(
+                        "integer overflow",
+                        span,
+                        crate::mir::TrapCategory::IntegerOverflow,
+                    )
+                })
                 .and_then(|value| self.normalize_numeric(value, expr, span)),
             (UnOp::Neg, Value::Float(value, width)) => {
                 self.normalize_numeric(Value::Float(-value, width), expr, span)
@@ -2067,7 +2336,11 @@ impl<'a> Interpreter<'a> {
                 if matches!(op, BinOp::Shl | BinOp::Shr) {
                     let width = integer_width(self.tables.expr_types.get(&expr)).unwrap_or(128);
                     if right < 0 || right >= i128::from(width) {
-                        return Err(RuntimeError::new("invalid shift count", span));
+                        return Err(RuntimeError::with_category(
+                            "invalid shift count",
+                            span,
+                            crate::mir::TrapCategory::InvalidShift,
+                        ));
                     }
                 }
                 // `MIN % -1` traps even though its mathematical result (0) is representable:
@@ -2079,7 +2352,11 @@ impl<'a> Interpreter<'a> {
                 if op == BinOp::Rem && right == -1 {
                     if let Some(min) = signed_integer_min(self.tables.expr_types.get(&expr)) {
                         if left == min {
-                            return Err(RuntimeError::new("integer overflow", span));
+                            return Err(RuntimeError::with_category(
+                                "integer overflow",
+                                span,
+                                crate::mir::TrapCategory::IntegerOverflow,
+                            ));
                         }
                     }
                 }
@@ -2108,14 +2385,19 @@ impl<'a> Interpreter<'a> {
                     _ => None,
                 }
                 .ok_or_else(|| {
-                    RuntimeError::new(
-                        if right == 0 && matches!(op, BinOp::Div | BinOp::Rem) {
-                            "division by zero"
-                        } else {
-                            "integer overflow"
-                        },
-                        span,
-                    )
+                    // WP-C7.9 G.3: the CATEGORY is decided by the same condition that picks the
+                    // wording, at the raise site, instead of being recovered downstream by matching
+                    // the wording. Rewording this message can no longer reclassify the trap.
+                    let (message, category) = if right == 0 && matches!(op, BinOp::Div | BinOp::Rem)
+                    {
+                        ("division by zero", crate::mir::TrapCategory::DivideByZero)
+                    } else {
+                        (
+                            "integer overflow",
+                            crate::mir::TrapCategory::IntegerOverflow,
+                        )
+                    };
+                    RuntimeError::with_category(message, span, category)
                 })?;
                 self.check_integer_range(value, expr, span).map(Value::Int)
             }
@@ -2212,12 +2494,20 @@ impl<'a> Interpreter<'a> {
                 // subsequent `check_cast_range` call performs the actual representability check
                 // against the target's declared width, in exact integer arithmetic.
                 if !value.is_finite() {
-                    return Err(RuntimeError::new("numeric cast out of range", span));
+                    return Err(RuntimeError::with_category(
+                        "numeric cast out of range",
+                        span,
+                        crate::mir::TrapCategory::CastFailure,
+                    ));
                 }
                 let truncated = value.trunc() as i128;
                 self.check_cast_range(truncated, expr, span).map(Value::Int)
             }
-            _ => Err(RuntimeError::new("invalid numeric cast", span)),
+            _ => Err(RuntimeError::with_category(
+                "invalid numeric cast",
+                span,
+                crate::mir::TrapCategory::CastFailure,
+            )),
         }
     }
 
@@ -2239,7 +2529,11 @@ impl<'a> Interpreter<'a> {
         if self.fits_target_integer_width(value, expr) {
             Ok(value)
         } else {
-            Err(RuntimeError::new("numeric cast out of range", span))
+            Err(RuntimeError::with_category(
+                "numeric cast out of range",
+                span,
+                crate::mir::TrapCategory::CastFailure,
+            ))
         }
     }
 
@@ -2252,7 +2546,11 @@ impl<'a> Interpreter<'a> {
         if self.fits_target_integer_width(value, expr) {
             Ok(value)
         } else {
-            Err(RuntimeError::new("integer overflow", span))
+            Err(RuntimeError::with_category(
+                "integer overflow",
+                span,
+                crate::mir::TrapCategory::IntegerOverflow,
+            ))
         }
     }
 
@@ -2529,7 +2827,11 @@ impl<'a> Interpreter<'a> {
             }
             Builtin::Assert => match args.pop() {
                 Some(Value::Bool(true)) => Ok(Value::Unit),
-                Some(Value::Bool(false)) => Err(RuntimeError::new("assertion failed", span)),
+                Some(Value::Bool(false)) => Err(RuntimeError::with_category(
+                    "assertion failed",
+                    span,
+                    crate::mir::TrapCategory::AssertFailure,
+                )),
                 _ => Err(RuntimeError::new("assert expects Bool", span)),
             },
             Builtin::AssertEq | Builtin::AssertNe => {
@@ -2546,14 +2848,16 @@ impl<'a> Interpreter<'a> {
                 if equal == want_eq {
                     Ok(Value::Unit)
                 } else if want_eq {
-                    Err(RuntimeError::new(
+                    Err(RuntimeError::with_category(
                         format!("assertion failed: `(left == right)`\n  left: `{left}`\n right: `{right}`"),
                         span,
+                        crate::mir::TrapCategory::AssertFailure,
                     ))
                 } else {
-                    Err(RuntimeError::new(
+                    Err(RuntimeError::with_category(
                         format!("assertion failed: `(left != right)`\n  left: `{left}`\n right: `{right}`"),
                         span,
+                        crate::mir::TrapCategory::AssertFailure,
                     ))
                 }
             }
@@ -2717,10 +3021,13 @@ impl<'a> Interpreter<'a> {
             }
             // -- Phase 4E: Math constants and functions --
             Builtin::MathAbs => match args.pop() {
-                Some(Value::Int(value)) => value
-                    .checked_abs()
-                    .map(Value::Int)
-                    .ok_or_else(|| RuntimeError::new("integer overflow", span)),
+                Some(Value::Int(value)) => value.checked_abs().map(Value::Int).ok_or_else(|| {
+                    RuntimeError::with_category(
+                        "integer overflow",
+                        span,
+                        crate::mir::TrapCategory::IntegerOverflow,
+                    )
+                }),
                 Some(Value::Float(value, width)) => {
                     Ok(Value::Float(canonicalize_nan(value.abs(), width), width))
                 }
@@ -2821,15 +3128,21 @@ impl<'a> Interpreter<'a> {
                 canonicalize_nan(float_arg(args.pop(), span)?.trunc(), FloatWidth::F64),
                 FloatWidth::F64,
             )),
-            // -- Phase 4E: stderr --
+            // -- Phase 4E: stderr; WP-C7.9 Packet D --
+            //
+            // These used to write through to the HOST process's stderr with `eprint!`. Two things
+            // followed, both bad: the bytes never reached `Execution.stderr`, so no comparator
+            // could see them and a case could "agree" while nobody observed the operation at all;
+            // and a STARK program's stderr landed in the Rust test runner's own stderr, mixed with
+            // whatever the harness was saying. They are captured now, exactly as `print`/`println`
+            // are, and the channel is compared.
             Builtin::Eprint | Builtin::Eprintln => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
                 let (text, arg_place) = self.display_text(deref, span)?;
+                self.stderr.push_str(&text);
                 if builtin == Builtin::Eprintln {
-                    eprintln!("{text}");
-                } else {
-                    eprint!("{text}");
+                    self.stderr.push('\n');
                 }
                 self.finish_display(arg_place, span)?;
                 Ok(Value::Unit)
@@ -4325,7 +4638,11 @@ impl<'a> Interpreter<'a> {
                 "insert" => {
                     let index = usize_arg(values.next(), span)?;
                     if index > vector.len() {
-                        return Err(RuntimeError::new("Vec insertion index out of bounds", span));
+                        return Err(RuntimeError::with_category(
+                            "Vec insertion index out of bounds",
+                            span,
+                            crate::mir::TrapCategory::IndexOutOfBounds,
+                        ));
                     }
                     vector.insert(index, values.next());
                     Ok(Value::Unit)
@@ -4333,7 +4650,11 @@ impl<'a> Interpreter<'a> {
                 "remove" => {
                     let index = usize_arg(values.next(), span)?;
                     if index >= vector.len() {
-                        return Err(RuntimeError::new("Vec removal index out of bounds", span));
+                        return Err(RuntimeError::with_category(
+                            "Vec removal index out of bounds",
+                            span,
+                            crate::mir::TrapCategory::IndexOutOfBounds,
+                        ));
                     }
                     Ok(vector.remove(index).unwrap_or(Value::Unit))
                 }
@@ -4530,9 +4851,13 @@ impl<'a> Interpreter<'a> {
                 let source = self.place_value(&place, span)?;
                 match source {
                     Value::Array(values) | Value::Vec(values) => {
-                        let range = values
-                            .get(start..end)
-                            .ok_or_else(|| RuntimeError::new("slice out of bounds", span))?;
+                        let range = values.get(start..end).ok_or_else(|| {
+                            RuntimeError::with_category(
+                                "slice out of bounds",
+                                span,
+                                crate::mir::TrapCategory::IndexOutOfBounds,
+                            )
+                        })?;
                         slots_to_bytes(range, span)
                     }
                     _ => Err(RuntimeError::new("File::write expects &[UInt8]", span)),
@@ -4655,6 +4980,204 @@ impl<'a> Interpreter<'a> {
             })),
             _ => Err(RuntimeError::new("invalid aggregate constructor", span)),
         }
+    }
+
+    /// PAT-BIND-001's predicate, in the interpreter: is this scrutinee a place read *through a
+    /// reference*?
+    ///
+    /// Deliberately the same shape as the type checker's `scrutinee_reads_through_ref`, over the
+    /// same HIR and the same expression types. The two must decide identically — the checker gives
+    /// the binding its `&C` type and this gives it its `&C` value, and a disagreement between them
+    /// is exactly the class of defect this packet closes.
+    fn scrutinee_reads_through_ref(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Unary {
+                op: UnOp::Deref, ..
+            } => true,
+            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
+                matches!(self.tables.expr_types.get(base), Some(Ty::Ref { .. }))
+                    || self.scrutinee_reads_through_ref(*base)
+            }
+            _ => false,
+        }
+    }
+
+    /// Match `pat` against a source whose binding mode the caller already decided.
+    fn match_source(
+        &mut self,
+        pat: PatId,
+        source: &PatternSource,
+        bindings: &mut Vec<(LocalId, Value)>,
+    ) -> Result<bool, RuntimeError> {
+        match source {
+            PatternSource::Owned(value) => {
+                let value = value.clone();
+                self.match_pattern(pat, &value, bindings)
+            }
+            PatternSource::Borrowed(place) => {
+                let place = place.clone();
+                self.match_pattern_borrowed(pat, &place, bindings)
+            }
+        }
+    }
+
+    /// Pattern matching against a PLACE, for a scrutinee read through a reference.
+    ///
+    /// Structurally parallel to [`Self::match_pattern`], with one difference that is the whole
+    /// point: where the owned matcher clones a component to bind it, this one projects the
+    /// component's place and binds `Value::Ref` to it when the component is not `Copy`. Tests
+    /// (literals, discriminants, arities) read through the place and are unaffected — a test never
+    /// moves anything, so reading it by value was never the defect.
+    ///
+    /// **Scope, stated rather than approximated.** A prelude `Option`/`Result` payload is stored as
+    /// `Box<Value>` rather than in a slot, so no `Projection` names it and it cannot be borrowed in
+    /// place. Those payloads fall back to the owned rule here, and creating a reference to a
+    /// temporary clone instead is refused deliberately: it would give the binding a referent the
+    /// program cannot observe mutations through, which is worse than a stated narrowing. Every
+    /// other component — struct field, tuple element, array element, and user-enum variant payload
+    /// — borrows in place.
+    fn match_pattern_borrowed(
+        &mut self,
+        pat: PatId,
+        place: &Place,
+        bindings: &mut Vec<(LocalId, Value)>,
+    ) -> Result<bool, RuntimeError> {
+        let pattern = self.hir.pat(pat);
+        let span = pattern.span;
+        match &pattern.kind {
+            hir::PatKind::Wild => Ok(true),
+            hir::PatKind::Binding { local, .. } => {
+                let local = *local;
+                let value = self.place_value(place, span)?.clone();
+                if self.value_is_copy(&value) {
+                    bindings.push((local, value));
+                } else {
+                    bindings.push((local, Value::Ref(place.clone())));
+                }
+                Ok(true)
+            }
+            hir::PatKind::Tuple(pats) => {
+                let pats = pats.clone();
+                let arity = match self.place_value(place, span)? {
+                    Value::Tuple(values) => values.len(),
+                    _ => return Ok(false),
+                };
+                self.match_elements_borrowed(&pats, place, arity, bindings)
+            }
+            hir::PatKind::Array(pats) => {
+                let pats = pats.clone();
+                let arity = match self.place_value(place, span)? {
+                    Value::Array(values) | Value::Vec(values) => values.len(),
+                    _ => return Ok(false),
+                };
+                self.match_elements_borrowed(&pats, place, arity, bindings)
+            }
+            hir::PatKind::TupleVariant { res, pats, .. } => {
+                let res = *res;
+                let pats = pats.clone();
+                let value = self.place_value(place, span)?.clone();
+                match (res, &value) {
+                    (
+                        Res::Variant(item, variant),
+                        Value::Enum {
+                            item: actual,
+                            variant: actual_variant,
+                            fields,
+                            ..
+                        },
+                    ) if item == *actual && variant == *actual_variant => {
+                        if pats.len() != fields.len() {
+                            return Ok(false);
+                        }
+                        for (index, sub) in pats.iter().enumerate() {
+                            let mut child = place.clone();
+                            child.projections.push(Projection::Index(index));
+                            if !self.match_pattern_borrowed(*sub, &child, bindings)? {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    }
+                    // `Option`/`Result` payloads are not slot-backed; see this function's header.
+                    // The owned rule applies, and the component binds by value.
+                    _ => self.match_pattern(pat, &value, bindings),
+                }
+            }
+            hir::PatKind::Struct { res, fields, .. } => {
+                let res = *res;
+                // `FieldPat` is not `Clone`, and the HIR borrow ends at the first `&mut self` call
+                // below — so the three `Copy` fields each entry contributes are taken here.
+                let fields: Vec<(Span, Option<PatId>, Option<LocalId>)> =
+                    fields.iter().map(|f| (f.name, f.pat, f.local)).collect();
+                let value = self.place_value(place, span)?.clone();
+                let named_ok = match (res, &value) {
+                    (Res::Item(item), Value::Struct { item: actual, .. }) => item == *actual,
+                    (
+                        Res::Variant(item, variant),
+                        Value::Enum {
+                            item: actual,
+                            variant: actual_variant,
+                            ..
+                        },
+                    ) => item == *actual && variant == *actual_variant,
+                    _ => false,
+                };
+                if !named_ok {
+                    return Ok(false);
+                }
+                for (field_name, field_pat, field_local) in fields {
+                    let name = self.text(field_name).to_string();
+                    let mut child = place.clone();
+                    child.projections.push(Projection::Field(name));
+                    // A field the value does not have, or one already moved out, is not a match.
+                    if self.place_value(&child, span).is_err() {
+                        return Ok(false);
+                    }
+                    if let Some(sub) = field_pat {
+                        if !self.match_pattern_borrowed(sub, &child, bindings)? {
+                            return Ok(false);
+                        }
+                    } else if let Some(local) = field_local {
+                        let component = self.place_value(&child, span)?.clone();
+                        if self.value_is_copy(&component) {
+                            bindings.push((local, component));
+                        } else {
+                            bindings.push((local, Value::Ref(child)));
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            // Tests read the component's value; nothing is bound, so the owned matcher's logic is
+            // exactly right and is reused rather than restated.
+            hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => {
+                let value = self.place_value(place, span)?.clone();
+                self.match_pattern(pat, &value, bindings)
+            }
+            hir::PatKind::Error => Err(RuntimeError::new("invalid pattern", span)),
+        }
+    }
+
+    /// Element patterns applied to the projected element places of a borrowed sequence — the
+    /// tuple and array arms of [`Self::match_pattern_borrowed`].
+    fn match_elements_borrowed(
+        &mut self,
+        patterns: &[PatId],
+        place: &Place,
+        arity: usize,
+        bindings: &mut Vec<(LocalId, Value)>,
+    ) -> Result<bool, RuntimeError> {
+        if patterns.len() != arity {
+            return Ok(false);
+        }
+        for (index, sub) in patterns.iter().enumerate() {
+            let mut child = place.clone();
+            child.projections.push(Projection::Index(index));
+            if !self.match_pattern_borrowed(*sub, &child, bindings)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn match_pattern(
@@ -5022,17 +5545,35 @@ impl<'a> Interpreter<'a> {
         else {
             return Err(RuntimeError::new("slice index must be a range", span));
         };
-        let start = usize::try_from(start)
-            .map_err(|_| RuntimeError::new("slice range out of bounds (negative start)", span))?;
-        let mut end = usize::try_from(end)
-            .map_err(|_| RuntimeError::new("slice range out of bounds (negative end)", span))?;
+        let start = usize::try_from(start).map_err(|_| {
+            RuntimeError::with_category(
+                "slice range out of bounds (negative start)",
+                span,
+                crate::mir::TrapCategory::IndexOutOfBounds,
+            )
+        })?;
+        let mut end = usize::try_from(end).map_err(|_| {
+            RuntimeError::with_category(
+                "slice range out of bounds (negative end)",
+                span,
+                crate::mir::TrapCategory::IndexOutOfBounds,
+            )
+        })?;
         if inclusive {
             end = end.checked_add(1).ok_or_else(|| {
-                RuntimeError::new("slice range out of bounds (inclusive end overflow)", span)
+                RuntimeError::with_category(
+                    "slice range out of bounds (inclusive end overflow)",
+                    span,
+                    crate::mir::TrapCategory::IndexOutOfBounds,
+                )
             })?;
         }
         if start > end || end > length {
-            return Err(RuntimeError::new("slice range out of bounds", span));
+            return Err(RuntimeError::with_category(
+                "slice range out of bounds",
+                span,
+                crate::mir::TrapCategory::IndexOutOfBounds,
+            ));
         }
         Ok((start, end))
     }
@@ -5112,13 +5653,22 @@ impl<'a> Interpreter<'a> {
                 // two ends of the same check -- and disagreed with MIR and the native backend on
                 // one of them. Found by the three-engine harness's negative-index case; no
                 // corpus or inline case had ever indexed with a negative value.
-                let index = usize::try_from(index_value)
-                    .map_err(|_| RuntimeError::new("negative index", node.span))?;
+                let index = usize::try_from(index_value).map_err(|_| {
+                    RuntimeError::with_category(
+                        "negative index",
+                        node.span,
+                        crate::mir::TrapCategory::IndexOutOfBounds,
+                    )
+                })?;
                 if let Value::Slice(base_place, start, end) =
                     self.place_value(&place, node.span)?.clone()
                 {
                     if index >= end - start {
-                        return Err(RuntimeError::new("index out of bounds", node.span));
+                        return Err(RuntimeError::with_category(
+                            "index out of bounds",
+                            node.span,
+                            crate::mir::TrapCategory::IndexOutOfBounds,
+                        ));
                     }
                     let mut item = base_place;
                     item.projections.push(Projection::Index(start + index));
@@ -5414,7 +5964,11 @@ impl<'a> Interpreter<'a> {
             _ => return Err(RuntimeError::new("slice base is unavailable", span)),
         };
         if start > end || *end > elements.len() {
-            return Err(RuntimeError::new("slice range out of bounds", span));
+            return Err(RuntimeError::with_category(
+                "slice range out of bounds",
+                span,
+                crate::mir::TrapCategory::IndexOutOfBounds,
+            ));
         }
         let rendered = elements[*start..*end]
             .iter()
@@ -5586,7 +6140,7 @@ impl<'a> Interpreter<'a> {
         for projection in &place.projections {
             value = project(value, projection)
                 .and_then(Option::as_ref)
-                .ok_or_else(|| RuntimeError::new(projection_failure_message(projection), span))?;
+                .ok_or_else(|| projection_failure(projection, span))?;
         }
         Ok(value)
     }
@@ -5603,7 +6157,7 @@ impl<'a> Interpreter<'a> {
         for projection in &place.projections {
             value = project_mut(value, projection)
                 .and_then(Option::as_mut)
-                .ok_or_else(|| RuntimeError::new(projection_failure_message(projection), span))?;
+                .ok_or_else(|| projection_failure(projection, span))?;
         }
         Ok(value)
     }
@@ -5993,6 +6547,10 @@ fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<V
     match (value, projection) {
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get(name),
+        // WP-C7.9 Packet C: a tuple-variant payload is slot-backed like any other component, but
+        // nothing named it — `Index` reached tuples, arrays and `Vec`s only, so an enum payload
+        // could not be borrowed in place and PAT-BIND-001 had no storage to point at.
+        (Value::Enum { fields, .. }, Projection::Index(index)) => fields.get(*index),
         (
             Value::Tuple(values)
             | Value::Array(values)
@@ -6014,6 +6572,8 @@ fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a 
     match (value, projection) {
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get_mut(name),
+        // WP-C7.9 Packet C, matching `project`: the positional payload of a tuple variant.
+        (Value::Enum { fields, .. }, Projection::Index(index)) => fields.get_mut(*index),
         (
             Value::Tuple(values)
             | Value::Array(values)
@@ -6376,6 +6936,24 @@ mod tests {
             portable_filename_component("interp::tests::file/resource"),
             "interp__tests__file_resource"
         );
+    }
+
+    /// The front end's diagnostics for `source`, for cases whose subject is a REFUSAL rather than
+    /// an execution (WP-C7.9 Packet E).
+    fn check_program(source: &str) -> Vec<crate::diag::Diagnostic> {
+        let file = Arc::new(SourceFile::new("test.stark", source));
+        let (ast, parse_diags) = parse(&file, ParseMode::Program);
+        assert!(parse_diags.is_empty(), "parse diagnostics: {parse_diags:?}");
+        let (hir, resolve_diags) = resolve(&ast, file.clone());
+        assert!(
+            resolve_diags.is_empty(),
+            "resolve diagnostics: {resolve_diags:?}"
+        );
+        typecheck::analyze(&hir, file)
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.severity == crate::diag::Severity::Error)
+            .collect()
     }
 
     fn execute(source: &str) -> Result<Execution, RuntimeError> {
@@ -6843,30 +7421,35 @@ mod tests {
         assert_eq!(execution.output, "true\ntrue\n1\n2\n");
     }
 
+    /// **By-value `Vec` iteration is refused by the front end (WP-C7.9 Packet E, `E0105`).**
+    ///
+    /// This test used to assert the oracle's drop schedule for `for value in values` over an owned
+    /// `Vec` — each binding dropped at the end of its iteration, and on an early `break` the
+    /// unconsumed tail dropped afterwards. That behaviour was real and is still implemented here,
+    /// but it is no longer reachable from source: the form type-checked and ran in this engine
+    /// while no compiler could lower it, which is exactly the accepted-but-unexecutable split
+    /// Packet E closed.
+    ///
+    /// So the assertion is inverted rather than deleted, and the drop schedule it documented is
+    /// recorded above for whoever implements the lowering: `body`, `first`, `body`, `second` for
+    /// the full loop; `one`, `three`, `two` for the early `break` — the broken-from binding first,
+    /// then the tail in order.
     #[test]
-    fn for_loop_drops_each_binding_and_unconsumed_tail() {
-        let execution = execute(
+    fn by_value_vec_iteration_is_refused_before_execution() {
+        let diagnostics = check_program(
             "struct Loud { label: String, stop: Bool } \
              impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
-             fn all() { \
+             fn main() { \
                  let mut values: Vec<Loud> = Vec::new(); \
                  values.push(Loud { label: String::from(\"first\"), stop: false }); \
-                 values.push(Loud { label: String::from(\"second\"), stop: false }); \
                  for value in values { println(\"body\"); } \
-             } \
-             fn early() { \
-                 let mut values: Vec<Loud> = Vec::new(); \
-                 values.push(Loud { label: String::from(\"one\"), stop: true }); \
-                 values.push(Loud { label: String::from(\"two\"), stop: false }); \
-                 values.push(Loud { label: String::from(\"three\"), stop: false }); \
-                 for value in values { if value.stop { break; } } \
-             } \
-             fn main() { all(); early(); }",
-        )
-        .unwrap();
-        assert_eq!(
-            execution.output,
-            "body\nfirst\nbody\nsecond\none\nthree\ntwo\n"
+             }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("E0105")),
+            "expected an E0105 refusal, got {diagnostics:?}"
         );
     }
 
@@ -7318,11 +7901,14 @@ mod tests {
                  let text = String::from(\"Aé中😀\"); \
                  println(text.len()); println(text.find(\"中\").unwrap()); \
                  println(text.substring(1u64, 3u64)); \
-                 let mut scalars = text.split(\"\"); \
-                 println(scalars.count()); \
-                 let mut empty_parts = String::from(\"\").split(\",\"); \
-                 let mut trailing_parts = String::from(\"a,\").split(\",\"); \
-                 println(empty_parts.count()); println(trailing_parts.count()); \
+                 let mut scalars: Int32 = 0; \
+                 for part in text.split(\"\") { scalars = scalars + 1; } \
+                 println(scalars); \
+                 let mut empty_parts: Int32 = 0; \
+                 for part in String::from(\"\").split(\",\") { empty_parts = empty_parts + 1; } \
+                 let mut trailing_parts: Int32 = 0; \
+                 for part in String::from(\"a,\").split(\",\") { trailing_parts = trailing_parts + 1; } \
+                 println(empty_parts); println(trailing_parts); \
                  println(String::from(\"ab\").replace(\"\", \"-\")); \
                  println(String::from(\"\\u{2003}ok\\u{3000}\").trim()); \
                  println(String::from(\"ß\").to_uppercase()); \

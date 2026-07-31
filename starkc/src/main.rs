@@ -644,19 +644,32 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
                     ExitCode::from(execution.status)
                 }
                 Err(error) => {
-                    let mut diagnostic = starkc::diag::Diagnostic::error(
-                        if error.is_trap {
-                            format!("runtime error: {}", error.message)
-                        } else {
-                            format!("executable target error: {}", error.message)
-                        },
-                        error.span,
-                    );
-                    if !error.is_trap {
-                        diagnostic.code = Some("E0214".to_string());
-                    }
+                    // WP-C7.9 Packet F: see `bin/stark.rs` — a resource limit is neither a trap
+                    // nor a compiler rejection, and must not borrow either one's status.
+                    let (headline, code, status) = match error.class {
+                        starkc::interp::FailureClass::Trap => {
+                            (format!("runtime error: {}", error.message), None, 101u8)
+                        }
+                        starkc::interp::FailureClass::Entry => (
+                            format!("executable target error: {}", error.message),
+                            Some("E0214"),
+                            1,
+                        ),
+                        starkc::interp::FailureClass::HostResource => (
+                            format!("resource limit reached: {}", error.message),
+                            None,
+                            2,
+                        ),
+                        starkc::interp::FailureClass::InternalInvariant => (
+                            format!("internal compiler error: {}", error.message),
+                            None,
+                            70,
+                        ),
+                    };
+                    let mut diagnostic = starkc::diag::Diagnostic::error(headline, error.span);
+                    diagnostic.code = code.map(str::to_string);
                     eprint!("{}", diagnostic.render(&file));
-                    ExitCode::from(if error.is_trap { 101 } else { 1 })
+                    ExitCode::from(status)
                 }
             };
         }

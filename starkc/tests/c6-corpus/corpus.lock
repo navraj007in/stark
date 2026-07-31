@@ -30,6 +30,13 @@
 # corpus_version 1.2.0 (2026-07-28, CD-176): DEV-116 FIXED -- `HashSet` lowers, verifies,
 # runs in the MIR interpreter and builds natively, as `StarkMap<T, ()>` in every engine so
 # STD-HASH-001 holds by construction. V19 moves from BLOCKED to covered. Four cases.
+# corpus_version 1.5.0 (WP-C7.9 Packet A, 2026-07-31): eight sentinels for signed
+# `MIN / -1` and `MIN % -1` at all four widths, each pinning `IntegerOverflow`. They
+# cover the pair that had no maintained coverage at all: `MIN % -1` COMPLETED in MIR and
+# native while the oracle trapped. Plus one Packet D sentinel writing BOTH streams before
+# trapping — the corpus had no case with program stderr at all, because no engine could
+# perform `eprintln`. Nine cases.
+# Minor: new cases, no existing source or expectation changed.
 # corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted
 # to a permanent regression per §11.11 step 6, and O14 (reinitialisation) moves from
 # BLOCKED to covered. Minor.
@@ -117,16 +124,16 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 1.4.0
+corpus_version = 1.5.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
-manifest_sha256 = 853e1b5fa680687af5f0f823349d5b55af07fddb9dce7494d5b762fc46c2b154
+manifest_sha256 = f2721015dec871e4aab640d5f858803f39fd8990707c572cbbfda137237ebe09
 generated_manifest_sha256 = 5e3600c3ad8281decd1ffadb560f51bd921c1828f094ec641ed160429b862d6b
 templates_sha256 = e26edf31db0df55c7a9e9c12662eab8d8e8f1a2e38b3f6e1f8b7cee5e49c5eaf
 metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
-generator_sha256 = da922025e737c7e35742abd64bd018c66fc9c6eba2937c18a09f07671aa4fcab
-case_count = 161
-handwritten_count = 78
+generator_sha256 = 18ea93826888c4e452181c39bf0c58b1ead4fb957493bdafcab7f285ee983815
+case_count = 170
+handwritten_count = 87
 generated_count = 74
 retained_count = 9
 metamorphic_group_count = 24
@@ -238,6 +245,15 @@ cd1b569a059380309cb5a8096aeaea63ee42d0765c3ddf9de597e65a313211b3  cases/handwrit
 da744bb48a7b4d985bfc1fb7af91bcb8ecc1d1100bde518bf17b24d9863c7355  cases/handwritten/sentinel__11_insertion_order_not_sorted.stark
 5bb44a53542fe9389dd952f5f1b1af7d17d10a692fecb120974088f1454e8b4c  cases/handwritten/sentinel__12_drop_identities.stark
 0c6f41ad73895d29d21319d42193a751ab6622f2d4afcef9adc4394ed7ef3f3b  cases/handwritten/sentinel__13_float32_rendering.stark
+a51784b404e026a8540813d1fb6782ab2cdd0ed86fc52097601bba761632e8f0  cases/handwritten/sentinel__14_int8_min_div_neg_one.stark
+b0991ec8a007dca336f5b44bd38d67094a6fca917dc36c8ae173fa74ec0b50dd  cases/handwritten/sentinel__15_int8_min_rem_neg_one.stark
+396bdd89907e0112cccb0ea1cba8f30f36c106ed73b81f9a92e87e0e1b166c63  cases/handwritten/sentinel__16_int16_min_div_neg_one.stark
+ba64d91c8df9c868054018c57c59aadffe8387038878645b7439b06dc53eb5ce  cases/handwritten/sentinel__17_int16_min_rem_neg_one.stark
+5c474a443ba6899c94c9975caaf12923a79bb79ead0efdb62f3c3d96ec2247dd  cases/handwritten/sentinel__18_int32_min_div_neg_one.stark
+6ea6f3b0036b6892d12d1edff08df9125b1bac971d81e1c09fbfc516b1a883fe  cases/handwritten/sentinel__19_int32_min_rem_neg_one.stark
+c62f2c377bdc1086f851a121f50956f1d53c14e9f0ca7cbfd23b604836009023  cases/handwritten/sentinel__20_int64_min_div_neg_one.stark
+6375f0e2bc04a5e153fcacebf1d9b6e05617d5e793690c0ad1eadbf9a1645db7  cases/handwritten/sentinel__21_int64_min_rem_neg_one.stark
+cecf08bf02913d8af56284db31ad3beb9095a4489457812e9115f745da2c75de  cases/handwritten/sentinel__22_stderr_before_trap.stark
 f1de9333ad93236faa4578d840ad3230ac1320e3f2cbf86bebb0dffdbe06142e  cases/retained/DEV-116/original/main.stark
 beac258bf83cacad3a3a5427933bf733526d97f4d4476874ea03e0e3ab954307  cases/retained/DEV-116/reduced/main.stark
 c6aabf288d0c3ddfb9b6aaf575f9b062e524b5d0a02911adeafb5add328f4410  cases/retained/DEV-117/original/main.stark

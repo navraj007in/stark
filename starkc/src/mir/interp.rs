@@ -108,6 +108,12 @@ pub enum MirRunError {
     },
     /// A bug in lowering/verification/interpretation — never a language-level outcome.
     Internal(String),
+    /// **WP-C7.9 Packet F**: a host/process resource limit (`LIMIT-RESOURCE-001`) — call depth
+    /// here. Deliberately its own variant rather than a `Trap`: capacities are implementation- and
+    /// target-defined, so this is not something the engines can be required to agree on, and it
+    /// carries no `TrapCategory` because none applies. Equally deliberately not `Internal`: nothing
+    /// is wrong with the compiler when a program recurses without a base case.
+    HostResource(String),
 }
 
 pub struct MirExecution {
@@ -120,18 +126,24 @@ pub struct MirExecution {
     /// oracle's `Execution` has carried the same field since Phase 4E; this is the MIR counterpart,
     /// deliberately named and shaped identically so the comparator can compare them directly.
     ///
-    /// `eprint`/`eprintln` do NOT flow here — they have no MIR lowering at all (their oracle
-    /// implementation writes to the host process's stderr), which is recorded as an open channel
-    /// gap in `C6-CORPUS-COVERAGE-MATRIX.md` §8 rather than papered over.
+    /// **WP-C7.9 Packet D**: `eprint`/`eprintln` now flow here too, ahead of any `Err` completion
+    /// bytes. They previously had no MIR lowering at all — the oracle wrote them to the host
+    /// process and this engine could not perform them — which made a program's own stderr
+    /// unobservable to every comparator. The channel gap that recorded this in
+    /// `C6-CORPUS-COVERAGE-MATRIX.md` §8 is closed.
     pub stderr: String,
 }
 
-/// A failed run, still carrying the stdout accumulated before the failure (C4.5e-0): the
-/// roadmap's comparator is output AND failure equality, so pre-trap output is observable.
+/// A failed run, still carrying the streams written before the failure (C4.5e-0): the roadmap's
+/// comparator is output AND failure equality, so pre-trap output is observable.
 #[derive(Debug)]
 pub struct MirFailure {
     pub error: MirRunError,
     pub output: String,
+    /// WP-C7.9 Packet D: the stderr written before the failure. A program that reports on stderr
+    /// and *then* traps is a different outcome from one that traps silently, and comparing only
+    /// stdout could not tell them apart.
+    pub stderr: String,
 }
 
 const FUEL: u64 = 50_000_000;
@@ -145,6 +157,16 @@ struct Frame {
 pub fn run_program(
     verified: crate::mir::verify::VerifiedMirProgram<'_>,
 ) -> Result<MirExecution, MirFailure> {
+    // WP-C7.9 Packet F: the same deep stack the HIR oracle runs on. This engine is also a
+    // tree-walker over frames, so a program that is executable in one interpreter must not
+    // overflow the host in the other — that would be a divergence created by the host rather than
+    // by either engine's semantics.
+    crate::interp::on_interpreter_stack(move || run_program_here(verified))
+}
+
+fn run_program_here(
+    verified: crate::mir::verify::VerifiedMirProgram<'_>,
+) -> Result<MirExecution, MirFailure> {
     let program = verified.program();
     let by_symbol: HashMap<&str, usize> = program
         .bodies
@@ -156,6 +178,7 @@ pub fn run_program(
         return Err(MirFailure {
             error: MirRunError::Internal("no main@[] instance".to_string()),
             output: String::new(),
+            stderr: String::new(),
         });
     };
     let mut cx = Interp {
@@ -164,25 +187,31 @@ pub fn run_program(
         frames: Vec::new(),
         next_generation: 0,
         output: String::new(),
+        stderr: String::new(),
         fuel: FUEL,
         layout: crate::layout::TargetLayout::default(),
         drop_plans: std::collections::BTreeMap::new(),
     };
     match cx.call(main_index, Vec::new()) {
         Ok(value) => match entry_termination(value) {
-            Ok((status, stderr)) => Ok(MirExecution {
+            // Program stderr first, then the entrypoint's `Err` bytes — the same order the HIR
+            // oracle produces, because the program wrote its own output while running and the
+            // completion message is by definition produced at the end.
+            Ok((status, exit_stderr)) => Ok(MirExecution {
                 output: cx.output,
                 status,
-                stderr,
+                stderr: format!("{}{exit_stderr}", cx.stderr),
             }),
             Err(error) => Err(MirFailure {
                 error,
                 output: cx.output,
+                stderr: cx.stderr,
             }),
         },
         Err(error) => Err(MirFailure {
             error,
             output: cx.output,
+            stderr: cx.stderr,
         }),
     }
 }
@@ -251,6 +280,8 @@ struct Interp<'a> {
     /// C4.5f-1: monotonic frame-generation counter (never reset, never reused).
     next_generation: u64,
     output: String,
+    /// WP-C7.9 Packet D: the program's own stderr, ordered independently of `output`.
+    stderr: String,
     fuel: u64,
     /// WP-C5.3e: the named target layout contract this run answers `size_of`/`align_of` from.
     /// Replaces the C4 `reference_layout` stub, whose own doc recorded that it reported one
@@ -292,6 +323,16 @@ impl<'a> Interp<'a> {
         }
         if args.next().is_some() {
             return self.internal("argument count does not match callee param locals");
+        }
+        // WP-C7.9 Packet F: the same call-depth capacity the HIR oracle applies, from the same
+        // constant — a program must not become executable by changing engines. Checked before the
+        // frame is pushed, so the reported depth is the one that would have been exceeded.
+        if self.frames.len() >= crate::interp::MAX_CALL_DEPTH {
+            return Err(MirRunError::HostResource(format!(
+                "call depth limit reached ({} frames): the program exceeded this implementation's \
+                 call-depth capacity",
+                crate::interp::MAX_CALL_DEPTH
+            )));
         }
         let generation = self.next_generation;
         self.next_generation += 1;
@@ -1255,26 +1296,30 @@ pub(crate) fn eval_checked(
                     ))),
                 }
             };
+            // NUM-INT-DIV-001 classifies two distinct failures for `/` and `%`, and the
+            // terminator carries only one default category (`DivideByZero`). A zero divisor
+            // keeps that default; the signed `MIN op -1` pair overrides it with
+            // `IntegerOverflow`, because those trap "because the intermediate quotient is not
+            // representable" — an overflow, not a division by zero. Both operands are read
+            // exactly once, and the minimum is taken from the DESTINATION type's declared
+            // range, never inferred from the `i128` carrier.
+            if matches!(op, Div | Rem) {
+                let (a, b) = (int(&args[0])?, int(&args[1])?);
+                if b == 0 {
+                    return Ok(CheckedOutcome::Trap(None));
+                }
+                if is_signed_int(dest_ty) && a == min && b == -1 {
+                    return Ok(CheckedOutcome::Trap(Some(TrapCategory::IntegerOverflow)));
+                }
+            }
             let result: Option<i128> = match op {
                 Add => int(&args[0])?.checked_add(int(&args[1])?),
                 Sub => int(&args[0])?.checked_sub(int(&args[1])?),
                 Mul => int(&args[0])?.checked_mul(int(&args[1])?),
-                Div => {
-                    let (a, b) = (int(&args[0])?, int(&args[1])?);
-                    if b == 0 {
-                        None
-                    } else {
-                        a.checked_div(b)
-                    }
-                }
-                Rem => {
-                    let (a, b) = (int(&args[0])?, int(&args[1])?);
-                    if b == 0 {
-                        None
-                    } else {
-                        a.checked_rem(b)
-                    }
-                }
+                // The zero divisor and the signed `MIN op -1` pair are already handled above,
+                // so these are the ordinary cases.
+                Div => int(&args[0])?.checked_div(int(&args[1])?),
+                Rem => int(&args[0])?.checked_rem(int(&args[1])?),
                 Neg => int(&args[0])?.checked_neg(),
                 // A5: exponent must be nonnegative (u32::try_from rejects negatives,
                 // NUM-INT-ARITH-001); each intermediate multiply is checked by checked_pow.
@@ -1542,6 +1587,57 @@ impl<'a> Interp<'a> {
                 );
                 Ok(MirValue::Unit)
             }
+            // --- 0.1-A13 (WP-C7.9 Packet D): the stderr half. Same rendering as the stdout arms
+            // above — deliberately the same expressions, so a formatting change cannot reach one
+            // channel and miss the other — into the independently ordered `stderr` buffer. ---
+            (EprintlnInt64 | EprintlnUInt64, Some(MirValue::Int(v))) => {
+                if matches!(rt, EprintlnUInt64) {
+                    let _ = writeln!(self.stderr, "{}", v as u128);
+                } else {
+                    let _ = writeln!(self.stderr, "{v}");
+                }
+                Ok(MirValue::Unit)
+            }
+            (EprintInt64 | EprintUInt64, Some(MirValue::Int(v))) => {
+                if matches!(rt, EprintUInt64) {
+                    let _ = write!(self.stderr, "{}", v as u128);
+                } else {
+                    let _ = write!(self.stderr, "{v}");
+                }
+                Ok(MirValue::Unit)
+            }
+            (EprintlnBool, Some(MirValue::Bool(b))) => {
+                let _ = writeln!(self.stderr, "{b}");
+                Ok(MirValue::Unit)
+            }
+            (EprintBool, Some(MirValue::Bool(b))) => {
+                let _ = write!(self.stderr, "{b}");
+                Ok(MirValue::Unit)
+            }
+            (EprintlnFloat64, Some(MirValue::Float(f))) => {
+                let _ = writeln!(self.stderr, "{}", crate::interp::canonical_float(f));
+                Ok(MirValue::Unit)
+            }
+            (EprintFloat64, Some(MirValue::Float(f))) => {
+                let _ = write!(self.stderr, "{}", crate::interp::canonical_float(f));
+                Ok(MirValue::Unit)
+            }
+            (EprintlnFloat32, Some(MirValue::Float(f))) => {
+                let _ = writeln!(
+                    self.stderr,
+                    "{}",
+                    crate::interp::canonical_float32(f as f32)
+                );
+                Ok(MirValue::Unit)
+            }
+            (EprintFloat32, Some(MirValue::Float(f))) => {
+                let _ = write!(
+                    self.stderr,
+                    "{}",
+                    crate::interp::canonical_float32(f as f32)
+                );
+                Ok(MirValue::Unit)
+            }
             // --- A1 str/String ops. `arg` holds the reconstructed first argument; the closure
             // below re-materializes the full list when an op needs more than one. ---
             (rt, arg) => self.run_string_runtime(rt, arg, rest),
@@ -1567,6 +1663,16 @@ impl<'a> Interp<'a> {
                     let _ = writeln!(self.output, "{s}");
                 } else {
                     let _ = write!(self.output, "{s}");
+                }
+                Ok(MirValue::Unit)
+            }
+            // 0.1-A13 (WP-C7.9 Packet D)
+            EprintlnStr | EprintStr => {
+                let s = self.as_str(&first)?;
+                if matches!(rt, EprintlnStr) {
+                    let _ = writeln!(self.stderr, "{s}");
+                } else {
+                    let _ = write!(self.stderr, "{s}");
                 }
                 Ok(MirValue::Unit)
             }
@@ -1620,6 +1726,15 @@ impl<'a> Interp<'a> {
             }
             // 0.1-A3 (f-3b): Char ops. Char values are Unicode scalar codepoints in
             // MirValue::Int.
+            EprintlnChar | EprintChar => {
+                let c = char_of(&first)?;
+                if matches!(rt, EprintlnChar) {
+                    let _ = writeln!(self.stderr, "{c}");
+                } else {
+                    let _ = write!(self.stderr, "{c}");
+                }
+                Ok(MirValue::Unit)
+            }
             PrintlnChar | PrintChar => {
                 let c = char_of(&first)?;
                 if matches!(rt, PrintlnChar) {
@@ -2637,6 +2752,12 @@ fn int_width(ty: &MirTy) -> Option<u32> {
         MirTy::Int64 | MirTy::UInt64 => 64,
         _ => return None,
     })
+}
+
+/// Signedness of an integer MIR type (NUM-INT-DIV-001: only signed types have a `MIN / -1`
+/// and `MIN % -1` failure, since the unsigned minimum is zero).
+fn is_signed_int(ty: &MirTy) -> bool {
+    matches!(ty, MirTy::Int8 | MirTy::Int16 | MirTy::Int32 | MirTy::Int64)
 }
 
 fn int_range(ty: &MirTy) -> Option<(i128, i128)> {

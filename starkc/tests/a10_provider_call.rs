@@ -177,10 +177,15 @@ fn expect_code(program: &MirProgram, code: &str) {
 
 // ------------------------------------------------------------ representation --
 
-/// A10 §7: the surface constant advances, and it advances to exactly `0.1-A10`.
+/// A10 §7: the surface constant advances when the runtime surface changes.
+///
+/// A10 took it to `0.1-A10`; **A13 (WP-C7.9 Packet D) takes it to `0.1-A13`** by adding the stderr
+/// half of the output operations — fourteen `RuntimeFn` members, which is exactly the kind of
+/// change this constant exists to announce. The pin moves with each revision on purpose: an
+/// unannounced surface change fails here rather than reaching a consumer built against the old one.
 #[test]
-fn runtime_surface_is_a10() {
-    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A10");
+fn runtime_surface_is_current() {
+    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A13");
 }
 
 /// A10 adds **no** `RuntimeFn` member, and `Callee::Provider` is a form `RuntimeFn` cannot

@@ -869,9 +869,19 @@ fn every_sentinel_pins_its_observation() {
         sentinels.len()
     );
     for case in sentinels {
+        // A sentinel exists to fail under the LIKELY WRONG implementation, so it must state what
+        // the right one produces. Which field carries that statement depends on how the case ends:
+        // a completing case pins its stdout or its Drop log; a TRAPPING case pins its trap
+        // category, which is the same claim in the only form available to a program that produces
+        // no output at all. WP-C7.9 added the first trapping sentinels (`MIN / -1`, `MIN % -1`),
+        // and this check predated them — it accepted only the completing forms.
+        let pins_completion =
+            !case.expected_stdout.is_empty() || !case.expected_drop_log.is_empty();
+        let pins_trap = case.expected_trap_category.is_some();
         assert!(
-            !case.expected_stdout.is_empty() || !case.expected_drop_log.is_empty(),
-            "{}: a sentinel must pin its observation independently of the engines",
+            pins_completion || pins_trap,
+            "{}: a sentinel must pin its observation independently of the engines — stdout, a \
+             Drop log, or a trap category",
             case.case_id
         );
     }

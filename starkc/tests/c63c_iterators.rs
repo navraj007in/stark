@@ -26,8 +26,6 @@
 mod support;
 
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::lower::lower_program;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
@@ -132,8 +130,13 @@ fn chars_iter_over_string() {
 // executable evidence of exactly where each row stops, so the boundary cannot drift unnoticed and so
 // a future lowering package has its starting point. `HashMap`/`HashSet` iteration is C6.3d.
 
-/// The program type-checks but LOWERING refuses it — an HIR-only shape.
-fn hir_only(tag: &str, src: &str) {
+/// **WP-C7.9 Packet E: these are front-end REJECTIONS now, not HIR-only shapes.**
+///
+/// This helper used to assert the opposite: that the program type-checked, that the reference
+/// interpreter ran it, and that lowering then refused it. That combination is the defect Packet E
+/// closed — a program the language accepted and no compiler could build — so the assertion is
+/// inverted rather than deleted. The cases are the same programs; what changed is where they stop.
+fn refused_by_front_end(tag: &str, src: &str) {
     let file = Arc::new(SourceFile::new(
         format!("c63c_{tag}.stark"),
         src.to_string(),
@@ -149,16 +152,8 @@ fn hir_only(tag: &str, src: &str) {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        errs.is_empty(),
-        "{tag}: expected it to type-check, got {errs:?}"
-    );
-    // The HIR interpreter DOES run it — which is what makes this a lowering gap rather than an
-    // unimplemented language feature.
-    interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag}: HIR should run it: {}", e.message));
-    assert!(
-        lower_program(&hir, &checked.tables, file).is_err(),
-        "{tag}: lowering is expected to refuse this; if it now lowers, make it a three-engine case"
+        errs.iter().any(|d| d.code.as_deref() == Some("E0105")),
+        "{tag}: expected an E0105 refusal at type checking, got {errs:?}"
     );
 }
 
@@ -193,20 +188,21 @@ fn slice_iteration_is_not_a_language_form() {
     );
 }
 
-/// By-VALUE `Vec` iteration runs in the HIR interpreter but is not lowered.
+/// By-VALUE `Vec` iteration: refused at type checking (E0105). It used to type-check and run in
+/// the oracle while no compiler could build it.
 #[test]
-fn vec_by_value_iteration_is_hir_only() {
-    hir_only(
+fn vec_by_value_iteration_is_refused() {
+    refused_by_front_end(
         "vecbyvalue",
         "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.push(2); \
          let mut n: Int32 = 0; for x in v { n = n + x; } assert_eq(n, 3); }",
     );
 }
 
-/// `map` needs a MIR representation for `MapIter` (it has none — a C4.5-era gap).
+/// `map` has no MIR representation for `MapIter`, so it is refused rather than accepted (E0105).
 #[test]
-fn map_adapter_is_hir_only() {
-    hir_only(
+fn map_adapter_is_refused() {
+    refused_by_front_end(
         "mapadapter",
         "fn double(x: &Int32) -> Int32 { *x * 2 }\n\
          fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
@@ -214,15 +210,16 @@ fn map_adapter_is_hir_only() {
     );
 }
 
-/// `count`/`collect` are method calls on a non-nominal (core) receiver, which lowering does not do.
+/// `count`/`collect` are method calls on a non-nominal (core) receiver, which lowering does not
+/// perform — so they are refused at type checking rather than accepted (E0105).
 #[test]
-fn count_and_collect_are_hir_only() {
-    hir_only(
+fn count_and_collect_are_refused() {
+    refused_by_front_end(
         "countadapter",
         "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
          let c = it.count(); assert_eq(c, 1u64); }",
     );
-    hir_only(
+    refused_by_front_end(
         "collectadapter",
         "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
          let w: Vec<Int32> = it.collect(); assert_eq(w.len(), 1u64); }",

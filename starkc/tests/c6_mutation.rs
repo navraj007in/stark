@@ -96,6 +96,7 @@ fn clone_observation(observation: &Observation) -> Observation {
             column: trap.column,
             message_class: trap.message_class.clone(),
             stdout_before_trap: trap.stdout_before_trap.clone(),
+            stderr_before_trap: trap.stderr_before_trap.clone(),
             stderr_observation: trap.stderr_observation.clone(),
             exit_status: trap.exit_status,
             drop_log_before_trap: trap.drop_log_before_trap.clone(),
@@ -182,6 +183,14 @@ fn every_required_mutation_is_detected() {
             && c.expected_trap_category.as_deref() == Some("IntegerOverflow")
     });
     let trap_observed = run_witness(overflow_trap);
+
+    // WP-C7.9 Packet D: the one case that writes to BOTH streams before trapping. MU24 needs it —
+    // clearing a field that was already empty is not a mutation, and every other trap case in the
+    // corpus produces no program stderr at all.
+    let stderr_trap = witness_where(&cases, "a trap case with pre-trap stderr", |c| {
+        c.case_id == "sentinel__22_stderr_before_trap"
+    });
+    let stderr_trap_observed = run_witness(stderr_trap);
 
     let drops = witness_where(
         &cases,
@@ -443,6 +452,20 @@ fn every_required_mutation_is_detected() {
         },
     ));
     results.push(mutation(
+        "MU24",
+        stderr_trap,
+        &stderr_trap_observed,
+        "stderr_before_trap",
+        |o| {
+            // WP-C7.9 Packet D. The program's OWN stderr before a trap must survive it, exactly as
+            // its stdout must — and it must stay distinguishable from the runtime's trap
+            // diagnostic, which is a separate field. Losing it is the defect that made this channel
+            // unobservable for the whole of C6: every engine reported nothing, and nothing
+            // reporting nothing compares equal.
+            trap(o).stderr_before_trap.clear();
+        },
+    ));
+    results.push(mutation(
         "MU20",
         overflow_trap,
         &trap_observed,
@@ -495,8 +518,9 @@ fn every_required_mutation_is_detected() {
 
     assert_eq!(
         results.len(),
-        23,
-        "§14.3's sixteen mutations plus R-03's seven comparator-field controls"
+        24,
+        "§14.3's sixteen mutations, R-03's seven comparator-field controls, and WP-C7.9's \
+         pre-trap stderr control (MU24)"
     );
     write_evidence(&results);
 }

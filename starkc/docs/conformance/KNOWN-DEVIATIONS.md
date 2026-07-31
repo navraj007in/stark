@@ -2737,3 +2737,63 @@ DEV-033 → `EXEC-EVAL-001`; DEV-034 → `EXEC-ONCE-001`; DEV-035 → `REF-RETUR
 DEV-037 → `REF-PROJECT-001`; DEV-039 → `DROP-LOOP-001`; and DEV-040 →
 `DROP-COLLECTION-001`. Closed entries remain regression evidence; open entries retain their
 C2.8–C2.11 disposition.
+
+---
+
+## DEV-120 — native call-depth exhaustion is a bounded host limitation (OPEN, documented; WP-C7.9 Packet F)
+
+- **Normative expectation:** `LIMIT-RESOURCE-001` — "Allocation, address-space, stack, call-depth,
+  file-descriptor, stream, and other host-resource exhaustion are host/process failures unless an
+  API returns a specified `Result`. Implementations must prevent host undefined behavior and report
+  the classified failure **when the host permits**; exact capacities are implementation/target-
+  defined."
+- **Current behaviour:** the two INTERPRETERS honour the whole rule. Both check
+  `interp::MAX_CALL_DEPTH` before pushing a frame and report a classified host/resource failure
+  (`FailureClass::HostResource` / `MirRunError::HostResource`), so a runaway recursion ends as a
+  reported outcome with a stable non-trap exit status and never as a process abort. **Native
+  execution does not**: a generated binary recurses on the host's own stack, and stack exhaustion
+  there terminates the process by signal, before any STARK-level code can observe it.
+- **Why it is not fixed here:** reporting it natively means per-call depth instrumentation in every
+  generated function — a cost paid by every program to report a condition that is already
+  host-defined, and one that still could not cover host stack growth from the runtime or a provider.
+  Owner ruling D4 for WP-C7.9: record the boundary rather than instrument the backend.
+- **Why this is conformant, not a divergence:** the rule's own qualifier is "when the host permits".
+  A signalled stack overflow is the host declining to permit it. The capacities are also explicitly
+  implementation-defined, so the interpreters' 512-frame capacity and a native binary's stack-shaped
+  capacity are not required to match, and **no claim is made that they do**.
+- **User impact:** a program that recurses without a base case is reported cleanly under
+  `stark run`, and terminates by signal when built natively. The three-engine claim is unaffected:
+  resource exhaustion is not a language outcome and is excluded from engine comparison by
+  construction — the comparator refuses to normalise it into one.
+- **Evidence:** `starkc/tests/resource_exhaustion.rs` (subprocess cases: below the limit completes,
+  above it is classified, mutual recursion is caught, the counter is restored after an error, and
+  no test process aborts).
+- **Owning gate:** none scheduled. Revisit only if native execution acquires a reason to bound call
+  depth for its own sake.
+
+---
+
+## DEV-118 — `HashMap`/`HashSet` key bounds were unenforced (CLOSED by WP-C7.9 Packet I)
+
+- **Normative expectation:** `06-Standard-Library.md` declares `HashMap<K: Hash + Eq, V>` and
+  `HashSet<T: Hash + Eq>`. A type used as a key must satisfy both.
+- **Behaviour while open:** neither bound was checked, in any engine. A `HashMap<Float64, Int32>`
+  type-checked, lowered, ran, and produced answers.
+- **Why it survived a three-engine differential:** because it was not a differential defect. All
+  three engines shared the omission — the storage scans by `Eq` and never consults a hash, so every
+  engine accepted the same invalid programs and agreed on their results. Agreement proves
+  consistency, not conformance; this entry is the reason the two are now distinguished in the
+  comparator's expectations (WP-C7.9 G.4).
+- **The fuse:** the omission becomes a live cross-engine divergence the moment ONE implementation
+  starts using the hash — a real hash table in the native runtime, for instance — in programs that
+  had compiled cleanly until then.
+- **Fix:** the bound is enforced at TYPE INSTANTIATION, through a general mechanism for
+  implementation-declared generic bounds (`typecheck.rs`: `builtin_type_bounds` /
+  `check_builtin_type_bounds`), not at `insert`. `HashMap<Float64, Int32>` is therefore ill-typed
+  wherever it is written, including in a signature that is never called. Rejection is `E0500`, the
+  same code every other unsatisfied bound uses.
+- **Evidence:** `starkc/tests/adversarial_hash_bounds.rs` — `Eq` without `Hash`, `Hash` without
+  `Eq`, float keys, an uncalled signature, a generic function with insufficient bounds, and a
+  nested position, all rejected; primitives, a user nominal with both impls, a generic function
+  with both bounds, and the unconstrained VALUE position, all accepted.
+- **Owning gate:** was WP-C6.3 (carried at C6 closure); closed here.

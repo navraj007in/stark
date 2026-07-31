@@ -1,5 +1,61 @@
 # STARK Compiler STATE
 
+## WP-C7.9 — three-engine adversarial conformance correction (CD-275, 2026-07-31)
+
+**Corrective work on the tree Gate C7 closed over.** CD-274 closed C7; this landed after it, from
+two adversarial review passes. CD-274's ruling stands as written and is not amended — but three of
+the defects below were **live cross-engine divergences at the moment C7 closed**, so the claim this
+work supports is stated separately rather than folded into C7's.
+
+### The three divergences the reviews found
+
+| | |
+| --- | --- |
+| `MIN % -1` | **Did not trap at all** in MIR or native: both evaluate on an `i128` carrier and range-filter, and the remainder `0` is in range. The program COMPLETED with a value where NUM-INT-DIV-001 requires a trap, while the oracle trapped. |
+| `MIN / -1` | Trapped in all three engines with the **wrong identity** — `DivideByZero`, because `Div`/`Rem` carried one static category per operator regardless of cause. |
+| borrowed payload binding | The oracle bound by clone, so a binding used AS a reference failed there and worked in MIR and native. CD-267 pinned and escalated it; Packet C closed it. |
+
+### Three more this work package found itself
+
+1. **Compound assignment skipped the range check entirely.** `acc /= -1` on `Int32::MIN` completed
+   in the oracle, storing `2147483648` in an `Int32`. `eval_binary` range-checks against the type of
+   the expression it is handed, and the compound path handed it the ASSIGNMENT — type `Unit`, no
+   width, so the check passed vacuously. No maintained case had ever overflowed through `/=`.
+2. **A function's generics were not in scope for its own signature.** They were installed after the
+   return type was converted, so `fn build<T: Hash + Eq>() -> HashMap<T, Int32>` rejected itself
+   once anything checked bounds during conversion.
+3. **Interpreter recursion overflowed the host stack at ~100 STARK frames** — a depth ordinary
+   programs reach. A depth cap alone could not fix it; execution now runs on a stack sized for the
+   cap, and the cap reports exhaustion before the host runs out.
+
+### What changed
+
+- **MIR amendment A13**: checked evaluation may override the terminator's category when an
+  operation fails for a different normative cause. `MIR_RUNTIME_SURFACE` `0.1-A10` → `0.1-A13`
+  (fourteen stderr output operations); `MIR_VERSION` stays `0.3` — A13 adds no shape.
+- **`E0105`** allocated: iteration forms this implementation does not support. Nine
+  accepted-but-unlowerable surfaces now refused by the front end instead of being accepted and
+  refused later by lowering.
+- **Core-trait implementations are checked**, against one canonical contract table. A `CoreTrait`
+  has no declaration item, so nothing had ever compared `impl Ord for T` against anything.
+- **`eprint`/`eprintln` reach every engine**, and the channel is compared — including before a trap,
+  separated from the runtime's own diagnostic by a per-run nonce.
+- **Trap identity is structural**: every language trap states its category where it is raised, the
+  prose normaliser is gone, and a guard test fails if phrase-matching returns.
+- **`FailureClass`** replaces `is_trap`: language trap / entry rejection / host resource /
+  interpreter invariant. Call-depth exhaustion is the third, never a trap (`LIMIT-RESOURCE-001`).
+- Corpus **1.4.0 → 1.5.0** (nine cases: eight `MIN op -1` sentinels, one writing both streams before
+  trapping — the corpus had no case with program stderr, because no engine could perform it).
+
+### Carried
+
+**DEV-120** (native call-depth exhaustion, bounded host limitation, ruling D4); provider-backed
+capabilities stay verifier/ABI/native qualified (D5); the nine refused iterator surfaces (D3); two
+CE4/CD-132-governed refusal points recorded with guard tests; `eprint`'s `&str`-only signature.
+
+Full account: `STARKLANG/docs/compiler/work-packages/WP-C7.9-CLOSURE.md`.
+
+
 ## Gate C6 — CLOSURE (CD-183)
 
 **Gate C6 closes with a qualified native executable subset. Of 87 audited normative
@@ -27,7 +83,7 @@ by `dev119_iterator_lifetime.rs`, and generalised as the risk-based follow-on
 | `String` extended (10) | CARRIED → `WP-C7-String-Surface` |
 | `HashMap` remainder (4) | CARRIED → `WP-C7-HashMap-Completion` (`with_capacity`, `get_mut`, `values`, `iter`) |
 | `Vec` remainder (3) | CARRIED → `WP-C7-Vec-Completion` |
-| DEV-118 | CARRIED — the `T: Hash + Eq` bound is unenforced for both collections. An enforcement omission all three engines share, not a differential defect. Owned by WP-C6.3. |
+| DEV-118 | **CLOSED by WP-C7.9 Packet I (CD-275)** — the `T: Hash + Eq` bound is enforced at type instantiation for both collections. It was an enforcement omission all three engines shared, which is why no differential could see it. |
 
 ### What C6 actually established
 
