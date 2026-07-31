@@ -1743,7 +1743,27 @@ impl<'a> BodyCx<'a> {
                 self.err(
                     "MIR-0016",
                     bi,
-                    format!("VecIndexGet requires a Copy element type, found {t:?}"),
+                    // **The message names the way out, because the rule alone does not imply it.**
+                    //
+                    // `v[i]` reads BY VALUE, which for an owning element would move it out of a
+                    // place the Vec still owns — correctly refused. But "requires a Copy element
+                    // type" tells a reader what is forbidden and not what to write instead, and
+                    // there are two answers neither of which is guessable from it.
+                    //
+                    // CD-293 tried to raise this in semantic analysis instead (E0106), on the
+                    // E0105 precedent that acceptance and executability should agree. That was
+                    // reverted in CD-294: the front end sees only the syntax `v[i]`, while this
+                    // site is reached ONLY by the value-read path — a method receiver, an
+                    // assignment target, a borrow, or an auto-borrowed comparison operand all
+                    // index a Vec without ever reaching here. Refusing on the syntax broke three
+                    // working programs. The layer migration is still right in principle and needs
+                    // a value-context analysis the checker does not have today.
+                    format!(
+                        "VecIndexGet requires a Copy element type, found {t:?}. `v[i]` reads by \
+                         value, which would move the element out of the Vec; borrow it instead \
+                         with `v.get(i)` (yields `Option<&T>`), `&v[i]`, or read it in place by \
+                         iterating with `for x in &v`"
+                    ),
                 );
             }
             // A6: Vec iteration is a borrowed cursor (no snapshot), so `T` need NOT be Copy.

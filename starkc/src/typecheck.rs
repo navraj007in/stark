@@ -217,13 +217,6 @@ pub struct TypeChecker<'a> {
     current_fn_ret: Option<Ty>,
     loop_nesting: u32,
     loop_contexts: Vec<LoopContext>,
-    /// Index expressions that are the operand of a borrow (`&v[i]`).
-    ///
-    /// E0106 refuses `v[i]` on a non-`Copy` element because reading BY VALUE would move it out of
-    /// the Vec. `&v[i]` does not read by value, so it is legal and must not be refused. Keyed by
-    /// the specific `ExprId` rather than a flag, so that a nested index inside the index
-    /// expression (`&v[w[0]]`) is still checked normally.
-    borrowed_index_exprs: HashSet<ExprId>,
     current_fn_generics: Option<Vec<hir::GenericParam>>,
     /// WP-C6.2b-F5: the ENCLOSING impl's generic parameters (with their bounds), in scope while an
     /// impl method body is checked so a bounded impl-head parameter's methods resolve — the impl
@@ -654,7 +647,6 @@ pub fn analyze_with_options(
         current_fn_ret: None,
         loop_nesting: 0,
         loop_contexts: Vec::new(),
-        borrowed_index_exprs: HashSet::new(),
         current_fn_generics: None,
         current_impl_generics: None,
         current_trait_id: None,
@@ -4865,14 +4857,6 @@ impl<'a> TypeChecker<'a> {
                 | Res::ParamAssoc(..) => Ty::Error,
             },
             hir::ExprKind::Unary { op, operand } => {
-                // `&v[i]` / `&mut v[i]` borrow the element rather than reading it by value, so the
-                // E0106 refusal in the `Index` arm must not fire for this operand. Marked before
-                // the operand is checked, and keyed by its `ExprId` so a nested index is unaffected.
-                if matches!(op, UnOp::Ref { .. })
-                    && matches!(self.hir.expr(*operand).kind, hir::ExprKind::Index { .. })
-                {
-                    self.borrowed_index_exprs.insert(*operand);
-                }
                 let op_ty = self.check_expr(*operand);
                 match op {
                     UnOp::Neg => {
@@ -5369,41 +5353,7 @@ impl<'a> TypeChecker<'a> {
                         if is_range {
                             Ty::Slice(Box::new(elem))
                         } else {
-                            // **`v[i]` reads the element BY VALUE, so it requires a `Copy` element.**
-                            //
-                            // For an owning element this would move out of the Vec while the Vec
-                            // still owns it — the "no moves out of indexed places" rule — so the
-                            // refusal is correct. What was wrong is WHERE it happened: this
-                            // type-checked, ran in the HIR oracle, and was then refused by MIR
-                            // (`MIR-0016 VecIndexGet requires a Copy element type`). An accepted
-                            // program no compiler could build, and an internal-sounding error at the
-                            // wrong layer — exactly the defect WP-C7.9 Packet E fixed for by-value
-                            // `Vec` iteration (E0105), left unfixed for indexing.
-                            //
-                            // The diagnostic names both ways to read an owning element, because
-                            // there ARE two and neither is guessable from "requires a Copy element":
-                            // `v.get(i)` yields `Option<&T>`, and iteration yields `&T`.
-                            if !matches!(elem, Ty::Error)
-                                && !self.is_copy_ty(&elem)
-                                && !self.borrowed_index_exprs.contains(&expr_id)
-                            {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!(
-                                            "cannot index a Vec whose element type '{}' is not Copy: `v[i]` reads by value, which would move the element out of the Vec",
-                                            self.ty_to_string(&elem)
-                                        ),
-                                        expr.span,
-                                    )
-                                    .with_code("E0106")
-                                    .with_help(
-                                        "borrow it with 'v.get(i)' (yields Option<&T>), or read it in place by iterating with 'for x in &v'",
-                                    ),
-                                );
-                                Ty::Error
-                            } else {
-                                elem
-                            }
+                            elem
                         }
                     }
                     Ty::Error => Ty::Error,

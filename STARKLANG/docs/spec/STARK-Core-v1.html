@@ -2533,15 +2533,6 @@ implementation that supports these forms does not raise E0105; one that
 does not MUST raise it during semantic analysis rather than accepting
 the program and failing later, so that acceptance and executability
 agree.</li>
-<li>E0106: <code>v[i]</code> on a <code>Vec&lt;T&gt;</code> whose
-element type <code>T</code> is not <code>Copy</code>. Indexing reads the
-element <strong>by value</strong>, which would move it out of a place
-the <code>Vec</code> still owns — the same restriction as “no moves out
-of indexed places”. An owning element is read through a borrow instead:
-<code>v.get(i)</code> yields <code>Option&lt;&amp;T&gt;</code>, and
-<code>for x in &amp;v</code> yields <code>&amp;T</code>. Like E0105,
-this MUST be raised during semantic analysis rather than accepting the
-program and refusing it in a later phase.</li>
 </ul>
 <h4 id="name-resolution-errors-e0200-e0299">Name Resolution Errors
 (E0200-E0299)</h4>

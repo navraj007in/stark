@@ -2515,11 +2515,6 @@ line | source code line
   with a `for` loop are supported. An implementation that supports these forms does
   not raise E0105; one that does not MUST raise it during semantic analysis rather than accepting
   the program and failing later, so that acceptance and executability agree.
-- E0106: `v[i]` on a `Vec<T>` whose element type `T` is not `Copy`. Indexing reads the element **by
-  value**, which would move it out of a place the `Vec` still owns — the same restriction as
-  "no moves out of indexed places". An owning element is read through a borrow instead:
-  `v.get(i)` yields `Option<&T>`, and `for x in &v` yields `&T`. Like E0105, this MUST be raised
-  during semantic analysis rather than accepting the program and refusing it in a later phase.
 
 #### Name Resolution Errors (E0200-E0299)
 - E0200: Undefined variable

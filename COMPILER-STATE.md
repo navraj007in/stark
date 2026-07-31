@@ -1,5 +1,57 @@
 # STARK Compiler STATE
 
+## CD-294 — E0106 reverted: the layer migration was not the cheap kind (2026-07-31)
+
+**CD-293 moved `v[i]`-on-a-non-`Copy`-element from MIR verification into semantic analysis as
+E0106, on the E0105 precedent that acceptance and executability should agree. It broke three
+working programs and is reverted.**
+
+| What broke | Why it was never a move |
+| --- | --- |
+| `holder.key == values[0]` | dispatches through `Eq::eq(&self, &Key)` — auto-borrowed |
+| `vs[idx()].push(arg())` | method receiver — borrowed |
+| `v[1u64] = Loud { id: 20 }` | assignment target — never read at all |
+
+**The premise was wrong, not the execution.** MIR reaches `VecIndexGet` only from the value-read
+path; a receiver, an assignment target, a borrow, and an auto-borrowed comparison operand all index
+a Vec and never arrive there. The front end sees only the syntax `v[i]`. Refusing on the syntax
+refuses four things to catch one.
+
+Scoping it correctly means enumerating every place context — `&`, receiver, field base, assignment
+LHS, comparison operand, nested index, match scrutinee — and **missing one breaks working code**,
+which is what happened three times. That is a value-context analysis the checker does not have, and
+building it is a design change, not a diagnostic fix.
+
+**The ergonomic win survives where it can tell the two apart.** MIR-0016 now reads: "…`v[i]` reads
+by value, which would move the element out of the Vec; borrow it instead with `v.get(i)` (yields
+`Option<&T>`), `&v[i]`, or read it in place by iterating with `for x in &v`". A message cannot
+produce a false positive.
+
+**CD-293's other two changes stand and are untouched:** `for x in &v` and `&v[i]` are pure
+additions — they can only make previously-rejected programs work, never break working ones.
+
+**WHAT THIS MEANS FOR THE LAYER AUDIT, which is the durable finding.** The estimate of "1–2 days,
+each fix small" for batch-migrating MIR refusals into semantic analysis is wrong. E0105 was cheap
+because by-value `Vec` iteration has exactly ONE syntactic form. E0106 was not, because `v[i]`
+appears in value and place positions that only later phases distinguish. The audit's output
+therefore needs a fourth classification beyond reachable/unreachable:
+
+```
+CHEAP     one syntactic form, unambiguous            (E0105-shaped)
+EXPENSIVE appears in value AND place positions;      (E0106-shaped)
+          needs context analysis the checker lacks
+```
+
+Which one a site is cannot be read off its message. It takes a probe per site.
+
+**Also recorded: how this was missed locally.** Two of the three failures are unit tests inside
+`src/interp.rs`, which `cargo test --test <name>` never compiles. Only
+`cargo test --workspace --all-targets` sees them — the same command CI runs.
+
+EVIDENCE: full-workspace verification was still running when this was pushed, at the owner's
+direction. fmt clean and clippy clean under CI's exact flags
+(`--workspace --all-targets --all-features -- -D warnings`) were confirmed before the revert.
+
 ## CD-293 — the three Vec ergonomics edges, and the guard that was a name filter (2026-07-31)
 
 **Found by writing CD-292's file surface against the real API, not by review.** Reading a
