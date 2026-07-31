@@ -5762,13 +5762,35 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<(Option<Value>, Value), RuntimeError> {
         match &mut iter {
+            // `*idx` is a BYTE offset into `s`, always on a scalar boundary because it only ever
+            // advances by `len_utf8()`.
+            //
+            // It used to be a SCALAR index compared against `s.len()`, which is a byte count. For
+            // any string containing a multi-byte scalar the two disagree: `"Stark語"` is 6 scalars
+            // in 8 bytes, so the loop ran twice too many times and `nth(6).unwrap()` panicked the
+            // host process. ASCII-only strings hid it exactly, because there the two counts are
+            // equal. The MIR interpreter and the native runtime were both already correct, so this
+            // was an oracle-only divergence — and one no differential could observe, because a
+            // panicking host produces no observation to compare.
+            //
+            // The byte cursor also removes an O(n^2) walk: `nth(idx)` re-scanned from the start of
+            // the string on every step.
             Value::CharsIter(s, ref mut idx) => {
-                let opt = if *idx < s.len() {
-                    let ch = s.chars().nth(*idx).unwrap();
-                    *idx += 1;
-                    Some(Value::Char(ch))
-                } else {
-                    None
+                // §4.6: no `unwrap` on a value derived from user content. A cursor off a scalar
+                // boundary would be an interpreter invariant violation, not a program error, so it
+                // is reported as one instead of panicking the host.
+                let Some(rest) = s.get(*idx..) else {
+                    return Err(RuntimeError::internal(
+                        "chars iterator cursor is not on a UTF-8 scalar boundary",
+                        span,
+                    ));
+                };
+                let opt = match rest.chars().next() {
+                    Some(ch) => {
+                        *idx += ch.len_utf8();
+                        Some(Value::Char(ch))
+                    }
+                    None => None,
                 };
                 Ok((opt, iter))
             }
