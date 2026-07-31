@@ -555,3 +555,41 @@ jobs:
       - name: Formatting
         working-directory: starkc/tests/workloads/c7-p1-rest
         run: ../../../target/release/stark${{ matrix.exe }} fmt --check
+
+  first-party-package-qualification:
+    name: first-party package qualification (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            exe: ''
+          - name: macos-arm64
+            os: macos-14
+            exe: ''
+          - name: windows-x64
+            os: windows-latest
+            exe: '.exe'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the compiler
+        working-directory: starkc
+        run: cargo build --release --bin stark
+      - name: Qualify JSON, URL, Base64, Hex, and UUID packages
+        run: |
+          python3 starkc/scripts/qualify-first-party-packages.py \
+            --stark "starkc/target/release/stark${{ matrix.exe }}" \
+            --repo-root "$PWD" \
+            --exe-suffix "${{ matrix.exe }}"

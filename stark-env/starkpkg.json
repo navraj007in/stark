@@ -1,0 +1,31 @@
+{
+  "name": "stark-env",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "capabilities": ["process.args", "process.env"],
+  "provider_api": {
+    "errors": {
+      "process.args": "RawEnvError",
+      "process.env": "RawEnvError"
+    },
+    "functions": {
+      "args_len_raw": {
+        "capability": "process.args",
+        "symbol": "stark_env_args_len"
+      },
+      "args_fill_raw": {
+        "capability": "process.args",
+        "symbol": "stark_env_args_fill"
+      },
+      "var_len_raw": {
+        "capability": "process.env",
+        "symbol": "stark_env_var_len"
+      },
+      "var_fill_raw": {
+        "capability": "process.env",
+        "symbol": "stark_env_var_fill"
+      }
+    }
+  },
+  "dependencies": {}
+}

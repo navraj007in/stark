@@ -1,0 +1,8 @@
+{
+  "name": "stark-env-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_env": { "package": "stark-env", "path": "../stark-env", "version": "0.1.0" }
+  }
+}

@@ -1,0 +1,24 @@
+use super::default_limits;
+use super::name_is_valid;
+
+fn test_default_limits_are_bounded() {
+    let limits = default_limits();
+    if limits.max_args == 0u64 || limits.max_total_arg_bytes == 0u64 || limits.max_value_bytes == 0u64 {
+        panic("default limits must be nonzero");
+    }
+}
+
+fn test_name_validation() {
+    if !name_is_valid("STARK_ENV_NAME") {
+        panic("ordinary name should be valid");
+    }
+    if name_is_valid("") {
+        panic("empty name should be invalid");
+    }
+    if name_is_valid("A=B") {
+        panic("equals should be invalid");
+    }
+    if name_is_valid("A\0B") {
+        panic("nul should be invalid");
+    }
+}

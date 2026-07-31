@@ -1,0 +1,38 @@
+use stark_env::args;
+use stark_env::get_required;
+use stark_env::EnvError;
+
+fn main() {
+    match args() {
+        Ok(values) => {
+            if values.len() < 1u64 {
+                panic("argv0 must be included");
+            }
+            println("args-present");
+        }
+        Err(_) => {
+            panic("args failed");
+        }
+    }
+
+    match get_required("STARK_ENV_CONSUMER_PROBE") {
+        Ok(value) => {
+            if value.as_str() != "Codex" {
+                panic("required env value mismatch");
+            }
+            println(value.as_str());
+        }
+        Err(_) => {
+            panic("required env failed");
+        }
+    }
+
+    match get_required("") {
+        Err(EnvError::InvalidName) => {
+            println("invalid-name");
+        }
+        _ => {
+            panic("invalid name should fail");
+        }
+    }
+}

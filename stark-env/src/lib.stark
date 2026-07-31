@@ -1,0 +1,327 @@
+pub enum EnvError {
+    InvalidName,
+    InvalidEncoding,
+    NotPresent,
+    LimitExceeded,
+    Other,
+}
+
+pub struct EnvLimits {
+    pub max_args: UInt64,
+    pub max_total_arg_bytes: UInt64,
+    pub max_value_bytes: UInt64,
+}
+
+const MAX_ARG_BYTES: UInt64 = 8192u64;
+const MAX_VALUE_BYTES: UInt64 = 4096u64;
+
+pub fn default_limits() -> EnvLimits {
+    EnvLimits {
+        max_args: 1024u64,
+        max_total_arg_bytes: MAX_ARG_BYTES,
+        max_value_bytes: MAX_VALUE_BYTES,
+    }
+}
+
+pub fn args() -> Result<Vec<String>, EnvError> {
+    args_with_limits(&default_limits())
+}
+
+pub fn args_with_limits(limits: &EnvLimits) -> Result<Vec<String>, EnvError> {
+    let required: UInt64;
+    match args_len_raw() {
+        Ok(value) => {
+            required = value;
+        }
+        Err(error) => {
+            return Err(map_raw_error(error));
+        }
+    }
+    if required > limits.max_total_arg_bytes {
+        return Err(EnvError::LimitExceeded);
+    }
+    if required > MAX_ARG_BYTES {
+        return Err(EnvError::LimitExceeded);
+    }
+
+    let mut buffer: [UInt8; 8192] = [0u8; 8192];
+    {
+        let out = &mut buffer[0u64..required];
+        match args_fill_raw(out) {
+            Ok(written) => {
+                if written != required {
+                    return Err(EnvError::Other);
+                }
+            }
+            Err(error) => {
+                return Err(map_raw_error(error));
+            }
+        }
+    }
+
+    parse_nul_separated_args(&buffer[0u64..required], limits.max_args)
+}
+
+pub fn get(name: &str) -> Result<Option<String>, EnvError> {
+    get_with_limit(name, default_limits().max_value_bytes)
+}
+
+pub fn get_with_limit(name: &str, max_bytes: UInt64) -> Result<Option<String>, EnvError> {
+    if !name_is_valid(name) {
+        return Err(EnvError::InvalidName);
+    }
+
+    let len_result: (Bool, UInt64);
+    match var_len_raw(name.bytes()) {
+        Ok(value) => {
+            len_result = value;
+        }
+        Err(error) => {
+            return Err(map_raw_error(error));
+        }
+    }
+    if !len_result.0 {
+        return Ok(None);
+    }
+    let required = len_result.1;
+    if required > max_bytes {
+        return Err(EnvError::LimitExceeded);
+    }
+    if required > MAX_VALUE_BYTES {
+        return Err(EnvError::LimitExceeded);
+    }
+
+    let mut buffer: [UInt8; 4096] = [0u8; 4096];
+    {
+        let out = &mut buffer[0u64..required];
+        match var_fill_raw(name.bytes(), out) {
+            Ok(written) => {
+                if written != required {
+                    return Err(EnvError::Other);
+                }
+            }
+            Err(error) => {
+                return Err(map_raw_error(error));
+            }
+        }
+    }
+
+    match decode_valid_utf8(&buffer[0u64..required]) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn get_required(name: &str) -> Result<String, EnvError> {
+    if !name_is_valid(name) {
+        return Err(EnvError::InvalidName);
+    }
+
+    let len_result: (Bool, UInt64);
+    match var_len_raw(name.bytes()) {
+        Ok(value) => {
+            len_result = value;
+        }
+        Err(error) => {
+            return Err(map_raw_error(error));
+        }
+    }
+    if !len_result.0 {
+        return Err(EnvError::NotPresent);
+    }
+    let required = len_result.1;
+    if required > default_limits().max_value_bytes {
+        return Err(EnvError::LimitExceeded);
+    }
+    if required > MAX_VALUE_BYTES {
+        return Err(EnvError::LimitExceeded);
+    }
+
+    let mut buffer: [UInt8; 4096] = [0u8; 4096];
+    {
+        let out = &mut buffer[0u64..required];
+        match var_fill_raw(name.bytes(), out) {
+            Ok(written) => {
+                if written != required {
+                    return Err(EnvError::Other);
+                }
+            }
+            Err(error) => {
+                return Err(map_raw_error(error));
+            }
+        }
+    }
+
+    decode_valid_utf8(&buffer[0u64..required])
+}
+
+pub fn name_is_valid(name: &str) -> Bool {
+    let bytes = name.bytes();
+    if bytes.len() == 0u64 {
+        return false;
+    }
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 0u8 || bytes[i] == 61u8 {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn parse_nul_separated_args(bytes: &[UInt8], max_args: UInt64) -> Result<Vec<String>, EnvError> {
+    let mut out: Vec<String> = Vec::new();
+    if bytes.len() == 0u64 {
+        return Ok(Vec::new());
+    }
+
+    let mut start: UInt64 = 0u64;
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 0u8 {
+            if out.len() >= max_args {
+                return Err(EnvError::LimitExceeded);
+            }
+            match decode_valid_utf8_range(bytes, start, i) {
+                Ok(value) => {
+                    out.push(value);
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            }
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+    if out.len() >= max_args {
+        return Err(EnvError::LimitExceeded);
+    }
+    match decode_valid_utf8_range(bytes, start, bytes.len()) {
+        Ok(value) => {
+            out.push(value);
+        }
+        Err(error) => {
+            return Err(error);
+        }
+    }
+    Ok(out)
+}
+
+fn map_raw_error(error: RawEnvError) -> EnvError {
+    match error {
+        RawEnvError::InvalidName => EnvError::InvalidName,
+        RawEnvError::InvalidEncoding => EnvError::InvalidEncoding,
+        RawEnvError::BufferTooSmall => EnvError::LimitExceeded,
+        RawEnvError::Unsupported => EnvError::Other,
+    }
+}
+
+fn is_continuation(byte: UInt8) -> Bool {
+    byte >= 0x80u8 && byte <= 0xBFu8
+}
+
+fn codepoint_char(codepoint: UInt32) -> Result<Char, EnvError> {
+    if codepoint > 0x10FFFFu32 {
+        return Err(EnvError::InvalidEncoding);
+    }
+    if codepoint >= 0xD800u32 && codepoint <= 0xDFFFu32 {
+        return Err(EnvError::InvalidEncoding);
+    }
+    match Char::from_u32(codepoint) {
+        Some(ch) => Ok(ch),
+        None => Err(EnvError::InvalidEncoding),
+    }
+}
+
+fn decode_valid_utf8(bytes: &[UInt8]) -> Result<String, EnvError> {
+    decode_valid_utf8_range(bytes, 0u64, bytes.len())
+}
+
+fn decode_valid_utf8_range(bytes: &[UInt8], start: UInt64, end: UInt64) -> Result<String, EnvError> {
+    let mut out = String::new();
+    let mut i: UInt64 = start;
+    while i < end {
+        let b0 = bytes[i];
+        if b0 < 0x80u8 {
+            out.push(codepoint_char(b0 as UInt32)?);
+            i = i + 1u64;
+        } else if b0 >= 0xC2u8 && b0 <= 0xDFu8 {
+            if i + 1u64 >= end || !is_continuation(bytes[i + 1u64]) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x1Fu32) << 6u32 | bytes[i + 1u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 2u64;
+        } else if b0 == 0xE0u8 {
+            if i + 2u64 >= end || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 >= 0xE1u8 && b0 <= 0xECu8 {
+            if i + 2u64 >= end || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 == 0xEDu8 {
+            if i + 2u64 >= end || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 >= 0xEEu8 && b0 <= 0xEFu8 {
+            if i + 2u64 >= end || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 == 0xF0u8 {
+            if i + 3u64 >= end || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else if b0 >= 0xF1u8 && b0 <= 0xF3u8 {
+            if i + 3u64 >= end || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else if b0 == 0xF4u8 {
+            if i + 3u64 >= end || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
+                return Err(EnvError::InvalidEncoding);
+            }
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else {
+            return Err(EnvError::InvalidEncoding);
+        }
+    }
+    Ok(out)
+}
+
+mod tests;
