@@ -5,6 +5,7 @@ use super::parse_request_target_with_limits;
 use super::percent_decode;
 use super::percent_encode_component;
 use super::QueryParameter;
+use super::RequestTarget;
 use super::UrlErrorKind;
 use super::UrlLimits;
 
@@ -150,6 +151,19 @@ fn test_parse_request_target_examples() {
     assert_target("/files/a%20b.txt", "/files/a b.txt", 0u64);
 }
 
+fn assert_query_param(target: &RequestTarget, index: UInt64, name: &str, value: &str) {
+    match target.query.get(index) {
+        Some(parameter) => {
+            if parameter.name.as_str() != name || parameter.value.as_str() != value {
+                panic("query parameter mismatch");
+            }
+        }
+        None => {
+            panic("query parameter missing");
+        }
+    }
+}
+
 fn test_parse_query_order_repeated_and_empty_values() {
     match parse_request_target("/search?q=stark&page=2&tag=compiler&tag=language&empty=") {
         Ok(target) => {
@@ -159,18 +173,10 @@ fn test_parse_query_order_repeated_and_empty_values() {
             if target.query.len() != 5u64 {
                 panic("query count mismatch");
             }
-            if target.query[0u64].name.as_str() != "q" || target.query[0u64].value.as_str() != "stark" {
-                panic("first query parameter mismatch");
-            }
-            if target.query[2u64].name.as_str() != "tag" || target.query[2u64].value.as_str() != "compiler" {
-                panic("first repeated parameter mismatch");
-            }
-            if target.query[3u64].name.as_str() != "tag" || target.query[3u64].value.as_str() != "language" {
-                panic("second repeated parameter mismatch");
-            }
-            if target.query[4u64].name.as_str() != "empty" || target.query[4u64].value.as_str() != "" {
-                panic("empty value mismatch");
-            }
+            assert_query_param(&target, 0u64, "q", "stark");
+            assert_query_param(&target, 2u64, "tag", "compiler");
+            assert_query_param(&target, 3u64, "tag", "language");
+            assert_query_param(&target, 4u64, "empty", "");
         }
         Err(_) => {
             panic("expected query target parse success");
@@ -184,15 +190,9 @@ fn test_encoded_separators_are_data_after_splitting() {
             if target.path.as_str() != "/users/a/b" {
                 panic("encoded slash in path data mismatch");
             }
-            if target.query[0u64].value.as_str() != "x/y" {
-                panic("encoded slash in query mismatch");
-            }
-            if target.query[1u64].value.as_str() != "a=b" {
-                panic("encoded equals in query mismatch");
-            }
-            if target.query[2u64].value.as_str() != "a&b" {
-                panic("encoded ampersand in query mismatch");
-            }
+            assert_query_param(&target, 0u64, "q", "x/y");
+            assert_query_param(&target, 1u64, "eq", "a=b");
+            assert_query_param(&target, 2u64, "and", "a&b");
         }
         Err(_) => {
             panic("expected encoded separator parse success");
@@ -209,12 +209,8 @@ fn test_query_splits_only_on_structural_separators() {
             if target.query.len() != 2u64 {
                 panic("query length mismatch");
             }
-            if target.query[0u64].name.as_str() != "name" || target.query[0u64].value.as_str() != "a=b&c" {
-                panic("encoded query separator mismatch");
-            }
-            if target.query[1u64].name.as_str() != "next" || target.query[1u64].value.as_str() != "x?y" {
-                panic("encoded query question mismatch");
-            }
+            assert_query_param(&target, 0u64, "name", "a=b&c");
+            assert_query_param(&target, 1u64, "next", "x?y");
         }
         Err(_) => {
             panic("expected query separator parse success");
@@ -236,12 +232,8 @@ fn test_percent_decoded_utf8_in_target() {
             if target.path.as_str() != "/café" {
                 panic("decoded unicode path mismatch");
             }
-            if target.query[0u64].value.as_str() != "😀" {
-                panic("decoded emoji query mismatch");
-            }
-            if target.query[1u64].value.as_str() != "€" {
-                panic("decoded currency query mismatch");
-            }
+            assert_query_param(&target, 0u64, "emoji", "😀");
+            assert_query_param(&target, 1u64, "currency", "€");
         }
         Err(_) => {
             panic("expected unicode target parse success");

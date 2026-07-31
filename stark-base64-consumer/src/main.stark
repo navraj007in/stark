@@ -1,0 +1,26 @@
+use stark_base64::decode;
+use stark_base64::encode;
+
+fn main() {
+    match decode("Zm9vYmFy") {
+        Ok(decoded) => {
+            if decoded.len() != 6u64 {
+                panic("base64 decode length mismatch");
+            }
+            if decoded[0u64] != 102u8 || decoded[1u64] != 111u8 || decoded[2u64] != 111u8 {
+                panic("base64 decode prefix mismatch");
+            }
+            if decoded[3u64] != 98u8 || decoded[4u64] != 97u8 || decoded[5u64] != 114u8 {
+                panic("base64 decode suffix mismatch");
+            }
+            let encoded = encode(decoded.as_slice());
+            if encoded.as_str() != "Zm9vYmFy" {
+                panic("base64 encode mismatch");
+            }
+            println(encoded.as_str());
+        }
+        Err(_) => {
+            panic("base64 decode failed");
+        }
+    }
+}

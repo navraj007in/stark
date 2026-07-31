@@ -1,0 +1,32 @@
+use stark_uuid::format;
+use stark_uuid::parse;
+use stark_uuid::variant;
+use stark_uuid::version;
+use stark_uuid::UuidVariant;
+
+fn main() {
+    match parse("F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6") {
+        Ok(uuid) => {
+            match version(&uuid) {
+                Some(value) => {
+                    if value != 1u8 {
+                        panic("version mismatch");
+                    }
+                }
+                None => {
+                    panic("missing version");
+                }
+            }
+            match variant(&uuid) {
+                UuidVariant::Rfc4122 => {}
+                _ => {
+                    panic("variant mismatch");
+                }
+            }
+            println(format(&uuid).as_str());
+        }
+        Err(_) => {
+            panic("parse failed");
+        }
+    }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "stark-uuid-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_uuid": { "package": "stark-uuid", "path": "../stark-uuid", "version": "0.1.0" }
+  }
+}
