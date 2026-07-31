@@ -159,10 +159,24 @@ pub fn discover_runtime(current_exe: Option<&Path>) -> Result<PathBuf, Toolchain
     let mut attempted = Vec::new();
     if let Some(exe) = current_exe {
         if let Some(bin_dir) = exe.parent() {
-            let candidate = bin_dir.join("../lib/stark/stark-runtime");
-            attempted.push(candidate.clone());
-            if let Some(path) = validate_runtime(&candidate) {
-                return Ok(path);
+            // `<prefix>/lib/stark` MIRRORS THE REPOSITORY, so the runtime sits under `starkc/`
+            // exactly as it does in a checkout. That is not cosmetic: this crate depends on
+            // `../stark-provider-abi`, and each provider crate depends on
+            // `../../starkc/stark-provider-abi`. Only a repository-shaped root makes both of those
+            // resolve to ONE path — and Cargo refuses a lockfile naming one package at two paths,
+            // even when the second is a symlink to the first.
+            //
+            // The flat `lib/stark/stark-runtime` location is still accepted, second, so an
+            // installation made before the mirror layout keeps working.
+            for relative in [
+                "../lib/stark/starkc/stark-runtime",
+                "../lib/stark/stark-runtime",
+            ] {
+                let candidate = bin_dir.join(relative);
+                attempted.push(candidate.clone());
+                if let Some(path) = validate_runtime(&candidate) {
+                    return Ok(path);
+                }
             }
         }
     }

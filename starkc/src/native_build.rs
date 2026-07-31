@@ -108,8 +108,9 @@ fn select_provider_set(
 fn provider_crates_for_set(
     set: &ProviderSet,
     package_root: &Path,
+    runtime_crate: &Path,
 ) -> Result<std::collections::BTreeMap<String, PathBuf>, BuildCommandError> {
-    let repo_root = provider_repo_root(package_root);
+    let repo_root = provider_repo_root(package_root, runtime_crate);
     let mut out = std::collections::BTreeMap::new();
     for provider in set.providers() {
         let name = &provider.crate_name;
@@ -402,7 +403,19 @@ fn select_provider_closes(
 /// The installed root mirrors the repository's shape (`<root>/stark-time/native`, and a
 /// `<root>/starkc/stark-provider-abi` for the `../../` dependency each provider manifest writes),
 /// so [`crate::provider_registry::crate_location`] needs no knowledge of which of the two it got.
-fn provider_repo_root(package_root: &Path) -> PathBuf {
+fn provider_repo_root(package_root: &Path, runtime_crate: &Path) -> PathBuf {
+    // **The runtime decides.** Providers and the runtime both depend on `stark-provider-abi`, and
+    // Cargo will not write a lockfile naming one package at two different paths. Taking the
+    // runtime from an installed prefix and the providers from a checkout produces exactly that:
+    //
+    //     error: package collision in the lockfile: packages stark-provider-abi v0.1.0
+    //     (~/.local/lib/stark/...) and stark-provider-abi v0.1.0 (…/starkc/…) are different
+    //
+    // So the tree that supplied the runtime supplies the providers. Anything else is a build that
+    // fails late, in Cargo, with a message about neither.
+    if let Some(root) = provider_root_beside_runtime(runtime_crate) {
+        return root;
+    }
     let mut current = Some(package_root);
     while let Some(dir) = current {
         if has_provider_layout(dir) {
@@ -414,6 +427,32 @@ fn provider_repo_root(package_root: &Path) -> PathBuf {
         return installed;
     }
     package_root.to_path_buf()
+}
+
+/// The provider root belonging to the same installation as `runtime_crate`.
+///
+/// An installed runtime lives at `<prefix>/lib/stark/stark-runtime`, so its providers are at
+/// `<prefix>/lib/stark/providers`. A runtime resolved out of a checkout has no such sibling, and
+/// this returns `None` so the checkout walk decides — which keeps in-repo development on repo
+/// providers, as it was.
+fn provider_root_beside_runtime(runtime_crate: &Path) -> Option<PathBuf> {
+    // An installed runtime lives at `<prefix>/lib/stark/starkc/stark-runtime`, in a root that
+    // mirrors the repository — so the providers are two levels up, beside `starkc/`, exactly where
+    // they sit in a checkout. `<prefix>/lib/stark/providers` is also accepted for an installation
+    // made before the mirror layout.
+    let parent = runtime_crate.parent()?;
+    for candidate in [
+        parent.parent().map(Path::to_path_buf),
+        Some(parent.join("providers")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if has_provider_layout(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Whether `dir` is a root holding first-party provider crates in the layout
@@ -656,7 +695,7 @@ pub fn build_current_package(
     // for a release build; TARGET separation comes from the build key, which carries the triple.
     let cache_root = target_root.join(profile.as_str());
     let provider_crates = if let Some(provider_set) = provider_set.as_ref() {
-        provider_crates_for_set(provider_set, &package_root)?
+        provider_crates_for_set(provider_set, &package_root, &toolchain.runtime_crate)?
     } else {
         std::collections::BTreeMap::new()
     };
@@ -905,6 +944,32 @@ mod tests {
         std::fs::write(root.join("stark-time/native/Cargo.toml"), "").unwrap();
     }
 
+    /// The runtime's own tree wins, because Cargo cannot lockfile one package at two paths.
+    #[test]
+    fn providers_follow_the_runtime_out_of_an_installed_prefix() {
+        let prefix = std::env::temp_dir().join(format!("stark_prov_prefix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&prefix);
+        let lib = prefix.join("lib/stark");
+        std::fs::create_dir_all(lib.join("stark-runtime")).unwrap();
+        provider_layout_at(&lib.join("providers"));
+
+        // A package that IS inside a checkout with its own providers...
+        let checkout = prefix.join("checkout");
+        provider_layout_at(&checkout);
+        let package = checkout.join("app");
+        std::fs::create_dir_all(&package).unwrap();
+
+        // ...still gets the installed providers, because that is where its runtime came from.
+        let chosen = provider_repo_root(&package, &lib.join("stark-runtime"));
+        assert_eq!(
+            chosen.canonicalize().unwrap(),
+            lib.join("providers").canonicalize().unwrap(),
+            "mixing an installed runtime with checkout providers is the lockfile collision this \
+             rule exists to prevent"
+        );
+        let _ = std::fs::remove_dir_all(&prefix);
+    }
+
     /// A package inside a checkout resolves providers from that checkout — the in-repo path,
     /// which must keep working exactly as before.
     #[test]
@@ -916,7 +981,9 @@ mod tests {
         std::fs::create_dir_all(&package).unwrap();
 
         assert_eq!(
-            provider_repo_root(&package).canonicalize().unwrap(),
+            provider_repo_root(&package, Path::new("/nonexistent/stark-runtime"))
+                .canonicalize()
+                .unwrap(),
             root.canonicalize().unwrap(),
             "the enclosing checkout must win: an in-repo build links the checkout's own providers"
         );

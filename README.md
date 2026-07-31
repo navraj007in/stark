@@ -220,9 +220,13 @@ install -m 755 target/release/stark    "$PREFIX/bin/"
 install -m 755 target/release/starkc   "$PREFIX/bin/"
 install -m 755 target/release/starkide "$PREFIX/bin/"
 
-# The runtime every generated binary links, plus its own path dependency.
-rsync -a --exclude target stark-runtime/       "$PREFIX/lib/stark/stark-runtime/"
-rsync -a --exclude target stark-provider-abi/  "$PREFIX/lib/stark/stark-provider-abi/"
+# The installed tree MIRRORS THE REPOSITORY. That is load-bearing, not tidiness: the runtime
+# depends on `../stark-provider-abi` and each provider crate on `../../starkc/stark-provider-abi`,
+# so only a repository-shaped root makes both resolve to ONE copy. Cargo refuses a lockfile that
+# names one package at two paths — even when the second is a symlink to the first.
+L="$PREFIX/lib/stark"
+rsync -a --exclude target stark-runtime/      "$L/starkc/stark-runtime/"
+rsync -a --exclude target stark-provider-abi/ "$L/starkc/stark-provider-abi/"
 ```
 
 Three binaries, not one: `stark` is the package driver, `starkc` the single-file CLI and language
@@ -232,10 +236,9 @@ server, `starkide` the terminal IDE. The VS Code extension defaults to `starkc`.
 crates too, in a root that mirrors the repository's shape:
 
 ```bash
-PROV="$PREFIX/lib/stark/providers"
-rsync -a --exclude target stark-provider-abi/ "$PROV/starkc/stark-provider-abi/"   # from starkc/
+# Beside `starkc/`, exactly as in a checkout — they share the ABI crate installed above.
 for p in stark-time stark-env stark-file stark-net; do
-  rsync -a --exclude target "../$p/native/" "$PROV/$p/native/"
+  rsync -a --exclude target "../$p/native/" "$PREFIX/lib/stark/$p/native/"
 done
 ```
 
