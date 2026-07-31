@@ -630,6 +630,14 @@ fn portability_installed_runtime_requirement_refuses_the_checkout_fallback() {
 /// §9.5: STARK's output contract is bytes. `\n` is `\n` on every platform — no host line-ending
 /// convention, no text-mode translation — and Unicode reaches stdout as UTF-8. Asserted as exact
 /// bytes so a platform that translated line endings would fail rather than be normalised away.
+///
+/// **The emoji is not decoration.** `é`/`ö` are 2-byte UTF-8 and also exist in Windows' cp1252, so
+/// a host that re-encoded output through the console codepage could still pass on them. `😀` is
+/// 4-byte UTF-8 with NO cp1252 representation: a platform doing any console-encoding round trip
+/// fails here and cannot fail quietly. CD-295 is why this matters — a Python harness died with
+/// `UnicodeEncodeError` on exactly this character, and nothing on the STARK side would have caught
+/// it, because the byte-level contract was only ever exercised with characters cp1252 happens to
+/// contain.
 #[test]
 fn platform_stdout_is_exact_bytes_including_unicode_and_line_termination() {
     if !rustc_available() {
@@ -640,7 +648,7 @@ fn platform_stdout_is_exact_bytes_including_unicode_and_line_termination() {
     let runtime = root.join("runtime");
     install_runtime_into(&runtime);
     let artifact = build_native(
-        "fn main() {\n  println(\"héllo wörld\");\n  print(\"no newline\");\n}\n",
+        "fn main() {\n  println(\"héllo wörld 😀\");\n  print(\"no newline\");\n}\n",
         "bytes.stark",
         &root.join("target"),
         &runtime,
@@ -655,7 +663,7 @@ fn platform_stdout_is_exact_bytes_including_unicode_and_line_termination() {
     );
     assert_eq!(
         run.stdout,
-        "héllo wörld\nno newline".as_bytes(),
+        "héllo wörld 😀\nno newline".as_bytes(),
         "stdout must be these exact bytes on every platform"
     );
     assert!(
