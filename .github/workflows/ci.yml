@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -593,3 +594,48 @@ jobs:
             --stark "starkc/target/release/stark${{ matrix.exe }}" \
             --repo-root "$PWD" \
             --exe-suffix "${{ matrix.exe }}"
+
+  # ------------------------------------------------------------------------------------------
+  # The single required check for branch protection.
+  #
+  # Protection could name all eleven jobs above, but three of them are matrices, so the real
+  # check names are generated (`fmt, clippy, test (linux-x64)` and so on) and change whenever a
+  # platform is added or renamed. A rule pinned to generated names fails open: a renamed job is
+  # simply not found, and GitHub reports the rule satisfied because nothing it requires failed.
+  #
+  # This job depends on every other and is the only name protection needs to know. Adding a job
+  # means adding one line to `needs:` -- and forgetting to is visible here, not silently
+  # unprotected.
+  # ------------------------------------------------------------------------------------------
+  ci-complete:
+    name: CI complete
+    if: always()
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-test
+      - c64-qualification
+      - c65-corpus
+      - c65-mutation-controls
+      - c65-tier1-comparison
+      - c64-tier1-comparison
+      - c64-windows-gap
+      - release-package-smoke
+      - fixture-conformance
+      - p1-rest-workload
+      - first-party-package-qualification
+    steps:
+      - name: Verify every job succeeded
+        # `needs.*.result` is `success`, `failure`, `cancelled` or `skipped`. Anything other than
+        # success fails this gate: `if: always()` means this job runs even when a dependency
+        # failed, so without the explicit check it would report success on a red run.
+        run: |
+          echo "results: ${{ join(needs.*.result, ', ') }}"
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ]; then
+            echo "::error::at least one CI job failed"
+            exit 1
+          fi
+          if [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::at least one CI job was cancelled"
+            exit 1
+          fi
+          echo "all jobs succeeded"
