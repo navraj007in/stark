@@ -323,13 +323,19 @@ fn vec_index_non_copy_is_refused_with_a_message_naming_the_alternatives() {
     );
     let program = match starkc::mir::lower::lower_program(&hir, &checked.tables, file) {
         Ok(program) => program,
-        Err(e) => panic!("lowering itself succeeds; the refusal is in verification: {}", e.what),
+        Err(e) => panic!(
+            "lowering itself succeeds; the refusal is in verification: {}",
+            e.what
+        ),
     };
     let errors = starkc::mir::verify::verify_program(&program)
         .err()
         .expect("verification must refuse a by-value read of a non-Copy element");
     let msg = &errors[0].message;
-    assert!(msg.contains("v.get(i)"), "must name the borrowing read: {msg}");
+    assert!(
+        msg.contains("v.get(i)"),
+        "must name the borrowing read: {msg}"
+    );
     assert!(msg.contains("for x in &v"), "must name iteration: {msg}");
 }
 
