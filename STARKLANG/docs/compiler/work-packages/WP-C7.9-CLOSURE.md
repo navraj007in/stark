@@ -6,7 +6,7 @@ evidence; §7 states the claim it supports.
 **Parent gate:** C7 — **CLOSED at CD-274** while this work package was being implemented. WP-C7.9
 therefore appends to a closed gate: it does not reopen CD-274, and §6 states exactly what CD-274's
 claim did and did not cover.
-**Decisions:** owner rulings D1–D7 in `WP-C7.9_Claude_Marathon_Execution_Brief.md` §2.
+**Decisions:** owner rulings D1–D7 in `STARKLANG/docs/compiler/plans/WP-C7.9_Claude_Marathon_Execution_Brief.md` §2.
 **MIR amendment:** A13 (trap classification + the stderr half of the runtime surface),
 `MIR_RUNTIME_SURFACE` `0.1-A10` → `0.1-A13`, `MIR_VERSION` unchanged at `0.3`.
 **Corpus:** 1.4.0 → **1.5.0** (nine new cases, no existing source or expectation changed).

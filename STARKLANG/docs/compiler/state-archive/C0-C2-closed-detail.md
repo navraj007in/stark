@@ -59,7 +59,7 @@ complete or as substituting for WP-C0.4.)
   that's a substantive per-rule completeness call, not a tooling question, and remains open for
   whichever WP next has reason to look closely at these rules. Root cause: the coverage database
   was seeded once at Phase 0 (2026-07-16, per
-  `stark-spec-parity-roadmap.md`) and never updated as Phases 1-4A subsequently closed exactly
+  `STARKLANG/docs/packages/stark-spec-parity-roadmap.md`) and never updated as Phases 1-4A subsequently closed exactly
   this scope — a "no status drift" (Charter rule 13) violation in the pre-existing process, now
   fixed. The "fourth unidentified missing rule" from WP-C0.0's provisional note is `STD-004`
   (standard traits) — also corrected. `STD-003`/`STD-005` source/tests citations were also
@@ -583,7 +583,7 @@ complete or as substituting for WP-C0.4.)
       post-Gate-5 status note + changelog entry, did not fabricate WP-level detail for Gates 6-7),
       root `README.md` (fixed a genuine prose-vs-table contradiction on Gate 5 status, completed
       the truncated further-reading list to include gate5/6/7 docs and the new governance files).
-- [x] WP-C0.2: confirmed `stark-spec-parity-roadmap.md` (Phases 0-9) and all `starkc/docs/
+- [x] WP-C0.2: confirmed `STARKLANG/docs/packages/stark-spec-parity-roadmap.md` (Phases 0-9) and all `starkc/docs/
       WP8_*_IMPLEMENTATION.md`/`PHASE4E_MATH_RANDOM_IO_IMPLEMENTATION.md` files are **current and
       evidenced** — no edits needed. `starkc/docs/PHASE8_GRAMMAR_GAPS.md` in particular is an
       existing high-quality deviation log that directly confirmed DEV-008 (structural equality),
@@ -702,12 +702,12 @@ NEXT: WP-C0.2
 
 ### WP-C0.2 — 2026-07-17
 DONE: Audited and reconciled documentation/status claims across `CLAUDE.md`, root `README.md`,
-`starkc/README.md`, `STARKLANG/docs/PLAN.md`, `stark-spec-parity-roadmap.md`, and every
+`starkc/README.md`, `STARKLANG/docs/PLAN.md`, `STARKLANG/docs/packages/stark-spec-parity-roadmap.md`, and every
 `starkc/docs/*IMPLEMENTATION*.md`/`PHASE*.md` file. Fixed four genuinely stale/contradictory
 documents (`CLAUDE.md`, `starkc/README.md`, `STARKLANG/docs/PLAN.md`, root `README.md`) without
 rewriting any historical gate-exit evidence — only current-status summaries were corrected, each
 with a pointer to this state file or to `compiler-map.md` as the up-to-date source. Confirmed
-`stark-spec-parity-roadmap.md` and all `WP8_*_IMPLEMENTATION.md`/`PHASE4E_*.md` docs are already
+`STARKLANG/docs/packages/stark-spec-parity-roadmap.md` and all `WP8_*_IMPLEMENTATION.md`/`PHASE4E_*.md` docs are already
 accurate (no edits needed). Discovered that `starkc/docs/PHASE8_GRAMMAR_GAPS.md` is a pre-existing,
 high-quality deviation log and used it to confirm five more deviations (DEV-008 through DEV-012),
 including closing out DEV-SEED-001 (equality/trait-dispatch — confirmed real: `==`/`!=` is pure

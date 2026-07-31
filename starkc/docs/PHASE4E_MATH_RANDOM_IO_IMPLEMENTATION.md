@@ -1,7 +1,7 @@
 # Phase 4E — Math, Random, and I/O Implementation
 
 **Status:** Partially complete (`File` struct deferred — see below)
-**Roadmap:** `stark-spec-parity-roadmap.md` Phase 4E
+**Roadmap:** `STARKLANG/docs/packages/stark-spec-parity-roadmap.md` Phase 4E
 **Spec:** `STARKLANG/docs/spec/06-Standard-Library.md` (Math/IO modules)
 
 ## Overview

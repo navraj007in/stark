@@ -940,7 +940,7 @@ exists** — work to date is proven on one host plus CI, not on a three-platform
 | Plan | `STARKLANG/docs/compiler/work-packages/WP-C7.8-First-Party-Native-Host-Capabilities.md` |
 | Decisions | `WP-C7.8.1-DECISION-PACKETS.md` — 3 of 5 dispositioned |
 | MIR amendment | `mir-amendment-A10-provider-invocation.md` (rev. 1, CE3, `0.1-A10`) |
-| Superseded | `WP-C7.8-Native-Host-Capability-Foundation.md` (repo root) — REVISE, CD-196 |
+| Superseded | `STARKLANG/docs/compiler/plans/WP-C7.8-Native-Host-Capability-Foundation.md` — REVISE, CD-196 |
 
 **Packet 1 / CE4 (CD-198, CD-199)** — first-party providers are **statically linked, ABI-semantic**:
 ordinary Rust crates linked into the produced binary, direct `extern "C"` symbol reference,

@@ -17,7 +17,7 @@ source-to-provider path, which is now the critical path to P1.
 | 6 | CE3 | MIR representation for package-declared host resources | **DISPOSITIONED 2026-07-29** — Route B, an explicit `MirTy::HostResource`-style form |
 
 These packets replace §5 ("Required design decisions") of the superseded root-level
-`WP-C7.8-Native-Host-Capability-Foundation.md`. That document's §5.1 presented the native
+`STARKLANG/docs/compiler/plans/WP-C7.8-Native-Host-Capability-Foundation.md`. That document's §5.1 presented the native
 resource model as an open choice and recommended generated-Rust wrappers with Rust `Drop`. That
 question is **not open**: it was decided by **CE4 Amendment 1 (CD-054, approved 2026-07-21)** and
 is implemented in `starkc/stark-runtime/src/provider_abi.rs`. Native Provider ABI v0.1 and CE4
@@ -729,7 +729,7 @@ Four consequences the superseded proposal missed:
 **Nothing else is Core.** `06-Standard-Library.md` contains no `args`, no `env`, no `Instant`, no
 `SystemTime`, no `sleep`, and no TCP type of any kind. Meanwhile `stark-time/` already exists as a
 *package* (`starkpkg.json`, `stark-time/native/` provider), and
-`STARK-Standard-Package-Roadmap.md` explicitly separates "pure libraries", "host-backed standard
+`STARKLANG/docs/packages/STARK-Standard-Package-Roadmap.md` explicitly separates "pure libraries", "host-backed standard
 packages that require operating-system providers", and "language/runtime capabilities".
 
 So the established pattern is already decided by precedent: **host capabilities are packages.**
@@ -754,7 +754,7 @@ So the established pattern is already decided by precedent: **host capabilities 
 
 **A.** It is the only option that unblocks P1 without a normative Core change, and it is the one
 the codebase already votes for — `stark-time` is a package, `CoreType::File` is in the front end,
-and `STARK-Standard-Package-Roadmap.md` was written to hold exactly this class of work.
+and `STARKLANG/docs/packages/STARK-Standard-Package-Roadmap.md` was written to hold exactly this class of work.
 
 ### The split, spec-faithful
 
@@ -829,7 +829,7 @@ error, never a retry — the alternative is an unbounded loop).
 - **No spec edit, no `build-core-spec.py` regeneration, no fixture re-triage** under A.
 - Gate C6's recorded exclusion — `File` (5) EXCLUDED, "deferred to the I/O gate" — is discharged
   by C7.8.4 against the spec surface, not against a new one.
-- Package qualification labels from `STARK-Standard-Package-Roadmap.md` P0
+- Package qualification labels from `STARKLANG/docs/packages/STARK-Standard-Package-Roadmap.md` P0
   (`HOST-BACKED`, `PLATFORM-SPECIFIC`) apply to the new packages.
 
 ## Implementation surface

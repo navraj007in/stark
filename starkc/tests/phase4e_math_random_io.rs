@@ -1,4 +1,4 @@
-//! Phase 4E — Math, Random, and I/O (`stark-spec-parity-roadmap.md`,
+//! Phase 4E — Math, Random, and I/O (`STARKLANG/docs/packages/stark-spec-parity-roadmap.md`,
 //! `06-Standard-Library.md`). Exercises each new stdlib surface end to end
 //! (parse -> resolve -> typecheck -> execute) rather than unit-testing
 //! individual compiler passes.

@@ -63,7 +63,7 @@ exit:
 5. **Engineering plan**: `STARKLANG/docs/PLAN.md` (accurate through Gate 5 work-package detail;
    Gates 6–7 recorded only as a summary note added under WP-C0.2, not full WP detail — see
    `COMPILER-STATE.md` CD-003 and the PLAN.md v0.6 changelog entry) and
-   `stark-spec-parity-roadmap.md` (Phases 0–9; confirmed accurate, no corrections needed).
+   `STARKLANG/docs/packages/stark-spec-parity-roadmap.md` (Phases 0–9; confirmed accurate, no corrections needed).
 6. **README/context files**: `CLAUDE.md`, root `README.md`, `starkc/README.md` — all three
    corrected under WP-C0.2 (see below); `starkc/docs/dev/compiler-map.md` (new, WP-C0.1) is now
    the authoritative module-by-module reference, superseding `starkc/README.md`'s Layout table
@@ -88,7 +88,7 @@ exit:
 | ONNX import/verify | Gate 4 closed (M4.5) | Maintained under Conditional Track T (T0); no new work authorized |
 | Native deployment (ONNX Runtime host) | Gate 5 closed (`gate5-exit.md`) | Distinct question from Gate C3 (general native Core compilation) — see `COMPILER-STATE.md` CD-002; not itself a C-gate subsystem |
 | Tensor productisation decision | Gate 6 REVISE, Gate 7 RETAIN AS RESEARCH LANGUAGE | Directly relevant prior evidence for Gate C3, not a substitute for it |
-| Package/manifest/dependency system | Phase 1–3 closed (`stark-spec-parity-roadmap.md`) | `PKG-004/005/006` coverage-DB status corrected `missing`→`partial` (DEV-002, closed); WP-C1.2 will do the rule-level pass |
+| Package/manifest/dependency system | Phase 1–3 closed (`STARKLANG/docs/packages/stark-spec-parity-roadmap.md`) | `PKG-004/005/006` coverage-DB status corrected `missing`→`partial` (DEV-002, closed); WP-C1.2 will do the rule-level pass |
 | Standard library | Phase 4A–4E closed/partial (`File` deferred) | `STD-003/004/005` coverage-DB citations corrected; DEV-009, DEV-013 open |
 | Formatter | WP8.2 complete | Not yet in scope for any open C-gate |
 | Test runner | WP8.3 complete | Not yet in scope for any open C-gate |

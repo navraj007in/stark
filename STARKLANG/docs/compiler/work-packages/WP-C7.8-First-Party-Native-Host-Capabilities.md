@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS (CD-212). C7.8.0–C7.8.2 closed; all five packets dispositioned;
 C7.8.3–C7.8.6 unblocked.
 **Parent gate:** C7
-**Supersedes:** `WP-C7.8-Native-Host-Capability-Foundation.md` (repo root), dispositioned
+**Supersedes:** `STARKLANG/docs/compiler/plans/WP-C7.8-Native-Host-Capability-Foundation.md` (moved there from the repository root), dispositioned
 **REVISE — conflicts with approved CE4 Native Provider ABI v0.1 and does not fully unblock P1.**
 **Decisions:** `WP-C7.8.1-DECISION-PACKETS.md` — **all five dispositioned** (CE4, CE3, CE2 on 2026-07-28; CE1, CE9 on 2026-07-29)
 **MIR amendment:** `mir-amendment-A10-provider-invocation.md` (rev. 1, surface `0.1-A10`)
