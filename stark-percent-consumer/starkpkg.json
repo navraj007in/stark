@@ -1,0 +1,8 @@
+{
+  "name": "stark-percent-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_percent": { "package": "stark-percent", "path": "../stark-percent", "version": "0.1.0" }
+  }
+}

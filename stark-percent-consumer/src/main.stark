@@ -1,0 +1,16 @@
+use stark_percent::decode;
+use stark_percent::encode;
+use stark_percent::PercentEncodeSet;
+
+fn main() {
+    let text = String::from("hello world/123");
+    let enc = encode(text.as_str().bytes(), PercentEncodeSet::PathSegment);
+    match decode(&enc) {
+        Ok(dec) => {
+            if dec.len() == 15u64 {
+                println("PERCENT_CONSUMER_OK");
+            }
+        }
+        Err(_) => panic("decode failed"),
+    }
+}

@@ -1,0 +1,136 @@
+use super::eq_ignore_ascii_case;
+use super::is_ascii;
+use super::is_ascii_alpha;
+use super::is_ascii_control;
+use super::is_ascii_digit;
+use super::is_ascii_hex_digit;
+use super::is_ascii_lowercase;
+use super::is_ascii_uppercase;
+use super::is_ascii_whitespace;
+use super::is_tchar;
+use super::string_eq_ignore_ascii_case;
+use super::to_ascii_lowercase;
+use super::to_ascii_uppercase;
+
+fn test_all_256_bytes_classification() {
+    let mut b: UInt64 = 0u64;
+    while b < 256u64 {
+        let byte = b as UInt8;
+        
+        let exp_ascii = byte <= 127u8;
+        let exp_upper = byte >= 65u8 && byte <= 90u8;
+        let exp_lower = byte >= 97u8 && byte <= 122u8;
+        let exp_alpha = exp_upper || exp_lower;
+        let exp_digit = byte >= 48u8 && byte <= 57u8;
+        let exp_hex = exp_digit || exp_upper && byte <= 70u8 || exp_lower && byte <= 102u8;
+        let exp_ws = byte == 32u8 || byte == 9u8 || byte == 10u8 || byte == 11u8 || byte == 12u8 || byte == 13u8;
+        let exp_ctrl = byte <= 31u8 || byte == 127u8;
+
+        if is_ascii(byte) != exp_ascii {
+            panic("is_ascii mismatch");
+        }
+        if is_ascii_alpha(byte) != exp_alpha {
+            panic("is_ascii_alpha mismatch");
+        }
+        if is_ascii_uppercase(byte) != exp_upper {
+            panic("is_ascii_uppercase mismatch");
+        }
+        if is_ascii_lowercase(byte) != exp_lower {
+            panic("is_ascii_lowercase mismatch");
+        }
+        if is_ascii_digit(byte) != exp_digit {
+            panic("is_ascii_digit mismatch");
+        }
+        if is_ascii_hex_digit(byte) != exp_hex {
+            panic("is_ascii_hex_digit mismatch");
+        }
+        if is_ascii_whitespace(byte) != exp_ws {
+            panic("is_ascii_whitespace mismatch");
+        }
+        if is_ascii_control(byte) != exp_ctrl {
+            panic("is_ascii_control mismatch");
+        }
+
+        b = b + 1u64;
+    }
+}
+
+fn test_tchar_classification() {
+    let mut b: UInt64 = 0u64;
+    while b < 256u64 {
+        let byte = b as UInt8;
+        let valid_tchar = (byte >= 48u8 && byte <= 57u8) ||
+            (byte >= 65u8 && byte <= 90u8) ||
+            (byte >= 97u8 && byte <= 122u8) ||
+            byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 ||
+            byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 ||
+            byte == 94u8 || byte == 95u8 || byte == 96u8 ||
+            byte == 124u8 || byte == 126u8;
+
+        if is_tchar(byte) != valid_tchar {
+            panic("is_tchar mismatch");
+        }
+        b = b + 1u64;
+    }
+}
+
+fn test_case_conversion() {
+    let mut b: UInt64 = 0u64;
+    while b < 256u64 {
+        let byte = b as UInt8;
+        if byte >= 65u8 && byte <= 90u8 {
+            if to_ascii_lowercase(byte) != byte + 32u8 {
+                panic("to_ascii_lowercase uppercase mismatch");
+            }
+            if to_ascii_uppercase(byte) != byte {
+                panic("to_ascii_uppercase uppercase mismatch");
+            }
+        } else if byte >= 97u8 && byte <= 122u8 {
+            if to_ascii_uppercase(byte) != byte - 32u8 {
+                panic("to_ascii_uppercase lowercase mismatch");
+            }
+            if to_ascii_lowercase(byte) != byte {
+                panic("to_ascii_lowercase lowercase mismatch");
+            }
+        } else {
+            if to_ascii_lowercase(byte) != byte {
+                panic("to_ascii_lowercase non-alpha mismatch");
+            }
+            if to_ascii_uppercase(byte) != byte {
+                panic("to_ascii_uppercase non-alpha mismatch");
+            }
+        }
+        b = b + 1u64;
+    }
+}
+
+fn test_eq_ignore_ascii_case() {
+    let empty: &[UInt8] = &[];
+    if !eq_ignore_ascii_case(empty, empty) {
+        panic("empty slice comparison failed");
+    }
+
+    let left: &[UInt8] = &[72u8, 101u8, 108u8, 108u8, 111u8]; // "Hello"
+    let right: &[UInt8] = &[104u8, 69u8, 76u8, 108u8, 79u8];  // "hELlO"
+    let diff: &[UInt8] = &[72u8, 101u8, 108u8, 112u8, 111u8];  // "Help"
+
+    if !eq_ignore_ascii_case(left, right) {
+        panic("mixed case equality failed");
+    }
+    if eq_ignore_ascii_case(left, diff) {
+        panic("unequal content returned true");
+    }
+    if eq_ignore_ascii_case(left, empty) {
+        panic("unequal length returned true");
+    }
+
+    let s1 = String::from("Content-Type");
+    let s2 = String::from("content-type");
+    let s3 = String::from("Content-Length");
+    if !string_eq_ignore_ascii_case(&s1, &s2) {
+        panic("string eq ignore case failed");
+    }
+    if string_eq_ignore_ascii_case(&s1, &s3) {
+        panic("string eq ignore case mismatch failed");
+    }
+}
