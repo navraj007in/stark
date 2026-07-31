@@ -111,6 +111,35 @@ const KNOWN_TARGETS: &[TargetSpec] = &[
 ];
 
 /// The Tier-1 triples, in the order a diagnostic should name them.
+/// The triple this compiler binary was built for, derived **without probing a Rust toolchain**.
+///
+/// `native_toolchain::discover` reports a host triple by running `rustc -vV`, which is correct and
+/// is what a native build must use — a build needs the toolchain anyway. `stark test` does not: it
+/// runs through the reference interpreter and compiles nothing. Requiring `rustc` to run
+/// interpreter-only tests would make a machine without a Rust toolchain unable to test a STARK
+/// package at all, and `native_build.rs`'s own ordering note records the failure mode this creates
+/// — a probe reached too eagerly turns every source error into "rustc not found".
+///
+/// `std::env::consts` is the compiler's own build configuration, so this is exact for the binary
+/// asking, which is the only thing the caller needs: the triple gates provider AVAILABILITY, and a
+/// provider available on the host is what a host-run test will use.
+///
+/// `None` when the host is not a target this compiler knows. That is a real answer, not a failure
+/// to compute one — a caller must decide whether an unknown host is fatal, and silently guessing a
+/// triple would bind providers that were never declared for it.
+pub fn host_triple_of_this_build() -> Option<&'static str> {
+    let triple = match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("aarch64", "macos") => "aarch64-apple-darwin",
+        ("x86_64", "macos") => "x86_64-apple-darwin",
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+        ("x86_64", "windows") => "x86_64-pc-windows-msvc",
+        _ => return None,
+    };
+    // Routed through `classify` rather than returned directly, so this cannot name a triple the
+    // rest of the module does not know about.
+    classify(triple).map(|spec| spec.triple)
+}
+
 pub fn tier1_triples() -> Vec<&'static str> {
     KNOWN_TARGETS
         .iter()

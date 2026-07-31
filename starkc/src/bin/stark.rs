@@ -1,7 +1,9 @@
 use starkc::diag::Severity;
 use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
-use starkc::parser::{parse_package_graph, parse_with_options, ParseMode};
+use starkc::parser::{
+    parse_package_graph, parse_package_graph_with_overlays, parse_with_options, ParseMode,
+};
 use starkc::resolve::{resolve, resolve_with_options};
 use starkc::source::SourceFile;
 use starkc::test_runner::{self, Outcome};
@@ -681,18 +683,48 @@ fn cmd_test(args: &[String]) -> ExitCode {
     };
 
     let options = LanguageOptions::CORE;
-    let (ast, mut diags) = parse_package_graph(&graph, options);
-    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
-    let entry_src = match std::fs::read_to_string(&root_pkg.entry) {
-        Ok(src) => src,
+
+    // **`provider_api` must be synthesized before the front end runs, here as in a native build.**
+    //
+    // Without it every generated `*_raw` function is E0200 and a package declaring `provider_api`
+    // fails to compile before a single test is discovered — which is what `stark test` did to
+    // `stark-io` and `stark-random`, both of which ship their own unit tests.
+    //
+    // The triple is derived from this build rather than probed from `rustc`: testing runs through
+    // the interpreter and compiles nothing, so requiring a Rust toolchain to run a package's tests
+    // would be a toolchain dependency bought for nothing.
+    let overlays = match starkc::native_build::provider_overlays_for_analysis(&graph) {
+        Ok(overlays) => overlays,
         Err(e) => {
-            eprintln!(
-                "Error: failed to read entry file '{}': {}",
-                root_pkg.entry.display(),
-                e
-            );
+            eprintln!("Error: {:?}", e);
             return ExitCode::FAILURE;
         }
+    };
+    let (ast, mut diags) = if overlays.is_empty() {
+        parse_package_graph(&graph, options)
+    } else {
+        parse_package_graph_with_overlays(&graph, options, &overlays)
+    };
+    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
+    // **The root file must be the OVERLAID source, not what is on disk.**
+    //
+    // Synthesis appends the generated `provider_api` items to the entry file's text, so every span
+    // in them lies past the end of the original. Rendering diagnostics against the on-disk file
+    // panics with "byte index N is out of bounds" the moment anything in the generated region is
+    // reported — which is what happened the first time this was wired up.
+    let entry_src = match overlays.get(&root_pkg.entry) {
+        Some(overlaid) => overlaid.clone(),
+        None => match std::fs::read_to_string(&root_pkg.entry) {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!(
+                    "Error: failed to read entry file '{}': {}",
+                    root_pkg.entry.display(),
+                    e
+                );
+                return ExitCode::FAILURE;
+            }
+        },
     };
     let root_file = Arc::new(SourceFile::new(
         root_pkg.entry.to_string_lossy().into_owned(),

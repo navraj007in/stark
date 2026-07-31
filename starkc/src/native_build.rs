@@ -78,6 +78,53 @@ pub struct BuildCommandResult {
 /// or not the root package mentions one. Sorted so the requirement set — and therefore the
 /// selected provider set, and therefore the generated manifest — cannot depend on graph iteration
 /// order.
+/// The `provider_api` source overlay a package graph needs, for callers that ANALYSE rather than
+/// build — `stark test` above all.
+///
+/// **Why this exists.** `provider_api` bindings are not real source: `provider_synth` generates
+/// them as items and merges them into the entry file before the front end runs. A caller that skips
+/// that step sees every generated `*_raw` function as E0200 "undefined variable" and the package
+/// fails to compile. `stark test` skipped it, so no package declaring `provider_api` could run its
+/// own tests at all — `stark-io` reported eighteen undefined variables before discovering a single
+/// test.
+///
+/// **The triple comes from `target::host_triple_of_this_build`, not from probing `rustc`.** A native
+/// build needs the toolchain regardless, so `native_toolchain::discover` is right there. Analysis
+/// does not compile anything, and requiring a Rust toolchain to run interpreter-only tests would
+/// make a machine without one unable to test a STARK package. The triple is used solely to gate
+/// which providers are available, and for a host-run test the host's providers are the correct
+/// answer.
+///
+/// **What this does NOT change:** the reference interpreter cannot PERFORM a provider call. This
+/// makes a provider-bound package compile and its provider-free tests run; a test that actually
+/// reaches a provider still cannot execute under `stark test`, and that is a property of the
+/// interpreter rather than of synthesis.
+///
+/// Returns an empty map when the graph declares no capability — such a package needs no provider
+/// set, no triple, and no overlay.
+pub fn provider_overlays_for_analysis(
+    graph: &PackageGraph,
+) -> Result<HashMap<PathBuf, String>, BuildCommandError> {
+    let required = required_capabilities(graph);
+    if required.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let Some(triple) = crate::target::host_triple_of_this_build() else {
+        return Err(BuildCommandError::Capability(format!(
+            "this compiler was built for {}-{}, which is not a target it knows, so the providers \
+             for capabilities {:?} cannot be selected",
+            std::env::consts::ARCH,
+            std::env::consts::OS,
+            required
+        )));
+    };
+    let set = ProviderSet::select(crate::provider_registry::first_party(), triple, &required)
+        .map_err(|errors| {
+            BuildCommandError::Capability(render_capability_errors(&errors, triple))
+        })?;
+    Ok(provider_layer_for_build(graph, Some(&set))?.overlays)
+}
+
 fn required_capabilities(graph: &PackageGraph) -> Vec<String> {
     let mut caps: Vec<String> = graph
         .packages
