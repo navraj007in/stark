@@ -479,6 +479,13 @@ fn io_minimal_executes_from_source_through_stark_io_package() {
         vendored_io.join("src").join("lib.stark"),
     )
     .expect("copy stark-io source");
+    // `lib.stark` declares `mod tests;`, so the module file is part of the package: omitting it is
+    // E0208 and the package does not compile, test or no test.
+    std::fs::copy(
+        repo_root().join("stark-io").join("src").join("tests.stark"),
+        vendored_io.join("src").join("tests.stark"),
+    )
+    .expect("copy stark-io tests module");
     let file_path = io_dir.join("sample.txt");
     let file_path = file_path
         .to_str()
@@ -618,6 +625,13 @@ fn io_expanded_surface_executes_from_source_through_stark_io_package() {
         vendored_io.join("src").join("lib.stark"),
     )
     .expect("copy stark-io source");
+    // `lib.stark` declares `mod tests;`, so the module file is part of the package: omitting it is
+    // E0208 and the package does not compile, test or no test.
+    std::fs::copy(
+        repo_root().join("stark-io").join("src").join("tests.stark"),
+        vendored_io.join("src").join("tests.stark"),
+    )
+    .expect("copy stark-io tests module");
 
     let esc = |p: std::path::PathBuf| {
         p.to_str()

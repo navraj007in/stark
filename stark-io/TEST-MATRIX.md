@@ -6,12 +6,11 @@ Status values:
   `io_minimal_executes_from_source_through_stark_io_package`, or
   `io_expanded_surface_executes_from_source_through_stark_io_package`, which covers seek, sync,
   set-length, metadata, path existence, joining, rename, copy and directory create/list/remove.
-- `pending`: a pure package test, writable **now**. This previously said "after syntax/API checking
-  is enabled for this package", which was wrong: `stark test` already runs a library package's unit
-  tests and needs no `main`. What it needs is the convention — a `tests.stark` module declared from
-  `lib.stark`, with functions named `test_*`, taking no parameters and no receiver. STARK has no
-  `#[test]` attribute; `#` does not lex. `stark-io` has no `tests.stark` at all yet, which is the
-  only reason these are pending.
+- `pending`: **written, in `src/tests.stark`, and not yet runnable.** The tests exist and are valid
+  STARK — they compile under the native build. `stark test` cannot run them because it does not
+  synthesize `provider_api`, so every generated `*_raw` function is E0200 and the package fails to
+  compile before discovery. See `BLOCKERS.md` gap 1. These become `covered` with no test changes the
+  day that is closed.
 - `blocked`: provider surface not present. **No row carries this status any more** — CD-292 supplied
   every native symbol the matrix was waiting on. Kept so a future row that needs it has a meaning.
 - `out of scope`: deliberately not provided, with the reason on the row.

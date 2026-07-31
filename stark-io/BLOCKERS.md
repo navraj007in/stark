@@ -65,25 +65,44 @@ The public nominal is `NativeFile` rather than `File` because Core reserves `Fil
 naming question rather than a blocker: `NativeFile` is a fully working owned file handle, and the
 only thing the Core name would add is the spelling. Adopting it needs Core `File`'s own migration.
 
-## Library package build mode
+## Library package testing — THREE gaps, previously conflated
 
-**Narrower than this file previously recorded.** It said a library package could not be tested at
-all. That conflated two different things, and only the second is a gap:
+This section has now been wrong twice in different ways. The original said a library package could
+not be tested at all. CD-298 corrected that to "`stark test` works, `stark build` needs an
+entrypoint" — which was also wrong, because it was never verified against a package that declares
+`provider_api`. Running it is what settled it.
 
-- **`stark test` works on a library package today.** It loads the package graph, parses, resolves,
-  type-checks, and runs tests through the interpreter. It never needs a `main`. What it does need is
-  the naming convention: `test_runner::discover_tests` selects a function by the **`test_` name
-  prefix**, taking no parameters and no receiver. There is no `#[test]` attribute — `#` is not in
-  STARK's lexer at all, so writing one is a lex error that takes the whole module down with it.
-  `stark-random` had exactly that defect (CD-297): its test module could not lex, and because
-  `lib.stark` declared `mod tests;`, the package did not compile.
-- **`stark build` still requires an entrypoint.** It reports `program without a main function`, so a
-  library cannot be NATIVELY qualified without an artificial `main`. That is the real gap.
+**1. `stark test` does not synthesize `provider_api`.** This is the blocker that actually stops this
+package. `native_build.rs` calls `provider_synth::synthesize_with_resources` before the front end
+runs, so the generated `*_raw` functions exist for a native build. `cmd_test` in `src/bin/stark.rs`
+does no provider handling at all, so under `stark test` every one of them is E0200 "undefined
+variable" and the package fails to compile before a single test is discovered:
 
-The consequence for this package: its own unit tests are runnable under `stark test`, but nothing
-proves the package works *through a native build* except a consumer that has a `main`. That is why
-`io_minimal_executes_...` and `io_expanded_surface_executes_...` are shaped as consumer programs in
-`starkc/tests/c788_starkc_build.rs` rather than as package tests.
+```
+Error: [E0200] undefined variable 'file_open_options_raw'
+Error: [E0200] undefined variable 'dir_list_raw'          ... and 17 more
+stark-io: package compilation failed
+```
+
+Both first-party packages that declare `provider_api` — `stark-io` and `stark-random` — are affected.
+`src/tests.stark` here is written and valid: it type-checks and compiles under the native build (the
+io e2e tests vendor it and pass). It simply cannot be RUN yet.
+
+Closing this means extracting the synthesis pipeline `native_build.rs` owns — `required_capabilities`
+→ provider set → `derive_all` → `synthesize_with_resources` → `merge_layer` — into something
+`cmd_test` can call. Note the semantic limit that survives it: `stark test` executes through the
+reference interpreter, which cannot perform a provider call. Even with synthesis, only tests that
+avoid the provider would run — which is exactly what `src/tests.stark` was written to be.
+
+**2. There is no `#[test]` attribute.** `#` is not in STARK's lexer, so writing one is a lex error
+that takes the whole module down with it. Tests are discovered by the `test_` NAME PREFIX, taking no
+parameters and no receiver (`test_runner::discover_tests`). `stark-random` had exactly this defect
+(CD-297). Necessary to get right, but not sufficient — gap 1 comes first.
+
+**3. `stark build` still requires an entrypoint.** It reports `program without a main function`, so a
+library cannot be NATIVELY qualified without an artificial `main`. This is why
+`io_minimal_executes_...` and `io_expanded_surface_executes_...` are consumer programs in
+`starkc/tests/c788_starkc_build.rs` rather than package tests.
 
 ## Provider surface expansion — DELIVERED (CD-292)
 
@@ -119,8 +138,9 @@ naming, tooling, and one recorded defect.
 - **exact public `File` nominal/method API** instead of `NativeFile` plus free wrappers. A naming
   question, not a capability one — it needs Core `File`'s own migration off the legacy
   `MirTy::Core` path, which is a three-engine change.
-- **library-only NATIVE qualification mode.** `stark test` already runs a library package's unit
-  tests; `stark build` needs an entrypoint. See "Library package build mode" above.
+- **`stark test` does not synthesize `provider_api`** — the blocker that stops this package's own
+  tests running, and then separately **library-only NATIVE qualification**. See "Library package
+  testing" above; they are three gaps, not one.
 - **the `IOError::` status labels name variants Core's `IOError` does not have** —
   `InvalidData`, `IsDirectory`, `Unsupported`. Core has five variants and `Other(String)` absorbs
   the surplus. The strings are consumed at exactly one site, interpolated into a generated-code

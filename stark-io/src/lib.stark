@@ -712,3 +712,6 @@ pub fn read_dir(path: &str, max_entries: UInt64) -> Result<Vec<DirectoryEntry>, 
     }
     Ok(out)
 }
+
+// Package unit tests, run by `stark test`. See `src/tests.stark`.
+mod tests;

@@ -1,0 +1,149 @@
+// Package unit tests, run by `stark test` from this package's root.
+//
+// **Naming, not attributes.** STARK has no `#[test]`: `#` is not in the lexer's vocabulary, so an
+// attribute here is a lex error that takes the whole module — and, since `lib.stark` declares
+// `mod tests;`, the whole package — down with it. `test_runner::discover_tests` selects a function
+// by the `test_` NAME PREFIX, requiring no parameters and no receiver.
+//
+// **What belongs here, and what does not.** `stark test` runs through the reference interpreter, so
+// these cover the package's own logic: option validation and path handling, which touch no file and
+// call no provider. Anything that needs a real filesystem effect — creating, reading, listing —
+// belongs in `starkc/tests/c788_starkc_build.rs`, which builds a consumer natively and runs it.
+// The split is not arbitrary: a provider call has no meaning in the interpreter.
+
+use super::FileError;
+use super::OpenOptions;
+use super::default_open_options;
+use super::open_options_are_valid;
+use super::open_with_options;
+use super::path_is_absolute;
+use super::path_is_valid;
+use super::path_join;
+
+// ---------------------------------------------------------------- open options --
+
+// Every mode false: the caller has asked to open a file for nothing at all. Refused rather than
+// silently treated as read-only, which is what a permissive default would amount to.
+fn test_open_options_with_no_access_mode_is_invalid() {
+    let options = default_open_options();
+    assert(!open_options_are_valid(&options));
+}
+
+fn test_open_options_read_only_is_valid() {
+    let mut options = default_open_options();
+    options.read = true;
+    assert(open_options_are_valid(&options));
+}
+
+fn test_open_options_append_alone_is_valid() {
+    let mut options = default_open_options();
+    options.append = true;
+    assert(open_options_are_valid(&options));
+}
+
+// Truncate means "empty this file on open". Without write access there is no authority to do it, so
+// the combination is incoherent rather than merely useless.
+fn test_open_options_truncate_without_write_is_invalid() {
+    let mut options = default_open_options();
+    options.read = true;
+    options.truncate = true;
+    assert(!open_options_are_valid(&options));
+}
+
+fn test_open_options_create_without_write_or_append_is_invalid() {
+    let mut options = default_open_options();
+    options.read = true;
+    options.create = true;
+    assert(!open_options_are_valid(&options));
+}
+
+fn test_open_options_create_new_without_write_or_append_is_invalid() {
+    let mut options = default_open_options();
+    options.read = true;
+    options.create_new = true;
+    assert(!open_options_are_valid(&options));
+}
+
+fn test_open_options_create_with_append_is_valid() {
+    let mut options = default_open_options();
+    options.append = true;
+    options.create = true;
+    assert(open_options_are_valid(&options));
+}
+
+// **This is the one that proves the check runs BEFORE the provider call.** The interpreter cannot
+// perform a provider call at all, so if `open_with_options` reached one this would fail rather than
+// return `InvalidInput`. The early return is what the test observes.
+fn test_open_with_options_refuses_invalid_before_calling_the_provider() {
+    let options = default_open_options();
+    match open_with_options("/tmp/stark-io-never-opened", &options) {
+        Err(FileError::InvalidInput) => {}
+        _ => assert(false),
+    }
+}
+
+// ------------------------------------------------------------------ path rules --
+
+fn test_path_is_valid_rejects_empty() {
+    assert(!path_is_valid(""));
+}
+
+fn test_path_is_valid_accepts_ordinary_path() {
+    assert(path_is_valid("dir/file.txt"));
+}
+
+fn test_path_is_absolute_detects_posix_root() {
+    assert(path_is_absolute("/etc/hosts"));
+    assert(!path_is_absolute("etc/hosts"));
+}
+
+fn test_path_is_absolute_detects_windows_drive() {
+    assert(path_is_absolute("C:/Users"));
+    assert(path_is_absolute("C:\\Users"));
+}
+
+// **The security-relevant one.** The convention where joining an absolute path discards everything
+// to its left is a well-known path-traversal source: a caller joining user input onto a trusted
+// prefix silently loses the prefix. Here it is refused.
+fn test_path_join_rejects_an_absolute_child() {
+    match path_join("/srv/data", "/etc/passwd") {
+        Err(FileError::InvalidInput) => {}
+        _ => assert(false),
+    }
+}
+
+fn test_path_join_rejects_an_empty_child() {
+    match path_join("/srv/data", "") {
+        Err(FileError::InvalidInput) => {}
+        _ => assert(false),
+    }
+}
+
+fn test_path_join_inserts_a_separator_when_the_base_lacks_one() {
+    match path_join("/srv/data", "file.txt") {
+        Ok(joined) => {
+            assert(joined == "/srv/data/file.txt");
+        }
+        Err(_) => assert(false),
+    }
+}
+
+// The base already ends in a separator, so adding another would produce `//` — a different path on
+// some hosts and merely ugly on others. Neither is acceptable when the caller wrote neither.
+fn test_path_join_does_not_double_an_existing_separator() {
+    match path_join("/srv/data/", "file.txt") {
+        Ok(joined) => {
+            assert(joined == "/srv/data/file.txt");
+        }
+        Err(_) => assert(false),
+    }
+}
+
+fn test_path_join_accepts_a_windows_separator_as_present() {
+    match path_join("C:\\srv\\", "file.txt") {
+        Ok(joined) => {
+            assert(joined == "C:\\srv\\file.txt");
+        }
+        Err(_) => assert(false),
+    }
+}
