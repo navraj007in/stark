@@ -35,19 +35,31 @@ Two consequences worth knowing:
   a three-engine change (checker, reference interpreter, native backend). Nothing here depends on
   it any more.
 
-## Written in the minimal native slice
+## Surface written and executing
 
 Normal STARK source reaches the first-party filesystem provider through the `stark-io` package
-using the existing `provider_api` binding mechanism — once the binding above is legal.
+using the existing `provider_api` binding mechanism.
 
-Surface written:
+**The minimal slice** (CD-290/CD-291):
 
-- provider-bound resource nominal for `file` as `NativeFile`;
+- provider-bound resource nominal for `io_file` as `NativeFile`;
 - `open_file`, `create_file`;
 - `file_read`, `file_write`, `file_flush`, `file_close`;
 - `file_read_to_end`, `file_read_to_string`;
 - `file_write_all`, `file_write_str`;
 - whole-file `read`, `read_text`, `write`, `write_text`.
+
+**The expanded surface** (CD-292) — see "Provider surface expansion" below for what each replaced:
+
+- `open_with_options` (with `default_open_options`, `open_options_are_valid`);
+- `file_seek`, `file_sync`, `file_set_length`;
+- `file_metadata`, `path_metadata`, `path_exists`;
+- `path_join` — refuses an absolute child rather than letting it silently replace the base;
+- `remove_file`, `rename`, `copy_file`;
+- `create_dir`, `remove_dir`, `read_dir`.
+
+Four types that were declared with no operation behind them — `OpenOptions`, `SeekFrom`,
+`FileMetadata`, `DirectoryEntry` — are now all consumed.
 
 The public nominal is `NativeFile` rather than `File` because Core reserves `File`. That is now a
 naming question rather than a blocker: `NativeFile` is a fully working owned file handle, and the
@@ -55,25 +67,67 @@ only thing the Core name would add is the spelling. Adopting it needs Core `File
 
 ## Library package build mode
 
-`stark build` currently reports `program without a main function` for this library package. The
-source file parses and reaches native build planning, but there is no separate library/package API
-check command to qualify a package without adding an artificial executable entrypoint.
+**Narrower than this file previously recorded.** It said a library package could not be tested at
+all. That conflated two different things, and only the second is a gap:
 
-## Provider surface expansion
+- **`stark test` works on a library package today.** It loads the package graph, parses, resolves,
+  type-checks, and runs tests through the interpreter. It never needs a `main`. What it does need is
+  the naming convention: `test_runner::discover_tests` selects a function by the **`test_` name
+  prefix**, taking no parameters and no receiver. There is no `#[test]` attribute — `#` is not in
+  STARK's lexer at all, so writing one is a lex error that takes the whole module down with it.
+  `stark-random` had exactly that defect (CD-297): its test module could not lex, and because
+  `lib.stark` declared `mod tests;`, the package did not compile.
+- **`stark build` still requires an entrypoint.** It reports `program without a main function`, so a
+  library cannot be NATIVELY qualified without an artificial `main`. That is the real gap.
 
-`stark-file/native` currently covers the first file-handle subset only. The full `stark-io` v0.1
-surface also needs provider metadata and native symbols for open options, append, truncate,
-create-new, seek, set length, sync, metadata, path operations, directory operations, remove, rename
-and bounded copy.
+The consequence for this package: its own unit tests are runnable under `stark test`, but nothing
+proves the package works *through a native build* except a consumer that has a `main`. That is why
+`io_minimal_executes_...` and `io_expanded_surface_executes_...` are shaped as consumer programs in
+`starkc/tests/c788_starkc_build.rs` rather than as package tests.
 
-## Still open after this slice
+## Provider surface expansion — DELIVERED (CD-292)
 
-- exact public `File` nominal/method API instead of `NativeFile` plus free wrappers;
-- library-only native qualification mode;
-- full open options;
-- seek;
-- durable sync;
-- metadata;
-- path and directory operations;
-- rename/delete/copy;
-- complete cross-platform `FileError`/`IOError` vocabulary.
+This section listed open options, append, truncate, create-new, seek, set length, sync, metadata,
+path operations, directory operations, remove, rename and bounded copy as missing. **All of them
+landed in CD-292**, which took `io_file` from 6 native symbols to 19 and added the package
+operations that consume them:
+
+| Was missing | Now |
+| --- | --- |
+| open options, append, truncate, create-new | `stark_iofile_open_options` / `open_with_options` |
+| seek | `stark_iofile_seek` / `file_seek` |
+| set length | `stark_iofile_set_len` / `file_set_length` |
+| durable sync | `stark_iofile_sync` / `file_sync` — distinct from `file_flush` |
+| metadata | `stark_iofile_metadata`, `stark_iopath_metadata` / `file_metadata`, `path_metadata` |
+| path operations | `stark_iopath_exists` / `path_exists`, `path_join` |
+| directory operations | `stark_iodir_create` / `_remove` / `_list` / `create_dir`, `remove_dir`, `read_dir` |
+| remove, rename, bounded copy | `stark_iofile_remove` / `_rename` / `_copy` |
+
+Exercised end-to-end by `io_expanded_surface_executes_from_source_through_stark_io_package`, which
+asserts on observed values — seek positions, metadata lengths, listing composition, cleanup — not on
+the absence of an error.
+
+**Deliberately NOT provided, and not a gap:** recursive directory creation and recursive delete.
+Both are unbounded effects from one call, and the second is the most destructive filesystem
+primitive there is. Callers walk with `read_dir` and act on what they have seen.
+
+## Still open
+
+Everything the previous version of this list named as missing surface is delivered; what remains is
+naming, tooling, and one recorded defect.
+
+- **exact public `File` nominal/method API** instead of `NativeFile` plus free wrappers. A naming
+  question, not a capability one — it needs Core `File`'s own migration off the legacy
+  `MirTy::Core` path, which is a three-engine change.
+- **library-only NATIVE qualification mode.** `stark test` already runs a library package's unit
+  tests; `stark build` needs an entrypoint. See "Library package build mode" above.
+- **the `IOError::` status labels name variants Core's `IOError` does not have** —
+  `InvalidData`, `IsDirectory`, `Unsupported`. Core has five variants and `Other(String)` absorbs
+  the surplus. The strings are consumed at exactly one site, interpolated into a generated-code
+  COMMENT (`emit_provider.rs`), so this is a naming defect rather than a conformance break. The
+  package's own enum is `FileError`, which does have them. Recorded in CD-290 and unfixed.
+- **symlink creation and reading.** `path_metadata` reports `FileType::Symlink` (it deliberately
+  does not follow links), but nothing creates or resolves one.
+- **no zeroization.** `secure`-style callers aside, `read`/`read_text` leave file contents in
+  buffers that are never scrubbed; STARK has no primitive for it today.
+- **complete cross-platform `FileError`/`IOError` vocabulary.**
