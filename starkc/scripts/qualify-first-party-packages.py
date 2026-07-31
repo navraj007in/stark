@@ -8,6 +8,22 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+# **STARK's output contract is UTF-8 bytes; this script's stdout must be too.**
+#
+# The subprocess is already read as UTF-8, so `completed.stdout` is correct text. Writing it out is
+# where it broke: Python encodes stdout using the CONSOLE's encoding, which on Windows is cp1252,
+# and a STARK program that prints an emoji then dies here with UnicodeEncodeError -- in the script
+# reporting the result, not in the program under test. Linux and macOS never showed it because
+# their default is already UTF-8.
+#
+# `errors="replace"` rather than strict: this is a reporting path, and a byte it cannot render must
+# not fail a qualification run that otherwise passed. The comparison against `expected_stdout`
+# happens on the decoded text above, so substitution here cannot mask a real mismatch.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 @dataclass(frozen=True)
 class PackageCase:
