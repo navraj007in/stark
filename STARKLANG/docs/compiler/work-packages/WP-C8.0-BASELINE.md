@@ -109,7 +109,7 @@ cargo test -p starkc --lib lsp:: -- --nocapture
 npm run compile --prefix editors/vscode
 ```
 
-Latest results: `cargo test --lib lsp:: -- --nocapture` (34 tests), `cargo check`, and `npm run compile --prefix editors/vscode` pass.
+Latest results: `cargo test --lib lsp:: -- --nocapture` (36 tests), `cargo check`, and `npm run compile --prefix editors/vscode` pass.
 
 ## Risks To Repair In Later C8 Steps
 

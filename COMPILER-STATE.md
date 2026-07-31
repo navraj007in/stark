@@ -6675,18 +6675,21 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-WP-C4.7-8.1a). **Every entry below is long-standing and unscheduled;
+Open as of 2026-07-31 (post-C8 candidate closeout). **Every entry below is long-standing and unscheduled;
 no open deviation belongs to the C4 track.**
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
-- DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
   proposal.
-- DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
+- DEV-012 — VS Code extension UI never interactively verified. Owner: post-C8 editor validation.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
+Closed 2026-07-31: **DEV-010** (C8 candidate closeout) — LSP hover, definition, and references
+are no longer protocol stubs. They are backed by `ProjectAnalysis` semantic queries and covered by
+`hover_uses_compiler_symbol_signature` and
+`definition_and_references_use_resolved_symbol_identity`.
 Closed 2026-07-20: DEV-070 (WP-C4.6 A2, both engines); DEV-074 (numbered by WP-C4.7-1 and closed
 at creation — the A4-2e oracle slice-message alignment, a governance gap, not a code defect);
 **DEV-069** (WP-C4.7-4 — per-item file resolution in typecheck/borrowck/oracle; this also
@@ -6840,8 +6843,10 @@ evidence in the C0/C1/C2 exit reports.
       record or confirm WP8.x was tooling, not "language expansion" in Gate 7's sense.
 - [ ] DEV-005: pick one warning-gating policy for `starkc check`/`run` vs `stark` — still
       unowned; candidate for C3-ENTRY or a small pre-C3 correction.
-- [ ] WP-C8.2/C8.3: implement real LSP hover/definition/references (DEV-010).
-- [ ] WP-C8.7: interactive VS Code Extension Development Host validation (DEV-012).
+- [x] WP-C8.2/C8.3: implement real LSP hover/definition/references (DEV-010). Closed by C8
+      candidate closeout; semantic query tests pass.
+- [ ] Post-C8: interactive VS Code Extension Development Host validation (DEV-012). C8 is
+      candidate-complete until this record exists.
 - [ ] WP-C1.1 follow-up (not blocking): underscore-placement rules for binary/octal literals
       untested; no max-value-per-suffix positive test for the 8 int / 2 float suffixes.
 - [ ] DEV-017 remainder: classify the 39 unclassified legacy coverage rules (unscheduled).
