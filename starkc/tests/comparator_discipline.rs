@@ -27,8 +27,13 @@ fn comparator_source() -> String {
     ]
     .iter()
     .collect();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read the comparator at {}: {e}", path.display()))
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read the comparator at {}: {e}", path.display()));
+    // Line endings are normalised because these guards search for source SHAPES — a macro arm's
+    // terminator, a `contains(...)` call. On a CRLF checkout (Windows) the terminator is
+    // `\r\n}\r\n`, so an `\n}\n` search finds nothing and the guard fails for a reason that has
+    // nothing to do with the property it exists to protect. Found by the Windows CI lane.
+    source.replace("\r\n", "\n")
 }
 
 /// The banned pattern: classifying a trap by matching prose.
