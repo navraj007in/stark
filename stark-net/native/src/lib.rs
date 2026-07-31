@@ -129,6 +129,11 @@ fn insert_stream(stream: TcpStream) -> RawResourceHandle {
     }
 }
 
+/// `stark_tcp_listener_bind`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `address` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_listener_bind(
     address: BorrowedBuffer,
@@ -146,6 +151,11 @@ pub unsafe extern "C" fn stark_tcp_listener_bind(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_listener_accept`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `listener` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_listener_accept(
     listener: RawResourceHandle,
@@ -168,6 +178,11 @@ pub unsafe extern "C" fn stark_tcp_listener_accept(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_stream_connect`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `address` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_stream_connect(
     address: BorrowedBuffer,
@@ -185,6 +200,12 @@ pub unsafe extern "C" fn stark_tcp_stream_connect(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_stream_read`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `stream` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_stream_read(
     stream: RawResourceHandle,
@@ -212,6 +233,12 @@ pub unsafe extern "C" fn stark_tcp_stream_read(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_stream_write`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `stream` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `data` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_stream_write(
     stream: RawResourceHandle,
@@ -232,6 +259,10 @@ pub unsafe extern "C" fn stark_tcp_stream_write(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_listener_close`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_listener_close(handle: RawResourceHandle) -> ProviderStatus {
     validate(handle, TCP_LISTENER_RESOURCE_TYPE);
@@ -242,6 +273,10 @@ pub unsafe extern "C" fn stark_tcp_listener_close(handle: RawResourceHandle) -> 
     ProviderStatus::SUCCESS
 }
 
+/// `stark_tcp_stream_close`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_tcp_stream_close(handle: RawResourceHandle) -> ProviderStatus {
     validate(handle, TCP_STREAM_RESOURCE_TYPE);

@@ -64,6 +64,10 @@ fn validate_env_name(bytes: &[u8]) -> Result<&str, ProviderStatus> {
     std::str::from_utf8(bytes).map_err(|_| STATUS_INVALID_ENCODING)
 }
 
+/// `stark_env_args_len`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_env_args_len(out_required_len: *mut u64) -> ProviderStatus {
     let bytes = match args_bytes() {
@@ -77,6 +81,11 @@ pub unsafe extern "C" fn stark_env_args_len(out_required_len: *mut u64) -> Provi
     ProviderStatus::SUCCESS
 }
 
+/// `stark_env_args_fill`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_env_args_fill(
     out_buffer: BorrowedBufferMut,
@@ -97,6 +106,11 @@ pub unsafe extern "C" fn stark_env_args_fill(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_env_var_len`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `name` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_env_var_len(
     name: BorrowedBuffer,
@@ -129,6 +143,12 @@ pub unsafe extern "C" fn stark_env_var_len(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_env_var_fill`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `name` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_env_var_fill(
     name: BorrowedBuffer,

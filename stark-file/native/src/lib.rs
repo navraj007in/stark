@@ -126,6 +126,11 @@ fn validate_file_handle(handle: RawResourceHandle) {
     validate_handle_of(handle, FILE_RESOURCE_TYPE);
 }
 
+/// `stark_file_open`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_open(
     path: BorrowedBuffer,
@@ -146,6 +151,11 @@ pub unsafe extern "C" fn stark_file_open(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_file_create`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_create(
     path: BorrowedBuffer,
@@ -166,6 +176,12 @@ pub unsafe extern "C" fn stark_file_create(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_file_read`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_read(
     handle: RawResourceHandle,
@@ -197,6 +213,12 @@ pub unsafe extern "C" fn stark_file_read(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_file_write`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `data` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_write(
     handle: RawResourceHandle,
@@ -217,6 +239,10 @@ pub unsafe extern "C" fn stark_file_write(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_file_complete`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_complete(handle: RawResourceHandle) -> ProviderStatus {
     validate_file_handle(handle);
@@ -229,6 +255,10 @@ pub unsafe extern "C" fn stark_file_complete(handle: RawResourceHandle) -> Provi
         .unwrap_or_else(|e| map_io_error(&e))
 }
 
+/// `stark_file_close`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_file_close(handle: RawResourceHandle) -> ProviderStatus {
     validate_file_handle(handle);
@@ -275,6 +305,11 @@ fn create_impl(
     }
 }
 
+/// `stark_iofile_open`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_open(
     path: BorrowedBuffer,
@@ -289,6 +324,11 @@ pub unsafe extern "C" fn stark_iofile_open(
     }
 }
 
+/// `stark_iofile_create`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_create(
     path: BorrowedBuffer,
@@ -303,6 +343,12 @@ pub unsafe extern "C" fn stark_iofile_create(
     }
 }
 
+/// `stark_iofile_read`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_read(
     handle: RawResourceHandle,
@@ -334,6 +380,12 @@ pub unsafe extern "C" fn stark_iofile_read(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_iofile_write`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `data` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_write(
     handle: RawResourceHandle,
@@ -354,6 +406,10 @@ pub unsafe extern "C" fn stark_iofile_write(
     ProviderStatus::SUCCESS
 }
 
+/// `stark_iofile_complete`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_complete(handle: RawResourceHandle) -> ProviderStatus {
     validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
@@ -366,6 +422,10 @@ pub unsafe extern "C" fn stark_iofile_complete(handle: RawResourceHandle) -> Pro
         .unwrap_or_else(|e| map_io_error(&e))
 }
 
+/// `stark_iofile_close`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_close(handle: RawResourceHandle) -> ProviderStatus {
     validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
@@ -469,6 +529,10 @@ unsafe fn write_metadata(
 /// `OpenOptions` would itself reject most incoherent combinations at `open` time, but it does so
 /// with an OS error whose kind varies by platform; validating here makes the diagnosis identical
 /// everywhere, which is what the Tier-1 agreement requires.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_open_options(
     path: BorrowedBuffer,
@@ -526,6 +590,10 @@ const SEEK_END: u8 = 2;
 ///
 /// A negative offset from `Start` is `InvalidInput` rather than an OS error, for the same
 /// cross-platform-diagnosis reason as the open-option checks.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_seek(
     handle: RawResourceHandle,
@@ -563,6 +631,9 @@ pub unsafe extern "C" fn stark_iofile_seek(
 /// Distinct from `complete` (flush), which only pushes buffered bytes into the kernel. A program
 /// that needs its write to survive power loss needs this one, and the two are separate symbols so
 /// that the difference cannot be lost in a convenience wrapper.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_sync(handle: RawResourceHandle) -> ProviderStatus {
     validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
@@ -576,6 +647,9 @@ pub unsafe extern "C" fn stark_iofile_sync(handle: RawResourceHandle) -> Provide
 }
 
 /// Truncate or extend. Extending fills with zeroes; that is the platform contract, not a choice.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_set_len(
     handle: RawResourceHandle,
@@ -591,6 +665,11 @@ pub unsafe extern "C" fn stark_iofile_set_len(
         .unwrap_or_else(|e| map_io_error(&e))
 }
 
+/// `stark_iofile_metadata`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_metadata(
@@ -637,6 +716,10 @@ pub unsafe extern "C" fn stark_iofile_metadata(
 /// Following would make `KIND_SYMLINK` unobservable: a followed link reports its target's kind, so
 /// a caller could never distinguish a link from the thing it points at. A caller that wants the
 /// target's metadata can open the path and ask the handle.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub unsafe extern "C" fn stark_iopath_metadata(
@@ -680,6 +763,10 @@ pub unsafe extern "C" fn stark_iopath_metadata(
 
 /// Does the path exist, and if so what is it? Reported as a pair so that "absent" and "present but
 /// unreadable kind" stay distinguishable; a bare bool would collapse them.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iopath_exists(
     path: BorrowedBuffer,
@@ -710,6 +797,10 @@ pub unsafe extern "C" fn stark_iopath_exists(
     }
 }
 
+/// `stark_iofile_remove`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_remove(path: BorrowedBuffer) -> ProviderStatus {
     let path = match path_from_buffer(path) {
@@ -721,6 +812,10 @@ pub unsafe extern "C" fn stark_iofile_remove(path: BorrowedBuffer) -> ProviderSt
         .unwrap_or_else(|e| map_io_error(&e))
 }
 
+/// `stark_iofile_rename`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `from` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_rename(
     from: BorrowedBuffer,
@@ -742,6 +837,10 @@ pub unsafe extern "C" fn stark_iofile_rename(
 /// Copy, reporting bytes written. `std::fs::copy` overwrites an existing destination; a caller that
 /// must not overwrite checks with `stark_iopath_exists` first, which is a race it owns rather than
 /// one this function can close for it.
+///
+/// # Safety
+/// `from` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iofile_copy(
     from: BorrowedBuffer,
@@ -768,6 +867,9 @@ pub unsafe extern "C" fn stark_iofile_copy(
 /// Create one directory. Not recursive: `create_dir_all` would silently create an arbitrary number
 /// of directories from one call, which is exactly the unbounded effect the capability model exists
 /// to keep visible. A caller that wants a tree asks for each level.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iodir_create(path: BorrowedBuffer) -> ProviderStatus {
     let path = match path_from_buffer(path) {
@@ -782,6 +884,9 @@ pub unsafe extern "C" fn stark_iodir_create(path: BorrowedBuffer) -> ProviderSta
 /// Remove one EMPTY directory. Recursive deletion is deliberately absent: it is the single most
 /// destructive filesystem primitive, and an unbounded one. A caller that wants a tree removed walks
 /// it with `stark_iodir_list` and removes what it has actually seen.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iodir_remove(path: BorrowedBuffer) -> ProviderStatus {
     let path = match path_from_buffer(path) {
@@ -802,6 +907,11 @@ pub unsafe extern "C" fn stark_iodir_remove(path: BorrowedBuffer) -> ProviderSta
 ///
 /// Names, not paths: a name cannot contain the separator on any supported platform, while a path
 /// could. Joining is the caller's business and is where the absolute-child rule belongs.
+///
+/// # Safety
+/// `path` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// `out_buffer` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
 #[no_mangle]
 pub unsafe extern "C" fn stark_iodir_list(
     path: BorrowedBuffer,
