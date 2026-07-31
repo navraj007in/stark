@@ -2,7 +2,9 @@
   "name": "stark-io",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": ["filesystem"],
+  "capabilities": [
+    "filesystem"
+  ],
   "dependencies": {},
   "provider_api": {
     "errors": {
@@ -38,6 +40,58 @@
       "file_close_raw": {
         "capability": "filesystem",
         "symbol": "stark_iofile_close"
+      },
+      "file_open_options_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_open_options"
+      },
+      "file_seek_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_seek"
+      },
+      "file_sync_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_sync"
+      },
+      "file_set_len_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_set_len"
+      },
+      "file_metadata_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_metadata"
+      },
+      "path_metadata_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iopath_metadata"
+      },
+      "path_exists_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iopath_exists"
+      },
+      "file_remove_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_remove"
+      },
+      "file_rename_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_rename"
+      },
+      "file_copy_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iofile_copy"
+      },
+      "dir_create_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iodir_create"
+      },
+      "dir_remove_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iodir_remove"
+      },
+      "dir_list_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_iodir_list"
       }
     }
   }

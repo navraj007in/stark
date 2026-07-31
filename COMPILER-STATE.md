@@ -1,5 +1,56 @@
 # STARK Compiler STATE
 
+## CD-292 — the rest of the file surface, executed rather than declared (2026-07-31)
+
+**`stark-io` had four types with nothing behind them.** `OpenOptions`, `SeekFrom`, `FileMetadata`
+and `DirectoryEntry` were declared and referenced by no function — `OpenOptions` had validation but
+no `open_with_options`, so append/truncate/create-new were unreachable. The API looked like it had
+open options; it did not.
+
+Provider: 6 `io_file` symbols → 19. Adds open-with-options, seek, durable sync, set-length, metadata
+(by handle and by path), path existence, remove, rename, copy, directory create/remove/list.
+Package: ~20 functions consuming all four types, plus `path_join`.
+
+**Encodings, each chosen rather than defaulted** — ABI §10 admits no aggregate parameter:
+- open options travel as a **bitmask**; an unknown bit is `InvalidInput`, not a dropped mode;
+- a seek origin is a **discriminant byte**; a `Start` offset above `Int64::MAX` is refused rather
+  than cast, because a failing `as` traps in every build mode;
+- metadata is a **row of out-slots**, with each timestamp a (seconds, valid) pair. No sentinel:
+  every `Int64` is a real instant, so there is no in-band value meaning "absent" — the same defect
+  CD-277 found in the clock reading, avoided by construction;
+- a directory listing is a **bounded NUL-separated snapshot** into a caller buffer, not a cursor.
+  A cursor would be a second resource type with its own lifecycle to get wrong; a snapshot owns
+  nothing past return. Truncation is reported and raised as `LimitExceeded` rather than returned as
+  a short list, which would be indistinguishable from a directory that small.
+
+**Deliberately absent:** recursive directory creation and recursive delete. Both are unbounded
+effects from a single call, and the second is the most destructive filesystem primitive there is.
+Callers walk with `read_dir` and act on what they have actually seen.
+
+**FOUR LANGUAGE SHARP EDGES, found by writing real code against a real API** — the evidence P1 was
+expected to produce, arriving early:
+1. `if v.len() > 0 && !f(v[v.len()-1]) { v.push(..) }` — **E0101**. The index in the condition holds
+   a borrow across the mutation in the body. Reading the byte into a local first ends it.
+2. `entries[i]` where the element is a non-`Copy` struct — **MIR-0016**. `VecIndexGet` requires a
+   `Copy` element, and borrowing the indexed place does not help. **A `Vec` of non-`Copy` structs is
+   not readable by index at all.**
+3. `for x in &v` — **E0001**, `&Vec<T>` is not iterable.
+4. `for x in v` — **E0105**, but the diagnostic names the fix: "iterate over a borrow with
+   `v.iter()`". The one refusal here that teaches instead of only refusing.
+
+(2)+(3)+(4) compound: a `Vec` of owning structs is reachable **only** through `.iter()`, and two of
+the three natural spellings fail first. Worth `WP-C7.8-RB0`'s attention, or its own ergonomics item.
+
+**A behavioural correctness point the test caught:** `set_length` on a handle from `open_file`
+fails, because `open_file` is read-only. The API was right and the test was wrong; the test now uses
+`open_with_options` with `write`, which exercises that path too.
+
+EVIDENCE: new `io_expanded_surface_executes_from_source_through_stark_io_package` — seek positions,
+metadata lengths, listing composition and cleanup asserted on **observed values**, not on absence of
+error, so an operation that silently did nothing fails it. `c788_starkc_build` 6/6,
+`c788_provider_api_manifest` 10/10, `a11_host_resource` 38/38, `c784_file` 11/11. fmt clean.
+Workspace and clippy left to CI.
+
 ## CD-291 — file IO works, because the package stopped asking for Core's identity (2026-07-31)
 
 **`io_minimal_executes_from_source_through_stark_io_package` passes.** Ordinary STARK source opens,

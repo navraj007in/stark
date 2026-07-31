@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Mutex, OnceLock};
 
 pub use stark_provider_abi::{
@@ -251,7 +251,10 @@ pub unsafe extern "C" fn stark_file_close(handle: RawResourceHandle) -> Provider
 // and only the identity differs.
 // ------------------------------------------------------------------------------------------
 
-fn open_impl(path: BorrowedBuffer, resource_type: u32) -> Result<RawResourceHandle, ProviderStatus> {
+fn open_impl(
+    path: BorrowedBuffer,
+    resource_type: u32,
+) -> Result<RawResourceHandle, ProviderStatus> {
     let path = path_from_buffer(path)?;
     match File::open(path) {
         Ok(file) => Ok(insert_file_as(file, resource_type)),
@@ -369,6 +372,493 @@ pub unsafe extern "C" fn stark_iofile_close(handle: RawResourceHandle) -> Provid
     let mut table = table().lock().unwrap_or_else(|_| abort_contract());
     if table.files.remove(&handle.id).is_none() {
         abort_contract();
+    }
+    ProviderStatus::SUCCESS
+}
+
+// ------------------------------------------------------------------------------------------
+// The rest of the `io_file` surface.
+//
+// Everything below is scalars and buffers because ABI §10 admits no aggregate parameter: open
+// options travel as a bitmask, a seek origin as a discriminant byte, metadata as a row of output
+// slots, and a directory listing as a NUL-separated snapshot written into a caller buffer. Each of
+// those is a deliberate encoding, documented at its function, not a workaround.
+//
+// No new resource type is introduced. A directory listing could have been a cursor handle; it is a
+// bounded snapshot instead, so nothing here can leak — there is no second thing to close.
+// ------------------------------------------------------------------------------------------
+
+/// Open-option bits, matching `stark-io`'s `OpenOptions` field order.
+const OPEN_READ: u32 = 1;
+const OPEN_WRITE: u32 = 1 << 1;
+const OPEN_APPEND: u32 = 1 << 2;
+const OPEN_TRUNCATE: u32 = 1 << 3;
+const OPEN_CREATE: u32 = 1 << 4;
+const OPEN_CREATE_NEW: u32 = 1 << 5;
+/// Every bit the vocabulary defines. An unknown bit is a caller defect, not a mode to ignore.
+const OPEN_KNOWN: u32 =
+    OPEN_READ | OPEN_WRITE | OPEN_APPEND | OPEN_TRUNCATE | OPEN_CREATE | OPEN_CREATE_NEW;
+
+/// `FileType` discriminants, matching `stark-io`'s enum order.
+const KIND_FILE: u8 = 0;
+const KIND_DIR: u8 = 1;
+const KIND_SYMLINK: u8 = 2;
+const KIND_OTHER: u8 = 3;
+
+fn kind_of(meta: &std::fs::Metadata, symlink: bool) -> u8 {
+    if symlink {
+        KIND_SYMLINK
+    } else if meta.is_file() {
+        KIND_FILE
+    } else if meta.is_dir() {
+        KIND_DIR
+    } else {
+        KIND_OTHER
+    }
+}
+
+/// Seconds since the Unix epoch, and whether the platform supplied the timestamp at all.
+///
+/// Returned as a (value, valid) pair rather than a sentinel: every `i64` is a legitimate time, so
+/// there is no in-band value that could mean "absent" without also meaning a real instant. This is
+/// the same defect CD-277 found in the clock reading, avoided by construction.
+fn epoch_seconds(time: std::io::Result<std::time::SystemTime>) -> (i64, bool) {
+    match time {
+        Ok(t) => match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => (d.as_secs() as i64, true),
+            // Before the epoch: representable, and negative is the right answer.
+            Err(e) => (-(e.duration().as_secs() as i64), true),
+        },
+        Err(_) => (0, false),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn write_metadata(
+    meta: &std::fs::Metadata,
+    symlink: bool,
+    out_kind: *mut u8,
+    out_len: *mut u64,
+    out_readonly: *mut bool,
+    out_modified: *mut i64,
+    out_modified_valid: *mut bool,
+    out_accessed: *mut i64,
+    out_accessed_valid: *mut bool,
+    out_created: *mut i64,
+    out_created_valid: *mut bool,
+) {
+    let (modified, modified_valid) = epoch_seconds(meta.modified());
+    let (accessed, accessed_valid) = epoch_seconds(meta.accessed());
+    let (created, created_valid) = epoch_seconds(meta.created());
+    unsafe {
+        write_scalar(out_kind, kind_of(meta, symlink));
+        write_scalar(out_len, meta.len());
+        write_scalar(out_readonly, meta.permissions().readonly());
+        write_scalar(out_modified, modified);
+        write_scalar(out_modified_valid, modified_valid);
+        write_scalar(out_accessed, accessed);
+        write_scalar(out_accessed_valid, accessed_valid);
+        write_scalar(out_created, created);
+        write_scalar(out_created_valid, created_valid);
+    }
+}
+
+/// Open with an explicit mode set.
+///
+/// **An unknown or incoherent bit is `InvalidInput`, not a silently-dropped mode.** `std`'s
+/// `OpenOptions` would itself reject most incoherent combinations at `open` time, but it does so
+/// with an OS error whose kind varies by platform; validating here makes the diagnosis identical
+/// everywhere, which is what the Tier-1 agreement requires.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_open_options(
+    path: BorrowedBuffer,
+    flags: u32,
+    out_handle: *mut RawResourceHandle,
+) -> ProviderStatus {
+    if flags & !OPEN_KNOWN != 0 {
+        return STATUS_INVALID_INPUT;
+    }
+    let read = flags & OPEN_READ != 0;
+    let write = flags & OPEN_WRITE != 0;
+    let append = flags & OPEN_APPEND != 0;
+    let truncate = flags & OPEN_TRUNCATE != 0;
+    let create = flags & OPEN_CREATE != 0;
+    let create_new = flags & OPEN_CREATE_NEW != 0;
+    // No access mode at all opens nothing; truncate/create without a write path cannot be honoured.
+    if !(read || write || append) {
+        return STATUS_INVALID_INPUT;
+    }
+    if truncate && !write {
+        return STATUS_INVALID_INPUT;
+    }
+    if (create || create_new) && !(write || append) {
+        return STATUS_INVALID_INPUT;
+    }
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let file = match OpenOptions::new()
+        .read(read)
+        .write(write)
+        .append(append)
+        .truncate(truncate)
+        .create(create)
+        .create_new(create_new)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+            return STATUS_IS_DIRECTORY
+        }
+        Err(error) => return map_io_error(&error),
+    };
+    unsafe { write_scalar(out_handle, insert_file_as(file, IO_FILE_RESOURCE_TYPE)) };
+    ProviderStatus::SUCCESS
+}
+
+/// Seek origins, matching `stark-io`'s `SeekFrom` variant order.
+const SEEK_START: u8 = 0;
+const SEEK_CURRENT: u8 = 1;
+const SEEK_END: u8 = 2;
+
+/// Reposition the cursor, reporting the resulting absolute position.
+///
+/// A negative offset from `Start` is `InvalidInput` rather than an OS error, for the same
+/// cross-platform-diagnosis reason as the open-option checks.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_seek(
+    handle: RawResourceHandle,
+    whence: u8,
+    offset: i64,
+    out_position: *mut u64,
+) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let from = match whence {
+        SEEK_START => {
+            if offset < 0 {
+                return STATUS_INVALID_INPUT;
+            }
+            SeekFrom::Start(offset as u64)
+        }
+        SEEK_CURRENT => SeekFrom::Current(offset),
+        SEEK_END => SeekFrom::End(offset),
+        _ => return STATUS_INVALID_INPUT,
+    };
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    match file.seek(from) {
+        Ok(position) => {
+            unsafe { write_scalar(out_position, position) };
+            ProviderStatus::SUCCESS
+        }
+        Err(error) => map_io_error(&error),
+    }
+}
+
+/// Durable sync — data and metadata to the storage device, not merely to the OS.
+///
+/// Distinct from `complete` (flush), which only pushes buffered bytes into the kernel. A program
+/// that needs its write to survive power loss needs this one, and the two are separate symbols so
+/// that the difference cannot be lost in a convenience wrapper.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_sync(handle: RawResourceHandle) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    file.sync_all()
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+/// Truncate or extend. Extending fills with zeroes; that is the platform contract, not a choice.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_set_len(
+    handle: RawResourceHandle,
+    length: u64,
+) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get_mut(&handle.id) else {
+        abort_contract();
+    };
+    file.set_len(length)
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_metadata(
+    handle: RawResourceHandle,
+    out_kind: *mut u8,
+    out_len: *mut u64,
+    out_readonly: *mut bool,
+    out_modified: *mut i64,
+    out_modified_valid: *mut bool,
+    out_accessed: *mut i64,
+    out_accessed_valid: *mut bool,
+    out_created: *mut i64,
+    out_created_valid: *mut bool,
+) -> ProviderStatus {
+    validate_handle_of(handle, IO_FILE_RESOURCE_TYPE);
+    let table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(file) = table.files.get(&handle.id) else {
+        abort_contract();
+    };
+    let meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(error) => return map_io_error(&error),
+    };
+    unsafe {
+        write_metadata(
+            &meta,
+            false,
+            out_kind,
+            out_len,
+            out_readonly,
+            out_modified,
+            out_modified_valid,
+            out_accessed,
+            out_accessed_valid,
+            out_created,
+            out_created_valid,
+        )
+    };
+    ProviderStatus::SUCCESS
+}
+
+/// Metadata by path, **without following a symlink** — `symlink_metadata`.
+///
+/// Following would make `KIND_SYMLINK` unobservable: a followed link reports its target's kind, so
+/// a caller could never distinguish a link from the thing it points at. A caller that wants the
+/// target's metadata can open the path and ask the handle.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn stark_iopath_metadata(
+    path: BorrowedBuffer,
+    out_kind: *mut u8,
+    out_len: *mut u64,
+    out_readonly: *mut bool,
+    out_modified: *mut i64,
+    out_modified_valid: *mut bool,
+    out_accessed: *mut i64,
+    out_accessed_valid: *mut bool,
+    out_created: *mut i64,
+    out_created_valid: *mut bool,
+) -> ProviderStatus {
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) => return map_io_error(&error),
+    };
+    let symlink = meta.file_type().is_symlink();
+    unsafe {
+        write_metadata(
+            &meta,
+            symlink,
+            out_kind,
+            out_len,
+            out_readonly,
+            out_modified,
+            out_modified_valid,
+            out_accessed,
+            out_accessed_valid,
+            out_created,
+            out_created_valid,
+        )
+    };
+    ProviderStatus::SUCCESS
+}
+
+/// Does the path exist, and if so what is it? Reported as a pair so that "absent" and "present but
+/// unreadable kind" stay distinguishable; a bare bool would collapse them.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iopath_exists(
+    path: BorrowedBuffer,
+    out_exists: *mut bool,
+    out_kind: *mut u8,
+) -> ProviderStatus {
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            let symlink = meta.file_type().is_symlink();
+            unsafe {
+                write_scalar(out_exists, true);
+                write_scalar(out_kind, kind_of(&meta, symlink));
+            }
+            ProviderStatus::SUCCESS
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            unsafe {
+                write_scalar(out_exists, false);
+                write_scalar(out_kind, KIND_OTHER);
+            }
+            ProviderStatus::SUCCESS
+        }
+        Err(error) => map_io_error(&error),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_remove(path: BorrowedBuffer) -> ProviderStatus {
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    std::fs::remove_file(&path)
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_rename(
+    from: BorrowedBuffer,
+    to: BorrowedBuffer,
+) -> ProviderStatus {
+    let from = match path_from_buffer(from) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let to = match path_from_buffer(to) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    std::fs::rename(&from, &to)
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+/// Copy, reporting bytes written. `std::fs::copy` overwrites an existing destination; a caller that
+/// must not overwrite checks with `stark_iopath_exists` first, which is a race it owns rather than
+/// one this function can close for it.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iofile_copy(
+    from: BorrowedBuffer,
+    to: BorrowedBuffer,
+    out_copied: *mut u64,
+) -> ProviderStatus {
+    let from = match path_from_buffer(from) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let to = match path_from_buffer(to) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    match std::fs::copy(&from, &to) {
+        Ok(copied) => {
+            unsafe { write_scalar(out_copied, copied) };
+            ProviderStatus::SUCCESS
+        }
+        Err(error) => map_io_error(&error),
+    }
+}
+
+/// Create one directory. Not recursive: `create_dir_all` would silently create an arbitrary number
+/// of directories from one call, which is exactly the unbounded effect the capability model exists
+/// to keep visible. A caller that wants a tree asks for each level.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iodir_create(path: BorrowedBuffer) -> ProviderStatus {
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    std::fs::create_dir(&path)
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+/// Remove one EMPTY directory. Recursive deletion is deliberately absent: it is the single most
+/// destructive filesystem primitive, and an unbounded one. A caller that wants a tree removed walks
+/// it with `stark_iodir_list` and removes what it has actually seen.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iodir_remove(path: BorrowedBuffer) -> ProviderStatus {
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    std::fs::remove_dir(&path)
+        .map(|_| ProviderStatus::SUCCESS)
+        .unwrap_or_else(|e| map_io_error(&e))
+}
+
+/// A bounded directory snapshot: entry names, NUL-separated, into the caller's buffer.
+///
+/// **A snapshot rather than a cursor, on purpose.** A cursor would be a second resource type with
+/// its own lifecycle to get wrong; this call owns nothing past return, so a truncated listing leaks
+/// nothing. `out_truncated` reports that the buffer bound was reached, so a caller can distinguish
+/// "that is the whole directory" from "there is more" — the distinction a bare count loses.
+///
+/// Names, not paths: a name cannot contain the separator on any supported platform, while a path
+/// could. Joining is the caller's business and is where the absolute-child rule belongs.
+#[no_mangle]
+pub unsafe extern "C" fn stark_iodir_list(
+    path: BorrowedBuffer,
+    out_buffer: BorrowedBufferMut,
+    out_written: *mut u64,
+    out_count: *mut u64,
+    out_truncated: *mut bool,
+) -> ProviderStatus {
+    if out_buffer.len > 0 && out_buffer.ptr.is_null() {
+        abort_contract();
+    }
+    let path = match path_from_buffer(path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) => return map_io_error(&error),
+    };
+    let out = if out_buffer.len == 0 {
+        &mut [][..]
+    } else {
+        unsafe { std::slice::from_raw_parts_mut(out_buffer.ptr, out_buffer.len) }
+    };
+    let mut written: usize = 0;
+    let mut count: u64 = 0;
+    let mut truncated = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => return map_io_error(&error),
+        };
+        let name = entry.file_name();
+        // A name that is not UTF-8 cannot cross into STARK, whose `String` is UTF-8 by definition.
+        // Reported rather than skipped: silently omitting an entry would make the listing a lie.
+        let Some(name) = name.to_str() else {
+            return STATUS_INVALID_ENCODING;
+        };
+        let bytes = name.as_bytes();
+        if bytes.contains(&0) {
+            return STATUS_INVALID_ENCODING;
+        }
+        // +1 for the separator that follows every name, including the last.
+        if written + bytes.len() + 1 > out.len() {
+            truncated = true;
+            break;
+        }
+        out[written..written + bytes.len()].copy_from_slice(bytes);
+        written += bytes.len();
+        out[written] = 0;
+        written += 1;
+        count += 1;
+    }
+    unsafe {
+        write_scalar(out_written, written as u64);
+        write_scalar(out_count, count);
+        write_scalar(out_truncated, truncated);
     }
     ProviderStatus::SUCCESS
 }
@@ -542,7 +1032,156 @@ mod tests {
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: io_file.clone(),
                     }],
-                    is_close_for: Some(io_file),
+                    is_close_for: Some(io_file.clone()),
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_open_options".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarIn(ScalarTy::U32),
+                        AbiParam::HandleOut {
+                            resource_type: io_file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_seek".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::ScalarIn(ScalarTy::U8),
+                        AbiParam::ScalarIn(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_sync".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleBorrowed {
+                        resource_type: io_file.clone(),
+                    }],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_set_len".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::ScalarIn(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_metadata".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: io_file.clone(),
+                        },
+                        AbiParam::ScalarOut(ScalarTy::U8),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iopath_metadata".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U8),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iopath_exists".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::U8),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_remove".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::BufferIn],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_rename".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::BufferIn, AbiParam::BufferIn],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iofile_copy".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iodir_create".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::BufferIn],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iodir_remove".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::BufferIn],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_iodir_list".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
                     may_block: true,
                 },
             ],
@@ -601,6 +1240,19 @@ mod tests {
             "stark_iofile_write",
             "stark_iofile_complete",
             "stark_iofile_close",
+            "stark_iofile_open_options",
+            "stark_iofile_seek",
+            "stark_iofile_sync",
+            "stark_iofile_set_len",
+            "stark_iofile_metadata",
+            "stark_iopath_metadata",
+            "stark_iopath_exists",
+            "stark_iofile_remove",
+            "stark_iofile_rename",
+            "stark_iofile_copy",
+            "stark_iodir_create",
+            "stark_iodir_remove",
+            "stark_iodir_list",
         ]);
         assert_eq!(declared, exported);
         assert!(declared.iter().all(|name| portable_c_identifier(name)));

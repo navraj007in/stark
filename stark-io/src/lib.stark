@@ -367,3 +367,348 @@ pub fn write(path: &str, data: &[UInt8]) -> Result<(), FileError> {
 pub fn write_text(path: &str, text: &str) -> Result<(), FileError> {
     write(path, text.bytes())
 }
+
+// ------------------------------------------------------------------- open options --
+//
+// The ABI admits no aggregate parameter, so an `OpenOptions` crosses as a bitmask. The bit order
+// matches the struct's field order and the provider's constants; all three must agree, and the
+// provider rejects an unknown bit rather than ignoring it.
+
+const OPEN_READ: UInt32 = 1u32;
+const OPEN_WRITE: UInt32 = 2u32;
+const OPEN_APPEND: UInt32 = 4u32;
+const OPEN_TRUNCATE: UInt32 = 8u32;
+const OPEN_CREATE: UInt32 = 16u32;
+const OPEN_CREATE_NEW: UInt32 = 32u32;
+
+fn open_flags(options: &OpenOptions) -> UInt32 {
+    let mut flags: UInt32 = 0u32;
+    if options.read {
+        flags = flags | OPEN_READ;
+    }
+    if options.write {
+        flags = flags | OPEN_WRITE;
+    }
+    if options.append {
+        flags = flags | OPEN_APPEND;
+    }
+    if options.truncate {
+        flags = flags | OPEN_TRUNCATE;
+    }
+    if options.create {
+        flags = flags | OPEN_CREATE;
+    }
+    if options.create_new {
+        flags = flags | OPEN_CREATE_NEW;
+    }
+    flags
+}
+
+/// Open with an explicit mode set. Validated here as well as in the provider: this returns the
+/// package's own `InvalidInput` without a call, and the provider's check is what makes the answer
+/// identical on every platform rather than an OS error whose kind varies.
+pub fn open_with_options(path: &str, options: &OpenOptions) -> Result<NativeFile, FileError> {
+    if !open_options_are_valid(options) {
+        return Err(FileError::InvalidInput);
+    }
+    match file_open_options_raw(path.bytes(), open_flags(options)) {
+        Ok(file) => Ok(file),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+// ------------------------------------------------------------------------- seek --
+
+const SEEK_START: UInt8 = 0u8;
+const SEEK_CURRENT: UInt8 = 1u8;
+const SEEK_END: UInt8 = 2u8;
+const INT64_MAX_AS_UINT64: UInt64 = 9223372036854775807u64;
+
+/// Reposition the cursor, returning the resulting absolute position.
+///
+/// A `Start` offset above `Int64::MAX` is rejected rather than cast: a failing `as` traps in every
+/// build mode, and a seek past the representable range is a caller error, not a crash.
+pub fn file_seek(file: &NativeFile, from: SeekFrom) -> Result<UInt64, FileError> {
+    let whence: UInt8;
+    let offset: Int64;
+    match from {
+        SeekFrom::Start(position) => {
+            if position > INT64_MAX_AS_UINT64 {
+                return Err(FileError::InvalidInput);
+            }
+            whence = SEEK_START;
+            offset = position as Int64;
+        }
+        SeekFrom::Current(delta) => {
+            whence = SEEK_CURRENT;
+            offset = delta;
+        }
+        SeekFrom::End(delta) => {
+            whence = SEEK_END;
+            offset = delta;
+        }
+    }
+    match file_seek_raw(file, whence, offset) {
+        Ok(position) => Ok(position),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Durable sync: data and metadata to the device, not merely to the OS.
+///
+/// Distinct from `file_flush`, which only pushes buffered bytes into the kernel. Only this one
+/// survives power loss.
+pub fn file_sync(file: &NativeFile) -> Result<(), FileError> {
+    match file_sync_raw(file) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Truncate or extend. Extending fills with zeroes — the platform contract, not a choice here.
+pub fn file_set_length(file: &NativeFile, length: UInt64) -> Result<(), FileError> {
+    match file_set_len_raw(file, length) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+// --------------------------------------------------------------------- metadata --
+
+fn file_type_of(kind: UInt8) -> FileType {
+    if kind == 0u8 {
+        FileType::File
+    } else if kind == 1u8 {
+        FileType::Directory
+    } else if kind == 2u8 {
+        FileType::Symlink
+    } else {
+        FileType::Other
+    }
+}
+
+/// A timestamp arrives as a (seconds, valid) pair and becomes an `Option`.
+///
+/// There is no sentinel second that could mean "absent": every `Int64` is a real instant, including
+/// zero and negatives. The pair is what keeps "the epoch" distinguishable from "unavailable".
+fn optional_seconds(seconds: Int64, valid: Bool) -> Option<Int64> {
+    if valid {
+        Some(seconds)
+    } else {
+        None
+    }
+}
+
+pub fn file_metadata(file: &NativeFile) -> Result<FileMetadata, FileError> {
+    match file_metadata_raw(file) {
+        Ok(m) => Ok(FileMetadata {
+            file_type: file_type_of(m.0),
+            length: m.1,
+            readonly: m.2,
+            modified_seconds: optional_seconds(m.3, m.4),
+            accessed_seconds: optional_seconds(m.5, m.6),
+            created_seconds: optional_seconds(m.7, m.8),
+        }),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Metadata for a path, **without following a symlink**.
+///
+/// A followed link reports its target's kind, which would make `FileType::Symlink` unobservable.
+/// To ask about the target instead, open the path and call `file_metadata`.
+pub fn path_metadata(path: &str) -> Result<FileMetadata, FileError> {
+    match path_metadata_raw(path.bytes()) {
+        Ok(m) => Ok(FileMetadata {
+            file_type: file_type_of(m.0),
+            length: m.1,
+            readonly: m.2,
+            modified_seconds: optional_seconds(m.3, m.4),
+            accessed_seconds: optional_seconds(m.5, m.6),
+            created_seconds: optional_seconds(m.7, m.8),
+        }),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Whether the path exists. A missing path is `Ok(false)`, not an error — absence is an answer.
+/// Genuine failures (a permission-denied parent, say) still surface as `Err`.
+pub fn path_exists(path: &str) -> Result<Bool, FileError> {
+    match path_exists_raw(path.bytes()) {
+        Ok(result) => Ok(result.0),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+// ------------------------------------------------------------ path manipulation --
+
+const PATH_SEPARATOR: UInt8 = 47u8;
+const WINDOWS_SEPARATOR: UInt8 = 92u8;
+
+fn is_separator(byte: UInt8) -> Bool {
+    byte == PATH_SEPARATOR || byte == WINDOWS_SEPARATOR
+}
+
+fn join_bytes(base: &str, name: &Vec<UInt8>) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let base_bytes = base.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < base_bytes.len() {
+        out.push(base_bytes[i]);
+        i = i + 1u64;
+    }
+    // The separator test is lifted into a local deliberately. Written as
+    // `if out.len() > 0 && !is_separator(out[out.len() - 1]) { out.push(..) }` the index in the
+    // condition holds a borrow of `out` that is still live across the `push`, and E0101 rejects it.
+    // Reading the byte out first ends that borrow before the mutation begins.
+    let mut needs_separator = false;
+    if out.len() > 0u64 {
+        let last = out[out.len() - 1u64];
+        needs_separator = !is_separator(last);
+    }
+    if needs_separator {
+        out.push(PATH_SEPARATOR);
+    }
+    let mut j: UInt64 = 0u64;
+    while j < name.len() {
+        out.push(name[j]);
+        j = j + 1u64;
+    }
+    out
+}
+
+/// Join a child onto a base path.
+///
+/// **An absolute child is rejected, not silently allowed to replace the base.** The convention
+/// where joining an absolute path discards everything to its left is a well-known source of path
+/// traversal: a caller that joins user input onto a trusted prefix loses the prefix without any
+/// diagnostic. Here it is `InvalidInput`.
+pub fn path_join(base: &str, child: &str) -> Result<String, FileError> {
+    if !path_is_valid(child) {
+        return Err(FileError::InvalidInput);
+    }
+    if path_is_absolute(child) {
+        return Err(FileError::InvalidInput);
+    }
+    let child_bytes = child.bytes();
+    let mut name: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < child_bytes.len() {
+        name.push(child_bytes[i]);
+        i = i + 1u64;
+    }
+    decode_valid_utf8(&join_bytes(base, &name))
+}
+
+// ----------------------------------------------------------- whole-path effects --
+
+pub fn remove_file(path: &str) -> Result<(), FileError> {
+    match file_remove_raw(path.bytes()) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn rename(from: &str, to: &str) -> Result<(), FileError> {
+    match file_rename_raw(from.bytes(), to.bytes()) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Copy, returning bytes written. An existing destination is OVERWRITTEN. A caller that must not
+/// overwrite checks `path_exists` first and owns the race that check leaves open.
+pub fn copy_file(from: &str, to: &str) -> Result<UInt64, FileError> {
+    match file_copy_raw(from.bytes(), to.bytes()) {
+        Ok(copied) => Ok(copied),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Create ONE directory. Not recursive: creating an unbounded number of directories from a single
+/// call is exactly the kind of unbounded effect the capability model exists to keep visible.
+pub fn create_dir(path: &str) -> Result<(), FileError> {
+    match dir_create_raw(path.bytes()) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+/// Remove ONE EMPTY directory. There is deliberately no recursive delete in this package: it is the
+/// most destructive filesystem primitive there is, and an unbounded one. Walk with `read_dir` and
+/// remove what you have actually seen.
+pub fn remove_dir(path: &str) -> Result<(), FileError> {
+    match dir_remove_raw(path.bytes()) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+// ------------------------------------------------------------ directory listing --
+
+const DIR_LIST_BUFFER_SIZE: UInt64 = 8192u64;
+
+/// List a directory, bounded twice: by `max_entries` and by the snapshot buffer.
+///
+/// **A truncated listing is an error, never a short answer.** Returning the entries that happened
+/// to fit would be indistinguishable from a directory that really has that many, and a caller
+/// deleting "everything it listed" would silently miss the rest.
+///
+/// Each entry's `file_type` costs one metadata call, and symlinks are reported as symlinks rather
+/// than as what they point at.
+pub fn read_dir(path: &str, max_entries: UInt64) -> Result<Vec<DirectoryEntry>, FileError> {
+    let mut scratch: [UInt8; 8192] = [0u8; 8192];
+    let written: UInt64;
+    let truncated: Bool;
+    {
+        let buffer = &mut scratch[0u64..DIR_LIST_BUFFER_SIZE];
+        match dir_list_raw(path.bytes(), buffer) {
+            Ok(result) => {
+                written = result.0;
+                truncated = result.2;
+            }
+            Err(error) => {
+                return Err(map_io_error(error));
+            }
+        }
+    }
+    if truncated {
+        return Err(FileError::LimitExceeded);
+    }
+    let mut out: Vec<DirectoryEntry> = Vec::new();
+    let mut start: UInt64 = 0u64;
+    let mut i: UInt64 = 0u64;
+    while i < written {
+        if scratch[i] == 0u8 {
+            let mut name_bytes: Vec<UInt8> = Vec::new();
+            let mut j: UInt64 = start;
+            while j < i {
+                name_bytes.push(scratch[j]);
+                j = j + 1u64;
+            }
+            if out.len() >= max_entries {
+                return Err(FileError::LimitExceeded);
+            }
+            let name = decode_valid_utf8(&name_bytes)?;
+            let joined = join_bytes(path, &name_bytes);
+            let child_path = decode_valid_utf8(&joined)?;
+            let kind: FileType;
+            match path_metadata_raw(&joined[0u64..joined.len()]) {
+                Ok(m) => {
+                    kind = file_type_of(m.0);
+                }
+                Err(error) => {
+                    return Err(map_io_error(error));
+                }
+            }
+            out.push(DirectoryEntry {
+                name: name,
+                path: child_path,
+                file_type: kind,
+            });
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+    Ok(out)
+}

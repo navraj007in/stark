@@ -586,3 +586,239 @@ fn main() {{
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **The expanded surface, executed.** Seek, durable sync, set-length, metadata, path existence,
+/// path joining, directory create/list/remove, rename and copy — all through `stark-io` and the
+/// first-party provider, in a natively built binary.
+///
+/// Separate from `io_minimal_...` because it proves a different thing. That test proves the
+/// resource lifecycle works at all; this proves the surface built on it is more than declarations.
+/// Every operation here was a declared type with no function behind it before this change:
+/// `SeekFrom`, `FileMetadata`, `DirectoryEntry` and `OpenOptions` each existed in the package with
+/// nothing that consumed them.
+///
+/// Assertions are on OBSERVED VALUES, not merely on "no error": a seek reports its new position, a
+/// listing reports the names it found, metadata reports the length the writes produced. An
+/// operation that silently did nothing would pass a smoke test and fail this one.
+#[test]
+fn io_expanded_surface_executes_from_source_through_stark_io_package() {
+    let root = fixture_root("io-expanded");
+    let io_dir = root.join("io-data");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&io_dir).expect("create io data dir");
+    let vendored_io = root.join("vendor").join("stark-io");
+    std::fs::create_dir_all(vendored_io.join("src")).expect("create vendored stark-io");
+    std::fs::copy(
+        repo_root().join("stark-io").join("starkpkg.json"),
+        vendored_io.join("starkpkg.json"),
+    )
+    .expect("copy stark-io manifest");
+    std::fs::copy(
+        repo_root().join("stark-io").join("src").join("lib.stark"),
+        vendored_io.join("src").join("lib.stark"),
+    )
+    .expect("copy stark-io source");
+
+    let esc = |p: std::path::PathBuf| {
+        p.to_str()
+            .expect("fixture path must be valid utf8")
+            .replace('\\', "\\\\")
+    };
+    let data_dir = esc(io_dir.clone());
+    let sample = esc(io_dir.join("sample.txt"));
+    let renamed = esc(io_dir.join("renamed.txt"));
+    let copied = esc(io_dir.join("copied.txt"));
+    let subdir = esc(io_dir.join("sub"));
+
+    write_package_with_entry(
+        &root,
+        r#"{
+  "name": "c788_io_expanded",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": ["filesystem"],
+  "dependencies": {
+    "stark_io": {
+      "package": "stark-io",
+      "path": "vendor/stark-io"
+    }
+  }
+}"#,
+        "src/main.stark",
+        &format!(
+            r#"use stark_io::SeekFrom;
+use stark_io::FileType;
+use stark_io::copy_file;
+use stark_io::default_open_options;
+use stark_io::open_with_options;
+use stark_io::create_dir;
+use stark_io::file_metadata;
+use stark_io::file_seek;
+use stark_io::file_set_length;
+use stark_io::file_sync;
+use stark_io::open_file;
+use stark_io::path_exists;
+use stark_io::path_join;
+use stark_io::path_metadata;
+use stark_io::read_dir;
+use stark_io::read_text;
+use stark_io::remove_dir;
+use stark_io::remove_file;
+use stark_io::rename;
+use stark_io::write_text;
+
+fn main() {{
+    let sample = "{sample}";
+    let renamed = "{renamed}";
+    let copied = "{copied}";
+    let subdir = "{subdir}";
+    let data_dir = "{data_dir}";
+
+    match write_text(sample, "hello stark io") {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("write failed"); }}
+    }}
+
+    // metadata by path: 14 bytes written, and it is a regular file.
+    match path_metadata(sample) {{
+        Ok(meta) => {{
+            if meta.length != 14u64 {{ panic("wrong length"); }}
+            match meta.file_type {{
+                FileType::File => {{ }}
+                _ => {{ panic("wrong file type"); }}
+            }}
+        }}
+        Err(_) => {{ panic("path_metadata failed"); }}
+    }}
+
+    // seek reports the absolute position it landed on, and a read from there sees the tail.
+    match open_file(sample) {{
+        Ok(file) => {{
+            match file_seek(&file, SeekFrom::Start(6u64)) {{
+                Ok(position) => {{ if position != 6u64 {{ panic("wrong seek position"); }} }}
+                Err(_) => {{ panic("seek failed"); }}
+            }}
+            match file_seek(&file, SeekFrom::End(0i64)) {{
+                Ok(position) => {{ if position != 14u64 {{ panic("wrong end position"); }} }}
+                Err(_) => {{ panic("seek end failed"); }}
+            }}
+            match file_metadata(&file) {{
+                Ok(meta) => {{ if meta.length != 14u64 {{ panic("wrong handle length"); }} }}
+                Err(_) => {{ panic("file_metadata failed"); }}
+            }}
+        }}
+        Err(_) => {{ panic("open failed"); }}
+    }}
+
+    // truncate through the handle, then observe it through the path. Opened WITH WRITE: a
+    // read-only handle cannot set length, and `open_file` is read-only.
+    let mut options = default_open_options();
+    options.write = true;
+    match open_with_options(sample, &options) {{
+        Ok(file) => {{
+            match file_set_length(&file, 5u64) {{
+                Ok(_) => {{ }}
+                Err(_) => {{ panic("set_length failed"); }}
+            }}
+            match file_sync(&file) {{
+                Ok(_) => {{ }}
+                Err(_) => {{ panic("sync failed"); }}
+            }}
+        }}
+        Err(_) => {{ panic("reopen failed"); }}
+    }}
+    match read_text(sample, 1024u64) {{
+        Ok(text) => {{ if text != "hello" {{ panic("truncation not observed"); }} }}
+        Err(_) => {{ panic("read after truncate failed"); }}
+    }}
+
+    // rename, then copy, and confirm existence tracks both.
+    match rename(sample, renamed) {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("rename failed"); }}
+    }}
+    match path_exists(sample) {{
+        Ok(found) => {{ if found {{ panic("renamed source still exists"); }} }}
+        Err(_) => {{ panic("exists failed"); }}
+    }}
+    match copy_file(renamed, copied) {{
+        Ok(count) => {{ if count != 5u64 {{ panic("wrong copy count"); }} }}
+        Err(_) => {{ panic("copy failed"); }}
+    }}
+
+    // path joining refuses an absolute child rather than letting it replace the base.
+    match path_join(data_dir, "child.txt") {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("join failed"); }}
+    }}
+    match path_join(data_dir, "/etc/passwd") {{
+        Ok(_) => {{ panic("absolute child must be refused"); }}
+        Err(_) => {{ }}
+    }}
+
+    // directory create, list, remove.
+    match create_dir(subdir) {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("create_dir failed"); }}
+    }}
+    match read_dir(data_dir, 64u64) {{
+        Ok(entries) => {{
+            let mut files: UInt64 = 0u64;
+            let mut dirs: UInt64 = 0u64;
+            // Iteration, not indexing, and spelled WITHOUT `&`. `entries[i]` is refused whatever
+            // you do with the result: `VecIndexGet` requires a Copy element, `DirectoryEntry` owns
+            // two `String`s, and borrowing the indexed place does not change that. `&entries` is
+            // not iterable either, and by-value `for x in entries` is refused with a diagnostic
+            // naming the fix: `.iter()`. That cursor is the only way to read a non-Copy element in
+            // place.
+            for entry in entries.iter() {{
+                match entry.file_type {{
+                    FileType::Directory => {{ dirs = dirs + 1u64; }}
+                    _ => {{ files = files + 1u64; }}
+                }}
+            }}
+            if dirs != 1u64 {{ panic("expected one directory"); }}
+            if files != 2u64 {{ panic("expected two files"); }}
+        }}
+        Err(_) => {{ panic("read_dir failed"); }}
+    }}
+    match remove_dir(subdir) {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("remove_dir failed"); }}
+    }}
+    match remove_file(copied) {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("remove_file failed"); }}
+    }}
+    match read_dir(data_dir, 64u64) {{
+        Ok(entries) => {{ if entries.len() != 1u64 {{ panic("cleanup not observed"); }} }}
+        Err(_) => {{ panic("final read_dir failed"); }}
+    }}
+
+    println("io-expanded-ok");
+}}"#
+        ),
+    );
+
+    let result = build_current_package(
+        &root,
+        &BuildCommandOptions {
+            no_build_cache: true,
+            ..BuildCommandOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("stark-io expanded package build must succeed: {error:?}"));
+
+    let output = std::process::Command::new(&result.artifact_path)
+        .output()
+        .unwrap_or_else(|error| panic!("run stark-io expanded binary: {error}"));
+    assert!(
+        output.status.success(),
+        "built program failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout.trim(), "io-expanded-ok");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
