@@ -105,6 +105,7 @@ impl ServerState {
         self.root_uri = None;
         self.open_documents.clear();
         self.compilation_cache.clear();
+        self.options = LanguageOptions::CORE;
     }
 }
 

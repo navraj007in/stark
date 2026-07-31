@@ -1,5 +1,17 @@
 # STARK Compiler STATE
 
+## Gate C9 — OPEN (2026-07-31)
+
+Active WP: C9.0 baseline and governance.
+
+Part A is authorised: C9.0 baseline/governance, C9.1 extension-isolation conformance, and C9.2
+tensor/ONNX provider map. Part B is blocked pending second-artifact evidence; no provider
+generalisation is authorised from ONNX alone.
+
+Current policy recorded for C9.1: Core-only is the default; `tensor` must be explicitly enabled;
+unknown and duplicate extension configuration is rejected at CLI/internal/LSP configuration
+surfaces.
+
 ## DEV-012 — interactive editor validation, partially recorded (2026-07-31)
 
 The first interactive record this deviation has ever had. It has been open since Gate C1 with the

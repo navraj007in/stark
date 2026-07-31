@@ -156,10 +156,8 @@ impl Server {
             self.state.set_root_uri(root_uri.to_string());
         }
 
-        // `initializationOptions: { "extensions": ["tensor"] }` — matches
-        // the CLI's `--extension` flag naming. Unknown names are ignored
-        // rather than rejected: a stale/misconfigured client option
-        // shouldn't prevent the server from starting.
+        // `initializationOptions: { "extensions": ["tensor"] }` matches the
+        // CLI's `--extension` flag naming and validation policy.
         if let Some(extensions) = params
             .get("initializationOptions")
             .and_then(|v| v.get("extensions"))
@@ -169,8 +167,11 @@ impl Server {
                 .iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect();
-            if let Ok(options) = crate::options::options_from_extension_flags(&names) {
-                self.state.options = options;
+            match crate::options::options_from_extension_flags(&names) {
+                Ok(options) => self.state.options = options,
+                Err(error) => {
+                    return self.error_response(id, -32602, &error.to_string());
+                }
             }
         }
 
@@ -1811,6 +1812,49 @@ mod tests {
     }
 
     #[test]
+    fn initialize_rejects_unknown_and_duplicate_extensions_like_cli() {
+        for (id, extensions, expected) in [
+            (11, vec!["unknown"], "unknown extension `unknown`"),
+            (
+                12,
+                vec!["tensor", "tensor"],
+                "extension `tensor` enabled more than once",
+            ),
+        ] {
+            let mut server = Server::new();
+            let params = initialize_params_with_extensions(extensions);
+            let response = server.handle_initialize(id, &params);
+            let error = response
+                .error
+                .expect("initialize must reject invalid extensions");
+            assert_eq!(error.code, -32602);
+            assert!(
+                error.message.contains(expected),
+                "expected {expected:?}, got {:?}",
+                error.message
+            );
+            assert_eq!(server.state.options, crate::options::LanguageOptions::CORE);
+        }
+    }
+
+    #[test]
+    fn shutdown_clears_lsp_extension_session_state() {
+        let mut server = Server::new();
+        let response =
+            server.handle_initialize(1, &initialize_params_with_extensions(vec!["tensor"]));
+        assert!(response.error.is_none());
+        assert!(server.state.options.tensor());
+
+        let shutdown = server.handle_shutdown(2, &JsonValue::Object(HashMap::new()));
+        assert!(shutdown.error.is_none());
+        assert_eq!(server.state.options, crate::options::LanguageOptions::CORE);
+
+        let response = server.handle_initialize(3, &JsonValue::Object(HashMap::new()));
+        assert!(response.error.is_none());
+        assert_eq!(server.state.options, crate::options::LanguageOptions::CORE);
+    }
+
+    #[test]
     fn hover_uses_compiler_symbol_signature() {
         let uri = "file:///hover.stark";
         let mut server = Server::new();
@@ -2319,6 +2363,25 @@ mod tests {
 
     fn text_position_params(uri: &str, line: i64, character: i64) -> JsonValue {
         text_position_params_with_declaration(uri, line, character, false)
+    }
+
+    fn initialize_params_with_extensions(extensions: Vec<&str>) -> JsonValue {
+        let mut options = HashMap::new();
+        options.insert(
+            "extensions".to_string(),
+            JsonValue::Array(
+                extensions
+                    .into_iter()
+                    .map(|extension| JsonValue::String(extension.to_string()))
+                    .collect(),
+            ),
+        );
+        let mut params = HashMap::new();
+        params.insert(
+            "initializationOptions".to_string(),
+            JsonValue::Object(options),
+        );
+        JsonValue::Object(params)
     }
 
     fn text_position_params_with_declaration(
