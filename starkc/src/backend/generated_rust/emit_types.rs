@@ -118,7 +118,34 @@ pub fn nominal_needs_lifetime(ty: &MirTy) -> bool {
         MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
             args.iter().any(ty_carries_reference)
         }
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE.** Same reason as [`ty_carries_reference`], which this consults:
+        // the arm asserts that a generated nominal needs no lifetime parameter, and emitting one
+        // that does need it without it is an E0106 in generated code rather than a soft miss.
+        //
+        // Only nominals can need one, so every non-nominal is false by construction. A host
+        // resource is a nominal but owns its handle outright and borrows nothing.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::Tuple(_)
+        | MirTy::Array(..)
+        | MirTy::Slice(_)
+        | MirTy::Ref { .. }
+        | MirTy::FnPtr { .. }
+        | MirTy::HostResource(_) => false,
     }
 }
 
@@ -348,7 +375,28 @@ pub fn ty_carries_reference(ty: &MirTy) -> bool {
         MirTy::FnPtr { params, ret } => {
             params.iter().any(ty_carries_reference) || ty_carries_reference(ret)
         }
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE.** This predicate ASSERTS A PROPERTY of a type rather than
+        // declining to optimise one, so a wildcard makes every future variant claim the property
+        // is absent — the shape that classified `HostResource` as `Copy` and leaked every
+        // resource with the suite green. Listing the leaves costs a line per variant and turns the
+        // next omission into a compile error.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::HostResource(_) => false,
     }
 }
 
@@ -582,11 +630,34 @@ fn derives_for(ty: &MirTy, types: &TypeContext) -> Option<&'static str> {
 fn ty_contains_ref(ty: &MirTy) -> bool {
     match ty {
         MirTy::Ref { .. } => true,
-        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Tuple(args) => {
-            args.iter().any(ty_contains_ref)
-        }
+        MirTy::Struct(_, args)
+        | MirTy::Enum(_, args)
+        | MirTy::Tuple(args)
+        | MirTy::Core(_, args) => args.iter().any(ty_contains_ref),
         MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_contains_ref(elem),
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE.** This predicate ASSERTS A PROPERTY of a type rather than
+        // declining to optimise one, so a wildcard makes every future variant claim the property
+        // is absent — the shape that classified `HostResource` as `Copy` and leaked every
+        // resource with the suite green. Listing the leaves costs a line per variant and turns the
+        // next omission into a compile error.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::FnPtr { .. }
+        | MirTy::HostResource(_) => false,
     }
 }
 

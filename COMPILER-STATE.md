@@ -1,5 +1,86 @@
 # STARK Compiler STATE
 
+## CD-287 — every `MirTy` predicate that asserts a property is now exhaustive (2026-07-31)
+
+**Generalises CD-240 from the instance to the shape.** CD-240 found `MirTy::HostResource` classified
+`Copy` by a `_ => true` arm and fixed that arm, while recording the real finding in its message:
+"THIRD TIME A MirTy CATCH-ALL HAS SWALLOWED THIS VARIANT." By the time A11 was working the count was
+six, each found by an e2e observing generated code, none by a test — because the type checker cannot
+notice a new variant falling into a wildcard.
+
+**The rule applied.** A wildcard is safe when its arm DECLINES to handle a type (`unsupported(...)`,
+`unreachable!`, "don't fold this"). It is unsafe when the arm ASSERTS A PROPERTY — `Copy`, `Noop`,
+"needs no drop", "carries no borrow" — because it then makes that claim on behalf of every variant
+nobody has classified yet, silently and with the suite green. Twelve predicates were of the second
+kind and are now exhaustive; the ~40 decline-shaped wildcards in `lower.rs` are deliberately
+untouched.
+
+| Site | Was |
+| --- | --- |
+| `mir/mod.rs` `TypeContext::is_copy` | `_ => true` |
+| `mir/lower.rs` `FnLowerer::is_copy` | `_ => true` |
+| `mir/lower.rs` `ty_needs_drop` | `_ => false` |
+| `mir/lower.rs` `ty_has_user_drop_guarded` | `_ => false` |
+| `mir/lower.rs` `ty_mentions_user_nominal` | `_ => false` |
+| `mir/lower.rs` `ty_carries_ref` | `_ => false` |
+| `mir/verify.rs` `may_need_drop` | `_ => false` |
+| `mir/verify.rs` `mir_needs_drop` | `_ => false` — **latent defect, see below** |
+| `mir/drop_plan.rs` `plan_for` | `_ => Ok(DropPlan::Noop)` |
+| `backend/…/emit_types.rs` `ty_carries_reference` | `_ => false` |
+| `backend/…/emit_types.rs` `ty_contains_ref` | `_ => false` |
+| `backend/…/emit_types.rs` `nominal_needs_lifetime` | `_ => false` |
+
+**THE SEVENTH SWALLOWED INSTANCE, AND THE FIRST FOUND BY THE COMPILER.** `verify::mir_needs_drop`
+was still classifying `MirTy::HostResource` as needing no drop. The verifier therefore held two
+copies of "does this need dropping" that disagreed about resources — `may_need_drop` said true,
+`mir_needs_drop` said false — with nothing in the suite distinguishing them. Every previous instance
+of this defect was found by an e2e observing generated code, after a leak; this one was found by
+making the match exhaustive, which is the entire argument for doing it.
+
+**A second behavioural fix:** `ty_contains_ref` did not recurse into `MirTy::Core`'s arguments, so a
+`Vec<&T>` was reported reference-free. Also surfaced by exhaustiveness.
+
+**Three answers the wildcards were hiding, now written down rather than decided quietly:**
+- `ty_needs_drop`'s `Core` arm is asymmetric — `VecIter`/`KeysIter`/`Iter` need glue,
+  `CharsIter`/`SplitIter`/`ValuesIter`/`MapIter`/`FilterIter` do not. Preserved exactly as it stood.
+  Whether the second group is right is a question for iterator lowering, and it is now visible.
+- `ty_carries_ref` (lowering) and `ty_carries_reference` (backend) disagree on `FnPtr`: the backend
+  descends into params/return, lowering calls every fn value borrow-free. Defensible — a Rust
+  `fn(&T)` is higher-ranked and needs no lifetime parameter, which is all this guards — but the two
+  copies had never been checked against each other.
+- `drop_plan::plan_for` on `String` returns `Noop` because the backend lowers it to a Rust `String`
+  whose own destructor reclaims it. Previously that answer came from the wildcard.
+
+**The duplication is still the defect, and it is worse than CD-240 recorded.** Twelve sites are
+twelve implementations of four rules: "is Copy" lives in two places, "needs drop" in **four**
+(`lower::ty_needs_drop`, `lower::ty_has_user_drop_guarded`, `verify::may_need_drop`,
+`verify::mir_needs_drop`), "carries a reference" in three. Each has historically been corrected
+separately, after a leak, and the `mir_needs_drop` finding above is what a fourth undiscovered copy
+costs. Exhaustiveness makes the next omission a compile error at every copy; it does NOT make the
+copies agree — `ty_carries_ref` and `ty_carries_reference` still disagree on `FnPtr`. Unifying them
+is a design change and is deliberately NOT this one, but it now has a concrete cost attached.
+
+**Why now, and not after C7.8.** Route B (`OwnedResourceHandle`, MIR-owned exactly-once close,
+`resource_type` on `HandleOut`) reshapes `MirTy`. That is the exact event that has cost six silent
+leaks. This converts the seventh into a compile error before the variant is added, not after.
+
+**`mir_needs_drop`'s correction needs a behavioural test**, which this entry does not supply: the
+compiler now agrees the arm is answered, but nothing asserts the verifier accepts the `Drop` that
+lowering emits for a resource — the exact disagreement that was latent. `a11_host_resource.rs` is
+the place for it.
+
+EVIDENCE: `cargo check --lib` clean across all twelve sites — which for this change is the load-
+bearing check, since a missed variant is a compile error and nothing else would report one. Full
+workspace/clippy verification deferred to CI per the usual practice on this shared checkout.
+FILES: starkc/src/mir/{mod,lower,verify,drop_plan}.rs,
+starkc/src/backend/generated_rust/emit_types.rs, starkc/tests/a11_host_resource.rs (its doc comment
+described the wildcard in the present tense), COMPILER-STATE.md.
+NOT MINE, PRESENT IN THE SAME SHARED CHECKOUT: `stark-io/`, `starkc/src/provider_registry.rs` and
+`WP-IO.1-Minimal-Native-File-IO.md` belong to a parallel session's WP-IO.1 work and must not be
+staged with this change. The `native_build.rs` refactor that was also in this tree was that
+session's, and landed as CD-286 (`manual_find` clippy fix) while this entry was being written —
+which is why this is CD-287.
+
 ## Gate C9 — OPEN (2026-07-31)
 
 Active WP: C9 Part A closeout.

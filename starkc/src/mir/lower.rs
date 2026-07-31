@@ -116,8 +116,29 @@ fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
         MirTy::Tuple(elems) => elems.iter().any(ty_mentions_user_nominal),
         MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_mentions_user_nominal(elem),
         MirTy::Ref { inner, .. } => ty_mentions_user_nominal(inner),
-        // FnPtr comparison is rejected upstream by the checker (TYPE-FN-001).
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE.** The arm asserts "no user impl governs comparison of this
+        // type", which is a licence to emit a structural `BinOp`; a wildcard grants that licence to
+        // every variant nobody has classified yet. FnPtr comparison is rejected upstream by the
+        // checker (TYPE-FN-001), and a host resource is not comparable at all — neither reaches a
+        // structural `BinOp`, so both are false because nothing dispatches, not by omission.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::FnPtr { .. }
+        | MirTy::HostResource(_) => false,
     }
 }
 
@@ -132,7 +153,34 @@ fn ty_carries_ref(ty: &MirTy) -> bool {
         }
         MirTy::Tuple(elems) => elems.iter().any(ty_carries_ref),
         MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_carries_ref(elem),
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE.** "Carries no borrow" is a claim about a type, not a decision to
+        // skip one, so it must be stated per variant.
+        //
+        // **This is the third copy of one rule**, after `emit_types::ty_carries_reference` and
+        // `emit_types::ty_contains_ref`, and it does not agree with the first: that one descends
+        // into a `FnPtr`'s parameters and return, this one calls every fn value borrow-free. The
+        // difference is defensible — a Rust `fn(&T)` is higher-ranked and needs no lifetime
+        // parameter, which is the only thing this predicate guards (E0106) — but it is an
+        // agreement the three copies have never been checked against each other for. Recorded
+        // rather than silently harmonised; unifying them is its own change.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::FnPtr { .. }
+        | MirTy::HostResource(_) => false,
     }
 }
 
@@ -1905,7 +1953,33 @@ impl<'a> FnLowerer<'a> {
             // (`meta.copy_eligible` vs `types.copy_eligible_items`); unifying them is worth doing
             // and is not this change.
             MirTy::HostResource(_) => false,
-            _ => true,
+
+            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
+            //
+            // This arm ended `_ => true`, which is the same defect CD-240 fixed in
+            // `TypeContext::is_copy`: a wildcard that ASSERTS the strongest claim in the table (no
+            // drop glue, no slot, a licence to duplicate) about every variant nobody has classified
+            // yet. Fixing one copy of the rule and leaving the other is how this variant came to be
+            // corrected five separate times.
+            //
+            // Scalars, `Never`, and `Str` are `Copy`; a fn value is `Copy` per this function's
+            // contract note above.
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Unit
+            | MirTy::Never
+            | MirTy::Str
+            | MirTy::FnPtr { .. } => true,
         }
     }
 
@@ -2043,7 +2117,57 @@ impl<'a> FnLowerer<'a> {
             // `File` on the legacy path, where `c784_file_e2e` closes it through explicit MIR rather
             // than through drop elaboration.
             MirTy::HostResource(_) => true,
-            _ => false,
+
+            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
+            //
+            // "Needs no drop glue" is indistinguishable from a leak, and this is the predicate the
+            // wildcard cost the most: it is what silently disabled the close mechanism above.
+            // `verify::may_need_drop` is the second copy of this rule and is hardened the same way.
+            //
+            // The `Core` arms are spelled out individually because the wildcard was hiding a real
+            // asymmetry inside them: `VecIter`/`KeysIter`/`Iter` need glue while `CharsIter`,
+            // `SplitIter`, `ValuesIter`, `MapIter` and `FilterIter` do not. That is preserved
+            // exactly as it stood rather than harmonised here — whether the second group is right
+            // is a question for whoever owns iterator lowering, and it is now written down instead
+            // of being a side effect of arm ordering. `Core(File, _)` is false for the reason
+            // given above (SELECT-C's legacy path), not by omission.
+            MirTy::Core(
+                crate::hir::CoreType::String
+                | crate::hir::CoreType::Option
+                | crate::hir::CoreType::Result
+                | crate::hir::CoreType::Range
+                | crate::hir::CoreType::RangeInclusive
+                | crate::hir::CoreType::CharsIter
+                | crate::hir::CoreType::SplitIter
+                | crate::hir::CoreType::ValuesIter
+                | crate::hir::CoreType::MapIter
+                | crate::hir::CoreType::FilterIter
+                | crate::hir::CoreType::Random
+                | crate::hir::CoreType::IOError
+                | crate::hir::CoreType::File
+                | crate::hir::CoreType::Ordering,
+                _,
+            ) => false,
+            // Scalars own nothing; `Str`/`Slice` are unsized and appear only behind a `Ref`, which
+            // borrows rather than owns; a fn value is a bare pointer.
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Unit
+            | MirTy::Never
+            | MirTy::Str
+            | MirTy::Slice(_)
+            | MirTy::Ref { .. }
+            | MirTy::FnPtr { .. } => false,
         })
     }
 
@@ -7909,7 +8033,35 @@ impl<'a> FnLowerer<'a> {
                 .iter()
                 .any(|t| self.ty_has_user_drop_guarded(t, visited)),
             MirTy::Array(elem, _) => self.ty_has_user_drop_guarded(elem, visited),
-            _ => false,
+
+            // **EXHAUSTIVE ON PURPOSE.** "No user `Drop` impl governs this type" is an assertion,
+            // and this is the narrowest of the drop predicates: it asks specifically about a USER
+            // impl, not about glue.
+            //
+            // A host resource is false here ON PURPOSE and this is the one place that distinction
+            // matters: its close is provider-driven, established by A11 §5 rather than by an
+            // `impl Drop` the program wrote. It needs drop (`ty_needs_drop`, `may_need_drop`,
+            // `mir_needs_drop` all say true) without having a user destructor.
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Unit
+            | MirTy::Never
+            | MirTy::Str
+            | MirTy::String
+            | MirTy::Slice(_)
+            | MirTy::Ref { .. }
+            | MirTy::FnPtr { .. }
+            | MirTy::HostResource(_) => false,
         }
     }
 

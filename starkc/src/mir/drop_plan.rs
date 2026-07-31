@@ -253,7 +253,44 @@ pub fn plan_for(ty: &MirTy, types: &TypeContext) -> Result<DropPlan, DropPlanErr
         // For `HashMap<K, V>` with a `V` that has a destructor that is arguably wrong, but it is
         // the reference semantics as they stand; changing it here would move the oracle without
         // an owner decision. Recorded so the question is answerable, not lost.
-        _ => Ok(DropPlan::Noop),
+        MirTy::Core(..) => Ok(DropPlan::Noop),
+
+        // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
+        //
+        // `Noop` means "this type destroys nothing", which is indistinguishable from a leak. A
+        // wildcard hands that answer to every future variant in silence, and `is_copy` has already
+        // shown the cost: `HostResource` was classified `Copy` by an identical default, every
+        // resource leaked, and the suite stayed green because nothing asks whether a variant has
+        // been classified yet.
+        //
+        // `HostResource` is NOT listed here: it is matched at the top of this function, where its
+        // close is scheduled from `host_resource_closes`. Adding it below produced an unreachable
+        // arm that claimed a resource destroys nothing — the exhaustiveness check caught the
+        // contradiction, which is the second thing it has found in this file.
+        //
+        // `String` owns a heap allocation, but the backend lowers it to a Rust `String` whose own
+        // destructor reclaims it, and `mir::interp::drop_in_place` runs no element glue for it —
+        // the same reasoning as the `Core` types above. Previously this answer came from the
+        // wildcard; making the match exhaustive is what forced it to be stated.
+        MirTy::String => Ok(DropPlan::Noop),
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::Slice(_)
+        | MirTy::Ref { .. }
+        | MirTy::FnPtr { .. } => Ok(DropPlan::Noop),
     }
 }
 

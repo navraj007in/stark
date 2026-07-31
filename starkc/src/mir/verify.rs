@@ -2171,7 +2171,34 @@ impl<'a> BodyCx<'a> {
             MirTy::Enum(_, args) => args.iter().any(|a| self.mir_needs_drop(a)),
             MirTy::Tuple(elems) => elems.iter().any(|e| self.mir_needs_drop(e)),
             MirTy::Array(elem, _) => self.mir_needs_drop(elem),
-            _ => false,
+
+            // **A11 §5: a host resource's drop IS its provider close.** This arm is not
+            // documentation of an old fix — exhaustiveness FOUND it. `HostResource` was falling
+            // into `_ => false` here, so this predicate and `may_need_drop` (the verifier's other
+            // copy of "does this need dropping") disagreed about resources, and this one was the
+            // wrong way round. The SEVENTH catch-all to swallow the variant, and the first found by
+            // the compiler rather than by a leak.
+            MirTy::HostResource(_) => true,
+
+            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.** See `may_need_drop`.
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Unit
+            | MirTy::Never
+            | MirTy::Str
+            | MirTy::Slice(_)
+            | MirTy::Ref { .. }
+            | MirTy::FnPtr { .. } => false,
         }
     }
 
@@ -2673,7 +2700,33 @@ fn may_need_drop(ty: &MirTy) -> bool {
         MirTy::Struct(..) | MirTy::Enum(..) | MirTy::String | MirTy::Core(..) => true,
         MirTy::Tuple(elems) => elems.iter().any(may_need_drop),
         MirTy::Array(elem, _) => may_need_drop(elem),
-        _ => false,
+        // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
+        //
+        // This predicate is deliberately conservative in the `true` direction (hence "may"), which
+        // makes a default of `false` the one answer it must never give by accident: it is the
+        // verifier agreeing that a `Drop` was correctly absent. That is precisely the failure the
+        // arm above documents, seen from the other engine.
+        //
+        // Scalars own nothing; `Str`/`Slice` are unsized and reachable only behind a `Ref`, which
+        // borrows rather than owns; a fn value is a bare pointer.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::Slice(_)
+        | MirTy::Ref { .. }
+        | MirTy::FnPtr { .. } => false,
     }
 }
 

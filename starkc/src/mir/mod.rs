@@ -929,7 +929,34 @@ impl TypeContext {
             // `ValueSlot::dead()` -- CD-234's "the slot begins dead" is then the representation
             // itself rather than a rule anything has to enforce.
             MirTy::HostResource(_) => false,
-            _ => true,
+
+            // **EXHAUSTIVE ON PURPOSE — there is no wildcard here, and adding one back is a
+            // regression.**
+            //
+            // This match ended `_ => true`, so a newly added `MirTy` variant was classified `Copy`
+            // by default. `Copy` is the strongest claim in this table: it means no drop glue, no
+            // slot, and a licence to duplicate. `HostResource` inherited exactly that when it was
+            // added — every resource leaked, and every unit test stayed green, because nothing
+            // asks "is this variant classified yet?".
+            //
+            // Listing the scalars costs one line per future variant and converts that silence into
+            // a compile error at the one place the answer has to be decided deliberately.
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Unit
+            | MirTy::Never
+            | MirTy::Str
+            | MirTy::FnPtr { .. } => true,
         }
     }
 }
