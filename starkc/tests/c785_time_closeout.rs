@@ -59,6 +59,34 @@ fn place(i: u32) -> Place {
 ///
 /// `extra` carries the second out-slot `stark_time_unix_now` declares (nanoseconds), so one body
 /// serves both clock functions and the arity comes from the declaration rather than a guess.
+/// The value an output slot holds **before** the provider is called.
+///
+/// It must be a value the provider cannot legitimately write, because that is the only thing that
+/// makes "the slot was written" observable from the printed output. The body used to pre-fill the
+/// slot with `0` and the monotonic test then asserted `reading > 0` — which is unsound, not merely
+/// strict: `stark_time_monotonic_now_ns` initialises its origin on the first call and measures
+/// elapsed time immediately after, so on a coarse-resolution clock (Windows' ~100 ns
+/// `QueryPerformanceCounter`) the first reading is legitimately `0`. The test read that as "the
+/// slot was never written" and failed on Windows while the provider was working correctly.
+///
+/// The type's maximum is the sentinel: a monotonic reading of `u64::MAX` nanoseconds is ~584 years
+/// of process uptime, and a unix timestamp of `i64::MAX` is ~292 billion years from now. Neither is
+/// reachable, so "printed the sentinel" means exactly one thing.
+fn unwritten_sentinel(ty: &MirTy) -> i128 {
+    match ty {
+        MirTy::UInt64 => i128::from(u64::MAX),
+        MirTy::UInt32 => i128::from(u32::MAX),
+        MirTy::UInt16 => i128::from(u16::MAX),
+        MirTy::UInt8 => i128::from(u8::MAX),
+        MirTy::Int64 => i128::from(i64::MAX),
+        MirTy::Int32 => i128::from(i32::MAX),
+        MirTy::Int16 => i128::from(i16::MAX),
+        MirTy::Int8 => i128::from(i8::MAX),
+        // `Unit` is the placeholder for "this call has no second out-slot"; nothing reads it.
+        _ => 0,
+    }
+}
+
 fn entry_body(scalar: MirTy, printer: RuntimeFn, extra: Option<MirTy>) -> MirBody {
     MirBody {
         instance: mir::Instance {
@@ -110,7 +138,10 @@ fn entry_body(scalar: MirTy, printer: RuntimeFn, extra: Option<MirTy>) -> MirBod
                     (
                         Statement::Assign(
                             place(1),
-                            Rvalue::Use(Operand::Const(Constant::Int(0, scalar))),
+                            Rvalue::Use(Operand::Const(Constant::Int(
+                                unwritten_sentinel(&scalar),
+                                scalar,
+                            ))),
                         ),
                         info(),
                     ),
@@ -131,7 +162,10 @@ fn entry_body(scalar: MirTy, printer: RuntimeFn, extra: Option<MirTy>) -> MirBod
                         (
                             Statement::Assign(
                                 place(5),
-                                Rvalue::Use(Operand::Const(Constant::Int(0, t.clone()))),
+                                Rvalue::Use(Operand::Const(Constant::Int(
+                                    unwritten_sentinel(t),
+                                    t.clone(),
+                                ))),
                             ),
                             info(),
                         ),
@@ -263,9 +297,15 @@ fn monotonic_now_executes_and_reports_a_reading() {
     let ns: u64 = printed
         .parse()
         .unwrap_or_else(|e| panic!("expected nanoseconds, got {printed:?}: {e}"));
-    assert!(
-        ns > 0,
-        "a monotonic reading of 0 means the slot was never written"
+    // The claim is that the PROVIDER WROTE THE SLOT, and the sentinel is what makes that
+    // observable. `0` is deliberately NOT the failure condition: the first call initialises the
+    // clock's origin and reads it immediately, so zero elapsed nanoseconds is a correct answer on
+    // any platform whose clock is coarser than that gap — which is what made the old `ns > 0`
+    // assertion fail on Windows against a working provider.
+    assert_ne!(
+        ns,
+        u64::MAX,
+        "the slot still holds its pre-call sentinel, so the provider never wrote it"
     );
 }
 
