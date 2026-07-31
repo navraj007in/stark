@@ -445,18 +445,13 @@ fn provider_root_beside_runtime(runtime_crate: &Path) -> Option<PathBuf> {
     // they sit in a checkout. `<prefix>/lib/stark/providers` is also accepted for an installation
     // made before the mirror layout.
     let parent = runtime_crate.parent()?;
-    for candidate in [
+    [
         parent.parent().map(Path::to_path_buf),
         Some(parent.join("providers")),
     ]
     .into_iter()
     .flatten()
-    {
-        if has_provider_layout(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
+    .find(|candidate| has_provider_layout(candidate))
 }
 
 /// Whether `dir` is a root holding first-party provider crates in the layout
