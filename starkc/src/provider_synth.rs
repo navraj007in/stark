@@ -64,7 +64,7 @@ fn resource_nominal_source(nominal: &str, provider_resource: &str) -> String {
          // ZERO VARIANTS, deliberately: no expression and no pattern can manufacture a value, so\n\
          // opacity is structural. Instances come only from a provider call, and lower to\n\
          // MirTy::HostResource -- never to this enum's own representation (CD-234).\n\
-         enum {nominal} {{ }}\n"
+         pub enum {nominal} {{ }}\n"
     )
 }
 

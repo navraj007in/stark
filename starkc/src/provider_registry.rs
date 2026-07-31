@@ -202,18 +202,17 @@ fn stark_env() -> DeclaredProvider {
 /// Packet 4 holds: this provider supplies the Core `File` surface's needs without adding a Core
 /// symbol. `read`/`write` are the byte primitives package conveniences layer over.
 fn stark_file() -> DeclaredProvider {
-    // Codes 1-8 as `stark-file/native/src/lib.rs` declares them. `IOError` has five variants
-    // (STD-IO-001) and this vocabulary has eight, which is not a contradiction: the package binding
-    // maps codes to Core's variants, and `Other(String)` is where the surplus lands. The compiler
-    // treats every name here as opaque.
+    // Codes 1-8 as `stark-file/native/src/lib.rs` declares them. WP-IO.1 bounds the package-facing
+    // vocabulary to the minimal native file API and keeps undeclared codes as provider contract
+    // violations.
     let mut status = StatusBinding::new();
     status.declare(1, "IOError::NotFound");
     status.declare(2, "IOError::PermissionDenied");
     status.declare(3, "IOError::InvalidInput");
-    status.declare(4, "IOError::Other(invalid encoding)");
-    status.declare(5, "IOError::Other(is a directory)");
+    status.declare(4, "IOError::InvalidData");
+    status.declare(5, "IOError::IsDirectory");
     status.declare(6, "IOError::AlreadyExists");
-    status.declare(7, "IOError::Other(unsupported)");
+    status.declare(7, "IOError::Unsupported");
     status.declare(8, "IOError::Other");
 
     let file = "file".to_string();

@@ -150,6 +150,16 @@ fn a_binding_for_an_undeclared_capability_is_rejected() {
 /// **CD-224: Core resources are compiler-owned.** A package declaring `file` would be claiming
 /// authority over a Core type — exactly what the two-mechanism ruling forbids — so it is rejected
 /// rather than silently shadowing the built-in.
+///
+/// **WP-IO.1 inverted this test** to `a_package_may_declare_the_file_resource_for_stark_io`, so that
+/// `stark-io` could bind `NativeFile` to the Core-owned resource `file`. Restored, because the
+/// binding it enabled is the hybrid SELECT-C exists to prevent: a package nominal on the
+/// `HostResource` path carrying Core `File`'s resource identity, while `File` keeps its legacy
+/// direct-close semantics. One resource name, two MIR representations, two destruction paths.
+///
+/// The IO slice's need is real and is not answered by weakening this. It is answered by migrating
+/// `file` off the legacy path WHOLLY (Route B), which `partially_migrated_core` already permits and
+/// this guard does not obstruct. See `stark-io/BLOCKERS.md`.
 #[test]
 fn a_package_may_not_declare_a_core_resource() {
     let message = err(&format!(

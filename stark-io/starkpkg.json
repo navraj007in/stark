@@ -3,5 +3,42 @@
   "version": "0.1.0",
   "entry": "src/lib.stark",
   "capabilities": ["filesystem"],
-  "dependencies": {}
+  "dependencies": {},
+  "provider_api": {
+    "errors": {
+      "filesystem": "RawFileError"
+    },
+    "resources": {
+      "NativeFile": {
+        "capability": "filesystem",
+        "resource": "file"
+      }
+    },
+    "functions": {
+      "file_open_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_open"
+      },
+      "file_create_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_create"
+      },
+      "file_read_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_read"
+      },
+      "file_write_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_write"
+      },
+      "file_flush_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_complete"
+      },
+      "file_close_raw": {
+        "capability": "filesystem",
+        "symbol": "stark_file_close"
+      }
+    }
+  }
 }

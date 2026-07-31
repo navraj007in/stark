@@ -326,7 +326,13 @@ fn resolve_resource_items(
             .find_map(|(idx, item)| match &item.kind {
                 crate::hir::ItemKind::Enum { name, .. }
                 | crate::hir::ItemKind::Struct { name, .. }
-                    if span_text(file, *name) == nominal =>
+                    if span_text(
+                        hir.item_files
+                            .get(&crate::hir::ItemId(idx as u32))
+                            .map(|f| f.as_ref())
+                            .unwrap_or(file),
+                        *name,
+                    ) == nominal =>
                 {
                     Some(crate::hir::ItemId(idx as u32))
                 }
@@ -344,7 +350,9 @@ fn resolve_resource_items(
 }
 
 fn span_text(file: &crate::source::SourceFile, span: crate::source::Span) -> &str {
-    &file.src[span.lo as usize..span.hi as usize]
+    file.src
+        .get(span.lo as usize..span.hi as usize)
+        .unwrap_or("")
 }
 
 fn select_provider_closes(

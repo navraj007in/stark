@@ -1,5 +1,68 @@
 # STARK Compiler STATE
 
+## CD-290 — WP-IO.1 lands with its guards intact; its e2e is blocked on Route B (2026-07-31)
+
+**The minimal native file-IO slice is committed. Its end-to-end test is `#[ignore]`d, deliberately,
+and that is the honest state rather than a failure to finish.**
+
+The slice binds `stark-io`'s nominal `NativeFile` to the provider resource `file`. That resource is
+Core-owned (`ResourceRegistry::builtin()` maps it to `LegacyCore(CoreType::File)`). The slice first
+ran by removing three compiler guards:
+
+| Guard | Removal |
+| --- | --- |
+| CD-224, `package.rs` — a package may not declare a Core resource | deleted outright |
+| MIR-0027, `verify.rs` — a Core-owned resource may not be a `HostResource` | `&& !(provider == "stark-std-file" && resource == "file")` |
+| A11 §5 — MIR owns a resource's only close | early `continue` on the same string pair |
+
+Together those put `file` on the `HostResource` path for selected rules while it kept legacy
+direct-close semantics: **one resource name, two MIR representations, two destruction paths.** That
+is the half-migration SELECT-C exists to refuse and that CD-235's `partially_migrated_core` was
+written to catch. The in-code comment beside the first exemption argues specifically against
+named exemptions, because one "would still exempt a program that HAD migrated, which is the very
+state the guard exists to catch" — a string pair is strictly weaker than the form it rejects.
+
+**All three guards are restored, and `a_package_may_not_declare_a_core_resource` is restored to its
+original assertion** (it had been inverted to `a_package_may_declare_the_file_resource_for_stark_io`).
+`io_minimal_executes_from_source_through_stark_io_package` is `#[ignore]`d with the reason on it.
+
+**What unblocks it:** migrating `file` off the legacy path WHOLLY — Route B's representation and
+lifecycle work. A complete migration is already permitted; only the partial one is refused. When it
+lands, delete the attribute; nothing in `stark-io` needs to change. Recorded in
+`stark-io/BLOCKERS.md`, whose "Closed in the minimal native slice" heading was corrected to
+"Written" — it claimed a closure the guards do not allow.
+
+Also in this change, from the same work: cross-file item resolution in `native_build.rs`
+(`resolve_resource_items` read spans against the entry file), a non-panicking `span_text`, `pub` on
+the synthesized resource nominal, and the `stark-file` status vocabulary. The `IOError::` labels in
+that vocabulary name variants Core's `IOError` does not have; they are consumed only as text in a
+generated-code comment (`emit_provider.rs`), so this is a naming defect, not a conformance break —
+left as-is and recorded here rather than fixed silently inside another change.
+
+EVIDENCE: `a11_host_resource` 38/38, `c788_provider_api_manifest` 10/10, `c788_starkc_build` 4 passed
+/ 1 ignored, `c64_platform_matrix` 15/15. fmt clean, clippy clean.
+
+## CD-289 — a guard test matched the layout the guard's own decision introduced (2026-07-31)
+
+**CI had been red for four consecutive commits (CD-284, CD-285, CD-286, CD-287) on one test**, on
+linux-x64, macos-arm64 and windows-x64. Not one of those changes caused it in the sense the run
+implied, and the switch under test worked correctly throughout.
+
+`portability_installed_runtime_requirement_refuses_the_checkout_fallback` asserted that under
+`REQUIRE_INSTALLED_RUNTIME` no attempted path ends with `starkc/stark-runtime` — an accurate way to
+name the checkout fallback until **CD-284 introduced the installed MIRROR layout**,
+`<prefix>/lib/stark/starkc/stark-runtime`, which mirrors the repository precisely so that the runtime
+crate and the provider crates resolve `stark-provider-abi` to one path. That legitimate installed
+candidate ends with the same two components, so the guard began rejecting the very layout the
+decision it guards had just added.
+
+Fixed at the assertion, which now compares against the checkout path itself
+(`<starkc manifest dir>/stark-runtime`) rather than a suffix, plus a check that the installed
+locations are still attempted and reported. A suffix was always the wrong instrument for identifying
+one specific directory.
+
+EVIDENCE: `c64_platform_matrix` 15/15 locally; the three-platform result is the CI run on this commit.
+
 ## CD-287 — every `MirTy` predicate that asserts a property is now exhaustive (2026-07-31)
 
 **Generalises CD-240 from the instance to the shape.** CD-240 found `MirTy::HostResource` classified

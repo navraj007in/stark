@@ -32,6 +32,13 @@ fn write_package(root: &std::path::Path, manifest: &str, source: &str) {
     std::fs::write(src.join("main.stark"), source).expect("write source");
 }
 
+fn write_package_with_entry(root: &std::path::Path, manifest: &str, entry: &str, source: &str) {
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create package src dir");
+    std::fs::write(root.join("starkpkg.json"), manifest).expect("write manifest");
+    std::fs::write(root.join(entry), source).expect("write source");
+}
+
 fn tcp_manifest(name: &str) -> String {
     format!(
         r#"{{
@@ -435,6 +442,152 @@ fn a_resource_bearing_provider_api_is_no_longer_refused_categorically() {
         !rendered.contains("resource-bearing provider signature"),
         "the categorical resource refusal must be gone; got:\n{rendered}"
     );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **BLOCKED ON ROUTE B, not on this test.** WP-IO.1's end-to-end: real STARK source opening,
+/// writing, reading and closing a file through the `stark-io` package and the first-party
+/// filesystem provider.
+///
+/// It cannot pass while Core `File` stays on the legacy `MirTy::Core` path. `stark-io`'s manifest
+/// binds `NativeFile` to the Core-owned resource `file`, and CD-224 rejects that: a package may not
+/// claim a Core resource. The slice originally passed by deleting that guard and adding two
+/// string-keyed exemptions to the verifier, which produced exactly the hybrid SELECT-C forbids —
+/// `file` reachable as a `HostResource` for some rules while keeping legacy direct-close semantics.
+/// One resource name, two MIR representations, two destruction paths. Those three removals are
+/// restored; this test is ignored rather than kept green by keeping them out.
+///
+/// **What unblocks it:** migrating `file` off the legacy path WHOLLY — Route B's representation and
+/// lifecycle work. `partially_migrated_core` already permits a complete migration; it is the partial
+/// one that is refused. Nothing here needs to change when that lands: delete this attribute.
+///
+/// The rest of the slice is untouched and still exercised — the source, the provider surface, the
+/// manifest, and the other four tests in this file.
+#[test]
+#[ignore = "WP-IO.1 e2e requires Core `file` to migrate off the legacy path (Route B); \
+            passing it today needs the CD-224 and MIR-0027 guards removed"]
+fn io_minimal_executes_from_source_through_stark_io_package() {
+    let root = fixture_root("io-minimal");
+    let io_dir = root.join("io-data");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&io_dir).expect("create io data dir");
+    let vendored_io = root.join("vendor").join("stark-io");
+    std::fs::create_dir_all(vendored_io.join("src")).expect("create vendored stark-io");
+    std::fs::copy(
+        repo_root().join("stark-io").join("starkpkg.json"),
+        vendored_io.join("starkpkg.json"),
+    )
+    .expect("copy stark-io manifest");
+    std::fs::copy(
+        repo_root().join("stark-io").join("src").join("lib.stark"),
+        vendored_io.join("src").join("lib.stark"),
+    )
+    .expect("copy stark-io source");
+    let file_path = io_dir.join("sample.txt");
+    let file_path = file_path
+        .to_str()
+        .expect("fixture path must be valid utf8")
+        .replace('\\', "\\\\");
+    let missing_path = io_dir
+        .join("missing.txt")
+        .to_str()
+        .expect("fixture path must be valid utf8")
+        .replace('\\', "\\\\");
+
+    write_package_with_entry(
+        &root,
+        r#"{
+  "name": "c788_io_minimal",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": ["filesystem"],
+  "dependencies": {
+    "stark_io": {
+      "package": "stark-io",
+      "path": "vendor/stark-io"
+    }
+  }
+}"#,
+        "src/main.stark",
+        &format!(
+            r#"use stark_io::NativeFile;
+use stark_io::FileError;
+use stark_io::file_close;
+use stark_io::file_read;
+use stark_io::open_file;
+use stark_io::read_text;
+use stark_io::write_text;
+
+fn main() {{
+    let path = "{file_path}";
+    match write_text(path, "hello stark") {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("write_text failed"); }}
+    }}
+
+    match read_text(path, 64u64) {{
+        Ok(text) => {{
+            if text.as_str() != "hello stark" {{
+                panic("read_text mismatch");
+            }}
+        }}
+        Err(_) => {{ panic("read_text failed"); }}
+    }}
+
+    let file: NativeFile;
+    match open_file(path) {{
+        Ok(value) => {{ file = value; }}
+        Err(_) => {{ panic("open failed"); return; }}
+    }}
+    let mut buffer: [UInt8; 5] = [0u8; 5];
+    {{
+        let out = &mut buffer[0u64..5u64];
+        match file_read(&file, out) {{
+            Ok(count) => {{
+                if count != 5u64 {{
+                    panic("read count mismatch");
+                }}
+            }}
+            Err(_) => {{ panic("read failed"); }}
+        }}
+    }}
+    if buffer[0u64] != 104u8 || buffer[1u64] != 101u8 || buffer[2u64] != 108u8 || buffer[3u64] != 108u8 || buffer[4u64] != 111u8 {{
+        panic("read bytes mismatch");
+    }}
+    match file_close(file) {{
+        Ok(_) => {{ }}
+        Err(_) => {{ panic("close failed"); }}
+    }}
+
+    match open_file("{missing_path}") {{
+        Ok(_file) => {{ panic("missing file opened"); }}
+        Err(FileError::NotFound) => {{ println("io-minimal-ok"); }}
+        Err(_) => {{ panic("missing file wrong error"); }}
+    }}
+}}"#
+        ),
+    );
+
+    let result = build_current_package(
+        &root,
+        &BuildCommandOptions {
+            no_build_cache: true,
+            ..BuildCommandOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("stark-io source package build must succeed: {error:?}"));
+
+    let output = std::process::Command::new(&result.artifact_path)
+        .output()
+        .unwrap_or_else(|error| panic!("run stark-io minimal binary: {error}"));
+    assert!(
+        output.status.success(),
+        "built program failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout.trim(), "io-minimal-ok");
 
     let _ = std::fs::remove_dir_all(&root);
 }

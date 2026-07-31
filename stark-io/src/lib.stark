@@ -1,26 +1,20 @@
-// stark-io v0.1 API shape.
+// stark-io minimal native file I/O slice.
 //
-// Host-backed operations trap in this source package until ordinary STARK package APIs can bind
-// resource-carrying Native Provider ABI calls. See ../BLOCKERS.md.
+// `NativeFile` is synthesized from starkpkg.json provider_api as an opaque host-resource nominal bound to
+// the first-party filesystem provider resource `file`.
 
-pub enum IOError {
+pub enum FileError {
     NotFound,
     PermissionDenied,
-    AlreadyExists,
     InvalidInput,
     InvalidData,
     IsDirectory,
-    NotDirectory,
-    DirectoryNotEmpty,
-    ReadOnlyFilesystem,
-    TooManyOpenFiles,
-    FileTooLarge,
-    LimitExceeded,
-    Interrupted,
-    WouldBlock,
+    AlreadyExists,
     Unsupported,
-    UnexpectedEnd,
-    Other(String),
+    LimitExceeded,
+    UnexpectedEof,
+    WriteZero,
+    Other,
 }
 
 pub enum SeekFrom {
@@ -60,9 +54,8 @@ pub struct OpenOptions {
     pub create_new: Bool,
 }
 
-pub struct File {
-    _opaque: UInt64,
-}
+const READ_TO_END_CHUNK_SIZE: UInt64 = 8192u64;
+const U64_MAX: UInt64 = 18446744073709551615u64;
 
 pub fn default_open_options() -> OpenOptions {
     OpenOptions {
@@ -119,4 +112,245 @@ pub fn path_is_absolute(path: &str) -> Bool {
         return true;
     }
     false
+}
+
+fn map_io_error(error: RawFileError) -> FileError {
+    match error {
+        RawFileError::NotFound => FileError::NotFound,
+        RawFileError::PermissionDenied => FileError::PermissionDenied,
+        RawFileError::InvalidInput => FileError::InvalidInput,
+        RawFileError::InvalidData => FileError::InvalidData,
+        RawFileError::IsDirectory => FileError::IsDirectory,
+        RawFileError::AlreadyExists => FileError::AlreadyExists,
+        RawFileError::Unsupported => FileError::Unsupported,
+        RawFileError::Other => FileError::Other,
+    }
+}
+
+fn is_continuation(byte: UInt8) -> Bool {
+    byte >= 0x80u8 && byte <= 0xBFu8
+}
+
+fn codepoint_char(codepoint: UInt32) -> Result<Char, FileError> {
+    if codepoint > 0x10FFFFu32 {
+        return Err(FileError::InvalidData);
+    }
+    if codepoint >= 0xD800u32 && codepoint <= 0xDFFFu32 {
+        return Err(FileError::InvalidData);
+    }
+    match Char::from_u32(codepoint) {
+        Some(ch) => Ok(ch),
+        None => Err(FileError::InvalidData),
+    }
+}
+
+fn decode_valid_utf8(bytes: &Vec<UInt8>) -> Result<String, FileError> {
+    let mut out = String::new();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        if b0 < 0x80u8 {
+            out.push(codepoint_char(b0 as UInt32)?);
+            i = i + 1u64;
+        } else if b0 >= 0xC2u8 && b0 <= 0xDFu8 {
+            if i + 1u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x1Fu32) << 6u32) | (bytes[i + 1u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 2u64;
+        } else if b0 == 0xE0u8 {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 >= 0xE1u8 && b0 <= 0xECu8 {
+            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 == 0xEDu8 {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(bytes[i + 2u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 >= 0xEEu8 && b0 <= 0xEFu8 {
+            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 3u64;
+        } else if b0 == 0xF0u8 {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else if b0 >= 0xF1u8 && b0 <= 0xF3u8 {
+            if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else if b0 == 0xF4u8 {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+                return Err(FileError::InvalidData);
+            }
+            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            out.push(codepoint_char(code)?);
+            i = i + 4u64;
+        } else {
+            return Err(FileError::InvalidData);
+        }
+    }
+    Ok(out)
+}
+
+pub fn open_file(path: &str) -> Result<NativeFile, FileError> {
+    match file_open_raw(path.bytes()) {
+        Ok(file) => Ok(file),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn create_file(path: &str) -> Result<NativeFile, FileError> {
+    match file_create_raw(path.bytes()) {
+        Ok(file) => Ok(file),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn file_read(file: &NativeFile, buffer: &mut [UInt8]) -> Result<UInt64, FileError> {
+    match file_read_raw(file, buffer) {
+        Ok(result) => Ok(result.0),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn file_write(file: &NativeFile, data: &[UInt8]) -> Result<UInt64, FileError> {
+    match file_write_raw(file, data) {
+        Ok(count) => Ok(count),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn file_flush(file: &NativeFile) -> Result<(), FileError> {
+    match file_flush_raw(file) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn file_close(file: NativeFile) -> Result<(), FileError> {
+    match file_close_raw(file) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+pub fn file_write_all(file: &NativeFile, data: &[UInt8]) -> Result<(), FileError> {
+    let mut written: UInt64 = 0u64;
+    while written < data.len() {
+        let remaining = &data[written..data.len()];
+        let count = file_write(file, remaining)?;
+        if count == 0u64 {
+            return Err(FileError::WriteZero);
+        }
+        written = written + count;
+    }
+    Ok(())
+}
+
+pub fn file_write_str(file: &NativeFile, text: &str) -> Result<UInt64, FileError> {
+    file_write(file, text.bytes())
+}
+
+pub fn file_read_to_end(file: &NativeFile, max_bytes: UInt64) -> Result<Vec<UInt8>, FileError> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut out_len: UInt64 = 0u64;
+    let mut scratch: [UInt8; 8192] = [0u8; 8192];
+    let mut done = false;
+    while !done {
+        let read_count: UInt64;
+        {
+            let buffer = &mut scratch[0u64..READ_TO_END_CHUNK_SIZE];
+            read_count = file_read(file, buffer)?;
+        }
+        if read_count == 0u64 {
+            done = true;
+        } else if out_len > max_bytes || read_count > max_bytes - out_len {
+            return Err(FileError::LimitExceeded);
+        } else {
+            let mut i: UInt64 = 0u64;
+            while i < read_count {
+                out.push(scratch[i]);
+                i = i + 1u64;
+            }
+            out_len = out_len + read_count;
+        }
+    }
+    Ok(out)
+}
+
+pub fn file_read_to_string(file: &NativeFile, max_bytes: UInt64) -> Result<String, FileError> {
+    let bytes = file_read_to_end(file, max_bytes)?;
+    decode_valid_utf8(&bytes)
+}
+
+pub fn read(path: &str, max_bytes: UInt64) -> Result<Vec<UInt8>, FileError> {
+    let file = open_file(path)?;
+    let result = file_read_to_end(&file, max_bytes);
+    match result {
+        Ok(bytes) => {
+            file_close(file)?;
+            Ok(bytes)
+        }
+        Err(error) => {
+            let _close_result = file_close(file);
+            Err(error)
+        }
+    }
+}
+
+pub fn read_text(path: &str, max_bytes: UInt64) -> Result<String, FileError> {
+    let file = open_file(path)?;
+    let result = file_read_to_string(&file, max_bytes);
+    match result {
+        Ok(text) => {
+            file_close(file)?;
+            Ok(text)
+        }
+        Err(error) => {
+            let _close_result = file_close(file);
+            Err(error)
+        }
+    }
+}
+
+pub fn write(path: &str, data: &[UInt8]) -> Result<(), FileError> {
+    let file = create_file(path)?;
+    let result = file_write_all(&file, data);
+    match result {
+        Ok(_) => {
+            file_close(file)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _close_result = file_close(file);
+            Err(error)
+        }
+    }
+}
+
+pub fn write_text(path: &str, text: &str) -> Result<(), FileError> {
+    write(path, text.bytes())
 }
