@@ -2797,3 +2797,92 @@ C2.8–C2.11 disposition.
   nested position, all rejected; primitives, a user nominal with both impls, a generic function
   with both bounds, and the unconstrained VALUE position, all accepted.
 - **Owning gate:** was WP-C6.3 (carried at C6 closure); closed here.
+
+## DEV-121 — engine value representation diverges from the normalized type (OPEN; instance fixed CD-305, class open)
+
+- **Normative expectation:** `03-Type-System.md` — a shared reference (`&T`, `&[T]`) is `Copy`.
+  Passing one to a function copies it; the source binding stays live. The governing rule this
+  entry establishes: **after expression typing, Copy/move behaviour — and the runtime
+  representation that carries it — is determined exclusively by the normalized semantic type,
+  never by the expression that produced the value.** It binds the checker, MIR lowering, the
+  native backend, and **each interpreter's value model** equally.
+- **Current behaviour:** `String::bytes()` is declared `&[UInt8]` but the HIR interpreter returned
+  `Value::Vec` — an owned, non-`Copy` runtime value. Passing it therefore MOVED it, emptying the
+  caller's local, and any later use trapped with "use of unavailable value". The checker accepted
+  the program and MIR emitted `copy` for both call operands; the HIR engine alone was wrong.
+  `bytes()` shared an implementation arm with `into_bytes()` (`Vec<UInt8>`, genuinely owned), so
+  one arm served two types with opposite ownership.
+- **Layer, established not assumed:** the emitted MIR for the reproducer is
+  `_9 = call use_len@[](copy _4)` / `_11 = call use_len@[](copy _4)` — `copy`, both calls. The
+  defect was below MIR, in the interpreter's value model. An earlier framing of this defect as
+  "emitted as a consuming call operand" was wrong and is corrected here.
+- **Classification:** CORPUS-GAP, not oracle-blind. The HIR engine diverged from MIR and native, so
+  differential testing could have caught it given matrix-shaped input; no input exercised the shape.
+  The sentinel matrix is therefore a permanent corpus obligation, not one-time DEV evidence.
+- **User impact:** a valid program is accepted and then traps at run time, with a message naming
+  neither the moved value nor (before CD-306) the right file. Found by `stark-mime`, `stark-query`
+  and `stark-form`, whose consumers all failed; `stark-percent` passed only because it indexes its
+  view rather than passing it.
+- **Security/soundness impact:** no memory unsafety — the interpreter detects the empty slot and
+  traps. The soundness cost is to the type system's contract: two runtime representations claimed
+  one static type and only one obeyed its ownership rule.
+- **Workaround:** none required, and none permitted in package code — copying a view into an owned
+  `Vec`, or inlining a helper to avoid a call, hides the defect the packages exist to expose.
+- **Instance fixed:** CD-305 — `bytes()` now materialises a temp place and returns
+  `Value::Slice`; `into_bytes()` keeps `Value::Vec`. Six-case three-engine regression, including a
+  move-semantics control proving owned values still move (E0100).
+- **Why the class stays open:** other producers are unaudited. Every intrinsic whose declared
+  return is `&T`/`&[T]` must be checked against its runtime representation, and the invariant that
+  would have caught this on the first execution (INV-VALUE-REP-001) does not exist yet.
+- **Sibling, not dual:** `P1-COMPILER-001` / `DEFECT-C788-LOOP-TEMP` (DEV-123) shares the
+  accepted-but-traps SYMPTOM class and nothing else — different engine, different layer, different
+  mechanism (piecewise-emptied storage vs. wrong value kind). Recorded so the two are not conflated.
+- **Proposed disposition:** WP-COPY-CANON Phases 1–3 — producer audit from the method registry,
+  per-engine canonicalization, and INV-VALUE-REP-001.
+- **Owning gate:** WP-COPY-CANON.
+
+## DEV-122 — span source-identity gap (OPEN, guarded; instance fixed CD-306)
+
+- **Normative expectation:** a diagnostic or trap location identifies the source it belongs to. A
+  span offset is meaningless without the identity of the file it indexes.
+- **Current behaviour:** spans carry no source identity of their own. Rendering selects a file by
+  convention and indexes it, so a span from one file resolved against another produces a location
+  in the wrong file. `SourceFile::line_col` CLAMPS an out-of-range offset to end-of-file, so the
+  result is not a visible failure but a well-formed, plausible, wrong location.
+- **Observed:** a runtime fault inside `stark-mime` reported at `stark-mime-consumer/src/main.stark:31:1`
+  — line 31 of a 21-line file, in the wrong package. Second instance of the class after CD-302,
+  where the test runner sliced a dependency's span against the root file and panicked.
+- **User impact:** measurable and demonstrated. On DEV-121 the wrong file sent the investigation to
+  the wrong shape entirely: the span pointed into the consumer, so the first characterisation
+  described the consumer's use of a match binding, and a reproducer built from that description
+  passed. The real fault was three call frames away.
+- **Security/soundness impact:** none direct. The cost is diagnostic trust — a location that is
+  confidently wrong is worse than one that is absent, because a reader cannot tell them apart.
+- **Instance fixed:** CD-306 — runtime rendering now uses the file DEV-113-B already stamps on the
+  error, plus a backstop that refuses to locate a span past end-of-file.
+- **Why it stays open:** the backstop checks only `span.lo > src.len()`. It does not check
+  `start <= end`, nor that the resolved column lies within the resolved line, and compile-time and
+  runtime rendering remain SEPARATE paths — so a future caller can reintroduce the fault on either.
+- **Proposed disposition:** WP-COPY-CANON Phase 4 — one checked `resolve_span` used by both paths,
+  never panicking and never falling back to the root source. The platform correction (mandatory
+  `SourceId` on every span, resolution total by construction) is filed as a separate future WP; the
+  interim guard must not be mistaken for it.
+- **Owning gate:** WP-COPY-CANON Phase 4, then the SourceId WP.
+
+## DEV-123 — `P1-COMPILER-001` / `DEFECT-C788-LOOP-TEMP`: repeated enum-result assignment retained a live generated slot (CLOSED by MIR A12, CD-265/CD-269)
+
+- **Registered for findability, not as a new finding.** This defect was governed and discharged
+  before this entry existed; it was recorded only inside `WP-C7-P1-REST-REPORT.md`, so the ledger
+  could not answer a query about it. `P1-COMPILER-001` is a LOCAL LABEL used by the P1 workload
+  report; `DEFECT-C788-LOOP-TEMP` is the same defect.
+- **Normative expectation:** storage for a place emptied piecewise must end when its units are
+  accounted for.
+- **Root cause:** **any** place whose storage is emptied piecewise — not temporaries specifically.
+- **Trail:** recorded CD-263; ruled a non-blocking C7 deviation CD-264; fixed by MIR amendment A12
+  (`Statement::StorageDead`, MIR `0.2` → `0.3`) at CD-265, approved retrospectively as CE3; a
+  surviving `?`-in-a-loop instance — the shape A12's sixteen-shape matrix missed, because
+  `lower_try` builds its own scrutinee temporary — found by `stark-json` and fixed at CD-269.
+- **Regression:** `starkc/tests/a12_storage_end_shapes.rs`.
+- **Relationship to DEV-121:** sibling in SYMPTOM class only (accepted-but-traps). Different engine,
+  layer and mechanism; not a shared root cause and not a dual.
+- **Owning gate:** closed under C7; full argument in `mir-amendment-A12-storage-end.md`.
