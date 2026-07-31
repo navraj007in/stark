@@ -1,0 +1,144 @@
+pub enum GlobStyle {
+    Unix,
+    Windows,
+}
+
+pub enum GlobError {
+    UnterminatedClass(UInt64),
+    EmptyClass(UInt64),
+}
+
+pub fn matches(pattern: &str, text: &str) -> Result<Bool, GlobError> {
+    matches_with_style(GlobStyle::Unix, pattern, text)
+}
+
+pub fn matches_with_style(style: GlobStyle, pattern: &str, text: &str) -> Result<Bool, GlobError> {
+    validate(pattern)?;
+    let pattern_bytes = bytes_to_vec(pattern.bytes());
+    let text_bytes = bytes_to_vec(text.bytes());
+    Ok(match_from(&style, &pattern_bytes, 0u64, &text_bytes, 0u64))
+}
+
+fn match_from(style: &GlobStyle, pattern: &Vec<UInt8>, p: UInt64, text: &Vec<UInt8>, t: UInt64) -> Bool {
+    if p == pattern.len() {
+        return t == text.len();
+    }
+
+    let token = pattern[p];
+    if token == 42u8 {
+        return match_star(style, pattern, p + 1u64, text, t);
+    }
+    if t == text.len() {
+        return false;
+    }
+    if token == 63u8 {
+        if is_separator(style, text[t]) {
+            return false;
+        }
+        return match_from(style, pattern, p + 1u64, text, t + 1u64);
+    }
+    if token == 91u8 {
+        if is_separator(style, text[t]) {
+            return false;
+        }
+        let close = find_class_end(pattern, p).unwrap();
+        if class_matches(pattern, p + 1u64, close, text[t]) {
+            return match_from(style, pattern, close + 1u64, text, t + 1u64);
+        }
+        return false;
+    }
+    if token == text[t] {
+        return match_from(style, pattern, p + 1u64, text, t + 1u64);
+    }
+    false
+}
+
+fn match_star(
+    style: &GlobStyle,
+    pattern: &Vec<UInt8>,
+    next: UInt64,
+    text: &Vec<UInt8>,
+    start: UInt64,
+) -> Bool {
+    if match_from(style, pattern, next, text, start) {
+        return true;
+    }
+    let mut i = start;
+    while i < text.len() {
+        if is_separator(style, text[i]) {
+            return false;
+        }
+        i = i + 1u64;
+        if match_from(style, pattern, next, text, i) {
+            return true;
+        }
+    }
+    false
+}
+
+fn validate(pattern: &str) -> Result<(), GlobError> {
+    let bytes = bytes_to_vec(pattern.bytes());
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 91u8 {
+            let end = find_class_end(&bytes, i);
+            if !end.is_some() {
+                return Err(GlobError::UnterminatedClass(i));
+            }
+            if end.unwrap() == i + 1u64 {
+                return Err(GlobError::EmptyClass(i));
+            }
+            i = end.unwrap();
+        }
+        i = i + 1u64;
+    }
+    Ok(())
+}
+
+fn find_class_end(pattern: &Vec<UInt8>, open: UInt64) -> Option<UInt64> {
+    let mut i = open + 1u64;
+    while i < pattern.len() {
+        if pattern[i] == 93u8 {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn class_matches(pattern: &Vec<UInt8>, start: UInt64, end: UInt64, value: UInt8) -> Bool {
+    let mut i = start;
+    while i < end {
+        if i + 2u64 < end && pattern[i + 1u64] == 45u8 {
+            if value >= pattern[i] && value <= pattern[i + 2u64] {
+                return true;
+            }
+            i = i + 3u64;
+        } else {
+            if pattern[i] == value {
+                return true;
+            }
+            i = i + 1u64;
+        }
+    }
+    false
+}
+
+fn is_separator(style: &GlobStyle, byte: UInt8) -> Bool {
+    match *style {
+        GlobStyle::Unix => byte == 47u8,
+        GlobStyle::Windows => byte == 47u8 || byte == 92u8,
+    }
+}
+
+fn bytes_to_vec(bytes: &[UInt8]) -> Vec<UInt8> {
+    let mut out = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        out.push(bytes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+mod tests;

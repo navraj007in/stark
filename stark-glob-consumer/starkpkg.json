@@ -1,0 +1,8 @@
+{
+  "name": "stark-glob-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_glob": { "package": "stark-glob", "path": "../stark-glob", "version": "0.1.0" }
+  }
+}

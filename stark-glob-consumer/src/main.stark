@@ -1,0 +1,16 @@
+use stark_glob::matches;
+
+fn main() {
+    match matches("src/*.stark", "src/lib.stark") {
+        Ok(value) => {
+            if value {
+                println("match");
+            } else {
+                panic("expected match");
+            }
+        }
+        Err(_) => {
+            panic("unexpected glob error");
+        }
+    }
+}

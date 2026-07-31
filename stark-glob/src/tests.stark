@@ -1,0 +1,91 @@
+use super::matches;
+use super::matches_with_style;
+use super::GlobError;
+use super::GlobStyle;
+
+fn assert_match(pattern: &str, text: &str) {
+    match matches(pattern, text) {
+        Ok(true) => {}
+        Ok(false) => {
+            panic("expected glob match");
+        }
+        Err(_) => {
+            panic("expected valid glob");
+        }
+    }
+}
+
+fn assert_no_match(pattern: &str, text: &str) {
+    match matches(pattern, text) {
+        Ok(false) => {}
+        Ok(true) => {
+            panic("expected glob miss");
+        }
+        Err(_) => {
+            panic("expected valid glob");
+        }
+    }
+}
+
+fn test_literal_star_and_question() {
+    assert_match("*.stark", "main.stark");
+    assert_match("src/*.stark", "src/lib.stark");
+    assert_no_match("src/*.stark", "src/lib/test.stark");
+    assert_match("file?.txt", "file1.txt");
+    assert_no_match("file?.txt", "file12.txt");
+}
+
+fn test_character_classes() {
+    assert_match("file[0-9].txt", "file7.txt");
+    assert_no_match("file[0-9].txt", "filea.txt");
+    assert_match("[abc].stark", "b.stark");
+    assert_match("file[-_].txt", "file-.txt");
+    assert_match("file[-_].txt", "file_.txt");
+}
+
+fn test_separator_policy() {
+    assert_no_match("src*lib", "src/lib");
+    match matches_with_style(GlobStyle::Windows, "src*lib", "src\\lib") {
+        Ok(false) => {}
+        _ => {
+            panic("windows star must not cross separator");
+        }
+    }
+    match matches_with_style(GlobStyle::Windows, "src?lib", "src\\lib") {
+        Ok(false) => {}
+        _ => {
+            panic("windows question must not match separator");
+        }
+    }
+}
+
+fn test_invalid_patterns() {
+    match matches("[abc", "a") {
+        Err(GlobError::UnterminatedClass(pos)) => {
+            if pos != 0u64 {
+                panic("unterminated class offset mismatch");
+            }
+        }
+        _ => {
+            panic("expected unterminated class");
+        }
+    }
+    match matches("[]", "") {
+        Err(GlobError::EmptyClass(pos)) => {
+            if pos != 0u64 {
+                panic("empty class offset mismatch");
+            }
+        }
+        _ => {
+            panic("expected empty class");
+        }
+    }
+}
+
+fn test_empty_and_full_consumption() {
+    assert_match("", "");
+    assert_no_match("", "x");
+    assert_match("*", "");
+    assert_match("*", "abc");
+    assert_no_match("*", "a/b");
+}
