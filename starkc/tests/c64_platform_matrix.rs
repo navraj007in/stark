@@ -594,11 +594,28 @@ fn portability_installed_runtime_requirement_refuses_the_checkout_fallback() {
 
     match strict {
         Err(starkc::native_toolchain::ToolchainError::RuntimeMissing { attempted }) => {
+            // **Identify the checkout by its actual path, not by a suffix.**
+            //
+            // This asserted `!p.ends_with("starkc/stark-runtime")`, which was an accurate way to
+            // name the checkout fallback until CD-284 introduced the installed MIRROR layout —
+            // `<prefix>/lib/stark/starkc/stark-runtime`, which mirrors the repository precisely so
+            // that this crate and the provider crates resolve `stark-provider-abi` to one path. That
+            // legitimate installed candidate ends with the same two components, so the guard began
+            // matching the very layout CD-284 added, and CI went red on this one test for four
+            // consecutive commits (CD-284, CD-285, CD-286, CD-287) while the switch itself worked.
+            //
+            // The checkout fallback is `<starkc manifest dir>/stark-runtime` and nothing else, so
+            // compare against exactly that. An integration test's `CARGO_MANIFEST_DIR` is the
+            // `starkc` package root — the same value `discover_runtime` uses to build it.
+            let checkout =
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime");
             assert!(
-                attempted
-                    .iter()
-                    .all(|p| !p.ends_with("starkc/stark-runtime")),
+                attempted.iter().all(|p| p != &checkout),
                 "the checkout must not even be attempted under the switch: {attempted:?}"
+            );
+            assert!(
+                !attempted.is_empty(),
+                "the installed locations must still be attempted and reported: {attempted:?}"
             );
         }
         other => panic!("expected RuntimeMissing under the switch, got {other:?}"),
