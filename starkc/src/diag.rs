@@ -160,6 +160,41 @@ impl Diagnostic {
     /// format. The result always ends with a newline.
     pub fn render(&self, default_file: &SourceFile) -> String {
         let file = self.file.as_deref().unwrap_or(default_file);
+        // **A span that does not fit this file cannot be located in it, and must not appear to be.**
+        //
+        // `SourceFile::line_col` clamps an out-of-range offset to end-of-file, so rendering a
+        // foreign span produced a well-formed, plausible, WRONG location — a 21-line file reporting
+        // a fault at line 31 of itself. A reader has no way to tell that apart from a real location,
+        // which is what makes it worse than printing nothing: it sends the reader into the wrong
+        // file with a specific line to look at.
+        //
+        // Reported as unlocatable instead. This is a backstop, not the fix: the fix is that spans
+        // carry their file (DEV-069/DEV-113-B) and callers pass it. When a span does slip through
+        // unattributed, this makes it visible rather than convincing.
+        if self.span.lo as usize > file.src.len() {
+            let mut out = String::new();
+            match &self.code {
+                Some(code) => {
+                    let _ = writeln!(
+                        out,
+                        "{}: [{}] {}",
+                        self.severity.heading(),
+                        code,
+                        self.message
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "{}: {}", self.severity.heading(), self.message);
+                }
+            }
+            let _ = writeln!(
+                out,
+                "  --> {}:<span {}..{} is not within this file; the diagnostic did not carry its \
+                 own source>",
+                file.name, self.span.lo, self.span.hi
+            );
+            return out;
+        }
         let (line, col) = file.line_col(self.span.lo);
         let line_str = line.to_string();
         // Right-align the line number into a min-width-2 column so the `|`
