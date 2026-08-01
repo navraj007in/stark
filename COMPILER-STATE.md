@@ -9006,3 +9006,66 @@ for CD-313..CD-316.
 FILES: starkc/src/mir/{mod,lower,verify}.rs, starkc/src/{interp,diag}.rs,
 starkc/tests/{copy_canon_matrix,operand_move_inventory,mir_verify}.rs, KNOWN-DEVIATIONS.md
 (DEV-121..DEV-128), STARKLANG/docs/compiler/work-packages/WP-SPAN-SOURCEID.md, COMPILER-STATE.md.
+
+### WP-COPY-CANON — CLOSED 2026-08-01 (Phase 5)
+
+**Verdict: the packet's law is enforced in one direction each for behaviour and representation,
+with the remainder filed rather than claimed.**
+
+**Phase 5 disposition.**
+- **Corpus: NO BUMP OWED, established rather than assumed.** `git diff 0bd4d54..HEAD` over
+  `tests/c6-corpus/` and `exec_snapshots` is EMPTY: no corpus case was added, changed or removed.
+  The packet's new tests are three plain `#[test]` files (`copy_canon_matrix.rs`,
+  `operand_move_inventory.rs`, and edits to `mir_verify.rs`). The generated corpus stays at
+  `EXPECTED_CORPUS_VERSION = "1.5.0"`.
+  **Two version claims made earlier in this session were wrong and are corrected here**: "locked at
+  1.2.0" was stale memory, and 1.3.0 is the FROZEN EXEC corpus re-pinned by CD-069 — a different
+  corpus from the C6 generated one. Three corpora with independent versions is the trap; naming
+  which one is meant is the fix.
+- **Qualification.** `qualify-first-party-packages.py` — the exact script CI runs — passed locally
+  at exit 0 over JSON, URL, Base64, Hex and UUID plus their consumers, including native builds.
+  Package suites: json 10/10, percent 3/3, ascii 4/4, and mime/query/form 10/11/11 where all three
+  previously had ZERO (CD-320).
+- **Reconciliation.** CD-307..CD-316 recorded under CD-317; CD-317..CD-322 recorded here.
+  **CD-295..CD-306 remain unrecorded** — other work, some from parallel sessions. That gap is
+  restated rather than quietly closed.
+
+**What the packet actually established.**
+
+| Half of the law | Invariant | Status |
+| --- | --- | --- |
+| Copy/move behaviour follows the type | INV-MOVE-001 (MIR-0036) | ENFORCED, unconditional |
+| The representation carrying it follows the type | INV-VALUE-REP-001 | NARROW — one direction, one pairing |
+
+INV-MOVE-001 found four latent defects on its first runs: DEV-124 (for-loop desugar, both forms),
+DEV-125 (provider status→`Result`, out-slot tuple, `?`'s `Err` payload), DEV-127
+(`borrow_set_receiver`). In every case the correct idiom sat beside the defect — `assign_provider_ok`
+read its slots through `read_place` then hand-built the `Move` wrapping them; `borrow_map_receiver`
+used `read_place` while its sibling three lines away did not.
+
+INV-VALUE-REP-001 is narrow deliberately and DEV-121 is recorded **NARROWED, not class-closed**,
+with residual exposure named: `&T` for scalar `T`, and the `Str`/`String` duality. Deferred by owner
+direction to `WP-VALUE-REP-TOTAL.md`.
+
+**Structural changes that outlive the packet.**
+- The `Copy` rule exists once (`mir::mir_ty_is_copy`), not twice. The comment claiming a test kept
+  the two copies in step named a test that **does not exist** (DEV-128).
+- Structural equality exists once (`values_equal`), not in four places with the `Str`/`String`
+  pairing in only one of them (DEV-130).
+- `operand_move_inventory` pins all eleven `Operand::Move` sites in `lower.rs` with a reason each,
+  so the next one fails at authoring time rather than when a workload of the right shape runs.
+- The matrix crosses producers with each other, not only with use modes (CD-316) — the axis whose
+  absence let DEV-126 reach CI.
+
+**Method finding, recorded because it cost the most.** Four instances of one defect reached CI one
+round at a time, because each local run covered a different slice: lib suite, then four iterator
+tests, then the provider workloads, then the C6 corpus, then `gate4a_prelude_traits`. The invariants
+were correct every time; the local evidence was too narrow for changes that constrain every lowering
+site and every binding site in the compiler.
+
+**Two defects were introduced by this packet's own fixes and are recorded as such**: CD-305's
+escaping-view flaw (found by the matrix on its first run) and DEV-131's over-broad string flattening
+(which broke `take`, one commit after its own DEV entry criticised name-keyed derefs).
+
+FOLLOW-UPS FILED, NOT PENDING: `WP-VALUE-REP-TOTAL.md` (owner-deferred),
+`WP-SPAN-SOURCEID.md` (CD-317). Neither blocks other work.
