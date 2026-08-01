@@ -314,6 +314,15 @@ mod inv_move_001 {
                     ty,
                     kind: LocalKind::Temp,
                 },
+                // `_3: UInt64` — a referent for the non-Copy fixture's `RefOf`. Without it that
+                // fixture had to point at `_2`, which is itself `&mut UInt64`, so the rvalue typed
+                // as `&mut &mut UInt64` against a `&mut UInt64` local and the body was rejected
+                // MIR-0004 before the operand rule was ever consulted. A control that fails for
+                // the wrong reason proves nothing about the rule it is controlling for.
+                LocalDecl {
+                    ty: MirTy::UInt64,
+                    kind: LocalKind::Temp,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -375,7 +384,7 @@ mod inv_move_001 {
         };
         let init = Rvalue::RefOf {
             mutable: true,
-            place: place(2),
+            place: place(3),
         };
         let program = program_reading(ty, init, Operand::Move(place(1)));
         if let Err(errors) = mir::verify::verify_program(&program) {

@@ -3001,3 +3001,25 @@ C2.8–C2.11 disposition.
 - **Matrix obligation (open):** the matrix should carry producer×producer chaining, not only
   producer×use-mode. Filed as follow-up work; this entry is the motivating program.
 - **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-127 — `borrow_set_receiver` moved a `&HashSet<T>` (CLOSED; found by INV-MOVE-001)
+
+- **Site:** `borrow_set_receiver` returned a hand-built `Operand::Move` of its `&HashSet<T>` temp.
+  A shared reference is `Copy`, so the move contradicts the type. Only the shared spellings fired;
+  `&mut` is not `Copy`.
+- **The tell:** `borrow_map_receiver`, its sibling three lines below, already read through
+  `read_place`. One of a matched pair diverged and nothing compared them.
+- **Reached by:** the whole DEV-116 HashSet corpus (6 C6 cases), `collection_iteration_order_agrees`,
+  `exhausted_set_iter_then_remove`, and the HashSet identity/ordering differentials.
+- **Resolution:** `read_place`, matching the sibling.
+- **Two test fixtures retyped, and why this is not test weakening:** `mir_verify`'s
+  `partial_move_of_one_field_leaves_sibling_readable` and
+  `dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not` hand-build MIR that moves
+  `Int32` locals. `Int32` was incidental filler in both — the subjects are V-MOVE-1 field precision
+  and MIR-0007/DEV-117's exemption — but under INV-MOVE-001 an `Int32` move is invalid MIR on its
+  own account, so both fixtures failed for a reason neither test concerns. The fields/locals are now
+  `&mut Int32`: non-`Copy`, no drop glue, and what a partial move actually looks like in lowered
+  code. Every assertion is unchanged. (`Constant::Str` was tried first and rejected: it types as
+  `&str`, a *shared* reference, hence `Copy` again.) The weakening that was NOT done is exempting
+  `Copy` moves in the invariant.
+- **Owning gate:** WP-COPY-CANON Phase 3.

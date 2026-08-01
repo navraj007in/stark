@@ -8305,12 +8305,16 @@ impl<'a> FnLowerer<'a> {
             mutable,
             inner: Box::new(set_ty),
         };
-        let temp = self.new_temp(ref_ty);
+        let temp = self.new_temp(ref_ty.clone());
         self.emit(
             Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
             self.info(span),
         );
-        Ok(Operand::Move(Place::local(temp)))
+        // DEV-127: `read_place`, matching `borrow_map_receiver` three lines below — its sibling
+        // already read this way and this one did not. A `&HashSet<T>` receiver is a SHARED
+        // reference and therefore `Copy`, so moving it contradicts its type; the `&mut` form is
+        // unaffected because `&mut` is not `Copy`, which is why only the shared spellings fired.
+        self.read_place(Place::local(temp), &ref_ty, span)
     }
 
     fn borrow_map_receiver(

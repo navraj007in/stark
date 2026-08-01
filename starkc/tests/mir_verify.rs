@@ -652,21 +652,43 @@ fn rejects_drop_flag_read_outside_switchint() {
 fn partial_move_of_one_field_leaves_sibling_readable() {
     let item = starkc::hir::ItemId(0);
     let struct_ty = MirTy::Struct(item, Vec::new());
+    // DEV-127: field `.0` is `&mut Int32`, not `Int32`. The subject of this test is V-MOVE-1 FIELD
+    // PRECISION — `Int32` was only convenient filler — but INV-MOVE-001 now rejects a `Move` of a
+    // `Copy` place, so an `Int32` field made the fixture invalid MIR for a reason unrelated to what
+    // it asserts. `&mut T` is the smallest non-`Copy` type with no drop glue to complicate the
+    // body; `Constant::Str` was not an option because it types as `&str`, which is *shared* and so
+    // `Copy` again. Sibling `.1` stays `Int32` precisely because it is read with `Copy`.
+    //
+    // The assertion is unchanged: move `.0`, still read `.1`.
+    let ref_ty = MirTy::Ref {
+        mutable: true,
+        inner: Box::new(MirTy::Int32),
+    };
     let b = body(
         vec![
             ret_local(),
             local(struct_ty.clone()),
+            local(ref_ty.clone()),
             local(MirTy::Int32),
+            // The referent `.0`'s reference points at, and a temp to build the aggregate from.
             local(MirTy::Int32),
+            local(ref_ty.clone()),
         ],
         vec![block(
             vec![
+                Statement::Assign(
+                    Place::local(LocalId(5)),
+                    Rvalue::RefOf {
+                        mutable: true,
+                        place: Place::local(LocalId(4)),
+                    },
+                ),
                 Statement::Assign(
                     Place::local(LocalId(1)),
                     Rvalue::Aggregate(
                         starkc::mir::AggKind::Struct(item),
                         vec![
-                            Operand::Const(Constant::Int(1, MirTy::Int32)),
+                            Operand::Move(Place::local(LocalId(5))),
                             Operand::Const(Constant::Int(2, MirTy::Int32)),
                         ],
                     ),
@@ -694,7 +716,7 @@ fn partial_move_of_one_field_leaves_sibling_readable() {
     program
         .types
         .struct_fields
-        .insert((0, Vec::new()), vec![MirTy::Int32, MirTy::Int32]);
+        .insert((0, Vec::new()), vec![ref_ty, MirTy::Int32]);
     if let Err(errors) = verify_program(&program) {
         panic!("partial move should verify clean, got:\n{errors:#?}");
     }
@@ -1656,11 +1678,22 @@ fn rejects_const_index_on_non_array() {
 /// differ only in the origin of the second move. Same statements, same shape, opposite verdicts.
 #[test]
 fn dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not() {
+    // DEV-127: `&mut Int32` locals, not `Int32`. This test is about MIR-0007 and DEV-117's
+    // drop-elaboration exemption; the type was incidental. Under INV-MOVE-001 an `Int32` move is
+    // invalid MIR on its own account, which made the `is_ok()` arm fail for a reason this test does
+    // not concern. Moving a non-`Copy` local is also what drop elaboration actually emits.
+    let ref_ty = MirTy::Ref {
+        mutable: true,
+        inner: Box::new(MirTy::Int32),
+    };
     let statements = || {
         vec![
             Statement::Assign(
                 Place::local(LocalId(1)),
-                Rvalue::Use(Operand::Const(Constant::Int(1, MirTy::Int32))),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place: Place::local(LocalId(4)),
+                },
             ),
             Statement::Assign(
                 Place::local(LocalId(2)),
@@ -1680,8 +1713,10 @@ fn dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not() {
         program_with(vec![body(
             vec![
                 ret_local(),
-                local(MirTy::Int32),
-                local(MirTy::Int32),
+                local(ref_ty.clone()),
+                local(ref_ty.clone()),
+                local(ref_ty.clone()),
+                // The referent the borrowed locals point at.
                 local(MirTy::Int32),
             ],
             vec![BasicBlock {
