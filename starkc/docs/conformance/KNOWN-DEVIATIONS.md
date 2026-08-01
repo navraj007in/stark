@@ -3150,3 +3150,41 @@ C2.8–C2.11 disposition.
   and the likely finding recorded: the mapping probably cannot be made total without first changing
   the oracle's value model, which is a larger change than the check it enables.
 - **Owning gate:** WP-COPY-CANON Phase 2 (narrow); WP-VALUE-REP-TOTAL (remainder).
+
+## DEV-132 — borrowed Vec index projection lowered as a by-value element read (OPEN)
+
+- **Classification:** borrowed Vec index projection lowered as a by-value element read, incorrectly
+  requiring `Copy` for `&v[i].field`.
+- **Normative expectation:** the four forms are distinct and must lower distinctly.
+
+  ```text
+  v[i].field       value read; may require Copy or move rules
+  &v[i].field      shared borrow; must NOT read the element by value
+  &mut v[i].field  mutable borrow; separate capability and aliasing question
+  v[i].field = x   mutation; must not become admitted through shared borrowing
+  ```
+
+- **Current behaviour:** `&v[i].field` on `Vec<NonCopy>` materialises the whole element into a temp
+  via `VecIndexGet` — a BY-VALUE read — and then projects the field off it. `VecIndexGet` requires a
+  `Copy` element (V-COPY-1), because reading a non-`Copy` element by value would move it out of the
+  Vec. So MIR-0016 is CORRECT for the MIR that was emitted; the emission is the defect. Nothing was
+  ever going to be moved: a borrow does not need the element by value.
+
+  ```text
+  emitted:  VecIndexGet -> element by value -> V-COPY-1 requires Copy   (refused)
+  required: VecGetRef   -> shared reference -> Deref place -> field projection -> borrow
+  ```
+
+- **Engine divergence:** the checker ACCEPTS it and the HIR oracle EXECUTES it correctly; MIR
+  refuses to lower it. An over-refusal, not unsoundness — accepted-but-unbuildable.
+- **This is not a MIR feature addition.** `RuntimeFn::VecGetRef` already exists, is described in
+  `mir/mod.rs` as "an interior borrow into the live Vec", carries a verified signature
+  `(&Vec<T>, u64) -> Option<&T>` with **no Copy requirement**, and is already what `v.get(i)`
+  lowers to. It is verified and supported by the native backend. The defect is the failure to
+  preserve PLACE CONTEXT through indexing, not a missing primitive.
+- **Found by:** extending `qualify-first-party-packages.py` to the five HTTP-substrate packages
+  (CD-326). Nothing had ever built them natively. `stark-mime`'s `media_type_parameter` uses
+  `&media_type.parameters[i].name`, which is an ordinary valid borrow.
+- **No package workaround was introduced.** `v.get(i)` would compile, and rewriting the package to
+  use it would conceal a valid source shape behind a compiler defect.
+- **Owning gate:** CD-326 (package qualification), repaired under its own CD.
