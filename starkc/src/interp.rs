@@ -1662,10 +1662,9 @@ impl<'a> Interpreter<'a> {
         };
         Err(RuntimeError::new(
             format!(
-                "internal: binding declared `{}` holds {owned} — a reference type must be \
+                "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
                  represented by a view, never by owned storage, or passing it consumes what it \
-                 only borrows (DEV-121)",
-                format!("{ty:?}")
+                 only borrows (DEV-121)"
             ),
             span,
         ))
