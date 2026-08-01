@@ -2886,3 +2886,39 @@ C2.8–C2.11 disposition.
 - **Relationship to DEV-121:** sibling in SYMPTOM class only (accepted-but-traps). Different engine,
   layer and mechanism; not a shared root cause and not a dual.
 - **Owning gate:** closed under C7; full argument in `mir-amendment-A12-storage-end.md`.
+
+## DEV-124 — iterator desugar moves a `Copy` loop variable (OPEN; found by INV-MOVE-001)
+
+- **Normative expectation:** a `Copy` value is read with `copy`. Moving one empties the source
+  place, which is a claim the type contradicts.
+- **Current behaviour:** `lower_for_over_iter` binds the loop variable with
+  `value: &T = move nxt.v1.0` — its own doc comment says so — moving the payload out of the
+  `Option<&T>` that `*IterNext` returned. Four instantiations observed, one lowering site:
+
+  ```
+  MIR-0036  move from a place of Copy type Ref { mutable: false, inner: Int32 }   for x in v.iter()
+  MIR-0036  move from a place of Copy type Ref { mutable: false, inner: String }  non-Copy element
+  MIR-0036  move from a place of Copy type Char                                   s.chars()
+  MIR-0036  move from a place of Copy type Int                                    user Iterator impl
+  ```
+- **How it was found:** INV-MOVE-001 (WP-COPY-CANON Phase 3). It had been in the tree indefinitely
+  and no test could see it, because nothing asked whether an operand's move was licensed by its
+  type. This is the invariant doing the job it was added for, on its first run.
+- **User impact:** none observed. The `Option` temp is reassigned on every iteration, so nothing
+  reads the emptied place before it is overwritten — the move is unobservable rather than harmless
+  by design. That is exactly the condition under which a latent defect survives: correct by
+  accident of scheduling.
+- **Security/soundness impact:** none today. The hazard is that the emptied place is only safe
+  while no path reads it between the move and the next assignment; any future change to the
+  desugar's block structure could introduce one, and nothing would flag it.
+- **Why it is not fixed here:** WP-COPY-CANON's Phase 3 rule — "report any firings as new DEVs; no
+  silent drive-by fixes". The repair is small (bind with `copy`, since the payload is `Copy` by the
+  same reasoning that makes the move invalid) but it changes a desugar shared by every iterator
+  form, and it deserves its own change with its own three-engine evidence rather than riding in on
+  the invariant that found it.
+- **Blocking:** INV-MOVE-001 cannot land until this is fixed — the invariant is unconditional by
+  design, so it correctly makes 12 iterator tests red. The invariant is written and held back, not
+  abandoned.
+- **Proposed disposition:** fix the desugar to `copy`, then land INV-MOVE-001 with the corpus
+  assertion of zero Move-of-Copy tree-wide.
+- **Owning gate:** WP-COPY-CANON Phase 3.
