@@ -2887,7 +2887,7 @@ C2.8–C2.11 disposition.
   layer and mechanism; not a shared root cause and not a dual.
 - **Owning gate:** closed under C7; full argument in `mir-amendment-A12-storage-end.md`.
 
-## DEV-124 — iterator desugar moves a `Copy` loop variable (OPEN; found by INV-MOVE-001)
+## DEV-124 — iterator desugar moves a `Copy` loop variable (CLOSED; found by INV-MOVE-001)
 
 - **Normative expectation:** a `Copy` value is read with `copy`. Moving one empties the source
   place, which is a claim the type contradicts.
@@ -2911,14 +2911,28 @@ C2.8–C2.11 disposition.
 - **Security/soundness impact:** none today. The hazard is that the emptied place is only safe
   while no path reads it between the move and the next assignment; any future change to the
   desugar's block structure could introduce one, and nothing would flag it.
-- **Why it is not fixed here:** WP-COPY-CANON's Phase 3 rule — "report any firings as new DEVs; no
-  silent drive-by fixes". The repair is small (bind with `copy`, since the payload is `Copy` by the
-  same reasoning that makes the move invalid) but it changes a desugar shared by every iterator
-  form, and it deserves its own change with its own three-engine evidence rather than riding in on
-  the invariant that found it.
-- **Blocking:** INV-MOVE-001 cannot land until this is fixed — the invariant is unconditional by
-  design, so it correctly makes 12 iterator tests red. The invariant is written and held back, not
-  abandoned.
-- **Proposed disposition:** fix the desugar to `copy`, then land INV-MOVE-001 with the corpus
-  assertion of zero Move-of-Copy tree-wide.
+- **Why it was reported before being fixed:** WP-COPY-CANON's Phase 3 rule — "report any firings as
+  new DEVs; no silent drive-by fixes". The invariant was written, held back, and registered here
+  first; the repair landed as its own change.
+- **Resolution:** two hand-built `Operand::Move`s in `lower.rs` — the `&T` reference form
+  (`lower_for_over_iter`) and the by-value `Item` form — now read through `read_place`, which
+  selects the operand from the payload's type.
+
+  **The fix is not "write `copy`", and that distinction is the substance of this entry.** The
+  proposed disposition above said `copy`, and it was wrong: a user `Iterator` may yield a non-`Copy`
+  `Item`, where `move` is correct and required. Replacing one hardcoded operand with the other
+  would have been the same defect facing the other way, and INV-MOVE-001 would not have caught it —
+  the invariant only rejects unlicensed moves, so a wrongly-`Copy`ed non-`Copy` payload would have
+  passed. What was actually wrong was that the desugar had an *opinion* about the operand at all.
+  A third hand-built `Move` in `lower_vec_clear_droppable` was examined and left alone: it runs only
+  for a droppable element type, and `Copy + Drop` is forbidden, so its move is always licensed.
+- **Consequence for the invariant:** INV-MOVE-001 (MIR-0036) landed in the same change, once no
+  program tripped it. Because nothing in the corpus can now reach it, three hand-built MIR fixtures
+  in `copy_canon_matrix.rs` keep it honest: a `Move` of a `Copy` place must be rejected, the `Copy`
+  form of the same body must verify, and a `Move` of a non-`Copy` place must verify. An invariant
+  no test can trip is indistinguishable from `if false`.
+- **Second property now enforced:** Copy-ness is decided twice — `LowerCtx::is_copy` picks the
+  operand, `TypeContext::is_copy` checks it — over different eligibility sets, and nothing made them
+  agree. Drift between them now surfaces as MIR-0036 on a real program instead of as divergence
+  between engines. Weaker than unifying the two predicates, which remains worth doing.
 - **Owning gate:** WP-COPY-CANON Phase 3.

@@ -258,3 +258,128 @@ fn reference_views_survive_being_passed_in_every_engine() {
         support::differential::agree_completing_available_engines(&tag, &src);
     }
 }
+
+// ---------------------------------------------------------- INV-MOVE-001 --
+
+/// Liveness fixtures for INV-MOVE-001 (MIR-0036).
+///
+/// **Why these exist at all.** Once the desugar defect (DEV-124) is fixed, no STARK program
+/// reaches the invariant — which is the goal, and also means a broken invariant would look exactly
+/// like a working one. An invariant nothing can trip is indistinguishable from `if false`. So the
+/// rule is exercised on hand-built MIR: one body that must be rejected, and two that must not.
+mod inv_move_001 {
+    use starkc::mir::{
+        self, BasicBlock, Constant, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Operand,
+        Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
+    };
+    use starkc::source::{SourceFile, Span};
+    use std::sync::Arc;
+
+    fn info() -> SourceInfo {
+        SourceInfo {
+            file: mir::FileId(0),
+            span: Span { lo: 0, hi: 0 },
+            origin: mir::Origin::UserCode,
+        }
+    }
+
+    fn place(index: u32) -> Place {
+        Place {
+            local: mir::LocalId(index),
+            projection: Vec::new(),
+        }
+    }
+
+    /// `_1: ty = <init>; _2: ty = <read> _1; return`. The operand is the only variable, so a
+    /// rejection can only be about the operand.
+    fn program_reading(ty: MirTy, init: Rvalue, read: Operand) -> MirProgram {
+        let body = MirBody {
+            instance: mir::Instance {
+                item: starkc::hir::ItemId(0),
+                type_args: Vec::new(),
+                symbol: "main@[]".to_string(),
+            },
+            params: Vec::new(),
+            ret: MirTy::Unit,
+            locals: vec![
+                LocalDecl {
+                    ty: MirTy::Unit,
+                    kind: LocalKind::Return,
+                },
+                LocalDecl {
+                    ty: ty.clone(),
+                    kind: LocalKind::Temp,
+                },
+                LocalDecl {
+                    ty,
+                    kind: LocalKind::Temp,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    (Statement::Assign(place(1), init), info()),
+                    (Statement::Assign(place(2), Rvalue::Use(read)), info()),
+                ],
+                terminator: (Terminator::Return, info()),
+            }],
+            entry: mir::BlockId(0),
+        };
+        MirProgram {
+            files: vec![Arc::new(SourceFile::new("inv_move_001.stark", ""))],
+            bodies: vec![body],
+            types: TypeContext::default(),
+            mir_version: mir::MIR_VERSION.to_string(),
+            runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
+            provider_calls: Vec::new(),
+            resource_bindings: Vec::new(),
+            provider_closes: Vec::new(),
+        }
+    }
+
+    fn scalar_init() -> Rvalue {
+        Rvalue::Use(Operand::Const(Constant::Int(0, MirTy::UInt64)))
+    }
+
+    /// The rule. A `Copy` type's contract is that reading leaves the source intact; `Move` empties
+    /// it. MIR must not assert both about one value.
+    #[test]
+    fn a_move_from_a_copy_place_is_rejected() {
+        let program = program_reading(MirTy::UInt64, scalar_init(), Operand::Move(place(1)));
+        match mir::verify::verify_program(&program) {
+            Ok(_) => panic!("INV-MOVE-001 is dead: a move from a Copy UInt64 place verified"),
+            Err(errors) => assert!(
+                errors.iter().any(|e| e.code == "MIR-0036"),
+                "expected MIR-0036, got: {errors:#?}"
+            ),
+        }
+    }
+
+    /// Control one: the same body, `copy` instead of `move`, must verify. Without this the test
+    /// above proves only that the fixture is malformed somehow.
+    #[test]
+    fn a_copy_from_a_copy_place_verifies() {
+        let program = program_reading(MirTy::UInt64, scalar_init(), Operand::Copy(place(1)));
+        if let Err(errors) = mir::verify::verify_program(&program) {
+            panic!("the copy form must verify: {errors:#?}");
+        }
+    }
+
+    /// Control two: the rule is *not* "never move". A `&mut` is not `Copy`, and moving one is both
+    /// legal and necessary — an over-broad invariant would reject this and would have been the
+    /// wrong fix for DEV-124.
+    #[test]
+    fn a_move_from_a_non_copy_place_verifies() {
+        let ty = MirTy::Ref {
+            mutable: true,
+            inner: Box::new(MirTy::UInt64),
+        };
+        let init = Rvalue::RefOf {
+            mutable: true,
+            place: place(2),
+        };
+        let program = program_reading(ty, init, Operand::Move(place(1)));
+        if let Err(errors) = mir::verify::verify_program(&program) {
+            panic!("moving a non-Copy place must verify: {errors:#?}");
+        }
+    }
+}

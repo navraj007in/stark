@@ -7292,7 +7292,7 @@ impl<'a> FnLowerer<'a> {
     ///   nxt = VecIterNext(&mut it)     // Option<&T>
     ///   switch discriminant(nxt) [Some → body_bb] else exit
     /// body_bb:
-    ///   value: &T = move nxt.v1.0
+    ///   value: &T = copy nxt.v1.0     // `copy`/`move` by the payload's type, never fixed
     ///   ...body (own scope)...
     ///   goto header
     /// exit:
@@ -7807,14 +7807,19 @@ impl<'a> FnLowerer<'a> {
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(var_local.0, bound);
+        // DEV-124, the by-value half: a user `Iterator` may yield a `Copy` `Item` (`Int32`) or a
+        // non-`Copy` one (`String`), and only the second may be moved. `read_place` decides from
+        // `elem`; the hand-built `Move` this replaces asserted the answer for both.
+        let payload_op = self.read_place(
+            Place {
+                local: nxt,
+                projection: vec![Projection::VariantField(1, 0)],
+            },
+            &elem,
+            span,
+        )?;
         self.emit(
-            Statement::Assign(
-                Place::local(bound),
-                Rvalue::Use(Operand::Move(Place {
-                    local: nxt,
-                    projection: vec![Projection::VariantField(1, 0)],
-                })),
-            ),
+            Statement::Assign(Place::local(bound), Rvalue::Use(payload_op)),
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
         );
         // The loop's `scope_depth` is captured BEFORE the per-iteration scope is pushed, so the
@@ -7995,14 +8000,28 @@ impl<'a> FnLowerer<'a> {
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(var_local.0, bound);
+        // **DEV-124: the operand follows the payload's TYPE, not the desugar's opinion.**
+        //
+        // This was a hand-built `Operand::Move`, moving out of a `Copy` payload — `&T` for
+        // `.iter()`, `Char` for `.chars()`. Nothing ever observed it, because the `Option` temp is
+        // overwritten at the top of every iteration before anything can read the emptied place:
+        // unobservable rather than harmless by design, which is why it survived. INV-MOVE-001
+        // found it on its first run.
+        //
+        // The repair is not "write `copy`" — that is the same mistake with the other constant.
+        // Routing through `read_place` makes the operand a function of `elem_ref`, which is what
+        // the law requires, and picks up the drop-flag transfer on the move path for free. The
+        // by-value sibling below now reads the same way.
+        let payload_op = self.read_place(
+            Place {
+                local: nxt,
+                projection: vec![Projection::VariantField(1, 0)],
+            },
+            &elem_ref,
+            span,
+        )?;
         self.emit(
-            Statement::Assign(
-                Place::local(bound),
-                Rvalue::Use(Operand::Move(Place {
-                    local: nxt,
-                    projection: vec![Projection::VariantField(1, 0)],
-                })),
-            ),
+            Statement::Assign(Place::local(bound), Rvalue::Use(payload_op)),
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
         );
         self.loops.push(LoopTargets {

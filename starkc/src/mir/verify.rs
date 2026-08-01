@@ -27,6 +27,7 @@
 //! V-SURFACE-1 MIR-0017 (unsupported mir_version/runtime_surface — A1, program-level gate)
 //! V-HOSTRES-1 MIR-0026 (a host resource was manufactured — A11/CD-234), MIR-0027 (a Core nominal
 //!            reached HostResource before its migration — CD-235)
+//! INV-MOVE-001 MIR-0036 (a `Move` operand from a place whose type is `Copy`)
 //! MIR-0003   projection type mismatch (V-CFG-2's "projections type-correct step by step")
 //! ```
 //!
@@ -1665,9 +1666,60 @@ impl<'a> BodyCx<'a> {
             }
             Operand::Move(place) => {
                 self.flow_read(place, moved, bi, report, "move from");
+                self.verify_move_is_licensed(place, bi, report);
                 moved.insert(moved_key(place));
             }
             Operand::Const(_) => {}
+        }
+    }
+
+    /// **INV-MOVE-001 (MIR-0036): a `Move` operand must be licensed by its place's type.**
+    ///
+    /// A `Copy` type's contract is that reading a value of it leaves the source intact. `Move`
+    /// says the opposite — it empties the source place and transfers drop responsibility. Emitting
+    /// `Move` from a `Copy` place is therefore MIR asserting two contradictory things about one
+    /// value, and every consumer is entitled to believe either.
+    ///
+    /// # Why this is unconditional
+    ///
+    /// The first thing this found (DEV-124) was harmless *in the schedule it happened to have*:
+    /// the for-loop desugar moved out of a `Copy` payload, and the `Option` temp holding it was
+    /// overwritten before anything could read the emptied place. A rule with an exemption for
+    /// "unobservable" moves would have admitted it, and would then have admitted the same shape in
+    /// a desugar whose block structure later grew a read in that window — with nothing to notice.
+    /// So there is no exemption mechanism here, and none should be added: a future exception
+    /// arrives as an approved MIR amendment with a motivating program, not as a flag on the
+    /// operand.
+    ///
+    /// # A second thing it enforces, for free
+    ///
+    /// Copy-ness is decided twice in this compiler — `LowerCtx::is_copy` picks the operand,
+    /// `TypeContext::is_copy` (via `mir_is_copy`) checks it — over different eligibility sets. The
+    /// two must agree, and until now nothing made them. Any drift between them now surfaces here
+    /// as a verifier error on a real program rather than as divergent behaviour between the
+    /// engines. That is a weaker guarantee than unifying them, which is still worth doing.
+    ///
+    /// Reported only on the reporting pass: `flow_operand` runs to a fixpoint, and `place_ty` can
+    /// itself emit, so an ungated check would multiply every diagnostic by the iteration count.
+    fn verify_move_is_licensed(&mut self, place: &Place, bi: u32, report: bool) {
+        if !report {
+            return;
+        }
+        let Some(ty) = self.place_ty(place, bi) else {
+            // Untypeable place: `place_ty` has already reported MIR-0002/0003. Saying anything
+            // further about its Copy-ness would be a guess layered on a known-bad place.
+            return;
+        };
+        if self.mir_is_copy(&ty) {
+            self.err(
+                "MIR-0036",
+                bi,
+                format!(
+                    "move from a place of Copy type {} — reading a Copy value must not empty its \
+                     source; emit `copy`",
+                    dump_ty(&ty)
+                ),
+            );
         }
     }
 
