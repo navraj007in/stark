@@ -5280,12 +5280,38 @@ impl<'a> Interpreter<'a> {
                 bindings.push((*local, value.clone()));
                 Ok(true)
             }
-            hir::PatKind::Lit(lit) => Ok(self.eval_lit(*lit, pattern.span)? == *value),
+            // **DEV-129: a literal pattern compares CONTENT, so it reads through a reference.**
+            //
+            // `match s.as_str() { "beta" => ... }` is normative — a `&str` scrutinee against string
+            // literals compares by content, never structurally. Since DEV-126 made `as_str` yield
+            // the receiver's place, the scrutinee arrives as `Value::Ref` and every arm missed,
+            // silently falling through to `_`: the oracle printed 0 where MIR printed 2. Silent is
+            // the operative word — no arm is "wrong" to fail, so nothing could report this except
+            // the differential that caught it.
+            hir::PatKind::Lit(lit) => {
+                let scrutinee = self.deref_value(value.clone(), pattern.span)?;
+                let expected = self.eval_lit(*lit, pattern.span)?;
+                match (string_text(&expected), string_text(&scrutinee)) {
+                    (Some(expected), Some(scrutinee)) => Ok(expected == scrutinee),
+                    _ => Ok(expected == scrutinee),
+                }
+            }
             hir::PatKind::Path { res, .. } => match (res, value) {
                 (Res::Item(item), actual) => match &self.hir.item(*item).kind {
+                    // A const pattern is a literal pattern with a name, so it reads through a
+                    // reference for the same reason. Only this sub-case: the variant arms below
+                    // must NOT deref, because a reference-typed enum scrutinee is a type error
+                    // (PAT-BIND-001/CD-303) and quietly accepting one here would re-open it.
                     hir::ItemKind::Const {
                         value: initializer, ..
-                    } => Ok(self.expect_value(*initializer)? == *actual),
+                    } => {
+                        let actual = self.deref_value(actual.clone(), pattern.span)?;
+                        let expected = self.expect_value(*initializer)?;
+                        match (string_text(&expected), string_text(&actual)) {
+                            (Some(expected), Some(actual)) => Ok(expected == actual),
+                            _ => Ok(expected == actual),
+                        }
+                    }
                     _ => Ok(false),
                 },
                 (
@@ -7014,6 +7040,20 @@ fn numeric_cmp(
             "expected two Int or two Float arguments",
             span,
         )),
+    }
+}
+
+/// The text of a string-ish value, whichever representation carries it.
+///
+/// **DEV-129.** `Value::Str` and `Value::String` are the same text in two wrappers, and `==` on
+/// `Value` distinguishes them. A `&str` scrutinee matched against a string literal must compare
+/// CONTENT — `match s.as_str() { "beta" => .. }` is normative — so the comparison cannot be
+/// variant-sensitive. It got away with being so only while `as_str` returned a `Value::Str` clone;
+/// once DEV-126 made it a reference to the owning `Value::String`, every arm missed.
+fn string_text(value: &Value) -> Option<&str> {
+    match value {
+        Value::Str(text) | Value::String(text) => Some(text.as_str()),
+        _ => None,
     }
 }
 

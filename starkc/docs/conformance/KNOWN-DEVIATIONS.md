@@ -3055,3 +3055,30 @@ C2.8–C2.11 disposition.
   fails at authoring time. Rows match trimmed source text (stable under line-number churn, not under
   rewording); CRLF is normalised at the read so a Windows checkout does not fail every row.
 - **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-129 — string literal patterns compared representation, not content (CLOSED)
+
+- **Normative expectation:** a string literal pattern on a `&str` scrutinee compares by CONTENT
+  (StrEq), never structurally. `match s.as_str() { "beta" => .. }` is the canonical form.
+- **What broke, and it was mine.** DEV-126 made `as_str` return `Value::Ref(receiver_place)` instead
+  of a `Value::Str` clone. Two things then went wrong at once in the HIR interpreter's
+  `PatKind::Lit` arm, which compared `eval_lit(..) == *value`:
+  1. the scrutinee was a `Value::Ref` and was never dereferenced;
+  2. dereferencing it yields `Value::String` (the owning local), while a literal evaluates to
+     `Value::Str` — the same text in two wrappers, which `==` on `Value` distinguishes.
+  The second was latent all along and hidden by the first: the comparison only ever worked because
+  `as_str` happened to hand back the same wrapper the literal used.
+- **Symptom:** every arm missed and the match fell through to `_`. `a2_str_pat.stark` printed 0 in
+  the oracle and 2 under MIR. **Silently** — no arm is "wrong" to fail, so nothing could report it;
+  the three-engine differential is the only thing that could have caught it, and did.
+- **Resolution:** the literal arm dereferences the scrutinee, and compares via `string_text`, which
+  reads through either wrapper. The same treatment is applied to the const-pattern sub-case, since a
+  const pattern is a literal pattern with a name. Deliberately NOT applied to the variant arms: a
+  reference-typed enum scrutinee is a type error (PAT-BIND-001, CD-303), and quietly accepting one
+  there would re-open it.
+- **Wider point:** DEV-126 was a representation change to a value model that several unrelated
+  comparisons had been reading structurally. This is the second consequence of it (after
+  `flatten_string_refs` for builtin arguments), and the class — "who else compares `Value` by
+  variant identity where content is meant?" — is worth an audit rather than waiting for the next
+  differential to find one.
+- **Owning gate:** WP-COPY-CANON Phase 2.
