@@ -259,6 +259,137 @@ fn reference_views_survive_being_passed_in_every_engine() {
     }
 }
 
+// ------------------------------------------------- chained producers (DEV-126) --
+
+/// A reference-producing expression written over an owner named `owner`, together with the owner's
+/// declaration. Chains are the second axis the original matrix lacked.
+struct Chain {
+    name: &'static str,
+    /// The owner's type as a borrowed parameter, e.g. `&String`.
+    owner_param: &'static str,
+    /// How `main` builds the owner.
+    owner_init: &'static str,
+    /// The expression producing a `&[UInt8]` from `owner`. This is the whole subject of the test.
+    expr: &'static str,
+}
+
+/// **The chains, each a producer applied to the result of another producer.**
+///
+/// # Why this axis exists
+///
+/// The original matrix crossed producers with USE MODES and never with each other, and it tested
+/// escape only for a direct `bytes()`. DEV-126 lived in the cell that crossing would have covered:
+/// `owner.as_str().bytes()` returned from a function dangled, while `owner.bytes()` — same type,
+/// same declared lifetime — worked. `as_str` returned a detached copy of the string, so the bytes
+/// materialised from it had no owner to anchor to and were promoted into the frame about to pop.
+///
+/// The failure was found by CI, in `stark-json`, whose hot loop is exactly
+/// `cursor.input.as_str().bytes()`. A matrix with this axis would have found it first, which is the
+/// entire argument for adding it.
+///
+/// Provenance, not type, is what varies here: every chain has the identical declared type
+/// `&[UInt8]`, so anything that distinguishes them is by definition a representation defect.
+fn chains() -> Vec<Chain> {
+    vec![
+        // The control: one step, already covered, included so a failure of the whole group is
+        // distinguishable from a failure of chaining specifically.
+        Chain {
+            name: "bytes (direct, control)",
+            owner_param: "&String",
+            owner_init: "let owner = String::from(\"abcd\");",
+            expr: "owner.bytes()",
+        },
+        // DEV-126 itself.
+        Chain {
+            name: "as_str then bytes",
+            owner_param: "&String",
+            owner_init: "let owner = String::from(\"abcd\");",
+            expr: "owner.as_str().bytes()",
+        },
+        // A view re-sliced: the second step consumes the first step's reference as a place.
+        Chain {
+            name: "bytes then re-slice",
+            owner_param: "&String",
+            owner_init: "let owner = String::from(\"abcd\");",
+            expr: "&owner.bytes()[1u64..3u64]",
+        },
+        Chain {
+            name: "as_str then bytes then re-slice",
+            owner_param: "&String",
+            owner_init: "let owner = String::from(\"abcd\");",
+            expr: "&owner.as_str().bytes()[1u64..3u64]",
+        },
+        // The Vec side of the same shape.
+        Chain {
+            name: "as_slice (direct, control)",
+            owner_param: "&Vec<UInt8>",
+            owner_init: "let mut owner: Vec<UInt8> = Vec::new(); owner.push(1u8); \
+                         owner.push(2u8); owner.push(3u8); owner.push(4u8);",
+            expr: "owner.as_slice()",
+        },
+        Chain {
+            name: "as_slice then re-slice",
+            owner_param: "&Vec<UInt8>",
+            owner_init: "let mut owner: Vec<UInt8> = Vec::new(); owner.push(1u8); \
+                         owner.push(2u8); owner.push(3u8); owner.push(4u8);",
+            expr: "&owner.as_slice()[1u64..3u64]",
+        },
+    ]
+}
+
+/// The escaping form: the chain is evaluated inside a function and RETURNED. Core v1 admits this —
+/// a returned reference deriving from a reference parameter — so the program is valid and any
+/// failure is a representation defect.
+///
+/// This is the position DEV-126 failed in and the position the original matrix never put a chained
+/// producer in.
+#[test]
+fn chained_producers_survive_escaping_their_defining_function() {
+    for chain in chains() {
+        let tag = format!(
+            "chain_escape_{}",
+            chain.name.replace([' ', '(', ')', ',', '.'], "_")
+        );
+        let src = format!(
+            "fn use_len(value: &[UInt8]) -> UInt64 {{ value.len() }}\n\
+             fn make(owner: {owner_param}) -> &[UInt8] {{ {expr} }}\n\
+             fn main() {{ {owner_init} \
+             let view = make(&owner); \
+             let a = use_len(view); let b = use_len(view); let c = view[0u64]; \
+             assert_eq(a, b); assert_eq(c, c); }}\n",
+            owner_param = chain.owner_param,
+            owner_init = chain.owner_init,
+            expr = chain.expr,
+        );
+        support::differential::agree_completing_available_engines(&tag, &src);
+    }
+}
+
+/// The same chains used locally, without crossing a function boundary.
+///
+/// Kept as the contrast: DEV-126 PASSED in this position and failed in the escaping one, so a
+/// matrix holding only this form reports success for a broken representation. Its value is
+/// entirely in being compared against the test above.
+#[test]
+fn chained_producers_are_usable_in_place() {
+    for chain in chains() {
+        let tag = format!(
+            "chain_local_{}",
+            chain.name.replace([' ', '(', ')', ',', '.'], "_")
+        );
+        let src = format!(
+            "fn use_len(value: &[UInt8]) -> UInt64 {{ value.len() }}\n\
+             fn main() {{ {owner_init} \
+             let view = {expr}; \
+             let a = use_len(view); let b = use_len(view); let c = view[0u64]; \
+             assert_eq(a, b); assert_eq(c, c); }}\n",
+            owner_init = chain.owner_init,
+            expr = chain.expr,
+        );
+        support::differential::agree_completing_available_engines(&tag, &src);
+    }
+}
+
 // ---------------------------------------------------------- INV-MOVE-001 --
 
 /// Liveness fixtures for INV-MOVE-001 (MIR-0036).
