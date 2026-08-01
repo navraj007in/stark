@@ -7098,7 +7098,7 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 72 numbered deviations):
+Canonical ledger (full structured entries, all 97 numbered deviations as of 2026-08-01):
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
@@ -7237,6 +7237,16 @@ involving nested modules and private items should assume this stricter model.
   structurally impossible while RuntimeFn is a closed enum; reserved for serialized MIR), 0013
   invalid FileId in SourceInfo. These are internal invariant failures (lowering bugs), never
   user-source diagnostics. Full map: `src/mir/verify.rs` header + WP-C4.3.md.
+- **MIR-0036** [WP-COPY-CANON Phase 3, CD-311] INV-MOVE-001: a `Move` operand from a place whose
+  type is `Copy`. A `Copy` type's contract is that reading leaves the source intact; `Move` empties
+  it and transfers drop responsibility. Emitting both about one value lets every consumer believe
+  whichever it prefers. Unconditional, with no exemption mechanism — see CD-311 for why an
+  "unobservable move" escape hatch was refused. Found four latent defects on its first runs
+  (DEV-124, DEV-125, DEV-127).
+  **This section is stale between MIR-0013 and MIR-0036**: MIR-0014..MIR-0027 and MIR-0034/0035
+  were allocated by later WPs (A1/A5/A11/A12) and recorded only in `src/mir/verify.rs`'s header
+  map, which is the working registry. Reconciling them here is unscheduled and is noted rather
+  than silently papered over by this entry.
 - **E0008** [WP-C1.5] Integer literal out of range for its type (suffixed literal exceeds its
   suffix's representable range, or an unsuffixed literal exceeds `Int64`). See DEV-015.
 - **E0009** [WP-C1.5] Array repeat count (`[value; count]`) is not a compile-time constant
@@ -8903,3 +8913,96 @@ starkc/tests/{mir_differential,mir_verify,exec_snapshots}.rs, the corpus (+3 fil
 its lock, STARKLANG/docs/compiler/mir.md (amendment A5), KNOWN-DEVIATIONS.md (DEV-086 closed/
 narrowed, DEV-083 deferred, DEV-088/089 opened; count 85 → 87), COMPILER-STATE.md.
 NEXT: **owner decision on DEV-089**, then closure. Everything else in the directive is done.
+
+### WP-COPY-CANON — Phases 0–4 done, Phase 5 partial — 2026-08-01
+
+**Reconciliation gap, stated first because it is the largest fact here.** Before this entry the
+highest CD recorded in this file was **CD-294**. CD-295 through CD-306 remain unrecorded — they are
+other work (package-track fixes, the HTTP substrate packages, `stark test` defects, DevOps) and
+some of it belongs to parallel sessions. This entry covers **CD-307..CD-316 only** and does not
+close that gap.
+
+**The packet.** WP-COPY-CANON governs one law: *after expression typing, Copy/move behaviour — and
+the runtime representation that carries it — is determined exclusively by the normalized semantic
+type, never by the expression that produced the value.* It binds the checker, MIR lowering, the
+native backend and each interpreter equally. Registered under CD-307 before any investigation, per
+the packet's ordering rule.
+
+**Phase 1 — the sentinel matrix (CD-308).** Six producers of a reference-typed value against six
+use modes, checked on three axes: MirTy copy-eligibility, the emitted MIR call operand (asserted
+from the dump, so a wrong operand fails even when runtime behaviour is green), and the runtime value
+kind. A per-producer matrix rather than a regression for `bytes()`, because DEV-121 was per-producer:
+`bytes()` and `as_slice()` share a normalized type, were built by different code paths, and only one
+was wrong.
+
+On its first run it failed on **CD-305's own fix**, not on DEV-121. CD-305 promoted `bytes()`'s
+materialised storage into the *current* frame; correct locally, dangling the moment the view is
+returned. `fn borrow_of(s: &String) -> &[UInt8] { s.bytes() }` is valid Core v1 and produced
+"dangling reference". CD-305's regression tests had no escaping-view case; the matrix's
+ordinary-language producer controls do.
+
+**Phase 2 — the escape fix (CD-308) and DEV-126 (CD-313).** `promote_to_temp_place_in` takes the
+owning frame explicitly. That was not sufficient: CI failed `stark-json` 9/10 on all three platforms
+with "dangling reference", because `as_str` returned `Value::Str(string.clone())` — a detached copy
+with no link to its origin — so the chained `c.input.as_str().bytes()` had nothing to anchor to.
+`as_str` now returns `Value::Ref(receiver_place)`. Consequence: `s.as_str()` reaches builtins as a
+`Value::Ref`, and `flatten_string_refs` derefs a reference argument **when its referent is a
+string** — keyed on the referent's kind, not the callee's name, unlike the pre-existing
+`remove`/`contains_key`/`contains` special case which only ever covered the three reported.
+
+**Phase 3 — INV-MOVE-001 / MIR-0036 (CD-311..CD-315).** Unconditional, no exemption mechanism. It
+found the same defect at seven sites across four DEVs, each invisible until a workload of the right
+shape ran:
+
+| DEV | Sites | What reached it |
+| --- | --- | --- |
+| 124 | for-loop desugar, both forms | any `for` loop — 12 unit tests |
+| 125 | provider status→`Result`; out-slot tuple; `?`'s `Err` payload | the REST workload and C7.8 only |
+| 127 | `borrow_set_receiver` | the DEV-116 HashSet corpus only |
+
+In every case the correct idiom sat next to the defect: `assign_provider_ok` read its slots through
+`read_place` then hand-built the `Move` wrapping them; `borrow_map_receiver` used `read_place` while
+`borrow_set_receiver` three lines away did not. **The fix is never "write `copy`"** — a non-`Copy`
+payload must still move; the defect is that the site had an opinion at all.
+
+Two structural consequences (CD-315, DEV-128): the `Copy` rule now exists **once**, in
+`mir::mir_ty_is_copy`, with the nominal case passed as a predicate — it had been two byte-identical
+matches differing in one lookup, and the comment naming
+`lowered_copy_classification_matches_the_type_context` as the test keeping them in step referred to
+**a test that does not exist**. And `operand_move_inventory` pins all eleven `Operand::Move`
+occurrences in `lower.rs` with a reason each, so a new one fails at authoring time.
+
+**Phase 4 — `diag::resolve_span` (CD-309).** The one checked path from a span to a location; never
+panics, never falls back to another source. An interim guard, not the architecture: filed as
+`WP-SPAN-SOURCEID.md`, which CD-309 committed to and did not do until now.
+
+**Two test fixtures retyped (CD-314), recorded because the distinction matters.** `mir_verify`'s
+`partial_move_of_one_field_leaves_sibling_readable` and `dev117_...` hand-build MIR moving `Int32`
+locals; `Int32` was incidental filler, and under INV-MOVE-001 an `Int32` move is invalid MIR on its
+own account, so both failed for a reason neither test concerns. Retyped to `&mut Int32` with every
+assertion unchanged. The weakening NOT done: exempting `Copy` moves in the invariant.
+
+**Method finding, recorded because it cost the most.** Four instances of one defect reached CI one
+round at a time, because each local run covered a different slice — lib suite, then four iterator
+tests, then the provider workloads, then the C6 corpus. INV-MOVE-001 was correct every time; the
+local evidence was too narrow for a change that constrains every lowering site in the compiler. The
+compensating measures are CD-315's authoring-time inventory and CD-316's matrix chaining axis.
+
+**Phase 5 — PARTIAL.** This reconciliation and `WP-SPAN-SOURCEID.md` are done. Not done:
+qualification evidence, and the frozen-corpus question. On the latter: the new matrix and chaining
+cases are plain `#[test]`s in `copy_canon_matrix.rs`, not corpus cases, so **no corpus bump may be
+owed at all** — an earlier claim in this session that the corpus was "locked at 1.2.0" was wrong
+(CD-069 re-pinned it to 1.3.0, and `exec_snapshots` and the generated corpus carry their own
+versions). Establishing which corpus, if any, is affected is the remaining Phase 5 work.
+
+**Still open from the packet:** INV-VALUE-REP-001, the actual class-closer for DEV-121. Not
+attempted. It needs the normalized type available at interpreter binding sites, and the HIR
+interpreter is largely untyped at runtime.
+
+EVIDENCE: lib 495/495; mir_verify 51/51; copy_canon_matrix 7/7; operand_move_inventory 1/1;
+c6_generated_corpus 7/7 over 170 cases; c788_lifecycle_e2e 9/9; stark-json 10/10; C7 P1 REST
+workload 24/24 byte-exact HTTP cases on all three platforms. CI on develop is the outstanding judge
+for CD-313..CD-316.
+FILES: starkc/src/mir/{mod,lower,verify}.rs, starkc/src/{interp,diag}.rs,
+starkc/tests/{copy_canon_matrix,operand_move_inventory,mir_verify}.rs, KNOWN-DEVIATIONS.md
+(DEV-121..DEV-128), STARKLANG/docs/compiler/work-packages/WP-SPAN-SOURCEID.md, COMPILER-STATE.md.

@@ -3023,3 +3023,35 @@ C2.8–C2.11 disposition.
   `&str`, a *shared* reference, hence `Copy` again.) The weakening that was NOT done is exempting
   `Copy` moves in the invariant.
 - **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-128 — the `Copy` rule was written twice, and the test guarding that was fictional (CLOSED)
+
+- **Normative expectation:** one rule, one implementation. Copy-ness decides operand selection, drop
+  glue, slot backing and duplication licence; two implementations of it can disagree, and every
+  consumer is entitled to believe whichever it asked.
+- **Current behaviour (before this entry):** `TypeContext::is_copy` and `mir::lower::LowerCtx::is_copy`
+  were byte-identical matches differing in exactly one lookup — `copy_eligible_items` versus
+  `meta.copy_eligible`, where `lower_program` fills the first FROM the second.
+- **Cost, measured rather than asserted:**
+  - `HostResource` was corrected **five separate times** across this family, each fix landing in one
+    copy of the rule at a time (the trail is in the comments on both functions).
+  - CD-240 fixed the `_ => true` wildcard defect in one copy and left the other; the surviving
+    wildcard is what made `read_place` emit `Operand::Copy` for a host resource, so a program could
+    hold two handles to one resource.
+  - DEV-125 and DEV-127 were operand decisions taken against the producer's predicate and rejected
+    by the consumer's — INV-MOVE-001 surfaced them as MIR-0036 on real programs.
+- **The fictional guard.** `TypeContext::is_copy`'s doc comment named
+  `lowered_copy_classification_matches_the_type_context` as the test keeping the two in step. **That
+  test does not exist.** The only occurrence of the name anywhere in the tree was the claim itself.
+  The same comment's stated rationale for the split was also stale: it says lowering answers the
+  nominal case from the HIR via `type_has_copy_impl`, while the code reads a precomputed set.
+- **Resolution:** the structural rule lives once, in `mir::mir_ty_is_copy`, with the nominal case
+  supplied as a predicate. The two SETS remain separate because they are read at different times;
+  only the rule is shared, which is the part that was drifting. Agreement is now structural rather
+  than asserted — a stronger guarantee than the missing test would have provided.
+- **Second half — `operand_move_inventory`:** INV-MOVE-001 catches a wrong operand only when a
+  PROGRAM reaches the site, which is how DEV-124/125/127 surfaced one CI round at a time. The new
+  test pins all eleven `Operand::Move` occurrences in `lower.rs` with a stated reason, so a new one
+  fails at authoring time. Rows match trimmed source text (stable under line-number churn, not under
+  rewording); CRLF is normalised at the read so a Windows checkout does not fail every row.
+- **Owning gate:** WP-COPY-CANON Phase 3.
