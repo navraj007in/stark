@@ -3188,3 +3188,42 @@ C2.8–C2.11 disposition.
 - **No package workaround was introduced.** `v.get(i)` would compile, and rewriting the package to
   use it would conceal a valid source shape behind a compiler defect.
 - **Owning gate:** CD-326 (package qualification), repaired under its own CD.
+
+## DEV-133 — array-to-slice unsizing is accepted but not lowered (OPEN)
+
+- **Classification:** an array-to-slice coercion at a declared `&[T]` binding is accepted by the
+  checker and executed by the HIR oracle, but MIR lowering never performs the unsizing, so
+  verification rejects the assignment.
+- **Minimal reproducer:**
+
+  ```stark
+  fn takes(s: &[UInt8]) -> UInt64 { s.len() }
+
+  fn main() {
+      let b: UInt8 = 7u8;
+      let slice: &[UInt8] = &[b];   // accepted; oracle prints 1
+      println(takes(slice));
+  }
+  ```
+
+  ```text
+  MIR-0004 main@[] bb0: assignment: expected Ref { mutable: false, inner: Slice(UInt8) },
+                        found Ref { mutable: false, inner: Array(UInt8, 1) }
+  ```
+
+- **Engine divergence:** checker ACCEPTS, HIR oracle EXECUTES correctly (prints `1`), MIR refuses.
+  Accepted-but-unbuildable — the same CLASS as DEV-132, an entirely different mechanism. DEV-132 was
+  a failure to preserve place context through indexing; this is a missing coercion at an assignment
+  whose declared type differs from the rvalue's by unsizing alone.
+- **Found by:** the ten-package qualification run added under CD-326/CD-328. `stark-form`'s
+  `form_encode_string` writes `let slice: &[UInt8] = &[b];` to percent-encode one byte — an ordinary
+  valid construct.
+- **Not caused by DEV-132's repair.** That change touched only `lower_index_place`'s `Vec` arm; this
+  reproducer contains no indexing. Confirmed by reproducing it standalone.
+- **Blocking:** `stark-form`'s native build, and therefore the addition of all five HTTP-substrate
+  packages to CI qualification as one change. Four of the five build; the ruling on DEV-132 was
+  explicit that adding the passing subset while knowingly excluding one would institutionalise an
+  avoidable gap, and that reasoning applies here unchanged.
+- **No package workaround introduced.** Rewriting `stark-form` to avoid the coercion would conceal a
+  valid source shape behind a compiler defect.
+- **Owning gate:** unassigned; registered before repair.
