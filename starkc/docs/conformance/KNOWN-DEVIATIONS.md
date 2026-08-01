@@ -3125,3 +3125,28 @@ C2.8–C2.11 disposition.
   text. Anything needing a place is untouched by construction rather than by exemption.
 - **Found by:** `gate4a_prelude_traits`, a suite not run when DEV-126 landed.
 - **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-121 — UPDATE: narrowed by INV-VALUE-REP-001, class NOT closed
+
+- **What is now enforced.** INV-VALUE-REP-001 checks at every `let` that a binding declared `&[T]`
+  or `&str` does not hold owned `Value::Vec`/`Value::String` storage. That is precisely the
+  direction DEV-121 broke: `let view = owner.bytes()` had `&[UInt8]` in the type tables and owned
+  storage at runtime, so passing it moved it and emptied the caller's binding — on a program the
+  checker and MIR both accepted, with correct MIR.
+- **A premise in the original entry was wrong.** DEV-121 said the class-closer was blocked because
+  the HIR interpreter is "largely untyped at runtime". `Interpreter` already holds
+  `tables: &TypeTables`, with both `expr_types` and `local_types`. It has the declared type at every
+  `let` and simply never consulted it. The invariant cost far less than the entry implied.
+- **Why it is narrow, deliberately.** It asserts one direction of one pairing, not a total
+  type→representation mapping — because the oracle's model is not total. `&Int32` may legitimately
+  arrive as the bare scalar through auto-deref, and `Value::Str`/`Value::String` both carry text
+  where one type is declared (DEV-130 had to make comparison representation-insensitive for exactly
+  that reason). A broad rule would fire on correct programs and need exemptions, and an invariant
+  with exemptions is advisory. A narrow rule that always means something was the trade taken.
+- **Status: NARROWED, not class-closed.** The residual exposure is named rather than implied: `&T`
+  for scalar `T`, and the `Str`/`String` duality. Those are the two pairings DEV-129, DEV-130 and
+  DEV-131 came out of, so the class is live, not theoretical.
+- **Deferred by owner direction** to `WP-VALUE-REP-TOTAL.md`, filed with the ambiguities enumerated
+  and the likely finding recorded: the mapping probably cannot be made total without first changing
+  the oracle's value model, which is a larger change than the check it enables.
+- **Owning gate:** WP-COPY-CANON Phase 2 (narrow); WP-VALUE-REP-TOTAL (remainder).

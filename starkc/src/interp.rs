@@ -1586,6 +1586,9 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
+                if let Some(value) = value.as_ref() {
+                    self.check_value_representation(*local, value, stmt.span)?;
+                }
                 self.frame_mut().insert(*local, value);
                 Ok(Flow::Value(Value::Unit))
             }
@@ -1608,6 +1611,64 @@ impl<'a> Interpreter<'a> {
             hir::StmtKind::Item(_) => Ok(Flow::Value(Value::Unit)),
             hir::StmtKind::Error => Err(RuntimeError::new("invalid statement", stmt.span)),
         }
+    }
+
+    /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
+    ///
+    /// WP-COPY-CANON's law is that Copy/move behaviour AND the representation carrying it follow
+    /// from the normalized semantic type, never from the expression that produced the value.
+    /// DEV-121 broke the second half: `let view = owner.bytes();` had `view: &[UInt8]` in the type
+    /// tables and an OWNED `Value::Vec` at runtime. Passing it therefore moved it, and the caller's
+    /// binding was emptied — on a program the checker and MIR both accepted, with correct MIR.
+    ///
+    /// # Why this is narrow on purpose
+    ///
+    /// It asserts ONE direction of one pairing: a binding whose declared type is a reference to an
+    /// unsized sequence (`&[T]`, `&str`) must not hold an owned `Vec`/`String`. It deliberately
+    /// does not assert a total type→representation mapping, because the oracle's value model is not
+    /// one: `&Int32` may legitimately arrive as the scalar itself through auto-deref, and a rule
+    /// claiming otherwise would fire on correct programs and have to be weakened — which is how an
+    /// invariant becomes advisory. A narrow rule that always means something beats a broad one with
+    /// exemptions. Widening is a separate change with its own evidence.
+    ///
+    /// The type tables are already on the interpreter (`self.tables`); the claim in DEV-121 that
+    /// the oracle is "untyped at runtime" was only half right. It has the types at every `let`, and
+    /// simply never consulted them.
+    ///
+    /// A firing is a COMPILER defect, not a user error, so the message says so and names the DEV.
+    fn check_value_representation(
+        &self,
+        local: LocalId,
+        value: &Value,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        let Some(ty) = self.tables.local_types.get(&local) else {
+            return Ok(());
+        };
+        let Ty::Ref { inner, .. } = ty else {
+            return Ok(());
+        };
+        let expects_view = matches!(
+            inner.as_ref(),
+            Ty::Slice(_) | Ty::Primitive(crate::ast::Primitive::Str)
+        );
+        if !expects_view {
+            return Ok(());
+        }
+        let owned = match value {
+            Value::Vec(_) => "an owned Vec",
+            Value::String(_) => "an owned String",
+            _ => return Ok(()),
+        };
+        Err(RuntimeError::new(
+            format!(
+                "internal: binding declared `{}` holds {owned} — a reference type must be \
+                 represented by a view, never by owned storage, or passing it consumes what it \
+                 only borrows (DEV-121)",
+                format!("{ty:?}")
+            ),
+            span,
+        ))
     }
 
     fn eval_expr(&mut self, expr_id: ExprId) -> Result<Flow, RuntimeError> {
