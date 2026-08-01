@@ -16,7 +16,7 @@ fn test_all_256_bytes_classification() {
     let mut b: UInt64 = 0u64;
     while b < 256u64 {
         let byte = b as UInt8;
-        
+
         let exp_ascii = byte <= 127u8;
         let exp_upper = byte >= 65u8 && byte <= 90u8;
         let exp_lower = byte >= 97u8 && byte <= 122u8;
@@ -59,13 +59,7 @@ fn test_tchar_classification() {
     let mut b: UInt64 = 0u64;
     while b < 256u64 {
         let byte = b as UInt8;
-        let valid_tchar = (byte >= 48u8 && byte <= 57u8) ||
-            (byte >= 65u8 && byte <= 90u8) ||
-            (byte >= 97u8 && byte <= 122u8) ||
-            byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 ||
-            byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 ||
-            byte == 94u8 || byte == 95u8 || byte == 96u8 ||
-            byte == 124u8 || byte == 126u8;
+        let valid_tchar = byte >= 48u8 && byte <= 57u8 || byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8 || byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 || byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 || byte == 94u8 || byte == 95u8 || byte == 96u8 || byte == 124u8 || byte == 126u8;
 
         if is_tchar(byte) != valid_tchar {
             panic("is_tchar mismatch");
@@ -111,8 +105,8 @@ fn test_eq_ignore_ascii_case() {
     }
 
     let left: &[UInt8] = &[72u8, 101u8, 108u8, 108u8, 111u8]; // "Hello"
-    let right: &[UInt8] = &[104u8, 69u8, 76u8, 108u8, 79u8];  // "hELlO"
-    let diff: &[UInt8] = &[72u8, 101u8, 108u8, 112u8, 111u8];  // "Help"
+    let right: &[UInt8] = &[104u8, 69u8, 76u8, 108u8, 79u8]; // "hELlO"
+    let diff: &[UInt8] = &[72u8, 101u8, 108u8, 112u8, 111u8]; // "Help"
 
     if !eq_ignore_ascii_case(left, right) {
         panic("mixed case equality failed");

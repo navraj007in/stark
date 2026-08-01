@@ -9069,3 +9069,90 @@ escaping-view flaw (found by the matrix on its first run) and DEV-131's over-bro
 
 FOLLOW-UPS FILED, NOT PENDING: `WP-VALUE-REP-TOTAL.md` (owner-deferred),
 `WP-SPAN-SOURCEID.md` (CD-317). Neither blocks other work.
+
+### CD-295..CD-306 — backfill of the gap restated by CD-317 and CD-323 — 2026-08-01
+
+Recorded from the commits themselves, not reconstructed. These sit between the last entry the
+ledger carried (CD-294) and WP-COPY-CANON's registration (CD-307). They are not one work package:
+they are a Windows-encoding fix, a package-tooling batch, a DevOps change, and two compiler defects
+that the packages exposed. Grouped by what they were, in commit order.
+
+**Windows encoding — CD-295, CD-296.**
+- **CD-295** — `qualify-first-party-packages.py` decoded UTF-8 and then re-encoded to cp1252.
+  `13c4eb0` had fixed the READ; the WRITE failed one line later, so a STARK program printing an
+  emoji killed the script REPORTING its result while the program itself had already emitted correct
+  bytes and passed. `sys.stdout`/`stderr` reconfigured to UTF-8 with `errors="replace"` — a
+  reporting path must not fail a qualification run over a byte it cannot render, and the comparison
+  happens on decoded text so substitution cannot mask a real mismatch. Verified by forcing
+  `PYTHONIOENCODING=cp1252`.
+- **CD-296** — the §9.5 output-contract test used `héllo wörld`, every character of which is present
+  in cp1252, so a host round-tripping stdout through the console codepage would still have passed.
+  Replaced with `😀` (4-byte UTF-8, no cp1252 representation). **The compiler was right and its test
+  was incomplete** — same shape as CD-276.
+
+**Package tooling — CD-297, CD-297a, CD-298, CD-300, CD-302.**
+- **CD-297** — `stark-random` plus an EXECUTION test, which is the point: three compiler-side tests
+  and four native crate tests all passed while the package's STARK code could not lex, had no
+  imports, had never compiled `fill_bytes`, and trapped in `next_u64` on its second call. The last
+  is a **language-level finding worth carrying**: STARK traps on integer overflow in every build
+  mode, and a shift discarding set bits IS an overflow — so every wrapping-arithmetic algorithm
+  (hashes, PRNGs, checksums, bit mixers) needs explicit masking, and the failure mode is a runtime
+  trap rather than a compile error. Also corrected `c63c_iterators`: **CD-293's E0106 was
+  redundant** — E0100 had always refused moving a non-`Copy` value out of an indexed place, and
+  E0106 was reasoned from a MIR message without checking a source program could reach it.
+- **CD-297a** — `assert_eq!(x, false)` is `clippy::bool_assert_comparison` under `-D warnings`. It
+  failed TWO jobs: the lint job and the C6.4 qualification, whose gate runs clippy — **a single lint
+  failure invalidates qualification evidence, not just the lint step.**
+- **CD-298** — `stark-io` docs four commits out of date. Established that the recorded "library
+  packages cannot test themselves" blocker is **narrower than written**: `stark test` already works
+  on a library package (parse, resolve, type-check, run through the interpreter, no `main`); what a
+  library cannot do is be NATIVELY qualified without an artificial entrypoint. Docs only.
+- **CD-300** — `stark test` never synthesized `provider_api`, so every generated `*_raw` was E0200
+  and a provider-bound package failed before discovering one test (`stark-io`: 18 undefined
+  variables). Added, with `target::host_triple_of_this_build()` derived from `std::env::consts`
+  rather than probing `rustc` — testing runs through the interpreter and compiles nothing. Also:
+  `stark-random/stark.lock` was malformed, and `stark-random-native` depended on `getrandom` from
+  crates.io, which broke every runner under `cargo generate-lockfile --offline`.
+- **CD-302** — `stark test` PANICKED on any package with a dependency: `item_text` sliced the root
+  file with a dependency's span (`byte index 2147483648` — 2^31, a synthetic span). Every package
+  depending on another was untestable, which is most of them; this is why reviewing the package
+  batch was impossible before it. `item_text` returns `Option` and callers skip an item whose span
+  does not fit its file — not clamped, not guessed. Also added `# Safety` to all 37 unsafe extern
+  fns across four provider crates; **CI lints only the `starkc` workspace, so none was checked.**
+
+**DevOps — CD-301.** `develop` branch flow, so a red run cannot land on `main`. The reasoning worth
+keeping: `ci.yml` has eleven jobs, three of them matrices, so real check names are generated —
+naming them in a protection rule **fails OPEN**, because a renamed matrix entry is simply not found
+and GitHub reports the rule satisfied. One `ci-complete` aggregator with `if: always()` and explicit
+`needs.*.result` checks is the only name protection needs.
+
+**Compiler defects the packages exposed — CD-303, CD-304, CD-305, CD-306.**
+- **CD-303** — **PAT-BIND-001 was never enforced.** `Ty::Ref` fell through every classifier, giving
+  the worst combination: exhaustiveness demanded a wildcard on a match that already covered every
+  variant (E0303 pointing at the wrong problem), and the `_` arm added to satisfy it then ABSORBED
+  EVERY CASE at run time. So the obvious response to a misleading error produced a function silently
+  returning the wildcard's answer for every input. Now rejected with help naming `match *r`.
+  **Deliberately not done:** making `match r` work by peeling the scrutinee type — that is Rust
+  match ergonomics, contradicts PAT-BIND-001, and is a language-design proposal requiring
+  coordinated checker/MIR/interpreter change. Caught only when opening the spec to document it.
+- **CD-304** — landed Gemini's five HTTP-substrate packages with what does and does not work
+  recorded: ascii 4/4 and percent 3/3 passing; mime, query and form with **zero tests and failing
+  consumers**, characterised but not fixed. (Their tests were written later, under CD-320.)
+- **CD-305** — `String::bytes()` returned an owned `Value::Vec` for a declared `&[UInt8]`, so
+  passing the view consumed it. **Which engine was wrong was established, not assumed**: emitted MIR
+  was `copy` on both calls, so the checker and MIR were right and the HIR interpreter alone was
+  wrong. Predates the session, verified by A/B against a compiler built at `77d763e`. This became
+  DEV-121 and the whole of WP-COPY-CANON; its own fix later proved incomplete for escaping views
+  (CD-308) and for chained producers (CD-313).
+- **CD-306** — a dependency's runtime span was rendered against the root consumer's source: a fault
+  inside `stark-mime` reported at line 31 of a 21-LINE consumer. Two causes, one per layer —
+  `cmd_run` never read `error.file`, and `SourceFile::line_col` CLAMPS an out-of-range offset so a
+  foreign span produces a plausible WRONG location rather than a failure. **It cost real
+  investigation time**: the wrong file sent the first characterisation of CD-305 to the wrong shape
+  entirely. This became DEV-122, later given a checked resolution path (CD-309) and a filed
+  correction (`WP-SPAN-SOURCEID.md`).
+
+**Why this gap existed.** These twelve were pushed across a single long session in which the ledger
+was not updated once. The lesson is the same one CD-317 recorded for CD-307..CD-316 and is now
+stated for both: `COMPILER-STATE.md` is the live status source, and a session that pushes twelve CDs
+without touching it leaves the ledger describing a compiler that no longer exists.

@@ -3,7 +3,7 @@ pub fn is_ascii(byte: UInt8) -> Bool {
 }
 
 pub fn is_ascii_alpha(byte: UInt8) -> Bool {
-    (byte >= 65u8 && byte <= 90u8) || (byte >= 97u8 && byte <= 122u8)
+    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
 }
 
 pub fn is_ascii_uppercase(byte: UInt8) -> Bool {
@@ -19,7 +19,7 @@ pub fn is_ascii_digit(byte: UInt8) -> Bool {
 }
 
 pub fn is_ascii_hex_digit(byte: UInt8) -> Bool {
-    (byte >= 48u8 && byte <= 57u8) || (byte >= 65u8 && byte <= 70u8) || (byte >= 97u8 && byte <= 102u8)
+    byte >= 48u8 && byte <= 57u8 || byte >= 65u8 && byte <= 70u8 || byte >= 97u8 && byte <= 102u8
 }
 
 pub fn is_ascii_whitespace(byte: UInt8) -> Bool {

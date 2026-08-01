@@ -3150,3 +3150,90 @@ C2.8–C2.11 disposition.
   and the likely finding recorded: the mapping probably cannot be made total without first changing
   the oracle's value model, which is a larger change than the check it enables.
 - **Owning gate:** WP-COPY-CANON Phase 2 (narrow); WP-VALUE-REP-TOTAL (remainder).
+
+## DEV-132 — borrowed Vec index projection lowered as a by-value element read (CLOSED)
+
+- **Classification:** borrowed Vec index projection lowered as a by-value element read, incorrectly
+  requiring `Copy` for `&v[i].field`.
+- **Normative expectation:** the four forms are distinct and must lower distinctly.
+
+  ```text
+  v[i].field       value read; may require Copy or move rules
+  &v[i].field      shared borrow; must NOT read the element by value
+  &mut v[i].field  mutable borrow; separate capability and aliasing question
+  v[i].field = x   mutation; must not become admitted through shared borrowing
+  ```
+
+- **Current behaviour:** `&v[i].field` on `Vec<NonCopy>` materialises the whole element into a temp
+  via `VecIndexGet` — a BY-VALUE read — and then projects the field off it. `VecIndexGet` requires a
+  `Copy` element (V-COPY-1), because reading a non-`Copy` element by value would move it out of the
+  Vec. So MIR-0016 is CORRECT for the MIR that was emitted; the emission is the defect. Nothing was
+  ever going to be moved: a borrow does not need the element by value.
+
+  ```text
+  emitted:  VecIndexGet -> element by value -> V-COPY-1 requires Copy   (refused)
+  required: VecGetRef   -> shared reference -> Deref place -> field projection -> borrow
+  ```
+
+- **Engine divergence:** the checker ACCEPTS it and the HIR oracle EXECUTES it correctly; MIR
+  refuses to lower it. An over-refusal, not unsoundness — accepted-but-unbuildable.
+- **This is not a MIR feature addition.** `RuntimeFn::VecGetRef` already exists, is described in
+  `mir/mod.rs` as "an interior borrow into the live Vec", carries a verified signature
+  `(&Vec<T>, u64) -> Option<&T>` with **no Copy requirement**, and is already what `v.get(i)`
+  lowers to. It is verified and supported by the native backend. The defect is the failure to
+  preserve PLACE CONTEXT through indexing, not a missing primitive.
+- **Found by:** extending `qualify-first-party-packages.py` to the five HTTP-substrate packages
+  (CD-326). Nothing had ever built them natively. `stark-mime`'s `media_type_parameter` uses
+  `&media_type.parameters[i].name`, which is an ordinary valid borrow.
+- **No package workaround was introduced.** `v.get(i)` would compile, and rewriting the package to
+  use it would conceal a valid source shape behind a compiler defect.
+- **Owning gate:** CD-326 (package qualification), repaired under its own CD.
+
+## DEV-133 — array-to-slice unsizing is accepted but not lowered (CLOSED)
+
+- **Classification:** an array-to-slice coercion at a declared `&[T]` binding is accepted by the
+  checker and executed by the HIR oracle, but MIR lowering never performs the unsizing, so
+  verification rejects the assignment.
+- **Minimal reproducer:**
+
+  ```stark
+  fn takes(s: &[UInt8]) -> UInt64 { s.len() }
+
+  fn main() {
+      let b: UInt8 = 7u8;
+      let slice: &[UInt8] = &[b];   // accepted; oracle prints 1
+      println(takes(slice));
+  }
+  ```
+
+  ```text
+  MIR-0004 main@[] bb0: assignment: expected Ref { mutable: false, inner: Slice(UInt8) },
+                        found Ref { mutable: false, inner: Array(UInt8, 1) }
+  ```
+
+- **Engine divergence:** checker ACCEPTS, HIR oracle EXECUTES correctly (prints `1`), MIR refuses.
+  Accepted-but-unbuildable — the same CLASS as DEV-132, an entirely different mechanism. DEV-132 was
+  a failure to preserve place context through indexing; this is a missing coercion at an assignment
+  whose declared type differs from the rvalue's by unsizing alone.
+- **Found by:** the ten-package qualification run added under CD-326/CD-328. `stark-form`'s
+  `form_encode_string` writes `let slice: &[UInt8] = &[b];` to percent-encode one byte — an ordinary
+  valid construct.
+- **Not caused by DEV-132's repair.** That change touched only `lower_index_place`'s `Vec` arm; this
+  reproducer contains no indexing. Confirmed by reproducing it standalone.
+- **Blocking:** `stark-form`'s native build, and therefore the addition of all five HTTP-substrate
+  packages to CI qualification as one change. Four of the five build; the ruling on DEV-132 was
+  explicit that adding the passing subset while knowingly excluding one would institutionalise an
+  avoidable gap, and that reasoning applies here unchanged.
+- **No package workaround introduced.** Rewriting `stark-form` to avoid the coercion would conceal a
+  valid source shape behind a compiler defect.
+- **Resolution (CD-329):** the coercion is emitted in `weaken_ref_to` — already the function that
+  coerces an operand to an expected reference type (it does `&mut T` -> `&T`). All six coercion
+  sites route through it (`let`, call argument, receiver, return, return-expression, assignment
+  RHS), so fixing it there covers every position at once; a new hook would have needed adding at
+  each, and whichever was forgotten would have kept the defect. `SliceNew` already accepts an
+  `&[T; N]` receiver, so no new `RuntimeFn`, no new `MirTy`, no amendment.
+- **Negative controls, because the risk is BROADENING the coercion rather than under-applying it:**
+  a mismatched element type must not coerce (that would reinterpret memory, not merely forget a
+  length), and a shared array must not become a `&mut` slice (coercion changes shape, never
+  capability). Both pinned.
+- **Owning gate:** CD-326 (package qualification); repaired under CD-329.

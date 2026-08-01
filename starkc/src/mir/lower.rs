@@ -4865,6 +4865,55 @@ impl<'a> FnLowerer<'a> {
         if !place.projection.is_empty() {
             return Ok(op);
         }
+        // **DEV-133: unsize `&[T; N]` to `&[T]`.**
+        //
+        // The checker accepts `let s: &[UInt8] = &[b];` and the oracle executes it, but lowering
+        // emitted the array reference unchanged, so the assignment's declared and actual types
+        // differed by unsizing alone and MIR-0004 rejected it. Accepted-but-unbuildable — the same
+        // class as DEV-132, a different mechanism: that one failed to preserve place context
+        // through indexing, this one omits a coercion outright.
+        //
+        // Handled here rather than at a new seam because this function is ALREADY the place where
+        // an operand is coerced to an expected reference type — it does `&mut T` -> `&T` — and all
+        // six coercion sites (let, call argument, receiver, return, return-expression, assignment
+        // RHS) route through it. A separate hook would have to be added to each, and whichever site
+        // was forgotten would keep this defect.
+        //
+        // `SliceNew` is the existing primitive and already accepts an `&[T; N]` receiver: no new
+        // `RuntimeFn`, no new `MirTy`, no amendment. Bounds are the whole array, exclusive.
+        // The local's type is cloned out before any `&mut self` call below: holding a borrow into
+        // `self.locals` across `new_temp`/`emit_runtime_call` does not compile.
+        let have_ty = self.locals[place.local.0 as usize].ty.clone();
+        if let MirTy::Slice(want_elem) = want.as_ref() {
+            if let MirTy::Ref {
+                mutable: have_mut,
+                inner: have,
+            } = &have_ty
+            {
+                if let MirTy::Array(have_elem, len) = have.as_ref() {
+                    if have_elem == want_elem && !*want_mut && !*have_mut {
+                        let slice_ty = MirTy::Ref {
+                            mutable: false,
+                            inner: Box::new(MirTy::Slice(want_elem.clone())),
+                        };
+                        let dest = self.new_temp(slice_ty.clone());
+                        let len = *len;
+                        self.emit_runtime_call(
+                            RuntimeFn::SliceNew,
+                            vec![
+                                op.clone(),
+                                Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                                Operand::Const(Constant::Int(len as i128, MirTy::UInt64)),
+                                Operand::Const(Constant::Bool(false)),
+                            ],
+                            Place::local(dest),
+                            span,
+                        );
+                        return self.read_place(Place::local(dest), &slice_ty, span);
+                    }
+                }
+            }
+        }
         let have = match &self.locals[place.local.0 as usize].ty {
             MirTy::Ref {
                 mutable: true,
@@ -5100,11 +5149,86 @@ impl<'a> FnLowerer<'a> {
                 return Ok(place);
             }
         }
-        if !matches!(base_ty, MirTy::Array(..)) {
-            return unsupported(
-                format!("indexing {base_ty:?} (Vec is runtime-surface; slices are C4.5b-2)"),
+        // **DEV-132: `v[i]` in PLACE position borrows the element; it does not read it.**
+        //
+        // This arm used to fall through to the refusal below, so `&v[i].field` was lowered by the
+        // VALUE path instead — `VecIndexGet` into a temp, then project the field off it. That is a
+        // by-value read of the element, so V-COPY-1 required `Copy` and MIR-0016 refused every
+        // `Vec<NonCopy>`. The refusal was correct for the MIR emitted; emitting it was the defect.
+        // A borrow never needed the element by value.
+        //
+        // `VecGetRef` is the existing primitive for exactly this — `(&Vec<T>, u64) -> Option<&T>`,
+        // verified, no `Copy` requirement, already what `v.get(i)` lowers to. No new runtime
+        // function, no new `MirTy`, no amendment.
+        //
+        // **The `Option` is unwrapped by TRAPPING, not by yielding `None`.** `get` and `[]` differ
+        // precisely there: `get` returns `None` out of bounds, `v[i]` traps. Lowering the place
+        // through `get`'s primitive must not quietly inherit `get`'s out-of-bounds behaviour, so
+        // the `None` edge terminates in `Trap(IndexOutOfBounds)` — the same category the array and
+        // slice paths raise, leaving observable out-of-bounds behaviour unchanged.
+        //
+        // The resulting place derefs a SHARED reference, so a write through it is already refused
+        // by V-REF-1 (MIR-0014). Making a borrow representable here does not make it assignable,
+        // which is the property the negative controls pin.
+        // Peeled, because the base is as often a `&Vec<T>` PARAMETER as an owned local — which is
+        // the form `stark-mime` uses and the form the first cut of this arm missed, matching the
+        // unpeeled type and falling through to the by-value path for exactly the case that
+        // motivated the change. `borrow_vec_receiver` peels again for itself.
+        let (peeled_base, _) = Self::peel_refs(base_ty.clone());
+        if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled_base {
+            let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+            let recv = self.borrow_vec_receiver(base, false, elem.clone(), span)?;
+            let index_op = self.lower_expr_to_operand(index)?;
+            let index_op = self.widen_index_to_u64(index_op, index, span)?;
+
+            let elem_ref = MirTy::Ref {
+                mutable: false,
+                inner: Box::new(elem),
+            };
+            let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref]);
+            let opt = self.new_temp(opt_ty);
+            self.emit_runtime_call(
+                RuntimeFn::VecGetRef,
+                vec![recv, index_op],
+                Place::local(opt),
                 span,
             );
+
+            let disc = self.new_temp(MirTy::Int64);
+            self.emit(
+                Statement::Assign(Place::local(disc), Rvalue::Discriminant(Place::local(opt))),
+                self.info(span),
+            );
+            let in_bounds = self.new_block();
+            let out_of_bounds = self.new_block();
+            self.terminate(
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(disc)),
+                    arms: vec![(1, in_bounds)],
+                    otherwise: out_of_bounds,
+                },
+                self.info(span),
+                out_of_bounds,
+            );
+            self.terminate(
+                Terminator::Trap {
+                    info: TrapInfo {
+                        category: TrapCategory::IndexOutOfBounds,
+                        source: self.info(span),
+                    },
+                    message: None,
+                },
+                self.info(span),
+                in_bounds,
+            );
+
+            return Ok(Place {
+                local: opt,
+                projection: vec![Projection::VariantField(1, 0), Projection::Deref],
+            });
+        }
+        if !matches!(base_ty, MirTy::Array(..)) {
+            return unsupported(format!("indexing {base_ty:?} (slices are C4.5b-2)"), span);
         }
         let base_place = match self.lower_place(base) {
             Ok(place) => place,
