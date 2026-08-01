@@ -1,0 +1,185 @@
+use super::default_limits;
+use super::parse;
+use super::serialize;
+use super::QueryError;
+use super::QueryLimits;
+use super::QueryPair;
+
+fn permissive_limits() -> QueryLimits {
+    QueryLimits {
+        max_total_bytes: 8192u64,
+        max_pair_count: 64u64,
+        max_name_bytes: 256u64,
+        max_value_bytes: 4096u64,
+    }
+}
+
+fn expect_ok(input: &String) -> Vec<QueryPair> {
+    match parse(input, default_limits()) {
+        Ok(pairs) => pairs,
+        Err(_error) => panic("expected the query to parse"),
+    }
+}
+
+fn test_pairs_split_on_ampersand_and_equals() {
+    let pairs = expect_ok(&String::from("a=1&b=2"));
+    assert_eq(pairs.len(), 2u64);
+    assert_eq(pairs[0u64].name.as_str(), "a");
+    assert_eq(pairs[0u64].value.as_str(), "1");
+    assert_eq(pairs[1u64].name.as_str(), "b");
+    assert_eq(pairs[1u64].value.as_str(), "2");
+}
+
+/// An empty input is zero pairs, not one empty pair — the early return exists for exactly this and
+/// it is the difference callers most often get wrong.
+fn test_empty_input_yields_no_pairs() {
+    let pairs = expect_ok(&String::from(""));
+    assert_eq(pairs.len(), 0u64);
+}
+
+/// A name with no `=` keeps its name and takes an empty value. Distinct from `a=`, which is the
+/// same result by a different route, so both are pinned.
+fn test_missing_equals_gives_an_empty_value() {
+    let bare = expect_ok(&String::from("a"));
+    assert_eq(bare.len(), 1u64);
+    assert_eq(bare[0u64].name.as_str(), "a");
+    assert_eq(bare[0u64].value.as_str(), "");
+
+    let trailing = expect_ok(&String::from("a="));
+    assert_eq(trailing.len(), 1u64);
+    assert_eq(trailing[0u64].name.as_str(), "a");
+    assert_eq(trailing[0u64].value.as_str(), "");
+}
+
+/// Only the FIRST `=` separates; later ones belong to the value. This is the documented behaviour
+/// of the scan loop, which breaks on the first match.
+fn test_only_the_first_equals_separates() {
+    let pairs = expect_ok(&String::from("a=1=2"));
+    assert_eq(pairs.len(), 1u64);
+    assert_eq(pairs[0u64].name.as_str(), "a");
+    assert_eq(pairs[0u64].value.as_str(), "1=2");
+}
+
+/// Empty segments are pairs too: `a=1&&b=2` has three, the middle one empty. Silently dropping it
+/// would change the pair count a caller sees, so it is asserted rather than left to chance.
+fn test_empty_segments_are_preserved_as_pairs() {
+    let pairs = expect_ok(&String::from("a=1&&b=2"));
+    assert_eq(pairs.len(), 3u64);
+    assert_eq(pairs[1u64].name.as_str(), "");
+    assert_eq(pairs[1u64].value.as_str(), "");
+}
+
+/// Percent decoding applies to BOTH halves, and `+` is not a space here — this decoder is
+/// percent-only, so asserting it keeps a future "form decoding" change from landing silently.
+fn test_percent_escapes_are_decoded_in_name_and_value() {
+    let pairs = expect_ok(&String::from("a%20b=c%20d"));
+    assert_eq(pairs.len(), 1u64);
+    assert_eq(pairs[0u64].name.as_str(), "a b");
+    assert_eq(pairs[0u64].value.as_str(), "c d");
+
+    let plus = expect_ok(&String::from("a=b+c"));
+    assert_eq(plus[0u64].value.as_str(), "b+c");
+}
+
+/// A malformed escape surfaces as `PercentDecodeError` carrying the underlying error, rather than
+/// being flattened into a generic failure.
+fn test_bad_percent_escapes_propagate_the_underlying_error() {
+    match parse(&String::from("a=%zz"), default_limits()) {
+        Ok(_pairs) => panic("a malformed escape must not parse"),
+        Err(error) => match error {
+            QueryError::PercentDecodeError(_inner) => {}
+            _other => panic("expected PercentDecodeError"),
+        }
+    }
+}
+
+/// Each limit is checked from a permissive baseline with one field tightened, so a failure cannot
+/// be another limit's doing.
+fn test_each_parse_limit_is_enforced_separately() {
+    let mut limits_total = permissive_limits();
+    limits_total.max_total_bytes = 3u64;
+    match parse(&String::from("a=1&b=2"), limits_total) {
+        Ok(_pairs) => panic("the total-bytes limit must be enforced"),
+        Err(error) => match error {
+            QueryError::ExceededTotalBytesLimit => {}
+            _other => panic("expected ExceededTotalBytesLimit"),
+        }
+    }
+
+    let mut limits_pairs = permissive_limits();
+    limits_pairs.max_pair_count = 1u64;
+    match parse(&String::from("a=1&b=2"), limits_pairs) {
+        Ok(_pairs) => panic("the pair-count limit must be enforced"),
+        Err(error) => match error {
+            QueryError::ExceededPairCountLimit => {}
+            _other => panic("expected ExceededPairCountLimit"),
+        }
+    }
+
+    let mut limits_name = permissive_limits();
+    limits_name.max_name_bytes = 1u64;
+    match parse(&String::from("abc=1"), limits_name) {
+        Ok(_pairs) => panic("the name limit must be enforced"),
+        Err(error) => match error {
+            QueryError::ExceededNameLimit => {}
+            _other => panic("expected ExceededNameLimit"),
+        }
+    }
+
+    let mut limits_value = permissive_limits();
+    limits_value.max_value_bytes = 1u64;
+    match parse(&String::from("a=abc"), limits_value) {
+        Ok(_pairs) => panic("the value limit must be enforced"),
+        Err(error) => match error {
+            QueryError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+}
+
+/// The limits are measured on DECODED bytes, which is the security-relevant choice: a caller
+/// bounding memory must be bounded on what it will hold, not on the shorter encoded form.
+fn test_name_and_value_limits_measure_decoded_length() {
+    let mut limits_decoded = permissive_limits();
+    limits_decoded.max_value_bytes = 2u64;
+    // Three decoded bytes written as nine encoded ones.
+    match parse(&String::from("a=%41%42%43"), limits_decoded) {
+        Ok(_pairs) => panic("the value limit must measure decoded bytes"),
+        Err(error) => match error {
+            QueryError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+}
+
+fn test_serialize_percent_encodes_and_joins() {
+    let mut pairs = Vec::new();
+    pairs.push(QueryPair { name: String::from("a b"), value: String::from("c&d") });
+    pairs.push(QueryPair { name: String::from("e"), value: String::from("f") });
+    match serialize(pairs.as_slice(), default_limits()) {
+        Ok(text) => {
+            assert_eq(text.as_str(), "a%20b=c%26d&e=f");
+        }
+        Err(_error) => panic("serialisation of ordinary pairs must succeed"),
+    }
+}
+
+/// The property a parser/serialiser pair owes: serialising parsed pairs and parsing the result
+/// returns the same pairs. This is what catches a byte the serialiser leaves bare that the parser
+/// then treats as a separator.
+fn test_serialize_then_parse_round_trips() {
+    let original = expect_ok(&String::from("a%20b=c%26d&e=f&g="));
+    let text = match serialize(original.as_slice(), default_limits()) {
+        Ok(text) => text,
+        Err(_error) => panic("serialisation must succeed"),
+    };
+    let reparsed = expect_ok(&text);
+
+    assert_eq(reparsed.len(), original.len());
+    let mut i: UInt64 = 0u64;
+    while i < original.len() {
+        assert_eq(reparsed[i].name.as_str(), original[i].name.as_str());
+        assert_eq(reparsed[i].value.as_str(), original[i].value.as_str());
+        i = i + 1u64;
+    }
+}

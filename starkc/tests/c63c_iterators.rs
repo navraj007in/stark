@@ -390,3 +390,209 @@ fn vec_index_borrow_out_of_bounds_traps() {
         1,
     );
 }
+
+// ---- CD-303: PAT-BIND-001 diagnostic enforcement ----
+
+/// **A reference-typed scrutinee with constructor patterns is REJECTED, and the message says how.**
+///
+/// PAT-BIND-001: "a struct/variant path must name the scrutinee's normalized nominal type, and `&T`
+/// is not a nominal type, so `match r { E::V(x) => .. }` for `r: &E` is a type error. This is why
+/// the rule is stated over the place read, not over the scrutinee's type."
+///
+/// It was not enforced. `Ty::Ref` fell through every classifier, and the result was the worst
+/// available combination: the exhaustiveness check demanded a wildcard (E0303) on a match that
+/// already covered every variant, and the wildcard added to satisfy it then absorbed every case at
+/// run time — a function returning the wildcard's answer for every input, silently.
+///
+/// The diagnostic names the fix rather than the symptom, because the symptom (E0303) pointed at
+/// the wrong problem and its obvious remedy made things worse.
+#[test]
+fn ref_scrutinee_with_constructor_patterns_is_rejected() {
+    let src = "enum E { A(UInt64), B } \
+               fn classify(e: &E) -> UInt64 { match e { E::A(n) => n, E::B => 900u64 } } \
+               fn main() { let v = E::A(7u64); println(classify(&v)); }";
+    let file = Arc::new(SourceFile::new("refscrut.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("reference-typed scrutinee"))
+        .unwrap_or_else(|| {
+            panic!(
+                "a reference-typed scrutinee with constructor patterns must be rejected; got {:?}",
+                checked.diagnostics
+            )
+        });
+    assert_eq!(diag.severity, Severity::Error);
+    assert!(
+        diag.helps.iter().any(|h| h.contains("match *r")),
+        "the diagnostic must recommend dereferencing: {:?}",
+        diag.helps
+    );
+}
+
+/// A wildcard or plain binding names no constructor, so it is NOT what the rule forbids and stays
+/// accepted. Without this, the check above would be free to over-reject.
+#[test]
+fn ref_scrutinee_without_constructor_patterns_is_accepted() {
+    let src = "enum E { A(UInt64), B } \
+               fn is_something(e: &E) -> UInt64 { match e { _ => 1u64 } } \
+               fn main() { let v = E::B; println(is_something(&v)); }";
+    let file = Arc::new(SourceFile::new("refscrutwild.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    assert!(
+        !checked
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("reference-typed scrutinee")),
+        "a wildcard arm names no constructor and must not be rejected: {:?}",
+        checked.diagnostics
+    );
+}
+
+/// **`match *r` is the working form, and it selects the right arm in every engine.**
+///
+/// The positive half of the rule. Three-engine, because the runtime behaviour is the part that was
+/// wrong: with the old code no arm matched, so this program would have trapped or taken a wildcard.
+#[test]
+fn deref_scrutinee_match_selects_the_right_arm() {
+    agree_out(
+        "derefscrutarm",
+        "enum E { A(UInt64), B, C } \
+         fn classify(e: &E) -> UInt64 { match *e { E::A(n) => n, E::B => 900u64, E::C => 901u64 } } \
+         fn main() { let a = E::A(7u64); let b = E::B; let c = E::C; \
+         assert_eq(classify(&a), 7u64); assert_eq(classify(&b), 900u64); assert_eq(classify(&c), 901u64); }",
+    );
+}
+
+/// `match *r` covering every variant is exhaustive and needs no wildcard — the deref form was never
+/// the thing E0303 was complaining about, and must not start complaining now.
+#[test]
+fn deref_scrutinee_match_is_exhaustive_without_a_wildcard() {
+    agree_out(
+        "derefscrutexh",
+        "enum E { A(UInt64), B, C } \
+         fn classify(e: &E) -> UInt64 { match *e { E::A(n) => n, E::B => 900u64, E::C => 901u64 } } \
+         fn main() { let v = E::C; assert_eq(classify(&v), 901u64); }",
+    );
+}
+
+/// **PAT-BIND-001's binding rule, pinned by use.** A `Copy` payload binds BY VALUE (`n` is a
+/// `UInt64`, added directly); a non-`Copy` payload binds BY REFERENCE (`s` is a `&String`, read in
+/// place and never moved out of the referent). Rust would bind both by reference; that difference
+/// is deliberate, and treating Rust's ergonomics as a separate proposal is why this test states the
+/// current rule explicitly rather than leaving it to be inferred.
+#[test]
+fn deref_scrutinee_binds_copy_by_value_and_owning_by_reference() {
+    agree_out(
+        "derefscrutbind",
+        "enum E { N(UInt64), S(String) } \
+         fn describe(e: &E) -> UInt64 { match *e { E::N(n) => n + 1u64, E::S(s) => s.len() } } \
+         fn main() { let n = E::N(41u64); assert_eq(describe(&n), 42u64); \
+         let s = E::S(String::from(\"abcd\")); assert_eq(describe(&s), 4u64); }",
+    );
+}
+
+// ---- CD-305: a shared slice view is Copy however it was produced ----
+
+/// **`String::bytes()` returned a value that was not `Copy`, so passing it consumed the caller's
+/// binding.** Accepted-but-traps: the checker allowed it, MIR emitted `copy` for the argument, and
+/// only the HIR interpreter destroyed the local — "use of unavailable value" at run time.
+///
+/// `bytes()` is `&[UInt8]`, a shared reference, which is `Copy`. It shared an implementation arm
+/// with `into_bytes()` — `Vec<UInt8>`, genuinely owned — and both produced `Value::Vec`. So two
+/// representations claimed to be `&[UInt8]` and only one obeyed the ownership contract.
+///
+/// This is DEV-087 in a second producer: that fix classified `Value::Slice` as `Copy` after the
+/// identical symptom, but `bytes()` never produced a `Value::Slice` to classify.
+///
+/// Three engines, because the failure existed in exactly one of them.
+#[test]
+fn bytes_view_survives_being_passed_to_a_function() {
+    agree_out(
+        "bytesviewtwice",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let a = use_len(bytes); let b = use_len(bytes); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// Passing then indexing — the discriminator that showed the CALL was what consumed the view,
+/// rather than "two calls" being the problem.
+#[test]
+fn bytes_view_is_indexable_after_being_passed() {
+    agree_out(
+        "bytesviewthenindex",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let a = use_len(bytes); let b = bytes[0u64]; assert_eq(a, 4u64); assert_eq(b, 97u8); }",
+    );
+}
+
+/// The same view reached through `as_str()`, which is how `stark-percent` spells it.
+#[test]
+fn as_str_bytes_view_survives_being_passed() {
+    agree_out(
+        "asstrbytesview",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.as_str().bytes(); \
+         let a = use_len(bytes); let b = use_len(bytes); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// A slice built the ordinary way already worked; pinned so the two producers cannot diverge again.
+#[test]
+fn array_slice_survives_being_passed() {
+    agree_out(
+        "arrayslicetwice",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let array: [UInt8; 4] = [97u8, 98u8, 99u8, 100u8]; \
+         let slice = &array[0u64..4u64]; \
+         let a = use_len(slice); let b = use_len(slice); assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// Aliasing the view and using both — a `Copy` value may be bound again without consuming the
+/// original.
+#[test]
+fn bytes_view_may_be_aliased() {
+    agree_out(
+        "bytesviewalias",
+        "fn use_len(value: &[UInt8]) -> UInt64 { value.len() } \
+         fn main() { let input = String::from(\"abcd\"); let bytes = input.bytes(); \
+         let alias = bytes; let a = use_len(bytes); let b = use_len(alias); \
+         assert_eq(a + b, 8u64); }",
+    );
+}
+
+/// **The control.** Without this, a repair that made every call argument a `Copy` read would pass
+/// all five tests above while silently destroying move semantics. `into_bytes()` is an OWNED
+/// `Vec<UInt8>`: passing it consumes it, and a second use is a compile-time move error.
+#[test]
+fn owned_vec_argument_still_moves() {
+    let src = "fn consume(v: Vec<UInt8>) -> UInt64 { v.len() } \
+               fn main() { let input = String::from(\"abcd\"); let owned = input.into_bytes(); \
+               let a = consume(owned); let b = consume(owned); println(a + b); }";
+    let file = Arc::new(SourceFile::new("ownedmove.stark", src.to_string()));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{rd:?}");
+    let checked = typecheck::analyze(&hir, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0100")),
+        "passing an owned Vec must still move it: {:?}",
+        checked.diagnostics
+    );
+}

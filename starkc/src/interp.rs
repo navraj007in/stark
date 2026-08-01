@@ -1586,6 +1586,9 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
+                if let Some(value) = value.as_ref() {
+                    self.check_value_representation(*local, value, stmt.span)?;
+                }
                 self.frame_mut().insert(*local, value);
                 Ok(Flow::Value(Value::Unit))
             }
@@ -1608,6 +1611,63 @@ impl<'a> Interpreter<'a> {
             hir::StmtKind::Item(_) => Ok(Flow::Value(Value::Unit)),
             hir::StmtKind::Error => Err(RuntimeError::new("invalid statement", stmt.span)),
         }
+    }
+
+    /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
+    ///
+    /// WP-COPY-CANON's law is that Copy/move behaviour AND the representation carrying it follow
+    /// from the normalized semantic type, never from the expression that produced the value.
+    /// DEV-121 broke the second half: `let view = owner.bytes();` had `view: &[UInt8]` in the type
+    /// tables and an OWNED `Value::Vec` at runtime. Passing it therefore moved it, and the caller's
+    /// binding was emptied — on a program the checker and MIR both accepted, with correct MIR.
+    ///
+    /// # Why this is narrow on purpose
+    ///
+    /// It asserts ONE direction of one pairing: a binding whose declared type is a reference to an
+    /// unsized sequence (`&[T]`, `&str`) must not hold an owned `Vec`/`String`. It deliberately
+    /// does not assert a total type→representation mapping, because the oracle's value model is not
+    /// one: `&Int32` may legitimately arrive as the scalar itself through auto-deref, and a rule
+    /// claiming otherwise would fire on correct programs and have to be weakened — which is how an
+    /// invariant becomes advisory. A narrow rule that always means something beats a broad one with
+    /// exemptions. Widening is a separate change with its own evidence.
+    ///
+    /// The type tables are already on the interpreter (`self.tables`); the claim in DEV-121 that
+    /// the oracle is "untyped at runtime" was only half right. It has the types at every `let`, and
+    /// simply never consulted them.
+    ///
+    /// A firing is a COMPILER defect, not a user error, so the message says so and names the DEV.
+    fn check_value_representation(
+        &self,
+        local: LocalId,
+        value: &Value,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        let Some(ty) = self.tables.local_types.get(&local) else {
+            return Ok(());
+        };
+        let Ty::Ref { inner, .. } = ty else {
+            return Ok(());
+        };
+        let expects_view = matches!(
+            inner.as_ref(),
+            Ty::Slice(_) | Ty::Primitive(crate::ast::Primitive::Str)
+        );
+        if !expects_view {
+            return Ok(());
+        }
+        let owned = match value {
+            Value::Vec(_) => "an owned Vec",
+            Value::String(_) => "an owned String",
+            _ => return Ok(()),
+        };
+        Err(RuntimeError::new(
+            format!(
+                "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
+                 represented by a view, never by owned storage, or passing it consumes what it \
+                 only borrows (DEV-121)"
+            ),
+            span,
+        ))
     }
 
     fn eval_expr(&mut self, expr_id: ExprId) -> Result<Flow, RuntimeError> {
@@ -2296,13 +2356,10 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
                 }
             }
-            let equal = match (&left, &right) {
-                (
-                    Value::String(left) | Value::Str(left),
-                    Value::String(right) | Value::Str(right),
-                ) => left == right,
-                _ => left == right,
-            };
+            // DEV-130: the inline `Str`/`String` pairing that used to live here is now
+            // `values_equal`, shared with `assert_eq`, `language_equal` and literal patterns —
+            // all of which lacked it.
+            let equal = values_equal(&left, &right);
             return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
         }
         if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
@@ -2811,6 +2868,51 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// **DEV-126: flatten a reference argument that refers to a STRING.**
+    ///
+    /// `as_str` yields the receiver's place rather than a detached copy, so `s.as_str()` arrives at
+    /// a builtin or core method as a `Value::Ref`. `string_arg` is a free function with no `&self`
+    /// and therefore no way to follow a place, so it rejected those as "expected string argument".
+    ///
+    /// The condition is the REFERENT'S KIND, not the callee's name. Keying on names is what the
+    /// `remove`/`contains_key`/`contains` special case does, and it only ever covered the three
+    /// that had been reported; every string-taking entry point has the same requirement. Keying on
+    /// "the referent is a string" also cannot disturb a `&mut Vec`/`&mut HashMap` argument, whose
+    /// whole purpose is to stay a reference — those referents are not strings.
+    fn flatten_string_refs(&mut self, args: &mut [Value], span: Span) -> Result<(), RuntimeError> {
+        for argument in args {
+            if !matches!(argument, Value::Ref(_)) {
+                continue;
+            }
+            let flattened = self.deref_value(argument.clone(), span)?;
+            if matches!(flattened, Value::Str(_) | Value::String(_)) {
+                *argument = flattened;
+            }
+        }
+        Ok(())
+    }
+
+    /// **DEV-131: deref a string argument at the sites that read its CONTENT, and only those.**
+    ///
+    /// DEV-126 first solved this by flattening every reference-to-string argument on the way into
+    /// `call_builtin`. That was too broad and broke `take(&mut a)`: `take` needs the REFERENCE, and
+    /// flattening handed it the string. A blanket rule cannot tell "reads the text" from "needs the
+    /// place" because `Value::Ref` does not record which the caller meant.
+    ///
+    /// So the deref moves to the five sites that call `string_arg` — the ones that demonstrably
+    /// want text. Anything wanting a place is untouched by construction rather than by exemption.
+    fn string_arg_deref(
+        &mut self,
+        value: Option<Value>,
+        span: Span,
+    ) -> Result<String, RuntimeError> {
+        let value = match value {
+            Some(value) => Some(self.deref_value(value, span)?),
+            None => None,
+        };
+        string_arg(value, span)
+    }
+
     fn call_builtin(
         &mut self,
         builtin: Builtin,
@@ -2858,7 +2960,9 @@ impl<'a> Interpreter<'a> {
                 })?;
                 let left = self.deref_value(left, span)?;
                 let right = self.deref_value(right, span)?;
-                let equal = left == right;
+                // DEV-130: was a raw `==`, so `assert_eq(s.as_str(), "beta")` failed with
+                // `left: beta, right: beta` — identical text in different wrappers.
+                let equal = values_equal(&left, &right);
                 let want_eq = builtin == Builtin::AssertEq;
                 if equal == want_eq {
                     Ok(Value::Unit)
@@ -2962,7 +3066,10 @@ impl<'a> Interpreter<'a> {
                     Err(RuntimeError::new("take expects mutable reference", span))
                 }
             }
-            Builtin::StringFrom => Ok(Value::String(string_arg(args.pop(), span)?)),
+            Builtin::StringFrom => {
+                let text = self.string_arg_deref(args.pop(), span)?;
+                Ok(Value::String(text))
+            }
             Builtin::StringNew => Ok(Value::String(String::new())),
             Builtin::StringWithCapacity => {
                 let capacity = usize_arg(args.pop(), span)?;
@@ -2999,7 +3106,7 @@ impl<'a> Interpreter<'a> {
                 args.pop().unwrap_or(Value::Unit),
             )))),
             Builtin::ReadFile => {
-                let path = string_arg(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::read_to_string(path) {
                     Ok(value) => Value::Result(Ok(Box::new(Value::String(value)))),
                     Err(error) => Value::Result(Err(Box::new(Value::IOError(
@@ -3011,8 +3118,8 @@ impl<'a> Interpreter<'a> {
                 if args.len() != 2 {
                     return Err(RuntimeError::new("write_file expects two arguments", span));
                 }
-                let content = string_arg(args.pop(), span)?;
-                let path = string_arg(args.pop(), span)?;
+                let content = self.string_arg_deref(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
                     Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
                     Err(error) => Value::Result(Err(Box::new(Value::IOError(
@@ -3021,7 +3128,7 @@ impl<'a> Interpreter<'a> {
                 })
             }
             Builtin::FileOpen | Builtin::FileCreate => {
-                let path = string_arg(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 let result = if builtin == Builtin::FileOpen {
                     std::fs::File::open(path)
                 } else {
@@ -3776,7 +3883,8 @@ impl<'a> Interpreter<'a> {
                 };
             }
         }
-        Ok(left == right)
+        // DEV-130: reached by `Vec::contains` and friends, and it had the same raw `==`.
+        Ok(values_equal(&left, &right))
     }
 
     fn call_core_method(
@@ -3821,6 +3929,7 @@ impl<'a> Interpreter<'a> {
         {
             arguments[0] = self.deref_value(arguments[0].clone(), span)?;
         }
+        self.flatten_string_refs(&mut arguments, span)?;
         if let Some(result) =
             self.call_collection_ownership_method(&receiver_place, name, &mut arguments, span)?
         {
@@ -4578,7 +4687,19 @@ impl<'a> Interpreter<'a> {
                     string.clear();
                     Ok(Value::Unit)
                 }
-                "as_str" => Ok(Value::Str(string.clone())),
+                // **DEV-126: `as_str` is a BORROW, so it must yield the receiver's place.**
+                //
+                // This cloned the string, producing a value with no link to what it was a view of.
+                // Every consumer that needs the OWNER — `bytes()`, which anchors its materialised
+                // byte storage to the owner's frame — then had nothing to anchor to, and
+                // `expr_place`'s fallback promoted the detached copy into the running frame. So
+                // `fn f(c: &C) -> &[UInt8] { c.input.as_str().bytes() }` dangled on return while
+                // the direct `c.input.bytes()` worked: identical types, different provenance.
+                //
+                // `Value::Ref` is what a `&str` of a place actually is, and `deref_place` /
+                // `deref_value` already normalise through it, so the receiver of a chained call
+                // resolves back to the `String`'s own place.
+                "as_str" => Ok(Value::Ref(receiver_place.clone())),
                 "trim" => Ok(Value::Str(string.trim().to_string())),
                 "contains" => Ok(Value::Bool(
                     string.contains(&string_arg(values.next(), span)?),
@@ -4615,7 +4736,41 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Str(string[start..end].to_string()))
                 }
                 "chars" => Ok(Value::CharsIter(string.clone(), 0)),
-                "bytes" | "into_bytes" => {
+                // **`bytes` and `into_bytes` have DIFFERENT types and must have different runtime
+                // representations.** They shared this arm, and both produced `Value::Vec`.
+                //
+                //   bytes()       -> `&[UInt8]`      a SHARED SLICE, and shared references are Copy
+                //   into_bytes()  -> `Vec<UInt8>`    an OWNED vector, correctly not Copy
+                //
+                // `Value::Vec` is classified non-`Copy` — rightly, it owns its elements. So the
+                // view returned by `bytes()` was CONSUMED when passed to a function, and any later
+                // use of the caller's binding read an emptied slot: "use of unavailable value", at
+                // run time, on a program the checker and MIR both accept.
+                //
+                // This is DEV-087's defect in a second producer. That fix classified
+                // `Value::Slice` as `Copy` and its comment describes this exact symptom —
+                // `total(shared); shared[0]` failing in the oracle alone. The classification was
+                // right; `bytes()` simply never produced the classified thing. Two representations
+                // claimed to be `&[UInt8]` and only one obeyed the ownership contract.
+                //
+                // Found in `stark-mime`, whose `slice_to_string(bytes, ..)` passes the view;
+                // `stark-percent` only ever indexed it, which is why one package worked and the
+                // other did not for what looked like an unrelated reason.
+                "bytes" => {
+                    let elements: Vec<Option<Value>> = string
+                        .bytes()
+                        .map(|b| Some(Value::Int(b as i128)))
+                        .collect();
+                    // The receiver borrow ends here, before the frame is touched.
+                    let len = elements.len();
+                    // Into the RECEIVER's frame, not the current one: the bytes are a view of that
+                    // string and must live as long as it does. Promoting into the running frame
+                    // dangles the moment the view is returned from the function that made it.
+                    let owner_frame = receiver_place.frame.min(self.frames.len() - 1);
+                    let place = self.promote_to_temp_place_in(owner_frame, Value::Vec(elements))?;
+                    Ok(Value::Slice(place, 0, len))
+                }
+                "into_bytes" => {
                     let bytes_val = string
                         .bytes()
                         .map(|b| Some(Value::Int(b as i128)))
@@ -5208,12 +5363,32 @@ impl<'a> Interpreter<'a> {
                 bindings.push((*local, value.clone()));
                 Ok(true)
             }
-            hir::PatKind::Lit(lit) => Ok(self.eval_lit(*lit, pattern.span)? == *value),
+            // **DEV-129: a literal pattern compares CONTENT, so it reads through a reference.**
+            //
+            // `match s.as_str() { "beta" => ... }` is normative — a `&str` scrutinee against string
+            // literals compares by content, never structurally. Since DEV-126 made `as_str` yield
+            // the receiver's place, the scrutinee arrives as `Value::Ref` and every arm missed,
+            // silently falling through to `_`: the oracle printed 0 where MIR printed 2. Silent is
+            // the operative word — no arm is "wrong" to fail, so nothing could report this except
+            // the differential that caught it.
+            hir::PatKind::Lit(lit) => {
+                let scrutinee = self.deref_value(value.clone(), pattern.span)?;
+                let expected = self.eval_lit(*lit, pattern.span)?;
+                Ok(values_equal(&expected, &scrutinee))
+            }
             hir::PatKind::Path { res, .. } => match (res, value) {
                 (Res::Item(item), actual) => match &self.hir.item(*item).kind {
+                    // A const pattern is a literal pattern with a name, so it reads through a
+                    // reference for the same reason. Only this sub-case: the variant arms below
+                    // must NOT deref, because a reference-typed enum scrutinee is a type error
+                    // (PAT-BIND-001/CD-303) and quietly accepting one here would re-open it.
                     hir::ItemKind::Const {
                         value: initializer, ..
-                    } => Ok(self.expect_value(*initializer)? == *actual),
+                    } => {
+                        let actual = self.deref_value(actual.clone(), pattern.span)?;
+                        let expected = self.expect_value(*initializer)?;
+                        Ok(values_equal(&expected, &actual))
+                    }
                     _ => Ok(false),
                 },
                 (
@@ -5717,10 +5892,47 @@ impl<'a> Interpreter<'a> {
     }
 
     fn promote_to_temp_place(&mut self, value: Value, _span: Span) -> Result<Place, RuntimeError> {
-        let local_id = LocalId(1000000 + self.frame().values.len() as u32);
-        self.frame_mut().values.insert(local_id, Some(value));
+        let frame = self.frames.len() - 1;
+        self.promote_to_temp_place_in(frame, value)
+    }
+
+    /// `promote_to_temp_place`, with the owning frame chosen explicitly.
+    ///
+    /// **The frame decides the backing storage's lifetime, so a view must be promoted into the
+    /// frame of what it is a view OF — not into whichever frame happens to be running.**
+    ///
+    /// CD-305 made `String::bytes()` return a `Value::Slice` over materialised bytes, and promoted
+    /// them into the CURRENT frame. That is correct while the view is used locally and wrong the
+    /// moment it escapes: `fn borrow_of(s: &String) -> &[UInt8] { s.bytes() }` materialised into
+    /// `borrow_of`'s frame, which pops on return, leaving the returned slice pointing at storage
+    /// that no longer exists — "dangling reference". Core v1 admits that function (a returned
+    /// reference deriving from a reference parameter), so the program is valid and the
+    /// representation was not.
+    ///
+    /// Promoting into the receiver's frame ties the bytes to the same frame as the string they
+    /// came from, which is precisely the lifetime the borrow already has. Found by
+    /// WP-COPY-CANON's matrix, whose ordinary-language producer controls cover the escaping case
+    /// that CD-305's own regression tests did not.
+    fn promote_to_temp_place_in(
+        &mut self,
+        frame: usize,
+        value: Value,
+    ) -> Result<Place, RuntimeError> {
+        let Some(target) = self.frames.get_mut(frame) else {
+            return Err(RuntimeError::new(
+                "internal: promotion into a frame that does not exist",
+                Span { lo: 0, hi: 0 },
+            ));
+        };
+        let local_id = LocalId(1000000 + target.values.len() as u32);
+        // `values.insert`, NOT `Frame::insert`: the latter also appends to `order`, which is the
+        // frame's DROP ORDER. A promoted temp is a view's backing storage, not a value the frame
+        // owns and destroys — registering it made promoted temps participate in destruction and
+        // broke `collection_replacement_and_removal_drop_consumed_keys`. The original spelling was
+        // load-bearing and the refactor lost it.
+        target.values.insert(local_id, Some(value));
         Ok(Place {
-            frame: self.frames.len() - 1,
+            frame,
             local: local_id,
             projections: Vec::new(),
         })
@@ -6905,6 +7117,121 @@ fn numeric_cmp(
             "expected two Int or two Float arguments",
             span,
         )),
+    }
+}
+
+/// The text of a string-ish value, whichever representation carries it.
+///
+/// **DEV-129.** `Value::Str` and `Value::String` are the same text in two wrappers, and `==` on
+/// `Value` distinguishes them. A `&str` scrutinee matched against a string literal must compare
+/// CONTENT — `match s.as_str() { "beta" => .. }` is normative — so the comparison cannot be
+/// variant-sensitive. It got away with being so only while `as_str` returned a `Value::Str` clone;
+/// once DEV-126 made it a reference to the owning `Value::String`, every arm missed.
+fn string_text(value: &Value) -> Option<&str> {
+    match value {
+        Value::Str(text) | Value::String(text) => Some(text.as_str()),
+        _ => None,
+    }
+}
+
+/// **DEV-130: structural equality with the one representation-insensitivity STARK requires.**
+///
+/// `Value` derives `PartialEq`, so `Str("a") != String("a")`. That is a representation difference
+/// the language does not have: both are the text `a`, and `06-Standard-Library.md` gives `&str` and
+/// `String` content equality.
+///
+/// The rule had been written inline at ONE site — the `==` operator — and omitted at the other
+/// three, which is why `s.as_str() == "beta"` was true while `assert_eq(s.as_str(), "beta")` failed
+/// with `left: beta, right: beta`: two values that print identically, declared unequal. Rather than
+/// patch each site, this is now the single comparison every structural equality routes through, the
+/// same correction DEV-128 made for `is_copy`.
+///
+/// Recursion into containers is deliberate: `Some(s.as_str())` against `Some("x")` compares
+/// payloads, and a flat rule would report them unequal for the same reason.
+///
+/// `Ref` is NOT followed here — callers deref first, because following a place needs `&self` and
+/// because a caller that has not deref'd has a bug this function should not hide.
+fn values_equal(left: &Value, right: &Value) -> bool {
+    if let (Some(left), Some(right)) = (string_text(left), string_text(right)) {
+        return left == right;
+    }
+    let slots_equal = |left: &[Option<Value>], right: &[Option<Value>]| {
+        left.len() == right.len()
+            && left.iter().zip(right).all(|pair| match pair {
+                (Some(left), Some(right)) => values_equal(left, right),
+                (None, None) => true,
+                _ => false,
+            })
+    };
+    match (left, right) {
+        (Value::Tuple(left), Value::Tuple(right))
+        | (Value::Array(left), Value::Array(right))
+        | (Value::Vec(left), Value::Vec(right)) => slots_equal(left, right),
+        (Value::Option(left), Value::Option(right)) => match (left, right) {
+            (Some(left), Some(right)) => values_equal(left, right),
+            (None, None) => true,
+            _ => false,
+        },
+        (Value::Result(left), Value::Result(right)) => match (left, right) {
+            (Ok(left), Ok(right)) | (Err(left), Err(right)) => values_equal(left, right),
+            _ => false,
+        },
+        (Value::Boxed(left), Value::Boxed(right)) => match (left.as_ref(), right.as_ref()) {
+            (Some(left), Some(right)) => values_equal(left, right),
+            (None, None) => true,
+            _ => false,
+        },
+        (
+            Value::Struct {
+                item: left_item,
+                fields: left_fields,
+            },
+            Value::Struct {
+                item: right_item,
+                fields: right_fields,
+            },
+        ) => {
+            left_item == right_item
+                && left_fields.len() == right_fields.len()
+                && left_fields.iter().all(|(name, left)| {
+                    right_fields
+                        .get(name)
+                        .is_some_and(|right| match (left, right) {
+                            (Some(left), Some(right)) => values_equal(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        })
+                })
+        }
+        (
+            Value::Enum {
+                item: left_item,
+                variant: left_variant,
+                fields: left_fields,
+                named: left_named,
+            },
+            Value::Enum {
+                item: right_item,
+                variant: right_variant,
+                fields: right_fields,
+                named: right_named,
+            },
+        ) => {
+            left_item == right_item
+                && left_variant == right_variant
+                && slots_equal(left_fields, right_fields)
+                && left_named.len() == right_named.len()
+                && left_named.iter().all(|(name, left)| {
+                    right_named
+                        .get(name)
+                        .is_some_and(|right| match (left, right) {
+                            (Some(left), Some(right)) => values_equal(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        })
+                })
+        }
+        _ => left == right,
     }
 }
 

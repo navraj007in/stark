@@ -1,0 +1,8 @@
+{
+  "name": "stark-mime-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_mime": { "package": "stark-mime", "path": "../stark-mime", "version": "0.1.0" }
+  }
+}

@@ -446,6 +446,40 @@ pub fn ty_contains_param(ty: &Ty) -> bool {
     ty_contains(ty, &|t| matches!(t, Ty::Param(_)))
 }
 
+/// How a pattern binding takes its value, decided once per `match` from its scrutinee.
+///
+/// **STARK differs from Rust here, deliberately.** Rust's match ergonomics bind EVERY component by
+/// reference under a reference scrutinee, so `E::A(n)` gives `n: &u64` and the arm writes `*n`.
+/// STARK copies a `Copy` component and binds a non-`Copy` one by reference: `n: UInt64`, written
+/// `n`. The rule is "take what cannot be taken from the referent by reference, copy the rest",
+/// which is the rule both runtime engines already implement for `match *r`.
+///
+/// The alternative was tried and rejected mid-change: matching Rust would mean threading the mode
+/// through `PatternSource` in the interpreter and through MIR pattern lowering as well, to keep
+/// three engines agreeing about the type of a binding. That is a language-semantics change worth
+/// making deliberately, not as a side effect of fixing a match that did not work at all. The
+/// consequence for callers is a `*` that is not written, and the checker says so precisely
+/// ("cannot dereference non-reference type 'UInt64'").
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindMode {
+    /// An owned scrutinee: every binding takes its value.
+    ByValue,
+    /// A scrutinee reached through a reference — either read through one (`*r`, or a field of one)
+    /// or reference-typed itself (`match r` where `r: &E`). Non-`Copy` components bind by
+    /// reference so the match cannot move out of borrowed storage; a `Copy` component is copied,
+    /// because copying it takes nothing from the referent.
+    ThroughRef,
+}
+
+impl BindMode {
+    fn binds_by_ref(self, is_copy: bool) -> bool {
+        match self {
+            BindMode::ByValue => false,
+            BindMode::ThroughRef => !is_copy,
+        }
+    }
+}
+
 impl LayoutTables {
     /// The CHECKER-type walker into the shared layout combinators (`crate::layout`).
     ///
@@ -900,6 +934,20 @@ impl<'a> TypeChecker<'a> {
     /// Without this, `match pair { (a, b) => .. }` (a fully-binding tuple pattern, matches any
     /// tuple) was flagged as non-exhaustive by the new general "requires wildcard" rule below,
     /// even though this single arm covers every possible tuple value.
+    /// Does this pattern name a CONSTRUCTOR — a variant path, a struct shape, a tuple or an array?
+    ///
+    /// Used to decide whether a reference-typed scrutinee is an error (PAT-BIND-001: `&T` is not a
+    /// nominal type, so a constructor path cannot name it). A wildcard or a plain binding names no
+    /// constructor and is fine against a reference — `match r { other => .. }` binds the reference
+    /// and is not what the rule forbids. Literal patterns likewise cannot apply to a reference and
+    /// are rejected by ordinary unification, so they need no separate report here.
+    fn pat_is_constructor(&self, pat_id: PatId) -> bool {
+        !matches!(
+            &self.hir.pat(pat_id).kind,
+            hir::PatKind::Wild | hir::PatKind::Binding { .. } | hir::PatKind::Lit(_)
+        )
+    }
+
     fn is_irrefutable(&self, pat: &hir::PatNode) -> bool {
         match &pat.kind {
             hir::PatKind::Wild | hir::PatKind::Binding { .. } => true,
@@ -5560,9 +5608,60 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             hir::ExprKind::Match { scrutinee, arms } => {
-                let scr_ty = self.check_expr(*scrutinee);
+                let scr_expr_ty = self.check_expr(*scrutinee);
                 let ret_ty = self.new_type_var();
-                let bind_non_copy_by_ref = self.scrutinee_reads_through_ref(*scrutinee);
+
+                // **A REFERENCE-TYPED SCRUTINEE IS REJECTED, PER PAT-BIND-001.**
+                //
+                // The spec states it directly: "a struct/variant path must name the scrutinee's
+                // normalized nominal type, and `&T` is not a nominal type, so `match r { E::V(x) =>
+                // .. }` for `r: &E` is a type error. This is why the rule is stated over the place
+                // read, not over the scrutinee's type." The program writes `match *r`, which IS a
+                // read through a reference and binds by PAT-BIND-001.
+                //
+                // It was not rejected. `Ty::Ref` simply fell through every classifier, and the
+                // result was the worst available combination:
+                //
+                //   - the exhaustiveness check saw a domain it did not know and demanded a wildcard,
+                //     reporting E0303 on a match that already covered every variant; and then
+                //   - the `_` arm added to satisfy that ABSORBED EVERY CASE at run time, because
+                //     the constructor arms were typed against a reference and matched nothing.
+                //
+                // So the diagnostic pointed at the wrong problem, and the obvious response to it
+                // produced a function that silently returned the wildcard's answer for every input.
+                // `stark-percent`'s `is_incomplete_escape` reported "not an incomplete escape" for
+                // an incomplete escape it had just been handed, and no test could see it, because
+                // the helper was reporting on itself.
+                //
+                // Rejecting names the fix rather than the symptom. A `match *r` in the same place
+                // compiles and behaves.
+                let scr_resolved = self.resolve(&scr_expr_ty);
+                if matches!(scr_resolved, Ty::Ref { .. })
+                    && arms.iter().any(|arm| self.pat_is_constructor(arm.pat))
+                {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "cannot match a reference-typed scrutinee '{}' against constructor patterns",
+                                self.ty_to_string(&scr_resolved)
+                            ),
+                            self.hir.expr(*scrutinee).span,
+                        )
+                        .with_code("E0001")
+                        .with_help(
+                            "dereference the scrutinee first: `match *r { .. }`. A binding to a \
+                             non-Copy component then has reference type (PAT-BIND-001) and nothing \
+                             is moved out of the referent",
+                        ),
+                    );
+                }
+
+                let scr_ty = scr_expr_ty.clone();
+                let bind_non_copy_by_ref = if self.scrutinee_reads_through_ref(*scrutinee) {
+                    BindMode::ThroughRef
+                } else {
+                    BindMode::ByValue
+                };
 
                 let mut matched_variants = HashSet::new();
                 let mut matched_bools = HashSet::new();
@@ -5855,7 +5954,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         pat_id: PatId,
         expected: Ty,
-        bind_non_copy_by_ref: bool,
+        bind_non_copy_by_ref: BindMode,
     ) -> Ty {
         let pat = self.hir.pat(pat_id);
         match &pat.kind {
@@ -5883,7 +5982,7 @@ impl<'a> TypeChecker<'a> {
             },
             hir::PatKind::Wild => expected,
             hir::PatKind::Binding { local, .. } => {
-                let binding_ty = if bind_non_copy_by_ref && !self.is_copy_ty(&expected) {
+                let binding_ty = if bind_non_copy_by_ref.binds_by_ref(self.is_copy_ty(&expected)) {
                     Ty::Ref {
                         mutable: false,
                         inner: Box::new(expected.clone()),
@@ -6017,15 +6116,16 @@ impl<'a> TypeChecker<'a> {
                                 let _ = self.unify(expected_f_ty, p_ty, field.name);
                             } else if let Some(local) = field.local {
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
-                                let binding_ty =
-                                    if bind_non_copy_by_ref && !self.is_copy_ty(&expected_f_ty) {
-                                        Ty::Ref {
-                                            mutable: false,
-                                            inner: Box::new(expected_f_ty.clone()),
-                                        }
-                                    } else {
-                                        expected_f_ty.clone()
-                                    };
+                                let binding_ty = if bind_non_copy_by_ref
+                                    .binds_by_ref(self.is_copy_ty(&expected_f_ty))
+                                {
+                                    Ty::Ref {
+                                        mutable: false,
+                                        inner: Box::new(expected_f_ty.clone()),
+                                    }
+                                } else {
+                                    expected_f_ty.clone()
+                                };
                                 self.local_types.insert(local, binding_ty);
                             }
                         }
@@ -6058,15 +6158,16 @@ impl<'a> TypeChecker<'a> {
                                 );
                                 let _ = self.unify(field_ty, pat_ty, field.name);
                             } else if let Some(local) = field.local {
-                                let binding_ty =
-                                    if bind_non_copy_by_ref && !self.is_copy_ty(&field_ty) {
-                                        Ty::Ref {
-                                            mutable: false,
-                                            inner: Box::new(field_ty.clone()),
-                                        }
-                                    } else {
-                                        field_ty.clone()
-                                    };
+                                let binding_ty = if bind_non_copy_by_ref
+                                    .binds_by_ref(self.is_copy_ty(&field_ty))
+                                {
+                                    Ty::Ref {
+                                        mutable: false,
+                                        inner: Box::new(field_ty.clone()),
+                                    }
+                                } else {
+                                    field_ty.clone()
+                                };
                                 self.local_types.insert(local, binding_ty);
                             }
                         }

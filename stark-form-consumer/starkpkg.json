@@ -1,0 +1,8 @@
+{
+  "name": "stark-form-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_form": { "package": "stark-form", "path": "../stark-form", "version": "0.1.0" }
+  }
+}

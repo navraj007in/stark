@@ -1,0 +1,30 @@
+use stark_mime::default_limits;
+use stark_mime::format_media_type;
+use stark_mime::media_type_is;
+use stark_mime::media_type_parameter;
+use stark_mime::parse_media_type;
+
+fn main() {
+    let raw = String::from("Application/JSON; charset=\"utf-8\"");
+    match parse_media_type(&raw, default_limits()) {
+        Ok(mt) => {
+            let app_type = String::from("application");
+            let json_sub = String::from("json");
+            let cs_param = String::from("charset");
+            if media_type_is(&mt, &app_type, &json_sub) {
+                match media_type_parameter(&mt, &cs_param) {
+                    Some(val) => {
+                        let fmt = format_media_type(&mt);
+                        if fmt.len() > 0u64 {
+                            println("MIME_CONSUMER_OK");
+                        }
+                    }
+                    None => panic("charset missing"),
+                }
+            } else {
+                panic("media_type_is mismatch");
+            }
+        }
+        Err(_) => panic("mime parse failed"),
+    }
+}

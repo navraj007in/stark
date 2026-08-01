@@ -12,6 +12,10 @@ fn abort_contract() -> ! {
     std::process::abort()
 }
 
+/// `stark_random_secure_fill`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `output` must point to `len` writable bytes the caller owns for the duration of this call, or be zero-length; the caller reads it back afterwards, which is the point of the form.
 #[no_mangle]
 pub unsafe extern "C" fn stark_random_secure_fill(output: BorrowedBufferMut) -> ProviderStatus {
     if output.len > MAX_SECURE_FILL {

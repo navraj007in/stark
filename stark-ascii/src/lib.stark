@@ -1,0 +1,87 @@
+pub fn is_ascii(byte: UInt8) -> Bool {
+    byte <= 127u8
+}
+
+pub fn is_ascii_alpha(byte: UInt8) -> Bool {
+    (byte >= 65u8 && byte <= 90u8) || (byte >= 97u8 && byte <= 122u8)
+}
+
+pub fn is_ascii_uppercase(byte: UInt8) -> Bool {
+    byte >= 65u8 && byte <= 90u8
+}
+
+pub fn is_ascii_lowercase(byte: UInt8) -> Bool {
+    byte >= 97u8 && byte <= 122u8
+}
+
+pub fn is_ascii_digit(byte: UInt8) -> Bool {
+    byte >= 48u8 && byte <= 57u8
+}
+
+pub fn is_ascii_hex_digit(byte: UInt8) -> Bool {
+    (byte >= 48u8 && byte <= 57u8) || (byte >= 65u8 && byte <= 70u8) || (byte >= 97u8 && byte <= 102u8)
+}
+
+pub fn is_ascii_whitespace(byte: UInt8) -> Bool {
+    byte == 32u8 || byte == 9u8 || byte == 10u8 || byte == 11u8 || byte == 12u8 || byte == 13u8
+}
+
+pub fn is_ascii_control(byte: UInt8) -> Bool {
+    byte <= 31u8 || byte == 127u8
+}
+
+pub fn is_tchar(byte: UInt8) -> Bool {
+    if byte >= 48u8 && byte <= 57u8 {
+        true
+    } else if byte >= 65u8 && byte <= 90u8 {
+        true
+    } else if byte >= 97u8 && byte <= 122u8 {
+        true
+    } else if byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 {
+        true
+    } else if byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 {
+        true
+    } else if byte == 94u8 || byte == 95u8 || byte == 96u8 {
+        true
+    } else if byte == 124u8 || byte == 126u8 {
+        true
+    } else {
+        false
+    }
+}
+
+pub fn to_ascii_lowercase(byte: UInt8) -> UInt8 {
+    if is_ascii_uppercase(byte) {
+        byte + 32u8
+    } else {
+        byte
+    }
+}
+
+pub fn to_ascii_uppercase(byte: UInt8) -> UInt8 {
+    if is_ascii_lowercase(byte) {
+        byte - 32u8
+    } else {
+        byte
+    }
+}
+
+pub fn eq_ignore_ascii_case(left: &[UInt8], right: &[UInt8]) -> Bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut i: UInt64 = 0u64;
+    while i < left.len() {
+        if to_ascii_lowercase(left[i]) != to_ascii_lowercase(right[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn string_eq_ignore_ascii_case(left: &String, right: &String) -> Bool {
+    eq_ignore_ascii_case(left.as_str().bytes(), right.as_str().bytes())
+}
+
+mod tests;

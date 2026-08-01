@@ -1474,7 +1474,8 @@ impl<'a> FnLowerer<'a> {
             let variant = to_fill[i].1;
             match variant {
                 Some(v) => {
-                    let raw = self.new_temp(MirTy::Enum(EnumRef::User(error_item), Vec::new()));
+                    let error_ty = MirTy::Enum(EnumRef::User(error_item), Vec::new());
+                    let raw = self.new_temp(error_ty.clone());
                     self.emit(
                         Statement::Assign(
                             Place::local(raw),
@@ -1485,12 +1486,18 @@ impl<'a> FnLowerer<'a> {
                         ),
                         self.info(span),
                     );
+                    // DEV-125: `read_place`, not a hand-built `Move`. A provider's error enum is
+                    // fieldless, so it is structurally `Copy` and moving it contradicts its type.
+                    // The slot reads below already went through `read_place`; this one did not,
+                    // which is the whole shape of the defect — an operand chosen by the site rather
+                    // than by the type.
+                    let payload = self.read_place(Place::local(raw), &error_ty, span)?;
                     self.emit(
                         Statement::Assign(
                             dest.clone(),
                             Rvalue::Aggregate(
                                 AggKind::EnumVariant(EnumRef::CoreResult, 1),
-                                vec![Operand::Move(Place::local(raw))],
+                                vec![payload],
                             ),
                         ),
                         self.info(span),
@@ -1521,7 +1528,7 @@ impl<'a> FnLowerer<'a> {
         };
         let payload = if slots.len() > 1 {
             let tuple_ty = MirTy::Tuple(slots.iter().map(|(_, t)| t.clone()).collect());
-            let tmp = self.new_temp(tuple_ty);
+            let tmp = self.new_temp(tuple_ty.clone());
             self.emit(
                 Statement::Assign(
                     Place::local(tmp),
@@ -1529,7 +1536,9 @@ impl<'a> FnLowerer<'a> {
                 ),
                 self.info(span),
             );
-            vec![Operand::Move(Place::local(tmp))]
+            // DEV-125, the same defect one line apart: a tuple of scalar out-slots — `(Bool,
+            // UInt64)` for `var_len` — is `Copy` because its elements are.
+            vec![self.read_place(Place::local(tmp), &tuple_ty, span)?]
         } else {
             payload
         };
@@ -1919,68 +1928,20 @@ impl<'a> FnLowerer<'a> {
         self.mir_ty(&ty, span)
     }
 
-    /// Copy-vs-move for reads (contract §5): primitives, fn values, and shared refs are Copy;
-    /// tuples/arrays/Option/Result of Copy are Copy; user structs/enums are Move (an explicit
-    /// `impl Copy` is not visible to lowering in the scalar core — conservative, and harmless
-    /// here because no scalar-core type requires drop).
+    /// Copy-vs-move for reads (contract §5), the PRODUCER side.
+    ///
+    /// **DEV-128: the rule itself is `mir::mir_ty_is_copy`; this supplies only the nominal set.**
+    /// This was a full second copy of that match, byte-identical apart from reading
+    /// `meta.copy_eligible` instead of `TypeContext::copy_eligible_items`. Two implementations of
+    /// one rule meant every fix had to be applied twice, and repeatedly was not: `HostResource` was
+    /// corrected five separate times across the family, CD-240 fixed one copy of the wildcard
+    /// defect and left the other, and DEV-125/DEV-127 were operand decisions taken against this
+    /// predicate and rejected by the other.
+    ///
+    /// The two SETS stay separate — they are read at different times, and `lower_program` fills the
+    /// consumer's from this one. Only the rule is shared, which is the part that was drifting.
     fn is_copy(&self, ty: &MirTy) -> bool {
-        match ty {
-            // C4.5e-0 (DEV-068): user nominals with an `impl Copy` are Copy — the front end
-            // has already validated the all-Copy-fields / no-Drop rules for the impl to
-            // exist, so lowering consults the impl's presence only. Without one they stay
-            // Move (an unmarked all-Copy-field struct is still Move in STARK).
-            // WP-C6.1g-a: `Copy` when the nominal is eligible (impl or structural) AND every
-            // type argument is `Copy`. Mirrors the front end exactly.
-            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
-                self.meta.copy_eligible.contains(&item.0) && args.iter().all(|a| self.is_copy(a))
-            }
-            MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
-            MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
-            MirTy::Array(elem, _) => self.is_copy(elem),
-            MirTy::Ref { mutable, .. } => !*mutable,
-            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
-            // **A11/CD-234: a host resource is never `Copy`** -- the FOURTH `MirTy` catch-all to
-            // swallow this variant, after `dump_ty`, `emit_ty`, `default_value_expr` and
-            // `TypeContext::is_copy` (CD-240).
-            //
-            // This one made `read_place` emit `Operand::Copy` for a resource, so `MatchDesugar`
-            // extracted `Ok(stream)`'s payload with `copy` and a program could hold two handles to
-            // one resource. `MIR-0026` rejected the result, which is how it surfaced.
-            //
-            // **The duplication is the real defect.** This predicate and `TypeContext::is_copy` are
-            // two implementations of one rule that must agree, and each had to be fixed separately.
-            // They are left separate here only because they read different eligibility sets
-            // (`meta.copy_eligible` vs `types.copy_eligible_items`); unifying them is worth doing
-            // and is not this change.
-            MirTy::HostResource(_) => false,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
-            //
-            // This arm ended `_ => true`, which is the same defect CD-240 fixed in
-            // `TypeContext::is_copy`: a wildcard that ASSERTS the strongest claim in the table (no
-            // drop glue, no slot, a licence to duplicate) about every variant nobody has classified
-            // yet. Fixing one copy of the rule and leaving the other is how this variant came to be
-            // corrected five separate times.
-            //
-            // Scalars, `Never`, and `Str` are `Copy`; a fn value is `Copy` per this function's
-            // contract note above.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::FnPtr { .. } => true,
-        }
+        crate::mir::mir_ty_is_copy(ty, &|item| self.meta.copy_eligible.contains(&item))
     }
 
     /// Read a place as an operand. C4.5d: a `Move` out of a drop-tracked local clears the
@@ -4560,11 +4521,24 @@ impl<'a> FnLowerer<'a> {
                 Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreOption, 0), Vec::new())
             }
             EnumRef::CoreResult => {
-                // Err(payload) — move the Err payload (variant 1, field 0) out of scrut.
-                let err_payload = Operand::Move(Place {
-                    local: scrut,
-                    projection: vec![Projection::VariantField(1, 0)],
-                });
+                // Err(payload) — read the Err payload (variant 1, field 0) out of scrut.
+                //
+                // DEV-125: this said `move` unconditionally. `?` on a `Result<T, E>` with a
+                // fieldless (therefore `Copy`) `E` — every provider error enum — moved a value
+                // whose type says reading leaves it intact.
+                //
+                // `storage_end_after` above already branches on `is_copy` of this very type to
+                // decide the A12 storage-end reason, so the distinction was present in this
+                // function and the operand ignored it.
+                let err_ty = err_payload_ty.clone().unwrap_or(MirTy::Unit);
+                let err_payload = self.read_place(
+                    Place {
+                        local: scrut,
+                        projection: vec![Projection::VariantField(1, 0)],
+                    },
+                    &err_ty,
+                    span,
+                )?;
                 Rvalue::Aggregate(
                     AggKind::EnumVariant(EnumRef::CoreResult, 1),
                     vec![err_payload],
@@ -7292,7 +7266,7 @@ impl<'a> FnLowerer<'a> {
     ///   nxt = VecIterNext(&mut it)     // Option<&T>
     ///   switch discriminant(nxt) [Some → body_bb] else exit
     /// body_bb:
-    ///   value: &T = move nxt.v1.0
+    ///   value: &T = copy nxt.v1.0     // `copy`/`move` by the payload's type, never fixed
     ///   ...body (own scope)...
     ///   goto header
     /// exit:
@@ -7807,14 +7781,19 @@ impl<'a> FnLowerer<'a> {
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(var_local.0, bound);
+        // DEV-124, the by-value half: a user `Iterator` may yield a `Copy` `Item` (`Int32`) or a
+        // non-`Copy` one (`String`), and only the second may be moved. `read_place` decides from
+        // `elem`; the hand-built `Move` this replaces asserted the answer for both.
+        let payload_op = self.read_place(
+            Place {
+                local: nxt,
+                projection: vec![Projection::VariantField(1, 0)],
+            },
+            &elem,
+            span,
+        )?;
         self.emit(
-            Statement::Assign(
-                Place::local(bound),
-                Rvalue::Use(Operand::Move(Place {
-                    local: nxt,
-                    projection: vec![Projection::VariantField(1, 0)],
-                })),
-            ),
+            Statement::Assign(Place::local(bound), Rvalue::Use(payload_op)),
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
         );
         // The loop's `scope_depth` is captured BEFORE the per-iteration scope is pushed, so the
@@ -7995,14 +7974,28 @@ impl<'a> FnLowerer<'a> {
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(var_local.0, bound);
+        // **DEV-124: the operand follows the payload's TYPE, not the desugar's opinion.**
+        //
+        // This was a hand-built `Operand::Move`, moving out of a `Copy` payload — `&T` for
+        // `.iter()`, `Char` for `.chars()`. Nothing ever observed it, because the `Option` temp is
+        // overwritten at the top of every iteration before anything can read the emptied place:
+        // unobservable rather than harmless by design, which is why it survived. INV-MOVE-001
+        // found it on its first run.
+        //
+        // The repair is not "write `copy`" — that is the same mistake with the other constant.
+        // Routing through `read_place` makes the operand a function of `elem_ref`, which is what
+        // the law requires, and picks up the drop-flag transfer on the move path for free. The
+        // by-value sibling below now reads the same way.
+        let payload_op = self.read_place(
+            Place {
+                local: nxt,
+                projection: vec![Projection::VariantField(1, 0)],
+            },
+            &elem_ref,
+            span,
+        )?;
         self.emit(
-            Statement::Assign(
-                Place::local(bound),
-                Rvalue::Use(Operand::Move(Place {
-                    local: nxt,
-                    projection: vec![Projection::VariantField(1, 0)],
-                })),
-            ),
+            Statement::Assign(Place::local(bound), Rvalue::Use(payload_op)),
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
         );
         self.loops.push(LoopTargets {
@@ -8264,12 +8257,16 @@ impl<'a> FnLowerer<'a> {
             mutable,
             inner: Box::new(set_ty),
         };
-        let temp = self.new_temp(ref_ty);
+        let temp = self.new_temp(ref_ty.clone());
         self.emit(
             Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
             self.info(span),
         );
-        Ok(Operand::Move(Place::local(temp)))
+        // DEV-127: `read_place`, matching `borrow_map_receiver` three lines below — its sibling
+        // already read this way and this one did not. A `&HashSet<T>` receiver is a SHARED
+        // reference and therefore `Copy`, so moving it contradicts its type; the `&mut` form is
+        // unaffected because `&mut` is not `Copy`, which is why only the shared spellings fired.
+        self.read_place(Place::local(temp), &ref_ty, span)
     }
 
     fn borrow_map_receiver(

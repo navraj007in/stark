@@ -1,0 +1,21 @@
+use stark_form::default_limits;
+use stark_form::parse;
+use stark_form::serialize;
+
+fn main() {
+    let raw = String::from("user=john+doe&action=submit");
+    let lims = default_limits();
+    match parse(&raw, lims) {
+        Ok(pairs) => {
+            match serialize(pairs.as_slice(), default_limits()) {
+                Ok(out) => {
+                    if out.len() > 0u64 {
+                        println("FORM_CONSUMER_OK");
+                    }
+                }
+                Err(_) => panic("serialize failed"),
+            }
+        }
+        Err(_) => panic("parse failed"),
+    }
+}

@@ -2797,3 +2797,356 @@ C2.8–C2.11 disposition.
   nested position, all rejected; primitives, a user nominal with both impls, a generic function
   with both bounds, and the unconstrained VALUE position, all accepted.
 - **Owning gate:** was WP-C6.3 (carried at C6 closure); closed here.
+
+## DEV-121 — engine value representation diverges from the normalized type (OPEN; instance fixed CD-305, class open)
+
+- **Normative expectation:** `03-Type-System.md` — a shared reference (`&T`, `&[T]`) is `Copy`.
+  Passing one to a function copies it; the source binding stays live. The governing rule this
+  entry establishes: **after expression typing, Copy/move behaviour — and the runtime
+  representation that carries it — is determined exclusively by the normalized semantic type,
+  never by the expression that produced the value.** It binds the checker, MIR lowering, the
+  native backend, and **each interpreter's value model** equally.
+- **Current behaviour:** `String::bytes()` is declared `&[UInt8]` but the HIR interpreter returned
+  `Value::Vec` — an owned, non-`Copy` runtime value. Passing it therefore MOVED it, emptying the
+  caller's local, and any later use trapped with "use of unavailable value". The checker accepted
+  the program and MIR emitted `copy` for both call operands; the HIR engine alone was wrong.
+  `bytes()` shared an implementation arm with `into_bytes()` (`Vec<UInt8>`, genuinely owned), so
+  one arm served two types with opposite ownership.
+- **Layer, established not assumed:** the emitted MIR for the reproducer is
+  `_9 = call use_len@[](copy _4)` / `_11 = call use_len@[](copy _4)` — `copy`, both calls. The
+  defect was below MIR, in the interpreter's value model. An earlier framing of this defect as
+  "emitted as a consuming call operand" was wrong and is corrected here.
+- **Classification:** CORPUS-GAP, not oracle-blind. The HIR engine diverged from MIR and native, so
+  differential testing could have caught it given matrix-shaped input; no input exercised the shape.
+  The sentinel matrix is therefore a permanent corpus obligation, not one-time DEV evidence.
+- **User impact:** a valid program is accepted and then traps at run time, with a message naming
+  neither the moved value nor (before CD-306) the right file. Found by `stark-mime`, `stark-query`
+  and `stark-form`, whose consumers all failed; `stark-percent` passed only because it indexes its
+  view rather than passing it.
+- **Security/soundness impact:** no memory unsafety — the interpreter detects the empty slot and
+  traps. The soundness cost is to the type system's contract: two runtime representations claimed
+  one static type and only one obeyed its ownership rule.
+- **Workaround:** none required, and none permitted in package code — copying a view into an owned
+  `Vec`, or inlining a helper to avoid a call, hides the defect the packages exist to expose.
+- **Instance fixed:** CD-305 — `bytes()` now materialises a temp place and returns
+  `Value::Slice`; `into_bytes()` keeps `Value::Vec`. Six-case three-engine regression, including a
+  move-semantics control proving owned values still move (E0100).
+- **Why the class stays open:** other producers are unaudited. Every intrinsic whose declared
+  return is `&T`/`&[T]` must be checked against its runtime representation, and the invariant that
+  would have caught this on the first execution (INV-VALUE-REP-001) does not exist yet.
+- **Sibling, not dual:** `P1-COMPILER-001` / `DEFECT-C788-LOOP-TEMP` (DEV-123) shares the
+  accepted-but-traps SYMPTOM class and nothing else — different engine, different layer, different
+  mechanism (piecewise-emptied storage vs. wrong value kind). Recorded so the two are not conflated.
+- **Proposed disposition:** WP-COPY-CANON Phases 1–3 — producer audit from the method registry,
+  per-engine canonicalization, and INV-VALUE-REP-001.
+- **Owning gate:** WP-COPY-CANON.
+
+## DEV-122 — span source-identity gap (OPEN, guarded; instance fixed CD-306)
+
+- **Normative expectation:** a diagnostic or trap location identifies the source it belongs to. A
+  span offset is meaningless without the identity of the file it indexes.
+- **Current behaviour:** spans carry no source identity of their own. Rendering selects a file by
+  convention and indexes it, so a span from one file resolved against another produces a location
+  in the wrong file. `SourceFile::line_col` CLAMPS an out-of-range offset to end-of-file, so the
+  result is not a visible failure but a well-formed, plausible, wrong location.
+- **Observed:** a runtime fault inside `stark-mime` reported at `stark-mime-consumer/src/main.stark:31:1`
+  — line 31 of a 21-line file, in the wrong package. Second instance of the class after CD-302,
+  where the test runner sliced a dependency's span against the root file and panicked.
+- **User impact:** measurable and demonstrated. On DEV-121 the wrong file sent the investigation to
+  the wrong shape entirely: the span pointed into the consumer, so the first characterisation
+  described the consumer's use of a match binding, and a reproducer built from that description
+  passed. The real fault was three call frames away.
+- **Security/soundness impact:** none direct. The cost is diagnostic trust — a location that is
+  confidently wrong is worse than one that is absent, because a reader cannot tell them apart.
+- **Instance fixed:** CD-306 — runtime rendering now uses the file DEV-113-B already stamps on the
+  error, plus a backstop that refuses to locate a span past end-of-file.
+- **Why it stays open:** the backstop checks only `span.lo > src.len()`. It does not check
+  `start <= end`, nor that the resolved column lies within the resolved line, and compile-time and
+  runtime rendering remain SEPARATE paths — so a future caller can reintroduce the fault on either.
+- **Proposed disposition:** WP-COPY-CANON Phase 4 — one checked `resolve_span` used by both paths,
+  never panicking and never falling back to the root source. The platform correction (mandatory
+  `SourceId` on every span, resolution total by construction) is filed as a separate future WP; the
+  interim guard must not be mistaken for it.
+- **Owning gate:** WP-COPY-CANON Phase 4, then the SourceId WP.
+
+## DEV-123 — `P1-COMPILER-001` / `DEFECT-C788-LOOP-TEMP`: repeated enum-result assignment retained a live generated slot (CLOSED by MIR A12, CD-265/CD-269)
+
+- **Registered for findability, not as a new finding.** This defect was governed and discharged
+  before this entry existed; it was recorded only inside `WP-C7-P1-REST-REPORT.md`, so the ledger
+  could not answer a query about it. `P1-COMPILER-001` is a LOCAL LABEL used by the P1 workload
+  report; `DEFECT-C788-LOOP-TEMP` is the same defect.
+- **Normative expectation:** storage for a place emptied piecewise must end when its units are
+  accounted for.
+- **Root cause:** **any** place whose storage is emptied piecewise — not temporaries specifically.
+- **Trail:** recorded CD-263; ruled a non-blocking C7 deviation CD-264; fixed by MIR amendment A12
+  (`Statement::StorageDead`, MIR `0.2` → `0.3`) at CD-265, approved retrospectively as CE3; a
+  surviving `?`-in-a-loop instance — the shape A12's sixteen-shape matrix missed, because
+  `lower_try` builds its own scrutinee temporary — found by `stark-json` and fixed at CD-269.
+- **Regression:** `starkc/tests/a12_storage_end_shapes.rs`.
+- **Relationship to DEV-121:** sibling in SYMPTOM class only (accepted-but-traps). Different engine,
+  layer and mechanism; not a shared root cause and not a dual.
+- **Owning gate:** closed under C7; full argument in `mir-amendment-A12-storage-end.md`.
+
+## DEV-124 — iterator desugar moves a `Copy` loop variable (CLOSED; found by INV-MOVE-001)
+
+- **Normative expectation:** a `Copy` value is read with `copy`. Moving one empties the source
+  place, which is a claim the type contradicts.
+- **Current behaviour:** `lower_for_over_iter` binds the loop variable with
+  `value: &T = move nxt.v1.0` — its own doc comment says so — moving the payload out of the
+  `Option<&T>` that `*IterNext` returned. Four instantiations observed, one lowering site:
+
+  ```
+  MIR-0036  move from a place of Copy type Ref { mutable: false, inner: Int32 }   for x in v.iter()
+  MIR-0036  move from a place of Copy type Ref { mutable: false, inner: String }  non-Copy element
+  MIR-0036  move from a place of Copy type Char                                   s.chars()
+  MIR-0036  move from a place of Copy type Int                                    user Iterator impl
+  ```
+- **How it was found:** INV-MOVE-001 (WP-COPY-CANON Phase 3). It had been in the tree indefinitely
+  and no test could see it, because nothing asked whether an operand's move was licensed by its
+  type. This is the invariant doing the job it was added for, on its first run.
+- **User impact:** none observed. The `Option` temp is reassigned on every iteration, so nothing
+  reads the emptied place before it is overwritten — the move is unobservable rather than harmless
+  by design. That is exactly the condition under which a latent defect survives: correct by
+  accident of scheduling.
+- **Security/soundness impact:** none today. The hazard is that the emptied place is only safe
+  while no path reads it between the move and the next assignment; any future change to the
+  desugar's block structure could introduce one, and nothing would flag it.
+- **Why it was reported before being fixed:** WP-COPY-CANON's Phase 3 rule — "report any firings as
+  new DEVs; no silent drive-by fixes". The invariant was written, held back, and registered here
+  first; the repair landed as its own change.
+- **Resolution:** two hand-built `Operand::Move`s in `lower.rs` — the `&T` reference form
+  (`lower_for_over_iter`) and the by-value `Item` form — now read through `read_place`, which
+  selects the operand from the payload's type.
+
+  **The fix is not "write `copy`", and that distinction is the substance of this entry.** The
+  proposed disposition above said `copy`, and it was wrong: a user `Iterator` may yield a non-`Copy`
+  `Item`, where `move` is correct and required. Replacing one hardcoded operand with the other
+  would have been the same defect facing the other way, and INV-MOVE-001 would not have caught it —
+  the invariant only rejects unlicensed moves, so a wrongly-`Copy`ed non-`Copy` payload would have
+  passed. What was actually wrong was that the desugar had an *opinion* about the operand at all.
+  A third hand-built `Move` in `lower_vec_clear_droppable` was examined and left alone: it runs only
+  for a droppable element type, and `Copy + Drop` is forbidden, so its move is always licensed.
+- **Consequence for the invariant:** INV-MOVE-001 (MIR-0036) landed in the same change, once no
+  program tripped it. Because nothing in the corpus can now reach it, three hand-built MIR fixtures
+  in `copy_canon_matrix.rs` keep it honest: a `Move` of a `Copy` place must be rejected, the `Copy`
+  form of the same body must verify, and a `Move` of a non-`Copy` place must verify. An invariant
+  no test can trip is indistinguishable from `if false`.
+- **Second property now enforced:** Copy-ness is decided twice — `LowerCtx::is_copy` picks the
+  operand, `TypeContext::is_copy` checks it — over different eligibility sets, and nothing made them
+  agree. Drift between them now surfaces as MIR-0036 on a real program instead of as divergence
+  between engines. Weaker than unifying the two predicates, which remains worth doing.
+- **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-125 — three more hand-built `Move`s on `Copy` places (CLOSED; found by INV-MOVE-001)
+
+- **Normative expectation:** as DEV-124 — the operand follows the place's type.
+- **Sites, all on the provider/`Result` path, all found by MIR-0036 on real workloads rather than
+  by the unit corpus:
+
+  | Site | Copy type moved | Reached by |
+  | --- | --- | --- |
+  | `lower.rs` provider status→`Result` binding | `enum#13`, `enum#14` (fieldless provider error enums) | C7 P1 REST workload, C7.8 native |
+  | `assign_provider_ok` multi-slot tuple | `(Bool, UInt64)` | `var_len` in the REST workload |
+  | `lower_try` — the `?` desugar's `Err` payload | `enum#2` | `c788_lifecycle_e2e::question_mark_propagation_closes_a_live_resource` |
+
+- **Why the unit corpus missed all three:** every one needs a `Result<T, E>` whose `E` is a
+  *fieldless* enum, which is what makes it `Copy`. The in-tree tests use `Result` with payload-
+  carrying or non-`Copy` errors, so `move` was always licensed there. The provider path produces
+  fieldless error enums by construction, so it fires on essentially every provider call.
+- **Aggravating detail in `lower_try`:** its `storage_end_after` closure already branches on
+  `is_copy` of the very type whose operand was hardcoded `move`, to pick the A12 storage-end
+  reason. The distinction was present in the function and the operand ignored it.
+- **Resolution:** all three read through `read_place`. Same fix as DEV-124 and, as there, *not*
+  "write `copy`" — a non-`Copy` `E` must still move.
+- **Process note:** these should have been caught before INV-MOVE-001 landed. The invariant was
+  pushed on the strength of the lib suite and four iterator tests; the provider workloads and the
+  conformance corpus were left to CI, and both failed. The invariant was right; the local evidence
+  was too narrow for a change that constrains every lowering site in the compiler.
+- **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-126 — `as_str` returned a detached copy, so a view of it had no owner (CLOSED)
+
+- **Normative expectation:** `as_str` produces a `&str` — a BORROW of the receiver. A value derived
+  from it is a view of the receiver's storage and lives as long as that storage.
+- **Current behaviour (before this entry):** the HIR interpreter's `as_str` returned
+  `Value::Str(string.clone())`, an owned copy with no link to the place it came from. Nothing
+  downstream could recover the owner.
+- **The symptom, and why it looked like a `bytes()` defect:**
+
+  ```stark
+  fn direct(c: &C)     -> &[UInt8] { c.input.bytes() }          // worked
+  fn via_as_str(c: &C) -> &[UInt8] { c.input.as_str().bytes() } // "dangling reference"
+  ```
+
+  Identical types, identical declared lifetimes, different provenance. CD-305 made `bytes()`
+  materialise its bytes into a promoted temp; CD-308 anchored that temp to the RECEIVER's frame so
+  the view survives being returned. Correct — but in the chained form the receiver is `as_str`'s
+  detached copy, which `expr_place`'s fallback had already promoted into the RUNNING frame. So the
+  bytes were anchored to the frame that was about to pop.
+- **How it was found:** CI, not the corpus. `stark-json` failed 9/10 on all three platforms with
+  "dangling reference"; its hot helper is `cursor.input.as_str().bytes()`. WP-COPY-CANON's matrix
+  has both `str::bytes (via as_str)` and an escaping `function returning a reference` producer, but
+  never their CROSS — as_str-then-bytes was only exercised locally, and escape was only exercised
+  with a direct `bytes()`. The failing cell is the one the matrix does not contain.
+- **Resolution:** `as_str` returns `Value::Ref(receiver_place)`. `deref_place`/`deref_value` already
+  normalise through it, so a chained call resolves back to the `String`'s own place and `bytes()`
+  anchors to the real owner.
+- **Consequence:** `s.as_str()` now reaches builtins and core methods as a `Value::Ref`, and
+  `string_arg` — a free function with no `&self`, so no way to follow a place — rejected those.
+  `flatten_string_refs` derefs a reference argument WHEN ITS REFERENT IS A STRING. The condition is
+  the referent's kind, not the callee's name: the pre-existing `remove`/`contains_key`/`contains`
+  special case keyed on names and so only ever covered the three that had been reported, while
+  every string-taking entry point has the same requirement. It cannot disturb a `&mut Vec`/`&mut
+  HashMap` argument, whose referent is not a string.
+- **Matrix obligation (open):** the matrix should carry producer×producer chaining, not only
+  producer×use-mode. Filed as follow-up work; this entry is the motivating program.
+- **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-127 — `borrow_set_receiver` moved a `&HashSet<T>` (CLOSED; found by INV-MOVE-001)
+
+- **Site:** `borrow_set_receiver` returned a hand-built `Operand::Move` of its `&HashSet<T>` temp.
+  A shared reference is `Copy`, so the move contradicts the type. Only the shared spellings fired;
+  `&mut` is not `Copy`.
+- **The tell:** `borrow_map_receiver`, its sibling three lines below, already read through
+  `read_place`. One of a matched pair diverged and nothing compared them.
+- **Reached by:** the whole DEV-116 HashSet corpus (6 C6 cases), `collection_iteration_order_agrees`,
+  `exhausted_set_iter_then_remove`, and the HashSet identity/ordering differentials.
+- **Resolution:** `read_place`, matching the sibling.
+- **Two test fixtures retyped, and why this is not test weakening:** `mir_verify`'s
+  `partial_move_of_one_field_leaves_sibling_readable` and
+  `dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not` hand-build MIR that moves
+  `Int32` locals. `Int32` was incidental filler in both — the subjects are V-MOVE-1 field precision
+  and MIR-0007/DEV-117's exemption — but under INV-MOVE-001 an `Int32` move is invalid MIR on its
+  own account, so both fixtures failed for a reason neither test concerns. The fields/locals are now
+  `&mut Int32`: non-`Copy`, no drop glue, and what a partial move actually looks like in lowered
+  code. Every assertion is unchanged. (`Constant::Str` was tried first and rejected: it types as
+  `&str`, a *shared* reference, hence `Copy` again.) The weakening that was NOT done is exempting
+  `Copy` moves in the invariant.
+- **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-128 — the `Copy` rule was written twice, and the test guarding that was fictional (CLOSED)
+
+- **Normative expectation:** one rule, one implementation. Copy-ness decides operand selection, drop
+  glue, slot backing and duplication licence; two implementations of it can disagree, and every
+  consumer is entitled to believe whichever it asked.
+- **Current behaviour (before this entry):** `TypeContext::is_copy` and `mir::lower::LowerCtx::is_copy`
+  were byte-identical matches differing in exactly one lookup — `copy_eligible_items` versus
+  `meta.copy_eligible`, where `lower_program` fills the first FROM the second.
+- **Cost, measured rather than asserted:**
+  - `HostResource` was corrected **five separate times** across this family, each fix landing in one
+    copy of the rule at a time (the trail is in the comments on both functions).
+  - CD-240 fixed the `_ => true` wildcard defect in one copy and left the other; the surviving
+    wildcard is what made `read_place` emit `Operand::Copy` for a host resource, so a program could
+    hold two handles to one resource.
+  - DEV-125 and DEV-127 were operand decisions taken against the producer's predicate and rejected
+    by the consumer's — INV-MOVE-001 surfaced them as MIR-0036 on real programs.
+- **The fictional guard.** `TypeContext::is_copy`'s doc comment named
+  `lowered_copy_classification_matches_the_type_context` as the test keeping the two in step. **That
+  test does not exist.** The only occurrence of the name anywhere in the tree was the claim itself.
+  The same comment's stated rationale for the split was also stale: it says lowering answers the
+  nominal case from the HIR via `type_has_copy_impl`, while the code reads a precomputed set.
+- **Resolution:** the structural rule lives once, in `mir::mir_ty_is_copy`, with the nominal case
+  supplied as a predicate. The two SETS remain separate because they are read at different times;
+  only the rule is shared, which is the part that was drifting. Agreement is now structural rather
+  than asserted — a stronger guarantee than the missing test would have provided.
+- **Second half — `operand_move_inventory`:** INV-MOVE-001 catches a wrong operand only when a
+  PROGRAM reaches the site, which is how DEV-124/125/127 surfaced one CI round at a time. The new
+  test pins all eleven `Operand::Move` occurrences in `lower.rs` with a stated reason, so a new one
+  fails at authoring time. Rows match trimmed source text (stable under line-number churn, not under
+  rewording); CRLF is normalised at the read so a Windows checkout does not fail every row.
+- **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-129 — string literal patterns compared representation, not content (CLOSED)
+
+- **Normative expectation:** a string literal pattern on a `&str` scrutinee compares by CONTENT
+  (StrEq), never structurally. `match s.as_str() { "beta" => .. }` is the canonical form.
+- **What broke, and it was mine.** DEV-126 made `as_str` return `Value::Ref(receiver_place)` instead
+  of a `Value::Str` clone. Two things then went wrong at once in the HIR interpreter's
+  `PatKind::Lit` arm, which compared `eval_lit(..) == *value`:
+  1. the scrutinee was a `Value::Ref` and was never dereferenced;
+  2. dereferencing it yields `Value::String` (the owning local), while a literal evaluates to
+     `Value::Str` — the same text in two wrappers, which `==` on `Value` distinguishes.
+  The second was latent all along and hidden by the first: the comparison only ever worked because
+  `as_str` happened to hand back the same wrapper the literal used.
+- **Symptom:** every arm missed and the match fell through to `_`. `a2_str_pat.stark` printed 0 in
+  the oracle and 2 under MIR. **Silently** — no arm is "wrong" to fail, so nothing could report it;
+  the three-engine differential is the only thing that could have caught it, and did.
+- **Resolution:** the literal arm dereferences the scrutinee, and compares via `string_text`, which
+  reads through either wrapper. The same treatment is applied to the const-pattern sub-case, since a
+  const pattern is a literal pattern with a name. Deliberately NOT applied to the variant arms: a
+  reference-typed enum scrutinee is a type error (PAT-BIND-001, CD-303), and quietly accepting one
+  there would re-open it.
+- **Wider point:** DEV-126 was a representation change to a value model that several unrelated
+  comparisons had been reading structurally. This is the second consequence of it (after
+  `flatten_string_refs` for builtin arguments), and the class — "who else compares `Value` by
+  variant identity where content is meant?" — is worth an audit rather than waiting for the next
+  differential to find one.
+- **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-130 — structural equality was written once and omitted three times (CLOSED)
+
+- **Normative expectation:** `&str` and `String` compare by content (`06-Standard-Library.md`).
+  `Value` derives `PartialEq`, so `Str("a") != String("a")` — a representation difference the
+  language does not have.
+- **Found by:** the value-comparison audit DEV-129 called for, run rather than deferred.
+- **The finding.** The `Str`/`String` pairing existed inline at exactly ONE site, the `==` operator.
+  Three others compared raw:
+
+  | Site | Had the pairing |
+  | --- | --- |
+  | `==` / `!=` operator | yes, inline |
+  | `assert_eq` / `assert_ne` | **no** |
+  | `language_equal` (backs `Vec::contains` and friends) | **no** |
+  | literal / const patterns | no — closed separately as DEV-129 |
+
+  So `s.as_str() == "beta"` was true while `assert_eq(s.as_str(), "beta")` failed, reporting
+  `left: beta` / `right: beta`. Two values that print identically, declared unequal.
+- **Resolution:** `values_equal` is the single structural comparison all five sites route through —
+  the same correction DEV-128 made for `is_copy`. It recurses into containers deliberately
+  (`Some(s.as_str())` against `Some("x")` compares payloads, and a flat rule fails it for the same
+  reason). It does NOT follow `Value::Ref`: callers deref first, because following a place needs
+  `&self` and because a caller that has not deref'd has a bug this function should not hide.
+- **Probed and found clean:** `HashMap::get`/`contains_key`/`remove` and `HashSet::contains` by
+  reference, for `String`, `Int32` and user-struct keys with `Eq` + `Hash` impls.
+- **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-131 — the string-ref flattening was too broad and broke `take` (CLOSED)
+
+- **What broke:** `take(&mut a)` failed with "take expects mutable reference".
+- **Cause, and it was mine.** DEV-126 flattened every reference-to-string argument on the way into
+  `call_builtin`. `take` needs the REFERENCE, not the text, and got the text. A blanket rule cannot
+  distinguish "reads the string" from "needs the place", because `Value::Ref` does not record which
+  the caller meant.
+- **Note on how this happened:** DEV-126's entry criticised the pre-existing
+  `remove`/`contains_key`/`contains` deref for keying on callee NAMES, then replaced it with a rule
+  keyed on referent kind — which is better for the sites that read content and no better for the
+  sites that do not. The defect was over-reach, not under-reach.
+- **Resolution:** the deref moved to the five sites that call `string_arg`, which demonstrably want
+  text. Anything needing a place is untouched by construction rather than by exemption.
+- **Found by:** `gate4a_prelude_traits`, a suite not run when DEV-126 landed.
+- **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-121 — UPDATE: narrowed by INV-VALUE-REP-001, class NOT closed
+
+- **What is now enforced.** INV-VALUE-REP-001 checks at every `let` that a binding declared `&[T]`
+  or `&str` does not hold owned `Value::Vec`/`Value::String` storage. That is precisely the
+  direction DEV-121 broke: `let view = owner.bytes()` had `&[UInt8]` in the type tables and owned
+  storage at runtime, so passing it moved it and emptied the caller's binding — on a program the
+  checker and MIR both accepted, with correct MIR.
+- **A premise in the original entry was wrong.** DEV-121 said the class-closer was blocked because
+  the HIR interpreter is "largely untyped at runtime". `Interpreter` already holds
+  `tables: &TypeTables`, with both `expr_types` and `local_types`. It has the declared type at every
+  `let` and simply never consulted it. The invariant cost far less than the entry implied.
+- **Why it is narrow, deliberately.** It asserts one direction of one pairing, not a total
+  type→representation mapping — because the oracle's model is not total. `&Int32` may legitimately
+  arrive as the bare scalar through auto-deref, and `Value::Str`/`Value::String` both carry text
+  where one type is declared (DEV-130 had to make comparison representation-insensitive for exactly
+  that reason). A broad rule would fire on correct programs and need exemptions, and an invariant
+  with exemptions is advisory. A narrow rule that always means something was the trade taken.
+- **Status: NARROWED, not class-closed.** The residual exposure is named rather than implied: `&T`
+  for scalar `T`, and the `Str`/`String` duality. Those are the two pairings DEV-129, DEV-130 and
+  DEV-131 came out of, so the class is live, not theoretical.
+- **Deferred by owner direction** to `WP-VALUE-REP-TOTAL.md`, filed with the ambiguities enumerated
+  and the likely finding recorded: the mapping probably cannot be made total without first changing
+  the oracle's value model, which is a larger change than the check it enables.
+- **Owning gate:** WP-COPY-CANON Phase 2 (narrow); WP-VALUE-REP-TOTAL (remainder).

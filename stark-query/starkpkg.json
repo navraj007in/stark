@@ -1,0 +1,8 @@
+{
+  "name": "stark-query",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {
+    "stark_percent": { "package": "stark-percent", "path": "../stark-percent", "version": "0.1.0" }
+  }
+}

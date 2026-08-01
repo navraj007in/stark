@@ -71,7 +71,10 @@ fn collect(
         let node = hir.item(id);
         match &node.kind {
             ItemKind::Fn(def) => {
-                let name = item_text(hir, root_file, id, def.sig.name);
+                // `None` means the item belongs to a dependency, not this package: skip it.
+                let Some(name) = item_text(hir, root_file, id, def.sig.name) else {
+                    continue;
+                };
                 if let Some(suffix) = test_name(name) {
                     if def.sig.params.is_empty() && def.sig.receiver.is_none() {
                         let mut full = mod_path.clone();
@@ -92,7 +95,12 @@ fn collect(
                 name,
                 items: Some(inner),
             } => {
-                mod_path.push(item_text(hir, root_file, id, *name).to_string());
+                // A module whose name span does not fit its file is a dependency's module; its
+                // contents are not this package's tests.
+                let Some(mod_name) = item_text(hir, root_file, id, *name) else {
+                    continue;
+                };
+                mod_path.push(mod_name.to_string());
                 collect(hir, root_file, inner, mod_path, out);
                 mod_path.pop();
             }
@@ -109,22 +117,37 @@ fn test_name(name: &str) -> Option<&str> {
     name.strip_prefix("test_").filter(|rest| !rest.is_empty())
 }
 
-/// `hir.item_files` only covers items loaded from `mod` submodule files
-/// (`resolve.rs` populates it during AST->HIR lowering, carried over from
-/// the parser's per-submodule tracking); an item declared directly in the
-/// package's entry file has no entry there, so `root_file` is the fallback.
+/// The source text of an item's name, or `None` when the span does not belong to the file this
+/// item resolves to.
+///
+/// `hir.item_files` only covers items loaded from `mod` submodule files (`resolve.rs` populates it
+/// during AST->HIR lowering, carried over from the parser's per-submodule tracking); an item
+/// declared directly in the package's entry file has no entry there, so `root_file` is the
+/// fallback.
+///
+/// **A DEPENDENCY's items have neither.** They are in the same `Hir` — the package graph is
+/// flattened into one — but their spans index their own package's source, not the root's. Slicing
+/// `root_file` with one of those spans panicked the whole run: `stark test` in any package with a
+/// dependency died with "byte index 2147483648 is out of bounds", killing the process before a
+/// single test was discovered. `stark-ascii` (no dependencies) worked; `stark-percent`, `-mime`,
+/// `-query` and `-form` did not, which is what made the cause visible.
+///
+/// Returning `None` rather than clamping or guessing: a span that does not fit its file identifies
+/// an item this test runner should not be looking at, and the caller skips it. Discovering a
+/// dependency's `test_*` functions would be wrong anyway — they are that package's tests, run from
+/// that package.
 fn item_text<'a>(
     hir: &'a Hir,
     root_file: &'a SourceFile,
     item: ItemId,
     span: crate::source::Span,
-) -> &'a str {
+) -> Option<&'a str> {
     let src = hir
         .item_files
         .get(&item)
         .map(|f| f.src.as_str())
         .unwrap_or(&root_file.src);
-    &src[span.lo as usize..span.hi as usize]
+    src.get(span.lo as usize..span.hi as usize)
 }
 
 /// Run a single discovered test as its own interpreter entry point.

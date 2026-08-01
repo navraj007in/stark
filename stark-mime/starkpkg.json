@@ -1,0 +1,8 @@
+{
+  "name": "stark-mime",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {
+    "stark_ascii": { "package": "stark-ascii", "path": "../stark-ascii", "version": "0.1.0" }
+  }
+}

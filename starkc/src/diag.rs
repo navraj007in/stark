@@ -49,6 +49,97 @@ impl Severity {
     }
 }
 
+/// A span resolved against a source that it demonstrably belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedLocation {
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Why a span could not be located in the source it was offered against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanResolutionError {
+    /// `hi < lo`. A span cannot end before it starts.
+    Inverted,
+    /// The span runs past the end of this source — the shape that produced DEV-122's phantom
+    /// location, where a dependency's span was measured against the consumer's line table.
+    PastEnd { source_len: usize },
+    /// The offset resolved to a line, but to a column outside that line's text. Reachable when a
+    /// line table and its source disagree, which is what a stale or foreign table looks like.
+    ColumnOutsideLine { line: usize },
+}
+
+impl SpanResolutionError {
+    /// The rendered explanation. Deliberately verbose and unmistakably internal: this text appearing
+    /// in output means a diagnostic reached rendering without knowing its own source, which is a
+    /// compiler defect to be reported, not a user error to be interpreted.
+    pub fn render(self, source_name: &str, span: Span) -> String {
+        let detail = match self {
+            SpanResolutionError::Inverted => "span is inverted (hi < lo)".to_string(),
+            SpanResolutionError::PastEnd { source_len } => {
+                format!("source is {source_len} bytes")
+            }
+            SpanResolutionError::ColumnOutsideLine { line } => {
+                format!("resolved column falls outside line {line}")
+            }
+        };
+        format!(
+            "internal diagnostic error: span {}..{} does not belong to selected source \
+             `{source_name}` ({detail}); location suppressed — DEV-122",
+            span.lo, span.hi
+        )
+    }
+}
+
+/// **DEV-122: the one checked path from a span to a location.**
+///
+/// Every renderer — compile-time diagnostics and runtime trap reporting alike — resolves through
+/// here. That unification is the point of the function, not a convenience: the defect that
+/// motivated it was in the RUNTIME path, and a guard installed only on the compile-time path would
+/// have missed the half that actually bit.
+///
+/// # Why each check exists
+///
+/// `SourceFile::line_col` CLAMPS an out-of-range offset to end-of-file. It cannot fail, so a span
+/// measured against the wrong source does not produce an error — it produces a well-formed,
+/// plausible, WRONG location. A 21-line consumer was told a fault lay at line 31 of itself, and a
+/// reader has no way to distinguish that from a real location. That is worse than no location,
+/// because it names a specific place to go and look.
+///
+/// So this returns `Err` rather than a best guess, and it **never** falls back to another source:
+/// substituting a different file is precisely how a dependency's span came to be rendered against
+/// the root in the first place.
+///
+/// It never panics. A diagnostic path that can abort turns a reportable defect into a lost one.
+///
+/// **This is an interim guard, not the architecture.** The platform correction is that every span
+/// carries a `SourceId` and resolution is total by construction, filed as its own work package.
+/// Until then this makes an unattributed span *visible* rather than *convincing*.
+pub fn resolve_span(
+    source: &SourceFile,
+    span: Span,
+) -> Result<ResolvedLocation, SpanResolutionError> {
+    if span.hi < span.lo {
+        return Err(SpanResolutionError::Inverted);
+    }
+    let source_len = source.src.len();
+    // `>` not `>=`: an offset exactly at end-of-file is the legitimate "just past the last byte"
+    // position a zero-width span at EOF uses.
+    if span.lo as usize > source_len || span.hi as usize > source_len {
+        return Err(SpanResolutionError::PastEnd { source_len });
+    }
+    let (line, column) = source.line_col(span.lo);
+    // The line table and the text must agree. A column beyond the line's length means they do not,
+    // which is what a foreign or stale table looks like from here.
+    if line == 0 || line > source.line_count() {
+        return Err(SpanResolutionError::ColumnOutsideLine { line });
+    }
+    if column == 0 || column > source.line_text(line).len() + 1 {
+        return Err(SpanResolutionError::ColumnOutsideLine { line });
+    }
+    Ok(ResolvedLocation { line, column })
+}
+
 #[derive(Debug, Clone)]
 pub struct RelatedDiagnostic {
     pub message: String,
@@ -160,7 +251,31 @@ impl Diagnostic {
     /// format. The result always ends with a newline.
     pub fn render(&self, default_file: &SourceFile) -> String {
         let file = self.file.as_deref().unwrap_or(default_file);
-        let (line, col) = file.line_col(self.span.lo);
+        // DEV-122: resolve through the one checked path. CD-306's inline lower-bound backstop is
+        // superseded here rather than duplicated — `resolve_span` is now the only place that
+        // decides whether a span is locatable, and it is shared with runtime trap rendering.
+        let (line, col) = match resolve_span(file, self.span) {
+            Ok(resolved) => (resolved.line, resolved.column),
+            Err(error) => {
+                let mut out = String::new();
+                match &self.code {
+                    Some(code) => {
+                        let _ = writeln!(
+                            out,
+                            "{}: [{}] {}",
+                            self.severity.heading(),
+                            code,
+                            self.message
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(out, "{}: {}", self.severity.heading(), self.message);
+                    }
+                }
+                let _ = writeln!(out, "  --> {}", error.render(&file.name, self.span));
+                return out;
+            }
+        };
         let line_str = line.to_string();
         // Right-align the line number into a min-width-2 column so the `|`
         // of every row lines up and carets sit exactly under their span.

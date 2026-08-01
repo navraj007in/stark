@@ -1,0 +1,8 @@
+use stark_ascii::eq_ignore_ascii_case;
+use stark_ascii::is_tchar;
+
+fn main() {
+    if is_tchar(65u8) && eq_ignore_ascii_case("content-type".bytes(), "Content-Type".bytes()) {
+        println("ASCII_CONSUMER_OK");
+    }
+}

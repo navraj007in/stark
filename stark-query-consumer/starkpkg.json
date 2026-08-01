@@ -1,0 +1,8 @@
+{
+  "name": "stark-query-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_query": { "package": "stark-query", "path": "../stark-query", "version": "0.1.0" }
+  }
+}
