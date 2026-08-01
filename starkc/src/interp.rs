@@ -2296,13 +2296,10 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
                 }
             }
-            let equal = match (&left, &right) {
-                (
-                    Value::String(left) | Value::Str(left),
-                    Value::String(right) | Value::Str(right),
-                ) => left == right,
-                _ => left == right,
-            };
+            // DEV-130: the inline `Str`/`String` pairing that used to live here is now
+            // `values_equal`, shared with `assert_eq`, `language_equal` and literal patterns —
+            // all of which lacked it.
+            let equal = values_equal(&left, &right);
             return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
         }
         if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
@@ -2835,13 +2832,33 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    /// **DEV-131: deref a string argument at the sites that read its CONTENT, and only those.**
+    ///
+    /// DEV-126 first solved this by flattening every reference-to-string argument on the way into
+    /// `call_builtin`. That was too broad and broke `take(&mut a)`: `take` needs the REFERENCE, and
+    /// flattening handed it the string. A blanket rule cannot tell "reads the text" from "needs the
+    /// place" because `Value::Ref` does not record which the caller meant.
+    ///
+    /// So the deref moves to the five sites that call `string_arg` — the ones that demonstrably
+    /// want text. Anything wanting a place is untouched by construction rather than by exemption.
+    fn string_arg_deref(
+        &mut self,
+        value: Option<Value>,
+        span: Span,
+    ) -> Result<String, RuntimeError> {
+        let value = match value {
+            Some(value) => Some(self.deref_value(value, span)?),
+            None => None,
+        };
+        string_arg(value, span)
+    }
+
     fn call_builtin(
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        self.flatten_string_refs(&mut args, span)?;
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
@@ -2883,7 +2900,9 @@ impl<'a> Interpreter<'a> {
                 })?;
                 let left = self.deref_value(left, span)?;
                 let right = self.deref_value(right, span)?;
-                let equal = left == right;
+                // DEV-130: was a raw `==`, so `assert_eq(s.as_str(), "beta")` failed with
+                // `left: beta, right: beta` — identical text in different wrappers.
+                let equal = values_equal(&left, &right);
                 let want_eq = builtin == Builtin::AssertEq;
                 if equal == want_eq {
                     Ok(Value::Unit)
@@ -2987,7 +3006,10 @@ impl<'a> Interpreter<'a> {
                     Err(RuntimeError::new("take expects mutable reference", span))
                 }
             }
-            Builtin::StringFrom => Ok(Value::String(string_arg(args.pop(), span)?)),
+            Builtin::StringFrom => {
+                let text = self.string_arg_deref(args.pop(), span)?;
+                Ok(Value::String(text))
+            }
             Builtin::StringNew => Ok(Value::String(String::new())),
             Builtin::StringWithCapacity => {
                 let capacity = usize_arg(args.pop(), span)?;
@@ -3024,7 +3046,7 @@ impl<'a> Interpreter<'a> {
                 args.pop().unwrap_or(Value::Unit),
             )))),
             Builtin::ReadFile => {
-                let path = string_arg(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::read_to_string(path) {
                     Ok(value) => Value::Result(Ok(Box::new(Value::String(value)))),
                     Err(error) => Value::Result(Err(Box::new(Value::IOError(
@@ -3036,8 +3058,8 @@ impl<'a> Interpreter<'a> {
                 if args.len() != 2 {
                     return Err(RuntimeError::new("write_file expects two arguments", span));
                 }
-                let content = string_arg(args.pop(), span)?;
-                let path = string_arg(args.pop(), span)?;
+                let content = self.string_arg_deref(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
                     Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
                     Err(error) => Value::Result(Err(Box::new(Value::IOError(
@@ -3046,7 +3068,7 @@ impl<'a> Interpreter<'a> {
                 })
             }
             Builtin::FileOpen | Builtin::FileCreate => {
-                let path = string_arg(args.pop(), span)?;
+                let path = self.string_arg_deref(args.pop(), span)?;
                 let result = if builtin == Builtin::FileOpen {
                     std::fs::File::open(path)
                 } else {
@@ -3801,7 +3823,8 @@ impl<'a> Interpreter<'a> {
                 };
             }
         }
-        Ok(left == right)
+        // DEV-130: reached by `Vec::contains` and friends, and it had the same raw `==`.
+        Ok(values_equal(&left, &right))
     }
 
     fn call_core_method(
@@ -5291,10 +5314,7 @@ impl<'a> Interpreter<'a> {
             hir::PatKind::Lit(lit) => {
                 let scrutinee = self.deref_value(value.clone(), pattern.span)?;
                 let expected = self.eval_lit(*lit, pattern.span)?;
-                match (string_text(&expected), string_text(&scrutinee)) {
-                    (Some(expected), Some(scrutinee)) => Ok(expected == scrutinee),
-                    _ => Ok(expected == scrutinee),
-                }
+                Ok(values_equal(&expected, &scrutinee))
             }
             hir::PatKind::Path { res, .. } => match (res, value) {
                 (Res::Item(item), actual) => match &self.hir.item(*item).kind {
@@ -5307,10 +5327,7 @@ impl<'a> Interpreter<'a> {
                     } => {
                         let actual = self.deref_value(actual.clone(), pattern.span)?;
                         let expected = self.expect_value(*initializer)?;
-                        match (string_text(&expected), string_text(&actual)) {
-                            (Some(expected), Some(actual)) => Ok(expected == actual),
-                            _ => Ok(expected == actual),
-                        }
+                        Ok(values_equal(&expected, &actual))
                     }
                     _ => Ok(false),
                 },
@@ -7054,6 +7071,107 @@ fn string_text(value: &Value) -> Option<&str> {
     match value {
         Value::Str(text) | Value::String(text) => Some(text.as_str()),
         _ => None,
+    }
+}
+
+/// **DEV-130: structural equality with the one representation-insensitivity STARK requires.**
+///
+/// `Value` derives `PartialEq`, so `Str("a") != String("a")`. That is a representation difference
+/// the language does not have: both are the text `a`, and `06-Standard-Library.md` gives `&str` and
+/// `String` content equality.
+///
+/// The rule had been written inline at ONE site — the `==` operator — and omitted at the other
+/// three, which is why `s.as_str() == "beta"` was true while `assert_eq(s.as_str(), "beta")` failed
+/// with `left: beta, right: beta`: two values that print identically, declared unequal. Rather than
+/// patch each site, this is now the single comparison every structural equality routes through, the
+/// same correction DEV-128 made for `is_copy`.
+///
+/// Recursion into containers is deliberate: `Some(s.as_str())` against `Some("x")` compares
+/// payloads, and a flat rule would report them unequal for the same reason.
+///
+/// `Ref` is NOT followed here — callers deref first, because following a place needs `&self` and
+/// because a caller that has not deref'd has a bug this function should not hide.
+fn values_equal(left: &Value, right: &Value) -> bool {
+    if let (Some(left), Some(right)) = (string_text(left), string_text(right)) {
+        return left == right;
+    }
+    let slots_equal = |left: &[Option<Value>], right: &[Option<Value>]| {
+        left.len() == right.len()
+            && left.iter().zip(right).all(|pair| match pair {
+                (Some(left), Some(right)) => values_equal(left, right),
+                (None, None) => true,
+                _ => false,
+            })
+    };
+    match (left, right) {
+        (Value::Tuple(left), Value::Tuple(right))
+        | (Value::Array(left), Value::Array(right))
+        | (Value::Vec(left), Value::Vec(right)) => slots_equal(left, right),
+        (Value::Option(left), Value::Option(right)) => match (left, right) {
+            (Some(left), Some(right)) => values_equal(left, right),
+            (None, None) => true,
+            _ => false,
+        },
+        (Value::Result(left), Value::Result(right)) => match (left, right) {
+            (Ok(left), Ok(right)) | (Err(left), Err(right)) => values_equal(left, right),
+            _ => false,
+        },
+        (Value::Boxed(left), Value::Boxed(right)) => match (left.as_ref(), right.as_ref()) {
+            (Some(left), Some(right)) => values_equal(left, right),
+            (None, None) => true,
+            _ => false,
+        },
+        (
+            Value::Struct {
+                item: left_item,
+                fields: left_fields,
+            },
+            Value::Struct {
+                item: right_item,
+                fields: right_fields,
+            },
+        ) => {
+            left_item == right_item
+                && left_fields.len() == right_fields.len()
+                && left_fields.iter().all(|(name, left)| {
+                    right_fields
+                        .get(name)
+                        .is_some_and(|right| match (left, right) {
+                            (Some(left), Some(right)) => values_equal(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        })
+                })
+        }
+        (
+            Value::Enum {
+                item: left_item,
+                variant: left_variant,
+                fields: left_fields,
+                named: left_named,
+            },
+            Value::Enum {
+                item: right_item,
+                variant: right_variant,
+                fields: right_fields,
+                named: right_named,
+            },
+        ) => {
+            left_item == right_item
+                && left_variant == right_variant
+                && slots_equal(left_fields, right_fields)
+                && left_named.len() == right_named.len()
+                && left_named.iter().all(|(name, left)| {
+                    right_named
+                        .get(name)
+                        .is_some_and(|right| match (left, right) {
+                            (Some(left), Some(right)) => values_equal(left, right),
+                            (None, None) => true,
+                            _ => false,
+                        })
+                })
+        }
+        _ => left == right,
     }
 }
 

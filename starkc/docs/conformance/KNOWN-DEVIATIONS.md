@@ -3082,3 +3082,46 @@ C2.8–C2.11 disposition.
   variant identity where content is meant?" — is worth an audit rather than waiting for the next
   differential to find one.
 - **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-130 — structural equality was written once and omitted three times (CLOSED)
+
+- **Normative expectation:** `&str` and `String` compare by content (`06-Standard-Library.md`).
+  `Value` derives `PartialEq`, so `Str("a") != String("a")` — a representation difference the
+  language does not have.
+- **Found by:** the value-comparison audit DEV-129 called for, run rather than deferred.
+- **The finding.** The `Str`/`String` pairing existed inline at exactly ONE site, the `==` operator.
+  Three others compared raw:
+
+  | Site | Had the pairing |
+  | --- | --- |
+  | `==` / `!=` operator | yes, inline |
+  | `assert_eq` / `assert_ne` | **no** |
+  | `language_equal` (backs `Vec::contains` and friends) | **no** |
+  | literal / const patterns | no — closed separately as DEV-129 |
+
+  So `s.as_str() == "beta"` was true while `assert_eq(s.as_str(), "beta")` failed, reporting
+  `left: beta` / `right: beta`. Two values that print identically, declared unequal.
+- **Resolution:** `values_equal` is the single structural comparison all five sites route through —
+  the same correction DEV-128 made for `is_copy`. It recurses into containers deliberately
+  (`Some(s.as_str())` against `Some("x")` compares payloads, and a flat rule fails it for the same
+  reason). It does NOT follow `Value::Ref`: callers deref first, because following a place needs
+  `&self` and because a caller that has not deref'd has a bug this function should not hide.
+- **Probed and found clean:** `HashMap::get`/`contains_key`/`remove` and `HashSet::contains` by
+  reference, for `String`, `Int32` and user-struct keys with `Eq` + `Hash` impls.
+- **Owning gate:** WP-COPY-CANON Phase 2.
+
+## DEV-131 — the string-ref flattening was too broad and broke `take` (CLOSED)
+
+- **What broke:** `take(&mut a)` failed with "take expects mutable reference".
+- **Cause, and it was mine.** DEV-126 flattened every reference-to-string argument on the way into
+  `call_builtin`. `take` needs the REFERENCE, not the text, and got the text. A blanket rule cannot
+  distinguish "reads the string" from "needs the place", because `Value::Ref` does not record which
+  the caller meant.
+- **Note on how this happened:** DEV-126's entry criticised the pre-existing
+  `remove`/`contains_key`/`contains` deref for keying on callee NAMES, then replaced it with a rule
+  keyed on referent kind — which is better for the sites that read content and no better for the
+  sites that do not. The defect was over-reach, not under-reach.
+- **Resolution:** the deref moved to the five sites that call `string_arg`, which demonstrably want
+  text. Anything needing a place is untouched by construction rather than by exemption.
+- **Found by:** `gate4a_prelude_traits`, a suite not run when DEV-126 landed.
+- **Owning gate:** WP-COPY-CANON Phase 2.
