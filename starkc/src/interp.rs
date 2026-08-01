@@ -2811,12 +2811,37 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// **DEV-126: flatten a reference argument that refers to a STRING.**
+    ///
+    /// `as_str` yields the receiver's place rather than a detached copy, so `s.as_str()` arrives at
+    /// a builtin or core method as a `Value::Ref`. `string_arg` is a free function with no `&self`
+    /// and therefore no way to follow a place, so it rejected those as "expected string argument".
+    ///
+    /// The condition is the REFERENT'S KIND, not the callee's name. Keying on names is what the
+    /// `remove`/`contains_key`/`contains` special case does, and it only ever covered the three
+    /// that had been reported; every string-taking entry point has the same requirement. Keying on
+    /// "the referent is a string" also cannot disturb a `&mut Vec`/`&mut HashMap` argument, whose
+    /// whole purpose is to stay a reference — those referents are not strings.
+    fn flatten_string_refs(&mut self, args: &mut [Value], span: Span) -> Result<(), RuntimeError> {
+        for argument in args {
+            if !matches!(argument, Value::Ref(_)) {
+                continue;
+            }
+            let flattened = self.deref_value(argument.clone(), span)?;
+            if matches!(flattened, Value::Str(_) | Value::String(_)) {
+                *argument = flattened;
+            }
+        }
+        Ok(())
+    }
+
     fn call_builtin(
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        self.flatten_string_refs(&mut args, span)?;
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
@@ -3821,6 +3846,7 @@ impl<'a> Interpreter<'a> {
         {
             arguments[0] = self.deref_value(arguments[0].clone(), span)?;
         }
+        self.flatten_string_refs(&mut arguments, span)?;
         if let Some(result) =
             self.call_collection_ownership_method(&receiver_place, name, &mut arguments, span)?
         {
@@ -4578,7 +4604,19 @@ impl<'a> Interpreter<'a> {
                     string.clear();
                     Ok(Value::Unit)
                 }
-                "as_str" => Ok(Value::Str(string.clone())),
+                // **DEV-126: `as_str` is a BORROW, so it must yield the receiver's place.**
+                //
+                // This cloned the string, producing a value with no link to what it was a view of.
+                // Every consumer that needs the OWNER — `bytes()`, which anchors its materialised
+                // byte storage to the owner's frame — then had nothing to anchor to, and
+                // `expr_place`'s fallback promoted the detached copy into the running frame. So
+                // `fn f(c: &C) -> &[UInt8] { c.input.as_str().bytes() }` dangled on return while
+                // the direct `c.input.bytes()` worked: identical types, different provenance.
+                //
+                // `Value::Ref` is what a `&str` of a place actually is, and `deref_place` /
+                // `deref_value` already normalise through it, so the receiver of a chained call
+                // resolves back to the `String`'s own place.
+                "as_str" => Ok(Value::Ref(receiver_place.clone())),
                 "trim" => Ok(Value::Str(string.trim().to_string())),
                 "contains" => Ok(Value::Bool(
                     string.contains(&string_arg(values.next(), span)?),

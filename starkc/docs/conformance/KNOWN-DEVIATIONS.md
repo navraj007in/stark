@@ -2963,3 +2963,41 @@ C2.8–C2.11 disposition.
   conformance corpus were left to CI, and both failed. The invariant was right; the local evidence
   was too narrow for a change that constrains every lowering site in the compiler.
 - **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-126 — `as_str` returned a detached copy, so a view of it had no owner (CLOSED)
+
+- **Normative expectation:** `as_str` produces a `&str` — a BORROW of the receiver. A value derived
+  from it is a view of the receiver's storage and lives as long as that storage.
+- **Current behaviour (before this entry):** the HIR interpreter's `as_str` returned
+  `Value::Str(string.clone())`, an owned copy with no link to the place it came from. Nothing
+  downstream could recover the owner.
+- **The symptom, and why it looked like a `bytes()` defect:**
+
+  ```stark
+  fn direct(c: &C)     -> &[UInt8] { c.input.bytes() }          // worked
+  fn via_as_str(c: &C) -> &[UInt8] { c.input.as_str().bytes() } // "dangling reference"
+  ```
+
+  Identical types, identical declared lifetimes, different provenance. CD-305 made `bytes()`
+  materialise its bytes into a promoted temp; CD-308 anchored that temp to the RECEIVER's frame so
+  the view survives being returned. Correct — but in the chained form the receiver is `as_str`'s
+  detached copy, which `expr_place`'s fallback had already promoted into the RUNNING frame. So the
+  bytes were anchored to the frame that was about to pop.
+- **How it was found:** CI, not the corpus. `stark-json` failed 9/10 on all three platforms with
+  "dangling reference"; its hot helper is `cursor.input.as_str().bytes()`. WP-COPY-CANON's matrix
+  has both `str::bytes (via as_str)` and an escaping `function returning a reference` producer, but
+  never their CROSS — as_str-then-bytes was only exercised locally, and escape was only exercised
+  with a direct `bytes()`. The failing cell is the one the matrix does not contain.
+- **Resolution:** `as_str` returns `Value::Ref(receiver_place)`. `deref_place`/`deref_value` already
+  normalise through it, so a chained call resolves back to the `String`'s own place and `bytes()`
+  anchors to the real owner.
+- **Consequence:** `s.as_str()` now reaches builtins and core methods as a `Value::Ref`, and
+  `string_arg` — a free function with no `&self`, so no way to follow a place — rejected those.
+  `flatten_string_refs` derefs a reference argument WHEN ITS REFERENT IS A STRING. The condition is
+  the referent's kind, not the callee's name: the pre-existing `remove`/`contains_key`/`contains`
+  special case keyed on names and so only ever covered the three that had been reported, while
+  every string-taking entry point has the same requirement. It cannot disturb a `&mut Vec`/`&mut
+  HashMap` argument, whose referent is not a string.
+- **Matrix obligation (open):** the matrix should carry producer×producer chaining, not only
+  producer×use-mode. Filed as follow-up work; this entry is the motivating program.
+- **Owning gate:** WP-COPY-CANON Phase 2.
