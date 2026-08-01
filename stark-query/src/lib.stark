@@ -262,3 +262,5 @@ fn direct_ascii_char(byte: UInt8) -> Char {
     else if byte == 126u8 { '~' }
     else { '?' }
 }
+
+mod tests;

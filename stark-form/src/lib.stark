@@ -152,6 +152,14 @@ fn form_encode_string(input: &String) -> String {
         let b = bytes[i];
         if b == 32u8 {
             out.push('+');
+        } else if b == 43u8 {
+            // A literal `+` MUST be escaped here, and `PercentEncodeSet::QueryComponent` will not
+            // do it: that set leaves `+` bare, which is right for a URL query component where `+`
+            // is an ordinary sub-delimiter. It is wrong for this serialisation, because our own
+            // decoder maps a bare `+` back to a space. Emitting it unescaped round-tripped
+            // `"1+2"` to `"1 2"` -- silent data corruption, and the exact failure the `+`/space
+            // convention invites.
+            out.push_str("%2B");
         } else {
             let slice: &[UInt8] = &[b];
             out.push_str(percent_encode(slice, PercentEncodeSet::QueryComponent).as_str());
@@ -284,3 +292,5 @@ fn direct_ascii_char(byte: UInt8) -> Char {
     else if byte == 126u8 { '~' }
     else { '?' }
 }
+
+mod tests;

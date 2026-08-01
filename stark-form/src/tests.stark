@@ -1,0 +1,180 @@
+use super::default_limits;
+use super::parse;
+use super::serialize;
+use super::FormError;
+use super::FormLimits;
+use super::FormPair;
+
+fn permissive_limits() -> FormLimits {
+    FormLimits {
+        max_total_bytes: 8192u64,
+        max_pair_count: 64u64,
+        max_name_bytes: 256u64,
+        max_value_bytes: 4096u64,
+    }
+}
+
+fn expect_ok(input: &String) -> Vec<FormPair> {
+    match parse(input, default_limits()) {
+        Ok(pairs) => pairs,
+        Err(_error) => panic("expected the form body to parse"),
+    }
+}
+
+fn test_pairs_split_on_ampersand_and_equals() {
+    let pairs = expect_ok(&String::from("a=1&b=2"));
+    assert_eq(pairs.len(), 2u64);
+    assert_eq(pairs[0u64].name.as_str(), "a");
+    assert_eq(pairs[0u64].value.as_str(), "1");
+    assert_eq(pairs[1u64].name.as_str(), "b");
+    assert_eq(pairs[1u64].value.as_str(), "2");
+}
+
+/// **The single behaviour that distinguishes this package from `stark-query`.**
+///
+/// `application/x-www-form-urlencoded` maps `+` to a space on the way in and a space to `+` on the
+/// way out. `stark-query` does neither — it is percent-only. The two packages otherwise have the
+/// same shape, so if this rule were ever dropped they would silently become the same thing, and
+/// every form body containing a `+` would decode wrongly. Both directions are pinned.
+fn test_plus_and_space_are_exchanged_in_both_directions() {
+    let decoded = expect_ok(&String::from("a+b=c+d"));
+    assert_eq(decoded[0u64].name.as_str(), "a b");
+    assert_eq(decoded[0u64].value.as_str(), "c d");
+
+    let mut pairs = Vec::new();
+    pairs.push(FormPair { name: String::from("a b"), value: String::from("c d") });
+    match serialize(pairs.as_slice(), default_limits()) {
+        Ok(text) => {
+            assert_eq(text.as_str(), "a+b=c+d");
+        }
+        Err(_error) => panic("serialising a space must succeed"),
+    }
+}
+
+/// A literal `+` in the DATA has to survive the round trip, which it can only do by being encoded
+/// as `%2B`. If it were emitted bare it would read back as a space — silent data corruption, and
+/// the one failure the `+`/space rule invites.
+fn test_a_literal_plus_survives_the_round_trip() {
+    let mut pairs = Vec::new();
+    pairs.push(FormPair { name: String::from("a"), value: String::from("1+2") });
+    let text = match serialize(pairs.as_slice(), default_limits()) {
+        Ok(text) => text,
+        Err(_error) => panic("serialisation must succeed"),
+    };
+    assert_eq(text.as_str(), "a=1%2B2");
+
+    let reparsed = expect_ok(&text);
+    assert_eq(reparsed[0u64].value.as_str(), "1+2");
+}
+
+fn test_empty_input_yields_no_pairs() {
+    let pairs = expect_ok(&String::from(""));
+    assert_eq(pairs.len(), 0u64);
+}
+
+fn test_missing_equals_gives_an_empty_value() {
+    let bare = expect_ok(&String::from("a"));
+    assert_eq(bare.len(), 1u64);
+    assert_eq(bare[0u64].name.as_str(), "a");
+    assert_eq(bare[0u64].value.as_str(), "");
+}
+
+/// Only the first `=` separates; later ones are value content.
+fn test_only_the_first_equals_separates() {
+    let pairs = expect_ok(&String::from("a=1=2"));
+    assert_eq(pairs.len(), 1u64);
+    assert_eq(pairs[0u64].value.as_str(), "1=2");
+}
+
+fn test_percent_escapes_are_decoded_in_name_and_value() {
+    let pairs = expect_ok(&String::from("a%20b=c%26d"));
+    assert_eq(pairs[0u64].name.as_str(), "a b");
+    assert_eq(pairs[0u64].value.as_str(), "c&d");
+}
+
+fn test_bad_percent_escapes_propagate_the_underlying_error() {
+    match parse(&String::from("a=%zz"), default_limits()) {
+        Ok(_pairs) => panic("a malformed escape must not parse"),
+        Err(error) => match error {
+            FormError::PercentDecodeError(_inner) => {}
+            _other => panic("expected PercentDecodeError"),
+        }
+    }
+}
+
+/// Each limit from a permissive baseline with one field tightened, so a failure cannot be another
+/// limit's doing.
+fn test_each_parse_limit_is_enforced_separately() {
+    let mut limits_total = permissive_limits();
+    limits_total.max_total_bytes = 3u64;
+    match parse(&String::from("a=1&b=2"), limits_total) {
+        Ok(_pairs) => panic("the total-bytes limit must be enforced"),
+        Err(error) => match error {
+            FormError::ExceededTotalBytesLimit => {}
+            _other => panic("expected ExceededTotalBytesLimit"),
+        }
+    }
+
+    let mut limits_pairs = permissive_limits();
+    limits_pairs.max_pair_count = 1u64;
+    match parse(&String::from("a=1&b=2"), limits_pairs) {
+        Ok(_pairs) => panic("the pair-count limit must be enforced"),
+        Err(error) => match error {
+            FormError::ExceededPairCountLimit => {}
+            _other => panic("expected ExceededPairCountLimit"),
+        }
+    }
+
+    let mut limits_name = permissive_limits();
+    limits_name.max_name_bytes = 1u64;
+    match parse(&String::from("abc=1"), limits_name) {
+        Ok(_pairs) => panic("the name limit must be enforced"),
+        Err(error) => match error {
+            FormError::ExceededNameLimit => {}
+            _other => panic("expected ExceededNameLimit"),
+        }
+    }
+
+    let mut limits_value = permissive_limits();
+    limits_value.max_value_bytes = 1u64;
+    match parse(&String::from("a=abc"), limits_value) {
+        Ok(_pairs) => panic("the value limit must be enforced"),
+        Err(error) => match error {
+            FormError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+}
+
+/// Limits are measured on DECODED bytes — a caller bounding memory must be bounded on what it will
+/// hold, not on the longer encoded form it arrived in.
+fn test_value_limit_measures_decoded_length() {
+    let mut limits_decoded = permissive_limits();
+    limits_decoded.max_value_bytes = 2u64;
+    match parse(&String::from("a=%41%42%43"), limits_decoded) {
+        Ok(_pairs) => panic("the value limit must measure decoded bytes"),
+        Err(error) => match error {
+            FormError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+}
+
+/// Serialising parsed pairs and parsing the result returns the same pairs — the property that
+/// catches a byte the serialiser leaves bare that the parser then reads as structure.
+fn test_serialize_then_parse_round_trips() {
+    let original = expect_ok(&String::from("a+b=c%26d&e=f&g="));
+    let text = match serialize(original.as_slice(), default_limits()) {
+        Ok(text) => text,
+        Err(_error) => panic("serialisation must succeed"),
+    };
+    let reparsed = expect_ok(&text);
+
+    assert_eq(reparsed.len(), original.len());
+    let mut i: UInt64 = 0u64;
+    while i < original.len() {
+        assert_eq(reparsed[i].name.as_str(), original[i].name.as_str());
+        assert_eq(reparsed[i].value.as_str(), original[i].value.as_str());
+        i = i + 1u64;
+    }
+}

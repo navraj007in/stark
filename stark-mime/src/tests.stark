@@ -1,0 +1,264 @@
+use super::default_limits;
+use super::format_media_type;
+use super::media_type_is;
+use super::media_type_parameter;
+use super::parse_media_type;
+use super::MediaType;
+use super::MediaTypeError;
+use super::MediaTypeLimits;
+use super::MediaTypeParameter;
+
+fn expect_ok(input: &String) -> MediaType {
+    match parse_media_type(input, default_limits()) {
+        Ok(value) => value,
+        Err(_error) => {
+            panic("expected a parse to succeed")
+        }
+    }
+}
+
+fn expect_err(input: &String) -> MediaTypeError {
+    match parse_media_type(input, default_limits()) {
+        Ok(_value) => {
+            panic("expected a parse to fail")
+        }
+        Err(error) => error,
+    }
+}
+
+fn test_type_and_subtype_are_split_at_the_slash() {
+    let parsed = expect_ok(&String::from("text/plain"));
+    assert_eq(parsed.type_name.as_str(), "text");
+    assert_eq(parsed.subtype.as_str(), "plain");
+    assert_eq(parsed.parameters.len(), 0u64);
+}
+
+fn test_leading_whitespace_is_skipped() {
+    let parsed = expect_ok(&String::from("   text/plain"));
+    assert_eq(parsed.type_name.as_str(), "text");
+}
+
+fn test_parameters_are_collected_in_order() {
+    let parsed = expect_ok(&String::from("text/plain; charset=utf-8; boundary=xyz"));
+    assert_eq(parsed.parameters.len(), 2u64);
+    assert_eq(parsed.parameters[0u64].name.as_str(), "charset");
+    assert_eq(parsed.parameters[0u64].value.as_str(), "utf-8");
+    assert_eq(parsed.parameters[1u64].name.as_str(), "boundary");
+    assert_eq(parsed.parameters[1u64].value.as_str(), "xyz");
+}
+
+fn test_whitespace_around_parameter_equals_is_tolerated() {
+    let parsed = expect_ok(&String::from("text/plain ;  charset  =  utf-8"));
+    assert_eq(parsed.parameters.len(), 1u64);
+    assert_eq(parsed.parameters[0u64].value.as_str(), "utf-8");
+}
+
+/// A quoted value keeps its bytes and loses its quotes; `\x` yields `x`, so an escaped quote is
+/// content rather than a terminator.
+fn test_quoted_values_are_unescaped() {
+    let parsed = expect_ok(&String::from("text/plain; name=\"a b\""));
+    assert_eq(parsed.parameters[0u64].value.as_str(), "a b");
+
+    let escaped = expect_ok(&String::from("text/plain; name=\"a\\\"b\""));
+    assert_eq(escaped.parameters[0u64].value.as_str(), "a\"b");
+
+    let backslash = expect_ok(&String::from("text/plain; name=\"a\\\\b\""));
+    assert_eq(backslash.parameters[0u64].value.as_str(), "a\\b");
+}
+
+/// The parse errors that are reachable from a single-token input. Each names the condition it
+/// stands for, so a future change that merges two of them fails here rather than silently.
+fn test_structural_errors_are_distinguished() {
+    match expect_err(&String::from("/plain")) {
+        MediaTypeError::EmptyType => {}
+        _other => {
+            panic("a missing type must be EmptyType")
+        }
+    }
+    match expect_err(&String::from("text/")) {
+        MediaTypeError::EmptySubtype => {}
+        _other => {
+            panic("a missing subtype must be EmptySubtype")
+        }
+    }
+    match expect_err(&String::from("text")) {
+        MediaTypeError::MissingSlash => {}
+        _other => {
+            panic("a missing slash must be MissingSlash")
+        }
+    }
+    match expect_err(&String::from("text/plain; name=\"unterminated")) {
+        MediaTypeError::MalformedQuote(_position) => {}
+        _other => {
+            panic("an unclosed quote must be MalformedQuote")
+        }
+    }
+}
+
+/// Every limit in `MediaTypeLimits` is enforced, and each reports its own error. Checked one limit
+/// at a time from a permissive baseline so a passing case cannot be passing for another limit's
+/// reason.
+fn test_each_limit_is_enforced_separately() {
+    let tiny_total = MediaTypeLimits {
+        max_total_bytes: 4u64,
+        max_parameter_count: 32u64,
+        max_parameter_name_bytes: 128u64,
+        max_parameter_value_bytes: 1024u64,
+    };
+    match parse_media_type(&String::from("text/plain"), tiny_total) {
+        Ok(_value) => {
+            panic("a total-length limit must be enforced")
+        }
+        Err(error) => match error {
+            MediaTypeError::ExceededTotalBytesLimit => {}
+            _other => {
+                panic("expected ExceededTotalBytesLimit")
+            }
+        }
+    }
+
+    let one_param = MediaTypeLimits {
+        max_total_bytes: 4096u64,
+        max_parameter_count: 1u64,
+        max_parameter_name_bytes: 128u64,
+        max_parameter_value_bytes: 1024u64,
+    };
+    match parse_media_type(&String::from("text/plain; a=1; b=2"), one_param) {
+        Ok(_value) => {
+            panic("a parameter-count limit must be enforced")
+        }
+        Err(error) => match error {
+            MediaTypeError::ExceededParameterCountLimit => {}
+            _other => {
+                panic("expected ExceededParameterCountLimit")
+            }
+        }
+    }
+
+    let short_name = MediaTypeLimits {
+        max_total_bytes: 4096u64,
+        max_parameter_count: 32u64,
+        max_parameter_name_bytes: 2u64,
+        max_parameter_value_bytes: 1024u64,
+    };
+    match parse_media_type(&String::from("text/plain; charset=utf-8"), short_name) {
+        Ok(_value) => {
+            panic("a parameter-name limit must be enforced")
+        }
+        Err(error) => match error {
+            MediaTypeError::ExceededParameterNameLimit => {}
+            _other => {
+                panic("expected ExceededParameterNameLimit")
+            }
+        }
+    }
+
+    let short_value = MediaTypeLimits {
+        max_total_bytes: 4096u64,
+        max_parameter_count: 32u64,
+        max_parameter_name_bytes: 128u64,
+        max_parameter_value_bytes: 2u64,
+    };
+    match parse_media_type(&String::from("text/plain; charset=utf-8"), short_value) {
+        Ok(_value) => {
+            panic("a parameter-value limit must be enforced")
+        }
+        Err(error) => match error {
+            MediaTypeError::ExceededParameterValueLimit => {}
+            _other => {
+                panic("expected ExceededParameterValueLimit")
+            }
+        }
+    }
+}
+
+/// Comparison and lookup are ASCII-case-insensitive, which is the whole reason they exist rather
+/// than callers comparing the fields directly.
+fn test_matching_and_lookup_ignore_ascii_case() {
+    let parsed = expect_ok(&String::from("TEXT/PLAIN; CharSet=utf-8"));
+    if !media_type_is(&parsed, &String::from("text"), &String::from("plain")) {
+        panic("media_type_is must ignore ASCII case")
+    }
+    if media_type_is(&parsed, &String::from("text"), &String::from("html")) {
+        panic("media_type_is must still distinguish different subtypes")
+    }
+
+    match media_type_parameter(&parsed, &String::from("charset")) {
+        Some(value) => {
+            assert_eq(value.as_str(), "utf-8");
+        }
+        None => {
+            panic("media_type_parameter must ignore ASCII case")
+        }
+    }
+    match media_type_parameter(&parsed, &String::from("boundary")) {
+        Some(_value) => {
+            panic("an absent parameter must be None")
+        }
+        None => {}
+    }
+}
+
+/// Formatting quotes exactly when the value is not a bare token, and escapes the two bytes that
+/// would otherwise end or corrupt the quoted string.
+fn test_formatting_quotes_only_when_required() {
+    let plain = MediaType {
+        type_name: String::from("text"),
+        subtype: String::from("plain"),
+        parameters: Vec::new(),
+    };
+    assert_eq(format_media_type(&plain).as_str(), "text/plain");
+
+    let mut token_params = Vec::new();
+    token_params.push(
+        MediaTypeParameter { name: String::from("charset"), value: String::from("utf-8") },
+    );
+    let token = MediaType {
+        type_name: String::from("text"),
+        subtype: String::from("plain"),
+        parameters: token_params,
+    };
+    assert_eq(format_media_type(&token).as_str(), "text/plain; charset=utf-8");
+
+    let mut spaced_params = Vec::new();
+    spaced_params.push(
+        MediaTypeParameter { name: String::from("name"), value: String::from("a b") },
+    );
+    let spaced = MediaType {
+        type_name: String::from("text"),
+        subtype: String::from("plain"),
+        parameters: spaced_params,
+    };
+    assert_eq(format_media_type(&spaced).as_str(), "text/plain; name=\"a b\"");
+
+    let mut quoted_params = Vec::new();
+    quoted_params.push(
+        MediaTypeParameter { name: String::from("name"), value: String::from("a\"b") },
+    );
+    let quoted = MediaType {
+        type_name: String::from("text"),
+        subtype: String::from("plain"),
+        parameters: quoted_params,
+    };
+    assert_eq(format_media_type(&quoted).as_str(), "text/plain; name=\"a\\\"b\"");
+}
+
+/// The property that matters for a parser paired with a formatter: formatting a parsed value and
+/// parsing it again yields the same fields. This is what catches an escape the formatter writes and
+/// the parser cannot read, which no single-direction test can see.
+fn test_format_then_parse_round_trips() {
+    let original = expect_ok(&String::from("text/plain; charset=utf-8; name=\"a b\""));
+    let formatted = format_media_type(&original);
+    let reparsed = expect_ok(&formatted);
+
+    assert_eq(reparsed.type_name.as_str(), original.type_name.as_str());
+    assert_eq(reparsed.subtype.as_str(), original.subtype.as_str());
+    assert_eq(reparsed.parameters.len(), original.parameters.len());
+
+    let mut i: UInt64 = 0u64;
+    while i < original.parameters.len() {
+        assert_eq(reparsed.parameters[i].name.as_str(), original.parameters[i].name.as_str());
+        assert_eq(reparsed.parameters[i].value.as_str(), original.parameters[i].value.as_str());
+        i = i + 1u64;
+    }
+}
