@@ -4,8 +4,24 @@ use super::PercentEncodeSet;
 use super::PercentError;
 
 fn test_encode_sets() {
-    let input: &[UInt8] = &[102u8, 111u8, 111u8, 47u8, 98u8, 97u8, 114u8, 63u8, 97u8, 61u8, 66u8, 38u8, 99u8, 61u8, 43u8];
-    
+    let input: &[UInt8] = &[
+        102u8,
+        111u8,
+        111u8,
+        47u8,
+        98u8,
+        97u8,
+        114u8,
+        63u8,
+        97u8,
+        61u8,
+        66u8,
+        38u8,
+        99u8,
+        61u8,
+        43u8,
+    ];
+
     let seg = encode(input, PercentEncodeSet::PathSegment);
     if seg.as_str() != "foo%2Fbar%3Fa%3DB%26c%3D%2B" {
         panic("PathSegment encode mismatch");
@@ -32,7 +48,28 @@ fn test_decode_valid() {
             // `+` to yield BOTH a plus and a space. Percent-decoding leaves `+` alone; mapping it
             // to a space is `application/x-www-form-urlencoded` decoding, which is `stark-form`'s
             // job. The single `32` here is the `%20` near the end, decoded correctly.
-            let expected: &[UInt8] = &[102u8, 111u8, 111u8, 47u8, 98u8, 97u8, 114u8, 63u8, 97u8, 61u8, 66u8, 43u8, 49u8, 50u8, 51u8, 32u8, 116u8, 101u8, 115u8, 116u8];
+            let expected: &[UInt8] = &[
+                102u8,
+                111u8,
+                111u8,
+                47u8,
+                98u8,
+                97u8,
+                114u8,
+                63u8,
+                97u8,
+                61u8,
+                66u8,
+                43u8,
+                49u8,
+                50u8,
+                51u8,
+                32u8,
+                116u8,
+                101u8,
+                115u8,
+                116u8,
+            ];
             assert_vec_matches_slice(&bytes, expected);
         }
         Err(_) => {
@@ -81,7 +118,11 @@ fn is_incomplete_escape(res: &Result<Vec<UInt8>, PercentError>, expected_off: UI
     }
 }
 
-fn is_invalid_hex(res: &Result<Vec<UInt8>, PercentError>, expected_off: UInt64, expected_byte: UInt8) -> Bool {
+fn is_invalid_hex(
+    res: &Result<Vec<UInt8>, PercentError>,
+    expected_off: UInt64,
+    expected_byte: UInt8,
+) -> Bool {
     match *res {
         Err(PercentError::InvalidHexDigit(off, byte)) => off == expected_off && byte == expected_byte,
         _ => false,
