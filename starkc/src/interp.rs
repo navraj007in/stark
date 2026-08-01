@@ -4642,7 +4642,11 @@ impl<'a> Interpreter<'a> {
                         .collect();
                     // The receiver borrow ends here, before the frame is touched.
                     let len = elements.len();
-                    let place = self.promote_to_temp_place(Value::Vec(elements), span)?;
+                    // Into the RECEIVER's frame, not the current one: the bytes are a view of that
+                    // string and must live as long as it does. Promoting into the running frame
+                    // dangles the moment the view is returned from the function that made it.
+                    let owner_frame = receiver_place.frame.min(self.frames.len() - 1);
+                    let place = self.promote_to_temp_place_in(owner_frame, Value::Vec(elements))?;
                     Ok(Value::Slice(place, 0, len))
                 }
                 "into_bytes" => {
@@ -5747,10 +5751,47 @@ impl<'a> Interpreter<'a> {
     }
 
     fn promote_to_temp_place(&mut self, value: Value, _span: Span) -> Result<Place, RuntimeError> {
-        let local_id = LocalId(1000000 + self.frame().values.len() as u32);
-        self.frame_mut().values.insert(local_id, Some(value));
+        let frame = self.frames.len() - 1;
+        self.promote_to_temp_place_in(frame, value)
+    }
+
+    /// `promote_to_temp_place`, with the owning frame chosen explicitly.
+    ///
+    /// **The frame decides the backing storage's lifetime, so a view must be promoted into the
+    /// frame of what it is a view OF — not into whichever frame happens to be running.**
+    ///
+    /// CD-305 made `String::bytes()` return a `Value::Slice` over materialised bytes, and promoted
+    /// them into the CURRENT frame. That is correct while the view is used locally and wrong the
+    /// moment it escapes: `fn borrow_of(s: &String) -> &[UInt8] { s.bytes() }` materialised into
+    /// `borrow_of`'s frame, which pops on return, leaving the returned slice pointing at storage
+    /// that no longer exists — "dangling reference". Core v1 admits that function (a returned
+    /// reference deriving from a reference parameter), so the program is valid and the
+    /// representation was not.
+    ///
+    /// Promoting into the receiver's frame ties the bytes to the same frame as the string they
+    /// came from, which is precisely the lifetime the borrow already has. Found by
+    /// WP-COPY-CANON's matrix, whose ordinary-language producer controls cover the escaping case
+    /// that CD-305's own regression tests did not.
+    fn promote_to_temp_place_in(
+        &mut self,
+        frame: usize,
+        value: Value,
+    ) -> Result<Place, RuntimeError> {
+        let Some(target) = self.frames.get_mut(frame) else {
+            return Err(RuntimeError::new(
+                "internal: promotion into a frame that does not exist",
+                Span { lo: 0, hi: 0 },
+            ));
+        };
+        let local_id = LocalId(1000000 + target.values.len() as u32);
+        // `values.insert`, NOT `Frame::insert`: the latter also appends to `order`, which is the
+        // frame's DROP ORDER. A promoted temp is a view's backing storage, not a value the frame
+        // owns and destroys — registering it made promoted temps participate in destruction and
+        // broke `collection_replacement_and_removal_drop_consumed_keys`. The original spelling was
+        // load-bearing and the refactor lost it.
+        target.values.insert(local_id, Some(value));
         Ok(Place {
-            frame: self.frames.len() - 1,
+            frame,
             local: local_id,
             projections: Vec::new(),
         })
