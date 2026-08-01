@@ -4865,6 +4865,55 @@ impl<'a> FnLowerer<'a> {
         if !place.projection.is_empty() {
             return Ok(op);
         }
+        // **DEV-133: unsize `&[T; N]` to `&[T]`.**
+        //
+        // The checker accepts `let s: &[UInt8] = &[b];` and the oracle executes it, but lowering
+        // emitted the array reference unchanged, so the assignment's declared and actual types
+        // differed by unsizing alone and MIR-0004 rejected it. Accepted-but-unbuildable — the same
+        // class as DEV-132, a different mechanism: that one failed to preserve place context
+        // through indexing, this one omits a coercion outright.
+        //
+        // Handled here rather than at a new seam because this function is ALREADY the place where
+        // an operand is coerced to an expected reference type — it does `&mut T` -> `&T` — and all
+        // six coercion sites (let, call argument, receiver, return, return-expression, assignment
+        // RHS) route through it. A separate hook would have to be added to each, and whichever site
+        // was forgotten would keep this defect.
+        //
+        // `SliceNew` is the existing primitive and already accepts an `&[T; N]` receiver: no new
+        // `RuntimeFn`, no new `MirTy`, no amendment. Bounds are the whole array, exclusive.
+        // The local's type is cloned out before any `&mut self` call below: holding a borrow into
+        // `self.locals` across `new_temp`/`emit_runtime_call` does not compile.
+        let have_ty = self.locals[place.local.0 as usize].ty.clone();
+        if let MirTy::Slice(want_elem) = want.as_ref() {
+            if let MirTy::Ref {
+                mutable: have_mut,
+                inner: have,
+            } = &have_ty
+            {
+                if let MirTy::Array(have_elem, len) = have.as_ref() {
+                    if have_elem == want_elem && !*want_mut && !*have_mut {
+                        let slice_ty = MirTy::Ref {
+                            mutable: false,
+                            inner: Box::new(MirTy::Slice(want_elem.clone())),
+                        };
+                        let dest = self.new_temp(slice_ty.clone());
+                        let len = *len;
+                        self.emit_runtime_call(
+                            RuntimeFn::SliceNew,
+                            vec![
+                                op.clone(),
+                                Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                                Operand::Const(Constant::Int(len as i128, MirTy::UInt64)),
+                                Operand::Const(Constant::Bool(false)),
+                            ],
+                            Place::local(dest),
+                            span,
+                        );
+                        return self.read_place(Place::local(dest), &slice_ty, span);
+                    }
+                }
+            }
+        }
         let have = match &self.locals[place.local.0 as usize].ty {
             MirTy::Ref {
                 mutable: true,

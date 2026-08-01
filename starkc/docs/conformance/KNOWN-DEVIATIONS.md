@@ -3151,7 +3151,7 @@ C2.8–C2.11 disposition.
   the oracle's value model, which is a larger change than the check it enables.
 - **Owning gate:** WP-COPY-CANON Phase 2 (narrow); WP-VALUE-REP-TOTAL (remainder).
 
-## DEV-132 — borrowed Vec index projection lowered as a by-value element read (OPEN)
+## DEV-132 — borrowed Vec index projection lowered as a by-value element read (CLOSED)
 
 - **Classification:** borrowed Vec index projection lowered as a by-value element read, incorrectly
   requiring `Copy` for `&v[i].field`.
@@ -3189,7 +3189,7 @@ C2.8–C2.11 disposition.
   use it would conceal a valid source shape behind a compiler defect.
 - **Owning gate:** CD-326 (package qualification), repaired under its own CD.
 
-## DEV-133 — array-to-slice unsizing is accepted but not lowered (OPEN)
+## DEV-133 — array-to-slice unsizing is accepted but not lowered (CLOSED)
 
 - **Classification:** an array-to-slice coercion at a declared `&[T]` binding is accepted by the
   checker and executed by the HIR oracle, but MIR lowering never performs the unsizing, so
@@ -3226,4 +3226,14 @@ C2.8–C2.11 disposition.
   avoidable gap, and that reasoning applies here unchanged.
 - **No package workaround introduced.** Rewriting `stark-form` to avoid the coercion would conceal a
   valid source shape behind a compiler defect.
-- **Owning gate:** unassigned; registered before repair.
+- **Resolution (CD-329):** the coercion is emitted in `weaken_ref_to` — already the function that
+  coerces an operand to an expected reference type (it does `&mut T` -> `&T`). All six coercion
+  sites route through it (`let`, call argument, receiver, return, return-expression, assignment
+  RHS), so fixing it there covers every position at once; a new hook would have needed adding at
+  each, and whichever was forgotten would have kept the defect. `SliceNew` already accepts an
+  `&[T; N]` receiver, so no new `RuntimeFn`, no new `MirTy`, no amendment.
+- **Negative controls, because the risk is BROADENING the coercion rather than under-applying it:**
+  a mismatched element type must not coerce (that would reinterpret memory, not merely forget a
+  length), and a shared array must not become a `&mut` slice (coercion changes shape, never
+  capability). Both pinned.
+- **Owning gate:** CD-326 (package qualification); repaired under CD-329.

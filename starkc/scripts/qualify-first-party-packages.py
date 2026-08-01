@@ -58,6 +58,41 @@ CASES = [
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",
     ),
+    # The HTTP substrate (CD-304), added CD-326. Nothing in CI had ever run these five — not
+    # their tests, not `fmt --check`, not a native build — which is how three of them stayed
+    # unformatted from the day they landed until CD-325, and how `stark-mime`, `stark-query`
+    # and `stark-form` shipped with ZERO tests until CD-320.
+    #
+    # Their `expected_stdout` is a marker line rather than a computed result, because these
+    # consumers are smoke tests for the package graph: what they prove is that the package
+    # checks, tests, formats, and that its consumer runs identically through the interpreter
+    # and as a native binary. The per-function behaviour is asserted by each package's own
+    # `test_*` suite, which the `stark test` step above runs.
+    PackageCase(
+        package="stark-ascii",
+        consumer="stark-ascii-consumer",
+        expected_stdout="ASCII_CONSUMER_OK\n",
+    ),
+    PackageCase(
+        package="stark-percent",
+        consumer="stark-percent-consumer",
+        expected_stdout="PERCENT_CONSUMER_OK\n",
+    ),
+    PackageCase(
+        package="stark-mime",
+        consumer="stark-mime-consumer",
+        expected_stdout="MIME_CONSUMER_OK\n",
+    ),
+    PackageCase(
+        package="stark-query",
+        consumer="stark-query-consumer",
+        expected_stdout="QUERY_CONSUMER_OK\n",
+    ),
+    PackageCase(
+        package="stark-form",
+        consumer="stark-form-consumer",
+        expected_stdout="FORM_CONSUMER_OK\n",
+    ),
 ]
 
 
