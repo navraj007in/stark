@@ -1474,7 +1474,8 @@ impl<'a> FnLowerer<'a> {
             let variant = to_fill[i].1;
             match variant {
                 Some(v) => {
-                    let raw = self.new_temp(MirTy::Enum(EnumRef::User(error_item), Vec::new()));
+                    let error_ty = MirTy::Enum(EnumRef::User(error_item), Vec::new());
+                    let raw = self.new_temp(error_ty.clone());
                     self.emit(
                         Statement::Assign(
                             Place::local(raw),
@@ -1485,12 +1486,18 @@ impl<'a> FnLowerer<'a> {
                         ),
                         self.info(span),
                     );
+                    // DEV-125: `read_place`, not a hand-built `Move`. A provider's error enum is
+                    // fieldless, so it is structurally `Copy` and moving it contradicts its type.
+                    // The slot reads below already went through `read_place`; this one did not,
+                    // which is the whole shape of the defect — an operand chosen by the site rather
+                    // than by the type.
+                    let payload = self.read_place(Place::local(raw), &error_ty, span)?;
                     self.emit(
                         Statement::Assign(
                             dest.clone(),
                             Rvalue::Aggregate(
                                 AggKind::EnumVariant(EnumRef::CoreResult, 1),
-                                vec![Operand::Move(Place::local(raw))],
+                                vec![payload],
                             ),
                         ),
                         self.info(span),
@@ -1521,7 +1528,7 @@ impl<'a> FnLowerer<'a> {
         };
         let payload = if slots.len() > 1 {
             let tuple_ty = MirTy::Tuple(slots.iter().map(|(_, t)| t.clone()).collect());
-            let tmp = self.new_temp(tuple_ty);
+            let tmp = self.new_temp(tuple_ty.clone());
             self.emit(
                 Statement::Assign(
                     Place::local(tmp),
@@ -1529,7 +1536,9 @@ impl<'a> FnLowerer<'a> {
                 ),
                 self.info(span),
             );
-            vec![Operand::Move(Place::local(tmp))]
+            // DEV-125, the same defect one line apart: a tuple of scalar out-slots — `(Bool,
+            // UInt64)` for `var_len` — is `Copy` because its elements are.
+            vec![self.read_place(Place::local(tmp), &tuple_ty, span)?]
         } else {
             payload
         };
@@ -4560,11 +4569,24 @@ impl<'a> FnLowerer<'a> {
                 Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreOption, 0), Vec::new())
             }
             EnumRef::CoreResult => {
-                // Err(payload) — move the Err payload (variant 1, field 0) out of scrut.
-                let err_payload = Operand::Move(Place {
-                    local: scrut,
-                    projection: vec![Projection::VariantField(1, 0)],
-                });
+                // Err(payload) — read the Err payload (variant 1, field 0) out of scrut.
+                //
+                // DEV-125: this said `move` unconditionally. `?` on a `Result<T, E>` with a
+                // fieldless (therefore `Copy`) `E` — every provider error enum — moved a value
+                // whose type says reading leaves it intact.
+                //
+                // `storage_end_after` above already branches on `is_copy` of this very type to
+                // decide the A12 storage-end reason, so the distinction was present in this
+                // function and the operand ignored it.
+                let err_ty = err_payload_ty.clone().unwrap_or(MirTy::Unit);
+                let err_payload = self.read_place(
+                    Place {
+                        local: scrut,
+                        projection: vec![Projection::VariantField(1, 0)],
+                    },
+                    &err_ty,
+                    span,
+                )?;
                 Rvalue::Aggregate(
                     AggKind::EnumVariant(EnumRef::CoreResult, 1),
                     vec![err_payload],

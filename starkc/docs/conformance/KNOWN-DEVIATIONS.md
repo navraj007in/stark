@@ -2936,3 +2936,30 @@ C2.8–C2.11 disposition.
   agree. Drift between them now surfaces as MIR-0036 on a real program instead of as divergence
   between engines. Weaker than unifying the two predicates, which remains worth doing.
 - **Owning gate:** WP-COPY-CANON Phase 3.
+
+## DEV-125 — three more hand-built `Move`s on `Copy` places (CLOSED; found by INV-MOVE-001)
+
+- **Normative expectation:** as DEV-124 — the operand follows the place's type.
+- **Sites, all on the provider/`Result` path, all found by MIR-0036 on real workloads rather than
+  by the unit corpus:
+
+  | Site | Copy type moved | Reached by |
+  | --- | --- | --- |
+  | `lower.rs` provider status→`Result` binding | `enum#13`, `enum#14` (fieldless provider error enums) | C7 P1 REST workload, C7.8 native |
+  | `assign_provider_ok` multi-slot tuple | `(Bool, UInt64)` | `var_len` in the REST workload |
+  | `lower_try` — the `?` desugar's `Err` payload | `enum#2` | `c788_lifecycle_e2e::question_mark_propagation_closes_a_live_resource` |
+
+- **Why the unit corpus missed all three:** every one needs a `Result<T, E>` whose `E` is a
+  *fieldless* enum, which is what makes it `Copy`. The in-tree tests use `Result` with payload-
+  carrying or non-`Copy` errors, so `move` was always licensed there. The provider path produces
+  fieldless error enums by construction, so it fires on essentially every provider call.
+- **Aggravating detail in `lower_try`:** its `storage_end_after` closure already branches on
+  `is_copy` of the very type whose operand was hardcoded `move`, to pick the A12 storage-end
+  reason. The distinction was present in the function and the operand ignored it.
+- **Resolution:** all three read through `read_place`. Same fix as DEV-124 and, as there, *not*
+  "write `copy`" — a non-`Copy` `E` must still move.
+- **Process note:** these should have been caught before INV-MOVE-001 landed. The invariant was
+  pushed on the strength of the lib suite and four iterator tests; the provider workloads and the
+  conformance corpus were left to CI, and both failed. The invariant was right; the local evidence
+  was too narrow for a change that constrains every lowering site in the compiler.
+- **Owning gate:** WP-COPY-CANON Phase 3.
