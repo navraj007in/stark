@@ -907,57 +907,77 @@ impl TypeContext {
     /// that impl to exist. §7.4 forbids a backend broadening the set from Rust traits, which is
     /// why the backend asks this rather than asking Rust.
     pub fn is_copy(&self, ty: &MirTy) -> bool {
-        match ty {
-            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
-                self.copy_eligible_items.contains(&item.0) && args.iter().all(|a| self.is_copy(a))
-            }
-            MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
-            MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
-            MirTy::Array(elem, _) => self.is_copy(elem),
-            MirTy::Ref { mutable, .. } => !*mutable,
-            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
-            // **A11/CD-234: a host resource is NEVER `Copy`, and this arm must stay explicit.**
-            //
-            // The wildcard below classified it `Copy`, with three consequences, none of which
-            // announced themselves: `is_slot_backed` became false, so the local was declared through
-            // `default_value_expr` -- which refuses a resource -- and emission failed before `Drop`
-            // was ever reached; `emit_drop` refuses a `Copy` type outright, so the close could not
-            // have run either; and "Copy" is the licence to DUPLICATE a handle, which would give two
-            // owners of one resource and close it twice.
-            //
-            // Being non-`Copy` is what makes a resource slot-backed, and a slot is what gives it
-            // `ValueSlot::dead()` -- CD-234's "the slot begins dead" is then the representation
-            // itself rather than a rule anything has to enforce.
-            MirTy::HostResource(_) => false,
+        mir_ty_is_copy(ty, &|item| self.copy_eligible_items.contains(&item))
+    }
+}
 
-            // **EXHAUSTIVE ON PURPOSE — there is no wildcard here, and adding one back is a
-            // regression.**
-            //
-            // This match ended `_ => true`, so a newly added `MirTy` variant was classified `Copy`
-            // by default. `Copy` is the strongest claim in this table: it means no drop glue, no
-            // slot, and a licence to duplicate. `HostResource` inherited exactly that when it was
-            // added — every resource leaked, and every unit test stayed green, because nothing
-            // asks "is this variant classified yet?".
-            //
-            // Listing the scalars costs one line per future variant and converts that silence into
-            // a compile error at the one place the answer has to be decided deliberately.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::FnPtr { .. } => true,
+/// **The one structural `Copy` rule. There is no second copy of this match.**
+///
+/// The nominal case is the only thing that differs between callers, so it arrives as a predicate:
+/// the CONSUMER (`TypeContext::is_copy`) answers it from `copy_eligible_items`, the PRODUCER
+/// (`mir::lower::LowerCtx::is_copy`) from `ProgramMeta::copy_eligible`. Those remain two sets
+/// because they are read at different times — `lower_program` fills the first FROM the second — but
+/// the rule applied to them is now one function.
+///
+/// # Why this was worth doing
+///
+/// The two implementations were byte-identical apart from that one lookup, and every fix had to be
+/// applied twice. `HostResource` was corrected five separate times across the family; CD-240 fixed
+/// one copy of the wildcard defect and left the other; DEV-125 and DEV-127 were both operand
+/// decisions taken against one predicate and checked against the other.
+///
+/// The comment on `TypeContext::is_copy` used to name
+/// `lowered_copy_classification_matches_the_type_context` as the test keeping the two in step.
+/// **That test does not exist** — the only occurrence of the name in the tree was the claim itself.
+/// Single-sourcing the rule is a stronger guarantee than the test would have been anyway: agreement
+/// is now structural rather than asserted.
+///
+/// The match stays EXHAUSTIVE with no wildcard. `Copy` is the strongest claim in this table — no
+/// drop glue, no slot, a licence to duplicate — and a `_ => true` arm hands it to every variant
+/// nobody has classified yet. That is how `HostResource` came to leak with every test green.
+pub(crate) fn mir_ty_is_copy(ty: &MirTy, nominal_is_copy_eligible: &dyn Fn(u32) -> bool) -> bool {
+    let recur = |t: &MirTy| mir_ty_is_copy(t, nominal_is_copy_eligible);
+    match ty {
+        MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+            nominal_is_copy_eligible(item.0) && args.iter().all(recur)
         }
+        MirTy::Enum(_, args) => args.iter().all(recur),
+        MirTy::Tuple(elems) => elems.iter().all(recur),
+        MirTy::Array(elem, _) => recur(elem),
+        MirTy::Ref { mutable, .. } => !*mutable,
+        MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+        // **A11/CD-234: a host resource is NEVER `Copy`, and this arm must stay explicit.**
+        //
+        // A wildcard classified it `Copy`, with three consequences, none of which announced
+        // themselves: `is_slot_backed` became false, so the local was declared through
+        // `default_value_expr` -- which refuses a resource -- and emission failed before `Drop` was
+        // ever reached; `emit_drop` refuses a `Copy` type outright, so the close could not have run
+        // either; and "Copy" is the licence to DUPLICATE a handle, which would give two owners of
+        // one resource and close it twice.
+        //
+        // Being non-`Copy` is what makes a resource slot-backed, and a slot is what gives it
+        // `ValueSlot::dead()` -- CD-234's "the slot begins dead" is then the representation itself
+        // rather than a rule anything has to enforce.
+        MirTy::HostResource(_) => false,
+
+        // Listing the scalars costs one line per future variant and converts silence into a
+        // compile error at the one place the answer has to be decided deliberately.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::FnPtr { .. } => true,
     }
 }
 

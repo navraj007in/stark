@@ -1928,68 +1928,20 @@ impl<'a> FnLowerer<'a> {
         self.mir_ty(&ty, span)
     }
 
-    /// Copy-vs-move for reads (contract §5): primitives, fn values, and shared refs are Copy;
-    /// tuples/arrays/Option/Result of Copy are Copy; user structs/enums are Move (an explicit
-    /// `impl Copy` is not visible to lowering in the scalar core — conservative, and harmless
-    /// here because no scalar-core type requires drop).
+    /// Copy-vs-move for reads (contract §5), the PRODUCER side.
+    ///
+    /// **DEV-128: the rule itself is `mir::mir_ty_is_copy`; this supplies only the nominal set.**
+    /// This was a full second copy of that match, byte-identical apart from reading
+    /// `meta.copy_eligible` instead of `TypeContext::copy_eligible_items`. Two implementations of
+    /// one rule meant every fix had to be applied twice, and repeatedly was not: `HostResource` was
+    /// corrected five separate times across the family, CD-240 fixed one copy of the wildcard
+    /// defect and left the other, and DEV-125/DEV-127 were operand decisions taken against this
+    /// predicate and rejected by the other.
+    ///
+    /// The two SETS stay separate — they are read at different times, and `lower_program` fills the
+    /// consumer's from this one. Only the rule is shared, which is the part that was drifting.
     fn is_copy(&self, ty: &MirTy) -> bool {
-        match ty {
-            // C4.5e-0 (DEV-068): user nominals with an `impl Copy` are Copy — the front end
-            // has already validated the all-Copy-fields / no-Drop rules for the impl to
-            // exist, so lowering consults the impl's presence only. Without one they stay
-            // Move (an unmarked all-Copy-field struct is still Move in STARK).
-            // WP-C6.1g-a: `Copy` when the nominal is eligible (impl or structural) AND every
-            // type argument is `Copy`. Mirrors the front end exactly.
-            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
-                self.meta.copy_eligible.contains(&item.0) && args.iter().all(|a| self.is_copy(a))
-            }
-            MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
-            MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
-            MirTy::Array(elem, _) => self.is_copy(elem),
-            MirTy::Ref { mutable, .. } => !*mutable,
-            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
-            // **A11/CD-234: a host resource is never `Copy`** -- the FOURTH `MirTy` catch-all to
-            // swallow this variant, after `dump_ty`, `emit_ty`, `default_value_expr` and
-            // `TypeContext::is_copy` (CD-240).
-            //
-            // This one made `read_place` emit `Operand::Copy` for a resource, so `MatchDesugar`
-            // extracted `Ok(stream)`'s payload with `copy` and a program could hold two handles to
-            // one resource. `MIR-0026` rejected the result, which is how it surfaced.
-            //
-            // **The duplication is the real defect.** This predicate and `TypeContext::is_copy` are
-            // two implementations of one rule that must agree, and each had to be fixed separately.
-            // They are left separate here only because they read different eligibility sets
-            // (`meta.copy_eligible` vs `types.copy_eligible_items`); unifying them is worth doing
-            // and is not this change.
-            MirTy::HostResource(_) => false,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
-            //
-            // This arm ended `_ => true`, which is the same defect CD-240 fixed in
-            // `TypeContext::is_copy`: a wildcard that ASSERTS the strongest claim in the table (no
-            // drop glue, no slot, a licence to duplicate) about every variant nobody has classified
-            // yet. Fixing one copy of the rule and leaving the other is how this variant came to be
-            // corrected five separate times.
-            //
-            // Scalars, `Never`, and `Str` are `Copy`; a fn value is `Copy` per this function's
-            // contract note above.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::FnPtr { .. } => true,
-        }
+        crate::mir::mir_ty_is_copy(ty, &|item| self.meta.copy_eligible.contains(&item))
     }
 
     /// Read a place as an operand. C4.5d: a `Move` out of a drop-tracked local clears the
