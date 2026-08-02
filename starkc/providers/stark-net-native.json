@@ -1,0 +1,84 @@
+{
+  "name": "stark-net-native",
+  "version": "0.1.0",
+  "provider": {
+    "abi": "0.1",
+    "identity": "stark-std-net",
+    "crate": "stark-net-native",
+    "capabilities": ["tcp", "dns"],
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ],
+    "resources": [{ "name": "tcp_listener" }, { "name": "tcp_stream" }],
+    "status": { "1": "NetworkError::ConnectionRefused", "2": "NetworkError::TimedOut", "3": "NetworkError::NotFound", "4": "NetworkError::PermissionDenied", "5": "NetworkError::AddressInUse", "6": "NetworkError::InvalidInput", "7": "NetworkError::ConnectionReset", "8": "NetworkError::BrokenPipe", "9": "NetworkError::WouldBlock", "10": "NetworkError::Unsupported", "11": "NetworkError::Other", "101": "DnsError::DnsInvalidHost", "102": "DnsError::DnsNotFound", "103": "DnsError::DnsTemporaryFailure", "104": "DnsError::DnsTooManyResults", "105": "DnsError::DnsUnsupportedAddressFamily", "106": "DnsError::DnsUnsupported", "107": "DnsError::DnsOther" },
+    "functions": [
+      {
+        "symbol": "stark_tcp_listener_bind",
+        "capability": "tcp",
+        "may_block": true,
+        "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "tcp_listener" }]
+      },
+      {
+        "symbol": "stark_tcp_listener_accept",
+        "capability": "tcp",
+        "may_block": true,
+        "params": [{ "form": "handle_borrowed", "resource": "tcp_listener" }, { "form": "handle_out", "resource": "tcp_stream" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_connect",
+        "capability": "tcp",
+        "may_block": true,
+        "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "tcp_stream" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_read",
+        "capability": "tcp",
+        "may_block": true,
+        "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_write",
+        "capability": "tcp",
+        "may_block": true,
+        "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_tcp_listener_close",
+        "capability": "tcp",
+        "close_for": "tcp_listener",
+        "params": [{ "form": "handle_consumed", "resource": "tcp_listener" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_close",
+        "capability": "tcp",
+        "close_for": "tcp_stream",
+        "params": [{ "form": "handle_consumed", "resource": "tcp_stream" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_set_read_timeout",
+        "capability": "tcp",
+        "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "scalar_in", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_tcp_stream_set_write_timeout",
+        "capability": "tcp",
+        "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "scalar_in", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_dns_resolve_len",
+        "capability": "dns",
+        "may_block": true,
+        "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_dns_resolve_fill",
+        "capability": "dns",
+        "may_block": true,
+        "params": [{ "form": "buffer_in" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "u64" }]
+      }
+    ]
+  }
+}
