@@ -1337,7 +1337,13 @@ impl<'a> FnLowerer<'a> {
                 // A11/CD-234: a BORROWED handle. The caller keeps ownership, so this is `&R` and the
                 // argument is an ordinary shared borrow of the caller's place -- never a move, which
                 // would consume the resource the call only reads.
-                crate::provider_abi::AbiParam::HandleBorrowed { resource_type } => {
+                // DEV-146: `resource_type` is deliberately unbound. The expected type is derived
+                // from the OPERAND below rather than rebuilt from the declaration, so the
+                // declaration's resource name is not needed here — see the comment on the
+                // coercion.
+                crate::provider_abi::AbiParam::HandleBorrowed {
+                    resource_type: _resource_type,
+                } => {
                     let Some(&a) = args.get(next_arg) else {
                         return unsupported(
                             "provider call argument count disagrees with the declaration",
