@@ -1,0 +1,252 @@
+use stark_time::Duration;
+
+pub enum IpAddress {
+    V4(Ipv4Address),
+    V6(Ipv6Address),
+}
+
+pub struct Ipv4Address { pub a: UInt8, pub b: UInt8, pub c: UInt8, pub d: UInt8 }
+
+pub struct Ipv6Address { pub segments: [UInt16; 8] }
+
+pub struct SocketAddress { pub address: IpAddress, pub port: UInt16 }
+
+pub enum NetworkError {
+    InvalidAddress,
+    AddressNotAvailable,
+    ConnectionRefused,
+    ConnectionReset,
+    TimedOut,
+    EndOfStream,
+    Interrupted,
+    PermissionDenied,
+    Unsupported,
+    ResourceExhausted,
+    ProviderFailure(UInt32),
+}
+
+const ZERO: UInt8 = 48u8;
+const A_LOWER: UInt8 = 97u8;
+
+pub fn ipv4(a: UInt8, b: UInt8, c: UInt8, d: UInt8) -> IpAddress {
+    IpAddress::V4(Ipv4Address { a: a, b: b, c: c, d: d })
+}
+
+pub fn ipv6(segments: [UInt16; 8]) -> IpAddress {
+    IpAddress::V6(Ipv6Address { segments: segments })
+}
+
+pub fn socket_address(address: IpAddress, port: UInt16) -> SocketAddress {
+    SocketAddress { address: address, port: port }
+}
+
+impl TcpStream {
+    pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+        connect(address, timeout)
+    }
+    pub fn read(&mut self, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+        read(self, output)
+    }
+    pub fn write(&mut self, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+        write(self, input)
+    }
+    pub fn write_all(&mut self, input: &[UInt8]) -> Result<(), NetworkError> {
+        write_all(self, input)
+    }
+    pub fn shutdown_write(&mut self) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported)
+    }
+}
+
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    let _timeout = timeout;
+    connect_socket_address(&address)
+}
+
+pub fn connect_no_timeout(address: SocketAddress) -> Result<TcpStream, NetworkError> {
+    connect_socket_address(&address)
+}
+
+fn connect_socket_address(address: &SocketAddress) -> Result<TcpStream, NetworkError> {
+    match tcp_stream_connect_raw(socket_address_text(address).as_str().bytes()) {
+        Ok(stream) => Ok(stream),
+        Err(error) => Err(map_network_error(error)),
+    }
+}
+
+pub fn read(stream: &TcpStream, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+    match tcp_stream_read_raw(stream, output) {
+        Ok(count) => Ok(count),
+        Err(error) => Err(map_network_error(error)),
+    }
+}
+
+pub fn write(stream: &TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+    match tcp_stream_write_raw(stream, input) {
+        Ok(count) => Ok(count),
+        Err(error) => Err(map_network_error(error)),
+    }
+}
+
+pub fn write_all(stream: &TcpStream, input: &[UInt8]) -> Result<(), NetworkError> {
+    let mut written: UInt64 = 0u64;
+    while written < input.len() {
+        let remaining = &input[written..input.len()];
+        let count = write(stream, remaining)?;
+        if count == 0u64 {
+            return Err(NetworkError::EndOfStream);
+        }
+        written = written + count;
+    }
+    Ok(())
+}
+
+pub fn close(stream: TcpStream) -> Result<(), NetworkError> {
+    Ok(())
+}
+
+pub fn socket_address_text(address: &SocketAddress) -> String {
+    let mut out = String::new();
+    match address.address {
+        IpAddress::V4(v4) => {
+            out.push_str(u8_decimal(v4.a).as_str());
+            out.push('.');
+            out.push_str(u8_decimal(v4.b).as_str());
+            out.push('.');
+            out.push_str(u8_decimal(v4.c).as_str());
+            out.push('.');
+            out.push_str(u8_decimal(v4.d).as_str());
+        }
+        IpAddress::V6(v6) => {
+            out.push('[');
+            let mut i: UInt64 = 0u64;
+            while i < 8u64 {
+                if i > 0u64 {
+                    out.push(':');
+                }
+                out.push_str(u16_hex(v6.segments[i]).as_str());
+                i = i + 1u64;
+            }
+            out.push(']');
+        }
+    }
+    out.push(':');
+    out.push_str(u16_decimal(address.port).as_str());
+    out
+}
+
+fn map_network_error(error: RawNetworkError) -> NetworkError {
+    match error {
+        RawNetworkError::ConnectionRefused => NetworkError::ConnectionRefused,
+        RawNetworkError::TimedOut => NetworkError::TimedOut,
+        RawNetworkError::NotFound => NetworkError::AddressNotAvailable,
+        RawNetworkError::PermissionDenied => NetworkError::PermissionDenied,
+        RawNetworkError::AddressInUse => NetworkError::AddressNotAvailable,
+        RawNetworkError::InvalidInput => NetworkError::InvalidAddress,
+        RawNetworkError::ConnectionReset => NetworkError::ConnectionReset,
+        RawNetworkError::BrokenPipe => NetworkError::ConnectionReset,
+        RawNetworkError::WouldBlock => NetworkError::Interrupted,
+        RawNetworkError::Unsupported => NetworkError::Unsupported,
+        RawNetworkError::Other => NetworkError::ProviderFailure(11u32),
+    }
+}
+
+fn u8_decimal(value: UInt8) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    if n >= 100u64 {
+        out.push(ascii_digit(n / 100u64));
+    }
+    if n >= 10u64 {
+        out.push(ascii_digit(n / 10u64 % 10u64));
+    }
+    out.push(ascii_digit(n % 10u64));
+    out
+}
+
+fn u16_decimal(value: UInt16) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    if n >= 10000u64 {
+        out.push(ascii_digit(n / 10000u64));
+    }
+    if n >= 1000u64 {
+        out.push(ascii_digit(n / 1000u64 % 10u64));
+    }
+    if n >= 100u64 {
+        out.push(ascii_digit(n / 100u64 % 10u64));
+    }
+    if n >= 10u64 {
+        out.push(ascii_digit(n / 10u64 % 10u64));
+    }
+    out.push(ascii_digit(n % 10u64));
+    out
+}
+
+fn u16_hex(value: UInt16) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    let mut started = false;
+    let mut shift: Int32 = 12i32;
+    while shift >= 0i32 {
+        let digit = n >> shift as UInt64 & 0xFu64;
+        if digit != 0u64 || started || shift == 0i32 {
+            out.push(hex_digit(digit));
+            started = true;
+        }
+        shift = shift - 4i32;
+    }
+    out
+}
+
+fn ascii_digit(value: UInt64) -> Char {
+    char_from_ascii(ZERO + value as UInt8)
+}
+
+fn hex_digit(value: UInt64) -> Char {
+    if value < 10u64 {
+        ascii_digit(value)
+    } else {
+        char_from_ascii(A_LOWER + (value - 10u64) as UInt8)
+    }
+}
+
+fn char_from_ascii(byte: UInt8) -> Char {
+    if byte == 48u8 {
+        '0'
+    } else if byte == 49u8 {
+        '1'
+    } else if byte == 50u8 {
+        '2'
+    } else if byte == 51u8 {
+        '3'
+    } else if byte == 52u8 {
+        '4'
+    } else if byte == 53u8 {
+        '5'
+    } else if byte == 54u8 {
+        '6'
+    } else if byte == 55u8 {
+        '7'
+    } else if byte == 56u8 {
+        '8'
+    } else if byte == 57u8 {
+        '9'
+    } else if byte == 97u8 {
+        'a'
+    } else if byte == 98u8 {
+        'b'
+    } else if byte == 99u8 {
+        'c'
+    } else if byte == 100u8 {
+        'd'
+    } else if byte == 101u8 {
+        'e'
+    } else if byte == 102u8 {
+        'f'
+    } else {
+        '?'
+    }
+}
+
+mod tests;

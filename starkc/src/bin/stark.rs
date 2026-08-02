@@ -8,7 +8,6 @@ use starkc::resolve::{resolve, resolve_with_options};
 use starkc::source::SourceFile;
 use starkc::test_runner::{self, Outcome};
 use starkc::typecheck;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -132,28 +131,74 @@ fn main() -> ExitCode {
         }
     };
 
-    let root_package_name = graph.root_package_name.clone();
     let options = LanguageOptions::CORE;
-    let analysis =
-        starkc::analysis::analyze_project(starkc::analysis::ProjectInput::package(graph), options);
-    let root_file = analysis.root_file.clone();
-    let diagnostic_batch = analysis.diagnostic_batch(&HashMap::new());
-    eprint!("{}", diagnostic_batch.render(&analysis.source_map));
-    if analysis.has_errors() {
-        eprintln!("{}: package compilation failed", root_package_name);
+
+    let overlays = match starkc::native_build::provider_overlays_for_analysis(&graph) {
+        Ok(overlays) => overlays,
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (ast, mut diags) = if overlays.is_empty() {
+        parse_package_graph(&graph, options)
+    } else {
+        parse_package_graph_with_overlays(&graph, options, &overlays)
+    };
+    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
+    let entry_src = match overlays.get(&root_pkg.entry) {
+        Some(overlaid) => overlaid.clone(),
+        None => match std::fs::read_to_string(&root_pkg.entry) {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!(
+                    "Error: failed to read entry file '{}': {}",
+                    root_pkg.entry.display(),
+                    e
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let root_file = Arc::new(SourceFile::new(
+        root_pkg.entry.to_string_lossy().into_owned(),
+        entry_src,
+    ));
+
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        for diag in &diags {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
+        return ExitCode::FAILURE;
+    }
+    let (hir, mut resolution) = resolve(&ast, root_file.clone());
+    diags.append(&mut resolution);
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        for diag in &diags {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
+        return ExitCode::FAILURE;
+    }
+    let checked = typecheck::analyze_with_options(&hir, root_file.clone(), options);
+    if checked
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        for diag in checked.diagnostics.iter().chain(diags.iter()) {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
         return ExitCode::FAILURE;
     }
     if cmd == "check" {
-        println!("{}: OK", root_package_name);
+        println!("{}: OK", root_pkg.name);
         return ExitCode::SUCCESS;
     }
     if cmd == "run" {
-        let hir = analysis.hir.as_ref().expect("successful analysis has HIR");
-        let tables = analysis
-            .type_tables
-            .as_ref()
-            .expect("successful analysis has type tables");
-        return match starkc::interp::run(hir, root_file.clone(), tables) {
+        return match starkc::interp::run(&hir, root_file.clone(), &checked.tables) {
             Ok(execution) => {
                 print!("{}", execution.output);
                 eprint!("{}", execution.stderr);
@@ -209,7 +254,7 @@ fn main() -> ExitCode {
             }
         };
     }
-    eprintln!("{}: package compilation failed", root_package_name);
+    eprintln!("{}: package compilation failed", root_pkg.name);
     ExitCode::FAILURE
 }
 

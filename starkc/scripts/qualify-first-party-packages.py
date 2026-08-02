@@ -93,6 +93,11 @@ CASES = [
         consumer="stark-form-consumer",
         expected_stdout="FORM_CONSUMER_OK\n",
     ),
+    PackageCase(
+        package="stark-net",
+        consumer="stark-net-consumer",
+        expected_stdout="STARK_NET_CONSUMER_OK\n",
+    ),
 ]
 
 

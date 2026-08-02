@@ -1,0 +1,18 @@
+use super::ipv4;
+use super::ipv6;
+use super::socket_address;
+use super::socket_address_text;
+
+fn test_socket_address_text_ipv4() {
+    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 8080u16);
+    if socket_address_text(&address).as_str() != "127.0.0.1:8080" {
+        panic("ipv4 socket address text mismatch");
+    }
+}
+
+fn test_socket_address_text_ipv6() {
+    let address = socket_address(ipv6([0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 1u16]), 443u16);
+    if socket_address_text(&address).as_str() != "[0:0:0:0:0:0:0:1]:443" {
+        panic("ipv6 socket address text mismatch");
+    }
+}
