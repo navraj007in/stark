@@ -58,6 +58,8 @@ fn stark_time_crate() -> PathBuf {
 fn stark_time_provider() -> DeclaredProvider {
     DeclaredProvider {
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-time".to_string(),
                 semver: (0, 1, 0),

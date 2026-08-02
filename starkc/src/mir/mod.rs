@@ -746,6 +746,19 @@ pub struct ValidatedProviderClose {
 /// passed [`crate::provider_abi::validate`]. The backend never performs first-time provider
 /// selection and never interprets unvalidated metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForeignResourceCall {
+    /// §2 identity of the provider that OWNS and closes this resource.
+    pub provider: String,
+    /// §13 resource-type name, as the owning provider declares it.
+    pub resource: String,
+    /// The OWNER's declared resource-type list, because §7's type id is an index into the
+    /// declaring provider's list — and for a transferred handle the declarer is the owner, not the
+    /// consumer. Deriving it from the consumer's list would hand the provider a tag naming a
+    /// different resource.
+    pub owner_resource_types: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedProviderCall {
     /// §2 identity of the selected provider.
     pub provider: crate::provider_abi::ProviderIdentity,
@@ -765,6 +778,13 @@ pub struct ValidatedProviderCall {
     /// empty vocabulary is a *meaningful* value rather than missing data: it says every nonzero
     /// status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// CD-360: foreign resources this call CONSUMES but does not own.
+    ///
+    /// A transferred handle keeps the OWNING provider's identity and type id — it was created with
+    /// them, and the consuming provider must present them unchanged. So the owner's name and its
+    /// resource-type list travel with the call, exactly as `provider_resource_types` does for the
+    /// provider's own resources. Empty for every call that is not a transfer.
+    pub foreign_resources: Vec<ForeignResourceCall>,
     /// The Cargo package name of the crate implementing this provider, e.g.
     /// `"stark-time-native"`.
     ///

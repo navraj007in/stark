@@ -421,6 +421,9 @@ fn select_provider_closes(
                         .find(|function| function.is_close_for.as_deref() == Some(resource))
                         .cloned()
                         .map(|function| crate::mir::ValidatedProviderCall {
+                            // CD-360: closes never consume a foreign resource — a provider may not
+                            // declare a close for a resource it does not own.
+                            foreign_resources: Vec::new(),
                             provider: provider.metadata.identity.clone(),
                             capability: function.capability.clone(),
                             function,

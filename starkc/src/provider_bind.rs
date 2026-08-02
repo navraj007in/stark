@@ -389,17 +389,32 @@ pub fn plan(
             // The registry supplies the NOMINAL; the `MirTy` is built here, where the selected
             // provider is known (A11 §4's implementation note). A registry entry cannot carry a
             // provider, because the provider is a property of the build.
+            // CD-360: a TRANSFERRED handle keeps its OWNER's identity and type id. It was created
+            // with them, and the consuming provider must present them unchanged — deriving either
+            // from the consumer would hand the provider a tag naming a different resource, or fail
+            // to resolve at all. So the owner is looked up first, and only a resource that is
+            // neither owned nor declared-foreign is an error.
+            let foreign = call
+                .foreign_resources
+                .iter()
+                .find(|f| &f.resource == resource_type);
+            let (owner_name, owner_types): (&str, &[String]) = match foreign {
+                Some(f) => (f.provider.as_str(), f.owner_resource_types.as_slice()),
+                None => (
+                    call.provider.name.as_str(),
+                    call.provider_resource_types.as_slice(),
+                ),
+            };
             let mir_type = registry
-                .resolve_ty(resource_type, &call.provider.name)
+                .resolve_ty(resource_type, owner_name)
                 .ok_or_else(|| PlanError::UnboundResourceType {
                     index,
                     resource_type: resource_type.clone(),
                 })?;
-            // §7: the id is the index into the provider's OWN declared resource-type list, not a
+            // §7: the id is the index into the DECLARING provider's resource-type list, not a
             // global registry index and not a provider-chosen tag. Deriving it here means emission
-            // never invents one.
-            let type_id = call
-                .provider_resource_types
+            // never invents one. For a transfer the declarer is the owner, per CD-360.
+            let type_id = owner_types
                 .iter()
                 .position(|d| d == resource_type)
                 .ok_or_else(|| PlanError::UndeclaredResourceType {

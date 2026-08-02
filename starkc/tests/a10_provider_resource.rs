@@ -41,6 +41,8 @@ fn synth_registry() -> ResourceRegistry {
 
 fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: "synthetic-provider".to_string(),
             semver: (0, 1, 0),

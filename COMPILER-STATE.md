@@ -1,5 +1,76 @@
 # STARK Compiler STATE
 
+## CD-360 — cross-provider transfer ruled and implemented; P0.1 closed (2026-08-03)
+
+**Ruling, from the language owner:**
+
+> A cross-provider `HandleConsumed` transfer consumes the source handle regardless of whether the
+> provider operation succeeds or fails. Failure does not restore the source resource. The consuming
+> provider is responsible for releasing any underlying native resource when it fails before
+> producing the destination handle.
+
+`HandleConsumed<T>` therefore keeps the meaning it has always had — ownership leaves the caller
+unconditionally — which is precisely why this needed **no change to drop elaboration**, no
+branch-dependent move state, and no place live on one result arm and dead on another. Option B
+would have required conditional move restoration across provider boundaries; that is ownership
+machinery, and it is not justified by making failed handshakes recoverable. It remains available as
+a future extension.
+
+Recorded in `native-provider-abi-v0.1-CD360-amendment-2.md`.
+
+### Three enforcement sites, not one
+
+The packet predicted a validator amendment. Implementation found the rule enforced in **three**
+places, and only reading the first two would have shipped a P0 that could not lower:
+
+| site | what it checked | change |
+| --- | --- | --- |
+| `provider_abi::validate` | a provider may only name resource types it declares | foreign types nameable in `HandleConsumed` position only, carrying no close obligation |
+| `ProviderSet::select` | (nothing — could not see across providers) | a foreign consumption resolves to EXACTLY ONE owner, and to the owner the consumer named |
+| `provider_bind` planner | handle type id and MirTy derived from the CALLING provider | for a transferred handle both come from the OWNER |
+
+The third is the one that mattered. `mir/lower.rs`'s `HandleConsumed` arm already carried a comment
+stating CD-360's rule verbatim — written for A11 §8, long before the question was asked — so the
+move semantics and drop behaviour genuinely were already correct. **But the call could not be
+planned at all**: `UndeclaredResourceType`. Nothing had ever lowered a transfer.
+
+A handle carries its OWNER's type id, because it was created with it, and the consuming provider
+must present it unchanged. Deriving it from the consumer would hand the provider a tag naming a
+different resource. `ValidatedProviderCall` now carries `ForeignResourceCall` for that reason.
+
+### Why the declaration is explicit
+
+`foreign_resources` is declared, not inferred. Treating "any handle type I did not declare" as
+foreign would silently accept `HandleConsumed { resource_type: "tcp_strem" }` and defer the typo to
+a link failure. Naming the owning provider keeps the check at the three-part identity
+`{nominal, provider, resource}` the type system already uses — which is also why
+`ForeignResourceOwnerMismatch` exists: a matching resource NAME under a different owner is a
+DIFFERENT resource.
+
+### Evidence
+
+19 tests. `cd360_cross_provider_transfer.rs` — 11 declaration rules (2 allowed, 9 refused) and 4
+resolution rules; `cd360_transfer_lowering.rs` — 4 lowering assertions on a synthetic net→wrap
+transfer, deliberately not TLS, so the proving case does not wait on a certificate chain.
+
+**The fixture earned its keep twice.** It caught the planner refusal, and it caught a bad assertion
+of my own: the first double-release check grepped the whole generated file and failed on the
+`extern "C"` declaration rather than a call. That form would have passed for the wrong reason had
+the code been broken differently — a declaration is not an invocation, and the test now cuts the
+extern block before checking the body.
+
+All ten provider suites re-run green (132 tests).
+
+### What P0.1 does NOT include
+
+The **runtime** proving case — a transfer executed against a live peer, both outcomes, release
+observed exactly once — remains open and belongs with HC9, since it needs a TLS peer with a
+controlled certificate chain. §3 of the amendment (a failing provider must leave no live native
+resource) is a provider-author obligation **no compiler check can enforce**; it is recorded so
+review can carry it.
+
+**P0.2 (external provider discovery) is now the critical path.**
+
 ## CD-359 — HC9 paused; two P0 platform-architecture packets opened (2026-08-03)
 
 **Two items previously carried as backlog are release-architecture blockers, and HC9 must not be

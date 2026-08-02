@@ -70,6 +70,8 @@ fn tcp_stream_ty() -> MirTy {
 
 fn tcp_call(name: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: "stark-std-net".to_string(),
             semver: (0, 1, 0),
@@ -274,6 +276,8 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
                 .find(|f| f.is_close_for.as_deref() == Some(resource))
                 .cloned()
                 .map(|function| ValidatedProviderCall {
+                    // CD-360: predates cross-provider transfer; consumes nothing foreign.
+                    foreign_resources: Vec::new(),
                     provider: set.providers()[0].metadata.identity.clone(),
                     capability: function.capability.clone(),
                     function,

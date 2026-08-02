@@ -398,6 +398,8 @@ fn close_decl(name: &str, is_close_for: Option<&str>, params: Vec<AbiParam>) -> 
 
 fn call_for(decl: FunctionDecl, provider: &str) -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: provider.to_string(),
             semver: (0, 1, 0),

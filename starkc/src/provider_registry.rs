@@ -85,6 +85,7 @@ fn stark_time() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["clock".to_string()],
+            foreign_resources: Vec::new(),
             resource_types: vec![],
             functions: vec![
                 FunctionDecl {
@@ -152,6 +153,7 @@ fn stark_env() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["process.args".to_string(), "process.env".to_string()],
+            foreign_resources: Vec::new(),
             resource_types: vec![],
             functions: vec![
                 FunctionDecl {
@@ -238,6 +240,7 @@ fn stark_file() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["filesystem".to_string()],
+            foreign_resources: Vec::new(),
             resource_types: vec![file.clone(), io_file.clone()],
             functions: vec![
                 FunctionDecl {
@@ -610,6 +613,7 @@ fn stark_net() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["tcp".to_string(), "dns".to_string()],
+            foreign_resources: Vec::new(),
             resource_types: vec![listener.clone(), stream.clone()],
             functions: vec![
                 FunctionDecl {
@@ -777,6 +781,7 @@ fn stark_random() -> DeclaredProvider {
                 "x86_64-pc-windows-msvc".to_string(),
             ],
             capabilities: vec!["random".to_string()],
+            foreign_resources: Vec::new(),
             resource_types: vec![],
             functions: vec![FunctionDecl {
                 name: "stark_random_secure_fill".to_string(),
