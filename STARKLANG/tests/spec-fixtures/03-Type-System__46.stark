@@ -1,3 +1,2 @@
-fn inspect(value: &String) { println(value.as_str()); }
-inspect(&String::from("temporary"));
-// let escaped = &String::from("temporary"); // rejected: no lifetime extension
+fn identity<T>(value: T) -> T { value }
+let inferred: Int64 = identity(1);

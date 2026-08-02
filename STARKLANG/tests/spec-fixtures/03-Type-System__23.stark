@@ -1,7 +1,3 @@
-fn add(a: Int32, b: Int32) -> Int32 {
-    a + b
-}
-
-fn greet(name: &str) {      // Returns Unit
-    println(name);
-}
+let x = 42;             // Inferred as Int32
+let y = 3.14;           // Inferred as Float64
+let z = [1, 2, 3];      // Inferred as [Int32; 3]

@@ -54,6 +54,9 @@ pub struct BorrowChecker<'a> {
     active_borrows: Vec<Borrow>,
     // Moved variables tracking
     moved_places: HashSet<Place>,
+    /// DEV-150: spans already reported as a call-argument overlap, so the left-to-right walk that
+    /// follows does not report the same read a second time in different words.
+    overlap_reported: HashSet<(u32, u32)>,
 }
 
 pub fn check(
@@ -71,6 +74,7 @@ pub fn check(
         copy_types: collect_copy_types(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
+        overlap_reported: HashSet::new(),
     };
 
     checker.check_crate();
@@ -93,6 +97,7 @@ pub fn check_fn(
         copy_types: collect_copy_types(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
+        overlap_reported: HashSet::new(),
     };
     checker.check_fn_def(def);
     checker.diags
@@ -115,6 +120,7 @@ pub fn check_snippet(
         copy_types: collect_copy_types(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
+        overlap_reported: HashSet::new(),
     };
     for &stmt_id in stmts {
         checker.check_stmt(stmt_id);
@@ -671,6 +677,24 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             hir::ExprKind::Call { callee, args } => {
+                // DEV-150 / CD-357: the overlap rule is checked over the WHOLE argument list, and
+                // before any of it is walked. A method's RECEIVER is an argument for this purpose —
+                // `buffer.fill(buffer.len())` is the same conflict as `fill(&mut buffer, len)` —
+                // so it joins the list when the call has one.
+                let mut parts: Vec<ExprId> = Vec::with_capacity(args.len() + 1);
+                if let hir::ExprKind::Field { base, name, .. } = &self.hir.expr(*callee).kind {
+                    if self.text(*name) != "refine"
+                        && matches!(
+                            self.method_receiver(*base, *name),
+                            Some(hir::Receiver::Ref | hir::Receiver::RefMut)
+                        )
+                    {
+                        parts.push(*base);
+                    }
+                }
+                parts.extend(args.iter().copied());
+                self.check_argument_overlap(&parts);
+
                 if let hir::ExprKind::Field { base, name, .. } = &self.hir.expr(*callee).kind {
                     if self.text(*name) == "refine" {
                         self.consume_place(*base);
@@ -1152,6 +1176,168 @@ impl<'a> BorrowChecker<'a> {
         self.moved_places.insert(place);
     }
 
+    /// **DEV-150 / CD-357 — argument evaluation does NOT provide two-phase borrow semantics.**
+    ///
+    /// > A call may not create an exclusive borrow of a place while another argument in the same
+    /// > call reads from or borrows an overlapping place. Such reads must be evaluated into locals
+    /// > before the exclusive borrow is created.
+    ///
+    /// ```stark
+    /// f(&mut x, x.field);            // refused
+    /// let field = x.field;           // hoist
+    /// f(&mut x, field);              // accepted
+    /// ```
+    ///
+    /// The rule is UNIFORM in the base it applies to — a local, a place reached through `&mut`, a
+    /// field projection, an index, a free function or a method receiver — and it is
+    /// ORDER-INDEPENDENT: `f(x.field, &mut x)` is refused exactly as `f(&mut x, x.field)` is. That
+    /// is why this runs as its own pass over the whole argument list rather than falling out of the
+    /// left-to-right walk, which by construction can only see a conflict when the borrow comes
+    /// first.
+    ///
+    /// # What was wrong before
+    ///
+    /// The local case was refused and the indirect case ACCEPTED:
+    ///
+    /// ```stark
+    /// fn forward(h: &mut Holder) { bump(h, h.limit); }   // accepted, ran, did not build
+    /// ```
+    ///
+    /// Passing a `&mut`-typed place REBORROWS, which registers no `active_borrows` entry, so the
+    /// read that followed saw nothing to conflict with. The HIR oracle then executed it correctly
+    /// and the native backend emitted Rust that rustc refused with E0503 — accepted-but-unbuildable,
+    /// and worse, a rule that changed meaning one indirection away from where it was written.
+    ///
+    /// # Why rejection rather than sequencing
+    ///
+    /// Blessing the accepted case would have required accepting the LOCAL case too, which widens
+    /// the borrow rule into two-phase borrows — evaluation-order machinery, and a semantics
+    /// commitment. Uniform rejection keeps one backend-neutral rule that every engine can agree on
+    /// by construction, and stays reversible if STARK later adopts two-phase borrows deliberately.
+    fn check_argument_overlap(&mut self, parts: &[ExprId]) {
+        let mut exclusive: Vec<(usize, Place)> = Vec::new();
+        for (index, &part) in parts.iter().enumerate() {
+            if let Some(place) = self.exclusive_borrow_of(part) {
+                exclusive.push((index, place));
+            }
+        }
+        if exclusive.is_empty() {
+            return;
+        }
+        for (index, &part) in parts.iter().enumerate() {
+            let mut reads = Vec::new();
+            self.collect_read_places(part, &mut reads);
+            for (place, span) in reads {
+                for (owner, exclusive_place) in &exclusive {
+                    if *owner != index && places_overlap(exclusive_place, &place) {
+                        self.push_diag(
+                            Diagnostic::error(
+                                format!(
+                                    "cannot read '{}' in the same call that borrows it exclusively",
+                                    self.text(span)
+                                ),
+                                span,
+                            )
+                            .with_code("E0101")
+                            .with_label(
+                                "bind this to a local before the call: argument evaluation does                                  not provide two-phase borrows",
+                            ),
+                        );
+                        // One mistake, one diagnostic. The left-to-right walk that follows would
+                        // otherwise report the SAME read again through `check_read_borrow_conflict`
+                        // — with different wording, which reads like two separate problems.
+                        self.overlap_reported.insert((span.lo, span.hi));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The place an argument borrows EXCLUSIVELY, if any.
+    ///
+    /// Two forms produce one, and treating them alike is the whole point of the repair: an explicit
+    /// `&mut place`, and a place whose type is already `&mut T` — which reborrows. The second is the
+    /// one that was invisible.
+    fn exclusive_borrow_of(&self, expr_id: ExprId) -> Option<Place> {
+        if let hir::ExprKind::Unary {
+            op: UnOp::Ref { mutable: true },
+            operand,
+        } = &self.hir.expr(expr_id).kind
+        {
+            return self.place_of(*operand);
+        }
+        if matches!(
+            self.expr_types.get(&expr_id),
+            Some(Ty::Ref { mutable: true, .. })
+        ) {
+            return self.place_of(expr_id);
+        }
+        None
+    }
+
+    /// Every place an argument expression reads or borrows.
+    ///
+    /// A sub-expression that IS a place is recorded whole and not descended into — `x.a.b` is one
+    /// read of `x.a.b`, and `places_overlap`'s prefix rule already relates it to a borrow of `x` or
+    /// of `x.a`. Anything else recurses, so a place buried inside arithmetic or a nested call is
+    /// still found.
+    fn collect_read_places(&self, expr_id: ExprId, out: &mut Vec<(Place, Span)>) {
+        let expr = self.hir.expr(expr_id);
+        if let Some(place) = self.place_of(expr_id) {
+            out.push((place, expr.span));
+            return;
+        }
+        match &expr.kind {
+            hir::ExprKind::Unary { operand, .. } => self.collect_read_places(*operand, out),
+            hir::ExprKind::Binary { lhs, rhs, .. }
+            | hir::ExprKind::Assign { lhs, rhs, .. }
+            | hir::ExprKind::Range {
+                lo: lhs, hi: rhs, ..
+            } => {
+                self.collect_read_places(*lhs, out);
+                self.collect_read_places(*rhs, out);
+            }
+            hir::ExprKind::Cast { expr, .. } | hir::ExprKind::Try(expr) => {
+                self.collect_read_places(*expr, out)
+            }
+            hir::ExprKind::Call { callee, args } => {
+                self.collect_read_places(*callee, out);
+                for &arg in args {
+                    self.collect_read_places(arg, out);
+                }
+            }
+            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
+                self.collect_read_places(*base, out)
+            }
+            hir::ExprKind::Index { base, index } => {
+                self.collect_read_places(*base, out);
+                self.collect_read_places(*index, out);
+            }
+            hir::ExprKind::Tuple(items) | hir::ExprKind::Array(items) => {
+                for &item in items {
+                    self.collect_read_places(item, out);
+                }
+            }
+            hir::ExprKind::Repeat { value, count } => {
+                self.collect_read_places(*value, out);
+                self.collect_read_places(*count, out);
+            }
+            hir::ExprKind::StructLit { fields, .. } => {
+                for field in fields {
+                    // A shorthand field init (`Point { x, y }`) carries no expression; the name
+                    // itself is the read, and it resolves to a local the caller can see.
+                    if let Some(value) = field.expr {
+                        self.collect_read_places(value, out);
+                    }
+                }
+            }
+            // A borrow reads the place it borrows: `f(&mut x, &x)` overlaps, and so does
+            // `f(&mut x, &mut x)`.
+            _ => {}
+        }
+    }
+
     fn check_read_expr(&mut self, expr_id: ExprId) {
         if let Some(place) = self.place_of(expr_id) {
             if self.check_place_available(&place, self.hir.expr(expr_id).span) {
@@ -1180,6 +1366,11 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn check_read_borrow_conflict(&mut self, local: LocalId, span: Span) {
+        // DEV-150: already reported as a call-argument overlap, with the message that says what to
+        // do about it. One mistake gets one diagnostic.
+        if self.overlap_reported.contains(&(span.lo, span.hi)) {
+            return;
+        }
         if self
             .active_borrows
             .iter()

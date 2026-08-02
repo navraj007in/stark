@@ -1,2 +1,2 @@
-&mut T -> &T        // Mutable reference to immutable reference
-&T -> &T            // Same type (identity)
+let x: Int32 = 42;
+let y: Int64 = x as Int64;  // Explicit cast required

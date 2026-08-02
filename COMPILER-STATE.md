@@ -1,5 +1,159 @@
 # STARK Compiler STATE
 
+## CD-357 — DEV-150 ruled: uniform rejection, hoisting required (2026-08-02)
+
+**Ruling (B), from the language owner. Now normative as OWN-BORROW-002 in `03-Type-System.md`:**
+
+> A call may not create an exclusive borrow of a place while another argument in the same call
+> reads from or borrows an overlapping place. Such reads must be evaluated into locals before the
+> exclusive borrow is created.
+
+```stark
+fill(&mut buffer, buffer.len());   // rejected
+let count = buffer.len();          // hoist
+fill(&mut buffer, count);          // accepted
+```
+
+Uniform in the base — a local, a place reached through `&mut`, a field projection, an index, a free
+function or a method receiver — and independent of argument order. **Core v1 therefore does not
+define argument evaluation as providing two-phase borrow semantics**, and says so; adopting them
+stays reserved and this ruling stays reversible.
+
+Chosen over blessing the accepted case because that would have required accepting the LOCAL case
+too — widening the borrow rule into two-phase borrows, with evaluation-order machinery and a real
+semantics commitment. (B) keeps one backend-neutral rule every engine satisfies by construction.
+
+### What had to change
+
+The rule already existed and already fired for a local base. It stopped one indirection away:
+passing a `&mut`-typed place REBORROWS, which registers no active borrow, so the read that followed
+saw nothing to conflict with.
+
+`check_argument_overlap` now runs as its own pass over the whole argument list — **a method
+receiver included**, since `v.push(v.len())` is the same conflict as `push(&mut v, len(&v))` —
+BEFORE the left-to-right walk. It has to be a separate pass: a check that falls out of the walk can
+only ever catch the borrow-first order, and the ruling is order-independent. `exclusive_borrow_of`
+treats an explicit `&mut place` and a `&mut`-typed place alike, which is the whole repair. A
+report-once set keeps one mistake to one diagnostic, rather than the new check and the old one both
+reporting the same read in different words.
+
+### Livability, checked rather than assumed
+
+**All 15 first-party packages pass the gate under the rule with zero new diagnostics.** The only
+site that ever hit it was `stark-http-parser`'s four `take_line` calls, hoisted when the defect was
+first found. A rule that had broken working code across the tree would have been the wrong rule to
+implement without saying so.
+
+### Engine agreement is by construction
+
+The front end rejects, so nothing reaches the HIR oracle or MIR. `check`, `run` and `build` all
+refuse the previously-accepted program with the same diagnostic — which is the point: the old
+behaviour was accepted by the checker, executed correctly by the oracle, and refused by rustc.
+
+### Evidence
+
+`tests/dev150_argument_overlap.rs` — 15 tests, negatives varying the base and the order, positives
+for every hoisted and non-overlapping form (different locals, literals, successive borrows,
+successive reborrows of a parameter, two shared reads). Plus spec fixture
+`03-Type-System__19.stark`, classified `semantic-error` with `errors = "E0101"`, so **the spec's own
+example is an executable test of the rule.**
+
+Supersedes `dev150_argument_conflict_through_reference.rs`, which pinned the INCONSISTENCY while the
+ruling was open. Its own doc required it to be rewritten around whichever ruling landed, and both of
+its "the two bases disagree" tests went red the moment they agreed — the mechanism working as
+designed, twice in two commits now.
+
+### One defect uncovered on the way: DEV-154
+
+CD-357's overlap check is place-granular and correctly declined to fire on `f(&mut p.a, p.b)`. The
+OLDER `check_read_borrow_conflict` then reported it anyway, because it compares only the LOCAL and
+ignores projections — so **disjoint field projections over-reject, contradicting OWN-BORROW-001's
+"Disjoint field projections do not overlap".** Pre-existing; visible only because two checks in the
+same area now disagree about granularity. Filed OPEN and deliberately NOT bundled here: loosening a
+borrow check is its own change with its own negative controls, and must not ride along with a ruling
+that tightens one.
+
+## CD-356 — DEV-148 CLOSED: the name was sliced out of the wrong file (2026-08-02)
+
+**Filed as a language limitation about associated functions. It was a text bug, and the gate built
+one commit earlier is what forced it into the open.**
+
+`Wrap::make(2)` from a submodule of its own package failed with "associated function 'make' not
+found". Path resolution was correct — it reached `Res::AssociatedFn`. `typecheck`'s lookup then
+compared member names with `self.text(span)`, which slices **the file currently being checked**,
+while a member's name span belongs to the file that declared the `impl`. Instrumented, `impl Wrap`'s
+two members read back as:
+
+```text
+member name_text="rap:"  has_receiver=false     // `make`'s offsets applied to the other file
+member name_text="?"     has_receiver=true      // a span running past the shorter file's end
+```
+
+No candidate could ever match. **Methods were unaffected because method lookup selects on the
+receiver's TYPE rather than by slicing a name** — and that asymmetry is the whole reason this looked
+like a rule about associated functions instead of a bug about files.
+
+### A second site, one layer down
+
+Fixing the comparison made plain associated functions work and immediately exposed the same defect
+in generics:
+
+```text
+error: [E0500] type 'r' does not satisfy operator trait 'Eq'
+```
+
+`'r'` is `T` sliced from the wrong file. The substitution map's keys and the `Ty::Param`s they
+substitute into must be read from the SAME file or substitution silently fails to fire, so
+`foreign_sig_item` now carries the declaring item across the whole signature conversion. Note also
+that `item_text` yields `"?"` for an out-of-range span, so several mis-sliced parameter names could
+COLLIDE on one key and substitute each other's types; a two-parameter test pins that they cannot.
+
+### The rule was already written down twice
+
+DEV-069 fixed exactly this for trait methods — "the trait's method names belong to the TRAIT's
+declaring file" — and `build_assoc_projections` converts "against the impl's own file". This site
+simply missed it. The general statement, worth keeping where someone will read it: **`self.text` is
+correct only for spans from the file under check; every lookup that reads a name off a foreign
+declaration needs `item_text`.** Worth auditing the remaining `self.text` call sites against that.
+
+### What closing it unblocked, and what it then found
+
+The three items CD-355 recorded as `surface_blocked` became callable, and **the gate refused its own
+stale records** — the self-cleaning rule firing for real rather than in principle:
+
+```text
+stark-url: these are recorded as blocked, but are now called:
+      Url::parse
+```
+
+With the records removed and the three exercised, **all 15 packages qualify with zero blocked
+items: every public callable in the tree is now called by its package's own tests or consumers.**
+
+**And calling `TcpStream::connect` for the first time found a third dead API.** It refuses EVERY
+non-zero timeout with `Unsupported`:
+
+```stark
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    if !timeout.is_zero() { return Err(NetworkError::Unsupported); }
+    connect_socket_address(&address)
+}
+```
+
+So the natural connect API — the one that takes a deadline — has never connected to anything. It
+succeeds only for a ZERO duration, which reads as "no timeout" and is the opposite of what passing a
+`Duration` means. There is no connect-timeout in the provider ABI to implement it against: the
+declaration ran ahead of the capability. Pinned in the consumer as a required failure, so landing a
+real connect timeout forces the assertion to change.
+
+That makes **three dead APIs in `stark-net` found by calling things nothing had called** —
+`shutdown_write` (permanent stub), `connect`-with-timeout (unsupported for every meaningful
+argument), and the timeout setters (unbuildable at a call site, DEV-151). All three concern
+timeouts or lifecycle, and all three were invisible for the same reason.
+
+**Evidence:** `tests/dev148_associated_fn_across_modules.rs` — 7 tests over a real two-file package
+graph, because a single-file fixture cannot reproduce a provenance bug. Vacuity-checked by reverting
+the repair: the three cross-boundary positives go RED, all four controls stay green.
+
 ## CD-355 — the gate now requires that a package's declared surface is CALLED (2026-08-02)
 
 **The gap this closes has cost three separate stretches, each time closing the instance and leaving

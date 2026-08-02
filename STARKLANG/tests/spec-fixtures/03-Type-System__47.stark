@@ -1,7 +1,3 @@
-enum Message { Quit, Count(Int32) }
-fn code(message: Message) -> Int32 {
-    match message {
-        Message::Quit => 0,
-        Message::Count(value) => value,
-    }
-}
+fn inspect(value: &String) { println(value.as_str()); }
+inspect(&String::from("temporary"));
+// let escaped = &String::from("temporary"); // rejected: no lifetime extension

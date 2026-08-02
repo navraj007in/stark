@@ -3962,7 +3962,7 @@ C2.8–C2.11 disposition.
   39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
 - **Owning gate:** CD-352.
 
-## DEV-148 — an associated function is unresolvable across any MODULE boundary [OPEN, found CD-353, scope corrected CD-355, 2026-08-02]
+## DEV-148 — an associated function is unresolvable across any MODULE boundary [CLOSED, fixed CD-356, 2026-08-02]
 
 - **Normative expectation:** `07-Modules-and-Packages.md` — a `pub` item of a dependency is
   reachable from a dependent package. Nothing distinguishes an associated function from a free
@@ -4019,10 +4019,38 @@ C2.8–C2.11 disposition.
   style.
 - **Security/soundness impact:** none — it refuses a valid program.
 - **Workaround:** export a free constructor alongside any associated one. In force everywhere.
-- **Proposed disposition:** unassigned. Adjacent to DEV-083 (impl-head matching) but distinct: this
-  is cross-package ITEM RESOLUTION of an impl member, not matching a receiver type. Worth checking
-  whether associated CONSTANTS and associated types have the same gap.
-- **Owning gate:** unassigned.
+- **ROOT CAUSE (CD-356): the name was sliced out of the wrong file.** Not visibility, not
+  coherence, not path resolution — the path reached `Res::AssociatedFn` correctly. `typecheck`'s
+  lookup compared member names with `self.text(span)`, which slices THE FILE BEING CHECKED, while a
+  member's name span belongs to the file that declared the `impl`. Instrumented, `impl Wrap`'s two
+  members read back as:
+
+  ```text
+  member name_text="rap:"  has_receiver=false     // `make`'s offsets applied to the other file
+  member name_text="?"     has_receiver=true      // a span past the shorter file's end
+  ```
+
+  No candidate ever matched. METHODS were unaffected because method lookup selects on the
+  receiver's TYPE rather than by slicing a name — which is exactly why this looked like a language
+  rule about associated functions rather than a text bug.
+- **Second site:** fixing the comparison exposed the same defect one layer down. A GENERIC
+  associated function then produced `type 'r' does not satisfy operator trait 'Eq'` — `'r'` being
+  `T` sliced from the wrong file. The substitution map's keys and the `Ty::Param`s they substitute
+  into must be read from the same file, so `foreign_sig_item` now carries the declaring item across
+  the whole signature conversion. `item_text` returning `"?"` for an out-of-range span also means
+  several mis-sliced parameters could COLLIDE on one key; a two-parameter test pins that.
+- **The precedent this missed:** DEV-069 fixed exactly this for trait methods ("the trait's method
+  names belong to the TRAIT's declaring file") and `build_assoc_projections` converts "against the
+  impl's own file". The rule was already written down twice. General statement worth keeping:
+  `self.text` is correct ONLY for spans from the file under check, and every lookup that reads a
+  name off a foreign declaration needs `item_text`.
+- **Fix:** `src/typecheck.rs` — `item_text` in the member comparison and the three generic-name
+  map insertions, plus the `foreign_sig_item` context across the signature conversion. Evidence:
+  `tests/dev148_associated_fn_across_modules.rs` (7 tests over a real two-file package graph,
+  since a single-file fixture cannot reproduce a provenance bug). Vacuity-checked: reverting the
+  repair turns the three cross-boundary positives RED and leaves all four controls green.
+- **Still open, adjacent:** whether associated CONSTANTS and associated types have the same gap.
+- **Owning gate:** package track, CD-356.
 
 ## DEV-149 — a `&self` method on a `&mut` base is neither weakened nor reborrowed [CLOSED, fixed CD-354, 2026-08-02]
 
@@ -4061,7 +4089,7 @@ C2.8–C2.11 disposition.
   loop case, DEV-147's own case, three negative controls).
 - **Owning gate:** package track, CD-354.
 
-## DEV-150 — the argument read-conflict rule does not fire through a reference base [OPEN, found CD-354, 2026-08-02]
+## DEV-150 — the argument read-conflict rule does not fire through a reference base [CLOSED, ruled and fixed CD-357, 2026-08-02]
 
 - **Normative expectation:** `03-Type-System.md` — one `&mut` XOR many `&`, with no exception for a
   base that is itself a reference.
@@ -4098,10 +4126,36 @@ C2.8–C2.11 disposition.
     caller hoists the read into a `let`.
 - **Workaround, valid under either ruling:** hoist the read. Applied at all four
   `stark-http-parser` sites.
-- **Proposed disposition:** ESCALATED — a semantics decision for the language owner, not a repair
-  commit. `tests/dev150_argument_conflict_through_reference.rs` pins the inconsistency itself, so
-  whichever ruling lands, the test contradicting it fails and this entry must be revisited.
-- **Owning gate:** unassigned.
+- **RULING (CD-357): (B), uniform rejection; hoisting required.** Now normative as
+  **OWN-BORROW-002** in `03-Type-System.md`:
+
+  > A call may not create an exclusive borrow of a place while another argument in the same call
+  > reads from or borrows an overlapping place. Such reads must be evaluated into locals before the
+  > exclusive borrow is created.
+
+  Uniform in the base — a local, a place reached through `&mut`, a field projection, an index, a
+  free function or a method receiver — and independent of argument order. Core v1 therefore does
+  NOT define argument evaluation as providing two-phase borrow semantics; that remains reserved,
+  and the ruling is reversible if STARK later adopts them deliberately.
+- **Why (B) over (A):** blessing the accepted case would have required accepting the local case
+  too, which widens the borrow rule into two-phase borrows — evaluation-order machinery and a real
+  semantics commitment. (B) keeps ONE backend-neutral rule that every engine satisfies by
+  construction.
+- **Fix:** `src/borrowck.rs` — `check_argument_overlap` runs as its own pass over the whole
+  argument list (a method receiver included) BEFORE the left-to-right walk, because the walk can
+  only ever see a conflict where the borrow comes first. `exclusive_borrow_of` treats an explicit
+  `&mut place` and a `&mut`-typed place (which reborrows) alike; the second was the invisible one.
+  A report-once set keeps one mistake to one diagnostic.
+- **Livability:** all 15 first-party packages pass the gate under the rule with zero new
+  diagnostics. The only site that ever hit it was `stark-http-parser`'s four `take_line` calls,
+  hoisted when the defect was found.
+- **Evidence:** `tests/dev150_argument_overlap.rs` (15 tests: negatives varying the base and the
+  order, positives for every hoisted and non-overlapping form) and spec fixture
+  `03-Type-System__19.stark`, classified `semantic-error` with `errors = "E0101"` — so the spec's
+  own example is an executable test of the rule. Supersedes
+  `dev150_argument_conflict_through_reference.rs`, which pinned the inconsistency while the ruling
+  was open and whose two "the bases disagree" tests went red the moment they agreed.
+- **Owning gate:** package track, CD-357.
 
 ## DEV-151 — a method on a host-resource receiver did not lower, and written `()` was not `Unit` [CLOSED, fixed CD-354, 2026-08-02]
 
@@ -4203,3 +4257,32 @@ Two defects, recorded together because the first concealed the second.
   `tests/dev153_slice_parameter_in_resource_method.rs` (4 tests: shared slice, mutable slice, two
   slices, plus a non-resource control that was never broken).
 - **Owning gate:** package track, CD-355.
+
+## DEV-154 — the read-conflict check is local-granular, so disjoint field projections over-reject [OPEN, found CD-357, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` OWN-BORROW-001 — "Disjoint field projections do
+  not overlap."
+- **Current behaviour:** `check_read_borrow_conflict` compares only the borrow's LOCAL, ignoring
+  projections, so a borrow of one field blocks a read of a sibling field:
+
+  ```stark
+  struct P { a: UInt64, b: UInt64 }
+  fn f(x: &mut UInt64, y: UInt64) { *x = *x + y; }
+
+  let mut p = P { a: 1u64, b: 2u64 };
+  f(&mut p.a, p.b);   // E0101 — but `p.a` and `p.b` are disjoint
+  ```
+
+- **PRE-EXISTING, and not introduced by CD-357.** Found because CD-357's own overlap check —
+  which IS place-granular and uses `places_overlap` — correctly declined to fire here, leaving the
+  older local-granular check as the only reporter. Two checks in the same area disagreeing about
+  granularity is how it became visible.
+- **User impact:** a valid program is refused, and the workaround (hoist the sibling read) is the
+  same shape OWN-BORROW-002 requires — so it is easy to mistake this for the new rule rather than
+  a defect. The compiler and the spec disagree, and the spec is right.
+- **Security/soundness impact:** none — it refuses a valid program.
+- **Proposed disposition:** make `check_read_borrow_conflict` place-granular via `places_overlap`,
+  the helper DEV-135 already made field-precise. Deliberately NOT bundled into CD-357: loosening a
+  borrow check is its own change with its own negative controls, and it must not ride along with a
+  ruling that TIGHTENS one.
+- **Owning gate:** unassigned.

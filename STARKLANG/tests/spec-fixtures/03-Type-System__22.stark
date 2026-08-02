@@ -1,3 +1,5 @@
-let x = 42;             // Inferred as Int32
-let y = 3.14;           // Inferred as Float64
-let z = [1, 2, 3];      // Inferred as [Int32; 3]
+fn longest(x: &str, y: &str) -> &str {
+    if x.len() > y.len() { x } else { y }
+}
+// The returned reference is valid only while BOTH x's and y's referents
+// are valid, regardless of which branch was taken.

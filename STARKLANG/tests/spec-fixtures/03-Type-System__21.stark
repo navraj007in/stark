@@ -1,5 +1,6 @@
-fn longest(x: &str, y: &str) -> &str {
-    if x.len() > y.len() { x } else { y }
-}
-// The returned reference is valid only while BOTH x's and y's referents
-// are valid, regardless of which branch was taken.
+let mut s = String::from("hello");
+{
+    let r = &s;           // Borrow begins
+    println(r.as_str());
+}                         // Borrow ends with the block
+s.push('!');              // OK: no live borrow
