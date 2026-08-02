@@ -42,15 +42,21 @@ implementer, not because anything is broken. Resolved by D4 (`push_str`).
 
 ## Package blockers
 
-### P-1 — `stark-net` has no STARK package — BLOCKS HC2 (it *is* HC2)
+### P-1 — `stark-net` has no STARK package — CLEARED BY HC2
 The directory contains `native/` only. There is no `src/lib.stark`, so nothing is importable.
 HC2 starts from zero, not from a partial surface — worth stating because the roadmap's title,
 "Complete `stark-net` TCP Client Surface", reads as though a package exists to complete.
 
-### P-2 — `stark-url` has no absolute-URL parsing — BLOCKS HC1 (it *is* HC1)
+Cleared by `56a78b4 Implement HC2 stark-net package`. Remaining timeout and shutdown limitations are
+recorded in `HC2-EVIDENCE.md`.
+
+### P-2 — `stark-url` has no absolute-URL parsing — CLEARED BY HC1
 `parse_request_target` handles origin-form (path + query) only. There is no scheme, host, port,
 userinfo or fragment. A client cannot decide where to connect from what the package returns today.
 HC1 is the missing half of the package, not polish.
+
+Cleared by `e54833a Implement HC1 stark-url parsing`. Validation boundaries are recorded in
+`HC1-EVIDENCE.md`.
 
 ### P-3 — `stark-mime`, `stark-query`, `stark-form` are newly tested — WATCH, NOT BLOCKING
 All three had **zero tests** until 2026-08-01 and now have 10, 11 and 11. Writing those tests
