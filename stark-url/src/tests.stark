@@ -415,3 +415,9 @@ fn test_absolute_url_rejections() {
         }
     }
 }
+
+// CD-355: `Url::parse` CANNOT be exercised here. DEV-148 makes an associated function unresolvable
+// across any module boundary, and `tests` is a submodule — so `Url::parse(&input)` does not compile
+// even inside its own package. It is recorded as `surface_blocked` in the qualification gate, which
+// refuses that record the moment the item becomes callable. Write the test then, not before: a test
+// that cannot compile is worse than an absent one.

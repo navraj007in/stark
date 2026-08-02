@@ -3962,13 +3962,37 @@ C2.8–C2.11 disposition.
   39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
 - **Owning gate:** CD-352.
 
-## DEV-148 — a cross-package associated function is unresolvable [OPEN, found CD-353, 2026-08-02]
+## DEV-148 — an associated function is unresolvable across any MODULE boundary [OPEN, found CD-353, scope corrected CD-355, 2026-08-02]
 
 - **Normative expectation:** `07-Modules-and-Packages.md` — a `pub` item of a dependency is
   reachable from a dependent package. Nothing distinguishes an associated function from a free
   function for visibility purposes.
-- **Current behaviour:** free functions and METHODS resolve across a package boundary; ASSOCIATED
-  functions (no receiver) do not.
+- **Current behaviour:** free functions and METHODS resolve across a module or package boundary;
+  ASSOCIATED functions (no receiver) do not.
+- **SCOPE CORRECTION (CD-355).** Filed as cross-PACKAGE; it is cross-MODULE, which is strictly
+  wider and includes the package case. A submodule of the SAME package cannot call one either:
+
+  ```stark
+  // src/lib.stark
+  pub struct Wrap { pub v: Int32 }
+  impl Wrap { pub fn make(v: Int32) -> Wrap { Wrap { v: v } } }
+  mod tests;
+
+  // src/tests.stark
+  use super::Wrap;
+  let b = Wrap::make(2);          // E0200 associated function 'make' not found
+  let c = super::Wrap::make(2);   // E0200 -- the fully qualified path fails too
+  ```
+
+  Same FILE resolves. This matters because it means a package cannot even TEST its own associated
+  functions: `stark-url`'s `Url::parse`, `stark-mime`'s `MediaType::parse` and `stark-net`'s
+  `TcpStream::connect` are unreachable from every test and consumer in the tree, and are recorded
+  as `surface_blocked` in the CD-355 gate for exactly that reason.
+- **Where the failure is:** NOT the resolver. `super::Wrap::make` reaches `Res::AssociatedFn` and
+  then fails in `typecheck.rs`'s associated-function lookup (the E0200 at the `candidates` empty
+  case), which scans impls for one whose `self_ty` path resolves to `Res::Item(nominal)`. Methods
+  are unaffected because method lookup goes by the receiver's TYPE, not by path resolution — which
+  is precisely why the two behave differently.
 - **Minimal reproducer:** two packages, `xapp` depending on `xlib`.
 
   ```stark
@@ -4128,3 +4152,54 @@ Two defects, recorded together because the first concealed the second.
   that has not yet MET a conflicting value). End-to-end: `stark-http-client-consumer` calls
   `set_read_timeout` on a live socket under the qualification gate's HTTP peer.
 - **Owning gate:** package track, CD-354.
+
+## DEV-152 — an `impl` whose type has no page-level item had its methods silently dropped from documentation [CLOSED, fixed CD-355, 2026-08-02]
+
+- **Normative expectation:** `stark doc` documents a package's public items. A `pub fn` in an
+  `impl` block is a public item.
+- **Behaviour before the fix:** `doc_gen::extract` collected impl members separately and attached
+  them to the type's own doc item; when the type had no page-level item **the methods were
+  discarded with no diagnostic**.
+- **Reproducer:** any `impl T { pub fn .. }` where `T` is not declared in the same package.
+- **User impact:** a provider-bound resource nominal is SYNTHESIZED, not written (CD-234), so
+  `impl TcpStream` had nothing to attach to. All seven of `stark-net`'s public methods —
+  `connect`, `read`, `write`, `write_all`, `set_read_timeout`, `set_write_timeout`,
+  `shutdown_write` — were absent from its documentation.
+- **Why it compounded:** DEV-151 showed the two timeout setters could not be BUILT at a call site,
+  and one reason nobody had called them is that the docs did not say they existed. An undocumented
+  API and an uncalled API are the same failure seen from two sides. It also blocked CD-355's
+  surface gate, which uses `stark doc` as the authority on what is public: built on the old
+  extractor, that gate would have certified `stark-net` as fully covered.
+- **Security/soundness impact:** none — it hid a surface rather than mis-compiling one.
+- **Fix:** `src/doc_gen/extract.rs` synthesizes a page for the type instead of discarding. Evidence:
+  `tests/dev152_orphan_impl_methods_documented.rs` (4 tests, including "a declared type gains no
+  duplicate page" and "a private method is still excluded").
+- **Owning gate:** package track, CD-355.
+
+## DEV-153 — `hir_field_ty` had no arm for an unsized slice [CLOSED, fixed CD-355, 2026-08-02]
+
+- **Normative expectation:** `&[T]` is a legal parameter type anywhere a parameter is legal.
+- **Behaviour before the fix:** a method on a host-resource receiver whose parameter was a slice
+  refused to lower, while the identical free function built:
+
+  ```text
+  owned.write_all("x".bytes())        -> field type form (C4.5)
+  write_all(&mut owned, "x".bytes())  -> builds
+  ```
+
+- **Root cause:** `mir_ty` has had a `Ty::Slice` arm all along; `hir_field_ty` did not, because it
+  only ever converted struct fields and enum payloads — and Core v1 forbids reference-typed fields,
+  so `&[T]` could not reach it.
+- **Why it appeared now — and this is the part worth keeping:** DEV-151(a) opened method dispatch on
+  a resource receiver, which routed a method's DECLARED parameter types through `hir_field_ty` for
+  the first time. **A repair that widens what is reachable will expose whatever the newly reachable
+  path never handled.** That is the cost of the DEV-151 class, not an argument against fixing it:
+  the alternative is the surface staying unreachable and the gap staying invisible, which is exactly
+  how `set_read_timeout` shipped unbuildable.
+- **Security/soundness impact:** none — it refused a valid program.
+- **Also fixed:** the `_` arm's message named neither the form nor the type, which is why bisecting
+  cost as long as it did. It now names the item kind.
+- **Fix:** `src/mir/lower.rs::hir_field_ty` gains a `Slice` arm. Evidence:
+  `tests/dev153_slice_parameter_in_resource_method.rs` (4 tests: shared slice, mutable slice, two
+  slices, plus a non-resource control that was never broken).
+- **Owning gate:** package track, CD-355.

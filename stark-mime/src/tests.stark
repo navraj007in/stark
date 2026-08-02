@@ -262,3 +262,55 @@ fn test_format_then_parse_round_trips() {
         i = i + 1u64;
     }
 }
+
+/// CD-355: `MediaType`'s method surface wraps the free functions the tests already cover, and
+/// nothing called any of it. A wrapper that no test calls is not a thinner API — it is a second
+/// implementation nobody has run, which is where DEV-146 and DEV-151 both hid. Each method is
+/// required to agree with the free function it delegates to.
+fn test_media_type_method_surface() {
+    let input = String::from("text/html; charset=utf-8");
+    let parsed: MediaType;
+    match parse_media_type(&input, default_limits()) {
+        Ok(value) => {
+            parsed = value;
+        }
+        Err(_error) => {
+            panic("a well-formed media type was refused");
+        }
+    }
+
+    // format()
+    assert_eq(parsed.format().as_str(), format_media_type(&parsed).as_str());
+
+    // is_type(), both the matching and the non-matching answer
+    let text = String::from("text");
+    let html = String::from("html");
+    let json = String::from("json");
+    if !parsed.is_type(&text, &html) {
+        panic("is_type failed to match text/html");
+    }
+    if parsed.is_type(&text, &json) {
+        panic("is_type matched a subtype it should not have");
+    }
+    if parsed.is_type(&text, &html) != media_type_is(&parsed, &text, &html) {
+        panic("is_type disagrees with media_type_is");
+    }
+
+    // parameter(), present and absent
+    let charset = String::from("charset");
+    match parsed.parameter(&charset) {
+        Some(value) => {
+            assert_eq(value.as_str(), "utf-8");
+        }
+        None => {
+            panic("parameter() lost a parameter the parser found");
+        }
+    }
+    let missing = String::from("boundary");
+    match parsed.parameter(&missing) {
+        Some(_value) => {
+            panic("parameter() invented one that is not there");
+        }
+        None => {}
+    }
+}

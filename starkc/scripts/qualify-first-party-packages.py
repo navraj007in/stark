@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import socket
-import threading
-import time
+import json
 import os
+import re
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +81,11 @@ class PackageCase:
     # against a live peer -- never less. Validated below rather than left to reviewer discipline,
     # because CD-345 is the record of what an unexecuted gate step costs.
     interpreter_exempt: bool = False
+    # CD-355: public callables that CANNOT be called, mapped to the open defect that blocks them.
+    # Not a convenience waiver — the check REFUSES an entry whose item has become callable, so a
+    # fix to the underlying defect forces the entry out rather than letting it rot. Its purpose is
+    # to make the cost of an open defect countable instead of invisible.
+    surface_blocked: tuple[tuple[str, str], ...] = ()
 
 
 CASES = [
@@ -90,6 +98,7 @@ CASES = [
         package="stark-url",
         consumer="stark-url-consumer",
         expected_stdout="q=stark%20url&tag=compiler&tag=language&emoji=%F0%9F%98%80\n",
+        surface_blocked=(("Url::parse", "DEV-148"),),
     ),
     PackageCase(
         package="stark-base64",
@@ -130,6 +139,7 @@ CASES = [
         package="stark-mime",
         consumer="stark-mime-consumer",
         expected_stdout="MIME_CONSUMER_OK\n",
+        surface_blocked=(("MediaType::parse", "DEV-148"),),
     ),
     PackageCase(
         package="stark-query",
@@ -161,6 +171,9 @@ CASES = [
         resource_consumer="stark-net-resource-consumer",
         resource_expected_stdout="STARK_NET_RESOURCE_OK\n",
         needs_echo_peer=True,
+        # Doubly unreachable: DEV-148 makes it uncallable from the consumer, and the package's own
+        # tests run on the interpreter, which has no provider layer to connect with.
+        surface_blocked=(("TcpStream::connect", "DEV-148"),),
     ),
     PackageCase(
         package="stark-http-parser",
@@ -371,6 +384,111 @@ def run(cmd: list[str], cwd: Path, expected_stdout: str | None = None) -> None:
         print("::endgroup::", flush=True)
 
 
+def strip_stark_comments(text: str) -> str:
+    """Remove comments so a NAME MENTIONED IN PROSE never counts as a call site."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
+def declared_surface(stark: Path, package_dir: Path) -> list[dict]:
+    """The package's public surface, as the COMPILER sees it.
+
+    `stark doc` walks the AST, so this cannot drift from the source the way a regex over `pub fn`
+    would. It is also why DEV-152 had to be fixed first: until it was, `impl` methods on a type
+    with no page-level item were silently dropped from the doc index, so a surface check built on
+    it would have certified `stark-net`'s seven `TcpStream` methods as fully covered while none of
+    them had ever been called.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        run([str(stark), "doc", "--output", tmp], package_dir)
+        with open(Path(tmp) / "search.json") as handle:
+            return json.load(handle)
+
+
+def check_declared_surface_is_called(stark: Path, repo_root: Path, case: "PackageCase") -> None:
+    """CD-355: every public callable must be CALLED by the package's own tests or its consumers.
+
+    The gate's other steps prove a package builds and its consumer runs. None of them proves that
+    what a package DECLARES is reached by anything. That gap has now cost three separate stretches:
+
+      * CD-345 -- `stark-net` passed all seven steps while `connect`/`read`/`write`/`close` had
+        never been called, hiding a build-breaking defect (DEV-146);
+      * CD-347 -- fixed that for resource LIFECYCLES, by requiring a native consumer;
+      * CD-354 (DEV-151) -- the same failure one level in. `set_read_timeout` was declared under
+        CD-346, qualified, documented, and unbuildable at every call site, because nothing had
+        ever called it.
+
+    Each round closed the instance and left the class open. This closes the class: a declared
+    callable that nothing calls fails qualification.
+
+    **The bar is the package's OWN evidence** -- its tests plus its own consumers -- not "called by
+    something, anywhere in the tree". A package must stand on its own: a downstream caller can be
+    deleted, and it proves nothing about the package in isolation anyway.
+
+    **Matching is textual, and deliberately biased toward FALSE PASSES.** An identifier followed by
+    `(` counts as a call. That cannot see through an alias or a generic dispatch, so it may credit
+    a call that never happens -- but comments are stripped first, so it will not credit prose. The
+    bias is chosen: a false FAILURE would force a package to add a fake call to satisfy the gate,
+    which is worse than a missed one, because it teaches that gate output is noise.
+    """
+    entries = declared_surface(stark, repo_root / case.package)
+
+    sources = [repo_root / case.package / "src"]
+    for consumer in (case.consumer, case.resource_consumer):
+        if consumer:
+            sources.append(repo_root / consumer / "src")
+    haystack = "\n".join(
+        strip_stark_comments(path.read_text(encoding="utf-8"))
+        for source in sources
+        if source.is_dir()
+        for path in sorted(source.rglob("*.stark"))
+    )
+
+    uncalled = []
+    for entry in entries:
+        name = entry["name"]
+        if entry["kind"] == "fn":
+            if not re.search(r"\b" + re.escape(name) + r"\s*\(", haystack):
+                uncalled.append(name)
+        elif entry["kind"] == "method":
+            short = name.split("::")[-1]
+            # `.name(` for a receiver method, `Type::name(` for an associated function.
+            called = re.search(r"[.]\s*" + re.escape(short) + r"\s*\(", haystack) or re.search(
+                r"\b" + re.escape(name) + r"\s*\(", haystack
+            )
+            if not called:
+                uncalled.append(name)
+
+    callable_count = sum(1 for e in entries if e["kind"] in ("fn", "method"))
+
+    # A blocked entry whose item is now CALLED is a stale waiver, and stale waivers are how a gate
+    # rots into decoration. Refused in the same breath as an uncalled item.
+    blocked = dict(case.surface_blocked)
+    stale = sorted(name for name in blocked if name not in uncalled)
+    if stale:
+        listing = "\n".join(f"      {name}" for name in stale)
+        raise SystemExit(
+            f"{case.package}: these are recorded as blocked, but are now called:\n{listing}\n\n"
+            f"    The defect that blocked them is fixed. Remove the `surface_blocked` entries in "
+            f"the same change, or the next uncalled item hides behind a waiver nobody rereads."
+        )
+    for name in sorted(set(uncalled) & set(blocked)):
+        print(f"  surface: {name} UNCALLABLE — blocked by {blocked[name]}", flush=True)
+    uncalled = [name for name in uncalled if name not in blocked]
+
+    if uncalled:
+        listing = "\n".join(f"      {name}" for name in uncalled)
+        raise SystemExit(
+            f"{case.package}: {len(uncalled)} of {callable_count} public callables are never "
+            f"called by the package's own tests or its consumers:\n{listing}\n\n"
+            f"    Declared-but-uncalled is where DEV-146 and DEV-151 both hid: each was accepted, "
+            f"qualified and shipped, and neither could be BUILT at a call site. Either exercise "
+            f"these, or remove them -- an API nothing calls is not evidence of anything."
+        )
+    print(f"  surface: {callable_count} public callables, all called", flush=True)
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stark", required=True, type=Path)
@@ -386,6 +504,7 @@ def main() -> int:
         consumer_dir = repo_root / case.consumer
         run([str(stark), "check"], package_dir)
         run([str(stark), "test"], package_dir)
+        check_declared_surface_is_called(stark, repo_root, case)
         run([str(stark), "fmt", "--check"], package_dir)
         run([str(stark), "check"], consumer_dir)
         if case.interpreter_exempt:

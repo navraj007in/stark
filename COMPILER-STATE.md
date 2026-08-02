@@ -1,5 +1,82 @@
 # STARK Compiler STATE
 
+## CD-355 — the gate now requires that a package's declared surface is CALLED (2026-08-02)
+
+**The gap this closes has cost three separate stretches, each time closing the instance and leaving
+the class open:**
+
+| | what happened | what was fixed |
+| --- | --- | --- |
+| CD-345 | `stark-net` passed all seven steps while `connect`/`read`/`write`/`close` had never been called, hiding a build-breaking defect (DEV-146) | that package's consumer |
+| CD-347/348 | resource LIFECYCLES made executable, against a live peer | the resource category |
+| CD-354 (DEV-151) | the same failure one level in: `set_read_timeout` was declared under CD-346, qualified, documented and **unbuildable at every call site**, because nothing had ever called it | that one method |
+
+Each round fixed an instance. **The class is: the gate proves a package builds and its consumer
+runs; it never proved that what a package DECLARES is reached by anything.**
+
+### The check
+
+`qualify-first-party-packages.py` gains a step: every public callable must be CALLED by the
+package's own tests or its own consumers. The declared surface comes from `stark doc` — the
+compiler's own AST walk — not a regex over `pub fn`, so it cannot drift from the source.
+
+**The bar is the package's OWN evidence**, not "called by something, anywhere in the tree". A
+downstream caller can be deleted, and proves nothing about the package in isolation.
+
+**Matching is textual and deliberately biased toward FALSE PASSES.** Comments are stripped first, so
+prose never counts as a call; but an alias or a generic dispatch can credit a call that does not
+happen. That bias is chosen: a false FAILURE would push someone to add a fake call to satisfy the
+gate, which is worse than a missed one, because it teaches that gate output is noise.
+
+### What it found immediately
+
+**12 uncalled public callables across 3 of 15 packages** — and the concentration is the finding:
+
+- `stark-net`: **all seven** `impl TcpStream` methods. The entire method surface was dead
+  end-to-end; every consumer used the free functions instead. DEV-151 was one instance of a block
+  that had never been called at all. Now exercised by the native resource consumer against the echo
+  peer, including the DEV-151 reproducer as a real call site.
+- `stark-mime`: four `MediaType` methods, wrapping free functions the tests already covered. A
+  wrapper no test calls is not a thinner API — it is a second implementation nobody has run.
+- `stark-url`: `Url::parse`.
+
+Also surfaced: **`shutdown_write` is a stub** that always returns `Unsupported`. Calling it is what
+made that visible. The consumer now asserts it fails, so implementing it forces the assertion to be
+updated rather than letting a permanently-broken promise sit in the surface.
+
+### Blocked items are counted, not waived
+
+Three of the twelve are ASSOCIATED functions and cannot be called at all — DEV-148. They are
+recorded per package with the defect that blocks them, and **the gate refuses a record whose item
+has become callable**. A fix to DEV-148 therefore forces the records out rather than letting them
+rot; the same self-cleaning rule as the sample suite's "an unexpected PASS is a failure". The
+purpose is to make the cost of an open defect countable instead of invisible.
+
+### Two compiler defects had to be fixed first
+
+- **DEV-152** — `doc_gen::extract` silently DISCARDED the methods of any `impl` whose type had no
+  page-level item. A synthesized resource nominal (CD-234) has none, so all seven `stark-net`
+  methods were absent from its documentation. A surface gate built on that extractor would have
+  certified the package as fully covered. It also explains part of why nobody called them: the docs
+  did not say they existed.
+- **DEV-153** — `hir_field_ty` had no arm for an unsized slice, so `owned.write_all(input)` refused
+  to lower while `write_all(&mut owned, input)` built. This is **DEV-151's second-order cost**:
+  opening method dispatch on a resource receiver routed declared parameter types through that
+  conversion for the first time, and met a form it had never had to handle. A repair that widens
+  what is reachable will expose whatever the newly reachable path never handled — that is the price
+  of the DEV-151 class, not an argument against paying it.
+
+### DEV-148's scope was wrong
+
+Filed as cross-PACKAGE; it is cross-MODULE, which is strictly wider. A submodule of the same
+package cannot call `Wrap::make` either, and neither can the fully qualified `super::Wrap::make`.
+So a package cannot even TEST its own associated functions. The failure is not in the resolver —
+the path reaches `Res::AssociatedFn` — but in `typecheck.rs`'s associated-function lookup. Methods
+are unaffected because method lookup goes by the receiver's TYPE rather than by path resolution,
+which is exactly why the two diverge.
+
+**Status: 15 packages qualify with the surface check enforcing**, 3 items recorded blocked.
+
 ## CD-354 — three compiler defects found by qualifying HC7/HC8; one escalated, not repaired (2026-08-02)
 
 **Writing two packages and running them through the gate found three compiler defects and one
