@@ -157,3 +157,106 @@ fn package_manifest_accepts_explicit_st_entry() {
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let _ = std::fs::remove_dir_all(directory);
 }
+
+#[test]
+fn package_manifest_rejects_non_stark_source_entry() {
+    let directory = workspace("unsupported_package_entry");
+    let source_directory = directory.join("src");
+    std::fs::create_dir_all(&source_directory).unwrap();
+    let manifest = directory.join("starkpkg.json");
+    std::fs::write(
+        &manifest,
+        r#"{
+            "name": "bad-source",
+            "version": "1.0.0",
+            "entry": "src/main.txt"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(source_directory.join("main.txt"), "fn main() {}").unwrap();
+
+    let error = PackageGraph::load_from_root(&manifest).unwrap_err();
+    assert!(error.contains("must use .stark or .st"), "{error}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn package_manifest_default_entry_remains_stark() {
+    let directory = workspace("canonical_default");
+    let source_directory = directory.join("src");
+    std::fs::create_dir_all(&source_directory).unwrap();
+    let manifest = directory.join("starkpkg.json");
+    std::fs::write(
+        &manifest,
+        r#"{
+            "name": "canonical-default",
+            "version": "1.0.0"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(source_directory.join("main.st"), "fn main() {}").unwrap();
+
+    let error = PackageGraph::load_from_root(&manifest).unwrap_err();
+    assert!(error.contains("src/main.stark"), "{error}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn package_cli_fmt_discovers_st_files() {
+    let directory = workspace("fmt");
+    let source_directory = directory.join("src");
+    std::fs::create_dir_all(&source_directory).unwrap();
+    std::fs::write(
+        directory.join("starkpkg.json"),
+        r#"{"name":"fmt-short","version":"1.0.0","entry":"src/main.st"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        source_directory.join("main.st"),
+        "fn main(){println(\"fmt\");}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_stark"))
+        .args(["fmt", "--check"])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "fmt --check should discover the non-canonical .st file"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("main.st"));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn package_cli_test_discovers_st_integration_tests_and_examples() {
+    let directory = workspace("test");
+    std::fs::create_dir_all(directory.join("src")).unwrap();
+    std::fs::create_dir_all(directory.join("tests")).unwrap();
+    std::fs::create_dir_all(directory.join("examples")).unwrap();
+    std::fs::write(
+        directory.join("starkpkg.json"),
+        r#"{"name":"test-short","version":"1.0.0","entry":"src/main.st"}"#,
+    )
+    .unwrap();
+    std::fs::write(directory.join("src/main.st"), "fn main() {}\n").unwrap();
+    std::fs::write(directory.join("tests/integration.st"), "fn main() {}\n").unwrap();
+    std::fs::write(directory.join("examples/demo.st"), "fn main() {}\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_stark"))
+        .arg("test")
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stark test rejected .st integration/example files:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test integration.st ... ok"), "{stdout}");
+    assert!(stdout.contains("example demo.st ... ok"), "{stdout}");
+    let _ = std::fs::remove_dir_all(directory);
+}

@@ -6,6 +6,7 @@ use starkc::parser::{
 };
 use starkc::resolve::{resolve, resolve_with_options};
 use starkc::source::SourceFile;
+use starkc::source_extensions::is_stark_source;
 use starkc::test_runner::{self, Outcome};
 use starkc::typecheck;
 use std::path::{Path, PathBuf};
@@ -37,13 +38,13 @@ Usage:
   stark run                     Compile and execute the package main entry point.
   stark test [name] [--ignored] [--show-output]
                                  Run `fn test_*()` functions in the package,
-                                 tests/*.stark integration programs, and
-                                 examples/*.stark. [name] filters by
+                                 tests/*.stark|*.st integration programs, and
+                                 examples/*.stark|*.st. [name] filters by
                                  substring. --ignored also runs
                                  `test_ignored_*` functions (skipped by
                                  default). --show-output prints captured
                                  stdout even for passing tests.
-  stark fmt [--check] [<file.stark>]
+  stark fmt [--check] [<file.stark|file.st>]
                                  Format the current package, or a single file.
                                  --check reports non-canonical files without
                                  modifying them (exit 1 if any differ).
@@ -635,7 +636,7 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
     };
 
     if files.is_empty() {
-        eprintln!("Error: no `.stark` files found");
+        eprintln!("Error: no `.stark` or `.st` files found");
         return ExitCode::FAILURE;
     }
 
@@ -698,7 +699,7 @@ fn collect_stark_files(dir: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             collect_stark_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("stark") {
+        } else if is_stark_source(&path) {
             out.push(path);
         }
     }
@@ -894,7 +895,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
         overall_failed = true;
     }
 
-    // ---- integration tests: tests/*.stark, each a standalone program ----
+    // ---- integration tests: tests/*.stark|*.st, each a standalone program ----
     let package_root = manifest_path
         .parent()
         .expect("manifest path has a parent directory")
@@ -903,7 +904,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
         overall_failed = overall_failed || more_failed;
     }
 
-    // ---- examples: examples/*.stark, each compiled and run ----
+    // ---- examples: examples/*.stark|*.st, each compiled and run ----
     if let Some(more_failed) =
         run_standalone_suite(&package_root.join("examples"), "example", options)
     {
@@ -917,7 +918,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
     }
 }
 
-/// Run every `.stark` file under `dir` as a standalone program (its own
+/// Run every `.stark` or `.st` file under `dir` as a standalone program (its own
 /// `fn main()`). Returns `None` if `dir` doesn't exist or is empty (nothing
 /// to report), else `Some(any_failed)`.
 fn run_standalone_suite(dir: &Path, label: &str, options: LanguageOptions) -> Option<bool> {
@@ -1044,7 +1045,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     files.sort();
     if files.is_empty() {
         eprintln!(
-            "Error: no `.stark` files found under {}",
+            "Error: no `.stark` or `.st` files found under {}",
             package_root.display()
         );
         return ExitCode::FAILURE;

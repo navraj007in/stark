@@ -76,7 +76,9 @@ def main() -> int:
     # harness that only runs on two of three Tier-1 platforms cannot close a cross-platform row.
     e2e = [sys.executable, str(package / "scripts" / "e2e.py"), "--profile", args.profile]
     e2e_samples = [run(e2e, package)[0] for _ in range(5)]
-    source_files = sorted((package / "src").glob("*.stark"))
+    source_files = sorted(
+        p for p in (package / "src").iterdir() if p.suffix in (".stark", ".st")
+    )
     binary = executable(package / "target" / "stark" / args.profile / "c7-p1-rest")
     git_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],

@@ -483,29 +483,43 @@ Use a caller-provided buffer with:
 
 ### 8.3 Entry encoding
 
-Recommended fixed record:
+Frozen fixed record width: **22 bytes**.
 
 ```text
-family: UInt8
-address_length: UInt8
-address: [UInt8; 16]
-scope_id: UInt32
+byte 0       family: UInt8
+byte 1       address_length: UInt8
+bytes 2..18  address: [UInt8; 16]
+bytes 18..22 scope_id: UInt32, big-endian
 ```
 
-Port is not included unless the API also accepts a service/port.
+Family tags:
+
+```text
+4 = IPv4
+6 = IPv6
+```
+
+Address bytes are network byte order. IPv4 uses the first four address bytes and zero-fills the
+remaining twelve. IPv6 uses all sixteen address bytes. `scope_id` is zero in DNS v0.1; nonzero
+scope-id support is deferred.
+
+Port is not included. The public package API supplies the port and attaches it to every resolved
+address.
 
 ### 8.4 Decisions to freeze
 
-- IPv4 and IPv6 family tags;
-- IPv4-mapped IPv6 policy;
-- scope-ID handling;
-- duplicate preservation;
-- host resolver ordering;
-- canonical-name inclusion or exclusion;
-- empty-success versus `NotFound`;
-- temporary failure mapping;
-- unsupported-family mapping;
-- maximum result count and total bytes.
+- IPv4 and IPv6 family tags: frozen as `4` and `6`.
+- IPv4-mapped IPv6 policy: preserve the host resolver output; no remapping in the provider.
+- scope-ID handling: record field exists, but DNS v0.1 emits zero and package decoding ignores it.
+- duplicate preservation: preserve host resolver output order and entries.
+- host resolver ordering: preserve host resolver order.
+- canonical-name inclusion or exclusion: excluded.
+- empty-success versus `NotFound`: empty result is `NotFound`.
+- temporary failure mapping: OS timeout/interrupted/would-block maps to `TemporaryFailure`.
+- unsupported-family mapping: unknown family tags decode as `UnsupportedAddressFamily`.
+- maximum result count and total bytes: package v0.1 supports at most 32 records, 704 bytes.
+- provider status codes: DNS statuses use `101..107` because the current provider vocabulary is
+  provider-wide, not per capability, and TCP already owns `1..11`.
 
 ### 8.5 Error model
 
@@ -513,12 +527,13 @@ Example:
 
 ```stark
 pub enum DnsError {
+    InvalidHost,
     NotFound,
     TemporaryFailure,
-    InvalidName,
-    LimitExceeded,
+    TooManyResults,
+    UnsupportedAddressFamily,
     Unsupported,
-    Other,
+    Other(UInt32),
 }
 ```
 
