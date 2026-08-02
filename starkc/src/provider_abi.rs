@@ -444,6 +444,8 @@ mod fixtures {
 
     pub fn valid_example_kv() -> ProviderMetadata {
         ProviderMetadata {
+            // CD-360: the example provider consumes no other provider's resource.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "example-kv".to_string(),
                 semver: (0, 1, 0),

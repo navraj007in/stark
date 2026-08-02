@@ -26,6 +26,8 @@ const WINDOWS: &str = "x86_64-pc-windows-msvc";
 fn stark_time() -> DeclaredProvider {
     DeclaredProvider {
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-time".to_string(),
                 semver: (0, 1, 0),
@@ -67,6 +69,8 @@ fn stark_time() -> DeclaredProvider {
 fn rival_clock() -> DeclaredProvider {
     DeclaredProvider {
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "rival-clock".to_string(),
                 semver: (1, 0, 0),

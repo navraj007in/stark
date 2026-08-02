@@ -591,6 +591,8 @@ mod tests {
         let listener = "tcp_listener".to_string();
         let stream = "tcp_stream".to_string();
         ProviderMetadata {
+            // CD-360: this provider consumes no other provider's resource.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-net".to_string(),
                 semver: (0, 1, 0),
