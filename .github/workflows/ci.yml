@@ -596,6 +596,77 @@ jobs:
             --exe-suffix "${{ matrix.exe }}"
 
   # ------------------------------------------------------------------------------------------
+  # WP-DEV-134-139 §10.2: the EXTERNAL task-shaped suite, run against built release artifacts.
+  #
+  # Why a separate repository rather than another directory here. The fixture corpus and the
+  # generated C6 corpus both grow from this compiler's own model of what programs look like. The
+  # sample suite grew from TASKS -- sort a vector, walk a graph, parse an expression -- and that
+  # independence is why it found six defects (CD-334) the in-tree suites did not. Absorbing it
+  # would reorganise it around compiler subsystems and destroy the property that makes it useful.
+  #
+  # PINNED BY SHA, deliberately, not tracking a branch. §10.3: when a compiler fix changes an
+  # external task's expected outcome, the suite's manifest must be updated and THIS PIN must move
+  # to the commit carrying that update, in the same logical change set. A floating `main` would
+  # let the suite drift green or red for reasons unrelated to the commit under test, which is
+  # exactly the confusion the pin prevents.
+  #
+  # It runs the BUILT artifacts, never `cargo run`, so what is tested is what would ship.
+  # ------------------------------------------------------------------------------------------
+  external-sample-suite:
+    name: External sample suite (pinned)
+    runs-on: ubuntu-latest
+    env:
+      # Moving this pin is a deliberate act. See §10.3 above.
+      SAMPLES_REPO: navraj007in/stark-samples
+      SAMPLES_SHA: b3b28e757f38d691e7309f168d1209e28ac459af
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the release artifacts under test
+        working-directory: starkc
+        run: cargo build --release --bin stark --bin starkc
+      - name: Check out the sample suite at its pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SAMPLES_REPO }}
+          ref: ${{ env.SAMPLES_SHA }}
+          path: external-samples
+      - name: Confirm the pin resolved to the commit we asked for
+        # `ref:` accepts a branch too, so an accidental branch name would silently float. This
+        # fails loudly instead.
+        working-directory: external-samples
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "pinned:   $SAMPLES_SHA"
+          echo "resolved: $actual"
+          if [ "$actual" != "$SAMPLES_SHA" ]; then
+            echo "::error::the sample suite did not resolve to the pinned commit"
+            exit 1
+          fi
+      - name: Run the suite against the built artifacts
+        working-directory: external-samples
+        run: |
+          python3 verify.py \
+            --stark "$GITHUB_WORKSPACE/starkc/target/release/stark" \
+            --starkc "$GITHUB_WORKSPACE/starkc/target/release/starkc" \
+            --results "$GITHUB_WORKSPACE/external-suite-results.json"
+      - name: Upload the suite's manifest and results as evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-sample-suite-results
+          path: |
+            external-suite-results.json
+            external-samples/manifest.json
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------------------------------
   # The single required check for branch protection.
   #
   # Protection could name all eleven jobs above, but three of them are matrices, so the real
@@ -623,6 +694,7 @@ jobs:
       - fixture-conformance
       - p1-rest-workload
       - first-party-package-qualification
+      - external-sample-suite
     steps:
       - name: Verify every job succeeded
         # `needs.*.result` is `success`, `failure`, `cancelled` or `skipped`. Anything other than

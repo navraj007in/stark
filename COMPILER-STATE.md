@@ -1,5 +1,47 @@
 # STARK Compiler STATE
 
+## CD-341 — the external sample suite is published, pinned, and gated in CI (2026-08-02)
+
+**WP-DEV-134-139 §10.1/§10.2. The suite that found all six CD-334 defects is now a repository CI
+clones at a fixed SHA, not a directory on one machine.**
+
+```text
+repo   navraj007in/stark-samples   (public)
+pin    b3b28e757f38d691e7309f168d1209e28ac459af
+job    external-sample-suite  ->  required via ci-complete
+```
+
+**Kept EXTERNAL on purpose (§10.2).** The fixture corpus and the generated C6 corpus both grow
+from this compiler's own model of what programs look like. The sample suite grew from TASKS — sort
+a vector, walk a graph, parse an expression — and that independence is why it found six defects the
+in-tree suites did not. Absorbing it would reorganise it around compiler subsystems and destroy
+the property that makes it useful.
+
+**PINNED BY SHA, not tracking a branch.** §10.3 requires that when a compiler fix changes an
+external task's expected outcome, the suite's manifest is updated and the pin moves to the commit
+carrying that update, in the same logical change set. A floating `main` would let the suite drift
+green or red for reasons unrelated to the commit under test — precisely the confusion the pin
+prevents. The job also asserts the resolved HEAD equals the pin, because `ref:` accepts a branch
+name and would otherwise float silently.
+
+**It runs the BUILT artifacts**, never `cargo run`, so what is tested is what would ship.
+
+**A machine-readable manifest now exists (§10.1)**, which the suite previously lacked —
+`run-all.sh` printed pass/fail and nothing more. `manifest.json` records 39 cases with, per case:
+id, description, linked DEV, and the expected outcome for EACH engine (front end, HIR, MIR,
+native), using an explicit vocabulary that distinguishes `not_reached` (rejected earlier) from
+`not_supported` (the engine lacks the construct) from `not_exercised` (this case does not drive
+it). `verify.py` drives it, writes `results.json`, and CI uploads both as evidence.
+
+**An unexpected PASS fails the job.** A reproducer that silently starts working means an
+expectation went stale, not that the suite is healthy — the six `defects/` cases are exactly this
+shape, since every one of them now does the OPPOSITE of what its file header describes.
+
+Local: `verify.py` — 39/39 cases matched, 1.8s. CI YAML validated; `ci-complete` now needs twelve
+jobs, and forgetting to add one remains visible there rather than silently unprotected.
+FILES: .github/workflows/ci.yml, COMPILER-STATE.md. Suite content lives in its own repository.
+NEXT: §11 layer-audit inventory enforcement, then reconciliation and the §17 report.
+
 ## CD-340 — DEV-138 CLOSED as a DEV-121 instance; all six CD-334 defects repaired (2026-08-02)
 
 **WP-DEV-134-139 Part F. The classification came first and decided the repair, as §9 required.**
@@ -436,7 +478,7 @@ Defects (WP-DEV-134-139 Parts A-F)     ALL SIX CLOSED (134, 135, 136, 137, 138, 
                                        DEV-138 closed as a DEV-121 instance; that class stays OPEN
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       6 of 16 complete — all defect repairs done;
+Programme tasks (WP-DEV-134-139)       8 of 16 complete — all defect repairs done;
                                        the remainder is regression/CI/audit infrastructure
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
