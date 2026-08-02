@@ -10,7 +10,13 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Borrow {
-    local: LocalId,
+    /// DEV-154: the full borrowed PLACE, not merely its root local.
+    ///
+    /// OWN-BORROW-001 says "Disjoint field projections do not overlap", and every comparison here
+    /// used to test `b.local == local` — so a borrow of `p.a` blocked a read of `p.b`, refusing a
+    /// valid program and contradicting the spec. `places_overlap` has been field-precise since
+    /// DEV-135; only these comparisons never used it.
+    place: Place,
     mutable: bool,
     _span: Span,
 }
@@ -615,7 +621,7 @@ impl<'a> BorrowChecker<'a> {
                         // Check conflicts
                         let mut has_conflict = false;
                         for b in &self.active_borrows {
-                            if b.local == local_id && (*mutable || b.mutable) {
+                            if places_overlap(&b.place, &place) && (*mutable || b.mutable) {
                                 self.push_diag(
                                     Diagnostic::error(format!("cannot borrow variable '{}' because it is already borrowed", self.text(expr.span)), expr.span)
                                         .with_code("E0101")
@@ -625,8 +631,9 @@ impl<'a> BorrowChecker<'a> {
                             }
                         }
                         if !has_conflict {
+                            let _ = local_id;
                             self.active_borrows.push(Borrow {
-                                local: local_id,
+                                place: place.clone(),
                                 mutable: *mutable,
                                 _span: expr.span,
                             });
@@ -652,9 +659,16 @@ impl<'a> BorrowChecker<'a> {
                 self.check_expr(*rhs);
 
                 // Write check: verify no active borrows on the place
+                let assigned = self.place_of(*lhs);
                 if let Some(local_id) = self.get_root_local(*lhs) {
                     for b in &self.active_borrows {
-                        if b.local == local_id {
+                        // With a place in hand compare precisely; otherwise fall back to the root
+                        // local, which is the conservative answer.
+                        let conflicts = match &assigned {
+                            Some(place) => places_overlap(&b.place, place),
+                            None => b.place.local == local_id,
+                        };
+                        if conflicts {
                             self.push_diag(
                                 Diagnostic::error(
                                     format!(
@@ -1055,7 +1069,7 @@ impl<'a> BorrowChecker<'a> {
         if self
             .active_borrows
             .iter()
-            .any(|borrow| borrow.local == place.local && (mutable || borrow.mutable))
+            .any(|borrow| places_overlap(&borrow.place, &place) && (mutable || borrow.mutable))
         {
             self.push_diag(
                 Diagnostic::error("method receiver conflicts with an active borrow", span)
@@ -1063,7 +1077,7 @@ impl<'a> BorrowChecker<'a> {
             );
         } else {
             self.active_borrows.push(Borrow {
-                local: place.local,
+                place: place.clone(),
                 mutable,
                 _span: span,
             });
@@ -1121,7 +1135,7 @@ impl<'a> BorrowChecker<'a> {
         if !self.check_place_available(&place, expr.span) {
             return;
         }
-        self.check_read_borrow_conflict(place.local, expr.span);
+        self.check_read_borrow_conflict(&place, expr.span);
 
         let ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Ty::Error);
         if self.is_copy_type(&ty) {
@@ -1134,7 +1148,11 @@ impl<'a> BorrowChecker<'a> {
         // not compile, since `it` is a live shared view into `v`'s storage. Confirmed empirically
         // that this previously compiled and crashed at runtime; see COMPILER-STATE.md's WP-C1.4
         // findings.
-        if self.active_borrows.iter().any(|b| b.local == place.local) {
+        if self
+            .active_borrows
+            .iter()
+            .any(|b| places_overlap(&b.place, &place))
+        {
             self.push_diag(
                 Diagnostic::error(
                     format!(
@@ -1341,7 +1359,7 @@ impl<'a> BorrowChecker<'a> {
     fn check_read_expr(&mut self, expr_id: ExprId) {
         if let Some(place) = self.place_of(expr_id) {
             if self.check_place_available(&place, self.hir.expr(expr_id).span) {
-                self.check_read_borrow_conflict(place.local, self.hir.expr(expr_id).span);
+                self.check_read_borrow_conflict(&place, self.hir.expr(expr_id).span);
             }
         } else {
             self.check_expr(expr_id);
@@ -1365,7 +1383,7 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-    fn check_read_borrow_conflict(&mut self, local: LocalId, span: Span) {
+    fn check_read_borrow_conflict(&mut self, place: &Place, span: Span) {
         // DEV-150: already reported as a call-argument overlap, with the message that says what to
         // do about it. One mistake gets one diagnostic.
         if self.overlap_reported.contains(&(span.lo, span.hi)) {
@@ -1374,7 +1392,7 @@ impl<'a> BorrowChecker<'a> {
         if self
             .active_borrows
             .iter()
-            .any(|borrow| borrow.local == local && borrow.mutable)
+            .any(|borrow| places_overlap(&borrow.place, place) && borrow.mutable)
         {
             self.push_diag(
                 Diagnostic::error(

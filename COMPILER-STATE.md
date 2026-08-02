@@ -1,5 +1,79 @@
 # STARK Compiler STATE
 
+## CD-358 — the file-provenance audit, and borrow conflicts made place-granular (2026-08-03)
+
+Two items from the post-CD-357 list, plus a CI failure that CD-357 caused and this fixes.
+
+### 1. The provenance audit closed the class by EXERCISE, not by inspection
+
+`self.text(span)` slices the file currently being CHECKED. A name belonging to a DECLARATION —
+an impl's generic parameter, a signature's, a trait default's return type — belongs to the file
+that declared it. Across a module boundary those differ, and the failure is **silent**: the
+comparison succeeds against garbage.
+
+The same bug has now been repaired at six sites across four decisions:
+
+| | site | found by |
+| --- | --- | --- |
+| DEV-069 | a trait method's name | a trait default across files |
+| DEV-101 | cross-package generic typecheck | a package consumer |
+| DEV-148 | an associated function's name, then its generic parameters | `stark-url` calling its own `Url::parse` |
+| **DEV-155** | a METHOD's impl generics, and a trait default's signature TYPES | **this audit** |
+
+**Inspection was the wrong tool and had already failed four times.** There are ~90 `self.text`
+calls in `typecheck.rs`, most legitimately reading the file under check. Classifying them by eye is
+exactly the process that missed this repeatedly. A probe that actually compiles two-file packages
+found the remaining live site in ONE run:
+
+```text
+*w.get() != 11   ->  E0001 expected 'S', found an integer literal
+```
+
+`'S'` is `T`'s offset in `lib.stark` landing on an `S` in `inner.stark`.
+
+The repair is a `decl_text` helper that resolves against `foreign_sig_item` when a declaring item is
+in scope — a helper rather than a habit, precisely because remembering `item_text` at 29 sites is
+what has not worked. `tests/cd358_cross_module_provenance.rs` drives every construct across a module
+boundary, so a future site added without it fails there rather than in a package months later.
+
+**The near miss worth recording:** `item_text` returns `"?"` for an out-of-range span, so two
+mis-sliced parameter names could COLLIDE on one key and substitute each other's types — a WRONG
+program rather than a rejected one. Every failure seen so far was a refusal; that one would not
+have been. A two-parameter test pins it.
+
+**Also answered:** associated TYPES resolve correctly across a module boundary — the open question
+DEV-148 left behind.
+
+### 2. DEV-154: borrow conflicts compare PLACES
+
+OWN-BORROW-001 has always said "Disjoint field projections do not overlap". Every comparison in
+`borrowck` tested `b.local == local`, so a borrow of `p.a` blocked a read of `p.b`. The `Borrow`
+record now carries the borrowed place, and every comparison — creation, assignment, move, method
+receiver, read — goes through `places_overlap`, field-precise since DEV-135.
+
+**This repair makes the checker accept more, so the refusals are the load-bearing half.** Identity,
+parent-over-child, whole-local-over-field, two exclusive borrows of one field, assignment to a
+borrowed place, and move-out-of-borrowed-storage all stay refused. The move check is deliberately
+stricter than the read check — it rejects under ANY live borrow, shared included, because moving
+invalidates storage a live view still points into — and going place-granular did not weaken it.
+
+### 3. CD-357 broke the AST snapshots, and blessing them would have hidden it
+
+CI went red on `tests/snapshots`. Inserting OWN-BORROW-002's example as `03-Type-System__19`
+shifted every later fixture by one, and the snapshot cases name fixtures **by number** — so
+`__20`, `__31`, `__37`, `__40` silently came to mean different constructs.
+
+`UPDATE_SNAPSHOTS=1` would have gone green while repointing each snapshot at a different construct.
+The cases were RENUMBERED to follow their content instead, and the `.ast` files renamed with them —
+**the snapshot contents did not change**, which is the proof the mapping is right. A comment on
+`CASES` now records that renumbering, not re-blessing, is the correct response.
+
+The extractor's "manifest is in sync" check covers the manifest only; the snapshots are a second
+artefact keyed to the same numbering, with no such check. That gap is real and remains open.
+
+**Verification:** 15/15 packages qualify, external sample suite 39/39, and the three new suites
+(8 provenance + 10 place-granular + the CD-357 15) are green. Full workspace coverage is CI's.
+
 ## CD-357 — DEV-150 ruled: uniform rejection, hoisting required (2026-08-02)
 
 **Ruling (B), from the language owner. Now normative as OWN-BORROW-002 in `03-Type-System.md`:**

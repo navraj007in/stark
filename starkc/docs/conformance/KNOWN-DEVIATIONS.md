@@ -4258,7 +4258,7 @@ Two defects, recorded together because the first concealed the second.
   slices, plus a non-resource control that was never broken).
 - **Owning gate:** package track, CD-355.
 
-## DEV-154 — the read-conflict check is local-granular, so disjoint field projections over-reject [OPEN, found CD-357, 2026-08-02]
+## DEV-154 — the read-conflict check is local-granular, so disjoint field projections over-reject [CLOSED, fixed CD-358, 2026-08-03]
 
 - **Normative expectation:** `03-Type-System.md` OWN-BORROW-001 — "Disjoint field projections do
   not overlap."
@@ -4281,8 +4281,52 @@ Two defects, recorded together because the first concealed the second.
   same shape OWN-BORROW-002 requires — so it is easy to mistake this for the new rule rather than
   a defect. The compiler and the spec disagree, and the spec is right.
 - **Security/soundness impact:** none — it refuses a valid program.
-- **Proposed disposition:** make `check_read_borrow_conflict` place-granular via `places_overlap`,
-  the helper DEV-135 already made field-precise. Deliberately NOT bundled into CD-357: loosening a
-  borrow check is its own change with its own negative controls, and it must not ride along with a
-  ruling that TIGHTENS one.
-- **Owning gate:** unassigned.
+- **Fix (CD-358):** the `Borrow` record now carries the borrowed PLACE rather than only its root
+  local, and every comparison — borrow creation, assignment, move, method receiver, and the read
+  check — goes through `places_overlap`, the helper DEV-135 already made field-precise.
+- **Why the negatives are the important half:** this repair makes the checker accept MORE, so each
+  refusal test is load-bearing. Identity, parent-over-child, whole-local-over-field, two exclusive
+  borrows of one field, assignment to a borrowed place, and move-out-of-borrowed-storage all stay
+  refused. The move check is deliberately stricter than the read check — it rejects under ANY live
+  borrow, shared included, because moving invalidates storage a live view still points into — and
+  making the comparison place-granular did not weaken that.
+- **Evidence:** `tests/dev154_place_granular_borrow_conflicts.rs` (10 tests, 4 accepted / 6
+  refused). All 15 packages qualify and the external sample suite is 39/39.
+- **Owning gate:** package track, CD-358.
+
+## DEV-155 — a method's impl generics and a trait default's signature were read from the wrong file [CLOSED, fixed CD-358, 2026-08-03]
+
+- **Normative expectation:** a generic method resolves the same way regardless of which module
+  calls it.
+- **Behaviour before the fix:** a generic method on a generic impl, called across a module
+  boundary, returned a parameter type named from the CALLER's file:
+
+  ```stark
+  // src/lib.stark
+  pub struct Wrap<T> { pub inner: T }
+  impl<T> Wrap<T> { pub fn get(&self) -> &T { &self.inner } }
+  mod inner;
+
+  // src/inner.stark
+  let w = Wrap { inner: 11 };
+  *w.get() != 11        // E0001 expected 'S', found an integer literal
+  ```
+
+  `'S'` is `T`'s offset in `lib.stark` landing on an `S` in `inner.stark`. Nothing could unify
+  against it.
+- **The same class as DEV-069, DEV-101 and DEV-148**, at a fifth and sixth site: the method
+  candidate loop converted the impl's self type and keyed `match_impl_type`'s generic map with
+  `self.text`, and the selected signature's parameter and return types were converted with no
+  declaring-file context. The trait-default path had the same gap — DEV-069 had fixed that
+  default's NAME but not its signature TYPES.
+- **Security/soundness impact:** none — it refused valid programs. But note the near miss:
+  `item_text` returns `"?"` for an out-of-range span, so two mis-sliced parameter names could
+  COLLIDE on one key and substitute each other's types, which would be a WRONG program rather than
+  a rejected one. A two-parameter test pins that they cannot.
+- **Fix:** `src/typecheck.rs` — a `decl_text` helper that resolves against `foreign_sig_item` when
+  a declaring item is in scope, plus that context set across the method candidate loop, the
+  selected signature's conversion, and the trait-default path.
+- **Evidence:** `tests/cd358_cross_module_provenance.rs` (8 tests over real two-file package
+  graphs, covering generic methods, method-level generics, trait defaults, associated types,
+  bounded generic functions, fields and enum variants, and two non-colliding parameters).
+- **Owning gate:** package track, CD-358.

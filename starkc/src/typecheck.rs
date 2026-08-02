@@ -832,6 +832,25 @@ impl<'a> TypeChecker<'a> {
     /// — another type's name, another impl's method names, another struct's field names — must
     /// use this, because `self.file` is the file of the item being CHECKED, not the item being
     /// LOOKED UP (DEV-069 failure shapes (b), (c), (d)).
+    /// Read a name off a DECLARATION, honouring whichever file declared it.
+    ///
+    /// CD-358: `self.text` slices the file currently being CHECKED. A name that belongs to a
+    /// declaration — an impl's generic parameter, a signature's, a field's — belongs to the file
+    /// that declared it, and across a module boundary those differ. Getting it wrong does not
+    /// error: it silently compares garbage, and a span running past the shorter file's end comes
+    /// back as `"?"`, so several names can COLLIDE on one key.
+    ///
+    /// This is the fourth time the same bug has been repaired (DEV-069, DEV-101, DEV-148 and its
+    /// generic second site), so it is a helper rather than a habit. Where a declaring item is in
+    /// scope, `foreign_sig_item` carries it and this resolves against it; where none is set the
+    /// declaration is local and the behaviour is unchanged.
+    fn decl_text(&self, span: Span) -> &str {
+        match self.foreign_sig_item {
+            Some(item) => self.item_text(item, span),
+            None => self.text(span),
+        }
+    }
+
     fn item_text(&self, item: ItemId, span: Span) -> &str {
         self.item_src(item)
             .get(span.lo as usize..span.hi as usize)
@@ -7593,8 +7612,15 @@ impl<'a> TypeChecker<'a> {
                 ..
             } = &item.kind
             {
+                // CD-358: both the self-type conversion and the generic-name keying read spans
+                // from the IMPL's file. Without this, `impl<T> Wrap<T>` resolved through a module
+                // boundary produced a parameter named from the caller's file — `Wrap<T>::get`
+                // returned `&S` — and no substitution could ever fire.
+                let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
                 let impl_self_ty = self.convert_hir_type(*impl_self_ty_id);
-                let Some(map) = self.match_impl_type(&impl_self_ty, &receiver_ty, generics) else {
+                let matched = self.match_impl_type(&impl_self_ty, &receiver_ty, generics);
+                self.foreign_sig_item = previous_sig_item;
+                let Some(map) = matched else {
                     continue;
                 };
 
@@ -7640,8 +7666,11 @@ impl<'a> TypeChecker<'a> {
                 self.check_member_visible(*is_pub, *impl_item_id, "method", &name_str, call_span);
             }
         }
-        let selected =
-            chosen.map(|(def, is_trait, map, self_ty, _, _)| (def, is_trait, map, self_ty));
+        // CD-358: the impl's ItemId is carried through, because the signature conversion below
+        // must read its spans against the impl's own file.
+        let selected = chosen.map(|(def, is_trait, map, self_ty, _, impl_item_id)| {
+            (def, is_trait, map, self_ty, impl_item_id)
+        });
 
         // WP-C1.3 (2026-07-17): fall back to a trait's own default method body when no impl
         // overrides it. `candidates` above only ever collects `ImplItem::Fn` overrides -- a
@@ -7678,7 +7707,7 @@ impl<'a> TypeChecker<'a> {
                     hir::TraitItem::Method { sig, body: Some(_) }
                         if self.item_text(trait_id, sig.name) == name_str =>
                     {
-                        Some((sig.clone(), map.clone(), impl_self_ty.clone()))
+                        Some((sig.clone(), map.clone(), impl_self_ty.clone(), trait_id))
                     }
                     _ => None,
                 })
@@ -7687,7 +7716,11 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
-        if let Some((sig, mut map, impl_self_ty)) = default_fallback {
+        if let Some((sig, mut map, impl_self_ty, trait_id)) = default_fallback {
+            // CD-358: a trait default's signature is declared in the TRAIT's file, which may
+            // differ from the impl's file and from the file under check. DEV-069 already applied
+            // that rule to the default's NAME; its parameter and return types need it too.
+            let previous_sig_item = self.foreign_sig_item.replace(trait_id);
             // WP-C4.7-9 audit: a TRAIT-DEFAULT method may declare its own generic parameters
             // too (`02:64`). WP-C4.7-8.4 gave the selected-impl path fresh per-call-site
             // variables for those; this path had the same gap, so `d.say(5)` on an
@@ -7714,7 +7747,7 @@ impl<'a> TypeChecker<'a> {
                     .generics
                     .iter()
                     .map(|param| {
-                        let name = self.text(param.name).to_string();
+                        let name = self.decl_text(param.name).to_string();
                         map.get(&name).cloned().unwrap_or(Ty::Error)
                     })
                     .collect();
@@ -7749,6 +7782,7 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
+            self.foreign_sig_item = previous_sig_item;
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -7770,7 +7804,10 @@ impl<'a> TypeChecker<'a> {
             return ret_ty;
         }
 
-        if let Some((def, _, mut map, impl_self_ty)) = selected {
+        if let Some((def, _, mut map, impl_self_ty, impl_item_id)) = selected {
+            // CD-358: every name below — the method's own generic parameters, and the parameter
+            // and return TYPES — is a span into the impl's file.
+            let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
             // WP-C4.7-8.4: the candidate's `map` carries only the IMPL's generic parameters. A
             // method may declare its OWN (`02:64` puts `GenericParams?` on every `FunctionSig`,
             // and `02:120` makes an impl item a `Function`), and those need a fresh inference
@@ -7784,12 +7821,12 @@ impl<'a> TypeChecker<'a> {
                         hir::GenericArg::Type(ty) => self.convert_hir_type(*ty),
                         _ => Ty::Error,
                     };
-                    map.insert(self.text(param.name).to_string(), ty);
+                    map.insert(self.decl_text(param.name).to_string(), ty);
                 }
             } else {
                 for param in &def.sig.generics {
                     let infer = self.new_type_var();
-                    map.insert(self.text(param.name).to_string(), infer);
+                    map.insert(self.decl_text(param.name).to_string(), infer);
                 }
             }
             // WP-C4.7-8.4: record this call site's METHOD-level instantiation for MIR
@@ -7803,7 +7840,7 @@ impl<'a> TypeChecker<'a> {
                     .generics
                     .iter()
                     .map(|param| {
-                        let name = self.text(param.name).to_string();
+                        let name = self.decl_text(param.name).to_string();
                         map.get(&name).cloned().unwrap_or(Ty::Error)
                     })
                     .collect();
@@ -7839,6 +7876,7 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
+            self.foreign_sig_item = previous_sig_item;
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -8767,8 +8805,10 @@ impl<'a> TypeChecker<'a> {
         let matches = self.unify_impl_ty(implementation, receiver, &mut map);
         if matches {
             for generic in generics {
-                map.entry(self.text(generic.name).to_string())
-                    .or_insert_with(|| Ty::Param(self.text(generic.name).to_string()));
+                // CD-358: the impl's own parameter names, read against the impl's file.
+                let name = self.decl_text(generic.name).to_string();
+                map.entry(name.clone())
+                    .or_insert_with(|| Ty::Param(name.clone()));
             }
             Some(map)
         } else {
