@@ -113,42 +113,27 @@ fn u64_text(value: UInt64) -> String {
     out
 }
 
-// DEV-147: these take an OWNED `Vec<UInt8>` and return it, rather than the `&mut Vec<UInt8>` the
-// shape obviously wants. A `&mut Vec<T>` parameter mutated in a loop is accepted by the checker and
-// executes correctly under the HIR oracle, but MIR verification refuses it:
-//
-//   MIR-0007 push_str_bytes@[] bb6: move from possibly-moved place _1[]
-//
-// Accepted-but-unbuildable. The package's own tests passed on the oracle while the native consumer
-// failed to build, which is precisely why the executed-surface rule (CD-348) requires a NATIVE
-// consumer: `stark test` alone would have shipped this.
-//
-// Restore the `&mut` form when DEV-147 is repaired.
-fn push_str_bytes(out: Vec<UInt8>, text: &str) -> Vec<UInt8> {
-    let mut acc = out;
+fn push_str_bytes(out: &mut Vec<UInt8>, text: &str) {
     let bytes = text.bytes();
     let n = bytes.len();
     let mut i = 0u64;
     while i < n {
-        acc.push(bytes[i]);
+        out.push(bytes[i]);
         i = i + 1u64;
     }
-    acc
 }
 
-fn push_crlf(out: Vec<UInt8>) -> Vec<UInt8> {
-    let mut acc = out;
-    acc.push(13u8);
-    acc.push(10u8);
-    acc
+fn push_crlf(out: &mut Vec<UInt8>) {
+    out.push(13u8);
+    out.push(10u8);
 }
 
-fn push_header_line(out: Vec<UInt8>, name: &str, value: &str) -> Vec<UInt8> {
-    let mut acc = push_str_bytes(out, name);
-    acc.push(58u8);
-    acc.push(32u8);
-    acc = push_str_bytes(acc, value);
-    push_crlf(acc)
+fn push_header_line(out: &mut Vec<UInt8>, name: &str, value: &str) {
+    push_str_bytes(out, name);
+    out.push(58u8);
+    out.push(32u8);
+    push_str_bytes(out, value);
+    push_crlf(out);
 }
 
 /// Serialize `request` into exact HTTP/1.1 bytes.
@@ -194,32 +179,32 @@ pub fn serialize_request(request: &HttpRequest, authority: &HostAuthority, limit
 
     let mut out: Vec<UInt8> = Vec::new();
 
-    out = push_str_bytes(out, method_text(&request.method).as_str());
+    push_str_bytes(&mut out, method_text(&request.method).as_str());
     out.push(32u8);
-    out = push_str_bytes(out, request.target.as_str());
+    push_str_bytes(&mut out, request.target.as_str());
     out.push(32u8);
-    out = push_str_bytes(out, version_text(&request.version).as_str());
-    out = push_crlf(out);
+    push_str_bytes(&mut out, version_text(&request.version).as_str());
+    push_crlf(&mut out);
 
-    out = push_header_line(out, "Host", host_value.as_str());
+    push_header_line(&mut out, "Host", host_value.as_str());
 
     let mut k = 0u64;
     while k < n {
         let entry = &request.headers.entries[k];
-        out = push_header_line(out, entry.name.as_str(), entry.value.as_str());
+        push_header_line(&mut out, entry.name.as_str(), entry.value.as_str());
         k = k + 1u64;
     }
 
     // `Content-Length` only when there is a body. A bodyless GET with `Content-Length: 0` is legal
     // but noisy, and omitting it keeps the common request minimal.
     if body_length > 0u64 {
-        out = push_header_line(out, "Content-Length", u64_text(body_length).as_str());
+        push_header_line(&mut out, "Content-Length", u64_text(body_length).as_str());
     }
 
     // First release is `Connection: close` — no pooling, so claiming keep-alive would promise
     // reuse the client does not implement.
-    out = push_header_line(out, "Connection", "close");
-    out = push_crlf(out);
+    push_header_line(&mut out, "Connection", "close");
+    push_crlf(&mut out);
 
     let mut b = 0u64;
     while b < body_length {

@@ -3893,7 +3893,7 @@ C2.8–C2.11 disposition.
   listener — `wrote / 5 / closed`, server saw `b'PING\n'`.
 - **Owning gate:** CD-346.
 
-## DEV-147 — `&mut Vec<T>` parameter mutated in a loop is accepted but not buildable [OPEN, found CD-350, 2026-08-02]
+## DEV-147 — `&mut Vec<T>` parameter mutated in a loop is accepted but not buildable [CLOSED, CD-352, 2026-08-02]
 
 - **Classification:** accepted-but-unbuildable. The checker accepts, the HIR oracle EXECUTES
   CORRECTLY, and MIR verification refuses. Same class as DEV-132/DEV-133/DEV-146, a fourth
@@ -3934,6 +3934,30 @@ C2.8–C2.11 disposition.
 - **Workaround, in force in `stark-http-serialize`:** the helpers take an OWNED `Vec<UInt8>` and
   return it, so the accumulator is a local rather than a borrowed parameter. It costs a move per
   call and reads worse than the `&mut` form.
-- **Proposed disposition:** unassigned. Likely adjacent to DEV-137's region work — a receiver
-  auto-borrow through a parameter across a back-edge — but that is a hypothesis, not a finding.
-- **Owning gate:** unassigned.
+- **ACTUAL LAYER, and the hypothesis above was wrong.** Not DEV-137 region work, and not the
+  verifier's whole-local `Deref` approximation either (that is a documented, deliberate scope note
+  and is fine). The defect was in LOWERING: `borrow_{vec,string,map,set}_receiver` each took the
+  same shortcut when the receiver was already a reference —
+
+  ```rust
+  if layers > 0 { return self.lower_expr_to_operand(base); }
+  ```
+
+  — and `&mut T` is not `Copy`, so "pass through" lowers to a **`Move` of the caller's reference**.
+  Harmless once; on a loop back-edge the parameter is then possibly-moved.
+- **Resolution (CD-352):** `reborrow_reference_receiver` builds `&mut *base`, which is exactly what
+  the `layers == 0` path already does one deref further down. Written once and called from all four
+  receiver borrowers, for the DEV-128/DEV-130 reason. Deliberately narrow: a SHARED reference passes
+  through unchanged (`&T` is `Copy`, nothing moves), and a non-place base passes through (there is
+  no caller reference to preserve).
+- **Audited, not assumed:** ten sites in `lower.rs` share the `layers > 0` shortcut. Six are not
+  receiver borrows — display refs, value refs, index paths — and are untouched.
+- **Negative controls, because an over-eager reborrow is worse than the defect:** the owner is still
+  refused while an exclusive borrow lives; two live `&mut` to one owner still refused; a shared
+  borrow still cannot satisfy a `&mut` parameter; an owned value moved twice still refused.
+- **`stark-http-serialize` is restored to the natural `&mut` form**, which is the end-to-end proof —
+  that package is what found the defect, and its native consumer now builds.
+- **Evidence:** `starkc/tests/dev147_reference_receiver_reborrow.rs`, 11 cases (7 build, 4 refuse);
+  MIR/differential/three-engine/lifecycle suites 326 green; 13-package gate exit 0; external suite
+  39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
+- **Owning gate:** CD-352.

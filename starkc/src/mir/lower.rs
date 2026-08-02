@@ -8411,6 +8411,71 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    /// DEV-147: a receiver that is ALREADY a reference must be REBORROWED, not passed through.
+    ///
+    /// `&mut T` is not `Copy`, so handing the caller's reference straight to the callee lowers to a
+    /// `Move` of it. Once per call is harmless; inside a loop it is not — the back-edge sees the
+    /// parameter possibly-moved and MIR-0007 refuses the next iteration:
+    ///
+    /// ```text
+    /// fn push_all(out: &mut Vec<UInt8>, ..) { while i < n { out.push(..); .. } }
+    ///   -> MIR-0007 push_all@[] bb6: move from possibly-moved place _1[]
+    /// ```
+    ///
+    /// The checker accepted it and the HIR oracle executed it correctly, so this was
+    /// accepted-but-unbuildable — and it blocked "append into a caller's buffer in a loop", the
+    /// shape of every serializer and encoder.
+    ///
+    /// A reborrow is `&mut *base`, which is exactly what the `layers == 0` path already builds one
+    /// deref further down. Returning `None` means "pass through unchanged", which stays correct for
+    /// a SHARED reference: `&T` is `Copy`, so reading it moves nothing and there is nothing to fix.
+    /// Narrowing to `mutable` keeps the change to the case that is actually broken.
+    fn reborrow_reference_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        span: Span,
+    ) -> Result<Option<Operand>, LowerError> {
+        if !mutable {
+            return Ok(None);
+        }
+        let base_ty = self.expr_mir_ty(base)?;
+        let MirTy::Ref {
+            mutable: base_mut,
+            inner,
+        } = &base_ty
+        else {
+            return Ok(None);
+        };
+        // Only a `&mut` receiver can be moved by being read. A `&T` base where `&mut` is wanted is
+        // a mutability error the checker already refused; lowering must not invent the capability.
+        if !*base_mut {
+            return Ok(None);
+        }
+        let ref_ty = MirTy::Ref {
+            mutable: true,
+            inner: inner.clone(),
+        };
+        let Ok(mut place) = self.lower_place(base) else {
+            // A non-place base (a call result, say) has no caller reference to preserve, so moving
+            // the temporary is already correct.
+            return Ok(None);
+        };
+        place.projection.push(Projection::Deref);
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(temp),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place,
+                },
+            ),
+            self.info(span),
+        );
+        Ok(Some(self.read_place(Place::local(temp), &ref_ty, span)?))
+    }
+
     fn borrow_set_receiver(
         &mut self,
         base: ExprId,
@@ -8420,6 +8485,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let set_ty = MirTy::Core(crate::hir::CoreType::HashSet, vec![elem.clone()]);
@@ -8450,6 +8519,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let map_ty = MirTy::Core(crate::hir::CoreType::HashMap, vec![k.clone(), v.clone()]);
@@ -8477,6 +8550,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let vec_ty = MirTy::Core(crate::hir::CoreType::Vec, vec![elem]);
@@ -8520,7 +8597,11 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
-            // Already a reference to the String — pass it through.
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
+            // Already a shared reference to the String — pass it through.
             return self.lower_expr_to_operand(base);
         }
         let place = self.place_or_temp(base, &MirTy::String, span)?;
