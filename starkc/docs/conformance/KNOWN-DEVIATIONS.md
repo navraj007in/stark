@@ -2630,7 +2630,9 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 88 numbered deviations total (DEV-002 through DEV-090, DEV-001/DEV-003 retired).
+Count **as of the WP-C4.7 close-out (2026-07-21)**, and not maintained since: 88 numbered
+deviations total (DEV-002 through DEV-090, DEV-001/DEV-003 retired). For the current total see
+`COMPILER-STATE.md`'s "Known deviations — open index".
 DEV-090 (by-value iteration over a non-`Copy` array element) was split from DEV-086's narrowed
 remainder during the WP-C4.7 close-out and rejected in the front end (`E0104`), the feature itself
 deferred. DEV-089 (user `Display` dispatch through `print`/`println`) was closed the same day by
@@ -3237,3 +3239,240 @@ C2.8–C2.11 disposition.
   length), and a shared array must not become a `&mut` slice (coercion changes shape, never
   capability). Both pinned.
 - **Owning gate:** CD-326 (package qualification); repaired under CD-329.
+
+## DEV-134 — `?` neither converts the error type nor requires that a conversion exist [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** `?` propagates `Err`/`None` early (`04-Semantic-Analysis.md` line 160,
+  `CORE-V1-ABSTRACT-MACHINE.md` EXEC-CFLOW-001). The spec does not define a `From` conversion at the
+  propagation site, so the only two defensible behaviours are: **reject** a `?` whose error type
+  differs from the enclosing function's, or **convert** it and require the `From` impl. The compiler
+  does neither.
+- **Current behaviour:** the error types are not compared at all. A `Result<T, Low>` propagates
+  through a function returning `Result<T, High>` with **no `impl From<Low> for High` anywhere in the
+  program**, and the `Low` value is carried out typed as `High`.
+- **Minimal reproducer:**
+
+  ```stark
+  enum Low { Bad }
+  enum High { Other }
+
+  fn low() -> Result<Int32, Low> { Err(Low::Bad) }
+  fn viaq() -> Result<Int32, High> { let value = low()?; Ok(value) }
+
+  fn main() {
+      match viaq() {
+          Ok(value) => println(value),
+          Err(error) => match error { High::Other => println("other") },
+      }
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> runtime error: non-exhaustive match reached
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; HIR oracle produces a value whose variant tag belongs to
+  a different enum, so the inner `match` — which IS exhaustive over `High` — falls through. The
+  "non-exhaustive match reached" message is therefore a symptom, not the defect.
+- **Security/soundness impact:** **soundness.** This is type confusion, not a diagnostic gap: a
+  value of one nominal type is observable at another nominal type. Both enums here are fieldless, so
+  the reproducer only mis-tags; with payloads of differing layout the consequence is worse, and that
+  variant has not been characterised. Anything downstream that trusts the static type of an `Err`
+  payload — a `Display` impl, a field read, a further `match` — is reading the wrong type.
+- **Workaround:** use `?` only where the error types are already equal, and convert across error
+  types with an explicit `match` plus `From::from`.
+- **Proposed disposition:** decide between reject and convert — an owner call, not an
+  implementation detail, because "convert" adds a `From` obligation the spec has not scoped and is a
+  CE-shaped semantic decision. Rejection is the conservative half and can land first.
+- **Owning gate:** unassigned; belongs with whichever work package next touches `?` lowering.
+
+## DEV-135 — moves of individual struct fields are not tracked [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** `04-Semantic-Analysis.md` defines partial moves — moving one field of
+  a struct leaves the other fields readable and the moved field unusable. A second move of the same
+  field must be rejected `E0100`.
+- **Current behaviour:** flow analysis tracks moves of a whole binding but not of its fields. The
+  same field can be moved out twice; the front end accepts it and the HIR oracle discovers it at run
+  time.
+- **Minimal reproducer:**
+
+  ```stark
+  struct Handle { label: String }
+  impl Drop for Handle { fn drop(&mut self) { println(self.label.as_str()); } }
+  struct Owner { handle: Handle }
+
+  fn main() {
+      let owner = Owner { handle: Handle { label: String::from("only-one") } };
+      let first = owner.handle;
+      let second = owner.handle;
+      println("both bindings exist");
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> internal compiler error: use of moved or invalid field
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; oracle refuses. Note the message class — this surfaces as
+  an **internal compiler error**, which is the wrong category for a user-authored program and will
+  read as a compiler crash to anyone who hits it.
+- **Security/soundness impact:** **soundness, bounded by the oracle's own check.** The oracle
+  catches it, so no double-drop is observable there; what is NOT established is whether the native
+  backend catches it, and a double-move of a droppable field is a double-free shape. That
+  characterisation is owed before the severity can be settled.
+- **Workaround:** none needed in practice — the construct is a genuine error; the gap is that it is
+  diagnosed late and in the wrong category.
+- **Proposed disposition:** extend the move set to per-field places (the projection machinery
+  DEV-086 added for `ConstIndex` is the nearest precedent), and reclassify the oracle's message from
+  internal-compiler-error to a normal trap if it survives as a backstop.
+- **Owning gate:** unassigned.
+
+## DEV-136 — a move on a returning path is treated as unconditional [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** definite-assignment and move analysis are path-sensitive. A move that
+  occurs only on a path that `return`s cannot affect the fall-through path, which that move never
+  reaches.
+- **Current behaviour:** the move is recorded unconditionally, so every later use of the binding is
+  rejected `E0100`.
+- **Minimal reproducer:**
+
+  ```stark
+  fn build(flag: Bool) -> String {
+      let mut out = String::new();
+      if flag { return out; }
+      out.push('a');
+      out
+  }
+  ```
+
+  ```text
+  E0100 use of moved value 'out'   (at `out.push('a')` and at the trailing `out`)
+  ```
+
+- **User impact:** high nuisance value, because the shape is idiomatic. "Build a buffer, bail early
+  with what you have, otherwise keep filling it" is refused outright. Every early return must
+  instead construct a fresh value, which is both slower and misleading to read.
+- **Security/soundness impact:** none — a false positive. It rejects valid programs; it does not
+  admit invalid ones.
+- **Workaround:** return a freshly constructed value from the early-return path rather than the
+  accumulator.
+- **Proposed disposition:** make the move set join over predecessors rather than accumulate, so a
+  `return`-terminated block does not contribute to its successor. Worth pairing with DEV-135 —
+  both are flow-analysis precision, in opposite directions.
+- **Owning gate:** unassigned.
+
+## DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "References and Lifetimes" — a temporary borrow
+  ends with its statement. The auto-borrow a method call takes of its receiver (TYPE-METHOD-002) is
+  a temporary; it must not outlive the condition it appears in.
+- **Current behaviour:** the borrow is treated as live for the whole loop, so any mutation of the
+  receiver inside the body is a conflict.
+- **Minimal reproducer:**
+
+  ```stark
+  fn main() {
+      let mut values: Vec<Int32> = Vec::new();
+      values.push(1);
+      values.push(2);
+      let mut i = 0u64;
+      while i < values.len() {
+          values[i] = 5;
+          i = i + 1u64;
+      }
+      println(values[0] + values[1]);
+  }
+  ```
+
+  ```text
+  E0101 cannot assign to variable 'values[i]' because it is borrowed
+  ```
+
+- **User impact:** this is the single most disruptive of the six in practice. `while i < v.len()` is
+  the ordinary way to write an indexed loop, and every in-place algorithm — sorting, filling,
+  partitioning — hits it. It also affects `&mut` PARAMETERS, where the same shape appears inside any
+  mutating helper.
+- **Security/soundness impact:** none — a false positive.
+- **Workaround:** hoist the length (`let n = values.len();`) above the loop. **This only works when
+  the length does not change**; a queue that grows while being drained must instead track its length
+  by hand, which is exactly the bookkeeping the borrow checker is supposed to make unnecessary.
+- **Proposed disposition:** end the condition's temporary borrows at the condition's own end. The
+  loop's back-edge is presumably why the region is being extended; the fix is to treat the condition
+  as its own statement scope rather than as part of the body.
+- **Owning gate:** unassigned.
+
+## DEV-138 — an iterator-yielded `&str` is consumed by its first use [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** `&str` is a shared borrow and is `Copy`-like at use sites; reading it
+  does not consume it. `06-Standard-Library.md` gives `SplitIter` an `Item` that is a reference.
+- **Current behaviour:** the yielded item is consumed by its first use. A second use of the same
+  loop variable in the same iteration fails at run time, and the front end does not catch it.
+- **Minimal reproducer:**
+
+  ```stark
+  fn main() {
+      for word in "alpha beta".split(" ") {
+          let first = String::from(word);
+          let second = String::from(word);
+          println(first.as_str());
+          println(second.as_str());
+      }
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> runtime error: use of unavailable value
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; oracle refuses on the second use. Same accepted-but-
+  unexecutable CLASS as DEV-132/DEV-133, different mechanism — this is a value-representation/
+  ownership question about iterator items, so it is plausibly an instance of the still-open
+  **DEV-121** class rather than an independent defect. That relationship is asserted as a hypothesis
+  here, not established; INV-VALUE-REP-001 is the instrument that would settle it.
+- **Security/soundness impact:** **soundness-adjacent.** A shared borrow is being treated as an
+  owned value, which is the same category error DEV-121 tracks. No memory unsafety is demonstrated;
+  the failure is a refusal, not a corruption.
+- **Workaround:** convert the item once (`let key = String::from(word);`) and `clone` from there.
+- **Proposed disposition:** check against DEV-121 first — if it is an instance, it belongs to that
+  class's closure and should not carry an independent fix.
+- **Owning gate:** unassigned; candidate for folding into DEV-121.
+
+## DEV-139 — impl-level generic bounds are invisible to operator desugaring [OPEN, found CD-334, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `<` on a generic parameter
+  desugars to `Ord`. A bound written on the impl head is in scope throughout the impl's method
+  bodies; DEV-073 and the WP-C4.7-5 work established exactly this for method resolution.
+- **Current behaviour:** `ty_satisfies_operator_bound`'s `Ty::Param` arm consults
+  `self.current_fn_generics` — the enclosing FUNCTION's parameters — only. An impl-level bound is
+  not in that set, so the operator check fails.
+- **Minimal reproducer:**
+
+  ```stark
+  struct Pair<T> { a: T, b: T }
+
+  impl<T: Ord> Pair<T> {
+      fn larger(&self) -> &T {
+          if self.a > self.b { &self.a } else { &self.b }
+      }
+  }
+  ```
+
+  ```text
+  E0500 type 'T' does not satisfy operator trait 'Ord'
+  ```
+
+- **The contrast that localises it:** the same comparison under the same bound is ACCEPTED as a free
+  function — `fn largest<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } }`. So this is not
+  about `Ord` on a parameter; it is about which generic environment the operator check reads.
+- **User impact:** any generic container that orders its own elements must move that comparison out
+  into a free function. Ordinary API shapes — `Heap<T: Ord>`, `SortedVec<T: Ord>`, a `max` method —
+  cannot be written as methods.
+- **Security/soundness impact:** none — a false positive.
+- **Workaround:** put the comparison in a free generic function with the bound on the function.
+- **Proposed disposition:** merge the impl's generics into the environment the operator check reads,
+  the same way method resolution already merges them. Related to DEV-083 (also impl-head matching,
+  also OPEN) and plausibly the same close-out.
+- **Owning gate:** unassigned; natural companion to DEV-083.

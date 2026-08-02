@@ -1,5 +1,66 @@
 # STARK Compiler STATE
 
+## CD-334 — six defects filed from an external sample suite; three are soundness (2026-08-02)
+
+**An 18-package sample suite was written OUTSIDE this repository, against the release binaries, to
+answer "what does it feel like to write ordinary STARK today?". It found six defects, numbered
+DEV-134…DEV-139. Three of them are soundness gaps the fixture corpus does not reach.**
+
+| DEV | One line | Class |
+| --- | --- | --- |
+| 134 | `?` neither converts the error type nor requires a conversion to exist | **soundness** — type confusion |
+| 135 | moves of individual struct FIELDS are not tracked; second move surfaces as an ICE | **soundness** (bounded by the oracle) |
+| 136 | a move on a `return`ing path is treated as unconditional (E0100) | false positive |
+| 137 | a receiver auto-borrow in a `while` CONDITION is live across the body (E0101) | false positive |
+| 138 | an iterator-yielded `&str` is consumed by its first use | **soundness-adjacent**; candidate DEV-121 instance |
+| 139 | impl-level generic bounds are invisible to operator desugaring (E0500) | false positive |
+
+Full structured entries — normative expectation, reproducer, engine behaviour, impact, workaround,
+disposition — are in the canonical ledger, `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. This
+record is the index and the finding about method, not a second copy.
+
+**DEV-134 is the one that needs an owner decision rather than an implementation.** The spec does not
+scope a `From` conversion at the propagation site, so "convert" would be new semantics — CE-shaped —
+while "reject" is the conservative half and can land alone. Filing it does not presume which.
+
+**DEV-138 is filed as a hypothesis, not a finding.** It is plausibly an instance of the still-open
+DEV-121 value-representation class rather than an independent defect; INV-VALUE-REP-001 is the
+instrument that would settle it, and it has not been run against this reproducer. Recorded that way
+deliberately, so the count is not inflated by a duplicate.
+
+**Why an external suite found things the corpus did not, which is the durable point.** The fixture
+corpus and the generated C6 corpus both grow from the compiler's own model of what programs look
+like. The sample suite grew from *tasks* — sort a vector, walk a graph, parse an expression, encode
+a run-length string — and the defects cluster exactly where those two diverge:
+
+```
+DEV-136, DEV-137   ordinary imperative loop and early-return shapes
+DEV-135, DEV-138   ownership of things the corpus rarely uses twice
+DEV-139            generic CONTAINERS with methods, not generic functions
+```
+
+DEV-137 is the most disruptive in practice: `while i < v.len()` is how an indexed loop is written,
+and every in-place algorithm hits it. Its workaround — hoist the length — **fails when the length
+changes**, so a growing queue must track its length by hand. That is worth weighting above the other
+two false positives when this is scheduled.
+
+**A limitation found alongside them, filed as neither defect nor deviation because it may be
+intended:** `Box<T>` cannot be dereferenced, so a recursive tree built with `Box` can be constructed
+but never walked by reference — traversal requires consuming it with `Box::into_inner`. The suite
+routes around this with an arena (nodes in one `Vec`, children as indices), which is a legitimate
+technique rather than a workaround. If by-reference traversal of a boxed tree is meant to be
+possible, this is a seventh defect; if not, it is a documented consequence of having no `Deref`.
+The owner's call, which is why it carries no DEV number.
+
+EVIDENCE: six runnable reproducers, one per DEV, verified against
+`starkc/target/release/{stark,starkc}` at this head — each shown to reproduce its stated
+`starkc check` and `starkc run` outcomes. The suite itself is 18 packages / 55 files / ~5,500 lines
+and passes 34 of 34 checks with the six workarounds applied and commented.
+SCOPE: **documentation only.** No compiler source, test, or fixture was modified under this CD, and
+no defect was repaired. Nothing here is gate evidence.
+FILES: starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-134…139 appended), COMPILER-STATE.md.
+NEXT: owner triage — DEV-134's reject-vs-convert ruling, and whether DEV-138 folds into DEV-121.
+
 ## CD-294 — E0106 reverted: the layer migration was not the cheap kind (2026-07-31)
 
 **CD-293 moved `v[i]`-on-a-non-`Copy`-element from MIR verification into semantic analysis as
@@ -7098,14 +7159,20 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 97 numbered deviations as of 2026-08-01):
+Canonical ledger (full structured entries): the file now carries **108 distinct numbered
+deviations** as of 2026-08-02, counted as unique `## DEV-NNN` headings (DEV-121 has two — an
+original and an UPDATE — and is counted once). CD-334 added six. NOTE: this line previously read
+"97 numbered deviations as of 2026-08-01", which did not match the file then either (102 by the
+same count); the discrepancy predates CD-334 and is recorded rather than silently rewritten,
+because whichever convention produced 97 may be the intended one. Path:
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-31 (post-C8 candidate closeout). **Every entry below is long-standing and unscheduled;
-no open deviation belongs to the C4 track.**
+Open as of 2026-08-02. Entries DEV-005…DEV-017 are long-standing and unscheduled, and no open
+deviation belongs to the C4 track. **DEV-134…DEV-139 were opened 2026-08-02 by CD-334 and are new,
+not long-standing** — three of them are soundness gaps and none has an owning gate yet.
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
   proposal.
@@ -7116,6 +7183,19 @@ no open deviation belongs to the C4 track.**
   remainder; owner: post-C8 editor validation.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
+- DEV-134 — `?` neither converts the error type nor requires a conversion to exist. **Soundness**;
+  needs an owner ruling (reject vs. convert) before implementation. Opened CD-334.
+- DEV-135 — moves of individual struct fields are not tracked; the second move surfaces as an
+  internal compiler error. **Soundness**, bounded by the oracle's own check. Opened CD-334.
+- DEV-136 — a move on a `return`ing path is treated as unconditional (E0100 false positive).
+  Opened CD-334.
+- DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body (E0101
+  false positive). The most disruptive of the six; its hoist-the-length workaround fails whenever
+  the length changes. Opened CD-334.
+- DEV-138 — an iterator-yielded `&str` is consumed by its first use. Filed as a **candidate
+  instance of DEV-121**, not an independent defect; unconfirmed. Opened CD-334.
+- DEV-139 — impl-level generic bounds are invisible to operator desugaring (E0500 false positive).
+  Natural companion to DEV-083. Opened CD-334.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
