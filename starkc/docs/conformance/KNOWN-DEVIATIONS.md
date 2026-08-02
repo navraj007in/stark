@@ -3816,3 +3816,45 @@ C2.8–C2.11 disposition.
   DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
   reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
 - **Owning gate:** unassigned.
+
+## DEV-146 — `&mut` to `&` weakening is not applied to a `HostResource` [OPEN, found CD-345, 2026-08-02]
+
+- **Normative expectation:** an exclusive borrow weakens to a shared one at a call site.
+  `weaken_ref_to` is the single function that performs this for every coercion position (DEV-133's
+  repair routed all six through it), so a `&mut T` argument may satisfy a `&T` parameter.
+- **Current behaviour:** the weakening is not applied when `T` is a `HostResource`. The front end
+  ACCEPTS the call; MIR verification then rejects it:
+
+  ```text
+  MIR-0005 stark_net::write@[] bb0: call argument:
+    expected Ref { mutable: false, inner: HostResource(.. resource: "tcp_stream") },
+    found    Ref { mutable: true,  inner: HostResource(.. resource: "tcp_stream") }
+  ```
+
+- **Minimal shape:** a package wrapper that takes `&mut` over a bound resource and forwards it to
+  the derived raw binding, whose `AbiParam::HandleBorrowed` derives a SHARED borrow:
+
+  ```stark
+  pub fn write(stream: &mut TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+      match tcp_stream_write_raw(stream, input) { .. }   // expects &TcpStream
+  }
+  ```
+
+- **Engine divergence:** checker ACCEPTS, MIR verification refuses. Accepted-but-unbuildable — the
+  DEV-132/DEV-133 class, a third mechanism: those were a missing place projection and a missing
+  unsize coercion; this is a missing MUTABILITY weakening, and only for host resources.
+- **Diagnostic quality is part of this defect.** `stark build` reports only
+  `error: internal compiler error: generated MIR failed verification` with no code, no location and
+  no detail. The MIR-0005 line above appears only under `--verbose`. A verifier rejection of
+  generated MIR is a compiler bug by definition, but the user still needs to know WHERE.
+- **User impact:** a package cannot give a resource-mutating operation the `&mut` signature it
+  deserves. `stark-net`'s `read`/`write`/`write_all` take `&TcpStream` for this reason alone, which
+  understates what they do — recorded in the source at their definition.
+- **Security/soundness impact:** none — it refuses a valid program rather than accepting an invalid
+  one. The cost is expressiveness and a misleading API shape.
+- **Workaround:** take a shared borrow. In force in `stark-net` today.
+- **Proposed disposition:** extend `weaken_ref_to` to `HostResource` inner types, with a negative
+  control that a SHARED borrow must not silently become exclusive (weakening changes capability in
+  one direction only). Restoring `stark-net`'s `&mut` signatures belongs with that repair, since it
+  is source-breaking for callers.
+- **Owning gate:** unassigned.

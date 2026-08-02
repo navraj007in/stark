@@ -1,5 +1,104 @@
 # STARK Compiler STATE
 
+## CD-345 — HC1 and HC2 qualified with evidence; HC2 was qualified in name only (2026-08-02)
+
+**HC1 (`stark-url`) and HC2 (`stark-net`) landed as plain commits with no CD entry and no evidence
+statement. Both are in the eleven-package gate and both pass it. For HC1 that means what it sounds
+like. FOR HC2 IT DID NOT.**
+
+### The finding: a happy-path gate cannot qualify a resource-holding package
+
+`stark-net` is the first first-party package that holds host resources. The seven-step gate ran
+`check` / `test` / `fmt` on the package, then `check` / `run` / `build` / execute on its consumer —
+and **the consumer only formatted addresses**:
+
+```stark
+let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 1u16);
+if socket_address_text(&address).as_str() != "127.0.0.1:1" { panic(..) }
+```
+
+The package's own tests are two cases, both address formatting. So `connect`, `read`, `write`,
+`write_all`, `close` and `shutdown_write` — the entire reason the package exists — were qualified
+**in name only**. Nothing had ever lowered a call into the raw bindings.
+
+### What that concealed: DEV-146, a build-breaking defect, on develop
+
+The CD-344 signature change (`&TcpStream` -> `&mut TcpStream` on `read`/`write`/`write_all`,
+Codex's work, committed by me) makes any program that CALLS those functions fail to build:
+
+```text
+MIR-0005 call argument: expected Ref { mutable: false, inner: HostResource(tcp_stream) },
+                        found    Ref { mutable: true,  inner: HostResource(tcp_stream) }
+```
+
+`weaken_ref_to` does not weaken `&mut T` to `&T` when `T` is a `HostResource`. Accepted by the
+front end, refused by MIR verification — the DEV-132/DEV-133 class, third mechanism. Registered as
+**DEV-146**; the signatures are reverted to shared borrows with the defect named at their
+definition.
+
+**My CD-344 verification was insufficient and I can name how.** I ran `stark check` (front end
+only, which accepts) and the package gate (whose consumer never calls the affected functions). I
+also checked that no package consumes the changed API — true, and exactly why nothing caught it.
+The check I did not run is the one that matters for a resource package: build a program that
+actually calls the thing.
+
+### First end-to-end observation of the resource path
+
+Never done before. A native client against a real loopback listener:
+
+```text
+client: wrote / 5 / closed          exit 0
+server: received b'PING\n' / closed
+```
+
+connect, write, read, close all work. The package's behaviour is sound; only the build was broken.
+
+**Drop elaboration verified, not assumed.** `close()`'s comment claims MIR emits
+`stark_tcp_stream_close` exactly once for an owned stream. Confirmed in the generated Rust:
+`_7.drop_with(|__v| unsafe { stark_tcp_stream_close(__v.as_raw()) })` for a program that never
+calls `close`.
+
+**Affine lifecycle negatives, observed for the first time:**
+
+| Shape | Outcome |
+| --- | --- |
+| double `close` | REFUSED, E0100 |
+| use after `close` | REFUSED, E0100 |
+| never closed | accepted — drop elaboration emits the close (verified above) |
+| closed on one branch only | accepted — same |
+| stream stored in a `Vec` | accepted |
+
+### A STRUCTURAL LIMIT OF THE GATE, which is the durable finding
+
+I tried to close the hole by making the consumer exercise the resource path. **It cannot.** Step 5
+is `stark run` on the consumer, and the interpreter has no provider layer — any consumer touching a
+bound resource dies with "provider binding not lowered". So the seven-step gate is CONSTITUTIONALLY
+unable to qualify a resource path, for `stark-net` or any future resource package.
+
+That is not a `stark-net` problem and should not be patched inside one. Resource lifecycle belongs
+in a native-only test alongside the existing provider e2e suites (`a10_*`, `c788_lifecycle_e2e`) and
+the C7.8 native-capabilities workflow. **Filed as the recommended next step, not done here** — it
+is a gate change, and gate changes need their own scope.
+
+### HC1 by contrast
+
+`stark-url` is genuinely qualified: 19 tests, 9 exercising the new absolute-URL surface, and a
+consumer that calls `parse_url`/`Url::parse`. Pure parsing, no resources, nothing deferred.
+
+### Correction
+
+Commit messages CD-337 … CD-344 say "all ten packages qualify". It has been **eleven** since
+`56a78b4` added `stark-net`, which landed between CD-336 and CD-337. The RUNS covered all eleven
+and passed; the descriptions were stale. Corrected here.
+
+EVIDENCE: eleven-package qualification exit 0; `stark-net` check/test/fmt clean; end-to-end native
+TCP client against a Python listener; generated-Rust inspection for drop elaboration; five affine
+lifecycle probes.
+FILES: stark-net/src/lib.stark (signatures reverted, DEV-146 named),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-146), COMPILER-STATE.md.
+NEXT: a native resource-lifecycle test for `stark-net` before HC3/HC4 consume these APIs, and
+DEV-146 before the `&mut` signatures can be restored.
+
 ## CD-343 — WP-DEV-134-139 final report; programme complete pending CI (2026-08-02)
 
 **All six CD-334 defects repaired, all infrastructure tasks delivered. §17 report at

@@ -45,13 +45,13 @@ impl TcpStream {
     pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
         connect(address, timeout)
     }
-    pub fn read(&mut self, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+    pub fn read(&self, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
         read(self, output)
     }
-    pub fn write(&mut self, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+    pub fn write(&self, input: &[UInt8]) -> Result<UInt64, NetworkError> {
         write(self, input)
     }
-    pub fn write_all(&mut self, input: &[UInt8]) -> Result<(), NetworkError> {
+    pub fn write_all(&self, input: &[UInt8]) -> Result<(), NetworkError> {
         write_all(self, input)
     }
     pub fn shutdown_write(&mut self) -> Result<(), NetworkError> {
@@ -77,21 +77,32 @@ fn connect_socket_address(address: &SocketAddress) -> Result<TcpStream, NetworkE
     }
 }
 
-pub fn read(stream: &mut TcpStream, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+// DEV-146: these take a SHARED borrow of the stream, not `&mut`, and that is currently forced
+// rather than chosen. `&mut TcpStream` is the better signature -- these mutate the stream -- and
+// the front end ACCEPTS it, but MIR verification then rejects the call into the raw binding:
+//
+//   MIR-0005 call argument: expected Ref { mutable: false, inner: HostResource(tcp_stream) },
+//                           found    Ref { mutable: true,  inner: HostResource(tcp_stream) }
+//
+// The derived raw signature takes `HandleBorrowed` (a shared borrow), and `weaken_ref_to` does not
+// weaken `&mut T` to `&T` when `T` is a `HostResource`, so the wrapper cannot pass its own `&mut`
+// through. Accepted-but-unbuildable, the DEV-132/DEV-133 class. Restore `&mut` once DEV-146 is
+// fixed; the change is source-breaking for callers, so it belongs with that repair.
+pub fn read(stream: &TcpStream, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
     match tcp_stream_read_raw(stream, output) {
         Ok(count) => Ok(count),
         Err(error) => Err(map_network_error(error)),
     }
 }
 
-pub fn write(stream: &mut TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+pub fn write(stream: &TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
     match tcp_stream_write_raw(stream, input) {
         Ok(count) => Ok(count),
         Err(error) => Err(map_network_error(error)),
     }
 }
 
-pub fn write_all(stream: &mut TcpStream, input: &[UInt8]) -> Result<(), NetworkError> {
+pub fn write_all(stream: &TcpStream, input: &[UInt8]) -> Result<(), NetworkError> {
     let mut written: UInt64 = 0u64;
     while written < input.len() {
         let remaining = &input[written..input.len()];
