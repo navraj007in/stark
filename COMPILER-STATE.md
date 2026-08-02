@@ -1,5 +1,81 @@
 # STARK Compiler STATE
 
+## CD-359 — HC9 paused; two P0 platform-architecture packets opened (2026-08-03)
+
+**Two items previously carried as backlog are release-architecture blockers, and HC9 must not be
+implemented before the first is frozen.** Recorded by the language owner; packets written to scope,
+deliberately NOT combined.
+
+### Revised priority
+
+```text
+P0  Cross-provider resource-transfer ABI      WP-PROVIDER-HANDLE-TRANSFER.md
+P0  External provider discovery/registration  WP-EXTERNAL-PROVIDERS.md
+P1  HC9 TLS implementation                    DESIGN-BLOCKED by P0.1
+P1  Database provider foundation              blocked by P0.2
+P1  HC10 HTTPS                                blocked by HC9
+P2  HC11-HC13
+```
+
+The two design tracks may run in parallel. **DB0 (STARK-facing value, error, connection, transaction
+and cursor contracts) may proceed now** — it is pure STARK and does not prejudge either decision.
+
+### Why HC9 stops
+
+TLS wraps TCP, so the TLS provider must take a `TcpStream` the net provider created. The ABI has no
+way to express that, and without a frozen rule an implementation would duplicate ownership, smuggle
+raw handles, bypass the validator, fuse TCP and TLS into one provider, or leave Drop authority
+unclear. Each weakens the resource model A11/CD-234/CD-237/CD-240 exist to guarantee.
+
+### The scope finding that shrinks P0.1
+
+Probing `provider_abi::validate` established that **most of the transfer contract already exists**:
+
+| already true | consequence |
+| --- | --- |
+| resource identity is structural over `{nominal, provider, resource}` | provider identity is part of the TYPE; a transfer is a genuine type change |
+| `HandleOut` writes its slot only on success | the destination's failure disposition is settled |
+| close is selected per resource, and a closeless resource is refused | "which provider releases" is answered structurally |
+| every function returns `ProviderStatus`, no direct returns | `Result<HandleOut<TlsStream>, TlsError>` is the shape it already has |
+
+So the packet does not design a mechanism. It authorizes **one referencing rule** — a provider may
+name a foreign resource type in `HandleConsumed` position without inheriting its close — and freezes
+**one failure rule**.
+
+The two existing refusals are CORRECT and must survive; the new rule sits alongside them:
+
+```text
+ResourceTypeMissingClose      declaring a foreign type would give it a second, competing close
+HandleResourceTypeUndeclared  a provider may only reference types it declares
+```
+
+### The hard question, and the recommendation
+
+What happens to the SOURCE handle when a transfer fails. Three candidates are set out in the packet;
+the recommendation is **(A) failure also consumes the source**, because it is the only option
+requiring **no change to drop elaboration** — `HandleConsumed` keeps meaning exactly what it means
+today, unconditionally consumed. Returning ownership on failure would make ownership depend on a
+runtime value, which is precisely the class of conditional invariant this compiler has repeatedly
+failed to get right first time. It also states the real-world truth: a failed handshake does not
+leave a usable socket.
+
+### Why P0.2 is broader than databases
+
+`first_party()` is a hardcoded `Vec` and `crate_location` a hardcoded `match`. Providers are
+compiler-integrated extensions, not an ecosystem mechanism: every native capability needs a compiler
+change, nobody outside the repo can publish one, provider versioning is welded to compiler releases,
+and trust policy is implicit because we wrote everything that exists. **The public package system is
+incomplete for host capabilities.**
+
+The packet keeps static linking and changes only DISCOVERY — manifests instead of hardcoded tables,
+with `provider_abi::validate` unchanged and merely fed from a different source. Trust is made
+explicit rather than enforced: four tiers, external providers off by default, no transitive
+activation, exact version and checksum, no sandboxing attempted.
+
+Its exit criterion is an executable claim:
+
+> Adding PostgreSQL, MongoDB, MySQL or SQL Server requires no compiler-source change.
+
 ## CD-358 — the file-provenance audit, and borrow conflicts made place-granular (2026-08-03)
 
 Two items from the post-CD-357 list, plus a CI failure that CD-357 caused and this fixes.
