@@ -1,5 +1,68 @@
 # STARK Compiler STATE
 
+## CD-361 — joint HC9/CRYPTO0 decision: rustls + aws-lc-rs (2026-08-03)
+
+> **Select `rustls` with `aws-lc-rs` as STARK's TLS and general native-cryptography foundation.
+> Reject `native-tls` for the first-party TLS provider.**
+
+Recorded in `WP-CRYPTO0-TLS-BACKEND.md` — which also CREATES the CRYPTO0 record, since none
+existed. HC9's roadmap section is updated at source: **backend selection is no longer part of the
+HC9 estimate.**
+
+### Why not native-tls
+
+It is not one TLS implementation — SChannel, Secure Transport and OpenSSL by platform. That would
+give STARK three error surfaces, three certificate behaviours, three security policies and three
+FIPS stories, and it is directly contrary to what this track has spent its effort on: one rule every
+engine satisfies by construction. It also multiplies CD-347/348's obligation, since lifecycle
+evidence would be needed per platform stack rather than once. Permitted later as an external
+provider under WP-EXTERNAL-PROVIDERS; not as the first-party implementation.
+
+### The sharpest point in the ruling
+
+```text
+trust-anchor source  ≠  TLS implementation
+```
+
+System roots can be used without handing the protocol to a platform stack. That defuses the only
+strong argument for native-tls, and it mirrors a separation this codebase already makes —
+`crate_location`'s doc: a crate's path is a property of the checkout, its name a property of the
+program. HC9's fixture uses `ExplicitRoots` with a test CA; `SystemRoots` is HC10's concern.
+
+### Verified before freezing, not carried over
+
+The external claims were fetched and checked rather than transcribed. **The ruling held up**, with
+two refinements:
+
+| claim | result |
+| --- | --- |
+| FIPS 140-3 certificate **#4816**, AWS-LC-backed | confirmed exactly |
+| rustls 0.23.42 | documentation had already moved to **0.23.43** |
+| aws-lc-rs 1.17.x | confirmed, 1.17.3, released 2026-07-17 |
+| normal build needs a C/C++ compiler; FIPS adds CMake and Go | confirmed — CMake/Go/bindgen are *never* needed for Profile N |
+| a Cargo feature alone is not a FIPS claim | confirmed, and **more specific** than stated |
+
+The version drifting between the ruling and the check, within one day, is itself the argument for
+the pin-exactly policy. Recorded as versions OBSERVED; the pin comes from HC9's qualification
+output, because you pin what you qualified.
+
+**Profile F is a two-step activation, not a flag:** install `default_fips_provider().install_default()`
+and verify `ClientConfig::fips()` at runtime. Both are checkable, so they belong in Profile F's
+qualification criteria rather than in prose.
+
+**A correction to my own objection:** I had called the build cost understated. Verification showed
+the ruling's split was accurate — Profile N needs only a C/C++ compiler. The residual point stands
+but is smaller: providers link statically into the generated workspace, so that compiler is required
+of every user building a TLS program, not only of the provider's authors. Recorded as a named cost.
+
+### Two things recorded so they are not rediscovered
+
+* A provider manifest's `targets` field declares triples but **cannot express toolchain
+  prerequisites**, so a provider may declare a target it cannot build on without extra tooling.
+  Belongs to WP-EXTERNAL-PROVIDERS.
+* `stark-http-client::parse_http_url` refuses `https://` outright today, deliberately. **HC10 turns
+  that refusal into scheme dispatch** — the visible edge of this decision in already-shipped code.
+
 ## CD-360 — cross-provider transfer ruled and implemented; P0.1 closed (2026-08-03)
 
 **Ruling, from the language owner:**

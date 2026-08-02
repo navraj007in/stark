@@ -983,16 +983,29 @@ packages/stark-tls
 providers/stark-tls-native
 ```
 
-## Native implementation recommendation
+## Native implementation — DECIDED (CD-361)
 
 Use a mature TLS implementation. Do not implement TLS or cryptographic primitives in STARK.
 
-The TLS backend decision is constrained by **CRYPTO0 step 3**:
+**The backend decision is CLOSED. Backend selection is no longer part of the HC9 estimate.** See
+`WP-CRYPTO0-TLS-BACKEND.md` for the joint HC9/CRYPTO0 record.
 
-- TLS and general cryptography must not accidentally create two independent crypto stacks;
-- the selected backend must preserve future Profile F/FIPS reachability;
-- evaluate `rustls` over `aws-lc-rs` as the default candidate unless CRYPTO0 selects another compatible foundation;
-- the final provider decision must be recorded jointly with the CRYPTO0 backend decision.
+```text
+TLS engine                rustls
+default crypto provider   aws-lc-rs, non-FIPS          (Profile N)
+Profile F provider        aws-lc-rs FIPS               (qualified separately)
+native-tls                REJECTED as first-party; permitted later as an external provider
+root-store policy         SEPARATE from engine selection — HC9's fixture uses ExplicitRoots
+versioning                exact versions and checksums pinned at qualification, never "latest"
+```
+
+Two consequences HC9 must plan for rather than discover:
+
+- `aws-lc-rs` needs a **C/C++ compiler** for Profile N, and providers link statically into the
+  generated workspace — so this becomes a requirement for every user building a TLS program, not
+  only for the provider's authors. Profile F additionally needs CMake and Go.
+- Profile F is **not** a Cargo feature: it requires installing the FIPS provider and verifying
+  `ClientConfig::fips()` at runtime. Both belong in Profile F's qualification criteria.
 
 Preferred properties:
 
@@ -1093,6 +1106,11 @@ If supported, use that atomic resource transition.
 If unsupported, freeze an explicit fallback before HC9 implementation. A two-call consume-then-create design must specify provider-internal handoff state, cancellation, failure cleanup, and exactly-once close semantics.
 
 ## TLS configuration
+
+Root acquisition is POLICY, separate from engine selection (CD-361): `SystemRoots`,
+`BundledRoots`, `ExplicitRoots`. **HC9's controlled fixture uses `ExplicitRoots`** containing the
+test CA; `SystemRoots` is HC10's concern and does not require handing the protocol to a platform
+TLS stack.
 
 First release:
 
