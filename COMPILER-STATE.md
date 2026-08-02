@@ -1,5 +1,40 @@
 # STARK Compiler STATE
 
+## CD-343 — WP-DEV-134-139 final report; programme complete pending CI (2026-08-02)
+
+**All six CD-334 defects repaired, all infrastructure tasks delivered. §17 report at
+`STARKLANG/docs/compiler/work-packages/WP-DEV-134-139-FINAL-REPORT.md`.**
+
+**Recommendation: release, CONDITIONAL on CD-340/341/342 reporting green.** WP §15's gate is
+otherwise satisfied, including its DEV-135 branch: the inventory proved parent poisoning
+unacceptable, and the precision a DEV-135b would have built already existed.
+
+**The qualification that must not be smoothed over.** CD-337 NEVER WENT GREEN — it failed
+`clippy::collapsible_match`, the fix landed in CD-338, and every commit from there is green, so
+DEV-136's code is transitively covered. But "aggregate CI green" is a release-gate item, and CI is
+the SOLE workspace authority since CD-337 dropped local workspace runs. CD-341 and CD-342 each add
+a required job to `ci-complete` and neither has yet been observed passing.
+
+**Root cause of that miss, which matters more than the lint.** The repo pins `channel = "stable"`;
+CI's resolves to 1.97.0, this machine's had gone stale at 1.93.0. Every "clippy clean" before
+CD-338 was against an older lint set than CI's. Gate is now `cargo +1.97.0 clippy`.
+
+**What the programme actually found.** None of the six needed a design change; four were a single
+wrong line or a single missing consultation, and DEV-135 — sized by the work package as "full
+field-sensitive move paths" — was one enum variant, because the move model was already
+field-precise and only field IDENTITY was broken. Four of six were WIDER than filed, and in every
+case the extra half was found by the repair's own must-pass tests rather than by the reproducer.
+
+**Residual, all registered, none from CD-334:** DEV-121 stays open with its blind spot now named
+(INV-VALUE-REP-001 checks `let` bindings; a for-loop binding is not a `let`, and both known
+instances were loop items). DEV-140…145 registered at CD-342. DEV-083 open. `types_equal`'s
+missing `Ty::Param` arm is symptomless and unowned. `?` conversion semantics is a language-design
+question with no owner.
+
+FILES: STARKLANG/docs/compiler/work-packages/WP-DEV-134-139-FINAL-REPORT.md, COMPILER-STATE.md.
+NEXT: owner review; then the DEV-121 invariant extension is the highest-value unowned item, since
+it would close a class rather than another instance.
+
 ## CD-342 — the layer audit is an enforcing gate; its six findings are now registered (2026-08-02)
 
 **WP-DEV-134-139 §11. The audit reported and passed unconditionally, so a NEW layer defect could
@@ -516,8 +551,8 @@ Defects (WP-DEV-134-139 Parts A-F)     ALL SIX CLOSED (134, 135, 136, 137, 138, 
                                        DEV-138 closed as a DEV-121 instance; that class stays OPEN
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       14 of 16 complete — all defect repairs done;
-                                       the remainder is regression/CI/audit infrastructure
+Programme tasks (WP-DEV-134-139)       16 of 16 complete; release recommendation is
+                                       CONDITIONAL on CD-340/341/342 CI going green
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
