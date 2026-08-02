@@ -1,5 +1,43 @@
 # STARK Compiler STATE
 
+## CD-342 — the layer audit is an enforcing gate; its six findings are now registered (2026-08-02)
+
+**WP-DEV-134-139 §11. The audit reported and passed unconditionally, so a NEW layer defect could
+appear and the suite would stay green — it could only ever be read by a human who happened to
+look. It now fails on any UNREGISTERED finding.**
+
+**The bar is not zero findings.** Six reachable lowering refusals exist and are NOT repaired by
+this programme. They are now numbered, which is the actual change: CD-331 found and printed them
+and they had carried no deviation number since.
+
+| DEV | Probe | Reachable lowering refusal |
+| --- | --- | --- |
+| DEV-140 | L7153 | `Vec::` method outside the implemented lowering set |
+| DEV-141 | L8093 | `HashMap` over a user-`Drop` value type |
+| DEV-142 | L9130 | droppable composite carrying a borrowed element |
+| DEV-143 | L5346 | `assert_eq` on a user-defined type |
+| DEV-144 | L3698 | `for` over a non-range, non-`Vec` iterator |
+| DEV-145 | L6450 | method on a peeled type outside the implemented slice |
+
+Every probe now declares the disposition it is expected to have — `FrontEnd`, `Lowers`, or
+`KnownDev("DEV-xxx")` — and the test compares actual against registered.
+
+**It fails in BOTH directions, which is the part worth stating.** A registered defect that stops
+reproducing fails too, because that means either the DEV was fixed and its registration is stale,
+or the probe no longer reaches the construct it was written for. Both need a human decision; both
+are invisible to a test that only looks for regressions. The failure was verified by deliberately
+mis-registering one probe and confirming the gate reports "registered as Lowers but actually
+KnownDev".
+
+**Disposition of the six is unscheduled and per-site, not global.** Two repair shapes exist —
+raise the refusal into semantic analysis (E0105) or teach lowering the construct (DEV-132,
+DEV-133). CD-294 is the precedent for why raising is not always cheap: E0106 was reverted because
+`v[i]` appears in value AND place positions that only later phases distinguish.
+
+Local: `cargo test --test layer_audit` green; negative case verified by mis-registration.
+FILES: starkc/tests/layer_audit.rs, starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: reconciliation and the §17 report — the last two programme tasks.
+
 ## CD-341 — the external sample suite is published, pinned, and gated in CI (2026-08-02)
 
 **WP-DEV-134-139 §10.1/§10.2. The suite that found all six CD-334 defects is now a repository CI
@@ -478,7 +516,7 @@ Defects (WP-DEV-134-139 Parts A-F)     ALL SIX CLOSED (134, 135, 136, 137, 138, 
                                        DEV-138 closed as a DEV-121 instance; that class stays OPEN
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       8 of 16 complete — all defect repairs done;
+Programme tasks (WP-DEV-134-139)       14 of 16 complete — all defect repairs done;
                                        the remainder is regression/CI/audit infrastructure
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite

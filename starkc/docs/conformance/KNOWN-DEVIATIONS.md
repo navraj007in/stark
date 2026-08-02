@@ -3719,3 +3719,100 @@ C2.8–C2.11 disposition.
   covering `Ord`/`Eq`/`Num` operators, trait-bound obligations, inherent and trait impls, impl and
   method bounds contributing together, and nested generic nominals.
 - **Owning gate:** WP-DEV-134-139 Part E (CD-339).
+
+
+## DEV-140 — `Vec::` method outside the implemented lowering set (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L7153` in `starkc/tests/layer_audit.rs`. Reproducer shape: `v.insert(0u64, 2)` after a `push`.
+- **Why it is reachable:** MIR lowering implements a subset of `Vec`'s methods; the rest are `unsupported(...)` sites.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-141 — `HashMap` over a user-`Drop` value type (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L8093` in `starkc/tests/layer_audit.rs`. Reproducer shape: `HashMap<Int32, D>` where `D` implements `Drop`.
+- **Why it is reachable:** Lowering has no drop elaboration for map values whose type carries a destructor.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-142 — droppable composite carrying a borrowed element (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L9130` in `starkc/tests/layer_audit.rs`. Reproducer shape: `(String, &str)` printed as a tuple.
+- **Why it is reachable:** A composite that mixes an owned droppable and a borrow has no lowering for its drop plan.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-143 — `assert_eq` on a user-defined type (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L5346` in `starkc/tests/layer_audit.rs`. Reproducer shape: `assert_eq(x, y)` for a struct with a user `impl Eq`.
+- **Why it is reachable:** The assert builtins lower only for the compiler-known comparable types.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-144 — `for` over a non-range, non-`Vec` iterator (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L3698` in `starkc/tests/layer_audit.rs`. Reproducer shape: `for` driving an iterator that is neither a range nor a `Vec` cursor.
+- **Why it is reachable:** Lowering implements the range and `Vec` cursors; other iterables reach an unsupported site.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-145 — method on a peeled type outside the implemented slice (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L6450` in `starkc/tests/layer_audit.rs`. Reproducer shape: a method call whose receiver auto-derefs to a type lowering does not carry.
+- **Why it is reachable:** TYPE-METHOD-002 peels references repeatedly; lowering implements a narrower set than the checker accepts.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
