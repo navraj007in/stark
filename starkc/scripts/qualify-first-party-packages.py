@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import socket
+import threading
 import os
 import subprocess
 import sys
@@ -46,9 +49,24 @@ class PackageCase:
     #
     # Empty means "this package holds no host resources", which is the honest state for the ten
     # pure packages and must stay easy to declare.
+    #
+    # CD-348 — EXECUTED SURFACE, BY PACKAGE CATEGORY. The bar differs, and stating it per category
+    # is what stops a future package satisfying "executed surface" through a path that only ever
+    # runs an expected error:
+    #
+    #   pure package              the ordinary consumer executes each principal public behaviour
+    #   function-shaped provider  the native consumer SUCCESSFULLY invokes each capability family
+    #   resource-shaped provider  the native consumer SUCCESSFULLY acquires, uses and releases
+    #                             every resource type -- both release paths, explicit and by drop
+    #   failure-only environment  a deterministic negative path is allowed, but must be LABELLED
+    #                             lowering/linking evidence, never lifecycle evidence
+    #
+    # `needs_echo_peer` is what makes the resource category reachable: without a live peer the
+    # consumer can only prove the failure path, which is the weaker claim.
     resources: tuple[str, ...] = ()
     resource_consumer: str | None = None
     resource_expected_stdout: str | None = None
+    needs_echo_peer: bool = False
 
 
 CASES = [
@@ -119,8 +137,64 @@ CASES = [
         resources=("TcpStream",),
         resource_consumer="stark-net-resource-consumer",
         resource_expected_stdout="STARK_NET_RESOURCE_OK\n",
+        needs_echo_peer=True,
     ),
 ]
+
+
+ECHO_PORT = 39187
+
+
+@contextlib.contextmanager
+def echo_peer():
+    """A loopback echo listener, so a resource consumer can complete a real lifecycle.
+
+    CD-348. Without a peer, a TCP consumer can only prove that its surface lowers, links and
+    starts -- `connect` fails, so nothing is acquired and `write`/`read`/`close`/drop-release are
+    compiled but never executed. That is lowering evidence, not lifecycle evidence, and the
+    distinction is exactly what CD-345 was about.
+
+    Binding is asserted rather than attempted: if the port is taken, qualification FAILS loudly.
+    Silently skipping would restore the weaker claim while the gate still reported success.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", ECHO_PORT))
+    except OSError as exc:
+        server.close()
+        raise SystemExit(
+            f"qualification cannot bind the echo peer on 127.0.0.1:{ECHO_PORT}: {exc}. "
+            f"A resource package's lifecycle evidence needs a live peer; refusing to fall back "
+            f"to a failure-only path, which would be lowering evidence reported as lifecycle "
+            f"evidence (CD-348)."
+        ) from exc
+    server.listen(8)
+    server.settimeout(30)
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _addr = server.accept()
+            except (TimeoutError, OSError):
+                return
+            with conn:
+                try:
+                    data = conn.recv(64)
+                    if data:
+                        conn.sendall(data)
+                except OSError:
+                    pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        server.close()
+        thread.join(timeout=5)
 
 
 def run(cmd: list[str], cwd: Path, expected_stdout: str | None = None) -> None:
@@ -196,11 +270,21 @@ def main() -> int:
                 / "debug"
                 / f"{case.resource_consumer}{args.exe_suffix}"
             )
-            run(
-                [str(resource_artifact)],
-                resource_dir,
-                expected_stdout=case.resource_expected_stdout,
-            )
+            if case.needs_echo_peer:
+                # The peer is started AFTER the build and torn down after the run: the build takes
+                # seconds, and a listener held open across it is a socket kept for no reason.
+                with echo_peer():
+                    run(
+                        [str(resource_artifact)],
+                        resource_dir,
+                        expected_stdout=case.resource_expected_stdout,
+                    )
+            else:
+                run(
+                    [str(resource_artifact)],
+                    resource_dir,
+                    expected_stdout=case.resource_expected_stdout,
+                )
 
     return 0
 

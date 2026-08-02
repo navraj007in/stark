@@ -1,80 +1,98 @@
-// CD-347 — the EXECUTED SURFACE for `stark-net`'s `TcpStream` resource.
+// CD-348 — the EXECUTED LIFECYCLE for `stark-net`'s `TcpStream` resource.
 //
-// The ordinary `stark-net-consumer` covers the address surface and is run under both the
-// interpreter and a native build. It cannot cover the resource surface: qualification step 5 is
-// `stark run`, and the interpreter has no provider layer, so any program touching a bound resource
-// dies with "provider binding not lowered". This consumer is therefore NATIVE-ONLY, and the gate
-// runs it without a `stark run` step.
+// The qualification script starts a loopback echo listener on 127.0.0.1:39187 before running this
+// binary, so every step below is DETERMINISTIC RUNTIME EVIDENCE rather than a compiled-but-untaken
+// branch. That distinction is the whole point of this file: CD-347's first version connected to a
+// port expected to refuse, which proved the surface lowered, linked and started — but never
+// acquired a stream, so `write`, `read`, `close` and drop-release were compiled and never run.
 //
-// It exists because CD-345 found `stark-net` passing all seven gate steps while `connect`, `read`,
-// `write` and `close` had never been called by anything at all — which let DEV-146, a
-// build-breaking defect, sit in the package undetected. Every line below is here to make a
-// specific step of the resource lifecycle OBSERVED rather than assumed.
+// Two lifecycles are exercised, because the two release paths are different machinery:
 //
-// It must be deterministic in CI, so it does not depend on a peer. Port 9 (discard) on loopback is
-// expected to refuse; what that proves is not that connecting works — that needs a server — but
-// that the resource path LOWERS, LINKS against the provider, and EXECUTES. Those are exactly the
-// steps that were unobserved, and they are what DEV-146 broke.
+//   acquire -> write -> read -> EXPLICIT close      the affine release the package exposes
+//   acquire -> write -> IMPLICIT drop release       MIR drop elaboration emitting the close
+//
+// If the peer is not there, this FAILS. It does not fall back to a negative path — a gate that
+// silently degrades to "the error branch ran" is the gate CD-345 already caught.
 
 use stark_net::close;
 use stark_net::connect_no_timeout;
 use stark_net::ipv4;
+use stark_net::read;
 use stark_net::socket_address;
 use stark_net::write_all;
+use stark_net::SocketAddress;
 
-// ACQUIRE + CLOSE. The success arm consumes the stream through `close`, which is the affine
-// release; the failure arm is the deterministic path in CI.
-fn acquire_and_close() {
-    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 9u16);
-    match connect_no_timeout(address) {
-        Ok(stream) => match close(stream) {
-            Ok(_unit) => {}
-            Err(_error) => {
-                panic("stark-net resource consumer: close failed");
-            }
-        }
-        Err(_error) => {}
-    }
+fn peer() -> SocketAddress {
+    socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 39187u16)
 }
 
-// USE. `write_all` takes `&mut TcpStream` and forwards to a raw binding whose derived signature
-// takes a SHARED borrow. That coercion is DEV-146, and this call is what makes it executable
-// evidence rather than a claim: before the repair, this package did not build.
-fn acquire_use_and_close() {
-    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 9u16);
-    match connect_no_timeout(address) {
+// ACQUIRE -> USE (write + read) -> EXPLICIT CLOSE.
+//
+// `write_all` and `read` take `&mut TcpStream` and forward to raw bindings whose derived
+// signatures take a SHARED borrow. That coercion is DEV-146: before CD-346 this did not build.
+fn acquire_use_and_close_explicitly() {
+    match connect_no_timeout(peer()) {
         Ok(stream) => {
             let mut owned = stream;
             match write_all(&mut owned, "PING\n".bytes()) {
-                Ok(_count) => {}
-                Err(_error) => {}
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: write_all to the echo peer failed");
+                }
+            }
+            let mut buffer: [UInt8; 32] = [0u8; 32];
+            let echoed: UInt64;
+            {
+                let output = &mut buffer[0u64..32u64];
+                match read(&mut owned, output) {
+                    Ok(count) => {
+                        echoed = count;
+                    }
+                    Err(_error) => {
+                        panic("resource consumer: read from the echo peer failed");
+                    }
+                }
+            }
+            if echoed != 5u64 {
+                panic("resource consumer: echo length mismatch");
             }
             match close(owned) {
                 Ok(_unit) => {}
                 Err(_error) => {
-                    panic("stark-net resource consumer: close after use failed");
+                    panic("resource consumer: explicit close failed");
                 }
             }
         }
-        Err(_error) => {}
+        Err(_error) => {
+            panic("resource consumer: the echo peer must be listening; see CD-348");
+        }
     }
 }
 
-// RELEASE BY DROP. A stream that is never explicitly closed must still be closed exactly once, by
-// drop elaboration. Verified at CD-345 in the generated Rust
-// (`_N.drop_with(|v| stark_tcp_stream_close(v.as_raw()))`); running the shape keeps the
-// elaboration from silently ceasing to be emitted.
-fn acquire_and_let_drop_release() {
-    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 9u16);
-    match connect_no_timeout(address) {
-        Ok(_stream) => {}
-        Err(_error) => {}
+// ACQUIRE -> USE -> IMPLICIT RELEASE BY DROP.
+//
+// No `close` call. The stream goes out of scope holding a live handle, and MIR drop elaboration
+// must emit `stark_tcp_stream_close` exactly once. A second close, or none, is observable: the
+// provider aborts on a handle it did not expect, so a non-zero exit here IS the failure signal.
+fn acquire_use_and_let_drop_release() {
+    match connect_no_timeout(peer()) {
+        Ok(stream) => {
+            let mut owned = stream;
+            match write_all(&mut owned, "DROP\n".bytes()) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: write_all before drop release failed");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: the echo peer must be listening; see CD-348");
+        }
     }
 }
 
 fn main() {
-    acquire_and_close();
-    acquire_use_and_close();
-    acquire_and_let_drop_release();
+    acquire_use_and_close_explicitly();
+    acquire_use_and_let_drop_release();
     println("STARK_NET_RESOURCE_OK");
 }

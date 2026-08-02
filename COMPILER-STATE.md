@@ -1,5 +1,64 @@
 # STARK Compiler STATE
 
+## CD-348 — CD-347's claim was stronger than its evidence; the gate now earns it (2026-08-02)
+
+**CD-347 said the gate requires a consumer to "acquire, use and close each resource". It did not.
+The checked-in consumer connected to a port expected to REFUSE, so on the path CI actually took:**
+
+```text
+connect fails
+  -> no TcpStream acquired
+  -> write_all never executed
+  -> close never executed
+  -> drop-release never executed
+```
+
+The program compiled and linked every one of those branches, so it was valid evidence that the
+source type-checks, provider calls lower, symbols link, the executable starts, and the failure path
+runs. **It was not evidence that an acquired resource is used and released.** The honest claim for
+that version was:
+
+> every resource-bearing package ships a native consumer that COMPILES AND LINKS its
+> acquire/use/release surface and EXECUTES AT LEAST ONE provider path.
+
+Recorded because the gap between that sentence and CD-347's is precisely the gap CD-345 was about:
+a claim satisfied by a path that never calls the product.
+
+**The fix is the peer, not a weaker sentence.** `qualify-first-party-packages.py` now starts a
+loopback echo listener before running a resource consumer, so the full lifecycle executes:
+
+```text
+acquire -> write -> read -> EXPLICIT close      the affine release the package exposes
+acquire -> write -> IMPLICIT drop release       MIR drop elaboration emitting the close
+```
+
+**It cannot silently degrade.** If the port cannot be bound, qualification FAILS with a message
+saying why, rather than falling back to the failure path — falling back would restore the weaker
+claim while still reporting success. And the consumer PANICS if the peer is absent: verified, exit
+code 101, so a peerless run can never be mistaken for a pass.
+
+### EXECUTED SURFACE, by package category
+
+The standing rule needed this precision, or a future team satisfies it through an expected error:
+
+| Category | Bar |
+| --- | --- |
+| pure package | the ordinary consumer executes each principal public behaviour |
+| function-shaped provider | the native consumer SUCCESSFULLY invokes each capability family |
+| resource-shaped provider | the native consumer SUCCESSFULLY acquires, uses and releases every resource type — BOTH release paths |
+| failure-only environment | a deterministic negative path is allowed, but must be LABELLED lowering/linking evidence, never lifecycle evidence |
+
+The fourth row is the important one: it keeps the escape hatch open for environments where success
+genuinely cannot be arranged, while making it impossible to use one and call the result lifecycle
+evidence.
+
+EVIDENCE: hardened eleven-package gate exit 0 with the peer, `STARK_NET_RESOURCE_OK` observed;
+the consumer exits 101 with no peer; echo peer refuses to skip on a bind failure; fmt clean.
+FILES: starkc/scripts/qualify-first-party-packages.py, stark-net-resource-consumer/src/main.stark,
+COMPILER-STATE.md.
+NEXT: unchanged — HC3/HC4 and the OPS resource items are unblocked; HC5/HC6 and the pure fills
+never were.
+
 ## CD-346 / CD-347 — DEV-146 repaired with its ruling; the gate's surface coverage made executable (2026-08-02)
 
 **The two toll items. Resource-track work (HC3/HC4, OPS stdio/signals/process) unblocks on these;
