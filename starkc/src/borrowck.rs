@@ -15,10 +15,24 @@ struct Borrow {
     _span: Span,
 }
 
+/// DEV-135: a projection identifies a field by its NAME, not by the span the name was written at.
+///
+/// This used to be `Field(u32, u32)` — the span's byte offsets. Two mentions of the same field sit
+/// at different offsets, so `owner.handle` on one line and `owner.handle` on the next produced two
+/// DIFFERENT projections that `places_overlap` then correctly reported as disjoint.
+///
+/// The move set was ALREADY field-precise — `places_overlap` does prefix matching, so moving
+/// `pair.left` correctly left `pair.right` live and moving the parent afterwards was correctly
+/// refused. What was broken was field IDENTITY alone, so a field could be moved out twice and the
+/// second move was invisible to the front end. The HIR oracle then failed at run time with
+/// "internal compiler error: use of moved or invalid field" — the wrong category for a
+/// user-authored program, and several layers late.
+///
+/// Same class as DEV-122: identity taken from a span rather than from what the span denotes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Projection {
-    Field(u32, u32),
-    TupleField(u32, u32),
+    Field(String),
+    TupleField(String),
     Index,
 }
 
@@ -406,6 +420,103 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// DEV-137: check a CONDITION expression, ending the borrows it creates before the branch it
+    /// guards. Used by `while` and `if`, which are the only two positions whose operand is
+    /// consumed by a branch and cannot outlive it.
+    ///
+    /// `active_borrows` is scoped by exactly two mechanisms — `check_block` truncates at block
+    /// end, and `check_stmt` truncates after each expression statement. A condition is NEITHER:
+    /// it is an expression evaluated outside any statement of its own. So the receiver auto-borrow
+    /// that `while i < v.len()` takes was pushed and then still on the stack when
+    /// `check_block(body)` ran — and `check_block` records its own entry depth AFTER that push, so
+    /// it could never pop it. Every mutation of that receiver inside the branch was an E0101
+    /// against a borrow that had already ended.
+    ///
+    /// `03-Type-System.md` "References and Lifetimes": a temporary borrow ends with its statement.
+    /// A condition's value is consumed by the branch, so its temporaries end at the branch
+    /// boundary.
+    ///
+    /// The truncate is DEPTH-BASED, which is what keeps the negative cases negative: a borrow
+    /// created before the loop (`let view = &values;`) lives at a shallower depth than this
+    /// snapshot, is untouched, and a mutation through its owner is still refused.
+    ///
+    /// **Deliberately NOT applied to `match` scrutinees or `for` iterators.** Those are not
+    /// conditions: PAT-BIND-001 binds arm payloads BY REFERENCE into the scrutinee, and
+    /// `for x in &v` yields references into the iterated value, so in both cases the borrow must
+    /// span the body. Truncating them would hand out references to storage the checker had
+    /// stopped tracking.
+    /// DEV-136: whether `block` definitely does NOT reach the statement after it.
+    ///
+    /// Ownership state is merged at a control-flow join from its predecessors. A predecessor that
+    /// terminates — `return`, `break`, `continue`, `panic`, a trap — is not a predecessor of that
+    /// join at all, so the moves it performed must not appear in the merged state. Before this,
+    /// every branch contributed unconditionally, so
+    ///
+    /// ```stark
+    /// if flag { return out; }
+    /// out.push('a');
+    /// ```
+    ///
+    /// reported "use of moved value" on a path where the move provably did not happen.
+    ///
+    /// **This predicate is deliberately conservative in one direction only.** Answering `true`
+    /// wrongly would DROP a real move from the join and accept a use-after-move — unsound.
+    /// Answering `false` wrongly only preserves the pre-existing false positive. So every arm
+    /// below reports `true` solely on evidence of divergence, and anything unrecognised
+    /// (including `loop` without a reachable `break`, which would need reachability analysis to
+    /// judge) falls through to `false`.
+    fn block_diverges(&self, block_id: BlockId) -> bool {
+        let block = self.hir.block(block_id);
+        // Statements execute in order, so a `return`/`break`/`continue` anywhere in the sequence
+        // makes everything after it — and the join — unreachable.
+        for &stmt_id in &block.stmts {
+            match &self.hir.stmt(stmt_id).kind {
+                hir::StmtKind::Return(_) | hir::StmtKind::Break(_) | hir::StmtKind::Continue => {
+                    return true;
+                }
+                hir::StmtKind::Expr { expr, .. } if self.expr_diverges(*expr) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        block.tail.is_some_and(|tail| self.expr_diverges(tail))
+    }
+
+    /// DEV-136: whether evaluating `expr` definitely does not fall through. See
+    /// [`Self::block_diverges`] for why this errs toward `false`.
+    fn expr_diverges(&self, expr_id: ExprId) -> bool {
+        // The type checker already proves divergence for anything of type `!` — `panic(..)`, and
+        // any call to a function returning `!`. Reusing that answer keeps one authority for the
+        // question rather than re-deriving it from syntax.
+        if matches!(self.expr_types.get(&expr_id), Some(Ty::Never)) {
+            return true;
+        }
+        match &self.hir.expr(expr_id).kind {
+            hir::ExprKind::Block(block) => self.block_diverges(*block),
+            // An `if` escapes only when BOTH sides do; without an `else` the fall-through path
+            // always exists.
+            hir::ExprKind::If {
+                then_block, else_, ..
+            } => {
+                else_.is_some_and(|else_expr| self.expr_diverges(else_expr))
+                    && self.block_diverges(*then_block)
+            }
+            // A `match` escapes only when every arm does. Exhaustiveness is checked elsewhere, so
+            // an empty arm list cannot reach a join either way.
+            hir::ExprKind::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.expr_diverges(arm.body))
+            }
+            _ => false,
+        }
+    }
+
+    fn check_condition(&mut self, cond: ExprId) {
+        let borrows_before = self.active_borrows.len();
+        self.check_expr(cond);
+        self.active_borrows.truncate(borrows_before);
+    }
+
     fn check_block(&mut self, block_id: BlockId) {
         let block = self.hir.block(block_id);
 
@@ -617,24 +728,43 @@ impl<'a> BorrowChecker<'a> {
                 then_block,
                 else_,
             } => {
-                self.check_expr(*cond);
+                self.check_condition(*cond);
 
                 let moved_before = self.moved_places.clone();
                 self.check_block(*then_block);
                 let moved_then = self.moved_places.clone();
+                // DEV-136: a branch that terminates is not a predecessor of the join, so the
+                // moves it performed must not be merged into the state after the `if`.
+                let then_diverges = self.block_diverges(*then_block);
 
                 if let Some(else_expr) = else_ {
-                    self.moved_places = moved_before;
+                    self.moved_places = moved_before.clone();
                     self.check_expr(*else_expr);
                     let moved_else = self.moved_places.clone();
+                    let else_diverges = self.expr_diverges(*else_expr);
 
-                    // Merged moves: union of both branches
-                    self.moved_places = moved_then.union(&moved_else).cloned().collect();
+                    self.moved_places = match (then_diverges, else_diverges) {
+                        // Neither reaches the join, so nothing after the `if` is reachable and
+                        // the merged value cannot be observed. The union is kept rather than
+                        // something emptier so that an unreachable tail still sees a
+                        // conservative state if reachability is ever judged differently.
+                        (true, true) => moved_then.union(&moved_else).cloned().collect(),
+                        (true, false) => moved_else,
+                        (false, true) => moved_then,
+                        // The pre-existing rule, and still the right one when both arrive:
+                        // moved on EITHER path means maybe-moved, which is treated as moved.
+                        (false, false) => moved_then.union(&moved_else).cloned().collect(),
+                    };
                 } else {
-                    // No else branch: variables moved in then branch might be used if then branch is skipped,
-                    // so we restore state before if (moved_before), but wait, in STARK, if a variable is moved
-                    // in one branch but not the other, it is considered moved after the block.
-                    self.moved_places = moved_then;
+                    // With no `else`, the fall-through path is the one that skipped the branch.
+                    // If the branch terminates, reaching this point PROVES it did not run, so the
+                    // state is exactly what it was before. Otherwise a move inside it is a
+                    // maybe-move, which stays treated as moved.
+                    self.moved_places = if then_diverges {
+                        moved_before
+                    } else {
+                        moved_then
+                    };
                 }
             }
             hir::ExprKind::Match { scrutinee, arms } => {
@@ -654,12 +784,26 @@ impl<'a> BorrowChecker<'a> {
                 }
                 let moved_before = self.moved_places.clone();
                 let mut merged_moved = HashSet::new();
+                // DEV-136: only arms that REACH the join contribute to it. An arm ending in
+                // `return`/`break`/`continue`/`panic` is not a predecessor.
+                let mut any_arm_reaches_join = false;
                 for arm in arms {
                     self.moved_places = moved_before.clone();
                     self.check_expr(arm.body);
-                    merged_moved.extend(self.moved_places.iter().cloned());
+                    if !self.expr_diverges(arm.body) {
+                        any_arm_reaches_join = true;
+                        merged_moved.extend(self.moved_places.iter().cloned());
+                    }
                 }
-                self.moved_places = merged_moved;
+                // When no arm reaches the join, `merged_moved` is empty — which would WIDEN the
+                // live set by discarding moves that happened before the `match`. The join is
+                // unreachable, so the state cannot be observed, but it must still not claim a
+                // previously moved value is live again.
+                self.moved_places = if any_arm_reaches_join {
+                    merged_moved
+                } else {
+                    moved_before
+                };
             }
             hir::ExprKind::Block(b) => {
                 self.check_block(*b);
@@ -668,7 +812,7 @@ impl<'a> BorrowChecker<'a> {
                 self.check_block(*body);
             }
             hir::ExprKind::While { cond, body } => {
-                self.check_expr(*cond);
+                self.check_condition(*cond);
                 self.check_block(*body);
             }
             hir::ExprKind::For { iter, body, .. } => {
@@ -914,14 +1058,19 @@ impl<'a> BorrowChecker<'a> {
             }),
             hir::ExprKind::Field { base, name, .. } => {
                 let mut place = self.place_of(*base)?;
-                place.projections.push(Projection::Field(name.lo, name.hi));
+                // The NAME, not the span: see `Projection`. Every expression reaching here
+                // belongs to the item currently being checked, and `self.file` tracks that item
+                // (DEV-069), so `self.text` reads against the right source.
+                place
+                    .projections
+                    .push(Projection::Field(self.text(*name).to_string()));
                 Some(place)
             }
             hir::ExprKind::TupleField { base, index } => {
                 let mut place = self.place_of(*base)?;
                 place
                     .projections
-                    .push(Projection::TupleField(index.lo, index.hi));
+                    .push(Projection::TupleField(self.text(*index).to_string()));
                 Some(place)
             }
             hir::ExprKind::Index { base, .. } => {

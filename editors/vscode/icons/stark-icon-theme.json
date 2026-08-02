@@ -3,7 +3,7 @@
     "GENERATED FILE -- do not hand-edit the Seti half.",
     "A VS Code file icon theme replaces the whole icon set; there is no way to contribute a single",
     "icon to the user's existing theme. So this theme is the built-in Seti theme with one entry",
-    "added: `.stark` files and the `stark` language id map to `_stark` (./stark.svg). Every other",
+    "added: `.stark`/`.st` files and the `stark` language id map to `_stark` (./stark.svg). Every other",
     "file keeps the icon it has under Seti, which is VS Code's default theme.",
     "Seti half generated from https://github.com/jesseweed/seti-ui/commit/2d6c5e68b4ded73c92dac291845ee44e1182d511, as shipped with VS Code, and seti.woff is",
     "copied from that extension unchanged. Seti-UI is MIT-licensed (jesseweed/seti-ui); icon fixes",
@@ -1800,7 +1800,8 @@
     "crt": "_lock",
     "pem": "_lock",
     "ds_store": "_ignored",
-    "stark": "_stark"
+    "stark": "_stark",
+    "st": "_stark"
   },
   "fileNames": {
     "mix": "_hex",
@@ -2232,7 +2233,8 @@
       "crt": "_lock_light",
       "pem": "_lock_light",
       "ds_store": "_ignored_light",
-      "stark": "_stark"
+      "stark": "_stark",
+      "st": "_stark"
     },
     "languageIds": {
       "bat": "_windows_light",

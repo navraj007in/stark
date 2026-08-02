@@ -8,6 +8,7 @@ use starkc::interp;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
+use starkc::source_extensions::is_stark_source;
 use starkc::typecheck;
 use std::cmp::min;
 use std::env;
@@ -1171,10 +1172,7 @@ fn collect_stark_files(root: &Path, depth: usize, files: &mut Vec<PathBuf>) {
             ) {
                 collect_stark_files(&path, depth + 1, files);
             }
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "stark")
-        {
+        } else if is_stark_source(&path) {
             files.push(path);
             if files.len() >= 500 {
                 return;

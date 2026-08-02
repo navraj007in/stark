@@ -1,0 +1,140 @@
+// Executed surface for `stark-http-parser` (CD-348, pure-package bar). The parser's whole claim is
+// fragmentation-independence, so the consumer does not parse one buffer — it parses the SAME
+// message at every two-part split and asserts every result agrees. A consumer that fed one whole
+// buffer would prove nothing this package is actually for.
+
+use stark_http_core::default_limits;
+use stark_http_core::get_first;
+use stark_http_core::HttpResponse;
+use stark_http_parser::finish;
+use stark_http_parser::new_parser;
+use stark_http_parser::parse_error_text;
+use stark_http_parser::push;
+use stark_http_parser::ParseProgress;
+
+fn bytes_of(text: &str) -> Vec<UInt8> {
+    let source = text.bytes();
+    let n = source.len();
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i = 0u64;
+    while i < n {
+        out.push(source[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+fn body_text(response: &HttpResponse) -> String {
+    let n = response.body.len();
+    let mut out = String::new();
+    let mut i = 0u64;
+    while i < n {
+        match Char::from_u32(response.body[i] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Parse `text` as two pushes split at `at`, aborting on any parse failure.
+///
+/// The push borrow must END before `finish` is called: a match scrutinee holds its borrow across
+/// every arm (DEV-137 leaves that deliberately in place), so each progress value is bound out first
+/// and matched afterwards.
+fn parse_split_at(text: &str, at: UInt64) -> HttpResponse {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of(text);
+    let n = data.len();
+
+    let first: ParseProgress;
+    match push(&mut parser, &data[0u64..at]) {
+        Ok(progress) => {
+            first = progress;
+        }
+        Err(error) => {
+            panic(parse_error_text(&error).as_str());
+        }
+    }
+    match first {
+        ParseProgress::Complete(response, _consumed) => {
+            return response;
+        }
+        ParseProgress::NeedMore => {}
+    }
+
+    let second: ParseProgress;
+    match push(&mut parser, &data[at..n]) {
+        Ok(progress) => {
+            second = progress;
+        }
+        Err(error) => {
+            panic(parse_error_text(&error).as_str());
+        }
+    }
+    let out: HttpResponse;
+    match second {
+        ParseProgress::Complete(response, _consumed) => {
+            out = response;
+        }
+        ParseProgress::NeedMore => match finish(&mut parser) {
+            Ok(response) => {
+                out = response;
+            }
+            Err(error) => {
+                panic(parse_error_text(&error).as_str());
+            }
+        }
+    }
+    out
+}
+
+fn main() {
+    let message = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+    let n = bytes_of(message).len();
+
+    let mut splits = 0u64;
+    let mut at = 1u64;
+    while at < n {
+        let response = parse_split_at(message, at);
+        if response.status != 200u16 {
+            panic("status disagreed across a split");
+        }
+        if body_text(&response).as_str() != "hello world" {
+            panic("body disagreed across a split");
+        }
+        match get_first(&response.headers, "content-type") {
+            Some(value) => {
+                if value.as_str() != "text/plain" {
+                    panic("header value disagreed across a split");
+                }
+            }
+            None => {
+                panic("a header vanished across a split");
+            }
+        }
+        splits = splits + 1u64;
+        at = at + 1u64;
+    }
+
+    println("stark-http-parser consumer");
+    print("  identical result at every split: ");
+    println(splits);
+    println("  status 200, body \"hello world\", Content-Type text/plain");
+
+    // The rejection half: a malformed message must be refused, not silently tolerated.
+    let mut bad = new_parser(default_limits());
+    let junk = bytes_of("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx");
+    match push(&mut bad, &junk[0u64..junk.len()]) {
+        Ok(_progress) => {
+            panic("conflicting Content-Length was accepted");
+        }
+        Err(error) => {
+            print("  rejected as expected: ");
+            println(parse_error_text(&error).as_str());
+        }
+    }
+}

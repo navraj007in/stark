@@ -179,6 +179,11 @@ pub struct TypeChecker<'a> {
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
     display_checks: Vec<(Ty, Span)>,
+    /// DEV-134: deferred `?` propagation compatibility — (operand type, enclosing return type,
+    /// span). Deferred for the same reason as `display_checks`: the operand's error type is
+    /// routinely an inference variable while the body is being checked (`Err(make())?`), so
+    /// comparing it eagerly would either reject valid code or force a premature binding.
+    try_checks: Vec<(Ty, Ty, Span)>,
     var_count: u32,
 
     // Side tables
@@ -663,6 +668,7 @@ pub fn analyze_with_options(
         subst: HashMap::new(),
         int_literal_vars: HashMap::new(),
         display_checks: Vec::new(),
+        try_checks: Vec::new(),
         var_count: 0,
         expr_types: HashMap::new(),
         local_types: HashMap::new(),
@@ -3166,6 +3172,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // DEV-134: `?` propagation compatibility, for the same reason and at the same point.
+        let tries = std::mem::take(&mut self.try_checks);
+        for (operand_ty, ret_ty, span) in tries {
+            self.check_try_compatibility(&operand_ty, &ret_ty, span);
+        }
+
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
         for (concrete_ty, bounds_list, span, enclosing, decl_file) in bounds {
@@ -5455,6 +5467,17 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
+                // DEV-134: relate the OPERAND to the enclosing return type. Before this, the two
+                // were checked only for being Result-or-Option INDEPENDENTLY, and never against
+                // each other -- so `Result<_, Low>` propagated out of a function returning
+                // `Result<_, High>` (no `From` impl required or applied), and `Option<_>`
+                // propagated out of a function returning `Result<_, _>`. Both produced a value
+                // whose variant tag belonged to a different type: type confusion, not a
+                // diagnostic gap. Deferred to `check_try_compatibility` so inference has settled.
+                if let Some(fn_ret) = self.current_fn_ret.clone() {
+                    self.try_checks.push((expr_ty.clone(), fn_ret, expr.span));
+                }
+
                 // 2. Check try expression type
                 match self.resolve(&expr_ty) {
                     // WP-C1.5: same fix as above -- Option/Result never resolve to `Ty::Enum`,
@@ -6466,7 +6489,7 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
-                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
+                let enclosing = self.current_generic_env();
                 self.bounds_checks.push((
                     arg_ty.clone(),
                     trait_bounds,
@@ -6487,7 +6510,7 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
-                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
+                let enclosing = self.current_generic_env();
                 self.bounds_checks.push((
                     var.clone(),
                     trait_bounds,
@@ -8749,33 +8772,51 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn types_equal(&self, t1: &Ty, t2: &Ty) -> bool {
+        self.types_equal_inner(t1, t2, false)
+    }
+
+    /// DEV-134: `types_equal` has **no `Ty::Param` arm** — two occurrences of the SAME type
+    /// parameter fall to `_ => false` and compare unequal. That is invisible to its existing
+    /// callers, which are coherence/overlap paths where `Ty::Param` is either pre-handled
+    /// (`types_may_overlap` matches it first) or where a conservative `false` is the safe answer.
+    ///
+    /// It is NOT safe for `?`, which must accept `fn f<E>(..) -> Result<_, E>` propagating into
+    /// `fn g<E>(..) -> Result<_, E>`. So the rule is written ONCE, here, and the `Ty::Param`
+    /// behaviour is a parameter rather than a second copy of the structural walk — DEV-128 and
+    /// DEV-130 are both "the rule was written twice and the copies drifted", and this avoids
+    /// adding a third.
+    ///
+    /// Name equality is the correct test at the `?` site specifically: the operand's type has
+    /// already been instantiated at its call site, so a `Ty::Param` surviving in it belongs to
+    /// the enclosing function — the same scope as the return type it is being compared against.
+    /// Widening `types_equal` itself was rejected: it would change coherence and overlap results
+    /// for a defect that has no demonstrated symptom there.
+    fn types_equal_inner(&self, t1: &Ty, t2: &Ty, params_equal_by_name: bool) -> bool {
         let t1 = self.resolve(t1);
         let t2 = self.resolve(t2);
         match (&t1, &t2) {
+            (Ty::Param(n1), Ty::Param(n2)) if params_equal_by_name => n1 == n2,
             (Ty::Primitive(p1), Ty::Primitive(p2)) => p1 == p2,
             (Ty::Struct(s1, args1), Ty::Struct(s2, args2)) => {
                 s1 == s2
                     && args1.len() == args2.len()
-                    && args1
-                        .iter()
-                        .zip(args2)
-                        .all(|(left, right)| self.types_equal(left, right))
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
             }
             (Ty::Enum(e1, args1), Ty::Enum(e2, args2)) => {
                 e1 == e2
                     && args1.len() == args2.len()
-                    && args1
-                        .iter()
-                        .zip(args2)
-                        .all(|(left, right)| self.types_equal(left, right))
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
             }
             (Ty::Core(c1, args1), Ty::Core(c2, args2)) => {
                 c1 == c2
                     && args1.len() == args2.len()
-                    && args1
-                        .iter()
-                        .zip(args2)
-                        .all(|(left, right)| self.types_equal(left, right))
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
             }
             (
                 Ty::Ref {
@@ -8786,7 +8827,7 @@ impl<'a> TypeChecker<'a> {
                     mutable: m2,
                     inner: i2,
                 },
-            ) => m1 == m2 && self.types_equal(i1, i2),
+            ) => m1 == m2 && self.types_equal_inner(i1, i2, params_equal_by_name),
             _ => false,
         }
     }
@@ -8822,6 +8863,60 @@ impl<'a> TypeChecker<'a> {
             ) => am == bm && self.types_may_overlap(&ai, &bi),
             (left, right) => self.types_equal(&left, &right),
         }
+    }
+
+    /// DEV-139: the full generic environment the current body is checked in — the impl's
+    /// parameters followed by the function's own.
+    ///
+    /// Deferred trait-bound obligations capture this and replay it at drain time. DEV-067(a)
+    /// introduced that capture so a caller's own `T: Ord` could discharge a callee's `T: Ord`,
+    /// but it captured `current_fn_generics` ALONE, so an obligation raised inside
+    /// `impl<T: Ord> Pair<T>` replayed against half its environment and failed. Capturing the
+    /// combined list here means the drain needs no second field to restore.
+    fn current_generic_env(&self) -> Vec<hir::GenericParam> {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .cloned()
+            .collect()
+    }
+
+    /// DEV-139: whether the type parameter `param_name` declares `required`, anywhere in the
+    /// generic environment the current body is checked in.
+    ///
+    /// **That environment is the impl's parameters PLUS the function's own**, and this is the one
+    /// place that assembles it. Both bound questions — operator desugaring
+    /// (`ty_satisfies_operator_bound`) and trait-bound satisfaction (`satisfies_bound`) — read it
+    /// through here, so they cannot drift apart; before this each kept its own copy of the lookup
+    /// and both consulted `current_fn_generics` alone. WP-C6.2b-F5 had already brought impl-head
+    /// generics into scope for method bodies via `current_impl_generics`; the bound lookups simply
+    /// never asked. So
+    ///
+    /// ```stark
+    /// impl<T: Ord> Pair<T> {
+    ///     fn larger(&self) -> &T { if self.a > self.b { &self.a } else { &self.b } }
+    /// }
+    /// ```
+    ///
+    /// was refused E0500 "type 'T' does not satisfy operator trait 'Ord'" while the identical
+    /// comparison in a free `fn largest<T: Ord>` was accepted — the bound was declared, just not
+    /// looked at.
+    ///
+    /// Impl generics are searched FIRST only for readability; a method may not redeclare an
+    /// impl-level parameter name, so the two sets are disjoint and order cannot change the answer.
+    fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .any(|param| {
+                self.text(param.name) == param_name
+                    && param
+                        .bounds
+                        .iter()
+                        .any(|bound| self.text(bound.path.span) == required)
+            })
     }
 
     fn require_operator_bound(&mut self, ty: &Ty, required: &str, span: Span) {
@@ -8873,15 +8968,7 @@ impl<'a> TypeChecker<'a> {
                 let inner = self.resolve(inner);
                 self.ty_satisfies_operator_bound(&inner, required)
             }
-            Ty::Param(name) => self.current_fn_generics.as_ref().is_some_and(|params| {
-                params.iter().any(|param| {
-                    self.text(param.name) == name
-                        && param
-                            .bounds
-                            .iter()
-                            .any(|bound| self.text(bound.path.span) == required)
-                })
-            }),
+            Ty::Param(name) => self.param_declares_bound(name, required),
             // DEV-073 (WP-C4.7-5): a GENERIC impl satisfies a concrete instantiation's bound —
             // `impl<T> Eq for W<T>` satisfies `W<Int32>: Eq`. This used to demand
             // `types_equal(impl_self_ty, ty)`, an EXACT match, so the impl's written self type
@@ -9170,18 +9257,7 @@ impl<'a> TypeChecker<'a> {
             // (TYPE-GENERIC-001: the caller's own bound discharges the callee's obligation).
             // This mirrors the `Ty::Param` arm `ty_satisfies_operator_bound` already had for the
             // operator-desugaring bounds, so the two bound checks now agree about parameters.
-            Ty::Param(param_name) => {
-                let Some(generics) = self.current_fn_generics.clone() else {
-                    return false;
-                };
-                generics.iter().any(|param| {
-                    self.text(param.name) == param_name
-                        && param
-                            .bounds
-                            .iter()
-                            .any(|declared| self.text(declared.path.span) == bound_name)
-                })
-            }
+            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name),
             Ty::Error => true,
             _ => false,
         }
@@ -9546,6 +9622,111 @@ fn direct_value_cycle(
 impl<'a> TypeChecker<'a> {
     /// WP-C4.7-9 audit: whether a value of this type can be given to `print`/`println` — a
     /// standard-library `Display` type, or a user nominal with its own `Display` impl.
+    /// DEV-134: `?` may propagate only into a return type that can actually receive it.
+    ///
+    /// `03-Type-System.md` defines `?` for `Result<T, E>`/`Option<T>` and Core v1 has no
+    /// user-extensible `Try` trait and no conversion step at the propagation site. The rule is
+    /// therefore EXACT compatibility, deliberately and conservatively:
+    ///
+    /// - `Result<_, E_in>?` in a function returning `Result<_, E_out>` requires `E_in == E_out`
+    ///   under `types_equal`, the compiler's canonical equivalence;
+    /// - `Option<_>?` in a function returning `Option<_>` is always fine (there is no payload on
+    ///   `None` to relate);
+    /// - mixing the two constructors in either direction is refused.
+    ///
+    /// An implicit `From` conversion is NOT introduced here. The specification does not scope
+    /// one, so adding it would be new semantics rather than a repair; that question is recorded
+    /// separately (see the DEV-134 ledger entry). Rejection is the conservative half and is what
+    /// this implements.
+    fn check_try_compatibility(&mut self, operand_ty: &Ty, ret_ty: &Ty, span: Span) {
+        let operand = self.resolve(operand_ty);
+        let ret = self.resolve(ret_ty);
+
+        // Never cascade: an already-failed or still-undetermined type says nothing about `?`.
+        if matches!(operand, Ty::Error) || matches!(ret, Ty::Error) {
+            return;
+        }
+        if ty_contains_infer(&operand) || ty_contains_infer(&ret) {
+            return;
+        }
+
+        let (Ty::Core(operand_ctor, operand_args), Ty::Core(ret_ctor, ret_args)) = (&operand, &ret)
+        else {
+            // Not a `?`-capable pair at all. The pre-existing E0006 checks in the `Try` arm
+            // already reported that; adding a second diagnostic here would double-report.
+            return;
+        };
+        if !matches!(operand_ctor, CoreType::Result | CoreType::Option)
+            || !matches!(ret_ctor, CoreType::Result | CoreType::Option)
+        {
+            return;
+        }
+
+        // Constructor mismatch. This is the half that is easy to overlook: it produces exactly
+        // the same type confusion as an error-type mismatch, because the propagated value's
+        // variant tag (`None`) belongs to a different enum than the one the caller matches on.
+        if operand_ctor != ret_ctor {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "'?' cannot propagate '{}' out of a function returning '{}'",
+                        self.ty_to_string(&operand),
+                        self.ty_to_string(&ret)
+                    ),
+                    span,
+                )
+                .with_code("E0006")
+                .with_label("the propagated value and the return type are different types")
+                .with_note(
+                    "'?' performs no conversion in Core v1. Match on the operand and construct \
+                     the returned type explicitly."
+                        .to_string(),
+                ),
+            );
+            return;
+        }
+
+        // Same constructor. Only `Result` carries an error type to relate.
+        if *operand_ctor != CoreType::Result {
+            return;
+        }
+        let (Some(err_in), Some(err_out)) = (operand_args.get(1), ret_args.get(1)) else {
+            return;
+        };
+        let err_in = self.resolve(err_in);
+        let err_out = self.resolve(err_out);
+        if matches!(err_in, Ty::Error) || matches!(err_out, Ty::Error) {
+            return;
+        }
+        if ty_contains_infer(&err_in) || ty_contains_infer(&err_out) {
+            return;
+        }
+        if self.types_equal_inner(&err_in, &err_out, true) {
+            return;
+        }
+
+        self.diags.push(
+            Diagnostic::error(
+                format!(
+                    "'?' cannot propagate error type '{}' out of a function returning '{}'",
+                    self.ty_to_string(&err_in),
+                    self.ty_to_string(&ret)
+                ),
+                span,
+            )
+            .with_code("E0006")
+            .with_label("error types must match exactly")
+            .with_note(format!(
+                "'?' performs no conversion in Core v1: it does not apply 'From', and an \
+                 'impl From<{}> for {}' would not change this. Match on the operand and \
+                 construct '{}' explicitly.",
+                self.ty_to_string(&err_in),
+                self.ty_to_string(&err_out),
+                self.ty_to_string(&err_out)
+            )),
+        );
+    }
+
     fn type_is_displayable(&self, ty: &Ty) -> bool {
         if standard_display_type(ty) {
             return true;

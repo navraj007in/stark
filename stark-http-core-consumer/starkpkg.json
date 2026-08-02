@@ -1,0 +1,2 @@
+{ "name": "stark-http-core-consumer", "version": "0.1.0", "entry": "src/main.stark",
+  "dependencies": { "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" } } }

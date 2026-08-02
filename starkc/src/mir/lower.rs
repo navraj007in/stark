@@ -1337,7 +1337,13 @@ impl<'a> FnLowerer<'a> {
                 // A11/CD-234: a BORROWED handle. The caller keeps ownership, so this is `&R` and the
                 // argument is an ordinary shared borrow of the caller's place -- never a move, which
                 // would consume the resource the call only reads.
-                crate::provider_abi::AbiParam::HandleBorrowed { resource_type } => {
+                // DEV-146: `resource_type` is deliberately unbound. The expected type is derived
+                // from the OPERAND below rather than rebuilt from the declaration, so the
+                // declaration's resource name is not needed here — see the comment on the
+                // coercion.
+                crate::provider_abi::AbiParam::HandleBorrowed {
+                    resource_type: _resource_type,
+                } => {
                     let Some(&a) = args.get(next_arg) else {
                         return unsupported(
                             "provider call argument count disagrees with the declaration",
@@ -1345,8 +1351,49 @@ impl<'a> FnLowerer<'a> {
                         );
                     };
                     next_arg += 1;
-                    let _ = resource_type;
-                    ops.push(self.lower_expr_to_operand(a)?);
+                    let op = self.lower_expr_to_operand(a)?;
+                    // DEV-146: weaken `&mut R` to `&R` here, the same as every other call site.
+                    //
+                    // This arm used to push the operand with NO expected-type coercion, so a
+                    // wrapper declaring `fn write(stream: &mut TcpStream, ..)` and forwarding to
+                    // the raw binding passed `&mut` where the derived signature wants `&`. The
+                    // front end accepted it; MIR-0005 then rejected the call. Accepted-but-
+                    // unbuildable — and it made `&mut` UNUSABLE as a package API shape over any
+                    // bound resource, which is a language-surface consequence, not a lowering
+                    // detail.
+                    //
+                    // DEV-133's comment predicted exactly this: it routed all six coercion sites
+                    // through `weaken_ref_to` and warned that "whichever site was forgotten would
+                    // keep this defect". Provider calls were the seventh, and were forgotten —
+                    // invisibly, because no first-party package called a resource function until
+                    // `stark-net` did.
+                    //
+                    // The expected type is derived from the OPERAND rather than rebuilt from the
+                    // declaration: if what we hold is `&mut X`, what the borrowed-handle slot wants
+                    // is `&X`. Reconstructing `HostResourceTy` here would be a second copy of
+                    // `provider_sig`'s mapping and could drift from it; this cannot.
+                    let held = match &op {
+                        Operand::Copy(place) | Operand::Move(place)
+                            if place.projection.is_empty() =>
+                        {
+                            Some(self.locals[place.local.0 as usize].ty.clone())
+                        }
+                        _ => None,
+                    };
+                    let op = match held {
+                        Some(MirTy::Ref {
+                            mutable: true,
+                            inner,
+                        }) => {
+                            let expected = MirTy::Ref {
+                                mutable: false,
+                                inner,
+                            };
+                            self.weaken_ref_to(op, &expected, span)?
+                        }
+                        _ => op,
+                    };
+                    ops.push(op);
                 }
                 // A11 §8: a CONSUMED handle. Ownership transfers at call entry and does not return
                 // on failure, so the argument is a move and the caller's drop flag is cleared --
@@ -1700,6 +1747,12 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::KeysIter, inner)
             }
+            // DEV-151: the EMPTY tuple is `MirTy::Unit`, not `MirTy::Tuple(vec![])`. MIR has one
+            // canonical unit type and every synthesized site uses it; only a written-out `()` in
+            // source reached here, so `fn f() -> Result<(), E>` produced a return type that no
+            // constructed value could ever match. It stayed invisible while nothing lowered such a
+            // body — DEV-151's method-dispatch repair is what first lowered one.
+            Ty::Tuple(elems) if elems.is_empty() => MirTy::Unit,
             Ty::Tuple(elems) => MirTy::Tuple(
                 elems
                     .iter()
@@ -1897,6 +1950,8 @@ impl<'a> FnLowerer<'a> {
                 };
                 Ok(MirTy::Array(Box::new(self.hir_field_ty(*elem)?), count))
             }
+            // DEV-151: same canonicalisation as `mir_ty` — an empty tuple is `Unit`.
+            hir::TypeKind::Tuple(elems) if elems.is_empty() => Ok(MirTy::Unit),
             hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
                 elems
                     .iter()
@@ -6375,6 +6430,22 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 (*item, args.clone())
             }
+            // DEV-151: a host resource IS a nominal for method-dispatch purposes. `HostResourceTy`
+            // carries the item of the synthesized zero-variant enum the package declared (CD-234),
+            // and an `impl TcpStream { fn set_read_timeout(&mut self, ..) }` hangs off exactly that
+            // item — so the ordinary nominal path resolves it with no special case beyond naming
+            // the item. Falling into `other` refused every method a resource package declares,
+            // which made CD-346's `&mut self` ruling unbuildable AT THE CALL SITE while the
+            // declaration itself qualified. Resources take no type arguments, hence the empty list.
+            MirTy::HostResource(resource) => match &resource.nominal {
+                crate::mir::HostResourceNominal::Item(item) => (*item, Vec::new()),
+                crate::mir::HostResourceNominal::Core(_) => {
+                    return unsupported(
+                        "method call on a Core host resource (CD-235 sequencing)".to_string(),
+                        span,
+                    );
+                }
+            },
             other => {
                 return unsupported(
                     format!("method call on non-nominal receiver {other:?} (C4.5b+)"),
@@ -8364,6 +8435,82 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    /// DEV-147: a receiver that is ALREADY a reference must be REBORROWED, not passed through.
+    ///
+    /// `&mut T` is not `Copy`, so handing the caller's reference straight to the callee lowers to a
+    /// `Move` of it. Once per call is harmless; inside a loop it is not — the back-edge sees the
+    /// parameter possibly-moved and MIR-0007 refuses the next iteration:
+    ///
+    /// ```text
+    /// fn push_all(out: &mut Vec<UInt8>, ..) { while i < n { out.push(..); .. } }
+    ///   -> MIR-0007 push_all@[] bb6: move from possibly-moved place _1[]
+    /// ```
+    ///
+    /// The checker accepted it and the HIR oracle executed it correctly, so this was
+    /// accepted-but-unbuildable — and it blocked "append into a caller's buffer in a loop", the
+    /// shape of every serializer and encoder.
+    ///
+    /// A reborrow is `&mut *base`, which is exactly what the `layers == 0` path already builds one
+    /// deref further down. Returning `None` means "pass through unchanged", which stays correct for
+    /// a SHARED base: `&T` is `Copy`, so reading it moves nothing and there is nothing to fix.
+    ///
+    /// # DEV-149: the gate is the BASE's mutability, not the RECEIVER's
+    ///
+    /// DEV-147 first narrowed this to `mutable` — the mutability the METHOD wants. That was the
+    /// wrong axis, and it left half the defect in place. A `&mut` base calling a `&self` method is
+    /// still broken in both ways at once:
+    ///
+    /// ```text
+    /// fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }
+    ///   -> MIR-0005 bb0: expected Ref { mutable: false, .. }, found Ref { mutable: true, .. }
+    ///   -> MIR-0007 bb4: move from possibly-moved place _1[]
+    /// ```
+    ///
+    /// The reborrow fixes both, because `&*base` from a `&mut` base IS the weakening: it produces
+    /// the shared reference the callee wants without consuming the caller's. So the gate is whether
+    /// the BASE is `&mut` (is there a non-`Copy` reference at risk of being moved), and the ref
+    /// built takes the RECEIVER's mutability (what does the callee actually want).
+    ///
+    /// The one case that must still refuse is a `&T` base under a `&mut` receiver: lowering must
+    /// not invent exclusivity the checker refused. That falls out of gating on the base.
+    fn reborrow_reference_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        span: Span,
+    ) -> Result<Option<Operand>, LowerError> {
+        let base_ty = self.expr_mir_ty(base)?;
+        let MirTy::Ref {
+            mutable: base_mut,
+            inner,
+        } = &base_ty
+        else {
+            return Ok(None);
+        };
+        // Only a `&mut` base can be moved by being read, and only a `&mut` base can be weakened.
+        // A `&T` base needs neither: it is `Copy`, and where `&mut` is wanted it is a mutability
+        // error the checker already refused — lowering must not invent the capability.
+        if !*base_mut {
+            return Ok(None);
+        }
+        let ref_ty = MirTy::Ref {
+            mutable,
+            inner: inner.clone(),
+        };
+        let Ok(mut place) = self.lower_place(base) else {
+            // A non-place base (a call result, say) has no caller reference to preserve, so moving
+            // the temporary is already correct.
+            return Ok(None);
+        };
+        place.projection.push(Projection::Deref);
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+            self.info(span),
+        );
+        Ok(Some(self.read_place(Place::local(temp), &ref_ty, span)?))
+    }
+
     fn borrow_set_receiver(
         &mut self,
         base: ExprId,
@@ -8373,6 +8520,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let set_ty = MirTy::Core(crate::hir::CoreType::HashSet, vec![elem.clone()]);
@@ -8403,6 +8554,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let map_ty = MirTy::Core(crate::hir::CoreType::HashMap, vec![k.clone(), v.clone()]);
@@ -8430,6 +8585,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
             return self.lower_expr_to_operand(base);
         }
         let vec_ty = MirTy::Core(crate::hir::CoreType::Vec, vec![elem]);
@@ -8473,7 +8632,11 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Operand, LowerError> {
         let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
         if layers > 0 {
-            // Already a reference to the String — pass it through.
+            // DEV-147: reborrow a `&mut` receiver rather than moving the caller's reference.
+            if let Some(reborrowed) = self.reborrow_reference_receiver(base, mutable, span)? {
+                return Ok(reborrowed);
+            }
+            // Already a shared reference to the String — pass it through.
             return self.lower_expr_to_operand(base);
         }
         let place = self.place_or_temp(base, &MirTy::String, span)?;

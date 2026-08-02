@@ -1,0 +1,454 @@
+// HC7 tests. The property that matters is that the parser gives the SAME answer regardless of how
+// the bytes are split, so most positive cases are run twice: once whole, once one byte at a time.
+
+use super::finish;
+use super::new_head_parser;
+use super::new_parser;
+use super::push;
+use super::HttpParseError;
+use super::ParseProgress;
+use super::default_limits;
+use super::get_first;
+use super::HttpLimits;
+use super::HttpResponse;
+
+fn expect(condition: Bool, message: &str) {
+    if !condition {
+        panic(message);
+    }
+}
+
+fn bytes_of(text: &str) -> Vec<UInt8> {
+    let source = text.bytes();
+    let n = source.len();
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i = 0u64;
+    while i < n {
+        out.push(source[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+fn body_text(response: &HttpResponse) -> String {
+    let n = response.body.len();
+    let mut out = String::new();
+    let mut i = 0u64;
+    while i < n {
+        match Char::from_u32(response.body[i] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Feed the whole message in one push.
+fn parse_whole(text: &str, limits: HttpLimits) -> Result<HttpResponse, HttpParseError> {
+    let mut parser = new_parser(limits);
+    let data = bytes_of(text);
+    let progress = push(&mut parser, &data[0u64..data.len()])?;
+    match progress {
+        ParseProgress::Complete(response, _consumed) => Ok(response),
+        ParseProgress::NeedMore => finish(&mut parser),
+    }
+}
+
+/// Feed the message one byte at a time. Any state that assumed a token arrived whole fails here.
+fn parse_byte_by_byte(text: &str, limits: HttpLimits) -> Result<HttpResponse, HttpParseError> {
+    let mut parser = new_parser(limits);
+    let data = bytes_of(text);
+    let n = data.len();
+    let mut i = 0u64;
+    while i < n {
+        let one = &data[i..i + 1u64];
+        let progress = push(&mut parser, one)?;
+        match progress {
+            ParseProgress::Complete(response, _consumed) => {
+                return Ok(response);
+            }
+            ParseProgress::NeedMore => {}
+        }
+        i = i + 1u64;
+    }
+    finish(&mut parser)
+}
+
+/// Both feeding strategies must agree — that agreement IS the parser's contract.
+fn parse_both(text: &str) -> HttpResponse {
+    let whole: HttpResponse;
+    match parse_whole(text, default_limits()) {
+        Ok(response) => {
+            whole = response;
+        }
+        Err(error) => {
+            panic(super::parse_error_text(&error).as_str());
+        }
+    }
+    let split: HttpResponse;
+    match parse_byte_by_byte(text, default_limits()) {
+        Ok(response) => {
+            split = response;
+        }
+        Err(error) => {
+            panic(super::parse_error_text(&error).as_str());
+        }
+    }
+    expect(whole.status == split.status, "status differs by fragmentation");
+    expect(whole.body.len() == split.body.len(), "body length differs by fragmentation");
+    expect(
+        whole.headers.entries.len() == split.headers.entries.len(),
+        "header count differs by fragmentation",
+    );
+    whole
+}
+
+fn expect_rejected(text: &str) {
+    match parse_whole(text, default_limits()) {
+        Ok(_response) => {
+            panic("a malformed response was accepted");
+        }
+        Err(_error) => {}
+    }
+    match parse_byte_by_byte(text, default_limits()) {
+        Ok(_response) => {
+            panic("a malformed response was accepted when fragmented");
+        }
+        Err(_error) => {}
+    }
+}
+
+// -- positive ---------------------------------------------------------------------------------
+
+fn test_fixed_body() {
+    let response = parse_both(
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
+    );
+    expect(response.status == 200u16, "status wrong");
+    expect(response.reason.as_str() == "OK", "reason wrong");
+    expect(body_text(&response).as_str() == "hello", "body wrong");
+}
+
+fn test_empty_fixed_body() {
+    let response = parse_both("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    expect(response.body.len() == 0u64, "expected an empty body");
+}
+
+fn test_chunked_body() {
+    let response = parse_both(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+    );
+    expect(body_text(&response).as_str() == "hello world", "chunked body wrong");
+}
+
+fn test_chunked_with_trailers_is_consumed() {
+    let response = parse_both(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Trailer: v\r\n\r\n",
+    );
+    expect(body_text(&response).as_str() == "abc", "trailered chunk body wrong");
+    // v0.1 policy: trailers are validated then DISCARDED, so they must not appear as headers.
+    match get_first(&response.headers, "x-trailer") {
+        Some(_value) => {
+            panic("a trailer leaked into the header map");
+        }
+        None => {}
+    }
+}
+
+fn test_chunk_extension_is_ignored() {
+    let response = parse_both(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3;name=value\r\nabc\r\n0\r\n\r\n",
+    );
+    expect(body_text(&response).as_str() == "abc", "chunk extension not ignored");
+}
+
+fn test_204_has_no_body() {
+    let response = parse_both("HTTP/1.1 204 No Content\r\n\r\n");
+    expect(response.status == 204u16, "status wrong");
+    expect(response.body.len() == 0u64, "204 must have no body");
+}
+
+fn test_304_has_no_body_despite_content_length() {
+    let response = parse_both("HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n");
+    expect(response.status == 304u16, "status wrong");
+    expect(response.body.len() == 0u64, "304 must have no body");
+}
+
+fn test_informational_is_skipped() {
+    let response = parse_both(
+        "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi",
+    );
+    expect(response.status == 200u16, "1xx was not skipped");
+    expect(body_text(&response).as_str() == "hi", "body after 1xx wrong");
+}
+
+fn test_multiple_informational_are_skipped() {
+    let response = parse_both(
+        "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nz",
+    );
+    expect(response.status == 200u16, "multiple 1xx not skipped");
+}
+
+fn test_duplicate_ordinary_headers_are_preserved() {
+    let response = parse_both(
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n",
+    );
+    expect(
+        super::count_matching(&response.headers, "set-cookie") == 2u64,
+        "duplicate headers collapsed",
+    );
+}
+
+fn test_missing_reason_phrase() {
+    let response = parse_both("HTTP/1.1 200 \r\nContent-Length: 0\r\n\r\n");
+    expect(response.status == 200u16, "status wrong without a reason");
+}
+
+fn test_http10_response() {
+    let response = parse_both("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    expect(body_text(&response).as_str() == "ok", "HTTP/1.0 body wrong");
+}
+
+fn test_close_delimited_body() {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of("HTTP/1.1 200 OK\r\n\r\nstreamed");
+    match push(&mut parser, &data[0u64..data.len()]) {
+        Ok(_progress) => {}
+        Err(_error) => {
+            panic("close-delimited push failed");
+        }
+    }
+    match finish(&mut parser) {
+        Ok(response) => {
+            expect(body_text(&response).as_str() == "streamed", "close-delimited body wrong");
+        }
+        Err(_error) => {
+            panic("close-delimited finish failed");
+        }
+    }
+}
+
+fn test_head_response_ignores_content_length() {
+    let mut parser = new_head_parser(default_limits());
+    let data = bytes_of("HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n");
+    match push(&mut parser, &data[0u64..data.len()]) {
+        Ok(progress) => match progress {
+            ParseProgress::Complete(response, _consumed) => {
+                expect(response.body.len() == 0u64, "HEAD response read a body");
+            }
+            ParseProgress::NeedMore => {
+                panic("HEAD response waited for a body it will never receive");
+            }
+        }
+        Err(_error) => {
+            panic("HEAD response failed to parse");
+        }
+    }
+}
+
+// -- negative ---------------------------------------------------------------------------------
+
+fn test_malformed_status_is_rejected() {
+    expect_rejected("HTTP/1.1 20 OK\r\n\r\n");
+    expect_rejected("HTTP/1.1 abc OK\r\n\r\n");
+    expect_rejected("NOTHTTP/1.1 200 OK\r\n\r\n");
+    expect_rejected("HTTP/9.9 200 OK\r\n\r\n");
+}
+
+fn test_out_of_range_status_is_rejected() {
+    expect_rejected("HTTP/1.1 999 Weird\r\n\r\n");
+    expect_rejected("HTTP/1.1 099 Weird\r\n\r\n");
+}
+
+fn test_bare_lf_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\nContent-Length: 0\n\n");
+}
+
+fn test_obs_fold_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nX-A: one\r\n  continued\r\n\r\n");
+}
+
+fn test_invalid_header_name_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nBad Name: v\r\n\r\n");
+}
+
+fn test_conflicting_content_length_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 9\r\n\r\nhello");
+}
+
+fn test_content_length_with_transfer_encoding_is_rejected() {
+    expect_rejected(
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello",
+    );
+}
+
+fn test_unsupported_transfer_encoding_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n");
+}
+
+fn test_invalid_chunk_size_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n");
+}
+
+fn test_bad_chunk_terminator_is_rejected() {
+    expect_rejected("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabcXX0\r\n\r\n");
+}
+
+fn test_truncated_fixed_body_is_rejected() {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+    match push(&mut parser, &data[0u64..data.len()]) {
+        Ok(_progress) => {}
+        Err(_error) => {
+            panic("truncated body should need more, not fail on push");
+        }
+    }
+    match finish(&mut parser) {
+        Ok(_response) => {
+            panic("a truncated fixed body was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_truncated_chunked_body_is_rejected() {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel");
+    match push(&mut parser, &data[0u64..data.len()]) {
+        Ok(_progress) => {}
+        Err(_error) => {
+            panic("truncated chunk should need more, not fail on push");
+        }
+    }
+    match finish(&mut parser) {
+        Ok(_response) => {
+            panic("a truncated chunked body was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_header_count_limit_is_enforced() {
+    let mut limits = default_limits();
+    limits.max_header_count = 2u64;
+    let text = "HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\nC: 3\r\nContent-Length: 0\r\n\r\n";
+    match parse_whole(text, limits) {
+        Ok(_response) => {
+            panic("header count limit not enforced");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_body_limit_is_enforced() {
+    let mut limits = default_limits();
+    limits.max_body_bytes = 2u64;
+    match parse_whole("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", limits) {
+        Ok(_response) => {
+            panic("body limit not enforced");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_status_line_limit_is_enforced() {
+    let mut limits = default_limits();
+    limits.max_status_line_bytes = 8u64;
+    match parse_whole("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", limits) {
+        Ok(_response) => {
+            panic("status line limit not enforced");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_pushing_after_completion_is_rejected() {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    match push(&mut parser, &data[0u64..data.len()]) {
+        Ok(_progress) => {}
+        Err(_error) => {
+            panic("well-formed response failed");
+        }
+    }
+    let more = bytes_of("HTTP/1.1 200 OK\r\n\r\n");
+    match push(&mut parser, &more[0u64..more.len()]) {
+        Ok(_progress) => {
+            panic("pushing after completion was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+// -- the exit criterion -------------------------------------------------------------------------
+
+/// Feed the message as exactly two pushes, split at `at`.
+fn parse_split_at(text: &str, at: UInt64) -> Result<HttpResponse, HttpParseError> {
+    let mut parser = new_parser(default_limits());
+    let data = bytes_of(text);
+    let n = data.len();
+    let first = push(&mut parser, &data[0u64..at])?;
+    match first {
+        ParseProgress::Complete(response, _consumed) => {
+            return Ok(response);
+        }
+        ParseProgress::NeedMore => {}
+    }
+    let second = push(&mut parser, &data[at..n])?;
+    match second {
+        ParseProgress::Complete(response, _consumed) => Ok(response),
+        ParseProgress::NeedMore => finish(&mut parser),
+    }
+}
+
+/// **HC7's exit criterion.** "The parser can consume any legal fragmentation pattern without socket
+/// knowledge" is not a claim a few hand-picked splits support. Every two-part split of the message
+/// must yield the same response — n-1 boundaries per message, each one landing mid-token somewhere
+/// different: inside `HTTP/1.1`, between CR and LF, inside a header name, inside a chunk size.
+fn check_every_split(text: &str, expected_status: UInt16, expected_body: &str) {
+    let n = bytes_of(text).len();
+    let mut at = 1u64;
+    while at < n {
+        match parse_split_at(text, at) {
+            Ok(response) => {
+                expect(response.status == expected_status, "status differs at some split");
+                expect(body_text(&response).as_str() == expected_body, "body differs at some split");
+            }
+            Err(error) => {
+                panic(super::parse_error_text(&error).as_str());
+            }
+        }
+        at = at + 1u64;
+    }
+}
+
+fn test_every_split_of_a_fixed_body() {
+    check_every_split(
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-A: 1\r\n\r\nhello",
+        200u16,
+        "hello",
+    );
+}
+
+fn test_every_split_of_a_chunked_body() {
+    check_every_split(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+        200u16,
+        "hello world",
+    );
+}
+
+fn test_every_split_of_a_response_after_informational() {
+    check_every_split(
+        "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\nok",
+        201u16,
+        "ok",
+    );
+}
+
+fn test_every_split_of_a_bodyless_response() {
+    check_every_split("HTTP/1.1 204 No Content\r\nX-A: 1\r\n\r\n", 204u16, "");
+}

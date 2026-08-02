@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::source_extensions::is_stark_source;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum JsonValue {
     Null,
@@ -553,6 +555,13 @@ impl Package {
             .parent()
             .ok_or("manifest must have a parent directory")?;
         let entry = parent_dir.join(entry_str);
+        if !is_stark_source(&entry) {
+            return Err(format!(
+                "entry file '{}' in manifest '{}' must use .stark or .st",
+                entry_str,
+                path.display()
+            ));
+        }
 
         let entry = entry.canonicalize().map_err(|_| {
             format!(

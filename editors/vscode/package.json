@@ -53,7 +53,8 @@
           "stark"
         ],
         "extensions": [
-          ".stark"
+          ".stark",
+          ".st"
         ],
         "configuration": "./language-configuration.json"
       }

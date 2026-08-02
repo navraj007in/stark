@@ -1,0 +1,5 @@
+{ "name": "stark-http-serialize-consumer", "version": "0.1.0", "entry": "src/main.stark",
+  "dependencies": {
+    "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" },
+    "stark_http_serialize": { "package": "stark-http-serialize", "path": "../stark-http-serialize", "version": "0.1.0" }
+  } }

@@ -1,0 +1,87 @@
+use super::ipv4;
+use super::ipv6;
+use super::socket_address;
+use super::socket_address_text;
+
+fn test_socket_address_text_ipv4() {
+    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 8080u16);
+    if socket_address_text(&address).as_str() != "127.0.0.1:8080" {
+        panic("ipv4 socket address text mismatch");
+    }
+}
+
+fn test_socket_address_text_ipv6() {
+    let address = socket_address(ipv6([0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 1u16]), 443u16);
+    if socket_address_text(&address).as_str() != "[0:0:0:0:0:0:0:1]:443" {
+        panic("ipv6 socket address text mismatch");
+    }
+}
+
+// --- HC3: DNS resolution -----------------------------------------------------------------
+//
+// These cover the VALIDATION half of `resolve`, which is pure and deterministic. The provider
+// half — an actual lookup — is exercised by `stark-net-resource-consumer` under a native build,
+// because `stark run` has no provider layer (CD-347).
+
+use super::default_resolve_limits;
+use super::resolve;
+use super::DnsError;
+use super::ResolveLimits;
+
+fn expect_invalid_host(host: &String, limits: ResolveLimits) {
+    match resolve(host, 80u16, limits) {
+        Ok(_addresses) => {
+            panic("resolve accepted a host it must reject");
+        }
+        Err(error) => match error {
+            DnsError::InvalidHost => {}
+            _other => {
+                panic("resolve rejected the host with the wrong error");
+            }
+        }
+    }
+}
+
+fn test_resolve_rejects_an_empty_host() {
+    expect_invalid_host(&String::new(), default_resolve_limits());
+}
+
+fn test_resolve_rejects_a_host_over_the_limit() {
+    let mut host = String::new();
+    let mut i = 0;
+    while i < 40 {
+        host.push_str("abcdefghij");
+        i = i + 1;
+    }
+    expect_invalid_host(&host, default_resolve_limits());
+}
+
+fn test_resolve_rejects_a_host_over_a_caller_limit() {
+    let limits = ResolveLimits { max_host_bytes: 4u64, max_results: 4u64 };
+    expect_invalid_host(&String::from("example.com"), limits);
+}
+
+fn test_resolve_rejects_a_zero_result_limit() {
+    let limits = ResolveLimits { max_host_bytes: 255u64, max_results: 0u64 };
+    match resolve(&String::from("example.com"), 80u16, limits) {
+        Ok(_addresses) => {
+            panic("resolve accepted a zero result limit");
+        }
+        Err(error) => match error {
+            DnsError::TooManyResults => {}
+            _other => {
+                panic("a zero result limit must be TooManyResults");
+            }
+        }
+    }
+}
+
+fn test_default_resolve_limits_are_usable() {
+    let limits = default_resolve_limits();
+    if limits.max_host_bytes == 0u64 {
+        panic("default resolve limits must allow a host");
+    }
+    if limits.max_results == 0u64 {
+        panic("default resolve limits must allow a result");
+    }
+}

@@ -2630,7 +2630,9 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 88 numbered deviations total (DEV-002 through DEV-090, DEV-001/DEV-003 retired).
+Count **as of the WP-C4.7 close-out (2026-07-21)**, and not maintained since: 88 numbered
+deviations total (DEV-002 through DEV-090, DEV-001/DEV-003 retired). For the current total see
+`COMPILER-STATE.md`'s "Known deviations — open index".
 DEV-090 (by-value iteration over a non-`Copy` array element) was split from DEV-086's narrowed
 remainder during the WP-C4.7 close-out and rejected in the front end (`E0104`), the feature itself
 deferred. DEV-089 (user `Display` dispatch through `print`/`println`) was closed the same day by
@@ -3126,6 +3128,18 @@ C2.8–C2.11 disposition.
 - **Found by:** `gate4a_prelude_traits`, a suite not run when DEV-126 landed.
 - **Owning gate:** WP-COPY-CANON Phase 2.
 
+## DEV-121 — UPDATE 2 (CD-340): a second producer found, and the invariant's blind spot named
+
+- **New instance: `SplitIter`'s item.** Declared `&str`, represented `Value::String` (owned), so
+  its first use consumed it. Registered and repaired as DEV-138; the class remains OPEN. That is
+  now TWO producers found by user-facing programs rather than by the invariant — `String::bytes()`
+  (CD-305) and `String::split()` (CD-340).
+- **The invariant's blind spot, stated so the next instance is found by tooling instead:**
+  INV-VALUE-REP-001 checks **`let` bindings**. A `for`-loop binding is not a `let`, so no loop
+  item is covered by it at all. Both known instances were reachable through a loop item. Extending
+  the invariant to loop bindings — and to call arguments, which are equally uncovered — is the
+  work that would close the class rather than another instance. Unowned.
+
 ## DEV-121 — UPDATE: narrowed by INV-VALUE-REP-001, class NOT closed
 
 - **What is now enforced.** INV-VALUE-REP-001 checks at every `let` that a binding declared `&[T]`
@@ -3237,3 +3251,880 @@ C2.8–C2.11 disposition.
   length), and a shared array must not become a `&mut` slice (coercion changes shape, never
   capability). Both pinned.
 - **Owning gate:** CD-326 (package qualification); repaired under CD-329.
+
+## DEV-134 — `?` neither converts the error type nor requires that a conversion exist [CLOSED, WP-DEV-134-139 Part A, CD-335, 2026-08-02]
+
+- **Normative expectation:** `?` propagates `Err`/`None` early (`04-Semantic-Analysis.md` line 160,
+  `CORE-V1-ABSTRACT-MACHINE.md` EXEC-CFLOW-001). The spec does not define a `From` conversion at the
+  propagation site, so the only two defensible behaviours are: **reject** a `?` whose error type
+  differs from the enclosing function's, or **convert** it and require the `From` impl. The compiler
+  does neither.
+- **Current behaviour:** the error types are not compared at all. A `Result<T, Low>` propagates
+  through a function returning `Result<T, High>` with **no `impl From<Low> for High` anywhere in the
+  program**, and the `Low` value is carried out typed as `High`.
+- **Minimal reproducer:**
+
+  ```stark
+  enum Low { Bad }
+  enum High { Other }
+
+  fn low() -> Result<Int32, Low> { Err(Low::Bad) }
+  fn viaq() -> Result<Int32, High> { let value = low()?; Ok(value) }
+
+  fn main() {
+      match viaq() {
+          Ok(value) => println(value),
+          Err(error) => match error { High::Other => println("other") },
+      }
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> runtime error: non-exhaustive match reached
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; HIR oracle produces a value whose variant tag belongs to
+  a different enum, so the inner `match` — which IS exhaustive over `High` — falls through. The
+  "non-exhaustive match reached" message is therefore a symptom, not the defect.
+- **Security/soundness impact:** **soundness.** This is type confusion, not a diagnostic gap: a
+  value of one nominal type is observable at another nominal type. Both enums here are fieldless, so
+  the reproducer only mis-tags; with payloads of differing layout the consequence is worse, and that
+  variant has not been characterised. Anything downstream that trusts the static type of an `Err`
+  payload — a `Display` impl, a field read, a further `match` — is reading the wrong type.
+- **Workaround:** use `?` only where the error types are already equal, and convert across error
+  types with an explicit `match` plus `From::from`.
+- **Proposed disposition:** decide between reject and convert — an owner call, not an
+  implementation detail, because "convert" adds a `From` obligation the spec has not scoped and is a
+  CE-shaped semantic decision. Rejection is the conservative half and can land first.
+- **WIDER THAN FILED, same mechanism.** The repair work found that the CONSTRUCTOR is unrelated
+  too: `Option<_>?` inside a function returning `Result<_, _>` — and the reverse — is equally
+  accepted, and equally produces a value whose variant tag belongs to a different enum. This is
+  not a second defect: the `Try` arm asked "is the return type `?`-capable?" and "is the operand
+  `?`-capable?" as two INDEPENDENT questions and never related them, so one missing relation
+  produced both symptoms. One mechanism, one repair, no new DEV number (WP-DEV-134-139 §2).
+- **Resolution (CD-335):** `check_try_compatibility` in `typecheck.rs`, recorded during body
+  checking and drained after inference settles — the same deferral `display_checks` uses, and for
+  the same reason: the operand's error type is routinely an inference variable while the body is
+  being checked, so an eager comparison would either reject valid code or force a premature
+  binding. The rule is EXACT compatibility: same constructor, and for `Result` an error type
+  equal under the compiler's canonical equivalence.
+- **The ruling, recorded because it is a language decision and not an implementation detail:**
+
+  ```text
+  `?` requires exact error-type compatibility.
+  Implicit From-based propagation is not part of this repair.
+  ```
+
+  `03-Type-System.md` does not scope a conversion at the propagation site, so applying `From`
+  would be new semantics rather than a repair. Rejection is the conservative half. An
+  `impl From<Low> for High` being present does NOT license the propagation, and
+  `from_impl_present_still_rejected` pins that so the absence of conversion cannot later be
+  mistaken for an oversight. Whether Core v1 should gain conversion at `?` remains an OPEN
+  language-design question and needs its own proposal; it is not tracked by this entry.
+- **Diagnostic:** E0006, the existing `?` code, widened rather than a new code allocated. The
+  spec's E0006 line is amended in the same change from "`?` operator in a function that does not
+  return `Result` or `Option`" to cover the whole return-type contract. Reusing the code keeps
+  the normative table stable and keeps one code per concept; the two conditions are distinguished
+  by message, and `non_result_return_reports_once_not_twice` pins that the pre-existing condition
+  still reports exactly once rather than twice.
+- **Negative controls, because the risk here is OVER-rejection.** A `?` check that is too eager
+  breaks every correct propagation in the provider layer and the ten first-party packages, so the
+  must-pass set is larger than the must-reject set: different SUCCESS types (legal — `?` relates
+  the error position only), identical generic error types, an error type that is the function's
+  own type parameter, chained `?`, and `String` as a `Ty::Core` error type.
+- **Latent gap found and deliberately NOT repaired:** `types_equal` has no `Ty::Param` arm, so two
+  occurrences of the same type parameter compare unequal. Its existing callers are coherence and
+  overlap paths where `Ty::Param` is either pre-handled or where a conservative `false` is safe,
+  so the gap has no demonstrated symptom there — but it made the first version of this repair
+  reject `fn f<E>() -> Result<_, E>` propagating into `fn g<E>() -> Result<_, E>`, caught by this
+  entry's own negative control. Rather than widen a shared coherence primitive for a defect with
+  no symptom of its own, the structural walk now takes the `Ty::Param` behaviour as a PARAMETER
+  (`types_equal_inner`), written once and reached by two entry points. Widening `types_equal`
+  itself is a separate question and is unowned; it gets a DEV number if a symptom is found.
+- **Evidence:** `starkc/tests/dev134_try_error_type.rs`, 16 cases. Ten first-party packages
+  qualify. The external task-shaped suite is 34/34 unchanged.
+- **Owning gate:** WP-DEV-134-139 Part A (CD-335).
+
+## DEV-135 — moves of individual struct fields are not tracked [CLOSED, WP-DEV-134-139 Part B, CD-338, 2026-08-02]
+
+- **Normative expectation:** `04-Semantic-Analysis.md` defines partial moves — moving one field of
+  a struct leaves the other fields readable and the moved field unusable. A second move of the same
+  field must be rejected `E0100`.
+- **Current behaviour:** flow analysis tracks moves of a whole binding but not of its fields. The
+  same field can be moved out twice; the front end accepts it and the HIR oracle discovers it at run
+  time.
+- **Minimal reproducer:**
+
+  ```stark
+  struct Handle { label: String }
+  impl Drop for Handle { fn drop(&mut self) { println(self.label.as_str()); } }
+  struct Owner { handle: Handle }
+
+  fn main() {
+      let owner = Owner { handle: Handle { label: String::from("only-one") } };
+      let first = owner.handle;
+      let second = owner.handle;
+      println("both bindings exist");
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> internal compiler error: use of moved or invalid field
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; oracle refuses. Note the message class — this surfaces as
+  an **internal compiler error**, which is the wrong category for a user-authored program and will
+  read as a compiler crash to anyone who hits it.
+- **Security/soundness impact:** **soundness, bounded by the oracle's own check.** The oracle
+  catches it, so no double-drop is observable there; what is NOT established is whether the native
+  backend catches it, and a double-move of a droppable field is a double-free shape. That
+  characterisation is owed before the severity can be settled.
+- **Workaround:** none needed in practice — the construct is a genuine error; the gap is that it is
+  diagnosed late and in the wrong category.
+- **INVENTORY (WP-DEV-134-139 §5.3, run 2026-08-02 before choosing a stage-one repair).** The
+  question the inventory had to settle is whether "parent poisoning" — marking the whole parent
+  unavailable once any non-`Copy` field moves — is an acceptable bounded limitation. **It is not.**
+  Sibling-after-partial-move is load-bearing at every layer, and is asserted as REQUIRED behaviour
+  by tests that predate this programme:
+
+  | Where | What it pins |
+  | --- | --- |
+  | `tests/gate2-valid/18_partial_moves.stark` | conformance fixture: `consume(pair.left); consume(pair.right);` |
+  | `tests/gate2_valid.rs` `..._without_its_own_drop_impl_is_accepted` | front end must ACCEPT the partial move |
+  | `tests/mir_verify.rs` `partial_move_of_one_field_leaves_sibling_readable` | V-MOVE-1 field precision in the verifier |
+  | `tests/mir_differential.rs` `conditional_partial_moves_and_loop_scopes_agree` | conditional partial moves + drop flags |
+  | `tests/three_engine_differential.rs` | the "partial-move survivor" drop case |
+  | `tests/native_c5_3_aggregates_enums.rs` `a_field_move_does_not_kill_its_siblings` | native: "under a whole-local approximation the sibling read would find a dead slot and abort" |
+  | `tests/c6-corpus/templates.py` T14 | generated corpus: "partial move and reinitialisation" |
+
+  The native test's own doc comment is an explicit, pre-existing rejection of the whole-local
+  approximation at the MIR and native layers. Poisoning would not be a bounded limitation; it
+  would contradict the conformance fixture set and four differential suites.
+- **Scan method, so the result can be re-derived:** 511 `.stark` sources outside `target/`, plus
+  inline STARK sources in `starkc/tests/*.rs` and `starkc/src/*.rs`. Sixteen `let x = y.field;`
+  sites appear in first-party packages (`stark-json`, `stark-random`) and ALL sixteen read `Copy`
+  scalar fields (`UInt64` offsets, line/column counters, PRNG state) — copies, not moves, so no
+  first-party package depends on partial-move behaviour either way. Every genuine partial move in
+  the tree is in the compiler's own test corpus, and every one of those requires sibling survival.
+- **CONSEQUENCE — the two-stage model collapses to one stage.** WP §5.4 is explicit: "If the
+  inventory shows sibling use is load-bearing, do not land poisoning silently. Proceed to
+  DEV-135b." So **DEV-135a is NOT the release-gating repair; DEV-135b is.** The release gate in
+  WP §15 resolves to its second branch: "DEV-135b is complete because inventory proved parent
+  poisoning unacceptable." This is a planned outcome of the inventory, not a scope change.
+- **CORRECTION to the disposition recorded above.** That paragraph said "the gap is in the front
+  end's `moved_places`, which is keyed on whole locals". **That was wrong**, and it is corrected
+  here rather than quietly rewritten because it drove the estimate. `moved_places` is a
+  `HashSet<Place>`, `Place` already carries `projections`, and `places_overlap` already does
+  prefix matching — the front end was ALREADY field-precise. Moving `pair.left` already left
+  `pair.right` live, and moving the parent afterwards was already refused.
+- **Actual root cause: field IDENTITY, one enum variant wide.** `place_of` built
+  `Projection::Field(name.lo, name.hi)` — the SPAN the field name was written at. Two mentions of
+  one field sit at different byte offsets, so `owner.handle` on one line and `owner.handle` on the
+  next were two DIFFERENT projections, which `places_overlap` then correctly reported as disjoint.
+  Nothing about the move model was missing; the comparison could never succeed.
+- **Resolution (CD-338):** `Projection::Field(String)` / `Projection::TupleField(String)`, holding
+  the resolved name. Read via `self.text`, which is correct here because every expression reaching
+  `place_of` belongs to the item being checked and `self.file` tracks that item (DEV-069). Same
+  class as DEV-122: identity taken from a span rather than from what the span denotes.
+- **The two-stage model therefore never had to be entered.** WP §5.2 split this into a
+  conservative "DEV-135a parent poisoning" gate and a "DEV-135b precision" follow-on, and the
+  inventory ruled poisoning out. But the precision the follow-on was meant to BUILD already
+  existed, so the repair is neither stage: it is a one-variant identity fix that makes the
+  existing precision reachable. **No DEV-135b is filed, and none is owed** — sibling survival,
+  nested paths, parent/child ordering, and exactly-once drop are all covered by the tests below,
+  which is what DEV-135b's closure criteria asked for.
+- **Evidence:** `starkc/tests/dev135_field_move_paths.rs`, 16 cases (6 reject, 10 accept). The
+  accepts are the important half here, because the inventory established that sibling survival is
+  load-bearing: `moving_one_field_leaves_its_sibling_usable`,
+  `moving_a_nested_field_leaves_its_nested_sibling_usable`,
+  `sibling_fields_are_each_destroyed_exactly_once` (executes, asserts exactly-once drop), plus
+  `partial_move_out_of_a_drop_type_is_still_rejected` to pin that the pre-existing Drop rule is
+  untouched. Two cases compose this repair with DEV-136: a field moved on a TERMINATING branch
+  does not poison the join, and on a REACHABLE branch it still does.
+- **Owning gate:** WP-DEV-134-139 Part B (CD-338).
+
+## DEV-136 — a move on a returning path is treated as unconditional [CLOSED, WP-DEV-134-139 Part D, CD-337, 2026-08-02]
+
+- **Normative expectation:** definite-assignment and move analysis are path-sensitive. A move that
+  occurs only on a path that `return`s cannot affect the fall-through path, which that move never
+  reaches.
+- **Current behaviour:** the move is recorded unconditionally, so every later use of the binding is
+  rejected `E0100`.
+- **Minimal reproducer:**
+
+  ```stark
+  fn build(flag: Bool) -> String {
+      let mut out = String::new();
+      if flag { return out; }
+      out.push('a');
+      out
+  }
+  ```
+
+  ```text
+  E0100 use of moved value 'out'   (at `out.push('a')` and at the trailing `out`)
+  ```
+
+- **User impact:** high nuisance value, because the shape is idiomatic. "Build a buffer, bail early
+  with what you have, otherwise keep filling it" is refused outright. Every early return must
+  instead construct a fresh value, which is both slower and misleading to read.
+- **Security/soundness impact:** none — a false positive. It rejects valid programs; it does not
+  admit invalid ones.
+- **Workaround:** return a freshly constructed value from the early-return path rather than the
+  accumulator.
+- **Layer:** `borrowck.rs`. The `If` arm unioned the then-branch's move set into the post-state
+  unconditionally, and the `Match` arm extended the merged set from EVERY arm. Neither asked
+  whether the branch reaches the join.
+- **Resolution (CD-337):** `block_diverges`/`expr_diverges` decide whether a branch reaches the
+  join, and only reaching branches contribute. Divergence is taken from two sources, both already
+  authoritative: a `Return`/`Break`/`Continue` statement anywhere in the block's statement
+  sequence, and the type checker's own `Ty::Never` for `panic(..)` and any call returning `!`.
+  Reusing `Ty::Never` keeps one authority for "does this diverge" rather than re-deriving it from
+  syntax. Composite forms recurse: an `if` diverges only when both sides do, a `match` only when
+  every arm does.
+- **THE DIRECTION OF CONSERVATISM IS THE SAFETY ARGUMENT.** The predicate answers "does this
+  definitely NOT reach the join?". A wrong `true` would drop a real move from the join and accept
+  a use-after-move — unsound. A wrong `false` merely preserves the old false positive. So every
+  arm reports `true` only on evidence and anything unrecognised falls through to `false`;
+  `loop` without a reachable `break` is deliberately NOT treated as diverging, because judging it
+  needs reachability analysis the checker does not have.
+- **Two merge subtleties that are easy to get wrong, both pinned by tests:**
+  1. `if` with no `else` and a terminating branch restores the state from BEFORE the `if`, not
+     the branch's state — reaching that point proves the branch did not run.
+  2. a `match` whose arms ALL diverge would leave the merged set empty, which would silently
+     resurrect a value moved BEFORE the `match`. The empty case falls back to the pre-match
+     state (`a_move_before_an_all_diverging_match_is_still_rejected`).
+- **Negative controls:** a move on a reachable branch, on one of two reachable branches, in a
+  reachable `match` arm, and a move placed BEFORE a terminating branch — the last pins that the
+  repair excludes a terminating branch's OWN moves, not moves that merely precede one.
+- **Drop obligations, not just diagnostics:** `a_droppable_value_survives_a_terminating_branch`
+  executes both paths and asserts each `Guard` is destroyed exactly once.
+- **Evidence:** `starkc/tests/dev136_terminating_path_moves.rs`, 14 cases (9 accept, 5 reject).
+- **Owning gate:** WP-DEV-134-139 Part D (CD-337).
+
+## DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body [CLOSED, WP-DEV-134-139 Part C, CD-336, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "References and Lifetimes" — a temporary borrow
+  ends with its statement. The auto-borrow a method call takes of its receiver (TYPE-METHOD-002) is
+  a temporary; it must not outlive the condition it appears in.
+- **Current behaviour:** the borrow is treated as live for the whole loop, so any mutation of the
+  receiver inside the body is a conflict.
+- **Minimal reproducer:**
+
+  ```stark
+  fn main() {
+      let mut values: Vec<Int32> = Vec::new();
+      values.push(1);
+      values.push(2);
+      let mut i = 0u64;
+      while i < values.len() {
+          values[i] = 5;
+          i = i + 1u64;
+      }
+      println(values[0] + values[1]);
+  }
+  ```
+
+  ```text
+  E0101 cannot assign to variable 'values[i]' because it is borrowed
+  ```
+
+- **User impact:** this is the single most disruptive of the six in practice. `while i < v.len()` is
+  the ordinary way to write an indexed loop, and every in-place algorithm — sorting, filling,
+  partitioning — hits it. It also affects `&mut` PARAMETERS, where the same shape appears inside any
+  mutating helper.
+- **Security/soundness impact:** none — a false positive.
+- **Workaround:** hoist the length (`let n = values.len();`) above the loop. **This only works when
+  the length does not change**; a queue that grows while being drained must instead track its length
+  by hand, which is exactly the bookkeeping the borrow checker is supposed to make unnecessary.
+- **LAYER LOCATED (WP-DEV-134-139 §6.3, recorded before repair):** `borrowck.rs`, not MIR, not
+  liveness, and not the back-edge. `Borrowck::active_borrows` is a stack, scoped by two mechanisms
+  and only two: `check_block` truncates to its entry depth at block end, and `check_stmt` truncates
+  after each expression statement. A `while` CONDITION is neither — it is an expression evaluated
+  outside any statement of its own, and the `While` arm reads
+
+  ```rust
+  hir::ExprKind::While { cond, body } => {
+      self.check_expr(*cond);      // pushes the receiver auto-borrow taken by `values.len()`
+      self.check_block(*body);     // records borrows_before AFTER that push, so it cannot pop it
+  }
+  ```
+
+  so the condition's temporaries are still on the stack when the body runs, and `check_block`'s own
+  truncate restores to a depth that already includes them. Nothing ever pops them until the
+  enclosing statement ends. The `Assign` arm then finds the borrow in `active_borrows` and reports
+  E0101.
+- **Why this also explains the `&mut` PARAMETER case:** it is the same code path. Nothing about the
+  receiver being a parameter matters; what matters is that `len()` was called in the condition.
+- **Not the `For` arm.** `for x in &v` must KEEP its iterator borrow alive across the body, so the
+  repair must not be generalised to loop headers as a category — only to `while` conditions, whose
+  value is consumed by the branch and cannot outlive it.
+- **WIDER THAN FILED, same mechanism.** `if` conditions had the identical defect, and it was found
+  by this entry's own must-pass case for condition re-evaluation:
+  `if values.len() < 5u64 { values.push(1); }` inside a loop body was refused for exactly the same
+  reason. A condition is a condition whether it guards a loop or a branch. One mechanism, one
+  repair, no new DEV number.
+- **Resolution (CD-336):** `Borrowck::check_condition` — snapshot the borrow depth, check the
+  condition, truncate back. Used by the `While` and `If` arms. The rule is written ONCE rather
+  than inline at both sites, for the DEV-128/DEV-130 reason.
+- **Scope boundary, and why it is not "loop and branch headers" as a category.** `match`
+  scrutinees and `for` iterators are deliberately NOT routed through `check_condition`.
+  PAT-BIND-001 binds a non-`Copy` arm payload BY REFERENCE into the scrutinee, and `for x in &v`
+  yields references into the iterated value, so in both cases the borrow must span the body;
+  truncating them would hand out references to storage the checker had stopped tracking. Two
+  negative controls pin this — `a_match_scrutinee_borrow_still_spans_the_arms` and
+  `for_loop_iterator_borrow_still_spans_the_body` — and both would fail if a later change
+  generalised the repair to every operand that precedes a block.
+- **The other negative control that defines the boundary:** a borrow created BEFORE the loop
+  (`let view = &values;`) lives at a shallower stack depth than the snapshot, so the truncate
+  cannot reach it and a body mutation through its owner is still refused
+  (`borrow_predating_the_loop_stays_live`). This is what makes the repair depth-based rather than
+  "clear the borrow set at the loop header", which would have been unsound.
+- **Execution evidence, not just acceptance.** `the_indexed_loop_executes_correctly` and
+  `a_growing_vector_re_evaluates_its_condition` run through the HIR oracle and assert output. The
+  second is the one that proves the hoist-the-length workaround was a SEMANTIC change, not a
+  stylistic one: the loop grows the vector it is measuring, so a hoisted bound would stop early.
+- **Evidence:** `starkc/tests/dev137_while_condition_borrows.rs`, 16 cases (12 accept, 4 reject).
+- **Owning gate:** WP-DEV-134-139 Part C (CD-336).
+
+## DEV-138 — an iterator-yielded `&str` is consumed by its first use [CLOSED as a DEV-121 INSTANCE, WP-DEV-134-139 Part F, CD-340, 2026-08-02]
+
+- **Normative expectation:** `&str` is a shared borrow and is `Copy`-like at use sites; reading it
+  does not consume it. `06-Standard-Library.md` gives `SplitIter` an `Item` that is a reference.
+- **Current behaviour:** the yielded item is consumed by its first use. A second use of the same
+  loop variable in the same iteration fails at run time, and the front end does not catch it.
+- **Minimal reproducer:**
+
+  ```stark
+  fn main() {
+      for word in "alpha beta".split(" ") {
+          let first = String::from(word);
+          let second = String::from(word);
+          println(first.as_str());
+          println(second.as_str());
+      }
+  }
+  ```
+
+  ```text
+  starkc check -> OK
+  starkc run   -> runtime error: use of unavailable value
+  ```
+
+- **Engine behaviour:** front end ACCEPTS; oracle refuses on the second use. Same accepted-but-
+  unexecutable CLASS as DEV-132/DEV-133, different mechanism — this is a value-representation/
+  ownership question about iterator items, so it is plausibly an instance of the still-open
+  **DEV-121** class rather than an independent defect. That relationship is asserted as a hypothesis
+  here, not established; INV-VALUE-REP-001 is the instrument that would settle it.
+- **Security/soundness impact:** **soundness-adjacent.** A shared borrow is being treated as an
+  owned value, which is the same category error DEV-121 tracks. No memory unsafety is demonstrated;
+  the failure is a refusal, not a corruption.
+- **Workaround:** convert the item once (`let key = String::from(word);`) and `clone` from there.
+- **CLASSIFICATION RESULT (WP-DEV-134-139 §9.2/§9.3): it IS a DEV-121 instance.** The matrix that
+  established it:
+
+  ```text
+  declared item type   &str            06-Standard-Library.md: SplitIter / String::split / &str
+  HIR runtime value    Value::String   OWNED  <- the defect
+  value_is_copy        Value::Str -> true, Value::String -> false
+  front end            ACCEPTS (sees a Copy shared reference)
+  MIR / native         VACUOUS - both refuse SplitIter outright (C4.5)
+  ```
+
+  The MIR and native rows are **vacuous rather than confirming** and are recorded that way: those
+  engines do not implement `SplitIter`, so they could not have disagreed. §9.3's "treat as
+  distinct" criteria require MIR to emit `Move` for a Copy shared-reference item AND all engines
+  to consume it; neither holds. §9.3's fold criteria hold on every testable dimension.
+- **Producer-specific, which is the DEV-121 signature.** Six shapes were probed: `&Vec<String>`,
+  `&Vec<Int32>`, `chars()`, and a plain `&str` outside a loop were already correct. Only `split`
+  was wrong — and `trim`/`substring`, which have the SAME declared return type, already yielded
+  `Value::Str`. The repair makes `split` consistent with its siblings rather than adding a rule.
+- **Resolution (CD-340):** one line in `interp.rs` — `Value::SplitIter`'s `next` yields
+  `Value::Str` rather than `Value::String`. No new `RuntimeFn`, no new `Value` variant, no
+  amendment. DEV-121's governing rule verbatim: representation follows the normalized semantic
+  type, never the producing expression.
+- **RESIDUAL EXPOSURE, recorded against DEV-121 rather than here.** INV-VALUE-REP-001 checks at
+  every `let` that a binding declared `&str`/`&[T]` does not hold owned storage. A **for-loop
+  binding is not a `let`**, which is exactly why the invariant did not catch this. Extending it to
+  loop bindings would have caught this class at the producer rather than at a user program; that
+  extension is unowned. The tests below are the interim guard.
+- **Evidence:** `starkc/tests/dev138_iterator_item_representation.rs`, 10 cases. Four exercise
+  `split` reuse; four pin producers that were ALREADY correct so the fix cannot regress what it
+  was not about; two pin that the item is still only a view — the source string is undisturbed by
+  iteration, and string-literal pattern matching still compares by content (DEV-129).
+- **Owning gate:** WP-DEV-134-139 Part F (CD-340), as a DEV-121 instance. **DEV-121's class stays
+  OPEN.**
+
+## DEV-139 — impl-level generic bounds are invisible to operator desugaring [CLOSED, WP-DEV-134-139 Part E, CD-339, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `<` on a generic parameter
+  desugars to `Ord`. A bound written on the impl head is in scope throughout the impl's method
+  bodies; DEV-073 and the WP-C4.7-5 work established exactly this for method resolution.
+- **Current behaviour:** `ty_satisfies_operator_bound`'s `Ty::Param` arm consults
+  `self.current_fn_generics` — the enclosing FUNCTION's parameters — only. An impl-level bound is
+  not in that set, so the operator check fails.
+- **Minimal reproducer:**
+
+  ```stark
+  struct Pair<T> { a: T, b: T }
+
+  impl<T: Ord> Pair<T> {
+      fn larger(&self) -> &T {
+          if self.a > self.b { &self.a } else { &self.b }
+      }
+  }
+  ```
+
+  ```text
+  E0500 type 'T' does not satisfy operator trait 'Ord'
+  ```
+
+- **The contrast that localises it:** the same comparison under the same bound is ACCEPTED as a free
+  function — `fn largest<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } }`. So this is not
+  about `Ord` on a parameter; it is about which generic environment the operator check reads.
+- **User impact:** any generic container that orders its own elements must move that comparison out
+  into a free function. Ordinary API shapes — `Heap<T: Ord>`, `SortedVec<T: Ord>`, a `max` method —
+  cannot be written as methods.
+- **Security/soundness impact:** none — a false positive.
+- **Workaround:** put the comparison in a free generic function with the bound on the function.
+- **WIDER THAN FILED: it was TWO lookups, and the second one was deferred.** The title names the
+  operator path, but `satisfies_bound` — ordinary trait-bound satisfaction — had the identical gap,
+  each keeping its own copy of the parameter lookup and each consulting `current_fn_generics`
+  alone. They agreed only by coincidence. Worse, the trait-bound half is DEFERRED: DEV-067(a)
+  records the "generic environment this obligation was recorded in" and replays it at drain time,
+  and that capture was also `current_fn_generics` alone, so an obligation raised inside
+  `impl<T: Ord> Pair<T>` replayed against half its environment and failed even after the operator
+  half was fixed. Two of this entry's own tests caught that second half.
+- **Resolution (CD-339):** two helpers, each written ONCE.
+  `param_declares_bound(param, required)` answers "does this parameter declare this bound?" over
+  the combined environment, and both lookups call it. `current_generic_env()` returns that
+  combined list for the deferred capture, so the drain needs no second field to restore. Writing
+  each once is deliberate — DEV-128 and DEV-130 are both "the rule was written twice and the
+  copies drifted", and this was already two copies.
+- **Nothing new was brought into scope.** WP-C6.2b-F5 had already installed impl-head generics in
+  `current_impl_generics` for method bodies; the bound lookups simply never asked. The repair is a
+  read, not a new binding — which is why it cannot change which names are in scope, only which
+  declared bounds are found.
+- **Negative controls, because WIDENING an environment risks discharging obligations that were
+  never declared:** an operator with no bound at all, `Eq` where `Ord` is required, `Ord` where
+  `Num` is required, a bound sitting on a DIFFERENT type parameter (pins that the lookup still
+  matches on parameter NAME rather than finding any bound in scope), an unbounded method-level
+  parameter, and an undischarged callee obligation.
+- **Relationship to DEV-083.** Not the same defect and not closed by this. DEV-083 is about
+  matching a CONCRETE position in an impl head against an unresolved receiver type argument —
+  impl-head *matching*. This was impl-head *bounds being read*. DEV-083 remains OPEN.
+- **Evidence:** `starkc/tests/dev139_impl_generic_bounds.rs`, 16 cases (10 accept, 6 reject),
+  covering `Ord`/`Eq`/`Num` operators, trait-bound obligations, inherent and trait impls, impl and
+  method bounds contributing together, and nested generic nominals.
+- **Owning gate:** WP-DEV-134-139 Part E (CD-339).
+
+
+## DEV-140 — `Vec::` method outside the implemented lowering set (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L7153` in `starkc/tests/layer_audit.rs`. Reproducer shape: `v.insert(0u64, 2)` after a `push`.
+- **Why it is reachable:** MIR lowering implements a subset of `Vec`'s methods; the rest are `unsupported(...)` sites.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-141 — `HashMap` over a user-`Drop` value type (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L8093` in `starkc/tests/layer_audit.rs`. Reproducer shape: `HashMap<Int32, D>` where `D` implements `Drop`.
+- **Why it is reachable:** Lowering has no drop elaboration for map values whose type carries a destructor.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-142 — droppable composite carrying a borrowed element (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L9130` in `starkc/tests/layer_audit.rs`. Reproducer shape: `(String, &str)` printed as a tuple.
+- **Why it is reachable:** A composite that mixes an owned droppable and a borrow has no lowering for its drop plan.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-143 — `assert_eq` on a user-defined type (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L5346` in `starkc/tests/layer_audit.rs`. Reproducer shape: `assert_eq(x, y)` for a struct with a user `impl Eq`.
+- **Why it is reachable:** The assert builtins lower only for the compiler-known comparable types.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-144 — `for` over a non-range, non-`Vec` iterator (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L3698` in `starkc/tests/layer_audit.rs`. Reproducer shape: `for` driving an iterator that is neither a range nor a `Vec` cursor.
+- **Why it is reachable:** Lowering implements the range and `Vec` cursors; other iterables reach an unsupported site.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-145 — method on a peeled type outside the implemented slice (layer defect) [OPEN, registered CD-342, 2026-08-02]
+
+- **Classification:** a REACHABLE lowering refusal — the front end accepts the program, the HIR
+  oracle runs it, and MIR lowering refuses. Accepted-but-unbuildable, the E0105 class.
+- **Probe:** `L6450` in `starkc/tests/layer_audit.rs`. Reproducer shape: a method call whose receiver auto-derefs to a type lowering does not carry.
+- **Why it is reachable:** TYPE-METHOD-002 peels references repeatedly; lowering implements a narrower set than the checker accepts.
+- **Not repaired by WP-DEV-134-139.** This entry exists so the finding is REGISTERED rather than
+  merely observed: since CD-342 the layer audit is an enforcing gate that fails on any
+  UNREGISTERED finding, and equally when a registered one stops reproducing. Six such refusals
+  were found and printed by CD-331 and had carried no deviation number since.
+- **Disposition:** unscheduled. Two repair shapes exist and the choice is per-site, not global —
+  raise the refusal into semantic analysis (as E0105 did) or teach lowering the construct (as
+  DEV-132 and DEV-133 did). CD-294 is the precedent for why raising is not always cheap: E0106 was
+  reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
+- **Owning gate:** unassigned.
+
+## DEV-146 — `&mut` to `&` weakening is not applied to a `HostResource` [CLOSED, CD-346, 2026-08-02]
+
+- **Normative expectation:** an exclusive borrow weakens to a shared one at a call site.
+  `weaken_ref_to` is the single function that performs this for every coercion position (DEV-133's
+  repair routed all six through it), so a `&mut T` argument may satisfy a `&T` parameter.
+- **Current behaviour:** the weakening is not applied when `T` is a `HostResource`. The front end
+  ACCEPTS the call; MIR verification then rejects it:
+
+  ```text
+  MIR-0005 stark_net::write@[] bb0: call argument:
+    expected Ref { mutable: false, inner: HostResource(.. resource: "tcp_stream") },
+    found    Ref { mutable: true,  inner: HostResource(.. resource: "tcp_stream") }
+  ```
+
+- **Minimal shape:** a package wrapper that takes `&mut` over a bound resource and forwards it to
+  the derived raw binding, whose `AbiParam::HandleBorrowed` derives a SHARED borrow:
+
+  ```stark
+  pub fn write(stream: &mut TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+      match tcp_stream_write_raw(stream, input) { .. }   // expects &TcpStream
+  }
+  ```
+
+- **Engine divergence:** checker ACCEPTS, MIR verification refuses. Accepted-but-unbuildable — the
+  DEV-132/DEV-133 class, a third mechanism: those were a missing place projection and a missing
+  unsize coercion; this is a missing MUTABILITY weakening, and only for host resources.
+- **Diagnostic quality is part of this defect.** `stark build` reports only
+  `error: internal compiler error: generated MIR failed verification` with no code, no location and
+  no detail. The MIR-0005 line above appears only under `--verbose`. A verifier rejection of
+  generated MIR is a compiler bug by definition, but the user still needs to know WHERE.
+- **User impact:** a package cannot give a resource-mutating operation the `&mut` signature it
+  deserves. `stark-net`'s `read`/`write`/`write_all` take `&TcpStream` for this reason alone, which
+  understates what they do — recorded in the source at their definition.
+- **Security/soundness impact:** none — it refuses a valid program rather than accepting an invalid
+  one. The cost is expressiveness and a misleading API shape.
+- **Workaround:** take a shared borrow. In force in `stark-net` today.
+- **ACTUAL LAYER, which the proposed disposition had wrong.** `weaken_ref_to` was never the
+  problem: its mutability arm is type-agnostic and would have handled `HostResource` fine. The
+  defect was that **provider calls never reached it**. The `HandleBorrowed` arm of
+  `lower_provider_call` pushed its operand with no expected-type coercion at all. DEV-133 routed
+  SIX coercion sites through `weaken_ref_to` and its comment warned that "whichever site was
+  forgotten would keep this defect" — provider calls were the seventh, forgotten invisibly,
+  because no first-party package called a resource function until `stark-net` did.
+- **Resolution (CD-346):** the `HandleBorrowed` arm derives the expected type FROM THE OPERAND — if
+  what is held is `&mut X`, the borrowed-handle slot wants `&X` — and routes through
+  `weaken_ref_to`. Deriving it from the operand rather than rebuilding `HostResourceTy` avoids a
+  second copy of `provider_sig`'s mapping that could drift from it.
+- **THE RULING (CD-346), which is the part that outlives this repair.** The ABI's derivation and
+  the package's declared signature **need not match**:
+
+  ```text
+  AbiParam::HandleBorrowed   always derives a SHARED reference   (ABI fact, unchanged)
+  package surface            may declare &mut, and the compiler weakens
+  ```
+
+  So the surface question is answered by SEMANTICS, not by the ABI:
+  - an operation that consumes or produces bytes, or moves a cursor, takes `&mut` — a shared
+    borrow would let a caller hold two readers of one stream, making byte-consumption order
+    non-local and unreviewable;
+  - a purely observational operation stays `&`;
+  - neither choice changes what crosses the ABI.
+
+  Settled once here rather than per package, because io v0.2 streams, signals, process handles and
+  crypto keys all face it. **Caveat recorded honestly:** this ruling was made from what the ABI
+  verifiably does; the CRYPTO0 convergence was not in evidence when it was written and should be
+  checked against it before the first crypto package declares a surface.
+- **Negative control, because the risk is weakening the WRONG way.** If `&R` could satisfy a
+  `&mut R` parameter, the repair would hand out exclusive access from a shared borrow — an
+  aliasing hole worse than the defect. `a_shared_borrow_does_not_satisfy_a_mutable_parameter`
+  pins that it still refuses.
+- **`stark-net`'s `&mut` signatures are restored** with the ruling recorded at their definition.
+- **Evidence:** `starkc/tests/dev146_resource_borrow_weakening.rs` (3 cases); `stark-net` builds
+  and runs `&mut` through the full provider path; end-to-end native client against a loopback
+  listener — `wrote / 5 / closed`, server saw `b'PING\n'`.
+- **Owning gate:** CD-346.
+
+## DEV-147 — `&mut Vec<T>` parameter mutated in a loop is accepted but not buildable [CLOSED, CD-352, 2026-08-02]
+
+- **Classification:** accepted-but-unbuildable. The checker accepts, the HIR oracle EXECUTES
+  CORRECTLY, and MIR verification refuses. Same class as DEV-132/DEV-133/DEV-146, a fourth
+  mechanism.
+- **Minimal reproducer:**
+
+  ```stark
+  fn push_all(out: &mut Vec<UInt8>, text: &str) {
+      let bytes = text.bytes();
+      let n = bytes.len();
+      let mut i = 0u64;
+      while i < n {
+          out.push(bytes[i]);
+          i = i + 1u64;
+      }
+  }
+  fn main() {
+      let mut v: Vec<UInt8> = Vec::new();
+      push_all(&mut v, "ab");
+      println(v.len());
+  }
+  ```
+
+  ```text
+  stark check  -> OK
+  stark run    -> 2          (correct)
+  stark build  -> MIR-0007 push_all@[] bb6: move from possibly-moved place _1[]
+  ```
+
+- **What it blocks:** "append into a caller's buffer in a loop", which is the fundamental shape of
+  every serializer, encoder and formatter. HC6 hit it immediately — `stark-http-serialize`'s
+  `push_str_bytes`/`push_header_line` are exactly this, and the package tests PASSED on the oracle
+  while the native consumer failed to build.
+- **Why the oracle disagrees:** the receiver auto-borrow for `push` is taken from a place reached
+  through a `&mut` parameter; MIR's move analysis treats the parameter place as possibly-moved
+  across the loop back-edge, while the oracle re-reads the referent each iteration. The two engines
+  disagree about whether a borrow through a parameter survives an iteration.
+- **Workaround, in force in `stark-http-serialize`:** the helpers take an OWNED `Vec<UInt8>` and
+  return it, so the accumulator is a local rather than a borrowed parameter. It costs a move per
+  call and reads worse than the `&mut` form.
+- **ACTUAL LAYER, and the hypothesis above was wrong.** Not DEV-137 region work, and not the
+  verifier's whole-local `Deref` approximation either (that is a documented, deliberate scope note
+  and is fine). The defect was in LOWERING: `borrow_{vec,string,map,set}_receiver` each took the
+  same shortcut when the receiver was already a reference —
+
+  ```rust
+  if layers > 0 { return self.lower_expr_to_operand(base); }
+  ```
+
+  — and `&mut T` is not `Copy`, so "pass through" lowers to a **`Move` of the caller's reference**.
+  Harmless once; on a loop back-edge the parameter is then possibly-moved.
+- **Resolution (CD-352):** `reborrow_reference_receiver` builds `&mut *base`, which is exactly what
+  the `layers == 0` path already does one deref further down. Written once and called from all four
+  receiver borrowers, for the DEV-128/DEV-130 reason. Deliberately narrow: a SHARED reference passes
+  through unchanged (`&T` is `Copy`, nothing moves), and a non-place base passes through (there is
+  no caller reference to preserve).
+- **Audited, not assumed:** ten sites in `lower.rs` share the `layers > 0` shortcut. Six are not
+  receiver borrows — display refs, value refs, index paths — and are untouched.
+- **Negative controls, because an over-eager reborrow is worse than the defect:** the owner is still
+  refused while an exclusive borrow lives; two live `&mut` to one owner still refused; a shared
+  borrow still cannot satisfy a `&mut` parameter; an owned value moved twice still refused.
+- **`stark-http-serialize` is restored to the natural `&mut` form**, which is the end-to-end proof —
+  that package is what found the defect, and its native consumer now builds.
+- **Evidence:** `starkc/tests/dev147_reference_receiver_reborrow.rs`, 11 cases (7 build, 4 refuse);
+  MIR/differential/three-engine/lifecycle suites 326 green; 13-package gate exit 0; external suite
+  39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
+- **Owning gate:** CD-352.
+
+## DEV-148 — a cross-package associated function is unresolvable [OPEN, found CD-353, 2026-08-02]
+
+- **Normative expectation:** `07-Modules-and-Packages.md` — a `pub` item of a dependency is
+  reachable from a dependent package. Nothing distinguishes an associated function from a free
+  function for visibility purposes.
+- **Current behaviour:** free functions and METHODS resolve across a package boundary; ASSOCIATED
+  functions (no receiver) do not.
+- **Minimal reproducer:** two packages, `xapp` depending on `xlib`.
+
+  ```stark
+  // xlib
+  pub struct Wrap { pub v: Int32 }
+  impl Wrap {
+      pub fn make(v: Int32) -> Wrap { Wrap { v: v } }   // associated
+      pub fn get(&self) -> Int32 { self.v }             // method
+  }
+  pub fn make_free(v: Int32) -> Wrap { Wrap { v: v } }  // free
+
+  // xapp
+  let a = make_free(1);   // OK
+  println(a.get());       // OK  -- method resolves
+  let b = Wrap::make(2);  // E0200 associated function 'make' not found
+  ```
+
+- **User impact: it silently shapes every package API in the tree.** `Type::new()` is the
+  idiomatic constructor and is simply unavailable to a consumer, so each package must expose a free
+  function instead. Every existing first-party package already does this — `stark-net`'s `ipv4`,
+  `socket_address`; `stark-http-core`'s `header`, `new_header_map`; `stark-time`'s own
+  `Duration::from_seconds` is the exception and is therefore UNUSABLE from a dependent package.
+  The convention was adopted without anyone recording why, which is how a defect becomes a house
+  style.
+- **Security/soundness impact:** none — it refuses a valid program.
+- **Workaround:** export a free constructor alongside any associated one. In force everywhere.
+- **Proposed disposition:** unassigned. Adjacent to DEV-083 (impl-head matching) but distinct: this
+  is cross-package ITEM RESOLUTION of an impl member, not matching a receiver type. Worth checking
+  whether associated CONSTANTS and associated types have the same gap.
+- **Owning gate:** unassigned.
+
+## DEV-149 — a `&self` method on a `&mut` base is neither weakened nor reborrowed [CLOSED, fixed CD-354, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "References and Lifetimes" — a `&mut T` coerces to
+  `&T` at any site expecting a shared borrow, and a reborrow leaves the caller's reference intact.
+- **Behaviour before the fix:** `borrow_{vec,string,map,set}_receiver` reborrowed a reference
+  receiver only when the METHOD wanted `&mut`. A `&mut` base under a `&self` method was passed
+  through unchanged, failing MIR verification twice at once.
+- **Minimal reproducer:** eight lines, reduced from `stark-http-parser::drop_front`.
+
+  ```stark
+  fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }
+  fn main() {
+      let mut v: Vec<UInt8> = Vec::new();
+      v.push(1u8);
+      println(count(&mut v));      // check: OK, run: 1, build: refused
+  }
+  ```
+
+  ```text
+  MIR-0005 bb0: expected Ref { mutable: false, .. }, found Ref { mutable: true, .. }
+  MIR-0007 bb4: move from possibly-moved place _1[]
+  ```
+
+- **User impact: "measure a caller's buffer, then modify it" did not build.** Accepted by the
+  checker, executed correctly by the HIR oracle, refused only by a native build — the
+  DEV-132/133/146/147 class, fifth mechanism.
+- **Security/soundness impact:** none — it refused a valid program. The repair's own risk (letting
+  a `&T` base satisfy a `&mut` receiver) is pinned by three negative controls.
+- **Root cause:** DEV-147's repair was narrowed on the wrong axis. The gate belongs on the BASE's
+  mutability — is there a non-`Copy` reference at risk — while the reference built takes the
+  RECEIVER's mutability. `&*base` from a `&mut` base IS the weakening, so one reborrow fixes both
+  the MIR-0005 and the MIR-0007 half.
+- **Fix:** `src/mir/lower.rs::reborrow_reference_receiver`. Evidence:
+  `tests/dev149_shared_receiver_over_mutable_base.rs` (13 tests: all four receiver sites, the
+  loop case, DEV-147's own case, three negative controls).
+- **Owning gate:** package track, CD-354.
+
+## DEV-150 — the argument read-conflict rule does not fire through a reference base [OPEN, found CD-354, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` — one `&mut` XOR many `&`, with no exception for a
+  base that is itself a reference.
+- **Current behaviour:** `f(&mut x, x.field)` is refused for a LOCAL base and ACCEPTED when the
+  base is a `&mut` parameter. The HIR oracle executes the accepted form correctly; the native
+  backend emits Rust that rustc refuses with E0503.
+- **Minimal reproducer:** 14 lines.
+
+  ```stark
+  struct Holder { limit: UInt64, seen: UInt64 }
+  fn bump(h: &mut Holder, by: UInt64) { h.seen = h.seen + by; }
+
+  fn main() {
+      let mut h = Holder { limit: 3u64, seen: 0u64 };
+      bump(&mut h, h.limit);       // E0101 read conflict -- refused, correctly
+  }
+
+  fn forward(h: &mut Holder) { bump(h, h.limit); }   // ACCEPTED, runs, does not build
+  ```
+
+- **User impact:** `f(buf, buf.len())` inside a function taking `buf: &mut T` builds a program the
+  native backend cannot emit. `stark-http-parser`'s four `take_line` call sites hit it.
+- **Security/soundness impact:** unresolved, and that is the point. Under ruling (B) below the
+  current acceptance is an aliasing hole the checker should have closed; under ruling (A) it is
+  benign and the backend is at fault. The two readings disagree about whether a real program is
+  sound, which is why this is escalated rather than repaired.
+- **NOT A MECHANICAL REPAIR — two candidate rulings, both defensible:**
+  - **(A) The checker is right; sequencing is the fix.** Read the field into a temporary BEFORE
+    forming the `&mut` and nothing aliases — close to Rust's two-phase borrows, which exist so
+    `v.push(v.len())` works. Cost: the LOCAL case must then start being accepted too, so this is a
+    widening of the borrow rule, not a backend change.
+  - **(B) The checker is wrong; the rule must fire through a reference base.** Uniform,
+    conservative, matches the spec as written. Cost: `f(buf, buf.len())` stops compiling and every
+    caller hoists the read into a `let`.
+- **Workaround, valid under either ruling:** hoist the read. Applied at all four
+  `stark-http-parser` sites.
+- **Proposed disposition:** ESCALATED — a semantics decision for the language owner, not a repair
+  commit. `tests/dev150_argument_conflict_through_reference.rs` pins the inconsistency itself, so
+  whichever ruling lands, the test contradicting it fails and this entry must be revisited.
+- **Owning gate:** unassigned.
+
+## DEV-151 — a method on a host-resource receiver did not lower, and written `()` was not `Unit` [CLOSED, fixed CD-354, 2026-08-02]
+
+Two defects, recorded together because the first concealed the second.
+
+### (a) A resource receiver was not treated as a nominal
+
+- **Normative expectation:** a package may declare `impl TcpStream { fn set_read_timeout(&mut self,
+  ..) }` — CD-346 rules that a resource operation moving a cursor or consuming bytes takes `&mut
+  self` — and a caller may call it.
+- **Behaviour before the fix:** `lower_method_call` matched only `Struct`/`Enum` for the receiver
+  nominal and refused everything else:
+
+  ```text
+  error: native build does not yet support this program: method call on non-nominal receiver
+         HostResource(HostResourceTy { nominal: Item(ItemId(381)), provider: "stark-std-net",
+         resource: "tcp_stream" }) (C4.5b+)
+  ```
+
+- **User impact: CD-346's ruling was unbuildable at every call site.** `stark-net` declared
+  `set_read_timeout`/`set_write_timeout` on that ruling and QUALIFIED; nothing had ever called
+  them natively, so nobody learned they could not be called. This is CD-345's lesson one level
+  down — CD-347 made a package's resource LIFECYCLE executable, and this was a declared surface
+  whose CALL SITES were still unexecuted. `stark-http-client` was the first caller.
+- **Root cause:** a missing match arm, not a missing capability. `HostResourceTy.nominal` already
+  holds the item of the synthesized zero-variant enum (CD-234), which is exactly the item the
+  `impl` hangs off.
+- **Fix:** `src/mir/lower.rs`, one arm mapping `MirTy::HostResource` to its nominal item. A `Core`
+  resource nominal still refuses, per CD-235's sequencing exception.
+
+### (b) `()` written in source lowered to `Tuple([])`
+
+- **Normative expectation:** MIR has one canonical unit type.
+- **Behaviour before the fix:** `MirTy::Unit` is used at all 99 synthesized sites and the empty
+  tuple is never constructed deliberately, but a written-out `()` in a type annotation reached the
+  tuple arm. So `fn f() -> Result<(), E>` declared a return type no constructed value could match:
+
+  ```text
+  MIR-0004 stark_net::TcpStream::set_read_timeout@[] bb26: assignment:
+    expected Enum(CoreResult, [Tuple([]), ..]), found Enum(CoreResult, [Unit, ..])
+  ```
+
+- **User impact:** `Result<(), E>` is an extremely common signature, and it was fine everywhere the
+  body was never lowered. It took two unexecuted paths crossing to make it reachable.
+- **Fix:** both conversion sites (`mir_ty`, `hir_field_ty`) canonicalise an empty tuple to `Unit`.
+- **Evidence for both:** `tests/dev151_resource_method_dispatch.rs` (4 tests, including a structural
+  assertion that no lowered signature or local carries `Tuple([])` — which catches a divergence
+  that has not yet MET a conflicting value). End-to-end: `stark-http-client-consumer` calls
+  `set_read_timeout` on a live socket under the qualification gate's HTTP peer.
+- **Owning gate:** package track, CD-354.

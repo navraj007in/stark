@@ -79,6 +79,19 @@ retained as a visible cold/outlier observation.
 
 Classification: **COMPILER DEFECT AGAINST EXISTING SPEC**
 
+**This is `DEFECT-C788-LOOP-TEMP`, and it is DISCHARGED. `P1-COMPILER-001` is a local label for a
+defect already under governance, not a second finding.** Recorded CD-263, ruled a non-blocking C7
+deviation CD-264, fixed by MIR amendment A12 (`Statement::StorageDead`, MIR `0.2` → `0.3`) at CD-265
+and approved retrospectively as CE3; a surviving `?`-in-a-loop instance — the one shape A12's
+sixteen-shape matrix missed, because `lower_try` builds its own scrutinee temporary — was found by
+`stark-json` and fixed under CD-269. Regression: `starkc/tests/a12_storage_end_shapes.rs`. Root
+cause: **any** place whose storage is emptied piecewise, not temporaries specifically. Full argument:
+`../mir-amendment-A12-storage-end.md`; ledger: `COMPILER-STATE.md`.
+
+The adaptation described below therefore documents what P1 did at implementation time, on a compiler
+that still had the defect. It is **not** a live constraint on the language, and it is not a reason to
+edit P1 — the workload is frozen at its qualifying commit.
+
 Minimal shape:
 
 ```stark
@@ -121,13 +134,17 @@ The full HTTP parser still decides the request exactly once.
 
 ## Gate handoff
 
-All mandatory application behavior and the macOS native path are demonstrated. P1 should not yet be
-recorded as fully satisfied because the required Tier-1 Linux/Windows evidence is outstanding.
+**Superseded by CD-273 — see the recommendation at the head of this report.** The handoff below was
+written at the 2026-07-30 macOS-only state and is retained as history. The Linux and Windows rows it
+was waiting on are green (§7); the current status is `P1 TIER-1 QUALIFIED`, not `P1 PARTIAL`.
 
-```text
-P1 PARTIAL — implementation and macOS arm64 qualification pass;
-Tier-1 Linux/Windows qualification remains.
-```
+> All mandatory application behavior and the macOS native path are demonstrated. P1 should not yet be
+> recorded as fully satisfied because the required Tier-1 Linux/Windows evidence is outstanding.
+>
+> ```text
+> P1 PARTIAL — implementation and macOS arm64 qualification pass;
+> Tier-1 Linux/Windows qualification remains.
+> ```
 
 This report does not declare Gate C7 closed.
 

@@ -1,0 +1,170 @@
+// HC8 tests, pure half.
+//
+// The client is capability-bearing, and `stark test` runs on the HIR interpreter, which has NO
+// provider layer — no socket in this process can be opened, at all. So this file covers exactly
+// what is decidable without one: URL targeting, configuration, and the request the flow would put
+// on the wire. The socket path — connect, write, read, close, timeouts, early close — is covered by
+// `stark-http-client-consumer`, which is native-only and requires a real HTTP peer, per the CD-348
+// category rule that a resource-shaped package needs observed lifecycle, not just linkage.
+
+use super::default_config;
+use super::get;
+use super::new_client;
+use super::parse_http_url;
+use super::post;
+use super::ClientError;
+use super::Target;
+use super::HttpMethod;
+
+fn expect(condition: Bool, message: &str) {
+    if !condition {
+        panic(message);
+    }
+}
+
+fn target_of(url: &str) -> Target {
+    let out: Target;
+    match parse_http_url(url) {
+        Ok(target) => {
+            out = target;
+        }
+        Err(_error) => {
+            panic("a well-formed URL was refused");
+        }
+    }
+    out
+}
+
+fn expect_url_rejected(url: &str) {
+    match parse_http_url(url) {
+        Ok(_target) => {
+            panic("a malformed URL was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+// -- URL targeting ------------------------------------------------------------------------------
+
+fn test_default_port_is_80() {
+    let target = target_of("http://example.com/");
+    expect(target.host.as_str() == "example.com", "host wrong");
+    expect(target.port == 80u16, "default port must be 80");
+    expect(target.path_and_query.as_str() == "/", "path wrong");
+}
+
+fn test_explicit_port() {
+    let target = target_of("http://example.com:8080/index.html");
+    expect(target.port == 8080u16, "explicit port not honoured");
+    expect(target.path_and_query.as_str() == "/index.html", "path wrong with a port");
+}
+
+fn test_empty_path_becomes_root() {
+    let target = target_of("http://example.com");
+    expect(target.path_and_query.as_str() == "/", "an absent path must become /");
+}
+
+fn test_query_is_kept_with_the_path() {
+    let target = target_of("http://example.com/search?q=stark&n=2");
+    expect(
+        target.path_and_query.as_str() == "/search?q=stark&n=2",
+        "query dropped from the request target",
+    );
+}
+
+fn test_fragment_is_not_sent() {
+    // A fragment is client-side only. Sending it is an information leak, so it must be stripped
+    // before the request target is formed.
+    let target = target_of("http://example.com/page#section");
+    expect(target.path_and_query.as_str() == "/page", "a fragment reached the request target");
+}
+
+fn test_ipv4_literal_host() {
+    let target = target_of("http://127.0.0.1:9000/x");
+    expect(target.host.as_str() == "127.0.0.1", "IPv4 literal host wrong");
+    expect(target.port == 9000u16, "IPv4 literal port wrong");
+}
+
+fn test_https_is_refused_explicitly() {
+    // Not "unsupported for now" as a silent downgrade: refusing loudly is the only safe answer,
+    // because a client that quietly speaks cleartext where TLS was asked for is a security defect.
+    match parse_http_url("https://example.com/") {
+        Ok(_target) => {
+            panic("https:// was accepted by a cleartext-only client");
+        }
+        Err(error) => match error {
+            ClientError::UnsupportedScheme => {}
+            _other => {
+                panic("https:// must fail as UnsupportedScheme, not as a parse error");
+            }
+        }
+    }
+}
+
+fn test_other_schemes_are_refused() {
+    expect_url_rejected("ftp://example.com/");
+    expect_url_rejected("file:///etc/passwd");
+    expect_url_rejected("//example.com/");
+    expect_url_rejected("example.com/");
+}
+
+fn test_malformed_urls_are_refused() {
+    expect_url_rejected("http://");
+    expect_url_rejected("http:///path");
+    expect_url_rejected("http://example.com:/");
+    expect_url_rejected("http://example.com:abc/");
+    expect_url_rejected("http://example.com:99999/");
+    expect_url_rejected("http://exa mple.com/");
+}
+
+fn test_port_zero_is_refused() {
+    expect_url_rejected("http://example.com:0/");
+}
+
+// -- configuration ------------------------------------------------------------------------------
+
+fn test_default_config_has_finite_budgets() {
+    let config = default_config();
+    expect(config.connect_timeout.seconds() > 0u64, "connect timeout must be finite and non-zero");
+    expect(config.read_timeout.seconds() > 0u64, "read timeout must be non-zero");
+    expect(config.write_timeout.seconds() > 0u64, "write timeout must be non-zero");
+    expect(
+        config.max_response_bytes > 0u64,
+        "an unbounded response cap is a memory-exhaustion hole",
+    );
+    expect(!config.follow_redirects, "v0.1 does not follow redirects, and the default must say so");
+}
+
+fn test_client_carries_parser_limits() {
+    let client = new_client(default_config());
+    expect(client.limits.max_body_bytes > 0u64, "the client must hand bounded limits to the parser");
+    expect(client.limits.max_header_count > 0u64, "header count must be bounded");
+}
+
+// -- builders -----------------------------------------------------------------------------------
+
+fn test_get_builder_shape() {
+    let builder = get("http://example.com/x");
+    match builder.method {
+        HttpMethod::Get => {}
+        _other => {
+            panic("get() built a non-GET request");
+        }
+    }
+    expect(builder.body.len() == 0u64, "a GET built with a body");
+    expect(builder.headers.entries.len() == 0u64, "a GET built with headers");
+}
+
+fn test_post_builder_keeps_the_body() {
+    let mut body: Vec<UInt8> = Vec::new();
+    body.push(104u8);
+    body.push(105u8);
+    let builder = post("http://example.com/x", body);
+    match builder.method {
+        HttpMethod::Post => {}
+        _other => {
+            panic("post() built a non-POST request");
+        }
+    }
+    expect(builder.body.len() == 2u64, "the POST body was not carried");
+}

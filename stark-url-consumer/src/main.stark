@@ -1,5 +1,7 @@
+use stark_url::default_limits;
 use stark_url::encode_query;
 use stark_url::parse_request_target;
+use stark_url::parse_url;
 use stark_url::percent_decode;
 use stark_url::percent_encode_component;
 
@@ -74,6 +76,26 @@ fn main() {
         }
         Err(_) => {
             panic("parse failed");
+        }
+    }
+
+    match parse_url("https://api.example.com:8443/v1/items?q=stark#ignored", &default_limits()) {
+        Ok(url) => {
+            if url.authority.host.as_str() != "api.example.com" {
+                panic("absolute url host mismatch");
+            }
+            if url.effective_port() != 8443u16 {
+                panic("absolute url port mismatch");
+            }
+            if url.origin_form_target().as_str() != "/v1/items?q=stark" {
+                panic("absolute url target mismatch");
+            }
+            if url.host_header_value().as_str() != "api.example.com:8443" {
+                panic("absolute url host header mismatch");
+            }
+        }
+        Err(_) => {
+            panic("absolute url parse failed");
         }
     }
 }

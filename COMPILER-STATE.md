@@ -1,5 +1,1029 @@
 # STARK Compiler STATE
 
+## CD-354 — three compiler defects found by qualifying HC7/HC8; one escalated, not repaired (2026-08-02)
+
+**Writing two packages and running them through the gate found three compiler defects and one
+semantics question. None was found by a reproducer; every one was found by executing something that
+had never been executed.**
+
+| | what | disposition |
+| --- | --- | --- |
+| DEV-149 | a `&self` method on a `&mut` base is neither weakened nor reborrowed | FIXED |
+| DEV-150 | the argument read-conflict rule does not fire through a reference base | **ESCALATED** |
+| DEV-151(a) | a method on a host-resource receiver did not lower | FIXED |
+| DEV-151(b) | a written-out `()` lowered to `Tuple([])`, not `Unit` | FIXED |
+
+### DEV-149 is my own DEV-147 repair, narrowed on the wrong axis
+
+DEV-147 taught the four `borrow_*_receiver` sites to reborrow rather than move, then gated the
+repair on the mutability the METHOD wants. The gate belongs on the mutability the BASE has:
+
+```stark
+fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }   // check: OK, run: 1, build: REFUSED
+```
+
+Two failures from one omission — MIR-0005 (the `&mut` handed over unweakened) and MIR-0007 (the
+caller's reference moved). One reborrow fixes both, because `&*base` from a `&mut` base IS the
+weakening. The shape it blocked is "measure a caller's buffer, then modify it", which is what
+`stark-http-parser::drop_front` does and what surfaced it.
+
+### DEV-151 is CD-345's lesson one level down
+
+CD-345 found `stark-net` passing all seven gate steps while `connect`/`read`/`write`/`close` had
+never been called. CD-347 fixed that by requiring a native consumer to exercise each resource's
+lifecycle. **This is the same failure one level in: a declared surface whose CALL SITES were still
+unexecuted.**
+
+CD-346 ruled that a resource operation moving a cursor or consuming bytes takes `&mut self`.
+`stark-net` declared `set_read_timeout`/`set_write_timeout` as methods on that ruling and qualified.
+Lowering refused every method call on a host-resource receiver, so **CD-346's ruling was
+unbuildable at every call site** — and nothing learned that, because nothing had called one.
+`stark-http-client` was the first caller and failed immediately.
+
+The refusal was a missing match arm, not a missing capability: `HostResourceTy.nominal` already
+holds the item the `impl` hangs off. Fixing it then exposed (b) — a written `()` reaching the tuple
+arm and producing `Tuple([])` where every synthesized site uses `MirTy::Unit`, so
+`fn f() -> Result<(), E>` declared a return type no constructed value could match. `Result<(), E>`
+is a very common signature; it took two unexecuted paths crossing to make the divergence reachable.
+The structural test now asserts no lowered signature or local carries an empty tuple, which catches
+a divergence that has not yet MET a conflicting value.
+
+**What this says about the gate.** Both halves of DEV-151 were reachable only by CALLING a declared
+surface natively. The seven steps check that a package builds and its consumer runs; they do not
+check that everything the package DECLARES is called by something. That is the next gap of the same
+family, and it is not closed by this CD.
+
+### DEV-150 is escalated, not repaired
+
+`f(&mut x, x.field)` is refused for a local base and accepted through a `&mut` parameter; the
+interpreter runs the accepted form and the native backend emits Rust that rustc refuses (E0503).
+Two defensible rulings:
+
+- **(A)** the checker is right and evaluation should be sequenced — close to Rust's two-phase
+  borrows, but it requires the LOCAL case to start being accepted too, so it widens the borrow rule;
+- **(B)** the checker is wrong and the rule must fire uniformly — conservative and matches the spec
+  as written, but `f(buf, buf.len())` stops compiling.
+
+They disagree about whether a real program is sound, so this is a language decision rather than a
+repair-commit decision, and it is left OPEN for the language owner. The test suite pins the
+INCONSISTENCY rather than either ruling: whichever lands, the test contradicting it fails and the
+entry must be revisited. `stark-http-parser`'s four `take_line` call sites were rewritten to hoist
+the read, which is required under either ruling.
+
+**Evidence:** `tests/dev149_shared_receiver_over_mutable_base.rs` (13),
+`tests/dev150_argument_conflict_through_reference.rs` (4),
+`tests/dev151_resource_method_dispatch.rs` (4). All three include negative controls, because each
+repair's own risk is handing out access that was never held.
+
+## CD-353 — HC7 and HC8 delivered and qualified; the gate grows an HTTP peer (2026-08-02)
+
+**`stark-http-parser` (HC7) and `stark-http-client` (HC8), both qualified through the seven-step
+gate. All 15 first-party packages now qualify, with both resource-bearing ones observed against
+live peers.**
+
+### HC7 — the parser, and the exit criterion that shaped its tests
+
+The roadmap's HC7 exit criterion is "the parser can consume any legal fragmentation pattern without
+socket knowledge". That is not a claim a few hand-picked splits support, so the suite parses each
+message at EVERY two-part split and requires every result to agree — n-1 boundaries per message,
+each landing mid-token somewhere different: inside `HTTP/1.1`, between CR and LF, inside a header
+name, inside a chunk size. The consumer does the same rather than parsing one buffer, because a
+one-buffer consumer would prove nothing this package is for.
+
+34 tests. Ten states, four framings (fixed, chunked, close-delimited, none), 1xx skipping, HEAD
+responses, and the rejection half: bare LF, obs-fold, conflicting `Content-Length`, `Content-Length`
+with `Transfer-Encoding`, unsupported codings, malformed chunk sizes and terminators, truncated
+bodies, and each limit.
+
+**Two real parser defects, both found by the whole-vs-fragmented differential rather than by any
+single case:** the OWS-skip after a header colon used an `n + 1` sentinel that destroyed the index
+it had just found, so every header value was mis-sliced; and the `UntilClose` transition returned
+before the drain arm could run, dropping every close-delimited body that arrived in one buffer.
+
+### HC8 — the client, and what a capability-bearing package can be tested with
+
+Every useful operation in `stark-http-client` requires a provider, and `stark test` runs on the HIR
+interpreter, which has no provider layer. So the split is forced, not chosen:
+
+- **`stark test` (14 tests)** covers what is decidable without a socket — URL targeting, config
+  budgets, builders.
+- **`stark-http-client-consumer`** is native-only and requires a live HTTP peer. It PANICS without
+  one rather than reporting success, per CD-348.
+
+Step 5 (`stark run`) is therefore unreachable for this package. The gate now has an
+`interpreter_exempt` flag that skips it with a printed reason — and REFUSES to accept the flag
+unless the case also declares resources and a resource consumer, so an exempt package is executed
+MORE than an ordinary one, never less. Validated in code rather than left to reviewer discipline,
+because CD-345 is the record of what an unexecuted step costs.
+
+**Two real client defects, found by the tests:** URL fragments reached the request target (an
+information leak — a fragment is client-side only and must never go on the wire), and an empty or
+invalid authority was accepted, including `http://h:/` silently defaulting to port 80 rather than
+being reported as the typo it is.
+
+### The HTTP peer
+
+`qualify-first-party-packages.py` grows `http_peer()` beside `echo_peer()`, serving four routes that
+each pin a response shape the client must handle differently: `/fixed`, `/chunked`, `/fragmented`
+(head and body split across several writes with pauses), and `/close-early`. The last two matter
+most — they are what a client that assumes one `recv()` per response, or that treats a short body as
+complete, gets wrong. Binding is asserted, never skipped.
+
+Observed natively, end to end: resolve, connect, set timeouts, write, read across fragmentation,
+decode chunks, detect an early close, release the stream.
+
+### Also recorded
+
+DEV-148 (a cross-package associated function is unresolvable) was found mid-sprint and is OPEN.
+`Type::new()` is simply unavailable to a consumer, so every first-party package exposes free
+constructors instead — a convention adopted without anyone recording why, which is how a defect
+becomes a house style. `stark-time` gained `duration_seconds`/`duration_millis`/`duration_nanos` as
+the forced workaround.
+
+## CD-348 — CD-347's claim was stronger than its evidence; the gate now earns it (2026-08-02)
+
+**CD-347 said the gate requires a consumer to "acquire, use and close each resource". It did not.
+The checked-in consumer connected to a port expected to REFUSE, so on the path CI actually took:**
+
+```text
+connect fails
+  -> no TcpStream acquired
+  -> write_all never executed
+  -> close never executed
+  -> drop-release never executed
+```
+
+The program compiled and linked every one of those branches, so it was valid evidence that the
+source type-checks, provider calls lower, symbols link, the executable starts, and the failure path
+runs. **It was not evidence that an acquired resource is used and released.** The honest claim for
+that version was:
+
+> every resource-bearing package ships a native consumer that COMPILES AND LINKS its
+> acquire/use/release surface and EXECUTES AT LEAST ONE provider path.
+
+Recorded because the gap between that sentence and CD-347's is precisely the gap CD-345 was about:
+a claim satisfied by a path that never calls the product.
+
+**The fix is the peer, not a weaker sentence.** `qualify-first-party-packages.py` now starts a
+loopback echo listener before running a resource consumer, so the full lifecycle executes:
+
+```text
+acquire -> write -> read -> EXPLICIT close      the affine release the package exposes
+acquire -> write -> IMPLICIT drop release       MIR drop elaboration emitting the close
+```
+
+**It cannot silently degrade.** If the port cannot be bound, qualification FAILS with a message
+saying why, rather than falling back to the failure path — falling back would restore the weaker
+claim while still reporting success. And the consumer PANICS if the peer is absent: verified, exit
+code 101, so a peerless run can never be mistaken for a pass.
+
+### EXECUTED SURFACE, by package category
+
+The standing rule needed this precision, or a future team satisfies it through an expected error:
+
+| Category | Bar |
+| --- | --- |
+| pure package | the ordinary consumer executes each principal public behaviour |
+| function-shaped provider | the native consumer SUCCESSFULLY invokes each capability family |
+| resource-shaped provider | the native consumer SUCCESSFULLY acquires, uses and releases every resource type — BOTH release paths |
+| failure-only environment | a deterministic negative path is allowed, but must be LABELLED lowering/linking evidence, never lifecycle evidence |
+
+The fourth row is the important one: it keeps the escape hatch open for environments where success
+genuinely cannot be arranged, while making it impossible to use one and call the result lifecycle
+evidence.
+
+EVIDENCE: hardened eleven-package gate exit 0 with the peer, `STARK_NET_RESOURCE_OK` observed;
+the consumer exits 101 with no peer; echo peer refuses to skip on a bind failure; fmt clean.
+FILES: starkc/scripts/qualify-first-party-packages.py, stark-net-resource-consumer/src/main.stark,
+COMPILER-STATE.md.
+NEXT: unchanged — HC3/HC4 and the OPS resource items are unblocked; HC5/HC6 and the pure fills
+never were.
+
+## CD-346 / CD-347 — DEV-146 repaired with its ruling; the gate's surface coverage made executable (2026-08-02)
+
+**The two toll items. Resource-track work (HC3/HC4, OPS stdio/signals/process) unblocks on these;
+HC5/HC6 and the pure OPS fills never depended on either and should not have waited.**
+
+### CD-346 — DEV-146, and the layer the first diagnosis got wrong
+
+`weaken_ref_to` was never the problem. Its mutability arm is type-agnostic and would have handled
+`HostResource` fine. **Provider calls never reached it**: the `HandleBorrowed` arm of
+`lower_provider_call` pushed its operand with no expected-type coercion at all.
+
+DEV-133 routed SIX coercion sites through `weaken_ref_to` and its comment warned that "whichever
+site was forgotten would keep this defect". Provider calls were the seventh. It stayed invisible
+because no first-party package called a resource function until `stark-net` did — the same
+blindness CD-345 found in the gate, one layer down.
+
+**THE RULING, which is what outlives the repair:**
+
+```text
+AbiParam::HandleBorrowed   always derives a SHARED reference   (ABI fact, unchanged)
+package surface            may declare &mut; the compiler weakens
+```
+
+The two need not match, so the surface question is answered by SEMANTICS rather than by the ABI:
+
+- an operation that consumes or produces bytes, or moves a cursor, takes `&mut` — a shared borrow
+  would let a caller hold two readers of one stream, making byte-consumption order non-local and
+  unreviewable;
+- a purely observational operation stays `&`;
+- neither choice changes what crosses the ABI.
+
+Settled once, here, rather than re-litigated per package: io v0.2 streams, signals, process
+handles and crypto keys all face it. **Recorded caveat:** the ruling was made from what the ABI
+verifiably does. The CRYPTO0 convergence was NOT in evidence when it was written and should be
+checked against it before the first crypto package declares a surface — if CRYPTO0 says something
+narrower, this ruling yields to it.
+
+**Negative control, because the risk is weakening the wrong way.** If `&R` could satisfy a `&mut R`
+parameter the repair would hand out exclusive access from a shared borrow — an aliasing hole worse
+than the defect. Pinned.
+
+`stark-net`'s `&mut` signatures are restored, with the ruling recorded at their definition.
+
+### CD-347 — the gate's executed-surface requirement
+
+A `PackageCase` now declares the resource types it exposes, and a package that declares any must
+ship a NATIVE consumer whose run acquires, uses and closes each one. Missing consumer, missing
+directory, or a failing run all fail qualification.
+
+**The split is forced, not chosen.** Step 5 is `stark run`, and the interpreter has no provider
+layer — any consumer touching a bound resource dies with "provider binding not lowered". So the
+resource exercise cannot live in the ordinary consumer, and the gate runs the resource consumer
+without a `stark run` step.
+
+`stark-net-resource-consumer` is the first: acquire+close, acquire+use+close (through the `&mut`
+path DEV-146 broke, so the package would not have built before CD-346), and acquire-then-let-drop-
+release. Deterministic in CI — it needs no peer, because what it proves is that the resource path
+LOWERS, LINKS and EXECUTES, which is exactly what was unobserved.
+
+Verified to bite: removing the resource consumer fails the gate with a message naming CD-345.
+
+### The standing rule for the Codex lane
+
+**Definition of done now includes executed surface, stated in each directive.** CD-344's failure
+was not Codex writing wrong code — the behaviour was sound, and the end-to-end run proves it. It
+was the lane's evidence standard being satisfiable by a consumer that never called the product.
+Every future package directive names its required consumer exercises the way the repair packets
+named their must-pass sets. One paragraph per directive; the difference between two lanes having
+one discipline or two.
+
+EVIDENCE: `dev146_resource_borrow_weakening` 3 cases; `mir_verify`/`mir_lowering`/
+`c788_lifecycle_e2e`/`conformance`/`gate3_execution` 87 green; provider and resource suites
+(`a10_provider_call`, `a11_host_resource`, `c786_tcp`, `c788_resource_lifecycle`) green; hardened
+eleven-package gate exit 0 with `STARK_NET_RESOURCE_OK` observed; end-to-end native TCP client
+`wrote / 5 / closed` against a listener that received `b'PING\n'`; fmt clean.
+FILES: starkc/src/mir/lower.rs, starkc/tests/dev146_resource_borrow_weakening.rs (new),
+starkc/scripts/qualify-first-party-packages.py, stark-net/src/lib.stark,
+stark-net-resource-consumer/ (new), starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: HC3/HC4 and the OPS resource items unblock. HC5/HC6 and the pure OPS fills were never blocked.
+
+## CD-345 — HC1 and HC2 qualified with evidence; HC2 was qualified in name only (2026-08-02)
+
+**HC1 (`stark-url`) and HC2 (`stark-net`) landed as plain commits with no CD entry and no evidence
+statement. Both are in the eleven-package gate and both pass it. For HC1 that means what it sounds
+like. FOR HC2 IT DID NOT.**
+
+### The finding: a happy-path gate cannot qualify a resource-holding package
+
+`stark-net` is the first first-party package that holds host resources. The seven-step gate ran
+`check` / `test` / `fmt` on the package, then `check` / `run` / `build` / execute on its consumer —
+and **the consumer only formatted addresses**:
+
+```stark
+let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 1u16);
+if socket_address_text(&address).as_str() != "127.0.0.1:1" { panic(..) }
+```
+
+The package's own tests are two cases, both address formatting. So `connect`, `read`, `write`,
+`write_all`, `close` and `shutdown_write` — the entire reason the package exists — were qualified
+**in name only**. Nothing had ever lowered a call into the raw bindings.
+
+### What that concealed: DEV-146, a build-breaking defect, on develop
+
+The CD-344 signature change (`&TcpStream` -> `&mut TcpStream` on `read`/`write`/`write_all`,
+Codex's work, committed by me) makes any program that CALLS those functions fail to build:
+
+```text
+MIR-0005 call argument: expected Ref { mutable: false, inner: HostResource(tcp_stream) },
+                        found    Ref { mutable: true,  inner: HostResource(tcp_stream) }
+```
+
+`weaken_ref_to` does not weaken `&mut T` to `&T` when `T` is a `HostResource`. Accepted by the
+front end, refused by MIR verification — the DEV-132/DEV-133 class, third mechanism. Registered as
+**DEV-146**; the signatures are reverted to shared borrows with the defect named at their
+definition.
+
+**My CD-344 verification was insufficient and I can name how.** I ran `stark check` (front end
+only, which accepts) and the package gate (whose consumer never calls the affected functions). I
+also checked that no package consumes the changed API — true, and exactly why nothing caught it.
+The check I did not run is the one that matters for a resource package: build a program that
+actually calls the thing.
+
+### First end-to-end observation of the resource path
+
+Never done before. A native client against a real loopback listener:
+
+```text
+client: wrote / 5 / closed          exit 0
+server: received b'PING\n' / closed
+```
+
+connect, write, read, close all work. The package's behaviour is sound; only the build was broken.
+
+**Drop elaboration verified, not assumed.** `close()`'s comment claims MIR emits
+`stark_tcp_stream_close` exactly once for an owned stream. Confirmed in the generated Rust:
+`_7.drop_with(|__v| unsafe { stark_tcp_stream_close(__v.as_raw()) })` for a program that never
+calls `close`.
+
+**Affine lifecycle negatives, observed for the first time:**
+
+| Shape | Outcome |
+| --- | --- |
+| double `close` | REFUSED, E0100 |
+| use after `close` | REFUSED, E0100 |
+| never closed | accepted — drop elaboration emits the close (verified above) |
+| closed on one branch only | accepted — same |
+| stream stored in a `Vec` | accepted |
+
+### A STRUCTURAL LIMIT OF THE GATE, which is the durable finding
+
+I tried to close the hole by making the consumer exercise the resource path. **It cannot.** Step 5
+is `stark run` on the consumer, and the interpreter has no provider layer — any consumer touching a
+bound resource dies with "provider binding not lowered". So the seven-step gate is CONSTITUTIONALLY
+unable to qualify a resource path, for `stark-net` or any future resource package.
+
+That is not a `stark-net` problem and should not be patched inside one. Resource lifecycle belongs
+in a native-only test alongside the existing provider e2e suites (`a10_*`, `c788_lifecycle_e2e`) and
+the C7.8 native-capabilities workflow. **Filed as the recommended next step, not done here** — it
+is a gate change, and gate changes need their own scope.
+
+### HC1 by contrast
+
+`stark-url` is genuinely qualified: 19 tests, 9 exercising the new absolute-URL surface, and a
+consumer that calls `parse_url`/`Url::parse`. Pure parsing, no resources, nothing deferred.
+
+### Correction
+
+Commit messages CD-337 … CD-344 say "all ten packages qualify". It has been **eleven** since
+`56a78b4` added `stark-net`, which landed between CD-336 and CD-337. The RUNS covered all eleven
+and passed; the descriptions were stale. Corrected here.
+
+EVIDENCE: eleven-package qualification exit 0; `stark-net` check/test/fmt clean; end-to-end native
+TCP client against a Python listener; generated-Rust inspection for drop elaboration; five affine
+lifecycle probes.
+FILES: stark-net/src/lib.stark (signatures reverted, DEV-146 named),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-146), COMPILER-STATE.md.
+NEXT: a native resource-lifecycle test for `stark-net` before HC3/HC4 consume these APIs, and
+DEV-146 before the `&mut` signatures can be restored.
+
+## CD-343 — WP-DEV-134-139 final report; programme complete pending CI (2026-08-02)
+
+**All six CD-334 defects repaired, all infrastructure tasks delivered. §17 report at
+`STARKLANG/docs/compiler/work-packages/WP-DEV-134-139-FINAL-REPORT.md`.**
+
+**Recommendation: release, CONDITIONAL on CD-340/341/342 reporting green.** WP §15's gate is
+otherwise satisfied, including its DEV-135 branch: the inventory proved parent poisoning
+unacceptable, and the precision a DEV-135b would have built already existed.
+
+**The qualification that must not be smoothed over.** CD-337 NEVER WENT GREEN — it failed
+`clippy::collapsible_match`, the fix landed in CD-338, and every commit from there is green, so
+DEV-136's code is transitively covered. But "aggregate CI green" is a release-gate item, and CI is
+the SOLE workspace authority since CD-337 dropped local workspace runs. CD-341 and CD-342 each add
+a required job to `ci-complete` and neither has yet been observed passing.
+
+**Root cause of that miss, which matters more than the lint.** The repo pins `channel = "stable"`;
+CI's resolves to 1.97.0, this machine's had gone stale at 1.93.0. Every "clippy clean" before
+CD-338 was against an older lint set than CI's. Gate is now `cargo +1.97.0 clippy`.
+
+**What the programme actually found.** None of the six needed a design change; four were a single
+wrong line or a single missing consultation, and DEV-135 — sized by the work package as "full
+field-sensitive move paths" — was one enum variant, because the move model was already
+field-precise and only field IDENTITY was broken. Four of six were WIDER than filed, and in every
+case the extra half was found by the repair's own must-pass tests rather than by the reproducer.
+
+**Residual, all registered, none from CD-334:** DEV-121 stays open with its blind spot now named
+(INV-VALUE-REP-001 checks `let` bindings; a for-loop binding is not a `let`, and both known
+instances were loop items). DEV-140…145 registered at CD-342. DEV-083 open. `types_equal`'s
+missing `Ty::Param` arm is symptomless and unowned. `?` conversion semantics is a language-design
+question with no owner.
+
+FILES: STARKLANG/docs/compiler/work-packages/WP-DEV-134-139-FINAL-REPORT.md, COMPILER-STATE.md.
+NEXT: owner review; then the DEV-121 invariant extension is the highest-value unowned item, since
+it would close a class rather than another instance.
+
+## CD-342 — the layer audit is an enforcing gate; its six findings are now registered (2026-08-02)
+
+**WP-DEV-134-139 §11. The audit reported and passed unconditionally, so a NEW layer defect could
+appear and the suite would stay green — it could only ever be read by a human who happened to
+look. It now fails on any UNREGISTERED finding.**
+
+**The bar is not zero findings.** Six reachable lowering refusals exist and are NOT repaired by
+this programme. They are now numbered, which is the actual change: CD-331 found and printed them
+and they had carried no deviation number since.
+
+| DEV | Probe | Reachable lowering refusal |
+| --- | --- | --- |
+| DEV-140 | L7153 | `Vec::` method outside the implemented lowering set |
+| DEV-141 | L8093 | `HashMap` over a user-`Drop` value type |
+| DEV-142 | L9130 | droppable composite carrying a borrowed element |
+| DEV-143 | L5346 | `assert_eq` on a user-defined type |
+| DEV-144 | L3698 | `for` over a non-range, non-`Vec` iterator |
+| DEV-145 | L6450 | method on a peeled type outside the implemented slice |
+
+Every probe now declares the disposition it is expected to have — `FrontEnd`, `Lowers`, or
+`KnownDev("DEV-xxx")` — and the test compares actual against registered.
+
+**It fails in BOTH directions, which is the part worth stating.** A registered defect that stops
+reproducing fails too, because that means either the DEV was fixed and its registration is stale,
+or the probe no longer reaches the construct it was written for. Both need a human decision; both
+are invisible to a test that only looks for regressions. The failure was verified by deliberately
+mis-registering one probe and confirming the gate reports "registered as Lowers but actually
+KnownDev".
+
+**Disposition of the six is unscheduled and per-site, not global.** Two repair shapes exist —
+raise the refusal into semantic analysis (E0105) or teach lowering the construct (DEV-132,
+DEV-133). CD-294 is the precedent for why raising is not always cheap: E0106 was reverted because
+`v[i]` appears in value AND place positions that only later phases distinguish.
+
+Local: `cargo test --test layer_audit` green; negative case verified by mis-registration.
+FILES: starkc/tests/layer_audit.rs, starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: reconciliation and the §17 report — the last two programme tasks.
+
+## CD-341 — the external sample suite is published, pinned, and gated in CI (2026-08-02)
+
+**WP-DEV-134-139 §10.1/§10.2. The suite that found all six CD-334 defects is now a repository CI
+clones at a fixed SHA, not a directory on one machine.**
+
+```text
+repo   navraj007in/stark-samples   (public)
+pin    b3b28e757f38d691e7309f168d1209e28ac459af
+job    external-sample-suite  ->  required via ci-complete
+```
+
+**Kept EXTERNAL on purpose (§10.2).** The fixture corpus and the generated C6 corpus both grow
+from this compiler's own model of what programs look like. The sample suite grew from TASKS — sort
+a vector, walk a graph, parse an expression — and that independence is why it found six defects the
+in-tree suites did not. Absorbing it would reorganise it around compiler subsystems and destroy
+the property that makes it useful.
+
+**PINNED BY SHA, not tracking a branch.** §10.3 requires that when a compiler fix changes an
+external task's expected outcome, the suite's manifest is updated and the pin moves to the commit
+carrying that update, in the same logical change set. A floating `main` would let the suite drift
+green or red for reasons unrelated to the commit under test — precisely the confusion the pin
+prevents. The job also asserts the resolved HEAD equals the pin, because `ref:` accepts a branch
+name and would otherwise float silently.
+
+**It runs the BUILT artifacts**, never `cargo run`, so what is tested is what would ship.
+
+**A machine-readable manifest now exists (§10.1)**, which the suite previously lacked —
+`run-all.sh` printed pass/fail and nothing more. `manifest.json` records 39 cases with, per case:
+id, description, linked DEV, and the expected outcome for EACH engine (front end, HIR, MIR,
+native), using an explicit vocabulary that distinguishes `not_reached` (rejected earlier) from
+`not_supported` (the engine lacks the construct) from `not_exercised` (this case does not drive
+it). `verify.py` drives it, writes `results.json`, and CI uploads both as evidence.
+
+**An unexpected PASS fails the job.** A reproducer that silently starts working means an
+expectation went stale, not that the suite is healthy — the six `defects/` cases are exactly this
+shape, since every one of them now does the OPPOSITE of what its file header describes.
+
+Local: `verify.py` — 39/39 cases matched, 1.8s. CI YAML validated; `ci-complete` now needs twelve
+jobs, and forgetting to add one remains visible there rather than silently unprotected.
+FILES: .github/workflows/ci.yml, COMPILER-STATE.md. Suite content lives in its own repository.
+NEXT: §11 layer-audit inventory enforcement, then reconciliation and the §17 report.
+
+## CD-340 — DEV-138 CLOSED as a DEV-121 instance; all six CD-334 defects repaired (2026-08-02)
+
+**WP-DEV-134-139 Part F. The classification came first and decided the repair, as §9 required.**
+
+```text
+declared item type   &str            06-Standard-Library.md: SplitIter / String::split / &str
+HIR runtime value    Value::String   OWNED  <- the defect
+value_is_copy        Value::Str -> true, Value::String -> false
+front end            ACCEPTS (sees a Copy shared reference)
+MIR / native         VACUOUS - both refuse SplitIter outright (C4.5)
+```
+
+**The MIR and native rows are vacuous, not confirming**, and are recorded that way rather than
+counted as agreement: those engines do not implement `SplitIter`, so they could not have
+disagreed. §9.3's "treat as distinct" test requires MIR to emit `Move` for a Copy shared-reference
+item AND all engines to consume it. Neither holds; every testable fold criterion does.
+
+**Producer-specific, which is what identifies it as DEV-121 rather than something new.** Six shapes
+were probed: `&Vec<String>`, `&Vec<Int32>`, `chars()`, and a plain `&str` outside a loop were
+already correct. Only `split` was wrong — and `trim`/`substring`, with the SAME declared return
+type, already yielded `Value::Str`. The repair makes `split` consistent with its siblings rather
+than introducing a rule. One line, no new `Value` variant, no amendment.
+
+**THE MORE USEFUL FINDING IS WHY THE INVARIANT MISSED IT.** INV-VALUE-REP-001 exists precisely to
+catch this class, and checks at every **`let`** that a binding declared `&str`/`&[T]` does not hold
+owned storage. A **for-loop binding is not a `let`**. Both known DEV-121 instances —
+`String::bytes()` at CD-305 and `String::split()` here — were reachable through a loop item, and
+both were found by a user-facing program rather than by the invariant. Extending it to loop
+bindings and call arguments is what would close the class; finding a third instance by hand would
+not. Recorded against DEV-121, unowned.
+
+**ALL SIX CD-334 DEFECTS ARE NOW REPAIRED.** Three were soundness holes; none required a design
+change, and four turned out to be a single wrong line or a single missing consultation:
+
+| DEV | Root cause in one line |
+| --- | --- |
+| 134 | operand and return type were never compared |
+| 137 | a condition is neither a block nor a statement, so nothing popped its borrows |
+| 136 | move state merged syntactic children instead of reaching predecessors |
+| 135 | a field was identified by the span it was written at |
+| 139 | two bound lookups each read half the generic environment |
+| 138 | one producer returned an owned value for a borrowed type |
+
+Local:
+- cargo test --test dev138_iterator_item_representation -- 10 cases, green
+- cargo test --test c63a_string --test copy_canon_matrix --test three_engine_differential --test
+  exec_snapshots --test conformance --test gate2_valid --test gate3_execution -- 209 green
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34, and its `defects/05` reproducer now runs correctly
+- full workspace NOT run, per the amended evidence policy
+
+CI:
+- the aggregate gate is the authority for this commit
+
+FILES: starkc/src/interp.rs, starkc/tests/dev138_iterator_item_representation.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: the three non-defect programme tasks — in-tree regression manifest (§10.1), pinned
+external-suite CI (§10.2, BLOCKED: the suite has no git remote), layer-audit inventory enforcement
+(§11) — then final reconciliation and the §17 report.
+
+## CD-339 — DEV-139 CLOSED: a method body reads the impl's bounds, not only its own (2026-08-02)
+
+**WP-DEV-134-139 Part E. Five of six defects closed; only DEV-138 remains.**
+
+**Wider than filed: it was TWO lookups, and the second was deferred.** The entry names operator
+desugaring, but `satisfies_bound` — ordinary trait-bound satisfaction — had the identical gap. Each
+kept its OWN copy of the parameter lookup and each consulted `current_fn_generics` alone; they
+agreed only by coincidence. And the trait-bound half is deferred: DEV-067(a) captures "the generic
+environment this obligation was recorded in" and replays it at drain, and that capture was also
+fn-generics-only — so an obligation raised inside `impl<T: Ord> Pair<T>` replayed against half its
+environment and still failed after the operator half was repaired. Two of this defect's own tests
+found that second half, which is the argument for writing the must-pass set before assuming the
+first fix was the whole fix.
+
+**Nothing new was brought into scope.** WP-C6.2b-F5 already installed impl-head generics in
+`current_impl_generics` for method bodies. The lookups never asked. This repair is a READ, not a
+new binding — it cannot change which names are in scope, only which declared bounds are found.
+
+**Two helpers, each written once:**
+
+```
+param_declares_bound(param, required)   both lookups call it
+current_generic_env()                   the deferred capture calls it
+```
+
+DEV-128 and DEV-130 are both "the rule was written twice and the copies drifted". This was already
+two copies; it is now one each.
+
+**Negative controls, because WIDENING an environment risks discharging obligations never
+declared:** no bound at all, `Eq` where `Ord` is required, `Ord` where `Num` is required, a bound
+on a DIFFERENT parameter (pins that the lookup still matches on parameter NAME rather than finding
+any bound in scope), an unbounded method-level parameter, and an undischarged callee obligation.
+
+**DEV-083 is NOT closed by this.** It is impl-head *matching* — a concrete position in an impl head
+against an unresolved receiver type argument. This was impl-head *bounds being read*. Different
+mechanism; DEV-083 remains OPEN and unowned.
+
+**What class of program is now prevented from failing:** any generic CONTAINER whose methods use
+the bounds its impl declares — `Heap<T: Ord>`, `SortedVec<T: Ord>`, a `max` method. The rule is on
+the environment, not on `Ord` or on operators, so it covers `Eq`/`Num`/user traits, inherent and
+trait impls, and trait-bound obligations as well as operator desugaring.
+
+Local:
+- cargo test --test dev139_impl_generic_bounds -- 16 cases (10 accept, 6 reject), green
+- cargo test --test c62b_f5_impl_bounds --test c62b_f6_self_normalisation --test
+  c62c_associated_types --test c62d_operator_coretrait --test cross_package_generics --test
+  native_c6_2_generics_traits -- 60 green; the generics/bounds subsystem closest to this change
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 69 green
+- cargo test --test dev134_try_error_type --test dev135_field_move_paths --test
+  dev136_terminating_path_moves --test dev137_while_condition_borrows -- 62 green, all four
+  previously closed defects in this programme
+- cargo test --test mir_verify --test three_engine_differential -- 160 green
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34, and its `defects/06` reproducer now checks OK
+- full workspace NOT run, per the amended evidence policy
+
+CI:
+- the aggregate gate is the authority for this commit, including clippy on CI's own stable
+
+FILES: starkc/src/typecheck.rs, starkc/tests/dev139_impl_generic_bounds.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-138 — build the engine matrix first and apply WP §9.3's decision rules, rather than
+assuming it is independent.
+
+## CD-338 — DEV-135 CLOSED: a field is one place however many times it is written (2026-08-02)
+
+**WP-DEV-134-139 Part B. Also carries a `collapsible_match` fix for CD-337 that CI caught and the
+local gate did not, and two Codex documentation updates to the frozen P1 workload.**
+
+**THE ESTIMATE WAS WRONG AND THE RECORD IS CORRECTED, NOT REWRITTEN.** The CD-334 inventory said
+"the gap is in the front end's `moved_places`, which is keyed on whole locals". It is not.
+`moved_places` is a `HashSet<Place>`, `Place` already carries `projections`, and `places_overlap`
+already does prefix matching. The front end was ALREADY field-precise: moving `pair.left` already
+left `pair.right` live, and moving the parent afterwards was already refused.
+
+**The actual defect was field IDENTITY, one enum variant wide:**
+
+```rust
+Projection::Field(name.lo, name.hi)   // the SPAN the name was written at
+```
+
+Two mentions of one field sit at different byte offsets, so `owner.handle` on line 5 and
+`owner.handle` on line 6 were two DIFFERENT projections that `places_overlap` correctly reported as
+disjoint. Nothing was missing from the move model; the comparison could never succeed. Storing the
+resolved NAME fixes it. Same class as DEV-122 — identity taken from a span rather than from what
+the span denotes.
+
+**So the WP's two-stage model was never entered, and that is a real outcome rather than a shortcut.**
+§5.2 split this into a conservative "DEV-135a parent poisoning" gate and a "DEV-135b precision"
+follow-on. The inventory ruled poisoning out — sibling survival is asserted by the conformance
+fixture set and four differential suites. But the precision DEV-135b was meant to BUILD already
+existed. The repair is neither stage. **No DEV-135b is filed and none is owed**: sibling survival,
+nested paths, parent/child ordering, and exactly-once drop are all covered, which is exactly what
+DEV-135b's closure criteria asked for. WP §15's release gate resolves on its second branch.
+
+**What class of program is now prevented:** any program that moves the same owned field, tuple
+element, or nested field out twice — and, by the same prefix rule that already worked, any that
+moves a parent after a field or reads a field after the parent. The check is on the PLACE, not on
+syntax, so it holds however the field is reached.
+
+**A CI-vs-local gate divergence, worth more than the lint it caught.** CD-337 went red on
+`clippy::collapsible_match`. The lint is real; the reason it was missed is that the repo pins
+`channel = "stable"` and CI's stable resolves to **1.97.0** while this machine's stable had gone
+stale at **1.93.0**. Every "clippy clean" reported earlier in this programme was against an OLDER
+lint set than CI's. Corrected here and going forward: the gate is `cargo +1.97.0 clippy`. This
+matters disproportionately now that CD-337 made CI the sole workspace authority — a local gate that
+silently differs from CI undermines exactly that arrangement.
+
+**Codex changes included at the owner's instruction, reviewed not rubber-stamped.** Two docs on the
+frozen P1 REST workload: the plan's status moves to `IMPLEMENTED — TIER-1 QUALIFIED`, and the report
+identifies `P1-COMPILER-001` as a local label for the already-governed `DEFECT-C788-LOOP-TEMP`
+(discharged by MIR amendment A12) while demoting a stale `P1 PARTIAL` handoff to quoted history.
+Cross-references verified: `a12_storage_end_shapes.rs`, `mir-amendment-A12-storage-end.md`, and
+CD-263/264/265/273 all exist. **CD-269 is cited and is absent from this file** — it is a real
+decision (commit `28a9ad1`, cited in five other documents), so the Codex text is correct and the gap
+is in this ledger. Recorded, not silently patched.
+
+Local:
+- cargo test --test dev135_field_move_paths -- 16 cases (6 reject, 10 accept), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential -- 292 green
+- cargo test --test dev134_try_error_type --test dev136_terminating_path_moves --test
+  dev137_while_condition_borrows -- 46 green, all three previously closed defects
+- cargo test --test c61f_reference_boundary --test c61f_structural_copy --test
+  native_c6_1_ownership --test operand_move_inventory --test copy_canon_matrix -- 51 green
+- cargo test --test native_c5_3_aggregates_enums --test c6_generated_corpus -- 27 green; these are
+  the suites that assert partial-move field precision at the MIR and native layers
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- full workspace NOT run, per the amended evidence policy
+- `cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings` was IN FLIGHT when
+  this was committed, at the owner's instruction to let CI decide. It is NOT claimed as passing.
+
+CI:
+- aggregate workspace gate is the authority for this commit, including clippy on CI's own stable
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev135_field_move_paths.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md, and the two Codex P1 documents.
+NEXT: DEV-139 — merge impl-level generics into the obligation environment the operator check reads.
+
+## CD-337 — DEV-136 CLOSED: only branches that reach a join contribute to it (2026-08-02)
+
+**WP-DEV-134-139 Part D, and the second of four milestone points. `if flag { return out; }
+out.push('a');` compiles.**
+
+**Layer: `borrowck.rs`.** The `If` arm unioned the then-branch's move set into the post-state
+unconditionally; the `Match` arm extended the merged set from every arm. Neither asked whether the
+branch reaches the join. A branch that `return`s is not a predecessor of the statement after the
+`if`, so its moves were being attributed to a path they never happened on.
+
+**Divergence is read from existing authorities, not re-derived from syntax.** A
+`Return`/`Break`/`Continue` statement anywhere in the sequence, plus the type checker's own
+`Ty::Never` for `panic(..)` and any call returning `!`. Composite forms recurse: an `if` diverges
+only when both sides do, a `match` only when every arm does.
+
+**THE DIRECTION OF CONSERVATISM IS THE ENTIRE SAFETY ARGUMENT.** The predicate answers "does this
+definitely NOT reach the join?":
+
+```
+wrong `true`   -> drops a real move from the join -> accepts use-after-move -> UNSOUND
+wrong `false`  -> keeps the old false positive     -> merely annoying
+```
+
+So it reports `true` only on evidence, and anything unrecognised falls through to `false`. `loop`
+without a reachable `break` is deliberately NOT treated as diverging — judging it needs
+reachability analysis the checker does not have, and guessing would land on the unsound side.
+
+**Two merge subtleties, both found while writing the repair and both pinned:**
+
+| Case | Naive answer | Correct answer |
+| --- | --- | --- |
+| `if` with no `else`, branch terminates | branch's move set | the state from BEFORE the `if` |
+| `match` where ALL arms terminate | empty merged set | the pre-match state |
+
+The second is the dangerous one: an empty merge would silently resurrect a value moved BEFORE the
+`match`, turning a false positive into a false negative. `a_move_before_an_all_diverging_match_
+is_still_rejected` exists precisely for it.
+
+**Drop obligations, not just diagnostics.** `a_droppable_value_survives_a_terminating_branch`
+executes both paths and asserts each `Guard` is destroyed exactly once — the false path drops at
+end of scope, the true path moves into a callee that drops it there.
+
+**What class of program is now prevented from failing:** any program whose move happens only on a
+path that leaves the function or the loop. The rule is on the control-flow edge, not on the
+syntax, so it covers `return`, `break`, `continue`, `panic`, nested `if`, and `match` arms
+uniformly — and it does NOT cover a branch that can fall through, which is what keeps
+maybe-moves rejected.
+
+Local:
+- cargo test --test dev136_terminating_path_moves -- 14 cases (9 accept, 5 reject), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential -- 292 green
+- cargo test --test dev134_try_error_type --test dev137_while_condition_borrows -- 32 green,
+  the two previously closed defects in this programme
+- cargo test --test c61f_reference_boundary --test native_c6_1_ownership --test
+  operand_move_inventory --test copy_canon_matrix --test exec_snapshots --test snapshots -- 43 green
+- cargo clippy --release --lib --tests --all-features -- -D warnings -- clean
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34
+- FULL WORKSPACE (milestone 2 of 4) -- see the commit for the recorded result
+
+CI:
+- aggregate workspace gate PENDING
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev136_terminating_path_moves.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-135b — full field-sensitive move paths, which the inventory established is the
+release-gating repair rather than the DEV-135a poisoning gate.
+
+## CD-336 — DEV-137 CLOSED: condition-only borrows end at the branch boundary (2026-08-02)
+
+**WP-DEV-134-139 Part C. `while i < v.len() { v[i] = 5; }` compiles. So does the `if` form, which
+had the identical defect and was found by this repair's own test.**
+
+**The layer, recorded before the repair as the work package required: `borrowck.rs`.** Not MIR,
+not liveness, not the back-edge. `active_borrows` is a stack scoped by exactly two mechanisms —
+`check_block` truncates at block end, `check_stmt` truncates after each expression statement. A
+CONDITION is neither: it is an expression evaluated outside any statement of its own. So
+
+```rust
+hir::ExprKind::While { cond, body } => {
+    self.check_expr(*cond);      // pushes the auto-borrow `values.len()` takes
+    self.check_block(*body);     // records its entry depth AFTER that push
+}
+```
+
+left the condition's temporaries on the stack for the whole body, and `check_block` restored to a
+depth that already included them. Nothing popped them until the enclosing statement ended.
+
+**Wider than filed, same mechanism.** `if` conditions were identical. The growing-vector must-pass
+case is what exposed it: `if values.len() < 5u64 { values.push(1); }` inside a loop body was
+refused for the same reason. One repair, `check_condition`, written ONCE and used by both arms —
+DEV-128 and DEV-130 are both "the rule was written twice and the copies drifted".
+
+**The scope boundary is the whole design, and it is not "loop and branch headers".** `match`
+scrutinees and `for` iterators are deliberately NOT routed through `check_condition`:
+
+| Position | Borrow must | Why |
+| --- | --- | --- |
+| `while` / `if` condition | END at the branch | value is consumed by the branch |
+| `match` scrutinee | SPAN the arms | PAT-BIND-001 binds payloads by reference into it |
+| `for` iterator | SPAN the body | yields references into the iterated value |
+
+Truncating either of the bottom two would hand out references to storage the checker had stopped
+tracking. Both are pinned by negative controls that fail if someone later generalises the repair.
+
+**Why depth-based rather than clearing the borrow set.** A borrow created before the loop
+(`let view = &values;`) sits at a shallower depth than the snapshot, so the truncate cannot reach
+it and a body mutation through its owner is still refused. That is
+`borrow_predating_the_loop_stays_live`, and it is the difference between modelling a region and
+just forgetting.
+
+**Execution, not merely acceptance.** `a_growing_vector_re_evaluates_its_condition` runs through
+the oracle and asserts output. It also settles a question the workaround raised: hoisting
+`let n = v.len()` was a SEMANTIC change, not a stylistic one — that loop grows the vector it is
+measuring, so a hoisted bound stops early. The samples that carried the hoist workaround were
+working around a defect at the cost of a different meaning.
+
+**What class of program is now prevented from failing:** any program that reads a receiver in a
+condition and mutates it in the guarded branch. The fix is on the borrow REGION, not on `len` or
+on `Vec`, so it holds for every method, every receiver type, `&mut` parameters included, and for
+indexed place reads (`while values[0] < 3`) as well as method calls.
+
+Local:
+- cargo test --test dev137_while_condition_borrows -- 16 cases (12 accept, 4 reject), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential
+  -- 292 green (78s for the three-engine differential)
+- cargo test --test c61f_reference_boundary --test c61f_nested_refs --test native_c6_1_ownership
+  --test dev132_vec_index_place --test operand_move_inventory -- 44 green, the borrow/ownership
+  subsystem closest to this change
+- cargo clippy --release --lib --tests --all-features -- -D warnings -- clean
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34
+- full workspace NOT run for this commit, per the 2026-08-02 evidence ruling; the next milestone
+  run is after DEV-136
+
+CI:
+- aggregate workspace gate PENDING
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev137_while_condition_borrows.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-136, then the milestone full-workspace run.
+
+## CD-335 — DEV-134 CLOSED: `?` now relates its operand to the return type (2026-08-02)
+
+**WP-DEV-134-139 Part A. `?` required exact error-type compatibility; it now does. The ruling is
+REJECT, not convert — recorded as a decision, because it is a language question and not an
+implementation detail.**
+
+```text
+`?` requires exact error-type compatibility.
+Implicit From-based propagation is not part of this repair.
+```
+
+**The defect was one missing relation, not two.** The `Try` arm asked "is the enclosing return
+type `?`-capable?" and "is the operand `?`-capable?" as INDEPENDENT questions and never compared
+them. That single omission produced two symptoms, and the repair work found the second:
+
+| Accepted before | Propagated value | Caller sees |
+| --- | --- | --- |
+| `Result<_, Low>?` in a fn returning `Result<_, High>` | a `Low` | tag from another enum |
+| `Option<_>?` in a fn returning `Result<_, _>` | a `None` | tag from another enum |
+| `Result<_, _>?` in a fn returning `Option<_>` | an `Err` | tag from another enum |
+
+The constructor half was NOT in DEV-134 as filed. It is the same mechanism and the same repair, so
+it widened the existing entry rather than taking a new number (WP §2, one mechanism one repair).
+
+**Deferred, like `display_checks`, and for the same reason.** The operand's error type is routinely
+an inference variable while the body is being checked (`Err(make())?`), so an eager comparison
+would either reject valid code or force a premature binding. `check_try_compatibility` is recorded
+during checking and drained after inference settles.
+
+**E0006 widened rather than a new code allocated.** The spec's E0006 now covers the whole
+return-type contract for `?` — wrong constructor, mismatched error type, or a function that
+returns neither. One code per concept, normative table stable, conditions distinguished by
+message. `non_result_return_reports_once_not_twice` pins that the pre-existing condition still
+reports once rather than twice.
+
+**A LATENT GAP FOUND BY THIS WORK'S OWN NEGATIVE CONTROL, and deliberately not repaired.**
+`types_equal` has no `Ty::Param` arm: two occurrences of the same type parameter compare unequal
+and fall to `_ => false`. Its existing callers are coherence and overlap paths where `Ty::Param`
+is pre-handled or where a conservative `false` is safe, so it has no demonstrated symptom there —
+but it made the first version of this repair reject
+
+```stark
+fn low<E>(e: E) -> Result<Int32, E> { Err(e) }
+fn same<E>(e: E) -> Result<Int32, E> { let v = low(e)?; Ok(v) }
+```
+
+which `error_type_as_a_generic_parameter_is_accepted` caught before it could ship. Widening a
+shared coherence primitive to fix a symptomless gap was rejected as out of scope; instead the
+structural walk takes the `Ty::Param` behaviour as a PARAMETER (`types_equal_inner`) — written
+ONCE, reached by two entry points, because DEV-128 and DEV-130 are both "the rule was written
+twice and the copies drifted". Whether `types_equal` itself should be widened is unowned and gets
+a DEV number only if a symptom is found.
+
+**What class of program is now prevented, which is the closure question rather than "the
+reproducer passes":** no program can propagate a value into a return type that cannot represent
+it. The check is on the TYPES at the propagation site, not on any syntactic shape, so it holds for
+`?` in any position — nested helpers, generic bodies, chained propagation — and it cannot be
+evaded by adding a `From` impl, which is the shape a reader coming from Rust would expect to work.
+
+EVIDENCE (all run locally, at this head):
+`cargo test --test dev134_try_error_type` — 16 cases, 7 reject / 9 accept, green.
+`cargo test --test conformance --test gate2_valid --test gate3_execution` — 65 green.
+`cargo test --test c788_synth --test a10_provider_call --test c788_source_time_e2e` — 32 green;
+these are the provider paths that use `?` most heavily and were the main over-rejection risk.
+`qualify-first-party-packages.py` over all ten packages — exit 0.
+External task-shaped suite — 34/34, unchanged.
+`cargo fmt --all -- --check` — clean. `rustfmt` was run on the two touched files only, never
+tree-wide, because this checkout is shared with parallel sessions.
+Spec regenerated (`build-core-spec.py`) and the 112-block fixture corpus re-extracted: manifest in
+sync, no block added or renumbered.
+LEFT TO CI: `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+`cargo test --workspace --all-targets --all-features` were still running locally when this was
+prepared; both are required and are the aggregate gate.
+FILES: starkc/src/typecheck.rs, starkc/tests/dev134_try_error_type.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, STARKLANG/docs/spec/04-Semantic-Analysis.md and the
+regenerated STARK-Core-v1.{md,html,pdf}, COMPILER-STATE.md.
+NEXT: DEV-137, per the work package's required order.
+
+**PROGRAMME STATUS — two counts, deliberately kept apart.** They are not the same number and
+conflating them misreports progress in both directions: the defect count understates the work
+(regression manifest, external-suite CI, and layer-audit hardening are none of them defects), and
+the task count understates release readiness (only the defects gate the release).
+
+```text
+Defects (WP-DEV-134-139 Parts A-F)     ALL SIX CLOSED (134, 135, 136, 137, 138, 139)
+                                       DEV-135b NOT FILED — see CD-338
+                                       DEV-138 closed as a DEV-121 instance; that class stays OPEN
+                                       DEV-135b conditional on the DEV-135 inventory
+
+Programme tasks (WP-DEV-134-139)       16 of 16 complete; release recommendation is
+                                       CONDITIONAL on CD-340/341/342 CI going green
+                                       includes the six defect repairs plus the in-tree
+                                       regression manifest (§10.1), the pinned external-suite
+                                       CI job (§10.2), layer-audit inventory enforcement (§11),
+                                       and final reconciliation (§16)
+```
+
+**LOCAL EVIDENCE POLICY, owner ruling 2026-08-02, in force from DEV-137 onward.** Per-commit local
+evidence is TARGETED — fmt, clippy over affected targets, the dedicated DEV suite, closest
+subsystem suites, MIR differential/verifier when lowering or ownership changes, affected package
+qualification, the external sample suite, and a clean `git status --short`.
+
+The original ruling additionally required full local workspace runs at four milestones.
+**AMENDED the same day after measurement: local workspace runs are DROPPED entirely after
+CD-337.** Each takes ~17 minutes, two more were scheduled, and they duplicate a gate CI already
+enforces on every pushed commit. Milestones 1 (CD-335, DEV-134) and 2 (CD-337, DEV-136) were run
+and their results are recorded; no further local workspace run is required, including at
+programme completion.
+
+**CI's aggregate required check is therefore the SOLE workspace authority**, which makes the merge
+gate strictly more important rather than less. A targeted local run supports a commit's evidence
+statement and never replaced CI, but from CD-338 onward nothing local covers the workspace at all.
+Any commit whose CI run is red is unverified regardless of how much local evidence it carries.
+
+**A procedural rule learned the hard way (CD-337): while a workspace run is in flight, nothing
+else may touch cargo.** The first attempt at milestone 2 was invalidated because a
+`cargo build --bin starkc` for the NEXT defect landed mid-run, and ~49 test files invoke the
+compiler through `CARGO_BIN_EXE` — so an unknown number of suites ran against a binary carrying an
+unrelated change. Two other measurement errors in the same session point the same way: a
+`head -40` that truncated a run and made `head`'s exit code look like cargo's, and a
+`grep '^test result'` that counted tests NAMED `result_*` as suite summaries. Capture the tool's
+own exit code, and validate counts against a known total rather than trusting a summary line.
+
+## CD-334 — six defects filed from an external sample suite; three are soundness (2026-08-02)
+
+**An 18-package sample suite was written OUTSIDE this repository, against the release binaries, to
+answer "what does it feel like to write ordinary STARK today?". It found six defects, numbered
+DEV-134…DEV-139. Three of them are soundness gaps the fixture corpus does not reach.**
+
+| DEV | One line | Class |
+| --- | --- | --- |
+| 134 | `?` neither converts the error type nor requires a conversion to exist | **soundness** — type confusion |
+| 135 | moves of individual struct FIELDS are not tracked; second move surfaces as an ICE | **soundness** (bounded by the oracle) |
+| 136 | a move on a `return`ing path is treated as unconditional (E0100) | false positive |
+| 137 | a receiver auto-borrow in a `while` CONDITION is live across the body (E0101) | false positive |
+| 138 | an iterator-yielded `&str` is consumed by its first use | **soundness-adjacent**; candidate DEV-121 instance |
+| 139 | impl-level generic bounds are invisible to operator desugaring (E0500) | false positive |
+
+Full structured entries — normative expectation, reproducer, engine behaviour, impact, workaround,
+disposition — are in the canonical ledger, `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. This
+record is the index and the finding about method, not a second copy.
+
+**DEV-134 is the one that needs an owner decision rather than an implementation.** The spec does not
+scope a `From` conversion at the propagation site, so "convert" would be new semantics — CE-shaped —
+while "reject" is the conservative half and can land alone. Filing it does not presume which.
+
+**DEV-138 is filed as a hypothesis, not a finding.** It is plausibly an instance of the still-open
+DEV-121 value-representation class rather than an independent defect; INV-VALUE-REP-001 is the
+instrument that would settle it, and it has not been run against this reproducer. Recorded that way
+deliberately, so the count is not inflated by a duplicate.
+
+**Why an external suite found things the corpus did not, which is the durable point.** The fixture
+corpus and the generated C6 corpus both grow from the compiler's own model of what programs look
+like. The sample suite grew from *tasks* — sort a vector, walk a graph, parse an expression, encode
+a run-length string — and the defects cluster exactly where those two diverge:
+
+```
+DEV-136, DEV-137   ordinary imperative loop and early-return shapes
+DEV-135, DEV-138   ownership of things the corpus rarely uses twice
+DEV-139            generic CONTAINERS with methods, not generic functions
+```
+
+DEV-137 is the most disruptive in practice: `while i < v.len()` is how an indexed loop is written,
+and every in-place algorithm hits it. Its workaround — hoist the length — **fails when the length
+changes**, so a growing queue must track its length by hand. That is worth weighting above the other
+two false positives when this is scheduled.
+
+**A limitation found alongside them, filed as neither defect nor deviation because it may be
+intended:** `Box<T>` cannot be dereferenced, so a recursive tree built with `Box` can be constructed
+but never walked by reference — traversal requires consuming it with `Box::into_inner`. The suite
+routes around this with an arena (nodes in one `Vec`, children as indices), which is a legitimate
+technique rather than a workaround. If by-reference traversal of a boxed tree is meant to be
+possible, this is a seventh defect; if not, it is a documented consequence of having no `Deref`.
+The owner's call, which is why it carries no DEV number.
+
+EVIDENCE: six runnable reproducers, one per DEV, verified against
+`starkc/target/release/{stark,starkc}` at this head — each shown to reproduce its stated
+`starkc check` and `starkc run` outcomes. The suite itself is 18 packages / 55 files / ~5,500 lines
+and passes 34 of 34 checks with the six workarounds applied and commented.
+SCOPE: **documentation only.** No compiler source, test, or fixture was modified under this CD, and
+no defect was repaired. Nothing here is gate evidence.
+FILES: starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-134…139 appended), COMPILER-STATE.md.
+NEXT: owner triage — DEV-134's reject-vs-convert ruling, and whether DEV-138 folds into DEV-121.
+
 ## CD-294 — E0106 reverted: the layer migration was not the cheap kind (2026-07-31)
 
 **CD-293 moved `v[i]`-on-a-non-`Copy`-element from MIR verification into semantic analysis as
@@ -7098,14 +8122,20 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 97 numbered deviations as of 2026-08-01):
+Canonical ledger (full structured entries): the file now carries **108 distinct numbered
+deviations** as of 2026-08-02, counted as unique `## DEV-NNN` headings (DEV-121 has two — an
+original and an UPDATE — and is counted once). CD-334 added six. NOTE: this line previously read
+"97 numbered deviations as of 2026-08-01", which did not match the file then either (102 by the
+same count); the discrepancy predates CD-334 and is recorded rather than silently rewritten,
+because whichever convention produced 97 may be the intended one. Path:
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-31 (post-C8 candidate closeout). **Every entry below is long-standing and unscheduled;
-no open deviation belongs to the C4 track.**
+Open as of 2026-08-02. Entries DEV-005…DEV-017 are long-standing and unscheduled, and no open
+deviation belongs to the C4 track. **DEV-134…DEV-139 were opened 2026-08-02 by CD-334 and are new,
+not long-standing** — three of them are soundness gaps and none has an owning gate yet.
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
   proposal.
@@ -7116,6 +8146,23 @@ no open deviation belongs to the C4 track.**
   remainder; owner: post-C8 editor validation.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
+- DEV-134 — CLOSED CD-335 (WP-DEV-134-139 Part A). `?` now requires exact error-type and
+  constructor compatibility; the ruling was REJECT, not convert. Whether Core v1 should gain
+  `From` conversion at `?` is a separate, still-open language-design question with no owner.
+- DEV-135 — CLOSED CD-338 (WP-DEV-134-139 Part B). The move model was already field-precise; the
+  defect was field IDENTITY taken from a span. No DEV-135b was filed: the precision that follow-on
+  would have built already existed.
+- DEV-136 — CLOSED CD-337 (WP-DEV-134-139 Part D). Move state now merges only from predecessors
+  that reach the join; `loop` without a reachable `break` is deliberately still treated as
+  reaching, because proving otherwise needs reachability analysis the checker lacks.
+- DEV-137 — CLOSED CD-336 (WP-DEV-134-139 Part C). Condition-only borrows now end at the branch
+  boundary, for `if` as well as `while`; `match` scrutinees and `for` iterators deliberately keep
+  theirs.
+- DEV-138 — CLOSED CD-340 as a CONFIRMED DEV-121 instance (WP-DEV-134-139 Part F). DEV-121's
+  class stays OPEN, and its blind spot is now named: INV-VALUE-REP-001 checks `let` bindings, and
+  a for-loop binding is not a `let`, so no loop item is covered.
+- DEV-139 — CLOSED CD-339 (WP-DEV-134-139 Part E). Both the operator and trait-bound lookups now
+  read the combined impl+method environment. DEV-083 is a different mechanism and remains OPEN.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 

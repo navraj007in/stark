@@ -1,0 +1,121 @@
+// CD-348 — the EXECUTED LIFECYCLE for `stark-net`'s `TcpStream` resource.
+//
+// The qualification script starts a loopback echo listener on 127.0.0.1:39187 before running this
+// binary, so every step below is DETERMINISTIC RUNTIME EVIDENCE rather than a compiled-but-untaken
+// branch. That distinction is the whole point of this file: CD-347's first version connected to a
+// port expected to refuse, which proved the surface lowered, linked and started — but never
+// acquired a stream, so `write`, `read`, `close` and drop-release were compiled and never run.
+//
+// Two lifecycles are exercised, because the two release paths are different machinery:
+//
+//   acquire -> write -> read -> EXPLICIT close      the affine release the package exposes
+//   acquire -> write -> IMPLICIT drop release       MIR drop elaboration emitting the close
+//
+// If the peer is not there, this FAILS. It does not fall back to a negative path — a gate that
+// silently degrades to "the error branch ran" is the gate CD-345 already caught.
+
+use stark_net::close;
+use stark_net::connect_no_timeout;
+use stark_net::ipv4;
+use stark_net::read;
+use stark_net::socket_address;
+use stark_net::default_resolve_limits;
+use stark_net::resolve;
+use stark_net::write_all;
+use stark_net::SocketAddress;
+
+fn peer() -> SocketAddress {
+    socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 39187u16)
+}
+
+// ACQUIRE -> USE (write + read) -> EXPLICIT CLOSE.
+//
+// `write_all` and `read` take `&mut TcpStream` and forward to raw bindings whose derived
+// signatures take a SHARED borrow. That coercion is DEV-146: before CD-346 this did not build.
+fn acquire_use_and_close_explicitly() {
+    match connect_no_timeout(peer()) {
+        Ok(stream) => {
+            let mut owned = stream;
+            match write_all(&mut owned, "PING\n".bytes()) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: write_all to the echo peer failed");
+                }
+            }
+            let mut buffer: [UInt8; 32] = [0u8; 32];
+            let echoed: UInt64;
+            {
+                let output = &mut buffer[0u64..32u64];
+                match read(&mut owned, output) {
+                    Ok(count) => {
+                        echoed = count;
+                    }
+                    Err(_error) => {
+                        panic("resource consumer: read from the echo peer failed");
+                    }
+                }
+            }
+            if echoed != 5u64 {
+                panic("resource consumer: echo length mismatch");
+            }
+            match close(owned) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: explicit close failed");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: the echo peer must be listening; see CD-348");
+        }
+    }
+}
+
+// ACQUIRE -> USE -> IMPLICIT RELEASE BY DROP.
+//
+// No `close` call. The stream goes out of scope holding a live handle, and MIR drop elaboration
+// must emit `stark_tcp_stream_close` exactly once. A second close, or none, is observable: the
+// provider aborts on a handle it did not expect, so a non-zero exit here IS the failure signal.
+fn acquire_use_and_let_drop_release() {
+    match connect_no_timeout(peer()) {
+        Ok(stream) => {
+            let mut owned = stream;
+            match write_all(&mut owned, "DROP\n".bytes()) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: write_all before drop release failed");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: the echo peer must be listening; see CD-348");
+        }
+    }
+}
+
+// HC3 — the `dns` capability, which is FUNCTION-SHAPED rather than resource-shaped: there is no
+// handle to acquire or release, so the bar (CD-348) is a SUCCESSFUL invocation of the capability
+// family, not a lifecycle.
+//
+// `localhost` is the one name every CI host resolves without a network. A failure here is a real
+// failure: it means the provider call did not reach the resolver, which is exactly the "lowered
+// and linked but never executed" gap this consumer exists to close.
+fn resolve_localhost() {
+    match resolve(&String::from("localhost"), 80u16, default_resolve_limits()) {
+        Ok(addresses) => {
+            if addresses.len() == 0u64 {
+                panic("resource consumer: localhost resolved to no addresses");
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: localhost must resolve; see CD-348");
+        }
+    }
+}
+
+fn main() {
+    acquire_use_and_close_explicitly();
+    acquire_use_and_let_drop_release();
+    resolve_localhost();
+    println("STARK_NET_RESOURCE_OK");
+}

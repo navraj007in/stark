@@ -1,0 +1,488 @@
+// HC8 — a plain `http://` client, composing every stage below it.
+//
+//   parse URL -> require http -> resolve host -> attempt addresses -> connect -> set timeouts
+//   -> serialize -> write_all -> read incrementally -> parse -> enforce body limit -> close
+//
+// This package owns POLICY. Every stage under it is pure or mechanical; the decisions that make a
+// client behave predictably — which address is tried, how long anything may take, what happens when
+// a peer closes early — live here and nowhere else, so they can be read in one place.
+
+use stark_http_core::default_limits;
+use stark_http_core::HttpLimits;
+use stark_http_core::HttpMethod;
+use stark_http_core::HttpRequest;
+use stark_http_core::HttpResponse;
+use stark_http_core::HttpVersion;
+use stark_http_core::new_header_map;
+use stark_http_core::request;
+use stark_http_parser::finish;
+use stark_http_parser::new_head_parser;
+use stark_http_parser::new_parser;
+use stark_http_parser::parse_error_text;
+use stark_http_parser::push;
+use stark_http_parser::HttpParseError;
+use stark_http_parser::ParseProgress;
+use stark_http_serialize::serialize_request;
+use stark_http_serialize::HostAuthority;
+use stark_net::close;
+use stark_net::connect_no_timeout;
+use stark_net::default_resolve_limits;
+use stark_net::read;
+use stark_net::resolve;
+use stark_net::socket_address;
+use stark_net::write_all;
+use stark_net::NetworkError;
+use stark_net::ResolvedAddress;
+use stark_net::TcpStream;
+use stark_time::duration_seconds;
+use stark_time::Duration;
+
+pub enum ClientError {
+    InvalidUrl,
+    UnsupportedScheme,
+    ResolveFailed,
+    NoAddresses,
+    ConnectFailed,
+    TimeoutSetupFailed,
+    SerializeFailed(String),
+    WriteFailed,
+    ReadFailed,
+    ParseFailed(String),
+    ResponseTooLarge,
+    ClosedEarly,
+    RedirectsUnsupported,
+}
+
+pub fn client_error_text(error: &ClientError) -> String {
+    match *error {
+        ClientError::InvalidUrl => String::from("the URL could not be parsed"),
+        ClientError::UnsupportedScheme => String::from("only http:// is supported in v0.1"),
+        ClientError::ResolveFailed => String::from("host resolution failed"),
+        ClientError::NoAddresses => String::from("host resolved to no addresses"),
+        ClientError::ConnectFailed => String::from("no address accepted a connection"),
+        ClientError::TimeoutSetupFailed => String::from("socket timeouts could not be set"),
+        ClientError::SerializeFailed(why) => {
+            let mut out = String::from("request serialization failed: ");
+            out.push_str(why.as_str());
+            out
+        }
+        ClientError::WriteFailed => String::from("writing the request failed"),
+        ClientError::ReadFailed => String::from("reading the response failed"),
+        ClientError::ParseFailed(why) => {
+            let mut out = String::from("response parsing failed: ");
+            out.push_str(why.as_str());
+            out
+        }
+        ClientError::ResponseTooLarge => String::from("response exceeded max_response_bytes"),
+        ClientError::ClosedEarly => String::from("the peer closed before the response completed"),
+        ClientError::RedirectsUnsupported => {
+            String::from("redirect following is not implemented in v0.1 (HC12)")
+        }
+    }
+}
+
+pub struct ClientConfig {
+    pub connect_timeout: Duration,
+    pub read_timeout: Duration,
+    pub write_timeout: Duration,
+    pub max_response_bytes: UInt64,
+    pub follow_redirects: Bool,
+}
+
+pub struct Client { pub config: ClientConfig, pub limits: HttpLimits }
+
+pub fn default_config() -> ClientConfig {
+    ClientConfig {
+        connect_timeout: duration_seconds(10u64),
+        read_timeout: duration_seconds(30u64),
+        write_timeout: duration_seconds(30u64),
+        max_response_bytes: 8388608u64,
+        follow_redirects: false,
+    }
+}
+
+pub fn new_client(config: ClientConfig) -> Client {
+    Client { config: config, limits: default_limits() }
+}
+
+/// A request under construction. Kept as owned data rather than a borrow of the client, because
+/// Core v1 forbids reference-typed fields — so a builder that held `&Client` could not be declared.
+pub struct RequestBuilder {
+    pub method: HttpMethod,
+    pub url: String,
+    pub headers: stark_http_core::HeaderMap,
+    pub body: Vec<UInt8>,
+}
+
+pub fn get(url: &str) -> RequestBuilder {
+    RequestBuilder {
+        method: HttpMethod::Get,
+        url: String::from(url),
+        headers: new_header_map(),
+        body: Vec::new(),
+    }
+}
+
+pub fn post(url: &str, body: Vec<UInt8>) -> RequestBuilder {
+    RequestBuilder {
+        method: HttpMethod::Post,
+        url: String::from(url),
+        headers: new_header_map(),
+        body: body,
+    }
+}
+
+/// The pieces of a URL this client needs. `stark-url`'s own `Url` carries more; this is the subset
+/// the request flow consumes, extracted once so the flow never re-parses.
+pub struct Target { pub host: String, pub port: UInt16, pub path_and_query: String }
+
+/// Bytes legal in the host of an `http://` URL this client will dial.
+///
+/// Registered names and IPv4 literals only: letters, digits, `-`, `.`, `_`. Everything else is
+/// refused, which deliberately includes the `[::1]` bracketed IPv6 form — v0.1 has no IPv6 literal
+/// support, and refusing is the honest answer where silently mangling the brackets is not.
+fn is_host_byte(byte: UInt8) -> Bool {
+    if byte >= 97u8 && byte <= 122u8 {
+        return true;
+    }
+    if byte >= 65u8 && byte <= 90u8 {
+        return true;
+    }
+    if byte >= 48u8 && byte <= 57u8 {
+        return true;
+    }
+    byte == 45u8 || byte == 46u8 || byte == 95u8
+}
+
+/// Split an `http://host[:port]/path?query` URL.
+///
+/// Deliberately strict: any other scheme is REFUSED rather than defaulted. A client that silently
+/// treats `https://` as `http://` would downgrade a caller's security expectation without saying so.
+pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
+    let bytes = url.bytes();
+    let full = bytes.len();
+    // The fragment is CLIENT-SIDE ONLY and must never reach the wire — sending it leaks where the
+    // caller was pointed inside the document. Cut before anything else is parsed, so no later step
+    // can see a `#` at all, including one sitting in the authority (`http://host#frag`).
+    let mut n = full;
+    let mut f = 0u64;
+    while f < full {
+        if bytes[f] == 35u8 {
+            n = f;
+            f = full;
+        } else {
+            f = f + 1u64;
+        }
+    }
+    let prefix = "http://".bytes();
+    if n <= prefix.len() {
+        return Err(ClientError::InvalidUrl);
+    }
+    let mut i = 0u64;
+    while i < prefix.len() {
+        if bytes[i] != prefix[i] {
+            // Anything that is not exactly `http://` — including `https://` — is out of scope.
+            return Err(ClientError::UnsupportedScheme);
+        }
+        i = i + 1u64;
+    }
+
+    let mut authority_end = n;
+    let mut j = prefix.len();
+    while j < n {
+        if bytes[j] == 47u8 {
+            authority_end = j;
+            j = n;
+        } else {
+            j = j + 1u64;
+        }
+    }
+
+    let mut host = String::new();
+    let mut port_text = String::new();
+    let mut in_port = false;
+    let mut k = prefix.len();
+    while k < authority_end {
+        let byte = bytes[k];
+        if byte == 58u8 && !in_port {
+            in_port = true;
+        } else {
+            if !in_port && !is_host_byte(byte) {
+                return Err(ClientError::InvalidUrl);
+            }
+            match Char::from_u32(byte as UInt32) {
+                Some(ch) => {
+                    if in_port {
+                        port_text.push(ch);
+                    } else {
+                        host.push(ch);
+                    }
+                }
+                None => {}
+            }
+        }
+        k = k + 1u64;
+    }
+    if host.len() == 0u64 {
+        return Err(ClientError::InvalidUrl);
+    }
+
+    // A colon that introduces no digits is malformed, not a request for the default. `http://h:/`
+    // is a typo, and guessing 80 for it hides the typo behind a working connection.
+    if in_port && port_text.len() == 0u64 {
+        return Err(ClientError::InvalidUrl);
+    }
+    let mut port = 80u16;
+    if port_text.len() > 0u64 {
+        let digits = port_text.bytes();
+        let count = digits.len();
+        let mut value = 0u64;
+        let mut d = 0u64;
+        while d < count {
+            let byte = digits[d];
+            if byte < 48u8 || byte > 57u8 {
+                return Err(ClientError::InvalidUrl);
+            }
+            value = value * 10u64 + (byte - 48u8) as UInt64;
+            if value > 65535u64 {
+                return Err(ClientError::InvalidUrl);
+            }
+            d = d + 1u64;
+        }
+        if value == 0u64 {
+            return Err(ClientError::InvalidUrl);
+        }
+        port = value as UInt16;
+    }
+
+    let mut path_and_query = String::new();
+    if authority_end < n {
+        let mut p = authority_end;
+        while p < n {
+            match Char::from_u32(bytes[p] as UInt32) {
+                Some(ch) => {
+                    path_and_query.push(ch);
+                }
+                None => {}
+            }
+            p = p + 1u64;
+        }
+    } else {
+        // An empty path is `/` on the wire. Origin-form always has one.
+        path_and_query.push('/');
+    }
+
+    Ok(Target { host: host, port: port, path_and_query: path_and_query })
+}
+
+// -- the request flow ------------------------------------------------------------------------
+
+/// ADDRESS-ATTEMPT POLICY, stated because leaving it implicit is how clients become unpredictable:
+///
+///   order            the resolver's order, unchanged. No reordering, no address-family
+///                    preference, no Happy Eyeballs (explicitly out of scope for v0.1).
+///   attempts         every returned address, in order, until one connects.
+///   final error      the LAST failure is reported. Not the first: the last address tried is the
+///                    one whose failure the caller can most usefully act on, and keeping a list
+///                    would leak resolver topology into an error type.
+///   timeout budget   PER ADDRESS, not total. A total budget would make the last address's odds
+///                    depend on how many preceded it, which is surprising; per-address means each
+///                    gets the deadline the caller asked for.
+fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Result<TcpStream, ClientError> {
+    let n = addresses.len();
+    if n == 0u64 {
+        return Err(ClientError::NoAddresses);
+    }
+    let mut index = 0u64;
+    while index < n {
+        let candidate = &addresses[index];
+        let target = socket_address(candidate.address, candidate.port);
+        match connect_no_timeout(target) {
+            Ok(stream) => {
+                let mut owned = stream;
+                // Timeouts are set immediately after connect and before any I/O, so no read or
+                // write can ever run unbounded — including the first.
+                let mut ok = true;
+                match owned.set_read_timeout(Some(config.read_timeout)) {
+                    Ok(_unit) => {}
+                    Err(_error) => {
+                        ok = false;
+                    }
+                }
+                if ok {
+                    match owned.set_write_timeout(Some(config.write_timeout)) {
+                        Ok(_unit) => {}
+                        Err(_error) => {
+                            ok = false;
+                        }
+                    }
+                }
+                if !ok {
+                    // The stream is closed rather than leaked: a connection whose deadlines could
+                    // not be configured must not be handed to the caller.
+                    match close(owned) {
+                        Ok(_unit) => {}
+                        Err(_error) => {}
+                    }
+                    return Err(ClientError::TimeoutSetupFailed);
+                }
+                return Ok(owned);
+            }
+            Err(_error) => {}
+        }
+        index = index + 1u64;
+    }
+    Err(ClientError::ConnectFailed)
+}
+
+/// Read until the parser says the message is complete, the body limit is hit, or the peer closes.
+///
+/// The limit is enforced on TOTAL BYTES READ, not on the parsed body: a peer can otherwise send an
+/// unbounded header block, or unbounded chunk metadata, and never trip a body-only check.
+fn read_response(
+    stream: &mut TcpStream,
+    parser: &mut stark_http_parser::HttpResponseParser,
+    max_bytes: UInt64,
+) -> Result<HttpResponse, ClientError> {
+    let mut total = 0u64;
+    let mut buffer: [UInt8; 4096] = [0u8; 4096];
+    let mut guard = 0u64;
+    while guard < 1000000u64 {
+        guard = guard + 1u64;
+        let count: UInt64;
+        {
+            let window = &mut buffer[0u64..4096u64];
+            match read(stream, window) {
+                Ok(read_count) => {
+                    count = read_count;
+                }
+                Err(_error) => {
+                    return Err(ClientError::ReadFailed);
+                }
+            }
+        }
+        if count == 0u64 {
+            // The peer closed. Only a close-delimited body may end this way; `finish` decides.
+            let ended = finish(parser);
+            match ended {
+                Ok(response) => {
+                    return Ok(response);
+                }
+                Err(_error) => {
+                    return Err(ClientError::ClosedEarly);
+                }
+            }
+        }
+        total = total + count;
+        if total > max_bytes {
+            return Err(ClientError::ResponseTooLarge);
+        }
+        let chunk = &buffer[0u64..count];
+        match push(parser, chunk) {
+            Ok(progress) => match progress {
+                ParseProgress::Complete(response, _consumed) => {
+                    return Ok(response);
+                }
+                ParseProgress::NeedMore => {}
+            }
+            Err(error) => {
+                return Err(ClientError::ParseFailed(parse_error_text(&error)));
+            }
+        }
+    }
+    Err(ClientError::ReadFailed)
+}
+
+/// Send a built request and return the response.
+///
+/// The stream is closed on EVERY exit path, including the failing ones. Drop elaboration would
+/// close it anyway (CD-345 verified that), but closing explicitly keeps the lifetime visible at
+/// the point a reader is asking "what happens to the socket if the parse fails?".
+pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, ClientError> {
+    if client.config.follow_redirects {
+        return Err(ClientError::RedirectsUnsupported);
+    }
+
+    let target = parse_http_url(builder.url.as_str())?;
+
+    let resolved: Vec<ResolvedAddress>;
+    match resolve(&target.host, target.port, default_resolve_limits()) {
+        Ok(addresses) => {
+            resolved = addresses;
+        }
+        Err(_error) => {
+            return Err(ClientError::ResolveFailed);
+        }
+    }
+
+    let built: HttpRequest;
+    match request(
+        builder.method,
+        target.path_and_query.as_str(),
+        HttpVersion::Http11,
+        builder.headers,
+        builder.body,
+    ) {
+
+        Ok(value) => {
+            built = value;
+        }
+        Err(error) => {
+            return Err(ClientError::SerializeFailed(stark_http_core::error_text(&error)));
+        }
+    }
+
+    let authority = HostAuthority {
+        host: target.host.clone(),
+        port: target.port,
+        default_port: 80u16,
+    };
+    let wire: Vec<UInt8>;
+    match serialize_request(&built, &authority, &client.limits) {
+        Ok(bytes) => {
+            wire = bytes;
+        }
+        Err(error) => {
+            return Err(ClientError::SerializeFailed(stark_http_serialize::error_text(&error)));
+        }
+    }
+
+    let mut stream = connect_to_any(&resolved, &client.config)?;
+
+    let sent = write_all(&mut stream, &wire[0u64..wire.len()]);
+    match sent {
+        Ok(_unit) => {}
+        Err(_error) => {
+            match close(stream) {
+                Ok(_unit) => {}
+                Err(_error) => {}
+            }
+            return Err(ClientError::WriteFailed);
+        }
+    }
+
+    // A HEAD response describes a body it never sends, so the parser must be told.
+    let head = match built.method {
+        HttpMethod::Head => true,
+        _other => false,
+    };
+    let mut parser = if head {
+        new_head_parser(client.limits)
+    } else {
+        new_parser(client.limits)
+    };
+
+    let outcome = read_response(&mut stream, &mut parser, client.config.max_response_bytes);
+    match close(stream) {
+        Ok(_unit) => {}
+        Err(_error) => {}
+    }
+    outcome
+}
+
+/// `GET` in one call.
+pub fn fetch(client: &Client, url: &str) -> Result<HttpResponse, ClientError> {
+    send(client, get(url))
+}
+
+mod tests;

@@ -1,0 +1,11 @@
+use stark_net::ipv4;
+use stark_net::socket_address;
+use stark_net::socket_address_text;
+
+fn main() {
+    let address = socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 1u16);
+    if socket_address_text(&address).as_str() != "127.0.0.1:1" {
+        panic("stark-net consumer address text mismatch");
+    }
+    println("STARK_NET_CONSUMER_OK");
+}

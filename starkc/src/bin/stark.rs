@@ -6,9 +6,9 @@ use starkc::parser::{
 };
 use starkc::resolve::{resolve, resolve_with_options};
 use starkc::source::SourceFile;
+use starkc::source_extensions::is_stark_source;
 use starkc::test_runner::{self, Outcome};
 use starkc::typecheck;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -38,13 +38,13 @@ Usage:
   stark run                     Compile and execute the package main entry point.
   stark test [name] [--ignored] [--show-output]
                                  Run `fn test_*()` functions in the package,
-                                 tests/*.stark integration programs, and
-                                 examples/*.stark. [name] filters by
+                                 tests/*.stark|*.st integration programs, and
+                                 examples/*.stark|*.st. [name] filters by
                                  substring. --ignored also runs
                                  `test_ignored_*` functions (skipped by
                                  default). --show-output prints captured
                                  stdout even for passing tests.
-  stark fmt [--check] [<file.stark>]
+  stark fmt [--check] [<file.stark|file.st>]
                                  Format the current package, or a single file.
                                  --check reports non-canonical files without
                                  modifying them (exit 1 if any differ).
@@ -132,28 +132,74 @@ fn main() -> ExitCode {
         }
     };
 
-    let root_package_name = graph.root_package_name.clone();
     let options = LanguageOptions::CORE;
-    let analysis =
-        starkc::analysis::analyze_project(starkc::analysis::ProjectInput::package(graph), options);
-    let root_file = analysis.root_file.clone();
-    let diagnostic_batch = analysis.diagnostic_batch(&HashMap::new());
-    eprint!("{}", diagnostic_batch.render(&analysis.source_map));
-    if analysis.has_errors() {
-        eprintln!("{}: package compilation failed", root_package_name);
+
+    let overlays = match starkc::native_build::provider_overlays_for_analysis(&graph) {
+        Ok(overlays) => overlays,
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (ast, mut diags) = if overlays.is_empty() {
+        parse_package_graph(&graph, options)
+    } else {
+        parse_package_graph_with_overlays(&graph, options, &overlays)
+    };
+    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
+    let entry_src = match overlays.get(&root_pkg.entry) {
+        Some(overlaid) => overlaid.clone(),
+        None => match std::fs::read_to_string(&root_pkg.entry) {
+            Ok(src) => src,
+            Err(e) => {
+                eprintln!(
+                    "Error: failed to read entry file '{}': {}",
+                    root_pkg.entry.display(),
+                    e
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let root_file = Arc::new(SourceFile::new(
+        root_pkg.entry.to_string_lossy().into_owned(),
+        entry_src,
+    ));
+
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        for diag in &diags {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
+        return ExitCode::FAILURE;
+    }
+    let (hir, mut resolution) = resolve(&ast, root_file.clone());
+    diags.append(&mut resolution);
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        for diag in &diags {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
+        return ExitCode::FAILURE;
+    }
+    let checked = typecheck::analyze_with_options(&hir, root_file.clone(), options);
+    if checked
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        for diag in checked.diagnostics.iter().chain(diags.iter()) {
+            eprint!("{}", diag.render(&root_file));
+        }
+        eprintln!("{}: package compilation failed", root_pkg.name);
         return ExitCode::FAILURE;
     }
     if cmd == "check" {
-        println!("{}: OK", root_package_name);
+        println!("{}: OK", root_pkg.name);
         return ExitCode::SUCCESS;
     }
     if cmd == "run" {
-        let hir = analysis.hir.as_ref().expect("successful analysis has HIR");
-        let tables = analysis
-            .type_tables
-            .as_ref()
-            .expect("successful analysis has type tables");
-        return match starkc::interp::run(hir, root_file.clone(), tables) {
+        return match starkc::interp::run(&hir, root_file.clone(), &checked.tables) {
             Ok(execution) => {
                 print!("{}", execution.output);
                 eprint!("{}", execution.stderr);
@@ -209,7 +255,7 @@ fn main() -> ExitCode {
             }
         };
     }
-    eprintln!("{}: package compilation failed", root_package_name);
+    eprintln!("{}: package compilation failed", root_pkg.name);
     ExitCode::FAILURE
 }
 
@@ -590,7 +636,7 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
     };
 
     if files.is_empty() {
-        eprintln!("Error: no `.stark` files found");
+        eprintln!("Error: no `.stark` or `.st` files found");
         return ExitCode::FAILURE;
     }
 
@@ -653,7 +699,7 @@ fn collect_stark_files(dir: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             collect_stark_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("stark") {
+        } else if is_stark_source(&path) {
             out.push(path);
         }
     }
@@ -849,7 +895,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
         overall_failed = true;
     }
 
-    // ---- integration tests: tests/*.stark, each a standalone program ----
+    // ---- integration tests: tests/*.stark|*.st, each a standalone program ----
     let package_root = manifest_path
         .parent()
         .expect("manifest path has a parent directory")
@@ -858,7 +904,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
         overall_failed = overall_failed || more_failed;
     }
 
-    // ---- examples: examples/*.stark, each compiled and run ----
+    // ---- examples: examples/*.stark|*.st, each compiled and run ----
     if let Some(more_failed) =
         run_standalone_suite(&package_root.join("examples"), "example", options)
     {
@@ -872,7 +918,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
     }
 }
 
-/// Run every `.stark` file under `dir` as a standalone program (its own
+/// Run every `.stark` or `.st` file under `dir` as a standalone program (its own
 /// `fn main()`). Returns `None` if `dir` doesn't exist or is empty (nothing
 /// to report), else `Some(any_failed)`.
 fn run_standalone_suite(dir: &Path, label: &str, options: LanguageOptions) -> Option<bool> {
@@ -999,7 +1045,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     files.sort();
     if files.is_empty() {
         eprintln!(
-            "Error: no `.stark` files found under {}",
+            "Error: no `.stark` or `.st` files found under {}",
             package_root.display()
         );
         return ExitCode::FAILURE;

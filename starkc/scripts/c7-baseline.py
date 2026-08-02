@@ -32,10 +32,12 @@ def sha(p: pathlib.Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 def source_identity(w: pathlib.Path) -> dict:
-    """Content identity of a frozen workload: every .stark and every manifest, path-relative."""
+    """Content identity of a frozen workload: every STARK source and every manifest, path-relative."""
     files = {}
     for p in sorted(w.rglob("*")):
-        if p.is_file() and (p.suffix == ".stark" or p.name in ("starkpkg.json", "stark.lock")):
+        if p.is_file() and (
+            p.suffix in (".stark", ".st") or p.name in ("starkpkg.json", "stark.lock")
+        ):
             files[str(p.relative_to(w))] = sha(p)
     digest = hashlib.sha256(
         "\n".join(f"{k}:{v}" for k, v in sorted(files.items())).encode()

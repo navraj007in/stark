@@ -42,6 +42,7 @@ pub mod provider_resolve;
 pub mod provider_synth;
 pub mod resolve;
 pub mod source;
+pub mod source_extensions;
 pub mod target;
 pub mod test_runner;
 pub mod typecheck;

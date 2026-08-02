@@ -5,6 +5,11 @@ pub enum UrlErrorKind {
     TooManyQueryParameters,
     InputTooLarge,
     PositionOverflow,
+    InvalidScheme,
+    MalformedAuthority,
+    MissingHost,
+    UserInfoUnsupported,
+    InvalidPort,
 }
 
 pub struct UrlError { pub kind: UrlErrorKind, pub offset: UInt64 }
@@ -15,13 +20,33 @@ pub struct QueryParameter { pub name: String, pub value: String }
 
 pub struct RequestTarget { pub path: String, pub query: Vec<QueryParameter> }
 
+pub enum UrlScheme {
+    Http,
+    Https,
+}
+
+pub struct Authority { pub host: String, pub port: Option<UInt16> }
+
+pub struct Url {
+    pub scheme: UrlScheme,
+    pub authority: Authority,
+    pub path: String,
+    pub query: Option<String>,
+    pub fragment: Option<String>,
+}
+
 const PERCENT: UInt8 = 37u8;
 const AMPERSAND: UInt8 = 38u8;
+const HASH: UInt8 = 35u8;
 const SLASH: UInt8 = 47u8;
+const COLON: UInt8 = 58u8;
 const ZERO: UInt8 = 48u8;
 const NINE: UInt8 = 57u8;
 const EQUALS: UInt8 = 61u8;
 const QUESTION: UInt8 = 63u8;
+const AT: UInt8 = 64u8;
+const OPEN_BRACKET: UInt8 = 91u8;
+const CLOSE_BRACKET: UInt8 = 93u8;
 const A_UPPER: UInt8 = 65u8;
 const F_UPPER: UInt8 = 70u8;
 const Z_UPPER: UInt8 = 90u8;
@@ -64,6 +89,149 @@ pub fn percent_decode(input: &str) -> Result<String, UrlError> {
 
 pub fn parse_request_target(input: &str) -> Result<RequestTarget, UrlError> {
     parse_request_target_with_limits(input, &default_limits())
+}
+
+impl Url {
+    pub fn parse(input: &String) -> Result<Url, UrlError> {
+        parse_url(input.as_str(), &default_limits())
+    }
+    pub fn effective_port(&self) -> UInt16 {
+        match self.authority.port {
+            Some(port) => port,
+            None => default_port(self.scheme),
+        }
+    }
+    pub fn origin_form_target(&self) -> String {
+        let mut out = String::new();
+        if self.path.len() == 0u64 {
+            out.push('/');
+        } else {
+            out.push_str(self.path.as_str());
+        }
+        match self.query {
+            Some(value) => {
+                out.push('?');
+                out.push_str(value.as_str());
+            }
+            None => {}
+        }
+        out
+    }
+    pub fn host_header_value(&self) -> String {
+        let mut out = String::new();
+        out.push_str(self.authority.host.as_str());
+        match self.authority.port {
+            Some(port) => {
+                if port != default_port(self.scheme) {
+                    out.push(':');
+                    out.push_str(u16_decimal(port).as_str());
+                }
+            }
+            None => {}
+        }
+        out
+    }
+}
+
+pub fn parse_url(input: &str, limits: &UrlLimits) -> Result<Url, UrlError> {
+    if input.len() > limits.max_input_bytes {
+        return Err(error_at(UrlErrorKind::InputTooLarge, 0u64));
+    }
+
+    let bytes = input.bytes();
+    let len = bytes.len();
+    let mut scheme_end = len;
+    let mut i: UInt64 = 0u64;
+    while i < len {
+        if bytes[i] == COLON {
+            scheme_end = i;
+            i = len;
+        } else {
+            i = i + 1u64;
+        }
+    }
+
+    if scheme_end == len {
+        return Err(error_at(UrlErrorKind::InvalidScheme, 0u64));
+    }
+
+    let scheme_text = input.substring(0u64, scheme_end);
+    let mut scheme = UrlScheme::Http;
+    if scheme_text == "http" {
+        scheme = UrlScheme::Http;
+    } else if scheme_text == "https" {
+        scheme = UrlScheme::Https;
+    } else {
+        return Err(error_at(UrlErrorKind::InvalidScheme, 0u64));
+    }
+
+    if scheme_end + 2u64 >= len || bytes[scheme_end + 1u64] != SLASH || bytes[scheme_end + 2u64] != SLASH {
+        return Err(error_at(UrlErrorKind::MalformedAuthority, scheme_end));
+    }
+
+    let authority_start = scheme_end + 3u64;
+    let mut authority_end = len;
+    i = authority_start;
+    while i < len {
+        if bytes[i] == SLASH || bytes[i] == QUESTION || bytes[i] == HASH {
+            authority_end = i;
+            i = len;
+        } else {
+            i = i + 1u64;
+        }
+    }
+
+    let authority = parse_authority(input, authority_start, authority_end)?;
+
+    let mut path_start = authority_end;
+    let mut path_end = len;
+    let mut query_start = len;
+    let mut query_end = len;
+    let mut fragment_start = len;
+
+    i = authority_end;
+    while i < len {
+        if bytes[i] == HASH {
+            path_end = i;
+            fragment_start = i + 1u64;
+            i = len;
+        } else if bytes[i] == QUESTION {
+            path_end = i;
+            query_start = i + 1u64;
+            query_end = len;
+            let mut j = query_start;
+            while j < len {
+                if bytes[j] == HASH {
+                    query_end = j;
+                    fragment_start = j + 1u64;
+                    j = len;
+                } else {
+                    j = j + 1u64;
+                }
+            }
+            i = len;
+        } else {
+            i = i + 1u64;
+        }
+    }
+
+    if path_start < len && bytes[path_start] != SLASH {
+        path_start = path_end;
+    }
+
+    let path = String::from(input.substring(path_start, path_end));
+    let query = if query_start < len {
+        Some(String::from(input.substring(query_start, query_end)))
+    } else {
+        None
+    };
+    let fragment = if fragment_start < len {
+        Some(String::from(input.substring(fragment_start, len)))
+    } else {
+        None
+    };
+
+    Ok(Url { scheme: scheme, authority: authority, path: path, query: query, fragment: fragment })
 }
 
 pub fn parse_request_target_with_limits(input: &str, limits: &UrlLimits) -> Result<RequestTarget, UrlError> {
@@ -121,6 +289,134 @@ pub fn encode_query(parameters: &Vec<QueryParameter>) -> String {
         i = i + 1u64;
     }
 
+    out
+}
+
+fn parse_authority(input: &str, start: UInt64, end: UInt64) -> Result<Authority, UrlError> {
+    if start >= end {
+        return Err(error_at(UrlErrorKind::MissingHost, start));
+    }
+
+    let bytes = input.bytes();
+    let mut i = start;
+    while i < end {
+        if bytes[i] == AT {
+            return Err(error_at(UrlErrorKind::UserInfoUnsupported, i));
+        }
+        i = i + 1u64;
+    }
+
+    if bytes[start] == OPEN_BRACKET {
+        return parse_ipv6_authority(input, start, end);
+    }
+
+    let mut colon_at = end;
+    i = start;
+    while i < end {
+        if bytes[i] == COLON {
+            if colon_at != end {
+                return Err(error_at(UrlErrorKind::MalformedAuthority, i));
+            }
+            colon_at = i;
+        }
+        i = i + 1u64;
+    }
+
+    if colon_at == start {
+        return Err(error_at(UrlErrorKind::MissingHost, start));
+    }
+
+    let host_end = colon_at;
+    let host = String::from(input.substring(start, host_end));
+    if host.len() == 0u64 {
+        return Err(error_at(UrlErrorKind::MissingHost, start));
+    }
+
+    let port = if colon_at < end {
+        Some(parse_port(input, colon_at + 1u64, end)?)
+    } else {
+        None
+    };
+
+    Ok(Authority { host: host, port: port })
+}
+
+fn parse_ipv6_authority(input: &str, start: UInt64, end: UInt64) -> Result<Authority, UrlError> {
+    let bytes = input.bytes();
+    let mut close_at = end;
+    let mut i = start + 1u64;
+    while i < end {
+        if bytes[i] == CLOSE_BRACKET {
+            close_at = i;
+            i = end;
+        } else {
+            i = i + 1u64;
+        }
+    }
+
+    if close_at == end || close_at == start + 1u64 {
+        return Err(error_at(UrlErrorKind::MalformedAuthority, start));
+    }
+
+    let host = String::from(input.substring(start, close_at + 1u64));
+    let mut port: Option<UInt16> = None;
+    if close_at + 1u64 == end {
+        port = None;
+    } else if bytes[close_at + 1u64] == COLON {
+        port = Some(parse_port(input, close_at + 2u64, end)?);
+    } else {
+        return Err(error_at(UrlErrorKind::MalformedAuthority, close_at + 1u64));
+    }
+
+    Ok(Authority { host: host, port: port })
+}
+
+fn parse_port(input: &str, start: UInt64, end: UInt64) -> Result<UInt16, UrlError> {
+    if start >= end {
+        return Err(error_at(UrlErrorKind::InvalidPort, start));
+    }
+
+    let bytes = input.bytes();
+    let mut value: UInt64 = 0u64;
+    let mut i = start;
+    while i < end {
+        let b = bytes[i];
+        if b < ZERO || b > NINE {
+            return Err(error_at(UrlErrorKind::InvalidPort, i));
+        }
+        value = value * 10u64 + (b - ZERO) as UInt64;
+        if value > 65535u64 {
+            return Err(error_at(UrlErrorKind::InvalidPort, start));
+        }
+        i = i + 1u64;
+    }
+
+    Ok(value as UInt16)
+}
+
+fn default_port(scheme: UrlScheme) -> UInt16 {
+    match scheme {
+        UrlScheme::Http => 80u16,
+        UrlScheme::Https => 443u16,
+    }
+}
+
+fn u16_decimal(value: UInt16) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    if n >= 10000u64 {
+        out.push(char_from_ascii(ZERO + (n / 10000u64) as UInt8));
+    }
+    if n >= 1000u64 {
+        out.push(char_from_ascii(ZERO + (n / 1000u64 % 10u64) as UInt8));
+    }
+    if n >= 100u64 {
+        out.push(char_from_ascii(ZERO + (n / 100u64 % 10u64) as UInt8));
+    }
+    if n >= 10u64 {
+        out.push(char_from_ascii(ZERO + (n / 10u64 % 10u64) as UInt8));
+    }
+    out.push(char_from_ascii(ZERO + (n % 10u64) as UInt8));
     out
 }
 

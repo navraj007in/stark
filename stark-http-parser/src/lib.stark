@@ -1,0 +1,908 @@
+// HC7 — an incremental HTTP/1.1 response parser.
+//
+// Pure. Bytes in, a response out, no socket knowledge — which is what lets every legal
+// fragmentation pattern be tested without a network, including the one-byte-at-a-time case that
+// finds nearly all real parser bugs.
+//
+// THE CENTRAL DESIGN CONSTRAINT: `push` may be called with a buffer that splits ANY token. A status
+// line, a header, a chunk-size line, or a chunk's trailing CRLF can each arrive in pieces. So the
+// parser owns a `pending` buffer and consumes from it only when a complete unit is present; a
+// caller's bytes are appended, never parsed in place. That costs a copy and buys the property that
+// the state machine never has to reason about buffer boundaries at all.
+//
+// SECURITY POSTURE. Every limit is checked BEFORE the bytes are retained, never after: a parser
+// that accumulates first and rejects later is a memory-exhaustion primitive regardless of what the
+// limit says. Framing ambiguity is refused rather than resolved — `Content-Length` with
+// `Transfer-Encoding`, duplicate conflicting `Content-Length`, unsupported codings, and obs-fold
+// continuations are all rejected, because every one of them is a request/response-smuggling vector
+// where two peers disagree about where a message ends.
+
+use stark_http_core::ascii_equal_ignore_case;
+use stark_http_core::count_matching;
+use stark_http_core::default_limits;
+use stark_http_core::get_first;
+use stark_http_core::header;
+use stark_http_core::is_valid_header_name;
+use stark_http_core::is_valid_header_value;
+use stark_http_core::is_valid_reason;
+use stark_http_core::is_valid_status;
+use stark_http_core::new_header_map;
+use stark_http_core::HeaderMap;
+use stark_http_core::HttpLimits;
+use stark_http_core::HttpResponse;
+use stark_http_core::HttpVersion;
+
+pub enum HttpParseError {
+    StatusLineTooLong,
+    InvalidStatusLine,
+    InvalidVersion,
+    InvalidStatus,
+    InvalidReason,
+    HeaderLineTooLong,
+    InvalidHeaderName,
+    InvalidHeaderValue,
+    ObsFoldRejected,
+    TooManyHeaders,
+    HeadersTooLarge,
+    BodyTooLarge,
+    BareLfRejected,
+    ConflictingContentLength,
+    ContentLengthWithTransferEncoding,
+    UnsupportedTransferEncoding,
+    InvalidContentLength,
+    InvalidChunkSize,
+    ChunkLineTooLong,
+    BadChunkTerminator,
+    PrematureEof,
+    AlreadyFailed,
+    AlreadyComplete,
+}
+
+pub fn parse_error_text(error: &HttpParseError) -> String {
+    match *error {
+        HttpParseError::StatusLineTooLong => String::from("status line exceeds its limit"),
+        HttpParseError::InvalidStatusLine => String::from("malformed status line"),
+        HttpParseError::InvalidVersion => String::from("unsupported HTTP version"),
+        HttpParseError::InvalidStatus => String::from("status code out of range"),
+        HttpParseError::InvalidReason => String::from("invalid reason phrase"),
+        HttpParseError::HeaderLineTooLong => String::from("header line exceeds its limit"),
+        HttpParseError::InvalidHeaderName => String::from("invalid header name"),
+        HttpParseError::InvalidHeaderValue => String::from("invalid header value"),
+        HttpParseError::ObsFoldRejected => String::from("obsolete line folding is rejected"),
+        HttpParseError::TooManyHeaders => String::from("too many headers"),
+        HttpParseError::HeadersTooLarge => String::from("header block exceeds its limit"),
+        HttpParseError::BodyTooLarge => String::from("body exceeds its limit"),
+        HttpParseError::BareLfRejected => String::from("bare LF line ending is rejected"),
+        HttpParseError::ConflictingContentLength => {
+            String::from("conflicting Content-Length headers")
+        }
+        HttpParseError::ContentLengthWithTransferEncoding => {
+            String::from("Content-Length with Transfer-Encoding is ambiguous framing")
+        }
+        HttpParseError::UnsupportedTransferEncoding => {
+            String::from("unsupported transfer coding")
+        }
+        HttpParseError::InvalidContentLength => String::from("invalid Content-Length"),
+        HttpParseError::InvalidChunkSize => String::from("invalid chunk size"),
+        HttpParseError::ChunkLineTooLong => String::from("chunk metadata line exceeds its limit"),
+        HttpParseError::BadChunkTerminator => String::from("chunk not terminated by CRLF"),
+        HttpParseError::PrematureEof => String::from("connection closed mid-message"),
+        HttpParseError::AlreadyFailed => String::from("parser already failed"),
+        HttpParseError::AlreadyComplete => String::from("parser already complete"),
+    }
+}
+
+/// `Complete` carries the byte count CONSUMED from everything pushed so far, so a caller driving a
+/// pipelined connection knows where the next message begins. v0.1 does not pipeline, but reporting
+/// it costs nothing and omitting it would be unrecoverable later.
+pub enum ParseProgress {
+    NeedMore,
+    Complete(HttpResponse, UInt64),
+}
+
+pub enum ParserState {
+    StatusLine,
+    Headers,
+    FixedBody,
+    ChunkSize,
+    ChunkData,
+    ChunkDataCrlf,
+    Trailers,
+    CloseDelimitedBody,
+    Complete,
+    Failed,
+}
+
+/// How the message body is framed, decided once the header block ends. Keeping this separate from
+/// `ParserState` is deliberate: the state says where the cursor is, the framing says how to know
+/// when the body ends, and conflating them is how "no body" and "empty body" get confused.
+pub enum BodyFraming {
+    None,
+    Fixed(UInt64),
+    Chunked,
+    UntilClose,
+}
+
+pub struct HttpResponseParser {
+    pub limits: HttpLimits,
+    pub state: ParserState,
+    pending: Vec<UInt8>,
+    consumed: UInt64,
+    version: HttpVersion,
+    status: UInt16,
+    reason: String,
+    headers: HeaderMap,
+    header_bytes_seen: UInt64,
+    body: Vec<UInt8>,
+    framing: BodyFraming,
+    remaining: UInt64,
+    head_request: Bool,
+    saw_informational: Bool,
+}
+/// Set when the caller's request used HEAD. RFC 9110: a HEAD response carries framing headers
+/// describing a body that is never sent, so `Content-Length: 42` must NOT cause a 42-byte wait.
+
+/// A `1xx` is informational: it is parsed, discarded, and the parser returns to `StatusLine`
+/// for the real response. Any number may precede it.
+
+const CR: UInt8 = 13u8;
+const LF: UInt8 = 10u8;
+const SP: UInt8 = 32u8;
+const HTAB: UInt8 = 9u8;
+const COLON: UInt8 = 58u8;
+const SEMICOLON: UInt8 = 59u8;
+
+pub fn new_parser(limits: HttpLimits) -> HttpResponseParser {
+    HttpResponseParser {
+        limits: limits,
+        state: ParserState::StatusLine,
+        pending: Vec::new(),
+        consumed: 0u64,
+        version: HttpVersion::Http11,
+        status: 0u16,
+        reason: String::new(),
+        headers: new_header_map(),
+        header_bytes_seen: 0u64,
+        body: Vec::new(),
+        framing: BodyFraming::None,
+        remaining: 0u64,
+        head_request: false,
+        saw_informational: false,
+    }
+}
+
+/// A parser for the response to a HEAD request. See `head_request`.
+pub fn new_head_parser(limits: HttpLimits) -> HttpResponseParser {
+    let mut parser = new_parser(limits);
+    parser.head_request = true;
+    parser
+}
+
+// -- small helpers ---------------------------------------------------------------------------
+
+fn is_digit(byte: UInt8) -> Bool {
+    byte >= 48u8 && byte <= 57u8
+}
+
+fn hex_value(byte: UInt8) -> Option<UInt64> {
+    if is_digit(byte) {
+        return Some((byte - 48u8) as UInt64);
+    }
+    if byte >= 97u8 && byte <= 102u8 {
+        return Some((byte - 97u8) as UInt64 + 10u64);
+    }
+    if byte >= 65u8 && byte <= 70u8 {
+        return Some((byte - 65u8) as UInt64 + 10u64);
+    }
+    None
+}
+
+fn slice_to_string(bytes: &Vec<UInt8>, from: UInt64, to: UInt64) -> String {
+    let mut out = String::new();
+    let mut i = from;
+    while i < to {
+        match Char::from_u32(bytes[i] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Index of the LF ending the first complete line in `pending`, or `None`.
+fn find_line_end(pending: &Vec<UInt8>) -> Option<UInt64> {
+    let n = pending.len();
+    let mut i = 0u64;
+    while i < n {
+        if pending[i] == LF {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+/// Drop `count` bytes from the front of `pending`.
+///
+/// O(n) per call and deliberately so: a cursor index would be faster, but it would let `pending`
+/// grow without bound across a long chunked body, which is the memory-exhaustion shape the limits
+/// exist to prevent. Correctness of the bound first; a ring buffer is a later optimisation.
+fn drop_front(pending: &mut Vec<UInt8>, count: UInt64) {
+    let n = pending.len();
+    let mut kept: Vec<UInt8> = Vec::new();
+    let mut i = count;
+    while i < n {
+        kept.push(pending[i]);
+        i = i + 1u64;
+    }
+    pending.clear();
+    let m = kept.len();
+    let mut k = 0u64;
+    while k < m {
+        pending.push(kept[k]);
+        k = k + 1u64;
+    }
+}
+
+// -- status line -----------------------------------------------------------------------------
+
+/// `HTTP/1.1 200 OK` — version, status, optional reason.
+///
+/// The line arrives without its terminator. A BARE LF is rejected upstream, so by the time this
+/// runs the caller has already stripped a CR; what is left must be exactly the three fields.
+fn parse_status_line(parser: &mut HttpResponseParser, line: &Vec<UInt8>) -> Result<Bool, HttpParseError> {
+    let n = line.len();
+    if n < 12u64 {
+        return Err(HttpParseError::InvalidStatusLine);
+    }
+    // Version: exactly `HTTP/1.0` or `HTTP/1.1`. Anything else is refused rather than guessed —
+    // a parser that accepts `HTTP/1.9` has no idea what framing rules apply to it.
+    if line[0u64] != 72u8 || line[1u64] != 84u8 || line[2u64] != 84u8 || line[3u64] != 80u8 {
+        return Err(HttpParseError::InvalidVersion);
+    }
+    if line[4u64] != 47u8 || line[5u64] != 49u8 || line[6u64] != 46u8 {
+        return Err(HttpParseError::InvalidVersion);
+    }
+    if line[7u64] == 48u8 {
+        parser.version = HttpVersion::Http10;
+    } else {
+        if line[7u64] == 49u8 {
+            parser.version = HttpVersion::Http11;
+        } else {
+            return Err(HttpParseError::InvalidVersion);
+        }
+    }
+    if line[8u64] != SP {
+        return Err(HttpParseError::InvalidStatusLine);
+    }
+    // Status: exactly three digits. Not "up to three" — a two-digit status would silently become a
+    // different code once the reason phrase ran into it.
+    let mut i = 9u64;
+    let mut digits = 0;
+    let mut value = 0u64;
+    while i < n && digits < 3 {
+        if !is_digit(line[i]) {
+            return Err(HttpParseError::InvalidStatusLine);
+        }
+        value = value * 10u64 + (line[i] - 48u8) as UInt64;
+        digits = digits + 1;
+        i = i + 1u64;
+    }
+    if digits != 3 {
+        return Err(HttpParseError::InvalidStatusLine);
+    }
+    let status = value as UInt16;
+    if !is_valid_status(status) {
+        return Err(HttpParseError::InvalidStatus);
+    }
+    parser.status = status;
+
+    // Reason phrase is optional; when present it must be preceded by a single space.
+    if i == n {
+        parser.reason = String::new();
+        return Ok(true);
+    }
+    if line[i] != SP {
+        return Err(HttpParseError::InvalidStatusLine);
+    }
+    i = i + 1u64;
+    let reason = slice_to_string(line, i, n);
+    if !is_valid_reason(reason.as_str()) {
+        return Err(HttpParseError::InvalidReason);
+    }
+    parser.reason = reason;
+    Ok(true)
+}
+
+// -- headers ---------------------------------------------------------------------------------
+
+/// One `Name: Value` line, already stripped of its terminator.
+fn parse_header_line(parser: &mut HttpResponseParser, line: &Vec<UInt8>) -> Result<Bool, HttpParseError> {
+    let n = line.len();
+    // OBS-FOLD: a line starting with SP or HTAB is a continuation of the previous header. RFC 9110
+    // deprecates it, and accepting it is a smuggling vector because peers disagree about how to
+    // unfold. Rejected outright rather than unfolded.
+    if n > 0u64 {
+        if line[0u64] == SP || line[0u64] == HTAB {
+            return Err(HttpParseError::ObsFoldRejected);
+        }
+    }
+    let mut colon = n;
+    let mut i = 0u64;
+    while i < n {
+        if line[i] == COLON {
+            colon = i;
+            i = n;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    if colon == n {
+        return Err(HttpParseError::InvalidHeaderName);
+    }
+    let name = slice_to_string(line, 0u64, colon);
+    if !is_valid_header_name(name.as_str()) {
+        return Err(HttpParseError::InvalidHeaderName);
+    }
+    // Optional whitespace after the colon is stripped; trailing whitespace likewise. Both are
+    // stripped rather than rejected because RFC 9110 defines them as not part of the value, so a
+    // sender emitting them is well-formed.
+    let mut start = colon + 1u64;
+    while start < n {
+        if line[start] == SP || line[start] == HTAB {
+            start = start + 1u64;
+        } else {
+            break;
+        }
+    }
+    let mut end = n;
+    while end > start {
+        let last = line[end - 1u64];
+        if last == SP || last == HTAB {
+            end = end - 1u64;
+        } else {
+            break;
+        }
+    }
+    let value = slice_to_string(line, start, end);
+    if !is_valid_header_value(value.as_str()) {
+        return Err(HttpParseError::InvalidHeaderValue);
+    }
+
+    if parser.headers.entries.len() + 1u64 > parser.limits.max_header_count {
+        return Err(HttpParseError::TooManyHeaders);
+    }
+    match header(name.as_str(), value.as_str()) {
+        Ok(entry) => {
+            parser.headers.entries.push(entry);
+            Ok(true)
+        }
+        Err(_error) => Err(HttpParseError::InvalidHeaderValue),
+    }
+}
+
+/// Decide how the body is framed, once the header block is complete.
+///
+/// This is where every framing-ambiguity rule lands, and each refusal is a smuggling defence
+/// rather than pedantry: two peers that resolve an ambiguity differently see different message
+/// boundaries on one byte stream.
+fn decide_framing(parser: &mut HttpResponseParser) -> Result<Bool, HttpParseError> {
+    let mut content_length: Option<UInt64> = None;
+    let mut saw_transfer_encoding = false;
+    let mut chunked = false;
+
+    let n = parser.headers.entries.len();
+    let mut i = 0u64;
+    while i < n {
+        let entry = &parser.headers.entries[i];
+        if ascii_equal_ignore_case(entry.name.as_str(), "content-length") {
+            let parsed = parse_decimal(entry.value.as_str())?;
+            match content_length {
+                None => {
+                    content_length = Some(parsed);
+                }
+                Some(previous) => {
+                    // Two Content-Lengths agreeing is legal-ish and harmless; two DISAGREEING is
+                    // the classic smuggling pair and is refused.
+                    if previous != parsed {
+                        return Err(HttpParseError::ConflictingContentLength);
+                    }
+                }
+            }
+        }
+        if ascii_equal_ignore_case(entry.name.as_str(), "transfer-encoding") {
+            saw_transfer_encoding = true;
+            // v0.1 supports `chunked` alone. A coding list, or any other coding, is refused: an
+            // unsupported coding means the body cannot be decoded, and guessing is worse.
+            if ascii_equal_ignore_case(entry.value.as_str(), "chunked") {
+                chunked = true;
+            } else {
+                return Err(HttpParseError::UnsupportedTransferEncoding);
+            }
+        }
+        i = i + 1u64;
+    }
+
+    if saw_transfer_encoding && content_length.is_some() {
+        return Err(HttpParseError::ContentLengthWithTransferEncoding);
+    }
+
+    // No-body statuses, checked BEFORE any framing header is honoured. RFC 9110: 1xx, 204 and 304
+    // never carry a body, and a HEAD response describes one it does not send.
+    if parser.head_request || parser.status == 204u16 || parser.status == 304u16 {
+        parser.framing = BodyFraming::None;
+        return Ok(true);
+    }
+
+    if chunked {
+        parser.framing = BodyFraming::Chunked;
+        return Ok(true);
+    }
+    match content_length {
+        Some(length) => {
+            if length > parser.limits.max_body_bytes {
+                return Err(HttpParseError::BodyTooLarge);
+            }
+            parser.framing = BodyFraming::Fixed(length);
+            parser.remaining = length;
+        }
+        None => {
+            // No framing header: the body runs until the connection closes. That is legal for
+            // responses (never for requests) and is why `finish` exists.
+            parser.framing = BodyFraming::UntilClose;
+        }
+    }
+    Ok(true)
+}
+
+/// Decimal `Content-Length`, overflow-checked.
+///
+/// The guard is BEFORE the multiply, because STARK traps on overflow — an unchecked accumulate
+/// would abort the process on a hostile header rather than reject the message.
+fn parse_decimal(text: &str) -> Result<UInt64, HttpParseError> {
+    let bytes = text.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return Err(HttpParseError::InvalidContentLength);
+    }
+    let mut value = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        if !is_digit(bytes[i]) {
+            return Err(HttpParseError::InvalidContentLength);
+        }
+        if value > 1844674407370955161u64 {
+            return Err(HttpParseError::InvalidContentLength);
+        }
+        value = value * 10u64 + (bytes[i] - 48u8) as UInt64;
+        i = i + 1u64;
+    }
+    Ok(value)
+}
+
+/// Hexadecimal chunk size, overflow-checked, stopping at a chunk extension (`;`).
+///
+/// Extensions are consumed and ignored — they are syntactically legal and semantically optional,
+/// so refusing them would reject well-formed peers, while interpreting them is out of v0.1 scope.
+fn parse_chunk_size(line: &Vec<UInt8>) -> Result<UInt64, HttpParseError> {
+    let n = line.len();
+    let mut value = 0u64;
+    let mut digits = 0;
+    let mut i = 0u64;
+    while i < n {
+        let byte = line[i];
+        if byte == SEMICOLON {
+            i = n;
+        } else {
+            match hex_value(byte) {
+                Some(digit) => {
+                    if value > 1152921504606846975u64 {
+                        return Err(HttpParseError::InvalidChunkSize);
+                    }
+                    value = value * 16u64 + digit;
+                    digits = digits + 1;
+                    i = i + 1u64;
+                }
+                None => {
+                    return Err(HttpParseError::InvalidChunkSize);
+                }
+            }
+        }
+    }
+    if digits == 0 {
+        return Err(HttpParseError::InvalidChunkSize);
+    }
+    Ok(value)
+}
+
+// -- the driver ------------------------------------------------------------------------------
+
+/// Take the next complete line out of `pending`, or `None` if one has not arrived yet.
+///
+/// Enforces the line limit against the PENDING length, not the finished line, so an unterminated
+/// flood is refused while it is arriving rather than after it has been retained.
+fn take_line(parser: &mut HttpResponseParser, limit: UInt64, too_long: HttpParseError) -> Result<Option<Vec<UInt8>>, HttpParseError> {
+    let end = find_line_end(&parser.pending);
+    match end {
+        None => {
+            if parser.pending.len() > limit {
+                return Err(too_long);
+            }
+            Ok(None)
+        }
+        Some(lf) => {
+            if lf > limit {
+                return Err(too_long);
+            }
+            // BARE LF is rejected: a peer that accepts it and one that does not will disagree
+            // about where a line ends, which is the smuggling shape again.
+            if lf == 0u64 {
+                return Err(HttpParseError::BareLfRejected);
+            }
+            if parser.pending[lf - 1u64] != CR {
+                return Err(HttpParseError::BareLfRejected);
+            }
+            let mut line: Vec<UInt8> = Vec::new();
+            let mut i = 0u64;
+            while i < lf - 1u64 {
+                line.push(parser.pending[i]);
+                i = i + 1u64;
+            }
+            drop_front(&mut parser.pending, lf + 1u64);
+            parser.consumed = parser.consumed + lf + 1u64;
+            Ok(Some(line))
+        }
+    }
+}
+
+fn finish_message(parser: &mut HttpResponseParser) -> Result<ParseProgress, HttpParseError> {
+    parser.state = ParserState::Complete;
+    let mut headers = new_header_map();
+    let n = parser.headers.entries.len();
+    let mut i = 0u64;
+    while i < n {
+        let entry = &parser.headers.entries[i];
+        match header(entry.name.as_str(), entry.value.as_str()) {
+            Ok(copy) => {
+                headers.entries.push(copy);
+            }
+            Err(_error) => {}
+        }
+        i = i + 1u64;
+    }
+    let mut body: Vec<UInt8> = Vec::new();
+    let m = parser.body.len();
+    let mut k = 0u64;
+    while k < m {
+        body.push(parser.body[k]);
+        k = k + 1u64;
+    }
+    let response = HttpResponse {
+        version: parser.version,
+        status: parser.status,
+        reason: parser.reason.clone(),
+        headers: headers,
+        body: body,
+    };
+    Ok(ParseProgress::Complete(response, parser.consumed))
+}
+
+/// Reset after an informational `1xx`, which is parsed and discarded. Any number may precede the
+/// real response, so this returns to `StatusLine` rather than completing.
+fn restart_after_informational(parser: &mut HttpResponseParser) {
+    parser.headers = new_header_map();
+    parser.header_bytes_seen = 0u64;
+    parser.status = 0u16;
+    parser.reason = String::new();
+    parser.framing = BodyFraming::None;
+    parser.remaining = 0u64;
+    parser.saw_informational = true;
+    parser.state = ParserState::StatusLine;
+}
+
+/// Feed bytes. Returns `NeedMore` until a complete message is available.
+///
+/// Every call appends to `pending` and then runs the machine to a fixed point, so a caller may
+/// push one byte or a megabyte and get the same answer. That equivalence is the parser's whole
+/// contract, and it is what the per-split-position tests check.
+pub fn push(parser: &mut HttpResponseParser, bytes: &[UInt8]) -> Result<ParseProgress, HttpParseError> {
+    match parser.state {
+        ParserState::Failed => {
+            return Err(HttpParseError::AlreadyFailed);
+        }
+        ParserState::Complete => {
+            return Err(HttpParseError::AlreadyComplete);
+        }
+        _other => {}
+    }
+
+    let incoming = bytes.len();
+    let mut i = 0u64;
+    while i < incoming {
+        parser.pending.push(bytes[i]);
+        i = i + 1u64;
+    }
+
+    let result = run(parser);
+    match result {
+        Ok(progress) => Ok(progress),
+        Err(error) => {
+            parser.state = ParserState::Failed;
+            Err(error)
+        }
+    }
+}
+
+/// The connection closed. Only a close-delimited body can legally end this way.
+pub fn finish(parser: &mut HttpResponseParser) -> Result<HttpResponse, HttpParseError> {
+    // Only a close-delimited body may legally end here. Deciding that BEFORE mutating state keeps
+    // every arm a value rather than a mix of `return`s and values, which Core v1 needs anyway
+    // since `return` is a statement.
+    let closable = match parser.state {
+        ParserState::CloseDelimitedBody => true,
+        _other => false,
+    };
+    if closable {
+        let progress = finish_message(parser)?;
+        let out = match progress {
+            ParseProgress::Complete(response, _consumed) => Ok(response),
+            ParseProgress::NeedMore => Err(HttpParseError::PrematureEof),
+        };
+        return out;
+    }
+    let already = match parser.state {
+        ParserState::Failed => 1,
+        ParserState::Complete => 2,
+        _other => 0,
+    };
+    if already == 1 {
+        return Err(HttpParseError::AlreadyFailed);
+    }
+    if already == 2 {
+        return Err(HttpParseError::AlreadyComplete);
+    }
+    // Every other state was waiting for bytes that will now never arrive.
+    parser.state = ParserState::Failed;
+    Err(HttpParseError::PrematureEof)
+}
+
+/// Run the machine until it needs more bytes or completes.
+fn run(parser: &mut HttpResponseParser) -> Result<ParseProgress, HttpParseError> {
+    let mut guard = 0u64;
+    while guard < 1000000u64 {
+        guard = guard + 1u64;
+        match parser.state {
+            ParserState::StatusLine => {
+                // The limit is read BEFORE the `&mut` is formed. Passing `parser.limits.max_status_line_bytes`
+                // directly reads a place that the same call has already borrowed exclusively —
+                // see DEV-150, which the checker accepts through a reference base and the native
+                // backend cannot express.
+                let max_status_line_bytes = parser.limits.max_status_line_bytes;
+                let line = take_line(
+                    parser,
+                    max_status_line_bytes,
+                    HttpParseError::StatusLineTooLong,
+                )?;
+                match line {
+                    None => {
+                        return Ok(ParseProgress::NeedMore);
+                    }
+                    Some(bytes) => {
+                        parse_status_line(parser, &bytes)?;
+                        parser.state = ParserState::Headers;
+                    }
+                }
+            }
+            ParserState::Headers => {
+                // The limit is read BEFORE the `&mut` is formed. Passing `parser.limits.max_header_line_bytes`
+                // directly reads a place that the same call has already borrowed exclusively —
+                // see DEV-150, which the checker accepts through a reference base and the native
+                // backend cannot express.
+                let max_header_line_bytes = parser.limits.max_header_line_bytes;
+                let line = take_line(
+                    parser,
+                    max_header_line_bytes,
+                    HttpParseError::HeaderLineTooLong,
+                )?;
+                match line {
+                    None => {
+                        return Ok(ParseProgress::NeedMore);
+                    }
+                    Some(bytes) => {
+                        if bytes.len() == 0u64 {
+                            // Blank line: the header block is over.
+                            if parser.status >= 100u16 && parser.status < 200u16 {
+                                restart_after_informational(parser);
+                            } else {
+                                decide_framing(parser)?;
+                                match parser.framing {
+                                    BodyFraming::None => {
+                                        return finish_message(parser);
+                                    }
+                                    BodyFraming::Fixed(length) => {
+                                        if length == 0u64 {
+                                            return finish_message(parser);
+                                        }
+                                        parser.state = ParserState::FixedBody;
+                                    }
+                                    BodyFraming::Chunked => {
+                                        parser.state = ParserState::ChunkSize;
+                                    }
+                                    BodyFraming::UntilClose => {
+                                        // No return: bytes already buffered belong to the body, and
+                                        // only the drain arm knows that. Returning here dropped
+                                        // every close-delimited body that arrived in one buffer.
+                                        parser.state = ParserState::CloseDelimitedBody;
+                                    }
+                                }
+                            }
+                        } else {
+                            parser.header_bytes_seen = parser.header_bytes_seen + bytes.len() + 2u64;
+                            if parser.header_bytes_seen > parser.limits.max_header_bytes {
+                                return Err(HttpParseError::HeadersTooLarge);
+                            }
+                            parse_header_line(parser, &bytes)?;
+                        }
+                    }
+                }
+            }
+            ParserState::FixedBody => {
+                let available = parser.pending.len();
+                if available == 0u64 {
+                    return Ok(ParseProgress::NeedMore);
+                }
+                let mut take = parser.remaining;
+                if available < take {
+                    take = available;
+                }
+                let mut i = 0u64;
+                while i < take {
+                    parser.body.push(parser.pending[i]);
+                    i = i + 1u64;
+                }
+                if parser.body.len() > parser.limits.max_body_bytes {
+                    return Err(HttpParseError::BodyTooLarge);
+                }
+                drop_front(&mut parser.pending, take);
+                parser.consumed = parser.consumed + take;
+                parser.remaining = parser.remaining - take;
+                if parser.remaining == 0u64 {
+                    return finish_message(parser);
+                }
+                return Ok(ParseProgress::NeedMore);
+            }
+            ParserState::ChunkSize => {
+                // The limit is read BEFORE the `&mut` is formed. Passing `parser.limits.max_chunk_line_bytes`
+                // directly reads a place that the same call has already borrowed exclusively —
+                // see DEV-150, which the checker accepts through a reference base and the native
+                // backend cannot express.
+                let max_chunk_line_bytes = parser.limits.max_chunk_line_bytes;
+                let line = take_line(parser, max_chunk_line_bytes, HttpParseError::ChunkLineTooLong)?;
+                match line {
+                    None => {
+                        return Ok(ParseProgress::NeedMore);
+                    }
+                    Some(bytes) => {
+                        let size = parse_chunk_size(&bytes)?;
+                        if size == 0u64 {
+                            // The terminating chunk. Trailers follow and must ALWAYS be consumed,
+                            // even though v0.1 discards them: leaving them in the stream would
+                            // desynchronise a reused connection.
+                            parser.state = ParserState::Trailers;
+                        } else {
+                            if parser.body.len() + size > parser.limits.max_body_bytes {
+                                return Err(HttpParseError::BodyTooLarge);
+                            }
+                            parser.remaining = size;
+                            parser.state = ParserState::ChunkData;
+                        }
+                    }
+                }
+            }
+            ParserState::ChunkData => {
+                let available = parser.pending.len();
+                if available == 0u64 {
+                    return Ok(ParseProgress::NeedMore);
+                }
+                let mut take = parser.remaining;
+                if available < take {
+                    take = available;
+                }
+                let mut i = 0u64;
+                while i < take {
+                    parser.body.push(parser.pending[i]);
+                    i = i + 1u64;
+                }
+                if parser.body.len() > parser.limits.max_body_bytes {
+                    return Err(HttpParseError::BodyTooLarge);
+                }
+                drop_front(&mut parser.pending, take);
+                parser.consumed = parser.consumed + take;
+                parser.remaining = parser.remaining - take;
+                if parser.remaining == 0u64 {
+                    parser.state = ParserState::ChunkDataCrlf;
+                } else {
+                    return Ok(ParseProgress::NeedMore);
+                }
+            }
+            ParserState::ChunkDataCrlf => {
+                // Every chunk's data is followed by exactly CRLF. Anything else means the declared
+                // size disagreed with the bytes sent, so the stream is no longer trustworthy.
+                if parser.pending.len() < 2u64 {
+                    return Ok(ParseProgress::NeedMore);
+                }
+                if parser.pending[0u64] != CR || parser.pending[1u64] != LF {
+                    return Err(HttpParseError::BadChunkTerminator);
+                }
+                drop_front(&mut parser.pending, 2u64);
+                parser.consumed = parser.consumed + 2u64;
+                parser.state = ParserState::ChunkSize;
+            }
+            ParserState::Trailers => {
+                // The limit is read BEFORE the `&mut` is formed. Passing `parser.limits.max_header_line_bytes`
+                // directly reads a place that the same call has already borrowed exclusively —
+                // see DEV-150, which the checker accepts through a reference base and the native
+                // backend cannot express.
+                let max_header_line_bytes = parser.limits.max_header_line_bytes;
+                let line = take_line(
+                    parser,
+                    max_header_line_bytes,
+                    HttpParseError::HeaderLineTooLong,
+                )?;
+                match line {
+                    None => {
+                        return Ok(ParseProgress::NeedMore);
+                    }
+                    Some(bytes) => {
+                        if bytes.len() == 0u64 {
+                            return finish_message(parser);
+                        }
+                        // Trailers are VALIDATED under the ordinary header rules and then
+                        // discarded (v0.1 policy). Validating before discarding matters: a
+                        // malformed trailer is a malformed message, and silently skipping it
+                        // would accept a stream a stricter peer rejects.
+                        parser.header_bytes_seen = parser.header_bytes_seen + bytes.len() + 2u64;
+                        if parser.header_bytes_seen > parser.limits.max_header_bytes {
+                            return Err(HttpParseError::HeadersTooLarge);
+                        }
+                        let mut scratch = new_parser(parser.limits);
+                        parse_header_line(&mut scratch, &bytes)?;
+                    }
+                }
+            }
+            ParserState::CloseDelimitedBody => {
+                let available = parser.pending.len();
+                if available == 0u64 {
+                    return Ok(ParseProgress::NeedMore);
+                }
+                let mut i = 0u64;
+                while i < available {
+                    parser.body.push(parser.pending[i]);
+                    i = i + 1u64;
+                }
+                if parser.body.len() > parser.limits.max_body_bytes {
+                    return Err(HttpParseError::BodyTooLarge);
+                }
+                drop_front(&mut parser.pending, available);
+                parser.consumed = parser.consumed + available;
+                return Ok(ParseProgress::NeedMore);
+            }
+            ParserState::Complete => {
+                return Err(HttpParseError::AlreadyComplete);
+            }
+            ParserState::Failed => {
+                return Err(HttpParseError::AlreadyFailed);
+            }
+        }
+    }
+    Err(HttpParseError::PrematureEof)
+}
+
+pub fn saw_informational(parser: &HttpResponseParser) -> Bool {
+    parser.saw_informational
+}
+
+mod tests;

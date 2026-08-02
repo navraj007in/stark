@@ -2,6 +2,7 @@ use super::default_limits;
 use super::encode_query;
 use super::parse_request_target;
 use super::parse_request_target_with_limits;
+use super::parse_url;
 use super::percent_decode;
 use super::percent_encode_component;
 use super::QueryParameter;
@@ -75,6 +76,11 @@ fn kind_code(kind: UrlErrorKind) -> UInt8 {
         UrlErrorKind::TooManyQueryParameters => 4u8,
         UrlErrorKind::InputTooLarge => 5u8,
         UrlErrorKind::PositionOverflow => 6u8,
+        UrlErrorKind::InvalidScheme => 7u8,
+        UrlErrorKind::MalformedAuthority => 8u8,
+        UrlErrorKind::MissingHost => 9u8,
+        UrlErrorKind::UserInfoUnsupported => 10u8,
+        UrlErrorKind::InvalidPort => 11u8,
     }
 }
 
@@ -301,5 +307,111 @@ fn test_default_limits_are_available() {
     let limits = default_limits();
     if limits.max_input_bytes == 0u64 || limits.max_query_parameters == 0u64 {
         panic("default limits should be nonzero");
+    }
+}
+
+fn assert_url(input: &str, host: &str, port: UInt16, target: &str, host_header: &str) {
+    match parse_url(input, &default_limits()) {
+        Ok(url) => {
+            if url.authority.host.as_str() != host {
+                panic("url host mismatch");
+            }
+            if url.effective_port() != port {
+                panic("url effective port mismatch");
+            }
+            if url.origin_form_target().as_str() != target {
+                panic("url origin-form target mismatch");
+            }
+            if url.host_header_value().as_str() != host_header {
+                panic("url host header mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected url parse success");
+        }
+    }
+}
+
+fn assert_url_error(input: &str, kind: UrlErrorKind) {
+    match parse_url(input, &default_limits()) {
+        Ok(_) => {
+            panic("expected url parse error");
+        }
+        Err(err) => {
+            if kind_code(err.kind) != kind_code(kind) {
+                panic("url error kind mismatch");
+            }
+        }
+    }
+}
+
+fn test_parse_absolute_url_hostname_path_and_query() {
+    assert_url("http://example.com/users/123", "example.com", 80u16, "/users/123", "example.com");
+    assert_url(
+        "https://api.example.com/v1/items?q=stark&limit=10",
+        "api.example.com",
+        443u16,
+        "/v1/items?q=stark&limit=10",
+        "api.example.com",
+    );
+}
+
+fn test_parse_absolute_url_default_and_explicit_ports() {
+    assert_url("http://example.com", "example.com", 80u16, "/", "example.com");
+    assert_url("https://example.com:443/path", "example.com", 443u16, "/path", "example.com");
+    assert_url("http://example.com:8080/path", "example.com", 8080u16, "/path", "example.com:8080");
+}
+
+fn test_parse_absolute_url_ipv4_ipv6_and_fragment() {
+    assert_url(
+        "http://127.0.0.1:8080/health#debug",
+        "127.0.0.1",
+        8080u16,
+        "/health",
+        "127.0.0.1:8080",
+    );
+    assert_url(
+        "https://[2001:db8::1]/v1?q=x#frag",
+        "[2001:db8::1]",
+        443u16,
+        "/v1?q=x",
+        "[2001:db8::1]",
+    );
+    assert_url("http://[::1]:8000", "[::1]", 8000u16, "/", "[::1]:8000");
+}
+
+fn test_parse_absolute_url_entry_point() {
+    match parse_url("https://example.com/path?x=1#ignored", &default_limits()) {
+        Ok(url) => {
+            if url.origin_form_target().as_str() != "/path?x=1" {
+                panic("url parse target mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected url parse success");
+        }
+    }
+}
+
+fn test_absolute_url_rejections() {
+    assert_url_error("ftp://example.com/", UrlErrorKind::InvalidScheme);
+    assert_url_error("http:/example.com/", UrlErrorKind::MalformedAuthority);
+    assert_url_error("http:///path", UrlErrorKind::MissingHost);
+    assert_url_error("http://user@example.com/", UrlErrorKind::UserInfoUnsupported);
+    assert_url_error("http://example.com:", UrlErrorKind::InvalidPort);
+    assert_url_error("http://example.com:abc/", UrlErrorKind::InvalidPort);
+    assert_url_error("http://example.com:70000/", UrlErrorKind::InvalidPort);
+    assert_url_error("http://[::1", UrlErrorKind::MalformedAuthority);
+
+    let limits = UrlLimits { max_input_bytes: 8u64, max_query_parameters: 1u64 };
+    match parse_url("http://example.com", &limits) {
+        Err(err) => {
+            if kind_code(err.kind) != kind_code(UrlErrorKind::InputTooLarge) {
+                panic("oversized url error kind mismatch");
+            }
+        }
+        Ok(_) => {
+            panic("expected oversized url error");
+        }
     }
 }

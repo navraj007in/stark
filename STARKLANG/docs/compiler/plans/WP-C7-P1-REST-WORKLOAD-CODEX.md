@@ -1,6 +1,12 @@
 # WP-C7.P1 — Native HTTP/JSON REST Workload
 
-**Status:** READY FOR PARALLEL IMPLEMENTATION  
+**Status:** **IMPLEMENTED — TIER-1 QUALIFIED** (CD-273). Six execution rows green at `d735b35`; see
+`../work-packages/WP-C7-P1-REST-REPORT.md`. This document is retained as the frozen commission, not
+as open work — P1 is frozen at 24 exchanges and is not to be modified (`COMPILER-STATE.md`).  
+**Implementation-era scope:** built against MIR **0.2** and the pre-A11 provider model, whose package
+source neither declares nor calls a close. MIR is now **0.3** (amendment A12, CD-265). The evidence
+below stands at its commit; when TCP migrates fully onto the A11 resource-nominal path, P1 is the
+natural re-qualification workload — the two provider generations are not interchangeable.  
 **Primary implementer:** Codex  
 **Gate:** C7 — Native Build and Realistic Workload Qualification  
 **Repository:** `navraj007in/stark`  

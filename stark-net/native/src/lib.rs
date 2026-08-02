@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -26,6 +26,17 @@ pub const STATUS_BROKEN_PIPE: ProviderStatus = ProviderStatus { code: 8 };
 pub const STATUS_WOULD_BLOCK: ProviderStatus = ProviderStatus { code: 9 };
 pub const STATUS_UNSUPPORTED: ProviderStatus = ProviderStatus { code: 10 };
 pub const STATUS_OTHER_DECLARED: ProviderStatus = ProviderStatus { code: 11 };
+pub const STATUS_DNS_INVALID_HOST: ProviderStatus = ProviderStatus { code: 101 };
+pub const STATUS_DNS_NOT_FOUND: ProviderStatus = ProviderStatus { code: 102 };
+pub const STATUS_DNS_TEMPORARY_FAILURE: ProviderStatus = ProviderStatus { code: 103 };
+pub const STATUS_DNS_TOO_MANY_RESULTS: ProviderStatus = ProviderStatus { code: 104 };
+pub const STATUS_DNS_UNSUPPORTED_ADDRESS_FAMILY: ProviderStatus = ProviderStatus { code: 105 };
+pub const STATUS_DNS_UNSUPPORTED: ProviderStatus = ProviderStatus { code: 106 };
+pub const STATUS_DNS_OTHER: ProviderStatus = ProviderStatus { code: 107 };
+
+const DNS_RECORD_WIDTH: usize = 22;
+const DNS_FAMILY_IPV4: u8 = 4;
+const DNS_FAMILY_IPV6: u8 = 6;
 
 struct Table {
     next: u64,
@@ -78,6 +89,19 @@ fn address_from_buffer(buffer: BorrowedBuffer) -> Result<String, ProviderStatus>
         .map_err(|_| STATUS_INVALID_INPUT)
 }
 
+fn hostname_from_buffer(buffer: BorrowedBuffer) -> Result<String, ProviderStatus> {
+    let bytes = unsafe { read_buffer(buffer) };
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(STATUS_DNS_INVALID_HOST);
+    }
+    if bytes.len() > 253 {
+        return Err(STATUS_DNS_INVALID_HOST);
+    }
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| STATUS_DNS_INVALID_HOST)
+}
+
 fn map_io_error(error: &std::io::Error) -> ProviderStatus {
     match error.kind() {
         std::io::ErrorKind::ConnectionRefused => STATUS_CONNECTION_REFUSED,
@@ -92,6 +116,45 @@ fn map_io_error(error: &std::io::Error) -> ProviderStatus {
         std::io::ErrorKind::Unsupported => STATUS_UNSUPPORTED,
         _ => STATUS_OTHER_DECLARED,
     }
+}
+
+fn map_dns_error(error: &std::io::Error) -> ProviderStatus {
+    match error.kind() {
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+            STATUS_DNS_INVALID_HOST
+        }
+        std::io::ErrorKind::NotFound => STATUS_DNS_NOT_FOUND,
+        std::io::ErrorKind::TimedOut
+        | std::io::ErrorKind::Interrupted
+        | std::io::ErrorKind::WouldBlock => STATUS_DNS_TEMPORARY_FAILURE,
+        std::io::ErrorKind::Unsupported => STATUS_DNS_UNSUPPORTED,
+        _ => STATUS_DNS_OTHER,
+    }
+}
+
+fn resolve_records(host: &str) -> Result<Vec<[u8; DNS_RECORD_WIDTH]>, ProviderStatus> {
+    let mut records = Vec::new();
+    let addrs = (host, 0u16).to_socket_addrs().map_err(|error| map_dns_error(&error))?;
+    for addr in addrs {
+        let mut record = [0u8; DNS_RECORD_WIDTH];
+        match addr.ip() {
+            IpAddr::V4(v4) => {
+                record[0] = DNS_FAMILY_IPV4;
+                record[1] = 4;
+                record[2..6].copy_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                record[0] = DNS_FAMILY_IPV6;
+                record[1] = 16;
+                record[2..18].copy_from_slice(&v6.octets());
+            }
+        }
+        records.push(record);
+    }
+    if records.is_empty() {
+        return Err(STATUS_DNS_NOT_FOUND);
+    }
+    Ok(records)
 }
 
 fn next_id(table: &mut Table) -> u64 {
@@ -259,6 +322,67 @@ pub unsafe extern "C" fn stark_tcp_stream_write(
     ProviderStatus::SUCCESS
 }
 
+/// HC4: `stark_tcp_stream_set_read_timeout`, an ABI v0.1 entry point.
+///
+/// `nanos` is a duration in nanoseconds, and **zero means "no timeout"** — the zero-duration
+/// semantics HC4 requires to be specified rather than left implicit. That maps to `None`, which is
+/// what `std` uses for a blocking socket.
+///
+/// A non-zero duration that rounds to zero at the OS's resolution is raised to 1ns rather than
+/// silently becoming "block forever": the caller asked for a bound, and the one thing this must not
+/// do is turn a bound into its opposite.
+///
+/// # Safety
+/// `stream` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+#[no_mangle]
+pub unsafe extern "C" fn stark_tcp_stream_set_read_timeout(
+    stream: RawResourceHandle,
+    nanos: u64,
+) -> ProviderStatus {
+    validate(stream, TCP_STREAM_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(stream_ref) = table.streams.get_mut(&stream.id) else {
+        abort_contract();
+    };
+    match stream_ref.set_read_timeout(timeout_from_nanos(nanos)) {
+        Ok(()) => ProviderStatus::SUCCESS,
+        Err(error) => map_io_error(&error),
+    }
+}
+
+/// HC4: `stark_tcp_stream_set_write_timeout`, an ABI v0.1 entry point.
+///
+/// # Safety
+/// `stream` must be a handle this provider issued and has not yet closed; its `resource_type` is checked, but a stale id is not detectable and aborts.
+#[no_mangle]
+pub unsafe extern "C" fn stark_tcp_stream_set_write_timeout(
+    stream: RawResourceHandle,
+    nanos: u64,
+) -> ProviderStatus {
+    validate(stream, TCP_STREAM_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(stream_ref) = table.streams.get_mut(&stream.id) else {
+        abort_contract();
+    };
+    match stream_ref.set_write_timeout(timeout_from_nanos(nanos)) {
+        Ok(()) => ProviderStatus::SUCCESS,
+        Err(error) => map_io_error(&error),
+    }
+}
+
+/// Zero is "no timeout"; anything else is a real bound, floored at 1ns so a sub-resolution request
+/// cannot become unbounded.
+fn timeout_from_nanos(nanos: u64) -> Option<std::time::Duration> {
+    if nanos == 0 {
+        return None;
+    }
+    let duration = std::time::Duration::from_nanos(nanos);
+    if duration.is_zero() {
+        return Some(std::time::Duration::from_nanos(1));
+    }
+    Some(duration)
+}
+
 /// `stark_tcp_listener_close`, an ABI v0.1 entry point.
 ///
 /// # Safety
@@ -285,6 +409,61 @@ pub unsafe extern "C" fn stark_tcp_stream_close(handle: RawResourceHandle) -> Pr
         let _ = stream.shutdown(Shutdown::Both);
     } else {
         abort_contract();
+    }
+    ProviderStatus::SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_dns_resolve_len(
+    host: BorrowedBuffer,
+    out_required_len: *mut u64,
+    out_count: *mut u64,
+) -> ProviderStatus {
+    let host = match hostname_from_buffer(host) {
+        Ok(host) => host,
+        Err(status) => return status,
+    };
+    let records = match resolve_records(&host) {
+        Ok(records) => records,
+        Err(status) => return status,
+    };
+    unsafe {
+        write_scalar(out_required_len, (records.len() * DNS_RECORD_WIDTH) as u64);
+        write_scalar(out_count, records.len() as u64);
+    }
+    ProviderStatus::SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn stark_dns_resolve_fill(
+    host: BorrowedBuffer,
+    out_records: BorrowedBufferMut,
+    out_written_len: *mut u64,
+    out_count: *mut u64,
+) -> ProviderStatus {
+    let host = match hostname_from_buffer(host) {
+        Ok(host) => host,
+        Err(status) => return status,
+    };
+    let records = match resolve_records(&host) {
+        Ok(records) => records,
+        Err(status) => return status,
+    };
+    let required = records.len() * DNS_RECORD_WIDTH;
+    if out_records.len < required {
+        return STATUS_DNS_TOO_MANY_RESULTS;
+    }
+    if required > 0 && out_records.ptr.is_null() {
+        abort_contract();
+    }
+    let output = unsafe { std::slice::from_raw_parts_mut(out_records.ptr, required) };
+    for (i, record) in records.iter().enumerate() {
+        let start = i * DNS_RECORD_WIDTH;
+        output[start..start + DNS_RECORD_WIDTH].copy_from_slice(record);
+    }
+    unsafe {
+        write_scalar(out_written_len, required as u64);
+        write_scalar(out_count, records.len() as u64);
     }
     ProviderStatus::SUCCESS
 }
@@ -423,7 +602,7 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["tcp".to_string()],
+            capabilities: vec!["tcp".to_string(), "dns".to_string()],
             resource_types: vec![listener.clone(), stream.clone()],
             functions: vec![
                 FunctionDecl {
@@ -508,6 +687,29 @@ mod tests {
                     is_close_for: Some(stream),
                     may_block: false,
                 },
+                FunctionDecl {
+                    name: "stark_dns_resolve_len".to_string(),
+                    capability: "dns".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_dns_resolve_fill".to_string(),
+                    capability: "dns".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
             ],
         }
     }
@@ -546,6 +748,17 @@ mod tests {
             ) -> ProviderStatus;
             pub fn stark_tcp_listener_close(handle: RawResourceHandle) -> ProviderStatus;
             pub fn stark_tcp_stream_close(handle: RawResourceHandle) -> ProviderStatus;
+            pub fn stark_dns_resolve_len(
+                host: BorrowedBuffer,
+                out_required_len: *mut u64,
+                out_count: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_dns_resolve_fill(
+                host: BorrowedBuffer,
+                out_records: BorrowedBufferMut,
+                out_written_len: *mut u64,
+                out_count: *mut u64,
+            ) -> ProviderStatus;
         }
     }
 
@@ -562,6 +775,8 @@ mod tests {
             "stark_tcp_stream_write",
             "stark_tcp_listener_close",
             "stark_tcp_stream_close",
+            "stark_dns_resolve_len",
+            "stark_dns_resolve_fill",
         ]);
         assert_eq!(declared, exported);
         assert!(declared.iter().all(|name| portable_c_identifier(name)));
@@ -596,6 +811,26 @@ mod tests {
     fn status_zero_means_success_and_declared_errors_are_stable() {
         assert_eq!(ProviderStatus::SUCCESS.code, 0);
         assert_eq!(STATUS_OTHER_DECLARED.code, 11);
+    }
+
+    #[test]
+    fn dns_rejects_invalid_hosts_before_resolver_call() {
+        let mut required_len = 123u64;
+        let mut count = 456u64;
+
+        let empty = unsafe {
+            linked::stark_dns_resolve_len(buf(b""), &mut required_len, &mut count)
+        };
+        assert_eq!(empty, STATUS_DNS_INVALID_HOST);
+        assert_eq!(required_len, 123);
+        assert_eq!(count, 456);
+
+        let nul = unsafe {
+            linked::stark_dns_resolve_len(buf(b"exa\0mple"), &mut required_len, &mut count)
+        };
+        assert_eq!(nul, STATUS_DNS_INVALID_HOST);
+        assert_eq!(required_len, 123);
+        assert_eq!(count, 456);
     }
 
     #[test]
