@@ -2494,7 +2494,13 @@ line | source code line
 - E0003: Type annotation required
 - E0004: Cannot infer type
 - E0005: Wrong number of arguments
-- E0006: `?` operator in a function that does not return `Result` or `Option`
+- E0006: `?` operator used where the enclosing function's return type cannot receive the
+  propagation. Covers three conditions: the enclosing function returns neither `Result` nor
+  `Option`; the operand and the return type use different constructors (propagating an `Option`
+  out of a `Result` function, or the reverse); or both are `Result` and their error types differ.
+  `?` performs **no conversion** — it does not apply `From`, so an `impl From<E1> for E2` does
+  not make `Result<_, E1>` propagable out of a function returning `Result<_, E2>`. Error types
+  must match exactly.
 - E0007: Index out of bounds (determinable at compile time)
 - E0008: Integer literal out of range for its type (suffixed literal exceeds its suffix's
   representable range, or an unsuffixed literal exceeds `Int64`)

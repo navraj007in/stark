@@ -2499,8 +2499,18 @@ line | source code line
 <li>E0003: Type annotation required</li>
 <li>E0004: Cannot infer type</li>
 <li>E0005: Wrong number of arguments</li>
-<li>E0006: <code>?</code> operator in a function that does not return
-<code>Result</code> or <code>Option</code></li>
+<li>E0006: <code>?</code> operator used where the enclosing function’s
+return type cannot receive the propagation. Covers three conditions: the
+enclosing function returns neither <code>Result</code> nor
+<code>Option</code>; the operand and the return type use different
+constructors (propagating an <code>Option</code> out of a
+<code>Result</code> function, or the reverse); or both are
+<code>Result</code> and their error types differ. <code>?</code>
+performs <strong>no conversion</strong> — it does not apply
+<code>From</code>, so an <code>impl From&lt;E1&gt; for E2</code> does
+not make <code>Result&lt;_, E1&gt;</code> propagable out of a function
+returning <code>Result&lt;_, E2&gt;</code>. Error types must match
+exactly.</li>
 <li>E0007: Index out of bounds (determinable at compile time)</li>
 <li>E0008: Integer literal out of range for its type (suffixed literal
 exceeds its suffix’s representable range, or an unsuffixed literal

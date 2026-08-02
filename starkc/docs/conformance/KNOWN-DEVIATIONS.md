@@ -3240,7 +3240,7 @@ C2.8–C2.11 disposition.
   capability). Both pinned.
 - **Owning gate:** CD-326 (package qualification); repaired under CD-329.
 
-## DEV-134 — `?` neither converts the error type nor requires that a conversion exist [OPEN, found CD-334, 2026-08-02]
+## DEV-134 — `?` neither converts the error type nor requires that a conversion exist [CLOSED, WP-DEV-134-139 Part A, CD-335, 2026-08-02]
 
 - **Normative expectation:** `?` propagates `Err`/`None` early (`04-Semantic-Analysis.md` line 160,
   `CORE-V1-ABSTRACT-MACHINE.md` EXEC-CFLOW-001). The spec does not define a `From` conversion at the
@@ -3285,7 +3285,54 @@ C2.8–C2.11 disposition.
 - **Proposed disposition:** decide between reject and convert — an owner call, not an
   implementation detail, because "convert" adds a `From` obligation the spec has not scoped and is a
   CE-shaped semantic decision. Rejection is the conservative half and can land first.
-- **Owning gate:** unassigned; belongs with whichever work package next touches `?` lowering.
+- **WIDER THAN FILED, same mechanism.** The repair work found that the CONSTRUCTOR is unrelated
+  too: `Option<_>?` inside a function returning `Result<_, _>` — and the reverse — is equally
+  accepted, and equally produces a value whose variant tag belongs to a different enum. This is
+  not a second defect: the `Try` arm asked "is the return type `?`-capable?" and "is the operand
+  `?`-capable?" as two INDEPENDENT questions and never related them, so one missing relation
+  produced both symptoms. One mechanism, one repair, no new DEV number (WP-DEV-134-139 §2).
+- **Resolution (CD-335):** `check_try_compatibility` in `typecheck.rs`, recorded during body
+  checking and drained after inference settles — the same deferral `display_checks` uses, and for
+  the same reason: the operand's error type is routinely an inference variable while the body is
+  being checked, so an eager comparison would either reject valid code or force a premature
+  binding. The rule is EXACT compatibility: same constructor, and for `Result` an error type
+  equal under the compiler's canonical equivalence.
+- **The ruling, recorded because it is a language decision and not an implementation detail:**
+
+  ```text
+  `?` requires exact error-type compatibility.
+  Implicit From-based propagation is not part of this repair.
+  ```
+
+  `03-Type-System.md` does not scope a conversion at the propagation site, so applying `From`
+  would be new semantics rather than a repair. Rejection is the conservative half. An
+  `impl From<Low> for High` being present does NOT license the propagation, and
+  `from_impl_present_still_rejected` pins that so the absence of conversion cannot later be
+  mistaken for an oversight. Whether Core v1 should gain conversion at `?` remains an OPEN
+  language-design question and needs its own proposal; it is not tracked by this entry.
+- **Diagnostic:** E0006, the existing `?` code, widened rather than a new code allocated. The
+  spec's E0006 line is amended in the same change from "`?` operator in a function that does not
+  return `Result` or `Option`" to cover the whole return-type contract. Reusing the code keeps
+  the normative table stable and keeps one code per concept; the two conditions are distinguished
+  by message, and `non_result_return_reports_once_not_twice` pins that the pre-existing condition
+  still reports exactly once rather than twice.
+- **Negative controls, because the risk here is OVER-rejection.** A `?` check that is too eager
+  breaks every correct propagation in the provider layer and the ten first-party packages, so the
+  must-pass set is larger than the must-reject set: different SUCCESS types (legal — `?` relates
+  the error position only), identical generic error types, an error type that is the function's
+  own type parameter, chained `?`, and `String` as a `Ty::Core` error type.
+- **Latent gap found and deliberately NOT repaired:** `types_equal` has no `Ty::Param` arm, so two
+  occurrences of the same type parameter compare unequal. Its existing callers are coherence and
+  overlap paths where `Ty::Param` is either pre-handled or where a conservative `false` is safe,
+  so the gap has no demonstrated symptom there — but it made the first version of this repair
+  reject `fn f<E>() -> Result<_, E>` propagating into `fn g<E>() -> Result<_, E>`, caught by this
+  entry's own negative control. Rather than widen a shared coherence primitive for a defect with
+  no symptom of its own, the structural walk now takes the `Ty::Param` behaviour as a PARAMETER
+  (`types_equal_inner`), written once and reached by two entry points. Widening `types_equal`
+  itself is a separate question and is unowned; it gets a DEV number if a symptom is found.
+- **Evidence:** `starkc/tests/dev134_try_error_type.rs`, 16 cases. Ten first-party packages
+  qualify. The external task-shaped suite is 34/34 unchanged.
+- **Owning gate:** WP-DEV-134-139 Part A (CD-335).
 
 ## DEV-135 — moves of individual struct fields are not tracked [OPEN, found CD-334, 2026-08-02]
 
@@ -3324,10 +3371,45 @@ C2.8–C2.11 disposition.
   characterisation is owed before the severity can be settled.
 - **Workaround:** none needed in practice — the construct is a genuine error; the gap is that it is
   diagnosed late and in the wrong category.
-- **Proposed disposition:** extend the move set to per-field places (the projection machinery
-  DEV-086 added for `ConstIndex` is the nearest precedent), and reclassify the oracle's message from
-  internal-compiler-error to a normal trap if it survives as a backstop.
-- **Owning gate:** unassigned.
+- **INVENTORY (WP-DEV-134-139 §5.3, run 2026-08-02 before choosing a stage-one repair).** The
+  question the inventory had to settle is whether "parent poisoning" — marking the whole parent
+  unavailable once any non-`Copy` field moves — is an acceptable bounded limitation. **It is not.**
+  Sibling-after-partial-move is load-bearing at every layer, and is asserted as REQUIRED behaviour
+  by tests that predate this programme:
+
+  | Where | What it pins |
+  | --- | --- |
+  | `tests/gate2-valid/18_partial_moves.stark` | conformance fixture: `consume(pair.left); consume(pair.right);` |
+  | `tests/gate2_valid.rs` `..._without_its_own_drop_impl_is_accepted` | front end must ACCEPT the partial move |
+  | `tests/mir_verify.rs` `partial_move_of_one_field_leaves_sibling_readable` | V-MOVE-1 field precision in the verifier |
+  | `tests/mir_differential.rs` `conditional_partial_moves_and_loop_scopes_agree` | conditional partial moves + drop flags |
+  | `tests/three_engine_differential.rs` | the "partial-move survivor" drop case |
+  | `tests/native_c5_3_aggregates_enums.rs` `a_field_move_does_not_kill_its_siblings` | native: "under a whole-local approximation the sibling read would find a dead slot and abort" |
+  | `tests/c6-corpus/templates.py` T14 | generated corpus: "partial move and reinitialisation" |
+
+  The native test's own doc comment is an explicit, pre-existing rejection of the whole-local
+  approximation at the MIR and native layers. Poisoning would not be a bounded limitation; it
+  would contradict the conformance fixture set and four differential suites.
+- **Scan method, so the result can be re-derived:** 511 `.stark` sources outside `target/`, plus
+  inline STARK sources in `starkc/tests/*.rs` and `starkc/src/*.rs`. Sixteen `let x = y.field;`
+  sites appear in first-party packages (`stark-json`, `stark-random`) and ALL sixteen read `Copy`
+  scalar fields (`UInt64` offsets, line/column counters, PRNG state) — copies, not moves, so no
+  first-party package depends on partial-move behaviour either way. Every genuine partial move in
+  the tree is in the compiler's own test corpus, and every one of those requires sibling survival.
+- **CONSEQUENCE — the two-stage model collapses to one stage.** WP §5.4 is explicit: "If the
+  inventory shows sibling use is load-bearing, do not land poisoning silently. Proceed to
+  DEV-135b." So **DEV-135a is NOT the release-gating repair; DEV-135b is.** The release gate in
+  WP §15 resolves to its second branch: "DEV-135b is complete because inventory proved parent
+  poisoning unacceptable." This is a planned outcome of the inventory, not a scope change.
+- **Proposed disposition (DEV-135b):** extend the move set to per-field PLACES, so `local.field_a`
+  and `local.field_b` are independent move paths and moving one does not invalidate the other. The
+  projection machinery DEV-086 added for `ConstIndex` is the nearest precedent, and MIR already
+  carries field-precise move paths (`mir_verify`'s V-MOVE-1) — the gap is in the front end's
+  `moved_places`, which is keyed on whole locals. Reuse the typed move/drop paths already in MIR
+  rather than adding an AST spelling check for `x.field`. The oracle's internal-compiler-error
+  message is reclassified to a normal diagnostic if it survives as a backstop.
+- **Owning gate:** WP-DEV-134-139 Part B; sequenced after DEV-134, DEV-137, and DEV-136 because
+  its branch-sensitive obligations depend on DEV-136's join semantics.
 
 ## DEV-136 — a move on a returning path is treated as unconditional [OPEN, found CD-334, 2026-08-02]
 
@@ -3398,10 +3480,32 @@ C2.8–C2.11 disposition.
 - **Workaround:** hoist the length (`let n = values.len();`) above the loop. **This only works when
   the length does not change**; a queue that grows while being drained must instead track its length
   by hand, which is exactly the bookkeeping the borrow checker is supposed to make unnecessary.
-- **Proposed disposition:** end the condition's temporary borrows at the condition's own end. The
-  loop's back-edge is presumably why the region is being extended; the fix is to treat the condition
-  as its own statement scope rather than as part of the body.
-- **Owning gate:** unassigned.
+- **LAYER LOCATED (WP-DEV-134-139 §6.3, recorded before repair):** `borrowck.rs`, not MIR, not
+  liveness, and not the back-edge. `Borrowck::active_borrows` is a stack, scoped by two mechanisms
+  and only two: `check_block` truncates to its entry depth at block end, and `check_stmt` truncates
+  after each expression statement. A `while` CONDITION is neither — it is an expression evaluated
+  outside any statement of its own, and the `While` arm reads
+
+  ```rust
+  hir::ExprKind::While { cond, body } => {
+      self.check_expr(*cond);      // pushes the receiver auto-borrow taken by `values.len()`
+      self.check_block(*body);     // records borrows_before AFTER that push, so it cannot pop it
+  }
+  ```
+
+  so the condition's temporaries are still on the stack when the body runs, and `check_block`'s own
+  truncate restores to a depth that already includes them. Nothing ever pops them until the
+  enclosing statement ends. The `Assign` arm then finds the borrow in `active_borrows` and reports
+  E0101.
+- **Why this also explains the `&mut` PARAMETER case:** it is the same code path. Nothing about the
+  receiver being a parameter matters; what matters is that `len()` was called in the condition.
+- **Not the `For` arm.** `for x in &v` must KEEP its iterator borrow alive across the body, so the
+  repair must not be generalised to loop headers as a category — only to `while` conditions, whose
+  value is consumed by the branch and cannot outlive it.
+- **Proposed disposition:** record the borrow depth BEFORE evaluating the condition and truncate to
+  it before entering the body. A borrow created before the loop lives at a shallower depth and is
+  therefore untouched, which is what keeps the must-reject cases rejected.
+- **Owning gate:** WP-DEV-134-139 Part C.
 
 ## DEV-138 — an iterator-yielded `&str` is consumed by its first use [OPEN, found CD-334, 2026-08-02]
 

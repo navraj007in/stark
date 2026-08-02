@@ -1,5 +1,110 @@
 # STARK Compiler STATE
 
+## CD-335 — DEV-134 CLOSED: `?` now relates its operand to the return type (2026-08-02)
+
+**WP-DEV-134-139 Part A. `?` required exact error-type compatibility; it now does. The ruling is
+REJECT, not convert — recorded as a decision, because it is a language question and not an
+implementation detail.**
+
+```text
+`?` requires exact error-type compatibility.
+Implicit From-based propagation is not part of this repair.
+```
+
+**The defect was one missing relation, not two.** The `Try` arm asked "is the enclosing return
+type `?`-capable?" and "is the operand `?`-capable?" as INDEPENDENT questions and never compared
+them. That single omission produced two symptoms, and the repair work found the second:
+
+| Accepted before | Propagated value | Caller sees |
+| --- | --- | --- |
+| `Result<_, Low>?` in a fn returning `Result<_, High>` | a `Low` | tag from another enum |
+| `Option<_>?` in a fn returning `Result<_, _>` | a `None` | tag from another enum |
+| `Result<_, _>?` in a fn returning `Option<_>` | an `Err` | tag from another enum |
+
+The constructor half was NOT in DEV-134 as filed. It is the same mechanism and the same repair, so
+it widened the existing entry rather than taking a new number (WP §2, one mechanism one repair).
+
+**Deferred, like `display_checks`, and for the same reason.** The operand's error type is routinely
+an inference variable while the body is being checked (`Err(make())?`), so an eager comparison
+would either reject valid code or force a premature binding. `check_try_compatibility` is recorded
+during checking and drained after inference settles.
+
+**E0006 widened rather than a new code allocated.** The spec's E0006 now covers the whole
+return-type contract for `?` — wrong constructor, mismatched error type, or a function that
+returns neither. One code per concept, normative table stable, conditions distinguished by
+message. `non_result_return_reports_once_not_twice` pins that the pre-existing condition still
+reports once rather than twice.
+
+**A LATENT GAP FOUND BY THIS WORK'S OWN NEGATIVE CONTROL, and deliberately not repaired.**
+`types_equal` has no `Ty::Param` arm: two occurrences of the same type parameter compare unequal
+and fall to `_ => false`. Its existing callers are coherence and overlap paths where `Ty::Param`
+is pre-handled or where a conservative `false` is safe, so it has no demonstrated symptom there —
+but it made the first version of this repair reject
+
+```stark
+fn low<E>(e: E) -> Result<Int32, E> { Err(e) }
+fn same<E>(e: E) -> Result<Int32, E> { let v = low(e)?; Ok(v) }
+```
+
+which `error_type_as_a_generic_parameter_is_accepted` caught before it could ship. Widening a
+shared coherence primitive to fix a symptomless gap was rejected as out of scope; instead the
+structural walk takes the `Ty::Param` behaviour as a PARAMETER (`types_equal_inner`) — written
+ONCE, reached by two entry points, because DEV-128 and DEV-130 are both "the rule was written
+twice and the copies drifted". Whether `types_equal` itself should be widened is unowned and gets
+a DEV number only if a symptom is found.
+
+**What class of program is now prevented, which is the closure question rather than "the
+reproducer passes":** no program can propagate a value into a return type that cannot represent
+it. The check is on the TYPES at the propagation site, not on any syntactic shape, so it holds for
+`?` in any position — nested helpers, generic bodies, chained propagation — and it cannot be
+evaded by adding a `From` impl, which is the shape a reader coming from Rust would expect to work.
+
+EVIDENCE (all run locally, at this head):
+`cargo test --test dev134_try_error_type` — 16 cases, 7 reject / 9 accept, green.
+`cargo test --test conformance --test gate2_valid --test gate3_execution` — 65 green.
+`cargo test --test c788_synth --test a10_provider_call --test c788_source_time_e2e` — 32 green;
+these are the provider paths that use `?` most heavily and were the main over-rejection risk.
+`qualify-first-party-packages.py` over all ten packages — exit 0.
+External task-shaped suite — 34/34, unchanged.
+`cargo fmt --all -- --check` — clean. `rustfmt` was run on the two touched files only, never
+tree-wide, because this checkout is shared with parallel sessions.
+Spec regenerated (`build-core-spec.py`) and the 112-block fixture corpus re-extracted: manifest in
+sync, no block added or renumbered.
+LEFT TO CI: `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+`cargo test --workspace --all-targets --all-features` were still running locally when this was
+prepared; both are required and are the aggregate gate.
+FILES: starkc/src/typecheck.rs, starkc/tests/dev134_try_error_type.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, STARKLANG/docs/spec/04-Semantic-Analysis.md and the
+regenerated STARK-Core-v1.{md,html,pdf}, COMPILER-STATE.md.
+NEXT: DEV-137, per the work package's required order.
+
+**PROGRAMME STATUS — two counts, deliberately kept apart.** They are not the same number and
+conflating them misreports progress in both directions: the defect count understates the work
+(regression manifest, external-suite CI, and layer-audit hardening are none of them defects), and
+the task count understates release readiness (only the defects gate the release).
+
+```text
+Defects (WP-DEV-134-139 Parts A-F)     DEV-134 CLOSED
+                                       DEV-137, DEV-136, DEV-135a, DEV-139, DEV-138 remain
+                                       DEV-135b conditional on the DEV-135 inventory
+
+Programme tasks (WP-DEV-134-139)       1 of 16 complete
+                                       includes the six defect repairs plus the in-tree
+                                       regression manifest (§10.1), the pinned external-suite
+                                       CI job (§10.2), layer-audit inventory enforcement (§11),
+                                       and final reconciliation (§16)
+```
+
+**LOCAL EVIDENCE POLICY, owner ruling 2026-08-02, in force from DEV-137 onward.** Per-commit local
+evidence is TARGETED — fmt, clippy over affected targets, the dedicated DEV suite, closest
+subsystem suites, MIR differential/verifier when lowering or ownership changes, affected package
+qualification, the external sample suite, and a clean `git status --short`. The full local
+workspace suite runs at MILESTONES only: after DEV-134 (this commit, the programme baseline),
+after DEV-136, after DEV-135a, and at programme completion. CI's aggregate required check remains
+the authority for every pushed commit; a targeted local run supports a commit's evidence
+statement and does not replace it. Rationale: a full workspace run per defect is disproportionate
+and does not materially improve detection over targeted suites plus protected aggregate CI.
+
 ## CD-334 — six defects filed from an external sample suite; three are soundness (2026-08-02)
 
 **An 18-package sample suite was written OUTSIDE this repository, against the release binaries, to
@@ -7183,8 +7288,9 @@ not long-standing** — three of them are soundness gaps and none has an owning 
   remainder; owner: post-C8 editor validation.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-134 — `?` neither converts the error type nor requires a conversion to exist. **Soundness**;
-  needs an owner ruling (reject vs. convert) before implementation. Opened CD-334.
+- DEV-134 — CLOSED CD-335 (WP-DEV-134-139 Part A). `?` now requires exact error-type and
+  constructor compatibility; the ruling was REJECT, not convert. Whether Core v1 should gain
+  `From` conversion at `?` is a separate, still-open language-design question with no owner.
 - DEV-135 — moves of individual struct fields are not tracked; the second move surfaces as an
   internal compiler error. **Soundness**, bounded by the oracle's own check. Opened CD-334.
 - DEV-136 — a move on a `return`ing path is treated as unconditional (E0100 false positive).
