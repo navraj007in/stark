@@ -3961,3 +3961,170 @@ C2.8–C2.11 disposition.
   MIR/differential/three-engine/lifecycle suites 326 green; 13-package gate exit 0; external suite
   39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
 - **Owning gate:** CD-352.
+
+## DEV-148 — a cross-package associated function is unresolvable [OPEN, found CD-353, 2026-08-02]
+
+- **Normative expectation:** `07-Modules-and-Packages.md` — a `pub` item of a dependency is
+  reachable from a dependent package. Nothing distinguishes an associated function from a free
+  function for visibility purposes.
+- **Current behaviour:** free functions and METHODS resolve across a package boundary; ASSOCIATED
+  functions (no receiver) do not.
+- **Minimal reproducer:** two packages, `xapp` depending on `xlib`.
+
+  ```stark
+  // xlib
+  pub struct Wrap { pub v: Int32 }
+  impl Wrap {
+      pub fn make(v: Int32) -> Wrap { Wrap { v: v } }   // associated
+      pub fn get(&self) -> Int32 { self.v }             // method
+  }
+  pub fn make_free(v: Int32) -> Wrap { Wrap { v: v } }  // free
+
+  // xapp
+  let a = make_free(1);   // OK
+  println(a.get());       // OK  -- method resolves
+  let b = Wrap::make(2);  // E0200 associated function 'make' not found
+  ```
+
+- **User impact: it silently shapes every package API in the tree.** `Type::new()` is the
+  idiomatic constructor and is simply unavailable to a consumer, so each package must expose a free
+  function instead. Every existing first-party package already does this — `stark-net`'s `ipv4`,
+  `socket_address`; `stark-http-core`'s `header`, `new_header_map`; `stark-time`'s own
+  `Duration::from_seconds` is the exception and is therefore UNUSABLE from a dependent package.
+  The convention was adopted without anyone recording why, which is how a defect becomes a house
+  style.
+- **Security/soundness impact:** none — it refuses a valid program.
+- **Workaround:** export a free constructor alongside any associated one. In force everywhere.
+- **Proposed disposition:** unassigned. Adjacent to DEV-083 (impl-head matching) but distinct: this
+  is cross-package ITEM RESOLUTION of an impl member, not matching a receiver type. Worth checking
+  whether associated CONSTANTS and associated types have the same gap.
+- **Owning gate:** unassigned.
+
+## DEV-149 — a `&self` method on a `&mut` base is neither weakened nor reborrowed [CLOSED, fixed CD-354, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` "References and Lifetimes" — a `&mut T` coerces to
+  `&T` at any site expecting a shared borrow, and a reborrow leaves the caller's reference intact.
+- **Behaviour before the fix:** `borrow_{vec,string,map,set}_receiver` reborrowed a reference
+  receiver only when the METHOD wanted `&mut`. A `&mut` base under a `&self` method was passed
+  through unchanged, failing MIR verification twice at once.
+- **Minimal reproducer:** eight lines, reduced from `stark-http-parser::drop_front`.
+
+  ```stark
+  fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }
+  fn main() {
+      let mut v: Vec<UInt8> = Vec::new();
+      v.push(1u8);
+      println(count(&mut v));      // check: OK, run: 1, build: refused
+  }
+  ```
+
+  ```text
+  MIR-0005 bb0: expected Ref { mutable: false, .. }, found Ref { mutable: true, .. }
+  MIR-0007 bb4: move from possibly-moved place _1[]
+  ```
+
+- **User impact: "measure a caller's buffer, then modify it" did not build.** Accepted by the
+  checker, executed correctly by the HIR oracle, refused only by a native build — the
+  DEV-132/133/146/147 class, fifth mechanism.
+- **Security/soundness impact:** none — it refused a valid program. The repair's own risk (letting
+  a `&T` base satisfy a `&mut` receiver) is pinned by three negative controls.
+- **Root cause:** DEV-147's repair was narrowed on the wrong axis. The gate belongs on the BASE's
+  mutability — is there a non-`Copy` reference at risk — while the reference built takes the
+  RECEIVER's mutability. `&*base` from a `&mut` base IS the weakening, so one reborrow fixes both
+  the MIR-0005 and the MIR-0007 half.
+- **Fix:** `src/mir/lower.rs::reborrow_reference_receiver`. Evidence:
+  `tests/dev149_shared_receiver_over_mutable_base.rs` (13 tests: all four receiver sites, the
+  loop case, DEV-147's own case, three negative controls).
+- **Owning gate:** package track, CD-354.
+
+## DEV-150 — the argument read-conflict rule does not fire through a reference base [OPEN, found CD-354, 2026-08-02]
+
+- **Normative expectation:** `03-Type-System.md` — one `&mut` XOR many `&`, with no exception for a
+  base that is itself a reference.
+- **Current behaviour:** `f(&mut x, x.field)` is refused for a LOCAL base and ACCEPTED when the
+  base is a `&mut` parameter. The HIR oracle executes the accepted form correctly; the native
+  backend emits Rust that rustc refuses with E0503.
+- **Minimal reproducer:** 14 lines.
+
+  ```stark
+  struct Holder { limit: UInt64, seen: UInt64 }
+  fn bump(h: &mut Holder, by: UInt64) { h.seen = h.seen + by; }
+
+  fn main() {
+      let mut h = Holder { limit: 3u64, seen: 0u64 };
+      bump(&mut h, h.limit);       // E0101 read conflict -- refused, correctly
+  }
+
+  fn forward(h: &mut Holder) { bump(h, h.limit); }   // ACCEPTED, runs, does not build
+  ```
+
+- **User impact:** `f(buf, buf.len())` inside a function taking `buf: &mut T` builds a program the
+  native backend cannot emit. `stark-http-parser`'s four `take_line` call sites hit it.
+- **Security/soundness impact:** unresolved, and that is the point. Under ruling (B) below the
+  current acceptance is an aliasing hole the checker should have closed; under ruling (A) it is
+  benign and the backend is at fault. The two readings disagree about whether a real program is
+  sound, which is why this is escalated rather than repaired.
+- **NOT A MECHANICAL REPAIR — two candidate rulings, both defensible:**
+  - **(A) The checker is right; sequencing is the fix.** Read the field into a temporary BEFORE
+    forming the `&mut` and nothing aliases — close to Rust's two-phase borrows, which exist so
+    `v.push(v.len())` works. Cost: the LOCAL case must then start being accepted too, so this is a
+    widening of the borrow rule, not a backend change.
+  - **(B) The checker is wrong; the rule must fire through a reference base.** Uniform,
+    conservative, matches the spec as written. Cost: `f(buf, buf.len())` stops compiling and every
+    caller hoists the read into a `let`.
+- **Workaround, valid under either ruling:** hoist the read. Applied at all four
+  `stark-http-parser` sites.
+- **Proposed disposition:** ESCALATED — a semantics decision for the language owner, not a repair
+  commit. `tests/dev150_argument_conflict_through_reference.rs` pins the inconsistency itself, so
+  whichever ruling lands, the test contradicting it fails and this entry must be revisited.
+- **Owning gate:** unassigned.
+
+## DEV-151 — a method on a host-resource receiver did not lower, and written `()` was not `Unit` [CLOSED, fixed CD-354, 2026-08-02]
+
+Two defects, recorded together because the first concealed the second.
+
+### (a) A resource receiver was not treated as a nominal
+
+- **Normative expectation:** a package may declare `impl TcpStream { fn set_read_timeout(&mut self,
+  ..) }` — CD-346 rules that a resource operation moving a cursor or consuming bytes takes `&mut
+  self` — and a caller may call it.
+- **Behaviour before the fix:** `lower_method_call` matched only `Struct`/`Enum` for the receiver
+  nominal and refused everything else:
+
+  ```text
+  error: native build does not yet support this program: method call on non-nominal receiver
+         HostResource(HostResourceTy { nominal: Item(ItemId(381)), provider: "stark-std-net",
+         resource: "tcp_stream" }) (C4.5b+)
+  ```
+
+- **User impact: CD-346's ruling was unbuildable at every call site.** `stark-net` declared
+  `set_read_timeout`/`set_write_timeout` on that ruling and QUALIFIED; nothing had ever called
+  them natively, so nobody learned they could not be called. This is CD-345's lesson one level
+  down — CD-347 made a package's resource LIFECYCLE executable, and this was a declared surface
+  whose CALL SITES were still unexecuted. `stark-http-client` was the first caller.
+- **Root cause:** a missing match arm, not a missing capability. `HostResourceTy.nominal` already
+  holds the item of the synthesized zero-variant enum (CD-234), which is exactly the item the
+  `impl` hangs off.
+- **Fix:** `src/mir/lower.rs`, one arm mapping `MirTy::HostResource` to its nominal item. A `Core`
+  resource nominal still refuses, per CD-235's sequencing exception.
+
+### (b) `()` written in source lowered to `Tuple([])`
+
+- **Normative expectation:** MIR has one canonical unit type.
+- **Behaviour before the fix:** `MirTy::Unit` is used at all 99 synthesized sites and the empty
+  tuple is never constructed deliberately, but a written-out `()` in a type annotation reached the
+  tuple arm. So `fn f() -> Result<(), E>` declared a return type no constructed value could match:
+
+  ```text
+  MIR-0004 stark_net::TcpStream::set_read_timeout@[] bb26: assignment:
+    expected Enum(CoreResult, [Tuple([]), ..]), found Enum(CoreResult, [Unit, ..])
+  ```
+
+- **User impact:** `Result<(), E>` is an extremely common signature, and it was fine everywhere the
+  body was never lowered. It took two unexecuted paths crossing to make it reachable.
+- **Fix:** both conversion sites (`mir_ty`, `hir_field_ty`) canonicalise an empty tuple to `Unit`.
+- **Evidence for both:** `tests/dev151_resource_method_dispatch.rs` (4 tests, including a structural
+  assertion that no lowered signature or local carries `Tuple([])` — which catches a divergence
+  that has not yet MET a conflicting value). End-to-end: `stark-http-client-consumer` calls
+  `set_read_timeout` on a live socket under the qualification gate's HTTP peer.
+- **Owning gate:** package track, CD-354.

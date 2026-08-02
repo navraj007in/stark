@@ -1747,6 +1747,12 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::KeysIter, inner)
             }
+            // DEV-151: the EMPTY tuple is `MirTy::Unit`, not `MirTy::Tuple(vec![])`. MIR has one
+            // canonical unit type and every synthesized site uses it; only a written-out `()` in
+            // source reached here, so `fn f() -> Result<(), E>` produced a return type that no
+            // constructed value could ever match. It stayed invisible while nothing lowered such a
+            // body — DEV-151's method-dispatch repair is what first lowered one.
+            Ty::Tuple(elems) if elems.is_empty() => MirTy::Unit,
             Ty::Tuple(elems) => MirTy::Tuple(
                 elems
                     .iter()
@@ -1944,6 +1950,8 @@ impl<'a> FnLowerer<'a> {
                 };
                 Ok(MirTy::Array(Box::new(self.hir_field_ty(*elem)?), count))
             }
+            // DEV-151: same canonicalisation as `mir_ty` — an empty tuple is `Unit`.
+            hir::TypeKind::Tuple(elems) if elems.is_empty() => Ok(MirTy::Unit),
             hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
                 elems
                     .iter()
@@ -6422,6 +6430,22 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 (*item, args.clone())
             }
+            // DEV-151: a host resource IS a nominal for method-dispatch purposes. `HostResourceTy`
+            // carries the item of the synthesized zero-variant enum the package declared (CD-234),
+            // and an `impl TcpStream { fn set_read_timeout(&mut self, ..) }` hangs off exactly that
+            // item — so the ordinary nominal path resolves it with no special case beyond naming
+            // the item. Falling into `other` refused every method a resource package declares,
+            // which made CD-346's `&mut self` ruling unbuildable AT THE CALL SITE while the
+            // declaration itself qualified. Resources take no type arguments, hence the empty list.
+            MirTy::HostResource(resource) => match &resource.nominal {
+                crate::mir::HostResourceNominal::Item(item) => (*item, Vec::new()),
+                crate::mir::HostResourceNominal::Core(_) => {
+                    return unsupported(
+                        "method call on a Core host resource (CD-235 sequencing)".to_string(),
+                        span,
+                    );
+                }
+            },
             other => {
                 return unsupported(
                     format!("method call on non-nominal receiver {other:?} (C4.5b+)"),
@@ -8428,17 +8452,33 @@ impl<'a> FnLowerer<'a> {
     ///
     /// A reborrow is `&mut *base`, which is exactly what the `layers == 0` path already builds one
     /// deref further down. Returning `None` means "pass through unchanged", which stays correct for
-    /// a SHARED reference: `&T` is `Copy`, so reading it moves nothing and there is nothing to fix.
-    /// Narrowing to `mutable` keeps the change to the case that is actually broken.
+    /// a SHARED base: `&T` is `Copy`, so reading it moves nothing and there is nothing to fix.
+    ///
+    /// # DEV-149: the gate is the BASE's mutability, not the RECEIVER's
+    ///
+    /// DEV-147 first narrowed this to `mutable` — the mutability the METHOD wants. That was the
+    /// wrong axis, and it left half the defect in place. A `&mut` base calling a `&self` method is
+    /// still broken in both ways at once:
+    ///
+    /// ```text
+    /// fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }
+    ///   -> MIR-0005 bb0: expected Ref { mutable: false, .. }, found Ref { mutable: true, .. }
+    ///   -> MIR-0007 bb4: move from possibly-moved place _1[]
+    /// ```
+    ///
+    /// The reborrow fixes both, because `&*base` from a `&mut` base IS the weakening: it produces
+    /// the shared reference the callee wants without consuming the caller's. So the gate is whether
+    /// the BASE is `&mut` (is there a non-`Copy` reference at risk of being moved), and the ref
+    /// built takes the RECEIVER's mutability (what does the callee actually want).
+    ///
+    /// The one case that must still refuse is a `&T` base under a `&mut` receiver: lowering must
+    /// not invent exclusivity the checker refused. That falls out of gating on the base.
     fn reborrow_reference_receiver(
         &mut self,
         base: ExprId,
         mutable: bool,
         span: Span,
     ) -> Result<Option<Operand>, LowerError> {
-        if !mutable {
-            return Ok(None);
-        }
         let base_ty = self.expr_mir_ty(base)?;
         let MirTy::Ref {
             mutable: base_mut,
@@ -8447,13 +8487,14 @@ impl<'a> FnLowerer<'a> {
         else {
             return Ok(None);
         };
-        // Only a `&mut` receiver can be moved by being read. A `&T` base where `&mut` is wanted is
-        // a mutability error the checker already refused; lowering must not invent the capability.
+        // Only a `&mut` base can be moved by being read, and only a `&mut` base can be weakened.
+        // A `&T` base needs neither: it is `Copy`, and where `&mut` is wanted it is a mutability
+        // error the checker already refused — lowering must not invent the capability.
         if !*base_mut {
             return Ok(None);
         }
         let ref_ty = MirTy::Ref {
-            mutable: true,
+            mutable,
             inner: inner.clone(),
         };
         let Ok(mut place) = self.lower_place(base) else {
@@ -8464,13 +8505,7 @@ impl<'a> FnLowerer<'a> {
         place.projection.push(Projection::Deref);
         let temp = self.new_temp(ref_ty.clone());
         self.emit(
-            Statement::Assign(
-                Place::local(temp),
-                Rvalue::RefOf {
-                    mutable: true,
-                    place,
-                },
-            ),
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
             self.info(span),
         );
         Ok(Some(self.read_place(Place::local(temp), &ref_ty, span)?))

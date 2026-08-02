@@ -1,5 +1,145 @@
 # STARK Compiler STATE
 
+## CD-354 — three compiler defects found by qualifying HC7/HC8; one escalated, not repaired (2026-08-02)
+
+**Writing two packages and running them through the gate found three compiler defects and one
+semantics question. None was found by a reproducer; every one was found by executing something that
+had never been executed.**
+
+| | what | disposition |
+| --- | --- | --- |
+| DEV-149 | a `&self` method on a `&mut` base is neither weakened nor reborrowed | FIXED |
+| DEV-150 | the argument read-conflict rule does not fire through a reference base | **ESCALATED** |
+| DEV-151(a) | a method on a host-resource receiver did not lower | FIXED |
+| DEV-151(b) | a written-out `()` lowered to `Tuple([])`, not `Unit` | FIXED |
+
+### DEV-149 is my own DEV-147 repair, narrowed on the wrong axis
+
+DEV-147 taught the four `borrow_*_receiver` sites to reborrow rather than move, then gated the
+repair on the mutability the METHOD wants. The gate belongs on the mutability the BASE has:
+
+```stark
+fn count(v: &mut Vec<UInt8>) -> UInt64 { v.len() }   // check: OK, run: 1, build: REFUSED
+```
+
+Two failures from one omission — MIR-0005 (the `&mut` handed over unweakened) and MIR-0007 (the
+caller's reference moved). One reborrow fixes both, because `&*base` from a `&mut` base IS the
+weakening. The shape it blocked is "measure a caller's buffer, then modify it", which is what
+`stark-http-parser::drop_front` does and what surfaced it.
+
+### DEV-151 is CD-345's lesson one level down
+
+CD-345 found `stark-net` passing all seven gate steps while `connect`/`read`/`write`/`close` had
+never been called. CD-347 fixed that by requiring a native consumer to exercise each resource's
+lifecycle. **This is the same failure one level in: a declared surface whose CALL SITES were still
+unexecuted.**
+
+CD-346 ruled that a resource operation moving a cursor or consuming bytes takes `&mut self`.
+`stark-net` declared `set_read_timeout`/`set_write_timeout` as methods on that ruling and qualified.
+Lowering refused every method call on a host-resource receiver, so **CD-346's ruling was
+unbuildable at every call site** — and nothing learned that, because nothing had called one.
+`stark-http-client` was the first caller and failed immediately.
+
+The refusal was a missing match arm, not a missing capability: `HostResourceTy.nominal` already
+holds the item the `impl` hangs off. Fixing it then exposed (b) — a written `()` reaching the tuple
+arm and producing `Tuple([])` where every synthesized site uses `MirTy::Unit`, so
+`fn f() -> Result<(), E>` declared a return type no constructed value could match. `Result<(), E>`
+is a very common signature; it took two unexecuted paths crossing to make the divergence reachable.
+The structural test now asserts no lowered signature or local carries an empty tuple, which catches
+a divergence that has not yet MET a conflicting value.
+
+**What this says about the gate.** Both halves of DEV-151 were reachable only by CALLING a declared
+surface natively. The seven steps check that a package builds and its consumer runs; they do not
+check that everything the package DECLARES is called by something. That is the next gap of the same
+family, and it is not closed by this CD.
+
+### DEV-150 is escalated, not repaired
+
+`f(&mut x, x.field)` is refused for a local base and accepted through a `&mut` parameter; the
+interpreter runs the accepted form and the native backend emits Rust that rustc refuses (E0503).
+Two defensible rulings:
+
+- **(A)** the checker is right and evaluation should be sequenced — close to Rust's two-phase
+  borrows, but it requires the LOCAL case to start being accepted too, so it widens the borrow rule;
+- **(B)** the checker is wrong and the rule must fire uniformly — conservative and matches the spec
+  as written, but `f(buf, buf.len())` stops compiling.
+
+They disagree about whether a real program is sound, so this is a language decision rather than a
+repair-commit decision, and it is left OPEN for the language owner. The test suite pins the
+INCONSISTENCY rather than either ruling: whichever lands, the test contradicting it fails and the
+entry must be revisited. `stark-http-parser`'s four `take_line` call sites were rewritten to hoist
+the read, which is required under either ruling.
+
+**Evidence:** `tests/dev149_shared_receiver_over_mutable_base.rs` (13),
+`tests/dev150_argument_conflict_through_reference.rs` (4),
+`tests/dev151_resource_method_dispatch.rs` (4). All three include negative controls, because each
+repair's own risk is handing out access that was never held.
+
+## CD-353 — HC7 and HC8 delivered and qualified; the gate grows an HTTP peer (2026-08-02)
+
+**`stark-http-parser` (HC7) and `stark-http-client` (HC8), both qualified through the seven-step
+gate. All 15 first-party packages now qualify, with both resource-bearing ones observed against
+live peers.**
+
+### HC7 — the parser, and the exit criterion that shaped its tests
+
+The roadmap's HC7 exit criterion is "the parser can consume any legal fragmentation pattern without
+socket knowledge". That is not a claim a few hand-picked splits support, so the suite parses each
+message at EVERY two-part split and requires every result to agree — n-1 boundaries per message,
+each landing mid-token somewhere different: inside `HTTP/1.1`, between CR and LF, inside a header
+name, inside a chunk size. The consumer does the same rather than parsing one buffer, because a
+one-buffer consumer would prove nothing this package is for.
+
+34 tests. Ten states, four framings (fixed, chunked, close-delimited, none), 1xx skipping, HEAD
+responses, and the rejection half: bare LF, obs-fold, conflicting `Content-Length`, `Content-Length`
+with `Transfer-Encoding`, unsupported codings, malformed chunk sizes and terminators, truncated
+bodies, and each limit.
+
+**Two real parser defects, both found by the whole-vs-fragmented differential rather than by any
+single case:** the OWS-skip after a header colon used an `n + 1` sentinel that destroyed the index
+it had just found, so every header value was mis-sliced; and the `UntilClose` transition returned
+before the drain arm could run, dropping every close-delimited body that arrived in one buffer.
+
+### HC8 — the client, and what a capability-bearing package can be tested with
+
+Every useful operation in `stark-http-client` requires a provider, and `stark test` runs on the HIR
+interpreter, which has no provider layer. So the split is forced, not chosen:
+
+- **`stark test` (14 tests)** covers what is decidable without a socket — URL targeting, config
+  budgets, builders.
+- **`stark-http-client-consumer`** is native-only and requires a live HTTP peer. It PANICS without
+  one rather than reporting success, per CD-348.
+
+Step 5 (`stark run`) is therefore unreachable for this package. The gate now has an
+`interpreter_exempt` flag that skips it with a printed reason — and REFUSES to accept the flag
+unless the case also declares resources and a resource consumer, so an exempt package is executed
+MORE than an ordinary one, never less. Validated in code rather than left to reviewer discipline,
+because CD-345 is the record of what an unexecuted step costs.
+
+**Two real client defects, found by the tests:** URL fragments reached the request target (an
+information leak — a fragment is client-side only and must never go on the wire), and an empty or
+invalid authority was accepted, including `http://h:/` silently defaulting to port 80 rather than
+being reported as the typo it is.
+
+### The HTTP peer
+
+`qualify-first-party-packages.py` grows `http_peer()` beside `echo_peer()`, serving four routes that
+each pin a response shape the client must handle differently: `/fixed`, `/chunked`, `/fragmented`
+(head and body split across several writes with pauses), and `/close-early`. The last two matter
+most — they are what a client that assumes one `recv()` per response, or that treats a short body as
+complete, gets wrong. Binding is asserted, never skipped.
+
+Observed natively, end to end: resolve, connect, set timeouts, write, read across fragmentation,
+decode chunks, detect an early close, release the stream.
+
+### Also recorded
+
+DEV-148 (a cross-package associated function is unresolvable) was found mid-sprint and is OPEN.
+`Type::new()` is simply unavailable to a consumer, so every first-party package exposes free
+constructors instead — a convention adopted without anyone recording why, which is how a defect
+becomes a house style. `stark-time` gained `duration_seconds`/`duration_millis`/`duration_nanos` as
+the forced workaround.
+
 ## CD-348 — CD-347's claim was stronger than its evidence; the gate now earns it (2026-08-02)
 
 **CD-347 said the gate requires a consumer to "acquire, use and close each resource". It did not.
