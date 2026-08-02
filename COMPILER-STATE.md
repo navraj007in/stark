@@ -1,5 +1,85 @@
 # STARK Compiler STATE
 
+## CD-346 / CD-347 — DEV-146 repaired with its ruling; the gate's surface coverage made executable (2026-08-02)
+
+**The two toll items. Resource-track work (HC3/HC4, OPS stdio/signals/process) unblocks on these;
+HC5/HC6 and the pure OPS fills never depended on either and should not have waited.**
+
+### CD-346 — DEV-146, and the layer the first diagnosis got wrong
+
+`weaken_ref_to` was never the problem. Its mutability arm is type-agnostic and would have handled
+`HostResource` fine. **Provider calls never reached it**: the `HandleBorrowed` arm of
+`lower_provider_call` pushed its operand with no expected-type coercion at all.
+
+DEV-133 routed SIX coercion sites through `weaken_ref_to` and its comment warned that "whichever
+site was forgotten would keep this defect". Provider calls were the seventh. It stayed invisible
+because no first-party package called a resource function until `stark-net` did — the same
+blindness CD-345 found in the gate, one layer down.
+
+**THE RULING, which is what outlives the repair:**
+
+```text
+AbiParam::HandleBorrowed   always derives a SHARED reference   (ABI fact, unchanged)
+package surface            may declare &mut; the compiler weakens
+```
+
+The two need not match, so the surface question is answered by SEMANTICS rather than by the ABI:
+
+- an operation that consumes or produces bytes, or moves a cursor, takes `&mut` — a shared borrow
+  would let a caller hold two readers of one stream, making byte-consumption order non-local and
+  unreviewable;
+- a purely observational operation stays `&`;
+- neither choice changes what crosses the ABI.
+
+Settled once, here, rather than re-litigated per package: io v0.2 streams, signals, process
+handles and crypto keys all face it. **Recorded caveat:** the ruling was made from what the ABI
+verifiably does. The CRYPTO0 convergence was NOT in evidence when it was written and should be
+checked against it before the first crypto package declares a surface — if CRYPTO0 says something
+narrower, this ruling yields to it.
+
+**Negative control, because the risk is weakening the wrong way.** If `&R` could satisfy a `&mut R`
+parameter the repair would hand out exclusive access from a shared borrow — an aliasing hole worse
+than the defect. Pinned.
+
+`stark-net`'s `&mut` signatures are restored, with the ruling recorded at their definition.
+
+### CD-347 — the gate's executed-surface requirement
+
+A `PackageCase` now declares the resource types it exposes, and a package that declares any must
+ship a NATIVE consumer whose run acquires, uses and closes each one. Missing consumer, missing
+directory, or a failing run all fail qualification.
+
+**The split is forced, not chosen.** Step 5 is `stark run`, and the interpreter has no provider
+layer — any consumer touching a bound resource dies with "provider binding not lowered". So the
+resource exercise cannot live in the ordinary consumer, and the gate runs the resource consumer
+without a `stark run` step.
+
+`stark-net-resource-consumer` is the first: acquire+close, acquire+use+close (through the `&mut`
+path DEV-146 broke, so the package would not have built before CD-346), and acquire-then-let-drop-
+release. Deterministic in CI — it needs no peer, because what it proves is that the resource path
+LOWERS, LINKS and EXECUTES, which is exactly what was unobserved.
+
+Verified to bite: removing the resource consumer fails the gate with a message naming CD-345.
+
+### The standing rule for the Codex lane
+
+**Definition of done now includes executed surface, stated in each directive.** CD-344's failure
+was not Codex writing wrong code — the behaviour was sound, and the end-to-end run proves it. It
+was the lane's evidence standard being satisfiable by a consumer that never called the product.
+Every future package directive names its required consumer exercises the way the repair packets
+named their must-pass sets. One paragraph per directive; the difference between two lanes having
+one discipline or two.
+
+EVIDENCE: `dev146_resource_borrow_weakening` 3 cases; `mir_verify`/`mir_lowering`/
+`c788_lifecycle_e2e`/`conformance`/`gate3_execution` 87 green; provider and resource suites
+(`a10_provider_call`, `a11_host_resource`, `c786_tcp`, `c788_resource_lifecycle`) green; hardened
+eleven-package gate exit 0 with `STARK_NET_RESOURCE_OK` observed; end-to-end native TCP client
+`wrote / 5 / closed` against a listener that received `b'PING\n'`; fmt clean.
+FILES: starkc/src/mir/lower.rs, starkc/tests/dev146_resource_borrow_weakening.rs (new),
+starkc/scripts/qualify-first-party-packages.py, stark-net/src/lib.stark,
+stark-net-resource-consumer/ (new), starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: HC3/HC4 and the OPS resource items unblock. HC5/HC6 and the pure OPS fills were never blocked.
+
 ## CD-345 — HC1 and HC2 qualified with evidence; HC2 was qualified in name only (2026-08-02)
 
 **HC1 (`stark-url`) and HC2 (`stark-net`) landed as plain commits with no CD entry and no evidence

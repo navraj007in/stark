@@ -45,13 +45,13 @@ impl TcpStream {
     pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
         connect(address, timeout)
     }
-    pub fn read(&self, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+    pub fn read(&mut self, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
         read(self, output)
     }
-    pub fn write(&self, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+    pub fn write(&mut self, input: &[UInt8]) -> Result<UInt64, NetworkError> {
         write(self, input)
     }
-    pub fn write_all(&self, input: &[UInt8]) -> Result<(), NetworkError> {
+    pub fn write_all(&mut self, input: &[UInt8]) -> Result<(), NetworkError> {
         write_all(self, input)
     }
     pub fn shutdown_write(&mut self) -> Result<(), NetworkError> {
@@ -77,32 +77,37 @@ fn connect_socket_address(address: &SocketAddress) -> Result<TcpStream, NetworkE
     }
 }
 
-// DEV-146: these take a SHARED borrow of the stream, not `&mut`, and that is currently forced
-// rather than chosen. `&mut TcpStream` is the better signature -- these mutate the stream -- and
-// the front end ACCEPTS it, but MIR verification then rejects the call into the raw binding:
+// RULING (CD-346): a resource-mutating operation takes `&mut`, and the compiler weakens it to the
+// shared borrow the ABI wants.
 //
-//   MIR-0005 call argument: expected Ref { mutable: false, inner: HostResource(tcp_stream) },
-//                           found    Ref { mutable: true,  inner: HostResource(tcp_stream) }
+// `AbiParam::HandleBorrowed` derives a SHARED reference, because a borrowed handle leaves ownership
+// with the caller — that is an ABI fact and does not change. The question this settles is what the
+// PACKAGE surface should say, and the answer is that the two need not match: `weaken_ref_to` now
+// coerces `&mut R` to `&R` at the provider-call boundary (DEV-146), so a package may declare the
+// stricter signature its semantics deserve.
 //
-// The derived raw signature takes `HandleBorrowed` (a shared borrow), and `weaken_ref_to` does not
-// weaken `&mut T` to `&T` when `T` is a `HostResource`, so the wrapper cannot pass its own `&mut`
-// through. Accepted-but-unbuildable, the DEV-132/DEV-133 class. Restore `&mut` once DEV-146 is
-// fixed; the change is source-breaking for callers, so it belongs with that repair.
-pub fn read(stream: &TcpStream, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
+// `read`, `write` and `write_all` take `&mut` because they are NOT observations: each consumes or
+// produces bytes and moves the stream's position. A shared borrow would let a caller hold two
+// readers of one stream, making byte-consumption order non-local and unreviewable. `&mut` makes
+// the aliasing question answerable at the call site, which is the whole reason Core v1 has the
+// distinction.
+//
+// Purely observational operations on a resource stay `&`. Nothing here is one yet.
+pub fn read(stream: &mut TcpStream, output: &mut [UInt8]) -> Result<UInt64, NetworkError> {
     match tcp_stream_read_raw(stream, output) {
         Ok(count) => Ok(count),
         Err(error) => Err(map_network_error(error)),
     }
 }
 
-pub fn write(stream: &TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
+pub fn write(stream: &mut TcpStream, input: &[UInt8]) -> Result<UInt64, NetworkError> {
     match tcp_stream_write_raw(stream, input) {
         Ok(count) => Ok(count),
         Err(error) => Err(map_network_error(error)),
     }
 }
 
-pub fn write_all(stream: &TcpStream, input: &[UInt8]) -> Result<(), NetworkError> {
+pub fn write_all(stream: &mut TcpStream, input: &[UInt8]) -> Result<(), NetworkError> {
     let mut written: UInt64 = 0u64;
     while written < input.len() {
         let remaining = &input[written..input.len()];

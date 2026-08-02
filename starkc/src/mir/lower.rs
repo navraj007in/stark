@@ -1345,8 +1345,49 @@ impl<'a> FnLowerer<'a> {
                         );
                     };
                     next_arg += 1;
-                    let _ = resource_type;
-                    ops.push(self.lower_expr_to_operand(a)?);
+                    let op = self.lower_expr_to_operand(a)?;
+                    // DEV-146: weaken `&mut R` to `&R` here, the same as every other call site.
+                    //
+                    // This arm used to push the operand with NO expected-type coercion, so a
+                    // wrapper declaring `fn write(stream: &mut TcpStream, ..)` and forwarding to
+                    // the raw binding passed `&mut` where the derived signature wants `&`. The
+                    // front end accepted it; MIR-0005 then rejected the call. Accepted-but-
+                    // unbuildable — and it made `&mut` UNUSABLE as a package API shape over any
+                    // bound resource, which is a language-surface consequence, not a lowering
+                    // detail.
+                    //
+                    // DEV-133's comment predicted exactly this: it routed all six coercion sites
+                    // through `weaken_ref_to` and warned that "whichever site was forgotten would
+                    // keep this defect". Provider calls were the seventh, and were forgotten —
+                    // invisibly, because no first-party package called a resource function until
+                    // `stark-net` did.
+                    //
+                    // The expected type is derived from the OPERAND rather than rebuilt from the
+                    // declaration: if what we hold is `&mut X`, what the borrowed-handle slot wants
+                    // is `&X`. Reconstructing `HostResourceTy` here would be a second copy of
+                    // `provider_sig`'s mapping and could drift from it; this cannot.
+                    let held = match &op {
+                        Operand::Copy(place) | Operand::Move(place)
+                            if place.projection.is_empty() =>
+                        {
+                            Some(self.locals[place.local.0 as usize].ty.clone())
+                        }
+                        _ => None,
+                    };
+                    let op = match held {
+                        Some(MirTy::Ref {
+                            mutable: true,
+                            inner,
+                        }) => {
+                            let expected = MirTy::Ref {
+                                mutable: false,
+                                inner,
+                            };
+                            self.weaken_ref_to(op, &expected, span)?
+                        }
+                        _ => op,
+                    };
+                    ops.push(op);
                 }
                 // A11 §8: a CONSUMED handle. Ownership transfers at call entry and does not return
                 // on failure, so the argument is a move and the caller's drop flag is cleared --

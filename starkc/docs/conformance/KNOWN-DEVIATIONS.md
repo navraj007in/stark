@@ -3817,7 +3817,7 @@ C2.8–C2.11 disposition.
   reverted because `v[i]` appears in value AND place positions that only later phases distinguish.
 - **Owning gate:** unassigned.
 
-## DEV-146 — `&mut` to `&` weakening is not applied to a `HostResource` [OPEN, found CD-345, 2026-08-02]
+## DEV-146 — `&mut` to `&` weakening is not applied to a `HostResource` [CLOSED, CD-346, 2026-08-02]
 
 - **Normative expectation:** an exclusive borrow weakens to a shared one at a call site.
   `weaken_ref_to` is the single function that performs this for every coercion position (DEV-133's
@@ -3853,8 +3853,42 @@ C2.8–C2.11 disposition.
 - **Security/soundness impact:** none — it refuses a valid program rather than accepting an invalid
   one. The cost is expressiveness and a misleading API shape.
 - **Workaround:** take a shared borrow. In force in `stark-net` today.
-- **Proposed disposition:** extend `weaken_ref_to` to `HostResource` inner types, with a negative
-  control that a SHARED borrow must not silently become exclusive (weakening changes capability in
-  one direction only). Restoring `stark-net`'s `&mut` signatures belongs with that repair, since it
-  is source-breaking for callers.
-- **Owning gate:** unassigned.
+- **ACTUAL LAYER, which the proposed disposition had wrong.** `weaken_ref_to` was never the
+  problem: its mutability arm is type-agnostic and would have handled `HostResource` fine. The
+  defect was that **provider calls never reached it**. The `HandleBorrowed` arm of
+  `lower_provider_call` pushed its operand with no expected-type coercion at all. DEV-133 routed
+  SIX coercion sites through `weaken_ref_to` and its comment warned that "whichever site was
+  forgotten would keep this defect" — provider calls were the seventh, forgotten invisibly,
+  because no first-party package called a resource function until `stark-net` did.
+- **Resolution (CD-346):** the `HandleBorrowed` arm derives the expected type FROM THE OPERAND — if
+  what is held is `&mut X`, the borrowed-handle slot wants `&X` — and routes through
+  `weaken_ref_to`. Deriving it from the operand rather than rebuilding `HostResourceTy` avoids a
+  second copy of `provider_sig`'s mapping that could drift from it.
+- **THE RULING (CD-346), which is the part that outlives this repair.** The ABI's derivation and
+  the package's declared signature **need not match**:
+
+  ```text
+  AbiParam::HandleBorrowed   always derives a SHARED reference   (ABI fact, unchanged)
+  package surface            may declare &mut, and the compiler weakens
+  ```
+
+  So the surface question is answered by SEMANTICS, not by the ABI:
+  - an operation that consumes or produces bytes, or moves a cursor, takes `&mut` — a shared
+    borrow would let a caller hold two readers of one stream, making byte-consumption order
+    non-local and unreviewable;
+  - a purely observational operation stays `&`;
+  - neither choice changes what crosses the ABI.
+
+  Settled once here rather than per package, because io v0.2 streams, signals, process handles and
+  crypto keys all face it. **Caveat recorded honestly:** this ruling was made from what the ABI
+  verifiably does; the CRYPTO0 convergence was not in evidence when it was written and should be
+  checked against it before the first crypto package declares a surface.
+- **Negative control, because the risk is weakening the WRONG way.** If `&R` could satisfy a
+  `&mut R` parameter, the repair would hand out exclusive access from a shared borrow — an
+  aliasing hole worse than the defect. `a_shared_borrow_does_not_satisfy_a_mutable_parameter`
+  pins that it still refuses.
+- **`stark-net`'s `&mut` signatures are restored** with the ruling recorded at their definition.
+- **Evidence:** `starkc/tests/dev146_resource_borrow_weakening.rs` (3 cases); `stark-net` builds
+  and runs `&mut` through the full provider path; end-to-end native client against a loopback
+  listener — `wrote / 5 / closed`, server saw `b'PING\n'`.
+- **Owning gate:** CD-346.

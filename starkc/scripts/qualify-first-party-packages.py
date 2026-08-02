@@ -30,6 +30,25 @@ class PackageCase:
     package: str
     consumer: str
     expected_stdout: str
+    # CD-347 — EXECUTED SURFACE. Names the resource types the package exposes, each of which must
+    # have its acquire / use / close observed by a NATIVE consumer run.
+    #
+    # This exists because CD-345 found `stark-net` passing all seven steps while `connect`, `read`,
+    # `write` and `close` had never been called by anything. The consumer only formatted addresses,
+    # so a build-breaking defect (DEV-146) sat in the package undetected: nothing had ever lowered
+    # a call into the raw bindings. A gate that a resource package can pass without exercising its
+    # resources is not a gate for resource packages.
+    #
+    # Why a SEPARATE native consumer rather than folding it into the ordinary one: step 5 runs
+    # `stark run`, and the interpreter has no provider layer — any consumer touching a bound
+    # resource dies with "provider binding not lowered". So the resource exercise is native-only by
+    # construction, and the split is forced by the toolchain, not chosen.
+    #
+    # Empty means "this package holds no host resources", which is the honest state for the ten
+    # pure packages and must stay easy to declare.
+    resources: tuple[str, ...] = ()
+    resource_consumer: str | None = None
+    resource_expected_stdout: str | None = None
 
 
 CASES = [
@@ -97,6 +116,9 @@ CASES = [
         package="stark-net",
         consumer="stark-net-consumer",
         expected_stdout="STARK_NET_CONSUMER_OK\n",
+        resources=("TcpStream",),
+        resource_consumer="stark-net-resource-consumer",
+        resource_expected_stdout="STARK_NET_RESOURCE_OK\n",
     ),
 ]
 
@@ -148,6 +170,37 @@ def main() -> int:
         run([str(stark), "build", "--no-build-cache"], consumer_dir)
         artifact = consumer_dir / "target" / "stark" / "debug" / f"{case.consumer}{args.exe_suffix}"
         run([str(artifact)], consumer_dir, expected_stdout=case.expected_stdout)
+
+        # CD-347: the executed-surface requirement. A package that declares resources must ship a
+        # native consumer that acquires, uses and closes each one. `stark run` is deliberately NOT
+        # part of this sequence -- the interpreter has no provider layer.
+        if case.resources:
+            if case.resource_consumer is None:
+                raise SystemExit(
+                    f"{case.package} declares resources {case.resources} but names no "
+                    f"resource_consumer. A resource package must exercise acquire/use/close "
+                    f"natively; see CD-345 for what a happy-path-only gate concealed."
+                )
+            resource_dir = repo_root / case.resource_consumer
+            if not resource_dir.is_dir():
+                raise SystemExit(
+                    f"{case.package}: resource consumer {case.resource_consumer} does not exist"
+                )
+            run([str(stark), "check"], resource_dir)
+            run([str(stark), "fmt", "--check"], resource_dir)
+            run([str(stark), "build", "--no-build-cache"], resource_dir)
+            resource_artifact = (
+                resource_dir
+                / "target"
+                / "stark"
+                / "debug"
+                / f"{case.resource_consumer}{args.exe_suffix}"
+            )
+            run(
+                [str(resource_artifact)],
+                resource_dir,
+                expected_stdout=case.resource_expected_stdout,
+            )
 
     return 0
 
