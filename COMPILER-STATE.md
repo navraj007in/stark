@@ -1,5 +1,70 @@
 # STARK Compiler STATE
 
+## CD-339 — DEV-139 CLOSED: a method body reads the impl's bounds, not only its own (2026-08-02)
+
+**WP-DEV-134-139 Part E. Five of six defects closed; only DEV-138 remains.**
+
+**Wider than filed: it was TWO lookups, and the second was deferred.** The entry names operator
+desugaring, but `satisfies_bound` — ordinary trait-bound satisfaction — had the identical gap. Each
+kept its OWN copy of the parameter lookup and each consulted `current_fn_generics` alone; they
+agreed only by coincidence. And the trait-bound half is deferred: DEV-067(a) captures "the generic
+environment this obligation was recorded in" and replays it at drain, and that capture was also
+fn-generics-only — so an obligation raised inside `impl<T: Ord> Pair<T>` replayed against half its
+environment and still failed after the operator half was repaired. Two of this defect's own tests
+found that second half, which is the argument for writing the must-pass set before assuming the
+first fix was the whole fix.
+
+**Nothing new was brought into scope.** WP-C6.2b-F5 already installed impl-head generics in
+`current_impl_generics` for method bodies. The lookups never asked. This repair is a READ, not a
+new binding — it cannot change which names are in scope, only which declared bounds are found.
+
+**Two helpers, each written once:**
+
+```
+param_declares_bound(param, required)   both lookups call it
+current_generic_env()                   the deferred capture calls it
+```
+
+DEV-128 and DEV-130 are both "the rule was written twice and the copies drifted". This was already
+two copies; it is now one each.
+
+**Negative controls, because WIDENING an environment risks discharging obligations never
+declared:** no bound at all, `Eq` where `Ord` is required, `Ord` where `Num` is required, a bound
+on a DIFFERENT parameter (pins that the lookup still matches on parameter NAME rather than finding
+any bound in scope), an unbounded method-level parameter, and an undischarged callee obligation.
+
+**DEV-083 is NOT closed by this.** It is impl-head *matching* — a concrete position in an impl head
+against an unresolved receiver type argument. This was impl-head *bounds being read*. Different
+mechanism; DEV-083 remains OPEN and unowned.
+
+**What class of program is now prevented from failing:** any generic CONTAINER whose methods use
+the bounds its impl declares — `Heap<T: Ord>`, `SortedVec<T: Ord>`, a `max` method. The rule is on
+the environment, not on `Ord` or on operators, so it covers `Eq`/`Num`/user traits, inherent and
+trait impls, and trait-bound obligations as well as operator desugaring.
+
+Local:
+- cargo test --test dev139_impl_generic_bounds -- 16 cases (10 accept, 6 reject), green
+- cargo test --test c62b_f5_impl_bounds --test c62b_f6_self_normalisation --test
+  c62c_associated_types --test c62d_operator_coretrait --test cross_package_generics --test
+  native_c6_2_generics_traits -- 60 green; the generics/bounds subsystem closest to this change
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 69 green
+- cargo test --test dev134_try_error_type --test dev135_field_move_paths --test
+  dev136_terminating_path_moves --test dev137_while_condition_borrows -- 62 green, all four
+  previously closed defects in this programme
+- cargo test --test mir_verify --test three_engine_differential -- 160 green
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34, and its `defects/06` reproducer now checks OK
+- full workspace NOT run, per the amended evidence policy
+
+CI:
+- the aggregate gate is the authority for this commit, including clippy on CI's own stable
+
+FILES: starkc/src/typecheck.rs, starkc/tests/dev139_impl_generic_bounds.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-138 — build the engine matrix first and apply WP §9.3's decision rules, rather than
+assuming it is independent.
+
 ## CD-338 — DEV-135 CLOSED: a field is one place however many times it is written (2026-08-02)
 
 **WP-DEV-134-139 Part B. Also carries a `collapsible_match` fix for CD-337 that CI caught and the
@@ -305,12 +370,12 @@ conflating them misreports progress in both directions: the defect count underst
 the task count understates release readiness (only the defects gate the release).
 
 ```text
-Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136, DEV-135 CLOSED
-                                       DEV-139, DEV-138 remain
+Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136, DEV-135, DEV-139 CLOSED
+                                       DEV-138 remains
                                        DEV-135b NOT FILED — see CD-338
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       4 of 16 complete
+Programme tasks (WP-DEV-134-139)       5 of 16 complete
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
@@ -7540,8 +7605,8 @@ not long-standing** — three of them are soundness gaps and none has an owning 
   theirs.
 - DEV-138 — an iterator-yielded `&str` is consumed by its first use. Filed as a **candidate
   instance of DEV-121**, not an independent defect; unconfirmed. Opened CD-334.
-- DEV-139 — impl-level generic bounds are invisible to operator desugaring (E0500 false positive).
-  Natural companion to DEV-083. Opened CD-334.
+- DEV-139 — CLOSED CD-339 (WP-DEV-134-139 Part E). Both the operator and trait-bound lookups now
+  read the combined impl+method environment. DEV-083 is a different mechanism and remains OPEN.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 

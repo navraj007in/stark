@@ -3614,7 +3614,7 @@ C2.8–C2.11 disposition.
   class's closure and should not carry an independent fix.
 - **Owning gate:** unassigned; candidate for folding into DEV-121.
 
-## DEV-139 — impl-level generic bounds are invisible to operator desugaring [OPEN, found CD-334, 2026-08-02]
+## DEV-139 — impl-level generic bounds are invisible to operator desugaring [CLOSED, WP-DEV-134-139 Part E, CD-339, 2026-08-02]
 
 - **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `<` on a generic parameter
   desugars to `Ord`. A bound written on the impl head is in scope throughout the impl's method
@@ -3646,7 +3646,33 @@ C2.8–C2.11 disposition.
   cannot be written as methods.
 - **Security/soundness impact:** none — a false positive.
 - **Workaround:** put the comparison in a free generic function with the bound on the function.
-- **Proposed disposition:** merge the impl's generics into the environment the operator check reads,
-  the same way method resolution already merges them. Related to DEV-083 (also impl-head matching,
-  also OPEN) and plausibly the same close-out.
-- **Owning gate:** unassigned; natural companion to DEV-083.
+- **WIDER THAN FILED: it was TWO lookups, and the second one was deferred.** The title names the
+  operator path, but `satisfies_bound` — ordinary trait-bound satisfaction — had the identical gap,
+  each keeping its own copy of the parameter lookup and each consulting `current_fn_generics`
+  alone. They agreed only by coincidence. Worse, the trait-bound half is DEFERRED: DEV-067(a)
+  records the "generic environment this obligation was recorded in" and replays it at drain time,
+  and that capture was also `current_fn_generics` alone, so an obligation raised inside
+  `impl<T: Ord> Pair<T>` replayed against half its environment and failed even after the operator
+  half was fixed. Two of this entry's own tests caught that second half.
+- **Resolution (CD-339):** two helpers, each written ONCE.
+  `param_declares_bound(param, required)` answers "does this parameter declare this bound?" over
+  the combined environment, and both lookups call it. `current_generic_env()` returns that
+  combined list for the deferred capture, so the drain needs no second field to restore. Writing
+  each once is deliberate — DEV-128 and DEV-130 are both "the rule was written twice and the
+  copies drifted", and this was already two copies.
+- **Nothing new was brought into scope.** WP-C6.2b-F5 had already installed impl-head generics in
+  `current_impl_generics` for method bodies; the bound lookups simply never asked. The repair is a
+  read, not a new binding — which is why it cannot change which names are in scope, only which
+  declared bounds are found.
+- **Negative controls, because WIDENING an environment risks discharging obligations that were
+  never declared:** an operator with no bound at all, `Eq` where `Ord` is required, `Ord` where
+  `Num` is required, a bound sitting on a DIFFERENT type parameter (pins that the lookup still
+  matches on parameter NAME rather than finding any bound in scope), an unbounded method-level
+  parameter, and an undischarged callee obligation.
+- **Relationship to DEV-083.** Not the same defect and not closed by this. DEV-083 is about
+  matching a CONCRETE position in an impl head against an unresolved receiver type argument —
+  impl-head *matching*. This was impl-head *bounds being read*. DEV-083 remains OPEN.
+- **Evidence:** `starkc/tests/dev139_impl_generic_bounds.rs`, 16 cases (10 accept, 6 reject),
+  covering `Ord`/`Eq`/`Num` operators, trait-bound obligations, inherent and trait impls, impl and
+  method bounds contributing together, and nested generic nominals.
+- **Owning gate:** WP-DEV-134-139 Part E (CD-339).

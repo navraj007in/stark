@@ -6489,7 +6489,7 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
-                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
+                let enclosing = self.current_generic_env();
                 self.bounds_checks.push((
                     arg_ty.clone(),
                     trait_bounds,
@@ -6510,7 +6510,7 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
-                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
+                let enclosing = self.current_generic_env();
                 self.bounds_checks.push((
                     var.clone(),
                     trait_bounds,
@@ -8865,6 +8865,60 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// DEV-139: the full generic environment the current body is checked in — the impl's
+    /// parameters followed by the function's own.
+    ///
+    /// Deferred trait-bound obligations capture this and replay it at drain time. DEV-067(a)
+    /// introduced that capture so a caller's own `T: Ord` could discharge a callee's `T: Ord`,
+    /// but it captured `current_fn_generics` ALONE, so an obligation raised inside
+    /// `impl<T: Ord> Pair<T>` replayed against half its environment and failed. Capturing the
+    /// combined list here means the drain needs no second field to restore.
+    fn current_generic_env(&self) -> Vec<hir::GenericParam> {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .cloned()
+            .collect()
+    }
+
+    /// DEV-139: whether the type parameter `param_name` declares `required`, anywhere in the
+    /// generic environment the current body is checked in.
+    ///
+    /// **That environment is the impl's parameters PLUS the function's own**, and this is the one
+    /// place that assembles it. Both bound questions — operator desugaring
+    /// (`ty_satisfies_operator_bound`) and trait-bound satisfaction (`satisfies_bound`) — read it
+    /// through here, so they cannot drift apart; before this each kept its own copy of the lookup
+    /// and both consulted `current_fn_generics` alone. WP-C6.2b-F5 had already brought impl-head
+    /// generics into scope for method bodies via `current_impl_generics`; the bound lookups simply
+    /// never asked. So
+    ///
+    /// ```stark
+    /// impl<T: Ord> Pair<T> {
+    ///     fn larger(&self) -> &T { if self.a > self.b { &self.a } else { &self.b } }
+    /// }
+    /// ```
+    ///
+    /// was refused E0500 "type 'T' does not satisfy operator trait 'Ord'" while the identical
+    /// comparison in a free `fn largest<T: Ord>` was accepted — the bound was declared, just not
+    /// looked at.
+    ///
+    /// Impl generics are searched FIRST only for readability; a method may not redeclare an
+    /// impl-level parameter name, so the two sets are disjoint and order cannot change the answer.
+    fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .any(|param| {
+                self.text(param.name) == param_name
+                    && param
+                        .bounds
+                        .iter()
+                        .any(|bound| self.text(bound.path.span) == required)
+            })
+    }
+
     fn require_operator_bound(&mut self, ty: &Ty, required: &str, span: Span) {
         let ty = self.resolve(ty);
         let satisfied = self.ty_satisfies_operator_bound(&ty, required);
@@ -8914,15 +8968,7 @@ impl<'a> TypeChecker<'a> {
                 let inner = self.resolve(inner);
                 self.ty_satisfies_operator_bound(&inner, required)
             }
-            Ty::Param(name) => self.current_fn_generics.as_ref().is_some_and(|params| {
-                params.iter().any(|param| {
-                    self.text(param.name) == name
-                        && param
-                            .bounds
-                            .iter()
-                            .any(|bound| self.text(bound.path.span) == required)
-                })
-            }),
+            Ty::Param(name) => self.param_declares_bound(name, required),
             // DEV-073 (WP-C4.7-5): a GENERIC impl satisfies a concrete instantiation's bound —
             // `impl<T> Eq for W<T>` satisfies `W<Int32>: Eq`. This used to demand
             // `types_equal(impl_self_ty, ty)`, an EXACT match, so the impl's written self type
@@ -9211,18 +9257,7 @@ impl<'a> TypeChecker<'a> {
             // (TYPE-GENERIC-001: the caller's own bound discharges the callee's obligation).
             // This mirrors the `Ty::Param` arm `ty_satisfies_operator_bound` already had for the
             // operator-desugaring bounds, so the two bound checks now agree about parameters.
-            Ty::Param(param_name) => {
-                let Some(generics) = self.current_fn_generics.clone() else {
-                    return false;
-                };
-                generics.iter().any(|param| {
-                    self.text(param.name) == param_name
-                        && param
-                            .bounds
-                            .iter()
-                            .any(|declared| self.text(declared.path.span) == bound_name)
-                })
-            }
+            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name),
             Ty::Error => true,
             _ => false,
         }
