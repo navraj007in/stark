@@ -1,5 +1,81 @@
 # STARK Compiler STATE
 
+## CD-336 — DEV-137 CLOSED: condition-only borrows end at the branch boundary (2026-08-02)
+
+**WP-DEV-134-139 Part C. `while i < v.len() { v[i] = 5; }` compiles. So does the `if` form, which
+had the identical defect and was found by this repair's own test.**
+
+**The layer, recorded before the repair as the work package required: `borrowck.rs`.** Not MIR,
+not liveness, not the back-edge. `active_borrows` is a stack scoped by exactly two mechanisms —
+`check_block` truncates at block end, `check_stmt` truncates after each expression statement. A
+CONDITION is neither: it is an expression evaluated outside any statement of its own. So
+
+```rust
+hir::ExprKind::While { cond, body } => {
+    self.check_expr(*cond);      // pushes the auto-borrow `values.len()` takes
+    self.check_block(*body);     // records its entry depth AFTER that push
+}
+```
+
+left the condition's temporaries on the stack for the whole body, and `check_block` restored to a
+depth that already included them. Nothing popped them until the enclosing statement ended.
+
+**Wider than filed, same mechanism.** `if` conditions were identical. The growing-vector must-pass
+case is what exposed it: `if values.len() < 5u64 { values.push(1); }` inside a loop body was
+refused for the same reason. One repair, `check_condition`, written ONCE and used by both arms —
+DEV-128 and DEV-130 are both "the rule was written twice and the copies drifted".
+
+**The scope boundary is the whole design, and it is not "loop and branch headers".** `match`
+scrutinees and `for` iterators are deliberately NOT routed through `check_condition`:
+
+| Position | Borrow must | Why |
+| --- | --- | --- |
+| `while` / `if` condition | END at the branch | value is consumed by the branch |
+| `match` scrutinee | SPAN the arms | PAT-BIND-001 binds payloads by reference into it |
+| `for` iterator | SPAN the body | yields references into the iterated value |
+
+Truncating either of the bottom two would hand out references to storage the checker had stopped
+tracking. Both are pinned by negative controls that fail if someone later generalises the repair.
+
+**Why depth-based rather than clearing the borrow set.** A borrow created before the loop
+(`let view = &values;`) sits at a shallower depth than the snapshot, so the truncate cannot reach
+it and a body mutation through its owner is still refused. That is
+`borrow_predating_the_loop_stays_live`, and it is the difference between modelling a region and
+just forgetting.
+
+**Execution, not merely acceptance.** `a_growing_vector_re_evaluates_its_condition` runs through
+the oracle and asserts output. It also settles a question the workaround raised: hoisting
+`let n = v.len()` was a SEMANTIC change, not a stylistic one — that loop grows the vector it is
+measuring, so a hoisted bound stops early. The samples that carried the hoist workaround were
+working around a defect at the cost of a different meaning.
+
+**What class of program is now prevented from failing:** any program that reads a receiver in a
+condition and mutates it in the guarded branch. The fix is on the borrow REGION, not on `len` or
+on `Vec`, so it holds for every method, every receiver type, `&mut` parameters included, and for
+indexed place reads (`while values[0] < 3`) as well as method calls.
+
+Local:
+- cargo test --test dev137_while_condition_borrows -- 16 cases (12 accept, 4 reject), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential
+  -- 292 green (78s for the three-engine differential)
+- cargo test --test c61f_reference_boundary --test c61f_nested_refs --test native_c6_1_ownership
+  --test dev132_vec_index_place --test operand_move_inventory -- 44 green, the borrow/ownership
+  subsystem closest to this change
+- cargo clippy --release --lib --tests --all-features -- -D warnings -- clean
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34
+- full workspace NOT run for this commit, per the 2026-08-02 evidence ruling; the next milestone
+  run is after DEV-136
+
+CI:
+- aggregate workspace gate PENDING
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev137_while_condition_borrows.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-136, then the milestone full-workspace run.
+
 ## CD-335 — DEV-134 CLOSED: `?` now relates its operand to the return type (2026-08-02)
 
 **WP-DEV-134-139 Part A. `?` required exact error-type compatibility; it now does. The ruling is
@@ -84,11 +160,11 @@ conflating them misreports progress in both directions: the defect count underst
 the task count understates release readiness (only the defects gate the release).
 
 ```text
-Defects (WP-DEV-134-139 Parts A-F)     DEV-134 CLOSED
-                                       DEV-137, DEV-136, DEV-135a, DEV-139, DEV-138 remain
+Defects (WP-DEV-134-139 Parts A-F)     DEV-134 CLOSED, DEV-137 CLOSED
+                                       DEV-136, DEV-135b, DEV-139, DEV-138 remain
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       1 of 16 complete
+Programme tasks (WP-DEV-134-139)       2 of 16 complete
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
@@ -7295,9 +7371,9 @@ not long-standing** — three of them are soundness gaps and none has an owning 
   internal compiler error. **Soundness**, bounded by the oracle's own check. Opened CD-334.
 - DEV-136 — a move on a `return`ing path is treated as unconditional (E0100 false positive).
   Opened CD-334.
-- DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body (E0101
-  false positive). The most disruptive of the six; its hoist-the-length workaround fails whenever
-  the length changes. Opened CD-334.
+- DEV-137 — CLOSED CD-336 (WP-DEV-134-139 Part C). Condition-only borrows now end at the branch
+  boundary, for `if` as well as `while`; `match` scrutinees and `for` iterators deliberately keep
+  theirs.
 - DEV-138 — an iterator-yielded `&str` is consumed by its first use. Filed as a **candidate
   instance of DEV-121**, not an independent defect; unconfirmed. Opened CD-334.
 - DEV-139 — impl-level generic bounds are invisible to operator desugaring (E0500 false positive).

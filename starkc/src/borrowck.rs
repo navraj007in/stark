@@ -406,6 +406,37 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// DEV-137: check a CONDITION expression, ending the borrows it creates before the branch it
+    /// guards. Used by `while` and `if`, which are the only two positions whose operand is
+    /// consumed by a branch and cannot outlive it.
+    ///
+    /// `active_borrows` is scoped by exactly two mechanisms — `check_block` truncates at block
+    /// end, and `check_stmt` truncates after each expression statement. A condition is NEITHER:
+    /// it is an expression evaluated outside any statement of its own. So the receiver auto-borrow
+    /// that `while i < v.len()` takes was pushed and then still on the stack when
+    /// `check_block(body)` ran — and `check_block` records its own entry depth AFTER that push, so
+    /// it could never pop it. Every mutation of that receiver inside the branch was an E0101
+    /// against a borrow that had already ended.
+    ///
+    /// `03-Type-System.md` "References and Lifetimes": a temporary borrow ends with its statement.
+    /// A condition's value is consumed by the branch, so its temporaries end at the branch
+    /// boundary.
+    ///
+    /// The truncate is DEPTH-BASED, which is what keeps the negative cases negative: a borrow
+    /// created before the loop (`let view = &values;`) lives at a shallower depth than this
+    /// snapshot, is untouched, and a mutation through its owner is still refused.
+    ///
+    /// **Deliberately NOT applied to `match` scrutinees or `for` iterators.** Those are not
+    /// conditions: PAT-BIND-001 binds arm payloads BY REFERENCE into the scrutinee, and
+    /// `for x in &v` yields references into the iterated value, so in both cases the borrow must
+    /// span the body. Truncating them would hand out references to storage the checker had
+    /// stopped tracking.
+    fn check_condition(&mut self, cond: ExprId) {
+        let borrows_before = self.active_borrows.len();
+        self.check_expr(cond);
+        self.active_borrows.truncate(borrows_before);
+    }
+
     fn check_block(&mut self, block_id: BlockId) {
         let block = self.hir.block(block_id);
 
@@ -617,7 +648,7 @@ impl<'a> BorrowChecker<'a> {
                 then_block,
                 else_,
             } => {
-                self.check_expr(*cond);
+                self.check_condition(*cond);
 
                 let moved_before = self.moved_places.clone();
                 self.check_block(*then_block);
@@ -668,7 +699,7 @@ impl<'a> BorrowChecker<'a> {
                 self.check_block(*body);
             }
             hir::ExprKind::While { cond, body } => {
-                self.check_expr(*cond);
+                self.check_condition(*cond);
                 self.check_block(*body);
             }
             hir::ExprKind::For { iter, body, .. } => {

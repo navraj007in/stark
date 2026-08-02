@@ -3445,7 +3445,7 @@ C2.8–C2.11 disposition.
   both are flow-analysis precision, in opposite directions.
 - **Owning gate:** unassigned.
 
-## DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body [OPEN, found CD-334, 2026-08-02]
+## DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body [CLOSED, WP-DEV-134-139 Part C, CD-336, 2026-08-02]
 
 - **Normative expectation:** `03-Type-System.md` "References and Lifetimes" — a temporary borrow
   ends with its statement. The auto-borrow a method call takes of its receiver (TYPE-METHOD-002) is
@@ -3502,10 +3502,33 @@ C2.8–C2.11 disposition.
 - **Not the `For` arm.** `for x in &v` must KEEP its iterator borrow alive across the body, so the
   repair must not be generalised to loop headers as a category — only to `while` conditions, whose
   value is consumed by the branch and cannot outlive it.
-- **Proposed disposition:** record the borrow depth BEFORE evaluating the condition and truncate to
-  it before entering the body. A borrow created before the loop lives at a shallower depth and is
-  therefore untouched, which is what keeps the must-reject cases rejected.
-- **Owning gate:** WP-DEV-134-139 Part C.
+- **WIDER THAN FILED, same mechanism.** `if` conditions had the identical defect, and it was found
+  by this entry's own must-pass case for condition re-evaluation:
+  `if values.len() < 5u64 { values.push(1); }` inside a loop body was refused for exactly the same
+  reason. A condition is a condition whether it guards a loop or a branch. One mechanism, one
+  repair, no new DEV number.
+- **Resolution (CD-336):** `Borrowck::check_condition` — snapshot the borrow depth, check the
+  condition, truncate back. Used by the `While` and `If` arms. The rule is written ONCE rather
+  than inline at both sites, for the DEV-128/DEV-130 reason.
+- **Scope boundary, and why it is not "loop and branch headers" as a category.** `match`
+  scrutinees and `for` iterators are deliberately NOT routed through `check_condition`.
+  PAT-BIND-001 binds a non-`Copy` arm payload BY REFERENCE into the scrutinee, and `for x in &v`
+  yields references into the iterated value, so in both cases the borrow must span the body;
+  truncating them would hand out references to storage the checker had stopped tracking. Two
+  negative controls pin this — `a_match_scrutinee_borrow_still_spans_the_arms` and
+  `for_loop_iterator_borrow_still_spans_the_body` — and both would fail if a later change
+  generalised the repair to every operand that precedes a block.
+- **The other negative control that defines the boundary:** a borrow created BEFORE the loop
+  (`let view = &values;`) lives at a shallower stack depth than the snapshot, so the truncate
+  cannot reach it and a body mutation through its owner is still refused
+  (`borrow_predating_the_loop_stays_live`). This is what makes the repair depth-based rather than
+  "clear the borrow set at the loop header", which would have been unsound.
+- **Execution evidence, not just acceptance.** `the_indexed_loop_executes_correctly` and
+  `a_growing_vector_re_evaluates_its_condition` run through the HIR oracle and assert output. The
+  second is the one that proves the hoist-the-length workaround was a SEMANTIC change, not a
+  stylistic one: the loop grows the vector it is measuring, so a hoisted bound would stop early.
+- **Evidence:** `starkc/tests/dev137_while_condition_borrows.rs`, 16 cases (12 accept, 4 reject).
+- **Owning gate:** WP-DEV-134-139 Part C (CD-336).
 
 ## DEV-138 — an iterator-yielded `&str` is consumed by its first use [OPEN, found CD-334, 2026-08-02]
 
