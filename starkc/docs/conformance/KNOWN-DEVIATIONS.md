@@ -3128,6 +3128,18 @@ C2.8–C2.11 disposition.
 - **Found by:** `gate4a_prelude_traits`, a suite not run when DEV-126 landed.
 - **Owning gate:** WP-COPY-CANON Phase 2.
 
+## DEV-121 — UPDATE 2 (CD-340): a second producer found, and the invariant's blind spot named
+
+- **New instance: `SplitIter`'s item.** Declared `&str`, represented `Value::String` (owned), so
+  its first use consumed it. Registered and repaired as DEV-138; the class remains OPEN. That is
+  now TWO producers found by user-facing programs rather than by the invariant — `String::bytes()`
+  (CD-305) and `String::split()` (CD-340).
+- **The invariant's blind spot, stated so the next instance is found by tooling instead:**
+  INV-VALUE-REP-001 checks **`let` bindings**. A `for`-loop binding is not a `let`, so no loop
+  item is covered by it at all. Both known instances were reachable through a loop item. Extending
+  the invariant to loop bindings — and to call arguments, which are equally uncovered — is the
+  work that would close the class rather than another instance. Unowned.
+
 ## DEV-121 — UPDATE: narrowed by INV-VALUE-REP-001, class NOT closed
 
 - **What is now enforced.** INV-VALUE-REP-001 checks at every `let` that a binding declared `&[T]`
@@ -3577,7 +3589,7 @@ C2.8–C2.11 disposition.
 - **Evidence:** `starkc/tests/dev137_while_condition_borrows.rs`, 16 cases (12 accept, 4 reject).
 - **Owning gate:** WP-DEV-134-139 Part C (CD-336).
 
-## DEV-138 — an iterator-yielded `&str` is consumed by its first use [OPEN, found CD-334, 2026-08-02]
+## DEV-138 — an iterator-yielded `&str` is consumed by its first use [CLOSED as a DEV-121 INSTANCE, WP-DEV-134-139 Part F, CD-340, 2026-08-02]
 
 - **Normative expectation:** `&str` is a shared borrow and is `Copy`-like at use sites; reading it
   does not consume it. `06-Standard-Library.md` gives `SplitIter` an `Item` that is a reference.
@@ -3610,9 +3622,40 @@ C2.8–C2.11 disposition.
   owned value, which is the same category error DEV-121 tracks. No memory unsafety is demonstrated;
   the failure is a refusal, not a corruption.
 - **Workaround:** convert the item once (`let key = String::from(word);`) and `clone` from there.
-- **Proposed disposition:** check against DEV-121 first — if it is an instance, it belongs to that
-  class's closure and should not carry an independent fix.
-- **Owning gate:** unassigned; candidate for folding into DEV-121.
+- **CLASSIFICATION RESULT (WP-DEV-134-139 §9.2/§9.3): it IS a DEV-121 instance.** The matrix that
+  established it:
+
+  ```text
+  declared item type   &str            06-Standard-Library.md: SplitIter / String::split / &str
+  HIR runtime value    Value::String   OWNED  <- the defect
+  value_is_copy        Value::Str -> true, Value::String -> false
+  front end            ACCEPTS (sees a Copy shared reference)
+  MIR / native         VACUOUS - both refuse SplitIter outright (C4.5)
+  ```
+
+  The MIR and native rows are **vacuous rather than confirming** and are recorded that way: those
+  engines do not implement `SplitIter`, so they could not have disagreed. §9.3's "treat as
+  distinct" criteria require MIR to emit `Move` for a Copy shared-reference item AND all engines
+  to consume it; neither holds. §9.3's fold criteria hold on every testable dimension.
+- **Producer-specific, which is the DEV-121 signature.** Six shapes were probed: `&Vec<String>`,
+  `&Vec<Int32>`, `chars()`, and a plain `&str` outside a loop were already correct. Only `split`
+  was wrong — and `trim`/`substring`, which have the SAME declared return type, already yielded
+  `Value::Str`. The repair makes `split` consistent with its siblings rather than adding a rule.
+- **Resolution (CD-340):** one line in `interp.rs` — `Value::SplitIter`'s `next` yields
+  `Value::Str` rather than `Value::String`. No new `RuntimeFn`, no new `Value` variant, no
+  amendment. DEV-121's governing rule verbatim: representation follows the normalized semantic
+  type, never the producing expression.
+- **RESIDUAL EXPOSURE, recorded against DEV-121 rather than here.** INV-VALUE-REP-001 checks at
+  every `let` that a binding declared `&str`/`&[T]` does not hold owned storage. A **for-loop
+  binding is not a `let`**, which is exactly why the invariant did not catch this. Extending it to
+  loop bindings would have caught this class at the producer rather than at a user program; that
+  extension is unowned. The tests below are the interim guard.
+- **Evidence:** `starkc/tests/dev138_iterator_item_representation.rs`, 10 cases. Four exercise
+  `split` reuse; four pin producers that were ALREADY correct so the fix cannot regress what it
+  was not about; two pin that the item is still only a view — the source string is undisturbed by
+  iteration, and string-literal pattern matching still compares by content (DEV-129).
+- **Owning gate:** WP-DEV-134-139 Part F (CD-340), as a DEV-121 instance. **DEV-121's class stays
+  OPEN.**
 
 ## DEV-139 — impl-level generic bounds are invisible to operator desugaring [CLOSED, WP-DEV-134-139 Part E, CD-339, 2026-08-02]
 

@@ -6022,10 +6022,21 @@ impl<'a> Interpreter<'a> {
                 Ok((opt, iter))
             }
             Value::SplitIter(parts, ref mut idx) => {
+                // DEV-138 (a DEV-121 instance): `SplitIter`'s item is `&str`
+                // (`06-Standard-Library.md`), so it must be `Value::Str` — which `value_is_copy`
+                // reports as Copy — and NOT `Value::String`, which is owned and therefore
+                // consumed by its first use. Yielding the owned form meant
+                // `String::from(word)` twice in one iteration trapped "use of unavailable value"
+                // on the second, while the checker and MIR both saw a `Copy` shared reference.
+                //
+                // This is DEV-121's governing rule verbatim: Copy/move behaviour, and the runtime
+                // representation carrying it, follow the normalized semantic type and never the
+                // expression that produced the value. `trim` and `substring` already yield
+                // `Value::Str` for the same declared type; `split` was the outlier.
                 let opt = if *idx < parts.len() {
                     let s = parts[*idx].clone();
                     *idx += 1;
-                    Some(Value::String(s))
+                    Some(Value::Str(s))
                 } else {
                     None
                 };

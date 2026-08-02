@@ -1,5 +1,66 @@
 # STARK Compiler STATE
 
+## CD-340 — DEV-138 CLOSED as a DEV-121 instance; all six CD-334 defects repaired (2026-08-02)
+
+**WP-DEV-134-139 Part F. The classification came first and decided the repair, as §9 required.**
+
+```text
+declared item type   &str            06-Standard-Library.md: SplitIter / String::split / &str
+HIR runtime value    Value::String   OWNED  <- the defect
+value_is_copy        Value::Str -> true, Value::String -> false
+front end            ACCEPTS (sees a Copy shared reference)
+MIR / native         VACUOUS - both refuse SplitIter outright (C4.5)
+```
+
+**The MIR and native rows are vacuous, not confirming**, and are recorded that way rather than
+counted as agreement: those engines do not implement `SplitIter`, so they could not have
+disagreed. §9.3's "treat as distinct" test requires MIR to emit `Move` for a Copy shared-reference
+item AND all engines to consume it. Neither holds; every testable fold criterion does.
+
+**Producer-specific, which is what identifies it as DEV-121 rather than something new.** Six shapes
+were probed: `&Vec<String>`, `&Vec<Int32>`, `chars()`, and a plain `&str` outside a loop were
+already correct. Only `split` was wrong — and `trim`/`substring`, with the SAME declared return
+type, already yielded `Value::Str`. The repair makes `split` consistent with its siblings rather
+than introducing a rule. One line, no new `Value` variant, no amendment.
+
+**THE MORE USEFUL FINDING IS WHY THE INVARIANT MISSED IT.** INV-VALUE-REP-001 exists precisely to
+catch this class, and checks at every **`let`** that a binding declared `&str`/`&[T]` does not hold
+owned storage. A **for-loop binding is not a `let`**. Both known DEV-121 instances —
+`String::bytes()` at CD-305 and `String::split()` here — were reachable through a loop item, and
+both were found by a user-facing program rather than by the invariant. Extending it to loop
+bindings and call arguments is what would close the class; finding a third instance by hand would
+not. Recorded against DEV-121, unowned.
+
+**ALL SIX CD-334 DEFECTS ARE NOW REPAIRED.** Three were soundness holes; none required a design
+change, and four turned out to be a single wrong line or a single missing consultation:
+
+| DEV | Root cause in one line |
+| --- | --- |
+| 134 | operand and return type were never compared |
+| 137 | a condition is neither a block nor a statement, so nothing popped its borrows |
+| 136 | move state merged syntactic children instead of reaching predecessors |
+| 135 | a field was identified by the span it was written at |
+| 139 | two bound lookups each read half the generic environment |
+| 138 | one producer returned an owned value for a borrowed type |
+
+Local:
+- cargo test --test dev138_iterator_item_representation -- 10 cases, green
+- cargo test --test c63a_string --test copy_canon_matrix --test three_engine_differential --test
+  exec_snapshots --test conformance --test gate2_valid --test gate3_execution -- 209 green
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34, and its `defects/05` reproducer now runs correctly
+- full workspace NOT run, per the amended evidence policy
+
+CI:
+- the aggregate gate is the authority for this commit
+
+FILES: starkc/src/interp.rs, starkc/tests/dev138_iterator_item_representation.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: the three non-defect programme tasks — in-tree regression manifest (§10.1), pinned
+external-suite CI (§10.2, BLOCKED: the suite has no git remote), layer-audit inventory enforcement
+(§11) — then final reconciliation and the §17 report.
+
 ## CD-339 — DEV-139 CLOSED: a method body reads the impl's bounds, not only its own (2026-08-02)
 
 **WP-DEV-134-139 Part E. Five of six defects closed; only DEV-138 remains.**
@@ -370,12 +431,13 @@ conflating them misreports progress in both directions: the defect count underst
 the task count understates release readiness (only the defects gate the release).
 
 ```text
-Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136, DEV-135, DEV-139 CLOSED
-                                       DEV-138 remains
+Defects (WP-DEV-134-139 Parts A-F)     ALL SIX CLOSED (134, 135, 136, 137, 138, 139)
                                        DEV-135b NOT FILED — see CD-338
+                                       DEV-138 closed as a DEV-121 instance; that class stays OPEN
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       5 of 16 complete
+Programme tasks (WP-DEV-134-139)       6 of 16 complete — all defect repairs done;
+                                       the remainder is regression/CI/audit infrastructure
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
@@ -7603,8 +7665,9 @@ not long-standing** — three of them are soundness gaps and none has an owning 
 - DEV-137 — CLOSED CD-336 (WP-DEV-134-139 Part C). Condition-only borrows now end at the branch
   boundary, for `if` as well as `while`; `match` scrutinees and `for` iterators deliberately keep
   theirs.
-- DEV-138 — an iterator-yielded `&str` is consumed by its first use. Filed as a **candidate
-  instance of DEV-121**, not an independent defect; unconfirmed. Opened CD-334.
+- DEV-138 — CLOSED CD-340 as a CONFIRMED DEV-121 instance (WP-DEV-134-139 Part F). DEV-121's
+  class stays OPEN, and its blind spot is now named: INV-VALUE-REP-001 checks `let` bindings, and
+  a for-loop binding is not a `let`, so no loop item is covered.
 - DEV-139 — CLOSED CD-339 (WP-DEV-134-139 Part E). Both the operator and trait-bound lookups now
   read the combined impl+method environment. DEV-083 is a different mechanism and remains OPEN.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
