@@ -1,0 +1,120 @@
+// Executed surface for `stark-http-client` (CD-348, RESOURCE-SHAPED category).
+//
+// NATIVE-ONLY, and it requires a live HTTP peer on 127.0.0.1:39188. Run without one it PANICS
+// rather than reporting success, because a client that cannot reach a peer proves only that its
+// surface lowers and links — the CD-345 failure exactly. The lifecycle observed here is the full
+// one the package exists for: resolve, connect, set timeouts, write a request, read a response
+// across whatever fragmentation the peer chose, and release the stream.
+//
+// The peer's four routes each pin a different response shape:
+//
+//   /fixed       Content-Length framing, body read to the declared length
+//   /chunked     chunked framing, decoded across chunk boundaries
+//   /fragmented  a fixed body written in several small writes with pauses, so the client's read
+//                loop must reassemble what one recv() never delivers whole
+//   /close-early headers promising more body than the peer sends, then a close — the client must
+//                REPORT this, never return a short body as if it were complete
+
+use stark_http_client::client_error_text;
+use stark_http_client::default_config;
+use stark_http_client::fetch;
+use stark_http_client::new_client;
+use stark_http_client::Client;
+use stark_http_core::get_first;
+use stark_http_core::HttpResponse;
+
+fn body_text(response: &HttpResponse) -> String {
+    let n = response.body.len();
+    let mut out = String::new();
+    let mut i = 0u64;
+    while i < n {
+        match Char::from_u32(response.body[i] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Fetch and require success. A failure here aborts: with no peer there is no evidence to report,
+/// and continuing would let the consumer print a success line it has not earned.
+fn require(client: &Client, url: &str, expected_status: UInt16, expected_body: &str) -> HttpResponse {
+    let out: HttpResponse;
+    match fetch(client, url) {
+        Ok(response) => {
+            out = response;
+        }
+        Err(error) => {
+            print("FETCH FAILED for ");
+            println(url);
+            println(client_error_text(&error).as_str());
+            panic("no HTTP peer on 127.0.0.1:39188 — this consumer needs a live one (CD-348)");
+        }
+    }
+    if out.status != expected_status {
+        panic("unexpected status");
+    }
+    if body_text(&out).as_str() != expected_body {
+        panic("unexpected body");
+    }
+    out
+}
+
+fn main() {
+    let client = new_client(default_config());
+
+    // 1. Content-Length framing over a real socket.
+    let fixed = require(&client, "http://127.0.0.1:39188/fixed", 200u16, "fixed-body-ok");
+    match get_first(&fixed.headers, "content-type") {
+        Some(value) => {
+            if value.as_str() != "text/plain" {
+                panic("Content-Type did not survive the round trip");
+            }
+        }
+        None => {
+            panic("Content-Type missing from a real response");
+        }
+    }
+    println("  fixed: 200, Content-Length framing, body and headers intact");
+
+    // 2. Chunked framing, decoded across chunk boundaries.
+    let _chunked = require(&client, "http://127.0.0.1:39188/chunked", 200u16, "chunked-body-ok");
+    println("  chunked: 200, chunks decoded and joined");
+
+    // 3. A body delivered in several small writes. This is the case a client that assumes one
+    //    recv() per response gets wrong, and it is why the parser is incremental.
+    let _fragmented = require(
+        &client,
+        "http://127.0.0.1:39188/fragmented",
+        200u16,
+        "fragmented-body-reassembled",
+    );
+    println("  fragmented: 200, reassembled across several socket reads");
+
+    // 4. The peer closes mid-body. A short body MUST be an error, never a quiet truncation — a
+    //    client that returns partial data as complete corrupts every caller downstream of it.
+    match fetch(&client, "http://127.0.0.1:39188/close-early") {
+        Ok(_response) => {
+            panic("a truncated response was returned as if it were complete");
+        }
+        Err(error) => {
+            print("  close-early: reported as expected: ");
+            println(client_error_text(&error).as_str());
+        }
+    }
+
+    // 5. The refusal path still has to be right: nothing is acquired, and the error says so.
+    match fetch(&client, "http://127.0.0.1:9/refused") {
+        Ok(_response) => {
+            panic("a connection to the discard port succeeded");
+        }
+        Err(_error) => {
+            println("  refused port: connect failure reported, no stream acquired");
+        }
+    }
+
+    println("STARK_HTTP_CLIENT_RESOURCE_OK");
+}

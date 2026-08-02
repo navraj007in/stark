@@ -687,3 +687,19 @@ fn test_unix_timestamp_round_trip() {
     expect_round_trip(123456789i64);
     expect_round_trip(-123456789i64);
 }
+
+// DEV-148: a cross-package ASSOCIATED function is unresolvable, so `Duration::from_seconds` is
+// unusable from a dependent package even though it is `pub`. These free functions are the
+// workaround every other first-party package already uses without recording why. Remove them, and
+// prefer the associated forms, once DEV-148 is repaired.
+pub fn duration_seconds(seconds: UInt64) -> Duration {
+    Duration::from_seconds(seconds)
+}
+
+pub fn duration_millis(milliseconds: UInt64) -> Duration {
+    Duration::from_millis(milliseconds)
+}
+
+pub fn duration_nanos(nanoseconds: UInt64) -> Duration {
+    Duration::from_nanos(nanoseconds)
+}
