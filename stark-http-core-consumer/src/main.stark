@@ -1,0 +1,71 @@
+// Executed surface for `stark-http-core` (CD-348, pure-package bar): each principal public
+// behaviour is invoked, not merely linked.
+
+use stark_http_core::append_validated;
+use stark_http_core::check_headers_within;
+use stark_http_core::default_limits;
+use stark_http_core::get_singleton;
+use stark_http_core::header;
+use stark_http_core::is_valid_status;
+use stark_http_core::is_valid_target;
+use stark_http_core::method_text;
+use stark_http_core::new_header_map;
+use stark_http_core::request;
+use stark_http_core::response;
+use stark_http_core::version_text;
+use stark_http_core::HttpMethod;
+use stark_http_core::HttpVersion;
+
+fn main() {
+    // construction + validation
+    match header("Content-Type", "application/json") {
+        Ok(_h) => {}
+        Err(_e) => panic("valid header rejected"),
+    }
+    match header("Bad Name", "x") {
+        Ok(_h) => panic("invalid header name accepted"),
+        Err(_e) => {}
+    }
+
+    // header map: append, duplicate preservation, singleton
+    let mut headers = new_header_map();
+    let _a = append_validated(&mut headers, "Accept", "application/json");
+    let _b = append_validated(&mut headers, "Accept", "text/plain");
+    match get_singleton(&headers, "accept") {
+        Ok(_v) => panic("duplicate singleton accepted"),
+        Err(_e) => {}
+    }
+    match check_headers_within(&headers, &default_limits()) {
+        Ok(_ok) => {}
+        Err(_e) => panic("two headers exceeded the default limits"),
+    }
+
+    // requests and responses
+    match request(HttpMethod::Post, "/v1/items", HttpVersion::Http11, new_header_map(), Vec::new()) {
+        Ok(_r) => {}
+        Err(_e) => panic("valid request rejected"),
+    }
+    match response(HttpVersion::Http11, 200u16, "OK", new_header_map(), Vec::new()) {
+        Ok(_r) => {}
+        Err(_e) => panic("valid response rejected"),
+    }
+
+    // scalar predicates
+    if !is_valid_target("/health") {
+        panic("valid target rejected");
+    }
+    if is_valid_target("/a b") {
+        panic("target with a space accepted");
+    }
+    if !is_valid_status(204u16) {
+        panic("204 rejected");
+    }
+    if method_text(&HttpMethod::Get).as_str() != "GET" {
+        panic("method text wrong");
+    }
+    if version_text(&HttpVersion::Http11).as_str() != "HTTP/1.1" {
+        panic("version text wrong");
+    }
+
+    println("STARK_HTTP_CORE_CONSUMER_OK");
+}

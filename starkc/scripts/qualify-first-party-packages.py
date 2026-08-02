@@ -130,6 +130,18 @@ CASES = [
         consumer="stark-form-consumer",
         expected_stdout="FORM_CONSUMER_OK\n",
     ),
+    # HC5/HC6 — pure packages, so the ordinary consumer bar applies: each principal public
+    # behaviour executed, no resources to acquire or release.
+    PackageCase(
+        package="stark-http-core",
+        consumer="stark-http-core-consumer",
+        expected_stdout="STARK_HTTP_CORE_CONSUMER_OK\n",
+    ),
+    PackageCase(
+        package="stark-http-serialize",
+        consumer="stark-http-serialize-consumer",
+        expected_stdout="STARK_HTTP_SERIALIZE_CONSUMER_OK\n",
+    ),
     PackageCase(
         package="stark-net",
         consumer="stark-net-consumer",

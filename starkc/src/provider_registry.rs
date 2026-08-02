@@ -586,6 +586,13 @@ fn stark_net() -> DeclaredProvider {
     status.declare(9, "NetworkError::WouldBlock");
     status.declare(10, "NetworkError::Unsupported");
     status.declare(11, "NetworkError::Other");
+    status.declare(101, "DnsError::DnsInvalidHost");
+    status.declare(102, "DnsError::DnsNotFound");
+    status.declare(103, "DnsError::DnsTemporaryFailure");
+    status.declare(104, "DnsError::DnsTooManyResults");
+    status.declare(105, "DnsError::DnsUnsupportedAddressFamily");
+    status.declare(106, "DnsError::DnsUnsupported");
+    status.declare(107, "DnsError::DnsOther");
 
     let listener = "tcp_listener".to_string();
     let stream = "tcp_stream".to_string();
@@ -602,7 +609,7 @@ fn stark_net() -> DeclaredProvider {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["tcp".to_string()],
+            capabilities: vec!["tcp".to_string(), "dns".to_string()],
             resource_types: vec![listener.clone(), stream.clone()],
             functions: vec![
                 FunctionDecl {
@@ -684,8 +691,58 @@ fn stark_net() -> DeclaredProvider {
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: stream.clone(),
                     }],
-                    is_close_for: Some(stream),
+                    is_close_for: Some(stream.clone()),
                     may_block: false,
+                },
+                // HC4: socket timeouts. `ScalarIn(U64)` nanoseconds, with 0 meaning "no timeout"
+                // — the zero-duration semantics HC4 requires to be specified rather than implied.
+                // Borrowed handle, because setting a timeout does not transfer the stream.
+                FunctionDecl {
+                    name: "stark_tcp_stream_set_read_timeout".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: stream.clone(),
+                        },
+                        AbiParam::ScalarIn(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_stream_set_write_timeout".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: stream.clone(),
+                        },
+                        AbiParam::ScalarIn(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_dns_resolve_len".to_string(),
+                    capability: "dns".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_dns_resolve_fill".to_string(),
+                    capability: "dns".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
                 },
             ],
         },

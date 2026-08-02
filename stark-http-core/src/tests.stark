@@ -1,0 +1,255 @@
+// HC5 tests. Every rule the roadmap lists, plus the byte-level edges that make each rule matter.
+
+use super::append_validated;
+use super::ascii_equal_ignore_case;
+use super::check_body_within;
+use super::check_headers_within;
+use super::contains;
+use super::count_matching;
+use super::default_limits;
+use super::get_first;
+use super::get_singleton;
+use super::header;
+use super::header_bytes;
+use super::is_valid_header_name;
+use super::is_valid_header_value;
+use super::is_valid_reason;
+use super::is_valid_status;
+use super::is_valid_target;
+use super::method_forbids_body;
+use super::method_text;
+use super::new_header_map;
+use super::request;
+use super::response;
+use super::version_text;
+use super::HttpMethod;
+use super::HttpVersion;
+
+fn expect(condition: Bool, message: &str) {
+    if !condition {
+        panic(message);
+    }
+}
+
+// -- header names ---------------------------------------------------------------------------
+
+fn test_header_names_accept_tokens() {
+    expect(is_valid_header_name("Content-Type"), "hyphenated token rejected");
+    expect(is_valid_header_name("X-Custom_9"), "underscore/digit token rejected");
+    expect(is_valid_header_name("a"), "single character name rejected");
+}
+
+fn test_header_names_reject_non_tokens() {
+    expect(!is_valid_header_name(""), "empty name accepted");
+    expect(!is_valid_header_name("Bad Name"), "space in name accepted");
+    expect(!is_valid_header_name("Bad:Name"), "colon in name accepted");
+    expect(!is_valid_header_name("Bad\rName"), "CR in name accepted");
+    expect(!is_valid_header_name("Bad\nName"), "LF in name accepted");
+}
+
+// -- header values --------------------------------------------------------------------------
+
+fn test_header_values_accept_visible_ascii_and_tab() {
+    expect(is_valid_header_value("application/json"), "media type rejected");
+    expect(is_valid_header_value("a\tb"), "internal tab rejected");
+    expect(is_valid_header_value(""), "empty value rejected");
+}
+
+fn test_header_values_reject_crlf_injection() {
+    expect(!is_valid_header_value("a\r\nX-Evil: 1"), "CRLF injection accepted");
+    expect(!is_valid_header_value("a\rb"), "bare CR accepted");
+    expect(!is_valid_header_value("a\nb"), "bare LF accepted");
+}
+
+fn test_header_values_reject_edge_whitespace() {
+    expect(!is_valid_header_value(" leading"), "leading space accepted");
+    expect(!is_valid_header_value("trailing "), "trailing space accepted");
+}
+
+fn test_header_constructor_rejects_invalid_parts() {
+    match header("Bad Name", "ok") {
+        Ok(_h) => {
+            panic("header() accepted an invalid name");
+        }
+        Err(_e) => {}
+    }
+    match header("Ok", "bad\r\nvalue") {
+        Ok(_h) => {
+            panic("header() accepted an injected value");
+        }
+        Err(_e) => {}
+    }
+}
+
+// -- lookup ---------------------------------------------------------------------------------
+
+fn test_lookup_is_ascii_case_insensitive() {
+    expect(ascii_equal_ignore_case("Content-Type", "content-type"), "case fold failed");
+    expect(ascii_equal_ignore_case("HOST", "host"), "upper/lower fold failed");
+    expect(!ascii_equal_ignore_case("Host", "Hosts"), "different lengths compared equal");
+}
+
+fn test_get_first_finds_case_insensitively() {
+    let mut map = new_header_map();
+    let _a = append_validated(&mut map, "Content-Type", "application/json");
+    match get_first(&map, "CONTENT-TYPE") {
+        Some(value) => {
+            expect(value.as_str() == "application/json", "wrong value returned");
+        }
+        None => {
+            panic("case-insensitive lookup missed");
+        }
+    }
+    expect(contains(&map, "content-type"), "contains missed");
+}
+
+fn test_duplicates_are_preserved() {
+    let mut map = new_header_map();
+    let _a = append_validated(&mut map, "Set-Cookie", "a=1");
+    let _b = append_validated(&mut map, "Set-Cookie", "b=2");
+    expect(count_matching(&map, "set-cookie") == 2u64, "duplicate collapsed");
+    match get_first(&map, "Set-Cookie") {
+        Some(value) => {
+            expect(value.as_str() == "a=1", "first duplicate not returned first");
+        }
+        None => {
+            panic("duplicate lookup missed");
+        }
+    }
+}
+
+fn test_singleton_rejects_ambiguous_duplicates() {
+    let mut map = new_header_map();
+    let _a = append_validated(&mut map, "Content-Length", "5");
+    let _b = append_validated(&mut map, "Content-Length", "9");
+    match get_singleton(&map, "content-length") {
+        Ok(_value) => {
+            panic("two different Content-Lengths accepted as a singleton");
+        }
+        Err(_e) => {}
+    }
+}
+
+fn test_singleton_allows_exactly_one_or_none() {
+    let mut map = new_header_map();
+    match get_singleton(&map, "content-length") {
+        Ok(found) => {
+            expect(found.is_none(), "absent singleton reported present");
+        }
+        Err(_e) => {
+            panic("absent singleton reported as duplicate");
+        }
+    }
+    let _a = append_validated(&mut map, "Content-Length", "5");
+    match get_singleton(&map, "CONTENT-LENGTH") {
+        Ok(found) => match found {
+            Some(value) => {
+                expect(value.as_str() == "5", "singleton returned the wrong value");
+            }
+            None => {
+                panic("present singleton reported absent");
+            }
+        }
+        Err(_e) => {
+            panic("single header reported as duplicate");
+        }
+    }
+}
+
+// -- targets, status, reason ------------------------------------------------------------------
+
+fn test_targets_reject_spaces_and_controls() {
+    expect(is_valid_target("/v1/items?active=true"), "valid target rejected");
+    expect(!is_valid_target(""), "empty target accepted");
+    expect(!is_valid_target("/a b"), "space in target accepted");
+    expect(!is_valid_target("/a\r\nGET /b"), "CRLF in target accepted");
+}
+
+fn test_status_range_is_checked() {
+    expect(is_valid_status(200u16), "200 rejected");
+    expect(is_valid_status(599u16), "599 rejected");
+    expect(!is_valid_status(99u16), "99 accepted");
+    expect(!is_valid_status(600u16), "600 accepted");
+}
+
+fn test_reason_rejects_crlf_but_allows_empty() {
+    expect(is_valid_reason(""), "empty reason rejected");
+    expect(is_valid_reason("Not Found"), "ordinary reason rejected");
+    expect(!is_valid_reason("Bad\r\nInjected"), "CRLF reason accepted");
+}
+
+fn test_request_rejects_an_invalid_target() {
+    match request(HttpMethod::Get, "/a b", HttpVersion::Http11, new_header_map(), Vec::new()) {
+        Ok(_r) => {
+            panic("request() accepted an invalid target");
+        }
+        Err(_e) => {}
+    }
+}
+
+fn test_response_rejects_an_invalid_status() {
+    match response(HttpVersion::Http11, 42u16, "Nope", new_header_map(), Vec::new()) {
+        Ok(_r) => {
+            panic("response() accepted an out-of-range status");
+        }
+        Err(_e) => {}
+    }
+}
+
+// -- limits ------------------------------------------------------------------------------------
+
+fn test_header_count_limit_is_enforced() {
+    let mut map = new_header_map();
+    let mut i = 0;
+    while i < 12 {
+        let _a = append_validated(&mut map, "X-Pad", "1");
+        i = i + 1;
+    }
+    let mut limits = default_limits();
+    limits.max_header_count = 10u64;
+    match check_headers_within(&map, &limits) {
+        Ok(_ok) => {
+            panic("header count limit not enforced");
+        }
+        Err(_e) => {}
+    }
+}
+
+fn test_header_byte_limit_counts_framing() {
+    let mut map = new_header_map();
+    let _a = append_validated(&mut map, "AB", "CD");
+    // 2 + 2 + 4 framing bytes = 8
+    expect(header_bytes(&map) == 8u64, "header_bytes ignored the ': ' and CRLF");
+}
+
+fn test_body_limit_is_enforced() {
+    let mut body: Vec<UInt8> = Vec::new();
+    let mut i = 0;
+    while i < 10 {
+        body.push(65u8);
+        i = i + 1;
+    }
+    let mut limits = default_limits();
+    limits.max_body_bytes = 4u64;
+    match check_body_within(&body, &limits) {
+        Ok(_ok) => {
+            panic("body limit not enforced");
+        }
+        Err(_e) => {}
+    }
+}
+
+// -- rendering ----------------------------------------------------------------------------------
+
+fn test_method_and_version_text() {
+    expect(method_text(&HttpMethod::Get).as_str() == "GET", "GET text wrong");
+    expect(method_text(&HttpMethod::Delete).as_str() == "DELETE", "DELETE text wrong");
+    expect(version_text(&HttpVersion::Http11).as_str() == "HTTP/1.1", "1.1 text wrong");
+    expect(version_text(&HttpVersion::Http10).as_str() == "HTTP/1.0", "1.0 text wrong");
+}
+
+fn test_bodyless_methods_are_identified() {
+    expect(method_forbids_body(&HttpMethod::Get), "GET should forbid a body");
+    expect(method_forbids_body(&HttpMethod::Head), "HEAD should forbid a body");
+    expect(!method_forbids_body(&HttpMethod::Post), "POST should allow a body");
+}

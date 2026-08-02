@@ -1,0 +1,8 @@
+{
+  "name": "stark-http-serialize",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {
+    "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" }
+  }
+}

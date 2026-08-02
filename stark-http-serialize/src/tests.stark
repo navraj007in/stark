@@ -1,0 +1,284 @@
+// HC6 tests. The roadmap asks for exact byte snapshots, so most of these compare the rendered
+// wire form against a literal — that is the only assertion that catches a stray space, a missing
+// CR, or a header emitted in a different position.
+
+use super::default_host_authority;
+use super::host_header_value;
+use super::render_ascii;
+use super::requires_host;
+use super::serialize_request;
+use super::HostAuthority;
+use super::append_validated;
+use super::default_limits;
+use super::new_header_map;
+use super::request;
+use super::HttpMethod;
+use super::HttpVersion;
+
+fn expect(condition: Bool, message: &str) {
+    if !condition {
+        panic(message);
+    }
+}
+
+fn body_of(text: &str) -> Vec<UInt8> {
+    let bytes = text.bytes();
+    let n = bytes.len();
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i = 0u64;
+    while i < n {
+        out.push(bytes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Serialize or panic with the reason, so a failing case reports WHY rather than "expected Ok".
+fn wire(
+    method: HttpMethod,
+    target: &str,
+    headers: super::HeaderMap,
+    body: Vec<UInt8>,
+    authority: &HostAuthority,
+) -> String {
+    let built: super::HttpRequest;
+    match request(method, target, HttpVersion::Http11, headers, body) {
+        Ok(value) => {
+            built = value;
+        }
+        Err(_error) => {
+            panic("test request could not be constructed");
+        }
+    }
+    let rendered: String;
+    match serialize_request(&built, authority, &default_limits()) {
+        Ok(bytes) => {
+            rendered = render_ascii(&bytes);
+        }
+        Err(error) => {
+            let mut message = String::from("serialize failed: ");
+            message.push_str(super::error_text(&error).as_str());
+            panic(message.as_str());
+        }
+    }
+    rendered
+}
+
+// -- exact byte snapshots -----------------------------------------------------------------
+
+fn test_get_with_no_body() {
+    let actual = wire(
+        HttpMethod::Get,
+        "/health",
+        new_header_map(),
+        Vec::new(),
+        &default_host_authority("api.example.com"),
+    );
+    let expected = "GET /health HTTP/1.1\\r\\nHost: api.example.com\\r\\nConnection: close\\r\\n\\r\\n";
+    if actual.as_str() != expected {
+        panic(actual.as_str());
+    }
+}
+
+fn test_post_with_body_gets_content_length() {
+    let actual = wire(
+        HttpMethod::Post,
+        "/v1/items",
+        new_header_map(),
+        body_of("{\"name\":\"example\"}"),
+        &default_host_authority("api.example.com"),
+    );
+    let expected = "POST /v1/items HTTP/1.1\\r\\nHost: api.example.com\\r\\nContent-Length: 18\\r\\nConnection: close\\r\\n\\r\\n{\"name\":\"example\"}";
+    if actual.as_str() != expected {
+        panic(actual.as_str());
+    }
+}
+
+fn test_query_target_is_emitted_verbatim() {
+    let actual = wire(
+        HttpMethod::Get,
+        "/v1/items?active=true&page=2",
+        new_header_map(),
+        Vec::new(),
+        &default_host_authority("api.example.com"),
+    );
+    let expected = "GET /v1/items?active=true&page=2 HTTP/1.1\\r\\nHost: api.example.com\\r\\nConnection: close\\r\\n\\r\\n";
+    if actual.as_str() != expected {
+        panic(actual.as_str());
+    }
+}
+
+fn test_custom_headers_keep_caller_order() {
+    let mut headers = new_header_map();
+    let _a = append_validated(&mut headers, "Accept", "application/json");
+    let _b = append_validated(&mut headers, "X-Request-Id", "abc123");
+    let actual = wire(
+        HttpMethod::Get,
+        "/health",
+        headers,
+        Vec::new(),
+        &default_host_authority("api.example.com"),
+    );
+    let expected = "GET /health HTTP/1.1\\r\\nHost: api.example.com\\r\\nAccept: application/json\\r\\nX-Request-Id: abc123\\r\\nConnection: close\\r\\n\\r\\n";
+    if actual.as_str() != expected {
+        panic(actual.as_str());
+    }
+}
+
+fn test_duplicate_allowed_headers_are_both_emitted() {
+    let mut headers = new_header_map();
+    let _a = append_validated(&mut headers, "Accept", "text/plain");
+    let _b = append_validated(&mut headers, "Accept", "application/json");
+    let actual = wire(
+        HttpMethod::Get,
+        "/health",
+        headers,
+        Vec::new(),
+        &default_host_authority("api.example.com"),
+    );
+    let expected = "GET /health HTTP/1.1\\r\\nHost: api.example.com\\r\\nAccept: text/plain\\r\\nAccept: application/json\\r\\nConnection: close\\r\\n\\r\\n";
+    if actual.as_str() != expected {
+        panic(actual.as_str());
+    }
+}
+
+// -- Host construction --------------------------------------------------------------------
+
+fn test_default_port_is_omitted_from_host() {
+    let authority = HostAuthority {
+        host: String::from("api.example.com"),
+        port: 80u16,
+        default_port: 80u16,
+    };
+    match host_header_value(&authority) {
+        Ok(value) => {
+            expect(value.as_str() == "api.example.com", "default port was emitted");
+        }
+        Err(_e) => {
+            panic("valid authority rejected");
+        }
+    }
+}
+
+fn test_explicit_non_default_port_appears_in_host() {
+    let authority = HostAuthority {
+        host: String::from("api.example.com"),
+        port: 8443u16,
+        default_port: 443u16,
+    };
+    match host_header_value(&authority) {
+        Ok(value) => {
+            expect(value.as_str() == "api.example.com:8443", "non-default port missing");
+        }
+        Err(_e) => {
+            panic("valid authority rejected");
+        }
+    }
+}
+
+fn test_ipv6_host_keeps_its_brackets() {
+    let authority = HostAuthority {
+        host: String::from("[2001:db8::1]"),
+        port: 8080u16,
+        default_port: 80u16,
+    };
+    match host_header_value(&authority) {
+        Ok(value) => {
+            expect(value.as_str() == "[2001:db8::1]:8080", "bracketed IPv6 host mangled");
+        }
+        Err(_e) => {
+            panic("bracketed IPv6 host rejected");
+        }
+    }
+}
+
+fn test_host_rejects_injection_and_emptiness() {
+    let injected = HostAuthority {
+        host: String::from("evil\r\nX-Bad: 1"),
+        port: 80u16,
+        default_port: 80u16,
+    };
+    match host_header_value(&injected) {
+        Ok(_v) => {
+            panic("CRLF in Host accepted");
+        }
+        Err(_e) => {}
+    }
+    let empty = HostAuthority { host: String::new(), port: 80u16, default_port: 80u16 };
+    match host_header_value(&empty) {
+        Ok(_v) => {
+            panic("empty Host accepted");
+        }
+        Err(_e) => {}
+    }
+}
+
+// -- framing conflicts --------------------------------------------------------------------
+
+fn expect_conflict(name: &str, value: &str) {
+    let mut headers = new_header_map();
+    let _a = append_validated(&mut headers, name, value);
+    let built: super::HttpRequest;
+    match request(HttpMethod::Get, "/health", HttpVersion::Http11, headers, Vec::new()) {
+        Ok(value) => {
+            built = value;
+        }
+        Err(_error) => {
+            panic("test request could not be constructed");
+        }
+    }
+    match serialize_request(&built, &default_host_authority("api.example.com"), &default_limits()) {
+        Ok(_bytes) => {
+            panic("a caller-supplied framing header was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_conflicting_content_length_is_rejected() {
+    expect_conflict("Content-Length", "999");
+}
+
+fn test_caller_supplied_host_is_rejected() {
+    expect_conflict("Host", "other.example.com");
+}
+
+fn test_caller_supplied_transfer_encoding_is_rejected() {
+    expect_conflict("Transfer-Encoding", "chunked");
+}
+
+fn test_caller_supplied_connection_is_rejected() {
+    expect_conflict("Connection", "keep-alive");
+}
+
+// -- method/body agreement ------------------------------------------------------------------
+
+fn test_body_on_a_bodyless_method_is_rejected() {
+    let built: super::HttpRequest;
+    match request(
+        HttpMethod::Get,
+        "/health",
+        HttpVersion::Http11,
+        new_header_map(),
+        body_of("nope"),
+    ) {
+
+        Ok(value) => {
+            built = value;
+        }
+        Err(_error) => {
+            panic("test request could not be constructed");
+        }
+    }
+    match serialize_request(&built, &default_host_authority("api.example.com"), &default_limits()) {
+        Ok(_bytes) => {
+            panic("a body on GET was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_http11_requires_host() {
+    expect(requires_host(&HttpVersion::Http11), "HTTP/1.1 must require Host");
+    expect(!requires_host(&HttpVersion::Http10), "HTTP/1.0 must not require Host");
+}

@@ -1,0 +1,76 @@
+// Executed surface for `stark-http-serialize` (CD-348, pure-package bar). Serializes a real
+// request and compares the exact bytes, so the consumer proves the wire format rather than just
+// that the call links.
+
+use stark_http_core::append_validated;
+use stark_http_core::default_limits;
+use stark_http_core::new_header_map;
+use stark_http_core::request;
+use stark_http_core::HttpMethod;
+use stark_http_core::HttpVersion;
+use stark_http_serialize::default_host_authority;
+use stark_http_serialize::render_ascii;
+use stark_http_serialize::serialize_request;
+
+fn main() {
+    let mut headers = new_header_map();
+    let _a = append_validated(&mut headers, "Accept", "application/json");
+
+    let mut body: Vec<UInt8> = Vec::new();
+    let bytes = "{\"name\":\"example\"}".bytes();
+    let n = bytes.len();
+    let mut i = 0u64;
+    while i < n {
+        body.push(bytes[i]);
+        i = i + 1u64;
+    }
+
+    let built: stark_http_core::HttpRequest;
+    match request(HttpMethod::Post, "/v1/items", HttpVersion::Http11, headers, body) {
+        Ok(value) => {
+            built = value;
+        }
+        Err(_error) => {
+            panic("consumer request could not be constructed");
+        }
+    }
+
+    match serialize_request(&built, &default_host_authority("api.example.com"), &default_limits()) {
+        Ok(wire) => {
+            let rendered = render_ascii(&wire);
+            let expected = "POST /v1/items HTTP/1.1\\r\\nHost: api.example.com\\r\\nAccept: application/json\\r\\nContent-Length: 18\\r\\nConnection: close\\r\\n\\r\\n{\"name\":\"example\"}";
+            if rendered.as_str() != expected {
+                panic(rendered.as_str());
+            }
+        }
+        Err(_error) => {
+            panic("consumer request failed to serialize");
+        }
+    }
+
+    // The conflict rule, exercised rather than assumed.
+    let mut bad = new_header_map();
+    let _c = append_validated(&mut bad, "Content-Length", "999");
+    let conflicting: stark_http_core::HttpRequest;
+    match request(HttpMethod::Get, "/health", HttpVersion::Http11, bad, Vec::new()) {
+        Ok(value) => {
+            conflicting = value;
+        }
+        Err(_error) => {
+            panic("consumer conflict request could not be constructed");
+        }
+    }
+    match serialize_request(
+        &conflicting,
+        &default_host_authority("api.example.com"),
+        &default_limits(),
+    ) {
+
+        Ok(_wire) => {
+            panic("a caller-supplied Content-Length was accepted");
+        }
+        Err(_error) => {}
+    }
+
+    println("STARK_HTTP_SERIALIZE_CONSUMER_OK");
+}

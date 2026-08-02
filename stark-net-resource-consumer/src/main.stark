@@ -19,6 +19,8 @@ use stark_net::connect_no_timeout;
 use stark_net::ipv4;
 use stark_net::read;
 use stark_net::socket_address;
+use stark_net::default_resolve_limits;
+use stark_net::resolve;
 use stark_net::write_all;
 use stark_net::SocketAddress;
 
@@ -91,8 +93,29 @@ fn acquire_use_and_let_drop_release() {
     }
 }
 
+// HC3 — the `dns` capability, which is FUNCTION-SHAPED rather than resource-shaped: there is no
+// handle to acquire or release, so the bar (CD-348) is a SUCCESSFUL invocation of the capability
+// family, not a lifecycle.
+//
+// `localhost` is the one name every CI host resolves without a network. A failure here is a real
+// failure: it means the provider call did not reach the resolver, which is exactly the "lowered
+// and linked but never executed" gap this consumer exists to close.
+fn resolve_localhost() {
+    match resolve(&String::from("localhost"), 80u16, default_resolve_limits()) {
+        Ok(addresses) => {
+            if addresses.len() == 0u64 {
+                panic("resource consumer: localhost resolved to no addresses");
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: localhost must resolve; see CD-348");
+        }
+    }
+}
+
 fn main() {
     acquire_use_and_close_explicitly();
     acquire_use_and_let_drop_release();
+    resolve_localhost();
     println("STARK_NET_RESOURCE_OK");
 }

@@ -3,14 +3,20 @@
   "version": "0.1.0",
   "entry": "src/lib.stark",
   "capabilities": [
-    "tcp"
+    "tcp",
+    "dns"
   ],
   "dependencies": {
-    "stark_time": { "package": "stark-time", "path": "../stark-time", "version": "0.1.0" }
+    "stark_time": {
+      "package": "stark-time",
+      "path": "../stark-time",
+      "version": "0.1.0"
+    }
   },
   "provider_api": {
     "errors": {
-      "tcp": "RawNetworkError"
+      "tcp": "RawNetworkError",
+      "dns": "RawDnsError"
     },
     "resources": {
       "TcpStream": {
@@ -34,6 +40,22 @@
       "tcp_stream_close_raw": {
         "capability": "tcp",
         "symbol": "stark_tcp_stream_close"
+      },
+      "dns_resolve_len_raw": {
+        "capability": "dns",
+        "symbol": "stark_dns_resolve_len"
+      },
+      "dns_resolve_fill_raw": {
+        "capability": "dns",
+        "symbol": "stark_dns_resolve_fill"
+      },
+      "tcp_stream_set_read_timeout_raw": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_set_read_timeout"
+      },
+      "tcp_stream_set_write_timeout_raw": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_set_write_timeout"
       }
     }
   }

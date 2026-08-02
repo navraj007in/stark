@@ -11,6 +11,10 @@ pub struct Ipv6Address { pub segments: [UInt16; 8] }
 
 pub struct SocketAddress { pub address: IpAddress, pub port: UInt16 }
 
+pub struct ResolvedAddress { pub address: IpAddress, pub port: UInt16 }
+
+pub struct ResolveLimits { pub max_host_bytes: UInt64, pub max_results: UInt64 }
+
 pub enum NetworkError {
     InvalidAddress,
     AddressNotAvailable,
@@ -25,9 +29,26 @@ pub enum NetworkError {
     ProviderFailure(UInt32),
 }
 
+pub enum DnsError {
+    InvalidHost,
+    NotFound,
+    TemporaryFailure,
+    TooManyResults,
+    UnsupportedAddressFamily,
+    Unsupported,
+    Other(UInt32),
+}
+
 const ZERO: UInt8 = 48u8;
 const A_LOWER: UInt8 = 97u8;
 const PROVIDER_STATUS_OTHER: UInt32 = 11u32;
+const DNS_STATUS_OTHER: UInt32 = 107u32;
+const DNS_RECORD_WIDTH: UInt64 = 22u64;
+const DNS_MAX_HOST_BYTES: UInt64 = 253u64;
+const DNS_MAX_RESULTS: UInt64 = 32u64;
+const DNS_MAX_RECORD_BYTES: UInt64 = 704u64;
+const DNS_FAMILY_IPV4: UInt8 = 4u8;
+const DNS_FAMILY_IPV6: UInt8 = 6u8;
 
 pub fn ipv4(a: UInt8, b: UInt8, c: UInt8, d: UInt8) -> IpAddress {
     IpAddress::V4(Ipv4Address { a: a, b: b, c: c, d: d })
@@ -39,6 +60,10 @@ pub fn ipv6(segments: [UInt16; 8]) -> IpAddress {
 
 pub fn socket_address(address: IpAddress, port: UInt16) -> SocketAddress {
     SocketAddress { address: address, port: port }
+}
+
+pub fn default_resolve_limits() -> ResolveLimits {
+    ResolveLimits { max_host_bytes: DNS_MAX_HOST_BYTES, max_results: DNS_MAX_RESULTS }
 }
 
 impl TcpStream {
@@ -53,6 +78,28 @@ impl TcpStream {
     }
     pub fn write_all(&mut self, input: &[UInt8]) -> Result<(), NetworkError> {
         write_all(self, input)
+    }
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), NetworkError> {
+        // HC4: socket timeouts.
+        //
+        // `None` means "no timeout" — an unbounded, blocking socket. `Some(duration)` is a bound, and
+        // a ZERO duration is rejected rather than silently meaning "unbounded": zero is the one value
+        // where the caller's intent is genuinely ambiguous, and guessing it wrong turns a bound into
+        // its opposite. `Duration::as_nanos` returns `None` on overflow, which becomes
+        // `InvalidAddress`-free `Unsupported` rather than a silent truncation.
+
+        let nanos = timeout_nanos(timeout)?;
+        match tcp_stream_set_read_timeout_raw(self, nanos) {
+            Ok(_unit) => Ok(()),
+            Err(error) => Err(map_network_error(error)),
+        }
+    }
+    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), NetworkError> {
+        let nanos = timeout_nanos(timeout)?;
+        match tcp_stream_set_write_timeout_raw(self, nanos) {
+            Ok(_unit) => Ok(()),
+            Err(error) => Err(map_network_error(error)),
+        }
     }
     pub fn shutdown_write(&mut self) -> Result<(), NetworkError> {
         Err(NetworkError::Unsupported)
@@ -128,6 +175,91 @@ pub fn close(stream: TcpStream) -> Result<(), NetworkError> {
     Ok(())
 }
 
+pub fn resolve(host: &String, port: UInt16, limits: ResolveLimits) -> Result<Vec<ResolvedAddress>, DnsError> {
+    if host.len() == 0u64 || host.len() > limits.max_host_bytes || host.len() > DNS_MAX_HOST_BYTES {
+        return Err(DnsError::InvalidHost);
+    }
+    if limits.max_results == 0u64 || limits.max_results > DNS_MAX_RESULTS {
+        return Err(DnsError::TooManyResults);
+    }
+    if contains_nul(host.as_str()) {
+        return Err(DnsError::InvalidHost);
+    }
+
+    let required: UInt64;
+    let provider_count: UInt64;
+    match dns_resolve_len_raw(host.as_str().bytes()) {
+        Ok(value) => {
+            required = value.0;
+            provider_count = value.1;
+        }
+        Err(error) => {
+            return Err(map_dns_error(error));
+        }
+    }
+    if provider_count == 0u64 {
+        return Err(DnsError::NotFound);
+    }
+    if provider_count > limits.max_results || required > DNS_MAX_RECORD_BYTES {
+        return Err(DnsError::TooManyResults);
+    }
+    if required != provider_count * DNS_RECORD_WIDTH {
+        return Err(DnsError::Other(DNS_STATUS_OTHER));
+    }
+
+    let mut buffer: [UInt8; 704] = [0u8; 704];
+    let written: UInt64;
+    let filled_count: UInt64;
+    {
+        let out = &mut buffer[0u64..required];
+        match dns_resolve_fill_raw(host.as_str().bytes(), out) {
+            Ok(value) => {
+                written = value.0;
+                filled_count = value.1;
+            }
+            Err(error) => {
+                return Err(map_dns_error(error));
+            }
+        }
+    }
+    if written != required || filled_count != provider_count {
+        return Err(DnsError::Other(DNS_STATUS_OTHER));
+    }
+
+    decode_resolved_addresses(&buffer[0u64..written], filled_count, port)
+}
+
+/// HC4: the three timeouts a client configures, kept together so a caller sets a coherent policy
+/// rather than three unrelated values.
+pub struct SocketTimeouts { pub connect: Duration, pub read: Duration, pub write: Duration }
+
+/// HC4: `Option<Duration>` to the provider's nanosecond encoding.
+///
+/// `None` -> 0, which the provider reads as "no timeout". A zero `Some` is REFUSED: it is the only
+/// value whose meaning cannot be inferred — a caller writing `Some(Duration::from_nanos(0))` may
+/// mean "never wait" or may have computed zero by accident, and mapping it to "wait forever" is
+/// the worst of the available guesses. Overflow converting the duration fails cleanly as
+/// `Unsupported` rather than truncating.
+fn timeout_nanos(timeout: Option<Duration>) -> Result<UInt64, NetworkError> {
+    match timeout {
+        None => Ok(0u64),
+        Some(duration) => {
+            if duration.is_zero() {
+                return Err(NetworkError::InvalidAddress);
+            }
+            match duration.as_nanos() {
+                Some(nanos) => {
+                    if nanos == 0u64 {
+                        return Err(NetworkError::InvalidAddress);
+                    }
+                    Ok(nanos)
+                }
+                None => Err(NetworkError::Unsupported),
+            }
+        }
+    }
+}
+
 pub fn socket_address_text(address: &SocketAddress) -> String {
     let mut out = String::new();
     match address.address {
@@ -171,7 +303,105 @@ fn map_network_error(error: RawNetworkError) -> NetworkError {
         RawNetworkError::WouldBlock => NetworkError::Interrupted,
         RawNetworkError::Unsupported => NetworkError::Unsupported,
         RawNetworkError::Other => NetworkError::ProviderFailure(PROVIDER_STATUS_OTHER),
+        RawNetworkError::DnsInvalidHost => NetworkError::ProviderFailure(101u32),
+        RawNetworkError::DnsNotFound => NetworkError::ProviderFailure(102u32),
+        RawNetworkError::DnsTemporaryFailure => NetworkError::ProviderFailure(103u32),
+        RawNetworkError::DnsTooManyResults => NetworkError::ProviderFailure(104u32),
+        RawNetworkError::DnsUnsupportedAddressFamily => NetworkError::ProviderFailure(105u32),
+        RawNetworkError::DnsUnsupported => NetworkError::ProviderFailure(106u32),
+        RawNetworkError::DnsOther => NetworkError::ProviderFailure(107u32),
     }
+}
+
+fn map_dns_error(error: RawDnsError) -> DnsError {
+    match error {
+        RawDnsError::DnsInvalidHost => DnsError::InvalidHost,
+        RawDnsError::DnsNotFound => DnsError::NotFound,
+        RawDnsError::DnsTemporaryFailure => DnsError::TemporaryFailure,
+        RawDnsError::DnsTooManyResults => DnsError::TooManyResults,
+        RawDnsError::DnsUnsupportedAddressFamily => DnsError::UnsupportedAddressFamily,
+        RawDnsError::DnsUnsupported => DnsError::Unsupported,
+        RawDnsError::DnsOther => DnsError::Other(DNS_STATUS_OTHER),
+        RawDnsError::ConnectionRefused => DnsError::Other(1u32),
+        RawDnsError::TimedOut => DnsError::Other(2u32),
+        RawDnsError::NotFound => DnsError::Other(3u32),
+        RawDnsError::PermissionDenied => DnsError::Other(4u32),
+        RawDnsError::AddressInUse => DnsError::Other(5u32),
+        RawDnsError::InvalidInput => DnsError::Other(6u32),
+        RawDnsError::ConnectionReset => DnsError::Other(7u32),
+        RawDnsError::BrokenPipe => DnsError::Other(8u32),
+        RawDnsError::WouldBlock => DnsError::Other(9u32),
+        RawDnsError::Unsupported => DnsError::Other(10u32),
+        RawDnsError::Other => DnsError::Other(11u32),
+    }
+}
+
+fn decode_resolved_addresses(records: &[UInt8], count: UInt64, port: UInt16) -> Result<Vec<ResolvedAddress>, DnsError> {
+    let mut out: Vec<ResolvedAddress> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < count {
+        let base = i * DNS_RECORD_WIDTH;
+        if base + DNS_RECORD_WIDTH > records.len() {
+            return Err(DnsError::Other(DNS_STATUS_OTHER));
+        }
+        let family = records[base];
+        let length = records[base + 1u64];
+        if family == DNS_FAMILY_IPV4 && length == 4u8 {
+            out.push(
+                ResolvedAddress {
+                    address: IpAddress::V4(
+                        Ipv4Address {
+                            a: records[base + 2u64],
+                            b: records[base + 3u64],
+                            c: records[base + 4u64],
+                            d: records[base + 5u64],
+                        },
+                    ),
+                    port: port,
+                },
+            );
+        } else if family == DNS_FAMILY_IPV6 && length == 16u8 {
+            out.push(
+                ResolvedAddress {
+                    address: IpAddress::V6(
+                        Ipv6Address {
+                            segments: [
+                                u16_from_be(records[base + 2u64], records[base + 3u64]),
+                                u16_from_be(records[base + 4u64], records[base + 5u64]),
+                                u16_from_be(records[base + 6u64], records[base + 7u64]),
+                                u16_from_be(records[base + 8u64], records[base + 9u64]),
+                                u16_from_be(records[base + 10u64], records[base + 11u64]),
+                                u16_from_be(records[base + 12u64], records[base + 13u64]),
+                                u16_from_be(records[base + 14u64], records[base + 15u64]),
+                                u16_from_be(records[base + 16u64], records[base + 17u64]),
+                            ],
+                        },
+                    ),
+                    port: port,
+                },
+            );
+        } else {
+            return Err(DnsError::UnsupportedAddressFamily);
+        }
+        i = i + 1u64;
+    }
+    Ok(out)
+}
+
+fn contains_nul(input: &str) -> Bool {
+    let bytes = input.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 0u8 {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+fn u16_from_be(hi: UInt8, lo: UInt8) -> UInt16 {
+    hi as UInt16 << 8u16 | lo as UInt16
 }
 
 fn u8_decimal(value: UInt8) -> String {

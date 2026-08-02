@@ -81,6 +81,11 @@ fn expected_inventory() -> BTreeMap<&'static str, usize> {
             1,
         ),
         ("let Operand::Move(default_place) = &default_op else {", 1),
+        // DEV-146: the borrowed-handle provider argument reads its operand's local to decide
+        // whether a `&mut R` needs weakening to `&R`. It INSPECTS the operand it was handed; it
+        // constructs nothing, and the weakening it may then perform goes through `weaken_ref_to`,
+        // which is itself inventoried above.
+        ("Operand::Copy(place) | Operand::Move(place)", 1),
     ])
 }
 

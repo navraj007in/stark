@@ -1,0 +1,413 @@
+// HC5 — `stark-http-core`: protocol-independent HTTP types and their invariants.
+//
+// Pure. No sockets, no providers, no capabilities. Everything here can be constructed, validated
+// and compared without a network, which is the point: HC7's parser and HC6's serializer both need
+// a settled vocabulary before either can be written, and a type that can only be tested against a
+// live server is a type nobody tests.
+//
+// The invariants are enforced at CONSTRUCTION rather than at serialization. A `Header` that exists
+// is a header that is already valid, so the serializer never has to ask — and a caller cannot
+// smuggle a CRLF into a value and have it become two headers on the wire.
+
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+}
+
+pub enum HttpVersion {
+    Http10,
+    Http11,
+}
+
+pub struct Header { pub name: String, pub value: String }
+
+pub struct HeaderMap { pub entries: Vec<Header> }
+
+pub struct HttpRequest {
+    pub method: HttpMethod,
+    pub target: String,
+    pub version: HttpVersion,
+    pub headers: HeaderMap,
+    pub body: Vec<UInt8>,
+}
+
+pub struct HttpResponse {
+    pub version: HttpVersion,
+    pub status: UInt16,
+    pub reason: String,
+    pub headers: HeaderMap,
+    pub body: Vec<UInt8>,
+}
+
+/// Every bound a caller can hit, in one place. Defaults are deliberately generous enough for real
+/// APIs and small enough that a hostile peer cannot exhaust memory.
+pub struct HttpLimits {
+    pub max_status_line_bytes: UInt64,
+    pub max_header_line_bytes: UInt64,
+    pub max_header_count: UInt64,
+    pub max_header_bytes: UInt64,
+    pub max_body_bytes: UInt64,
+    pub max_chunk_line_bytes: UInt64,
+}
+
+pub enum HttpError {
+    InvalidHeaderName,
+    InvalidHeaderValue,
+    InvalidTarget,
+    InvalidStatus,
+    InvalidReason,
+    DuplicateSingletonHeader,
+    TooManyHeaders,
+    HeadersTooLarge,
+    BodyTooLarge,
+}
+
+pub fn default_limits() -> HttpLimits {
+    HttpLimits {
+        max_status_line_bytes: 8192u64,
+        max_header_line_bytes: 8192u64,
+        max_header_count: 100u64,
+        max_header_bytes: 65536u64,
+        max_body_bytes: 16777216u64,
+        max_chunk_line_bytes: 1024u64,
+    }
+}
+
+// -- byte classification -------------------------------------------------------------------
+//
+// RFC 9110 token characters. Written out rather than derived from ranges because the punctuation
+// set is not contiguous and a range expression would be a second, wrong description of it.
+
+fn is_digit(byte: UInt8) -> Bool {
+    byte >= 48u8 && byte <= 57u8
+}
+
+fn is_alpha(byte: UInt8) -> Bool {
+    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
+}
+
+fn is_token_byte(byte: UInt8) -> Bool {
+    if is_alpha(byte) || is_digit(byte) {
+        return true;
+    }
+    // ! # $ % & ' * + - . ^ _ ` | ~
+    byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 || byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 || byte == 94u8 || byte == 95u8 || byte == 96u8 || byte == 124u8 || byte == 126u8
+}
+
+/// A header value may hold visible ASCII, space and horizontal tab. It may NOT hold CR or LF —
+/// that is the injection this rejects — and it may not hold other control bytes.
+fn is_value_byte(byte: UInt8) -> Bool {
+    byte == 9u8 || byte >= 32u8 && byte <= 126u8
+}
+
+fn to_lower_byte(byte: UInt8) -> UInt8 {
+    if byte >= 65u8 && byte <= 90u8 {
+        return byte + 32u8;
+    }
+    byte
+}
+
+/// ASCII case-insensitive comparison, which is what header names use. Deliberately NOT a
+/// lowercase-and-compare on `String`: `to_uppercase` is Unicode-aware, and a Unicode fold on a
+/// header name would make two distinct names compare equal.
+pub fn ascii_equal_ignore_case(left: &str, right: &str) -> Bool {
+    let a = left.bytes();
+    let b = right.bytes();
+    let n = a.len();
+    if n != b.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < n {
+        if to_lower_byte(a[i]) != to_lower_byte(b[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn is_valid_header_name(name: &str) -> Bool {
+    let bytes = name.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < n {
+        if !is_token_byte(bytes[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn is_valid_header_value(value: &str) -> Bool {
+    let bytes = value.bytes();
+    let n = bytes.len();
+    let mut i = 0u64;
+    while i < n {
+        if !is_value_byte(bytes[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    // Leading or trailing whitespace is not part of the value; a serializer that emitted it would
+    // produce a value a parser then strips, so the two would disagree about equality.
+    if n > 0u64 {
+        let first = bytes[0u64];
+        let last = bytes[n - 1u64];
+        if first == 32u8 || first == 9u8 || last == 32u8 || last == 9u8 {
+            return false;
+        }
+    }
+    true
+}
+
+/// A request target must be a single non-empty run with no spaces and no CR/LF — otherwise it
+/// becomes a second request line on the wire.
+pub fn is_valid_target(target: &str) -> Bool {
+    let bytes = target.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < n {
+        let byte = bytes[i];
+        if byte <= 32u8 || byte == 127u8 {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+/// A reason phrase may be empty (HTTP/1.1 allows it) but may not carry CR/LF or other controls.
+pub fn is_valid_reason(reason: &str) -> Bool {
+    let bytes = reason.bytes();
+    let n = bytes.len();
+    let mut i = 0u64;
+    while i < n {
+        if !is_value_byte(bytes[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn is_valid_status(status: UInt16) -> Bool {
+    status >= 100u16 && status <= 599u16
+}
+
+// -- headers -------------------------------------------------------------------------------
+
+pub fn new_header_map() -> HeaderMap {
+    HeaderMap { entries: Vec::new() }
+}
+
+/// Construct a validated header. This is the ONLY way to make one, which is what lets every later
+/// stage assume validity instead of re-checking it.
+pub fn header(name: &str, value: &str) -> Result<Header, HttpError> {
+    if !is_valid_header_name(name) {
+        return Err(HttpError::InvalidHeaderName);
+    }
+    if !is_valid_header_value(value) {
+        return Err(HttpError::InvalidHeaderValue);
+    }
+    Ok(Header { name: String::from(name), value: String::from(value) })
+}
+
+/// Append, preserving duplicates and order. HTTP allows repeated headers and their order is
+/// semantically significant for some of them, so this never de-duplicates.
+pub fn append(map: &mut HeaderMap, entry: Header) {
+    map.entries.push(entry);
+}
+
+pub fn append_validated(map: &mut HeaderMap, name: &str, value: &str) -> Result<Bool, HttpError> {
+    let entry = header(name, value)?;
+    append(map, entry);
+    Ok(true)
+}
+
+pub fn header_count(map: &HeaderMap) -> UInt64 {
+    map.entries.len()
+}
+
+/// Case-insensitive lookup of the FIRST match.
+pub fn get_first(map: &HeaderMap, name: &str) -> Option<String> {
+    let n = map.entries.len();
+    let mut i = 0u64;
+    while i < n {
+        let entry = &map.entries[i];
+        if ascii_equal_ignore_case(entry.name.as_str(), name) {
+            return Some(entry.value.clone());
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+pub fn count_matching(map: &HeaderMap, name: &str) -> UInt64 {
+    let n = map.entries.len();
+    let mut found = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let entry = &map.entries[i];
+        if ascii_equal_ignore_case(entry.name.as_str(), name) {
+            found = found + 1u64;
+        }
+        i = i + 1u64;
+    }
+    found
+}
+
+pub fn contains(map: &HeaderMap, name: &str) -> Bool {
+    count_matching(map, name) > 0u64
+}
+
+/// A SINGLETON header is one where two different values is not a merge but a contradiction —
+/// `Content-Length: 5` and `Content-Length: 9` cannot both be true, and a peer that accepts both
+/// is a request-smuggling vector. Returning the value only when exactly one is present makes the
+/// ambiguity impossible to ignore.
+pub fn get_singleton(map: &HeaderMap, name: &str) -> Result<Option<String>, HttpError> {
+    let matches = count_matching(map, name);
+    if matches > 1u64 {
+        return Err(HttpError::DuplicateSingletonHeader);
+    }
+    Ok(get_first(map, name))
+}
+
+/// Total wire size of the header block, used against `max_header_bytes`. Counts the `: ` and the
+/// CRLF each line costs, because a limit that ignored framing would under-count by 4 bytes a line.
+pub fn header_bytes(map: &HeaderMap) -> UInt64 {
+    let n = map.entries.len();
+    let mut total = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let entry = &map.entries[i];
+        total = total + entry.name.len() + entry.value.len() + 4u64;
+        i = i + 1u64;
+    }
+    total
+}
+
+pub fn check_headers_within(map: &HeaderMap, limits: &HttpLimits) -> Result<Bool, HttpError> {
+    if header_count(map) > limits.max_header_count {
+        return Err(HttpError::TooManyHeaders);
+    }
+    if header_bytes(map) > limits.max_header_bytes {
+        return Err(HttpError::HeadersTooLarge);
+    }
+    Ok(true)
+}
+
+// -- requests and responses ------------------------------------------------------------------
+
+pub fn method_text(method: &HttpMethod) -> String {
+    match *method {
+        HttpMethod::Get => String::from("GET"),
+        HttpMethod::Post => String::from("POST"),
+        HttpMethod::Put => String::from("PUT"),
+        HttpMethod::Patch => String::from("PATCH"),
+        HttpMethod::Delete => String::from("DELETE"),
+        HttpMethod::Head => String::from("HEAD"),
+        HttpMethod::Options => String::from("OPTIONS"),
+    }
+}
+
+pub fn version_text(version: &HttpVersion) -> String {
+    match *version {
+        HttpVersion::Http10 => String::from("HTTP/1.0"),
+        HttpVersion::Http11 => String::from("HTTP/1.1"),
+    }
+}
+
+/// A method with no request body by definition. The serializer uses this to decide whether a
+/// `Content-Length: 0` is appropriate rather than guessing from an empty body.
+pub fn method_forbids_body(method: &HttpMethod) -> Bool {
+    match *method {
+        HttpMethod::Get => true,
+        HttpMethod::Head => true,
+        HttpMethod::Options => true,
+        HttpMethod::Delete => false,
+        HttpMethod::Post => false,
+        HttpMethod::Put => false,
+        HttpMethod::Patch => false,
+    }
+}
+
+pub fn request(
+    method: HttpMethod,
+    target: &str,
+    version: HttpVersion,
+    headers: HeaderMap,
+    body: Vec<UInt8>,
+) -> Result<HttpRequest, HttpError> {
+    if !is_valid_target(target) {
+        return Err(HttpError::InvalidTarget);
+    }
+    Ok(
+        HttpRequest {
+            method: method,
+            target: String::from(target),
+            version: version,
+            headers: headers,
+            body: body,
+        },
+    )
+}
+
+pub fn response(
+    version: HttpVersion,
+    status: UInt16,
+    reason: &str,
+    headers: HeaderMap,
+    body: Vec<UInt8>,
+) -> Result<HttpResponse, HttpError> {
+    if !is_valid_status(status) {
+        return Err(HttpError::InvalidStatus);
+    }
+    if !is_valid_reason(reason) {
+        return Err(HttpError::InvalidReason);
+    }
+    Ok(
+        HttpResponse {
+            version: version,
+            status: status,
+            reason: String::from(reason),
+            headers: headers,
+            body: body,
+        },
+    )
+}
+
+pub fn check_body_within(body: &Vec<UInt8>, limits: &HttpLimits) -> Result<Bool, HttpError> {
+    if body.len() > limits.max_body_bytes {
+        return Err(HttpError::BodyTooLarge);
+    }
+    Ok(true)
+}
+
+pub fn error_text(error: &HttpError) -> String {
+    match *error {
+        HttpError::InvalidHeaderName => String::from("invalid header name"),
+        HttpError::InvalidHeaderValue => String::from("invalid header value"),
+        HttpError::InvalidTarget => String::from("invalid request target"),
+        HttpError::InvalidStatus => String::from("status code out of range"),
+        HttpError::InvalidReason => String::from("invalid reason phrase"),
+        HttpError::DuplicateSingletonHeader => String::from("duplicate singleton header"),
+        HttpError::TooManyHeaders => String::from("too many headers"),
+        HttpError::HeadersTooLarge => String::from("header block too large"),
+        HttpError::BodyTooLarge => String::from("body too large"),
+    }
+}
+
+mod tests;

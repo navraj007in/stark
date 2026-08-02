@@ -3892,3 +3892,48 @@ C2.8–C2.11 disposition.
   and runs `&mut` through the full provider path; end-to-end native client against a loopback
   listener — `wrote / 5 / closed`, server saw `b'PING\n'`.
 - **Owning gate:** CD-346.
+
+## DEV-147 — `&mut Vec<T>` parameter mutated in a loop is accepted but not buildable [OPEN, found CD-350, 2026-08-02]
+
+- **Classification:** accepted-but-unbuildable. The checker accepts, the HIR oracle EXECUTES
+  CORRECTLY, and MIR verification refuses. Same class as DEV-132/DEV-133/DEV-146, a fourth
+  mechanism.
+- **Minimal reproducer:**
+
+  ```stark
+  fn push_all(out: &mut Vec<UInt8>, text: &str) {
+      let bytes = text.bytes();
+      let n = bytes.len();
+      let mut i = 0u64;
+      while i < n {
+          out.push(bytes[i]);
+          i = i + 1u64;
+      }
+  }
+  fn main() {
+      let mut v: Vec<UInt8> = Vec::new();
+      push_all(&mut v, "ab");
+      println(v.len());
+  }
+  ```
+
+  ```text
+  stark check  -> OK
+  stark run    -> 2          (correct)
+  stark build  -> MIR-0007 push_all@[] bb6: move from possibly-moved place _1[]
+  ```
+
+- **What it blocks:** "append into a caller's buffer in a loop", which is the fundamental shape of
+  every serializer, encoder and formatter. HC6 hit it immediately — `stark-http-serialize`'s
+  `push_str_bytes`/`push_header_line` are exactly this, and the package tests PASSED on the oracle
+  while the native consumer failed to build.
+- **Why the oracle disagrees:** the receiver auto-borrow for `push` is taken from a place reached
+  through a `&mut` parameter; MIR's move analysis treats the parameter place as possibly-moved
+  across the loop back-edge, while the oracle re-reads the referent each iteration. The two engines
+  disagree about whether a borrow through a parameter survives an iteration.
+- **Workaround, in force in `stark-http-serialize`:** the helpers take an OWNED `Vec<UInt8>` and
+  return it, so the accumulator is a local rather than a borrowed parameter. It costs a move per
+  call and reads worse than the `&mut` form.
+- **Proposed disposition:** unassigned. Likely adjacent to DEV-137's region work — a receiver
+  auto-borrow through a parameter across a back-edge — but that is a hypothesis, not a finding.
+- **Owning gate:** unassigned.
