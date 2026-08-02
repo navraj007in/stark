@@ -7,6 +7,7 @@ use super::percent_decode;
 use super::percent_encode_component;
 use super::QueryParameter;
 use super::RequestTarget;
+use super::Url;
 use super::UrlErrorKind;
 use super::UrlLimits;
 
@@ -421,3 +422,29 @@ fn test_absolute_url_rejections() {
 // even inside its own package. It is recorded as `surface_blocked` in the qualification gate, which
 // refuses that record the moment the item becomes callable. Write the test then, not before: a test
 // that cannot compile is worse than an absent one.
+
+/// DEV-148 is fixed, so the wrapper the package advertises can finally be tested. It must agree
+/// with the free function it delegates to.
+fn test_url_parse_associated_function() {
+    let input = String::from("http://example.com:8080/a/b?x=1");
+    match Url::parse(&input) {
+        Ok(url) => {
+            if url.effective_port() != 8080u16 {
+                panic("Url::parse lost the explicit port");
+            }
+            match parse_url(input.as_str(), &default_limits()) {
+                Ok(direct) => {
+                    if direct.effective_port() != url.effective_port() {
+                        panic("Url::parse disagrees with parse_url");
+                    }
+                }
+                Err(_e) => {
+                    panic("parse_url refused what Url::parse accepted");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("Url::parse refused a well-formed URL");
+        }
+    }
+}

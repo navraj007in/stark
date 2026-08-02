@@ -270,7 +270,9 @@ fn test_format_then_parse_round_trips() {
 fn test_media_type_method_surface() {
     let input = String::from("text/html; charset=utf-8");
     let parsed: MediaType;
-    match parse_media_type(&input, default_limits()) {
+    // DEV-148 is fixed, so the associated constructor is reachable and must agree with the free
+    // function it wraps.
+    match MediaType::parse(&input, default_limits()) {
         Ok(value) => {
             parsed = value;
         }

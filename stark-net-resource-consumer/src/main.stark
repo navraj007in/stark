@@ -24,6 +24,7 @@ use stark_time::duration_seconds;
 use stark_net::resolve;
 use stark_net::write_all;
 use stark_net::SocketAddress;
+use stark_net::TcpStream;
 
 fn peer() -> SocketAddress {
     socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 39187u16)
@@ -124,6 +125,27 @@ fn resolve_localhost() {
 //
 // Each method here is required to behave like the free function it delegates to.
 fn exercise_the_method_surface() {
+    // `TcpStream::connect` is an ASSOCIATED function, and until DEV-148 was fixed it could not be
+    // called from another package at all — which is why it stayed uncalled while every receiver
+    // method around it was reachable.
+    //
+    // CALLING IT IMMEDIATELY EXPOSED THAT IT DOES NOT WORK. `connect(address, timeout)` refuses
+    // EVERY non-zero timeout with `Unsupported`, so the natural connect API — the one that takes a
+    // deadline — has never connected to anything. It succeeds only for a ZERO duration, which
+    // reads as "no timeout" and is the opposite of what passing a `Duration` means. There is no
+    // connect-timeout in the provider ABI to implement it against; the declaration ran ahead of
+    // the capability.
+    //
+    // Pinned rather than hidden: when a connect timeout lands, this assertion fails and forces
+    // this consumer to be updated, exactly as with `shutdown_write` below.
+    match TcpStream::connect(peer(), duration_seconds(5u64)) {
+        Ok(_stream) => {
+            panic(
+                "resource consumer: connect-with-timeout works now — implement it properly and update this",
+            );
+        }
+        Err(_error) => {}
+    }
     match connect_no_timeout(peer()) {
         Ok(stream) => {
             let mut owned = stream;

@@ -208,6 +208,10 @@ pub struct TypeChecker<'a> {
 
     // Scopes context
     current_self_ty: Option<Ty>,
+    /// DEV-148: the item whose FILE the signature currently being converted belongs to, or `None`
+    /// when the signature is local. Every name sliced out of a foreign signature — type-parameter
+    /// names above all — must be read from that file, not from the file under check.
+    foreign_sig_item: Option<ItemId>,
     current_assoc_types: HashMap<String, Ty>,
     /// WP-C6.2c: resolved associated-type bindings across the whole program, keyed by
     /// `(implementing nominal, associated-type name)`. Lets a concrete projection
@@ -681,6 +685,7 @@ pub fn analyze_with_options(
         generic_insts: HashMap::new(),
         layout_queries: HashMap::new(),
         current_self_ty: None,
+        foreign_sig_item: None,
         current_assoc_types: HashMap::new(),
         assoc_projections: HashMap::new(),
         projection_obligations: Vec::new(),
@@ -2202,7 +2207,15 @@ impl<'a> TypeChecker<'a> {
                         .cloned()
                         .unwrap_or_else(|| Ty::Param(format!("Self::{}", self.text(*name)))),
                     Res::TypeParam => {
-                        let name_str = self.text(node.span);
+                        // DEV-148: a type parameter's NAME is a span into the file that declared
+                        // the signature being converted, which is not the file being checked when
+                        // the call crosses a module boundary. `foreign_sig_item` carries that file
+                        // while a foreign signature is in flight; unset, this is the ordinary
+                        // same-file path and behaves exactly as before.
+                        let name_str = match self.foreign_sig_item {
+                            Some(item) => self.item_text(item, node.span),
+                            None => self.text(node.span),
+                        };
                         match self.generic_kinds.get(name_str).copied() {
                             Some(GenericKind::Dim) => {
                                 self.tensor_error(
@@ -7083,8 +7096,21 @@ impl<'a> TypeChecker<'a> {
             let impl_item_id = ItemId(impl_idx as u32);
             let candidate = items.iter().find_map(|item| match item {
                 // WP-C6.2b-F1: capture visibility + defining impl for the private-member check.
+                //
+                // DEV-148: `item_text`, NOT `text`. A member's name is a span into the file that
+                // DECLARED the impl, and `self.text` slices whichever file is currently being
+                // checked. Across a module boundary those differ, so the comparison sliced the
+                // wrong file and matched garbage — `make` came back as `"rap:"`, and a name that
+                // ran past the shorter file's end came back as `"?"`. No candidate ever matched,
+                // and the caller got "associated function not found" for a function that plainly
+                // exists.
+                //
+                // METHODS were unaffected because method lookup selects on the receiver's TYPE
+                // rather than by slicing a name, which is exactly why the two diverged and why
+                // this looked like a visibility or coherence rule rather than a text bug.
                 hir::ImplItem::Fn { vis, def }
-                    if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
+                    if def.sig.receiver.is_none()
+                        && self.item_text(impl_item_id, def.sig.name) == name =>
                 {
                     Some((
                         def.sig.clone(),
@@ -7136,6 +7162,11 @@ impl<'a> TypeChecker<'a> {
             call_span,
         );
 
+        // DEV-148: everything from here until the context is restored reads spans belonging to
+        // the IMPL's file, not the caller's. The names must be sliced consistently on both sides —
+        // the map's keys and the `Ty::Param`s they substitute into — or substitution silently
+        // fails to fire and the caller sees a stray parameter type like `'r'`.
+        let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
         let self_ty = self.convert_hir_type(self_ty_id);
         let previous_self = self.current_self_ty.replace(self_ty);
         let mut params: Vec<Ty> = sig
@@ -7153,7 +7184,7 @@ impl<'a> TypeChecker<'a> {
         let mut map = HashMap::new();
         for param in &impl_generics {
             let infer = self.new_type_var();
-            map.insert(self.text(param.name).to_string(), infer);
+            map.insert(self.item_text(impl_item_id, param.name).to_string(), infer);
         }
         if let Some(args) = turbofish {
             self.validate_generic_arity(sig.generics.len(), args.args.len(), call_span);
@@ -7162,14 +7193,15 @@ impl<'a> TypeChecker<'a> {
                     hir::GenericArg::Type(ty) => self.convert_hir_type(*ty),
                     _ => Ty::Error,
                 };
-                map.insert(self.text(param.name).to_string(), ty);
+                map.insert(self.item_text(impl_item_id, param.name).to_string(), ty);
             }
         } else {
             for param in &sig.generics {
                 let infer = self.new_type_var();
-                map.insert(self.text(param.name).to_string(), infer);
+                map.insert(self.item_text(impl_item_id, param.name).to_string(), infer);
             }
         }
+        self.foreign_sig_item = previous_sig_item;
         params = params
             .iter()
             .map(|ty| self.instantiate_ty(ty, &map))

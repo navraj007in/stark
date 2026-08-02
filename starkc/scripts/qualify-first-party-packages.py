@@ -98,7 +98,6 @@ CASES = [
         package="stark-url",
         consumer="stark-url-consumer",
         expected_stdout="q=stark%20url&tag=compiler&tag=language&emoji=%F0%9F%98%80\n",
-        surface_blocked=(("Url::parse", "DEV-148"),),
     ),
     PackageCase(
         package="stark-base64",
@@ -139,7 +138,6 @@ CASES = [
         package="stark-mime",
         consumer="stark-mime-consumer",
         expected_stdout="MIME_CONSUMER_OK\n",
-        surface_blocked=(("MediaType::parse", "DEV-148"),),
     ),
     PackageCase(
         package="stark-query",
@@ -171,9 +169,6 @@ CASES = [
         resource_consumer="stark-net-resource-consumer",
         resource_expected_stdout="STARK_NET_RESOURCE_OK\n",
         needs_echo_peer=True,
-        # Doubly unreachable: DEV-148 makes it uncallable from the consumer, and the package's own
-        # tests run on the interpreter, which has no provider layer to connect with.
-        surface_blocked=(("TcpStream::connect", "DEV-148"),),
     ),
     PackageCase(
         package="stark-http-parser",
