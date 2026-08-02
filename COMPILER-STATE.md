@@ -1,5 +1,75 @@
 # STARK Compiler STATE
 
+## CD-337 — DEV-136 CLOSED: only branches that reach a join contribute to it (2026-08-02)
+
+**WP-DEV-134-139 Part D, and the second of four milestone points. `if flag { return out; }
+out.push('a');` compiles.**
+
+**Layer: `borrowck.rs`.** The `If` arm unioned the then-branch's move set into the post-state
+unconditionally; the `Match` arm extended the merged set from every arm. Neither asked whether the
+branch reaches the join. A branch that `return`s is not a predecessor of the statement after the
+`if`, so its moves were being attributed to a path they never happened on.
+
+**Divergence is read from existing authorities, not re-derived from syntax.** A
+`Return`/`Break`/`Continue` statement anywhere in the sequence, plus the type checker's own
+`Ty::Never` for `panic(..)` and any call returning `!`. Composite forms recurse: an `if` diverges
+only when both sides do, a `match` only when every arm does.
+
+**THE DIRECTION OF CONSERVATISM IS THE ENTIRE SAFETY ARGUMENT.** The predicate answers "does this
+definitely NOT reach the join?":
+
+```
+wrong `true`   -> drops a real move from the join -> accepts use-after-move -> UNSOUND
+wrong `false`  -> keeps the old false positive     -> merely annoying
+```
+
+So it reports `true` only on evidence, and anything unrecognised falls through to `false`. `loop`
+without a reachable `break` is deliberately NOT treated as diverging — judging it needs
+reachability analysis the checker does not have, and guessing would land on the unsound side.
+
+**Two merge subtleties, both found while writing the repair and both pinned:**
+
+| Case | Naive answer | Correct answer |
+| --- | --- | --- |
+| `if` with no `else`, branch terminates | branch's move set | the state from BEFORE the `if` |
+| `match` where ALL arms terminate | empty merged set | the pre-match state |
+
+The second is the dangerous one: an empty merge would silently resurrect a value moved BEFORE the
+`match`, turning a false positive into a false negative. `a_move_before_an_all_diverging_match_
+is_still_rejected` exists precisely for it.
+
+**Drop obligations, not just diagnostics.** `a_droppable_value_survives_a_terminating_branch`
+executes both paths and asserts each `Guard` is destroyed exactly once — the false path drops at
+end of scope, the true path moves into a callee that drops it there.
+
+**What class of program is now prevented from failing:** any program whose move happens only on a
+path that leaves the function or the loop. The rule is on the control-flow edge, not on the
+syntax, so it covers `return`, `break`, `continue`, `panic`, nested `if`, and `match` arms
+uniformly — and it does NOT cover a branch that can fall through, which is what keeps
+maybe-moves rejected.
+
+Local:
+- cargo test --test dev136_terminating_path_moves -- 14 cases (9 accept, 5 reject), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential -- 292 green
+- cargo test --test dev134_try_error_type --test dev137_while_condition_borrows -- 32 green,
+  the two previously closed defects in this programme
+- cargo test --test c61f_reference_boundary --test native_c6_1_ownership --test
+  operand_move_inventory --test copy_canon_matrix --test exec_snapshots --test snapshots -- 43 green
+- cargo clippy --release --lib --tests --all-features -- -D warnings -- clean
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- qualify-first-party-packages.py over all ten packages -- exit 0
+- external task-shaped suite -- 34/34
+- FULL WORKSPACE (milestone 2 of 4) -- see the commit for the recorded result
+
+CI:
+- aggregate workspace gate PENDING
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev136_terminating_path_moves.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+NEXT: DEV-135b — full field-sensitive move paths, which the inventory established is the
+release-gating repair rather than the DEV-135a poisoning gate.
+
 ## CD-336 — DEV-137 CLOSED: condition-only borrows end at the branch boundary (2026-08-02)
 
 **WP-DEV-134-139 Part C. `while i < v.len() { v[i] = 5; }` compiles. So does the `if` form, which
@@ -160,11 +230,11 @@ conflating them misreports progress in both directions: the defect count underst
 the task count understates release readiness (only the defects gate the release).
 
 ```text
-Defects (WP-DEV-134-139 Parts A-F)     DEV-134 CLOSED, DEV-137 CLOSED
-                                       DEV-136, DEV-135b, DEV-139, DEV-138 remain
+Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136 CLOSED
+                                       DEV-135b, DEV-139, DEV-138 remain
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       2 of 16 complete
+Programme tasks (WP-DEV-134-139)       3 of 16 complete
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
@@ -174,12 +244,28 @@ Programme tasks (WP-DEV-134-139)       2 of 16 complete
 **LOCAL EVIDENCE POLICY, owner ruling 2026-08-02, in force from DEV-137 onward.** Per-commit local
 evidence is TARGETED — fmt, clippy over affected targets, the dedicated DEV suite, closest
 subsystem suites, MIR differential/verifier when lowering or ownership changes, affected package
-qualification, the external sample suite, and a clean `git status --short`. The full local
-workspace suite runs at MILESTONES only: after DEV-134 (this commit, the programme baseline),
-after DEV-136, after DEV-135a, and at programme completion. CI's aggregate required check remains
-the authority for every pushed commit; a targeted local run supports a commit's evidence
-statement and does not replace it. Rationale: a full workspace run per defect is disproportionate
-and does not materially improve detection over targeted suites plus protected aggregate CI.
+qualification, the external sample suite, and a clean `git status --short`.
+
+The original ruling additionally required full local workspace runs at four milestones.
+**AMENDED the same day after measurement: local workspace runs are DROPPED entirely after
+CD-337.** Each takes ~17 minutes, two more were scheduled, and they duplicate a gate CI already
+enforces on every pushed commit. Milestones 1 (CD-335, DEV-134) and 2 (CD-337, DEV-136) were run
+and their results are recorded; no further local workspace run is required, including at
+programme completion.
+
+**CI's aggregate required check is therefore the SOLE workspace authority**, which makes the merge
+gate strictly more important rather than less. A targeted local run supports a commit's evidence
+statement and never replaced CI, but from CD-338 onward nothing local covers the workspace at all.
+Any commit whose CI run is red is unverified regardless of how much local evidence it carries.
+
+**A procedural rule learned the hard way (CD-337): while a workspace run is in flight, nothing
+else may touch cargo.** The first attempt at milestone 2 was invalidated because a
+`cargo build --bin starkc` for the NEXT defect landed mid-run, and ~49 test files invoke the
+compiler through `CARGO_BIN_EXE` — so an unknown number of suites ran against a binary carrying an
+unrelated change. Two other measurement errors in the same session point the same way: a
+`head -40` that truncated a run and made `head`'s exit code look like cargo's, and a
+`grep '^test result'` that counted tests NAMED `result_*` as suite summaries. Capture the tool's
+own exit code, and validate counts against a known total rather than trusting a summary line.
 
 ## CD-334 — six defects filed from an external sample suite; three are soundness (2026-08-02)
 
@@ -7369,8 +7455,9 @@ not long-standing** — three of them are soundness gaps and none has an owning 
   `From` conversion at `?` is a separate, still-open language-design question with no owner.
 - DEV-135 — moves of individual struct fields are not tracked; the second move surfaces as an
   internal compiler error. **Soundness**, bounded by the oracle's own check. Opened CD-334.
-- DEV-136 — a move on a `return`ing path is treated as unconditional (E0100 false positive).
-  Opened CD-334.
+- DEV-136 — CLOSED CD-337 (WP-DEV-134-139 Part D). Move state now merges only from predecessors
+  that reach the join; `loop` without a reachable `break` is deliberately still treated as
+  reaching, because proving otherwise needs reachability analysis the checker lacks.
 - DEV-137 — CLOSED CD-336 (WP-DEV-134-139 Part C). Condition-only borrows now end at the branch
   boundary, for `if` as well as `while`; `match` scrutinees and `for` iterators deliberately keep
   theirs.

@@ -3411,7 +3411,7 @@ C2.8–C2.11 disposition.
 - **Owning gate:** WP-DEV-134-139 Part B; sequenced after DEV-134, DEV-137, and DEV-136 because
   its branch-sensitive obligations depend on DEV-136's join semantics.
 
-## DEV-136 — a move on a returning path is treated as unconditional [OPEN, found CD-334, 2026-08-02]
+## DEV-136 — a move on a returning path is treated as unconditional [CLOSED, WP-DEV-134-139 Part D, CD-337, 2026-08-02]
 
 - **Normative expectation:** definite-assignment and move analysis are path-sensitive. A move that
   occurs only on a path that `return`s cannot affect the fall-through path, which that move never
@@ -3440,10 +3440,35 @@ C2.8–C2.11 disposition.
   admit invalid ones.
 - **Workaround:** return a freshly constructed value from the early-return path rather than the
   accumulator.
-- **Proposed disposition:** make the move set join over predecessors rather than accumulate, so a
-  `return`-terminated block does not contribute to its successor. Worth pairing with DEV-135 —
-  both are flow-analysis precision, in opposite directions.
-- **Owning gate:** unassigned.
+- **Layer:** `borrowck.rs`. The `If` arm unioned the then-branch's move set into the post-state
+  unconditionally, and the `Match` arm extended the merged set from EVERY arm. Neither asked
+  whether the branch reaches the join.
+- **Resolution (CD-337):** `block_diverges`/`expr_diverges` decide whether a branch reaches the
+  join, and only reaching branches contribute. Divergence is taken from two sources, both already
+  authoritative: a `Return`/`Break`/`Continue` statement anywhere in the block's statement
+  sequence, and the type checker's own `Ty::Never` for `panic(..)` and any call returning `!`.
+  Reusing `Ty::Never` keeps one authority for "does this diverge" rather than re-deriving it from
+  syntax. Composite forms recurse: an `if` diverges only when both sides do, a `match` only when
+  every arm does.
+- **THE DIRECTION OF CONSERVATISM IS THE SAFETY ARGUMENT.** The predicate answers "does this
+  definitely NOT reach the join?". A wrong `true` would drop a real move from the join and accept
+  a use-after-move — unsound. A wrong `false` merely preserves the old false positive. So every
+  arm reports `true` only on evidence and anything unrecognised falls through to `false`;
+  `loop` without a reachable `break` is deliberately NOT treated as diverging, because judging it
+  needs reachability analysis the checker does not have.
+- **Two merge subtleties that are easy to get wrong, both pinned by tests:**
+  1. `if` with no `else` and a terminating branch restores the state from BEFORE the `if`, not
+     the branch's state — reaching that point proves the branch did not run.
+  2. a `match` whose arms ALL diverge would leave the merged set empty, which would silently
+     resurrect a value moved BEFORE the `match`. The empty case falls back to the pre-match
+     state (`a_move_before_an_all_diverging_match_is_still_rejected`).
+- **Negative controls:** a move on a reachable branch, on one of two reachable branches, in a
+  reachable `match` arm, and a move placed BEFORE a terminating branch — the last pins that the
+  repair excludes a terminating branch's OWN moves, not moves that merely precede one.
+- **Drop obligations, not just diagnostics:** `a_droppable_value_survives_a_terminating_branch`
+  executes both paths and asserts each `Guard` is destroyed exactly once.
+- **Evidence:** `starkc/tests/dev136_terminating_path_moves.rs`, 14 cases (9 accept, 5 reject).
+- **Owning gate:** WP-DEV-134-139 Part D (CD-337).
 
 ## DEV-137 — a receiver auto-borrow in a `while` condition is live across the loop body [CLOSED, WP-DEV-134-139 Part C, CD-336, 2026-08-02]
 

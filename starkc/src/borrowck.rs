@@ -431,6 +431,74 @@ impl<'a> BorrowChecker<'a> {
     /// `for x in &v` yields references into the iterated value, so in both cases the borrow must
     /// span the body. Truncating them would hand out references to storage the checker had
     /// stopped tracking.
+    /// DEV-136: whether `block` definitely does NOT reach the statement after it.
+    ///
+    /// Ownership state is merged at a control-flow join from its predecessors. A predecessor that
+    /// terminates — `return`, `break`, `continue`, `panic`, a trap — is not a predecessor of that
+    /// join at all, so the moves it performed must not appear in the merged state. Before this,
+    /// every branch contributed unconditionally, so
+    ///
+    /// ```stark
+    /// if flag { return out; }
+    /// out.push('a');
+    /// ```
+    ///
+    /// reported "use of moved value" on a path where the move provably did not happen.
+    ///
+    /// **This predicate is deliberately conservative in one direction only.** Answering `true`
+    /// wrongly would DROP a real move from the join and accept a use-after-move — unsound.
+    /// Answering `false` wrongly only preserves the pre-existing false positive. So every arm
+    /// below reports `true` solely on evidence of divergence, and anything unrecognised
+    /// (including `loop` without a reachable `break`, which would need reachability analysis to
+    /// judge) falls through to `false`.
+    fn block_diverges(&self, block_id: BlockId) -> bool {
+        let block = self.hir.block(block_id);
+        // Statements execute in order, so a `return`/`break`/`continue` anywhere in the sequence
+        // makes everything after it — and the join — unreachable.
+        for &stmt_id in &block.stmts {
+            match &self.hir.stmt(stmt_id).kind {
+                hir::StmtKind::Return(_) | hir::StmtKind::Break(_) | hir::StmtKind::Continue => {
+                    return true;
+                }
+                hir::StmtKind::Expr { expr, .. } => {
+                    if self.expr_diverges(*expr) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        block.tail.is_some_and(|tail| self.expr_diverges(tail))
+    }
+
+    /// DEV-136: whether evaluating `expr` definitely does not fall through. See
+    /// [`Self::block_diverges`] for why this errs toward `false`.
+    fn expr_diverges(&self, expr_id: ExprId) -> bool {
+        // The type checker already proves divergence for anything of type `!` — `panic(..)`, and
+        // any call to a function returning `!`. Reusing that answer keeps one authority for the
+        // question rather than re-deriving it from syntax.
+        if matches!(self.expr_types.get(&expr_id), Some(Ty::Never)) {
+            return true;
+        }
+        match &self.hir.expr(expr_id).kind {
+            hir::ExprKind::Block(block) => self.block_diverges(*block),
+            // An `if` escapes only when BOTH sides do; without an `else` the fall-through path
+            // always exists.
+            hir::ExprKind::If {
+                then_block, else_, ..
+            } => {
+                else_.is_some_and(|else_expr| self.expr_diverges(else_expr))
+                    && self.block_diverges(*then_block)
+            }
+            // A `match` escapes only when every arm does. Exhaustiveness is checked elsewhere, so
+            // an empty arm list cannot reach a join either way.
+            hir::ExprKind::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.expr_diverges(arm.body))
+            }
+            _ => false,
+        }
+    }
+
     fn check_condition(&mut self, cond: ExprId) {
         let borrows_before = self.active_borrows.len();
         self.check_expr(cond);
@@ -653,19 +721,38 @@ impl<'a> BorrowChecker<'a> {
                 let moved_before = self.moved_places.clone();
                 self.check_block(*then_block);
                 let moved_then = self.moved_places.clone();
+                // DEV-136: a branch that terminates is not a predecessor of the join, so the
+                // moves it performed must not be merged into the state after the `if`.
+                let then_diverges = self.block_diverges(*then_block);
 
                 if let Some(else_expr) = else_ {
-                    self.moved_places = moved_before;
+                    self.moved_places = moved_before.clone();
                     self.check_expr(*else_expr);
                     let moved_else = self.moved_places.clone();
+                    let else_diverges = self.expr_diverges(*else_expr);
 
-                    // Merged moves: union of both branches
-                    self.moved_places = moved_then.union(&moved_else).cloned().collect();
+                    self.moved_places = match (then_diverges, else_diverges) {
+                        // Neither reaches the join, so nothing after the `if` is reachable and
+                        // the merged value cannot be observed. The union is kept rather than
+                        // something emptier so that an unreachable tail still sees a
+                        // conservative state if reachability is ever judged differently.
+                        (true, true) => moved_then.union(&moved_else).cloned().collect(),
+                        (true, false) => moved_else,
+                        (false, true) => moved_then,
+                        // The pre-existing rule, and still the right one when both arrive:
+                        // moved on EITHER path means maybe-moved, which is treated as moved.
+                        (false, false) => moved_then.union(&moved_else).cloned().collect(),
+                    };
                 } else {
-                    // No else branch: variables moved in then branch might be used if then branch is skipped,
-                    // so we restore state before if (moved_before), but wait, in STARK, if a variable is moved
-                    // in one branch but not the other, it is considered moved after the block.
-                    self.moved_places = moved_then;
+                    // With no `else`, the fall-through path is the one that skipped the branch.
+                    // If the branch terminates, reaching this point PROVES it did not run, so the
+                    // state is exactly what it was before. Otherwise a move inside it is a
+                    // maybe-move, which stays treated as moved.
+                    self.moved_places = if then_diverges {
+                        moved_before
+                    } else {
+                        moved_then
+                    };
                 }
             }
             hir::ExprKind::Match { scrutinee, arms } => {
@@ -685,12 +772,26 @@ impl<'a> BorrowChecker<'a> {
                 }
                 let moved_before = self.moved_places.clone();
                 let mut merged_moved = HashSet::new();
+                // DEV-136: only arms that REACH the join contribute to it. An arm ending in
+                // `return`/`break`/`continue`/`panic` is not a predecessor.
+                let mut any_arm_reaches_join = false;
                 for arm in arms {
                     self.moved_places = moved_before.clone();
                     self.check_expr(arm.body);
-                    merged_moved.extend(self.moved_places.iter().cloned());
+                    if !self.expr_diverges(arm.body) {
+                        any_arm_reaches_join = true;
+                        merged_moved.extend(self.moved_places.iter().cloned());
+                    }
                 }
-                self.moved_places = merged_moved;
+                // When no arm reaches the join, `merged_moved` is empty — which would WIDEN the
+                // live set by discarding moves that happened before the `match`. The join is
+                // unreachable, so the state cannot be observed, but it must still not claim a
+                // previously moved value is live again.
+                self.moved_places = if any_arm_reaches_join {
+                    merged_moved
+                } else {
+                    moved_before
+                };
             }
             hir::ExprKind::Block(b) => {
                 self.check_block(*b);
