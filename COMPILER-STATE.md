@@ -1,5 +1,80 @@
 # STARK Compiler STATE
 
+## CD-338 — DEV-135 CLOSED: a field is one place however many times it is written (2026-08-02)
+
+**WP-DEV-134-139 Part B. Also carries a `collapsible_match` fix for CD-337 that CI caught and the
+local gate did not, and two Codex documentation updates to the frozen P1 workload.**
+
+**THE ESTIMATE WAS WRONG AND THE RECORD IS CORRECTED, NOT REWRITTEN.** The CD-334 inventory said
+"the gap is in the front end's `moved_places`, which is keyed on whole locals". It is not.
+`moved_places` is a `HashSet<Place>`, `Place` already carries `projections`, and `places_overlap`
+already does prefix matching. The front end was ALREADY field-precise: moving `pair.left` already
+left `pair.right` live, and moving the parent afterwards was already refused.
+
+**The actual defect was field IDENTITY, one enum variant wide:**
+
+```rust
+Projection::Field(name.lo, name.hi)   // the SPAN the name was written at
+```
+
+Two mentions of one field sit at different byte offsets, so `owner.handle` on line 5 and
+`owner.handle` on line 6 were two DIFFERENT projections that `places_overlap` correctly reported as
+disjoint. Nothing was missing from the move model; the comparison could never succeed. Storing the
+resolved NAME fixes it. Same class as DEV-122 — identity taken from a span rather than from what
+the span denotes.
+
+**So the WP's two-stage model was never entered, and that is a real outcome rather than a shortcut.**
+§5.2 split this into a conservative "DEV-135a parent poisoning" gate and a "DEV-135b precision"
+follow-on. The inventory ruled poisoning out — sibling survival is asserted by the conformance
+fixture set and four differential suites. But the precision DEV-135b was meant to BUILD already
+existed. The repair is neither stage. **No DEV-135b is filed and none is owed**: sibling survival,
+nested paths, parent/child ordering, and exactly-once drop are all covered, which is exactly what
+DEV-135b's closure criteria asked for. WP §15's release gate resolves on its second branch.
+
+**What class of program is now prevented:** any program that moves the same owned field, tuple
+element, or nested field out twice — and, by the same prefix rule that already worked, any that
+moves a parent after a field or reads a field after the parent. The check is on the PLACE, not on
+syntax, so it holds however the field is reached.
+
+**A CI-vs-local gate divergence, worth more than the lint it caught.** CD-337 went red on
+`clippy::collapsible_match`. The lint is real; the reason it was missed is that the repo pins
+`channel = "stable"` and CI's stable resolves to **1.97.0** while this machine's stable had gone
+stale at **1.93.0**. Every "clippy clean" reported earlier in this programme was against an OLDER
+lint set than CI's. Corrected here and going forward: the gate is `cargo +1.97.0 clippy`. This
+matters disproportionately now that CD-337 made CI the sole workspace authority — a local gate that
+silently differs from CI undermines exactly that arrangement.
+
+**Codex changes included at the owner's instruction, reviewed not rubber-stamped.** Two docs on the
+frozen P1 REST workload: the plan's status moves to `IMPLEMENTED — TIER-1 QUALIFIED`, and the report
+identifies `P1-COMPILER-001` as a local label for the already-governed `DEFECT-C788-LOOP-TEMP`
+(discharged by MIR amendment A12) while demoting a stale `P1 PARTIAL` handoff to quoted history.
+Cross-references verified: `a12_storage_end_shapes.rs`, `mir-amendment-A12-storage-end.md`, and
+CD-263/264/265/273 all exist. **CD-269 is cited and is absent from this file** — it is a real
+decision (commit `28a9ad1`, cited in five other documents), so the Codex text is correct and the gap
+is in this ledger. Recorded, not silently patched.
+
+Local:
+- cargo test --test dev135_field_move_paths -- 16 cases (6 reject, 10 accept), green
+- cargo test --test conformance --test gate2_valid --test gate3_execution -- 65 green
+- cargo test --test mir_verify --test mir_differential --test three_engine_differential -- 292 green
+- cargo test --test dev134_try_error_type --test dev136_terminating_path_moves --test
+  dev137_while_condition_borrows -- 46 green, all three previously closed defects
+- cargo test --test c61f_reference_boundary --test c61f_structural_copy --test
+  native_c6_1_ownership --test operand_move_inventory --test copy_canon_matrix -- 51 green
+- cargo test --test native_c5_3_aggregates_enums --test c6_generated_corpus -- 27 green; these are
+  the suites that assert partial-move field precision at the MIR and native layers
+- cargo fmt --all -- --check -- clean; rustfmt on the two touched files only
+- full workspace NOT run, per the amended evidence policy
+- `cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings` was IN FLIGHT when
+  this was committed, at the owner's instruction to let CI decide. It is NOT claimed as passing.
+
+CI:
+- aggregate workspace gate is the authority for this commit, including clippy on CI's own stable
+
+FILES: starkc/src/borrowck.rs, starkc/tests/dev135_field_move_paths.rs (new),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md, and the two Codex P1 documents.
+NEXT: DEV-139 — merge impl-level generics into the obligation environment the operator check reads.
+
 ## CD-337 — DEV-136 CLOSED: only branches that reach a join contribute to it (2026-08-02)
 
 **WP-DEV-134-139 Part D, and the second of four milestone points. `if flag { return out; }
@@ -230,11 +305,12 @@ conflating them misreports progress in both directions: the defect count underst
 the task count understates release readiness (only the defects gate the release).
 
 ```text
-Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136 CLOSED
-                                       DEV-135b, DEV-139, DEV-138 remain
+Defects (WP-DEV-134-139 Parts A-F)     DEV-134, DEV-137, DEV-136, DEV-135 CLOSED
+                                       DEV-139, DEV-138 remain
+                                       DEV-135b NOT FILED — see CD-338
                                        DEV-135b conditional on the DEV-135 inventory
 
-Programme tasks (WP-DEV-134-139)       3 of 16 complete
+Programme tasks (WP-DEV-134-139)       4 of 16 complete
                                        includes the six defect repairs plus the in-tree
                                        regression manifest (§10.1), the pinned external-suite
                                        CI job (§10.2), layer-audit inventory enforcement (§11),
@@ -7453,8 +7529,9 @@ not long-standing** — three of them are soundness gaps and none has an owning 
 - DEV-134 — CLOSED CD-335 (WP-DEV-134-139 Part A). `?` now requires exact error-type and
   constructor compatibility; the ruling was REJECT, not convert. Whether Core v1 should gain
   `From` conversion at `?` is a separate, still-open language-design question with no owner.
-- DEV-135 — moves of individual struct fields are not tracked; the second move surfaces as an
-  internal compiler error. **Soundness**, bounded by the oracle's own check. Opened CD-334.
+- DEV-135 — CLOSED CD-338 (WP-DEV-134-139 Part B). The move model was already field-precise; the
+  defect was field IDENTITY taken from a span. No DEV-135b was filed: the precision that follow-on
+  would have built already existed.
 - DEV-136 — CLOSED CD-337 (WP-DEV-134-139 Part D). Move state now merges only from predecessors
   that reach the join; `loop` without a reachable `break` is deliberately still treated as
   reaching, because proving otherwise needs reachability analysis the checker lacks.

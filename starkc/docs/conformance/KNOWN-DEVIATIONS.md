@@ -3334,7 +3334,7 @@ C2.8–C2.11 disposition.
   qualify. The external task-shaped suite is 34/34 unchanged.
 - **Owning gate:** WP-DEV-134-139 Part A (CD-335).
 
-## DEV-135 — moves of individual struct fields are not tracked [OPEN, found CD-334, 2026-08-02]
+## DEV-135 — moves of individual struct fields are not tracked [CLOSED, WP-DEV-134-139 Part B, CD-338, 2026-08-02]
 
 - **Normative expectation:** `04-Semantic-Analysis.md` defines partial moves — moving one field of
   a struct leaves the other fields readable and the moved field unusable. A second move of the same
@@ -3401,15 +3401,37 @@ C2.8–C2.11 disposition.
   DEV-135b." So **DEV-135a is NOT the release-gating repair; DEV-135b is.** The release gate in
   WP §15 resolves to its second branch: "DEV-135b is complete because inventory proved parent
   poisoning unacceptable." This is a planned outcome of the inventory, not a scope change.
-- **Proposed disposition (DEV-135b):** extend the move set to per-field PLACES, so `local.field_a`
-  and `local.field_b` are independent move paths and moving one does not invalidate the other. The
-  projection machinery DEV-086 added for `ConstIndex` is the nearest precedent, and MIR already
-  carries field-precise move paths (`mir_verify`'s V-MOVE-1) — the gap is in the front end's
-  `moved_places`, which is keyed on whole locals. Reuse the typed move/drop paths already in MIR
-  rather than adding an AST spelling check for `x.field`. The oracle's internal-compiler-error
-  message is reclassified to a normal diagnostic if it survives as a backstop.
-- **Owning gate:** WP-DEV-134-139 Part B; sequenced after DEV-134, DEV-137, and DEV-136 because
-  its branch-sensitive obligations depend on DEV-136's join semantics.
+- **CORRECTION to the disposition recorded above.** That paragraph said "the gap is in the front
+  end's `moved_places`, which is keyed on whole locals". **That was wrong**, and it is corrected
+  here rather than quietly rewritten because it drove the estimate. `moved_places` is a
+  `HashSet<Place>`, `Place` already carries `projections`, and `places_overlap` already does
+  prefix matching — the front end was ALREADY field-precise. Moving `pair.left` already left
+  `pair.right` live, and moving the parent afterwards was already refused.
+- **Actual root cause: field IDENTITY, one enum variant wide.** `place_of` built
+  `Projection::Field(name.lo, name.hi)` — the SPAN the field name was written at. Two mentions of
+  one field sit at different byte offsets, so `owner.handle` on one line and `owner.handle` on the
+  next were two DIFFERENT projections, which `places_overlap` then correctly reported as disjoint.
+  Nothing about the move model was missing; the comparison could never succeed.
+- **Resolution (CD-338):** `Projection::Field(String)` / `Projection::TupleField(String)`, holding
+  the resolved name. Read via `self.text`, which is correct here because every expression reaching
+  `place_of` belongs to the item being checked and `self.file` tracks that item (DEV-069). Same
+  class as DEV-122: identity taken from a span rather than from what the span denotes.
+- **The two-stage model therefore never had to be entered.** WP §5.2 split this into a
+  conservative "DEV-135a parent poisoning" gate and a "DEV-135b precision" follow-on, and the
+  inventory ruled poisoning out. But the precision the follow-on was meant to BUILD already
+  existed, so the repair is neither stage: it is a one-variant identity fix that makes the
+  existing precision reachable. **No DEV-135b is filed, and none is owed** — sibling survival,
+  nested paths, parent/child ordering, and exactly-once drop are all covered by the tests below,
+  which is what DEV-135b's closure criteria asked for.
+- **Evidence:** `starkc/tests/dev135_field_move_paths.rs`, 16 cases (6 reject, 10 accept). The
+  accepts are the important half here, because the inventory established that sibling survival is
+  load-bearing: `moving_one_field_leaves_its_sibling_usable`,
+  `moving_a_nested_field_leaves_its_nested_sibling_usable`,
+  `sibling_fields_are_each_destroyed_exactly_once` (executes, asserts exactly-once drop), plus
+  `partial_move_out_of_a_drop_type_is_still_rejected` to pin that the pre-existing Drop rule is
+  untouched. Two cases compose this repair with DEV-136: a field moved on a TERMINATING branch
+  does not poison the join, and on a REACHABLE branch it still does.
+- **Owning gate:** WP-DEV-134-139 Part B (CD-338).
 
 ## DEV-136 — a move on a returning path is treated as unconditional [CLOSED, WP-DEV-134-139 Part D, CD-337, 2026-08-02]
 

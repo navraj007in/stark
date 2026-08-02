@@ -15,10 +15,24 @@ struct Borrow {
     _span: Span,
 }
 
+/// DEV-135: a projection identifies a field by its NAME, not by the span the name was written at.
+///
+/// This used to be `Field(u32, u32)` — the span's byte offsets. Two mentions of the same field sit
+/// at different offsets, so `owner.handle` on one line and `owner.handle` on the next produced two
+/// DIFFERENT projections that `places_overlap` then correctly reported as disjoint.
+///
+/// The move set was ALREADY field-precise — `places_overlap` does prefix matching, so moving
+/// `pair.left` correctly left `pair.right` live and moving the parent afterwards was correctly
+/// refused. What was broken was field IDENTITY alone, so a field could be moved out twice and the
+/// second move was invisible to the front end. The HIR oracle then failed at run time with
+/// "internal compiler error: use of moved or invalid field" — the wrong category for a
+/// user-authored program, and several layers late.
+///
+/// Same class as DEV-122: identity taken from a span rather than from what the span denotes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Projection {
-    Field(u32, u32),
-    TupleField(u32, u32),
+    Field(String),
+    TupleField(String),
     Index,
 }
 
@@ -460,10 +474,8 @@ impl<'a> BorrowChecker<'a> {
                 hir::StmtKind::Return(_) | hir::StmtKind::Break(_) | hir::StmtKind::Continue => {
                     return true;
                 }
-                hir::StmtKind::Expr { expr, .. } => {
-                    if self.expr_diverges(*expr) {
-                        return true;
-                    }
+                hir::StmtKind::Expr { expr, .. } if self.expr_diverges(*expr) => {
+                    return true;
                 }
                 _ => {}
             }
@@ -1046,14 +1058,19 @@ impl<'a> BorrowChecker<'a> {
             }),
             hir::ExprKind::Field { base, name, .. } => {
                 let mut place = self.place_of(*base)?;
-                place.projections.push(Projection::Field(name.lo, name.hi));
+                // The NAME, not the span: see `Projection`. Every expression reaching here
+                // belongs to the item currently being checked, and `self.file` tracks that item
+                // (DEV-069), so `self.text` reads against the right source.
+                place
+                    .projections
+                    .push(Projection::Field(self.text(*name).to_string()));
                 Some(place)
             }
             hir::ExprKind::TupleField { base, index } => {
                 let mut place = self.place_of(*base)?;
                 place
                     .projections
-                    .push(Projection::TupleField(index.lo, index.hi));
+                    .push(Projection::TupleField(self.text(*index).to_string()));
                 Some(place)
             }
             hir::ExprKind::Index { base, .. } => {
