@@ -146,7 +146,7 @@ HC8  Deliver plain HTTP client
 HC9  Add TLS provider and secure stream          CLOSED (CD-365)
 HC10 Deliver HTTPS client                       CLOSED (CD-366)
 HC11 Add JSON convenience API                   CLOSED (CD-367)
-HC12 Add redirects policy
+HC12 Add redirects policy                       CLOSED (CD-368)
 HC13 Cross-platform qualification and release
 ```
 
@@ -1316,6 +1316,10 @@ verified TLS session as the consumer's twelfth case.
 
 # HC12 — Add Safe Redirect Policy
 
+**STATUS: CLOSED 2026-08-03 (CD-368).** Evidence in
+`STARKLANG/docs/http-client/HC12-REDIRECT-EVIDENCE.md`. Following stays OFF by default; the policy
+below is what "on" means.
+
 ## Objective
 
 Provide bounded redirect handling without leaking credentials.
@@ -1361,6 +1365,10 @@ struct RedirectPolicy {
 ## Exit criteria
 
 Redirect support is opt-in, bounded, and cannot silently forward credentials to another origin.
+
+**MET.** Ten native consumer cases against live peers, including cross-origin credential stripping
+asserted by reading what the peer actually received, and a downgrade refused before anything is
+dialled.
 
 ---
 

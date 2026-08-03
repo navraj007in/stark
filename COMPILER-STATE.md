@@ -1,5 +1,69 @@
 # STARK Compiler STATE
 
+## CD-368 — HC12 CLOSED: safe redirects; DEV-160 found (2026-08-03)
+
+**Redirect support is opt-in, bounded, and cannot silently forward credentials to another origin.**
+All three words are separate mechanisms. Full record:
+`STARKLANG/docs/http-client/HC12-REDIRECT-EVIDENCE.md`.
+
+```text
+opt-in        follow_redirects defaults false; off, a 3xx is RETURNED, not errored — a redirect
+              is a valid answer and hiding it would misreport what the server said
+bounded       max_redirects (5) AND loop detection over every visited URL — two different faults,
+              two different errors, because raising the limit should fix one and not the other
+not silently  Authorization and Cookie stripped on any origin change; opting out is possible and
+              is named `preserve_authorization_same_origin_only`
+```
+
+### Two rulings worth stating
+
+**301/302 rewrite POST to GET**, contradicting a literal reading of the RFCs and matching every
+browser and `curl -L`. The letter would send a POST body to a target the origin server redirected a
+POST *away* from — both surprising and the more dangerous reading. 307/308 preserve and replay,
+which is safe only because a body is a buffered `Vec<UInt8>`.
+
+**Origin comparison uses the EFFECTIVE port**, so `https://h/` and `https://h:443/` are one origin.
+Otherwise a redirect that merely spelled the port differently would strip credentials for no reason,
+and callers would learn to turn the stripping off — which is how a safety default dies.
+
+### A bug the pure tests could not have found
+
+The 303 case asserts against what the PEER received. Method and body were already correct, and
+`Content-Type: text/plain` was still riding along on a bodyless `GET` — a claim about content that
+is not there. Dropping a body now drops every header that describes one. The rewrite-table test
+alone would have passed; the echo route reflecting the actual wire is what caught it.
+
+### DEV-160 — place-granular borrows, whole-value projections (OPEN)
+
+STARK's borrow checker is place-granular (DEV-154) and correctly accepts disjoint-field borrows in
+one call:
+
+```stark
+send_once(client, builder.method, builder.url.as_str(), builder.headers, builder.body)
+```
+
+The generated projections take `&slot` and `&mut slot`, losing that granularity, so **rustc rejects
+the generated code**:
+
+```text
+error[E0502]: cannot borrow `_2` as mutable because it is also borrowed as immutable
+```
+
+A correct program refused by the backend. Worked around by moving the fields into locals first.
+
+**This is the same shape as DEV-158** — the slot abstraction is whole-value while the ownership
+model is place-granular — and it is the third defect in that family. Whatever fixes the
+`Partial`/`Whole` transition should be scoped to look at projection granularity generally rather
+than at field assignment alone.
+
+### Evidence
+
+38 `stark-http-client` tests (9 new) and 22 consumer cases (10 new), all against live peers. The
+credential case reads the WIRE rather than the policy flag: the cleartext peer redirects to the TLS
+peer, and the echo route reflecting `GET|-|-|` proves the header was absent on the second request.
+The bound and the loop are proved separately — `/r-loop` revisits one target, `/r-hopN` walks an
+ever-lengthening chain of distinct ones.
+
 ## CD-367 — HC11 CLOSED: JSON convenience, and a strict UTF-8 decoder (2026-08-03)
 
 **Common JSON REST calls no longer require manual byte conversion or header construction, and HTTP

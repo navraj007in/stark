@@ -101,8 +101,22 @@ pub enum HttpError {
     ResponseTooLarge,
     ClosedEarly,
     Timeout(HttpTimeoutPhase),
-    RedirectsUnsupported,
+    TooManyRedirects,
+    RedirectLoop,
+    MissingLocation,
+    InvalidRedirectTarget,
+    InsecureRedirect,
 }
+/// The chain exceeded `max_redirects`.
+
+/// A target repeated. Distinct from `TooManyRedirects` because a loop is a server defect and a
+/// long chain may be legitimate — a caller raising the limit fixes one and not the other.
+
+/// A `3xx` that redirects carried no `Location`.
+
+/// A `Location` that does not resolve to a URL this client will dial.
+
+/// An `https://` response redirected to `http://` and the policy forbids it.
 
 pub fn timeout_phase_text(phase: &HttpTimeoutPhase) -> String {
     match *phase {
@@ -145,8 +159,12 @@ pub fn error_text(error: &HttpError) -> String {
             out.push_str(timeout_phase_text(&phase).as_str());
             out
         }
-        HttpError::RedirectsUnsupported => {
-            String::from("redirect following is not implemented in v0.1 (HC12)")
+        HttpError::TooManyRedirects => String::from("too many redirects"),
+        HttpError::RedirectLoop => String::from("the redirect chain revisited a target"),
+        HttpError::MissingLocation => String::from("a redirect carried no Location header"),
+        HttpError::InvalidRedirectTarget => String::from("the redirect target is not a usable URL"),
+        HttpError::InsecureRedirect => {
+            String::from("refusing to follow https:// to http:// (a downgrade)")
         }
     }
 }
@@ -173,6 +191,16 @@ fn tls_at(error: TlsError, phase: HttpTimeoutPhase) -> HttpError {
     }
 }
 
+/// Everything a client decides once and applies to every request.
+///
+/// `tls_root_store` is held as POLICY rather than as a built `TlsClientConfig`, because
+/// `TlsStream::connect` consumes its configuration and a client makes many requests — see
+/// `stark_tls::clone_root_store`. `tls_handshake_timeout` bounds the WHOLE handshake, separately
+/// from the per-read socket timeouts (HC4). `redirects` applies only when `follow_redirects` is
+/// set, and is present regardless so turning following on cannot also mean "and I chose no policy".
+///
+/// (Documented on the type rather than per field: `stark fmt` evicts a field's doc comment to after
+/// the struct — DEV-156.)
 pub struct ClientConfig {
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
@@ -181,12 +209,48 @@ pub struct ClientConfig {
     pub follow_redirects: Bool,
     pub tls_root_store: RootStorePolicy,
     pub tls_handshake_timeout: Duration,
+    pub redirects: RedirectPolicy,
 }
-/// Where `https://` gets its trust anchors. Held as POLICY rather than as a built
-/// `TlsClientConfig`, because `TlsStream::connect` consumes its configuration and a client
-/// makes many requests — see `stark_tls::clone_root_store`.
 
-/// A bound on the WHOLE handshake, separate from the per-read socket timeouts (HC4).
+/// **HC12 — how far, and at what cost, a redirect may be followed.**
+///
+/// Following is off by default (`ClientConfig::follow_redirects`), because a client that follows
+/// silently turns one request the caller reasoned about into several they did not. This is what the
+/// "yes" means when they say yes.
+///
+/// `max_redirects` is the chain bound — `UInt8` because a legitimate chain is single digits, and a
+/// caller needing hundreds has a server problem rather than a configuration one.
+///
+/// `allow_https_to_http` permits a downgrade. **Default false.** A downgrade takes a request the
+/// caller secured and puts it on the wire in clear, which is the one thing following redirects must
+/// never do by accident.
+///
+/// `preserve_authorization_same_origin_only` strips `Authorization` when the ORIGIN changes.
+/// **Default true.** Setting it false forwards credentials to whatever host a redirect names, so an
+/// open redirect on the first server becomes credential exfiltration to the attacker's. It exists
+/// because some internal deployments genuinely redirect inside a trust boundary this client cannot
+/// see, and an explicit opt-out is not the "silently" the exit criterion forbids. It is still a
+/// loaded gun, and the name says which way it points.
+///
+/// `sensitive_headers` names additional headers to strip on an origin change, ASCII
+/// case-insensitively. `Authorization` and `Cookie` are ALWAYS stripped; these are the caller's own
+/// bearer-shaped headers, which this package cannot recognise on its own.
+pub struct RedirectPolicy {
+    pub max_redirects: UInt8,
+    pub allow_https_to_http: Bool,
+    pub preserve_authorization_same_origin_only: Bool,
+    pub sensitive_headers: Vec<String>,
+}
+
+/// The safe policy: a short chain, no downgrade, credentials confined to their origin.
+pub fn default_redirect_policy() -> RedirectPolicy {
+    RedirectPolicy {
+        max_redirects: 5u8,
+        allow_https_to_http: false,
+        preserve_authorization_same_origin_only: true,
+        sensitive_headers: Vec::new(),
+    }
+}
 
 pub struct Client { pub config: ClientConfig, pub limits: HttpLimits }
 
@@ -203,6 +267,7 @@ pub fn default_config() -> ClientConfig {
         follow_redirects: false,
         tls_root_store: RootStorePolicy::SystemRoots,
         tls_handshake_timeout: duration_seconds(30u64),
+        redirects: default_redirect_policy(),
     }
 }
 
@@ -227,6 +292,7 @@ pub fn config_with_explicit_roots(roots_pem: String) -> ClientConfig {
         follow_redirects: false,
         tls_root_store: RootStorePolicy::ExplicitRoots(roots_pem),
         tls_handshake_timeout: duration_seconds(30u64),
+        redirects: default_redirect_policy(),
     }
 }
 
@@ -694,18 +760,279 @@ fn exchange_secure(
     outcome
 }
 
-/// Send a built request and return the response.
-///
-/// **The scheme is the only thing that decides whether the channel is verified**, and the caller
-/// makes that choice in the URL. There is no per-request TLS switch, no "insecure" flag, and no way
-/// to reach `https://` without certificate and hostname verification — HC10's requirement that no
-/// application-level distinction beyond the URL is needed, read in both directions.
-pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
-    if client.config.follow_redirects {
-        return Err(HttpError::RedirectsUnsupported);
-    }
+// --- HC12: following redirects, safely -------------------------------------------------------
 
-    let target = parse_url(builder.url.as_str())?;
+/// A `3xx` this client will follow. `300` and `304` are excluded deliberately: `300` has no single
+/// target and `304` is a cache answer, not a relocation.
+pub fn is_followable_redirect(status: UInt16) -> Bool {
+    status == 301u16 || status == 302u16 || status == 303u16 || status == 307u16 || status == 308u16
+}
+
+/// **The method-rewrite table, stated rather than inherited.**
+///
+/// Returns the method for the next hop and whether the body travels with it.
+///
+/// | status | method | body |
+/// | --- | --- | --- |
+/// | 301, 302 | `POST` becomes `GET`, others unchanged | dropped when rewritten |
+/// | 303 | always `GET` | always dropped |
+/// | 307, 308 | unchanged | replayed |
+///
+/// 301/302 rewriting `POST` to `GET` contradicts a literal reading of the RFCs and matches what
+/// every browser and `curl -L` actually do. Following the letter here would send a POST body to a
+/// target the origin server redirected a POST *away* from, which is both surprising and the more
+/// dangerous of the two readings. 307 and 308 exist precisely to say "no, really, replay it", and
+/// this honours that — which is safe only because a body is a buffered `Vec<UInt8>` and replay
+/// costs nothing but bytes.
+pub fn redirect_method(status: UInt16, method: &HttpMethod) -> (HttpMethod, Bool) {
+    if status == 303u16 {
+        return (HttpMethod::Get, false);
+    }
+    if status == 307u16 || status == 308u16 {
+        return (clone_method(method), true);
+    }
+    match *method {
+        HttpMethod::Post => (HttpMethod::Get, false),
+        _ => (clone_method(method), true),
+    }
+}
+
+/// `HttpMethod` is not `Copy`, and a redirect needs the same method again on the next hop.
+pub fn clone_method(method: &HttpMethod) -> HttpMethod {
+    match *method {
+        HttpMethod::Get => HttpMethod::Get,
+        HttpMethod::Post => HttpMethod::Post,
+        HttpMethod::Put => HttpMethod::Put,
+        HttpMethod::Patch => HttpMethod::Patch,
+        HttpMethod::Delete => HttpMethod::Delete,
+        HttpMethod::Head => HttpMethod::Head,
+        HttpMethod::Options => HttpMethod::Options,
+    }
+}
+
+fn clone_bytes(body: &Vec<UInt8>) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i = 0u64;
+    while i < body.len() {
+        out.push(body[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Two URLs share an origin when scheme, host and EFFECTIVE port all match.
+///
+/// Effective, so `https://h/` and `https://h:443/` are one origin — otherwise a redirect that only
+/// spelled the port differently would strip credentials for no reason, and callers would learn to
+/// turn the stripping off.
+pub fn same_origin(a: &Target, b: &Target) -> Bool {
+    if a.port != b.port {
+        return false;
+    }
+    if !stark_http_core::ascii_equal_ignore_case(a.host.as_str(), b.host.as_str()) {
+        return false;
+    }
+    match a.scheme {
+        Scheme::Http => match b.scheme {
+            Scheme::Http => true,
+            Scheme::Https => false,
+        }
+        Scheme::Https => match b.scheme {
+            Scheme::Https => true,
+            Scheme::Http => false,
+        }
+    }
+}
+
+fn scheme_prefix(scheme: &Scheme) -> String {
+    match *scheme {
+        Scheme::Http => String::from("http://"),
+        Scheme::Https => String::from("https://"),
+    }
+}
+
+/// The scheme and its colon, WITHOUT the `//`.
+///
+/// A scheme-relative `Location` supplies its own `//`, so joining it to `scheme_prefix` produces
+/// `https:////host` — which parses as nothing. Caught by the resolution test, which is why each
+/// form has its own case there rather than one representative.
+fn scheme_colon(scheme: &Scheme) -> String {
+    match *scheme {
+        Scheme::Http => String::from("http:"),
+        Scheme::Https => String::from("https:"),
+    }
+}
+
+/// Resolve a `Location` against the URL it came from, into an absolute URL.
+///
+/// Four forms, and nothing else is guessed:
+///
+/// ```text
+/// https://host/path   absolute        taken as-is
+/// //host/path         scheme-relative inherits the current scheme
+/// /path               absolute path   inherits scheme, host and port
+/// path                relative path   replaces the last segment of the current path
+/// ```
+///
+/// A `Location` this cannot resolve is refused rather than approximated. The result still goes
+/// through `parse_url`, so a redirect target faces exactly the URL limits a caller-supplied one
+/// does — a server cannot use a redirect to reach a URL the client would not have accepted.
+pub fn resolve_location(base: &Target, location: &str) -> Result<String, HttpError> {
+    let bytes = location.bytes();
+    if bytes.len() == 0u64 {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
+    // Absolute: it names a scheme this client dials.
+    if starts_with(bytes, "http://".bytes()) || starts_with(bytes, "https://".bytes()) {
+        return Ok(String::from(location));
+    }
+    // Scheme-relative `//host/path`: inherits the current scheme, which is what keeps an
+    // https:// page from being walked onto http:// by omission.
+    if bytes.len() >= 2u64 && bytes[0u64] == 47u8 && bytes[1u64] == 47u8 {
+        let mut out = scheme_colon(&base.scheme);
+        out.push_str(location);
+        return Ok(out);
+    }
+    let mut out = scheme_prefix(&base.scheme);
+    out.push_str(base.host.as_str());
+    if base.port != default_port(&base.scheme) {
+        out.push(':');
+        out.push_str(u16_decimal(base.port).as_str());
+    }
+    if bytes[0u64] == 47u8 {
+        // Absolute path.
+        out.push_str(location);
+        return Ok(out);
+    }
+    // Relative path: replace everything after the last `/` of the current path.
+    let current = base.path_and_query.as_str().bytes();
+    let mut cut = 0u64;
+    let mut i = 0u64;
+    while i < current.len() {
+        if current[i] == 47u8 {
+            cut = i + 1u64;
+        }
+        // A `?` ends the path; the query is never part of the base for resolution.
+        if current[i] == 63u8 {
+            i = current.len();
+        } else {
+            i = i + 1u64;
+        }
+    }
+    let mut j = 0u64;
+    while j < cut {
+        match Char::from_u32(current[j] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        j = j + 1u64;
+    }
+    out.push_str(location);
+    Ok(out)
+}
+
+fn u16_decimal(value: UInt16) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    let mut started = false;
+    let mut scale: UInt64 = 10000u64;
+    while scale > 0u64 {
+        let digit = n / scale % 10u64;
+        if digit != 0u64 || started || scale == 1u64 {
+            match Char::from_u32((48u64 + digit) as UInt32) {
+                Some(ch) => {
+                    out.push(ch);
+                }
+                None => {}
+            }
+            started = true;
+        }
+        scale = scale / 10u64;
+    }
+    out
+}
+
+/// Whether a header must not survive an origin change.
+fn is_sensitive_header(name: &str, policy: &RedirectPolicy) -> Bool {
+    // Always, whatever the policy says. `Authorization` is the credential and `Cookie` is the
+    // session; forwarding either to a host the caller never named is the failure this whole
+    // work package exists to prevent.
+    if stark_http_core::ascii_equal_ignore_case(name, "authorization") {
+        return true;
+    }
+    if stark_http_core::ascii_equal_ignore_case(name, "cookie") {
+        return true;
+    }
+    let mut i = 0u64;
+    while i < policy.sensitive_headers.len() {
+        let candidate = &policy.sensitive_headers[i];
+        if stark_http_core::ascii_equal_ignore_case(name, candidate.as_str()) {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// A header that DESCRIBES a body, and so must not outlive one.
+///
+/// When a 301/302/303 rewrite drops the body, `Content-Type` and friends have to go with it.
+/// Leaving them behind sends a bodyless `GET` that announces `Content-Type: text/plain` — a claim
+/// about content that is not there, which some servers reject and all of them find confusing.
+/// Found by the 303 case observing the actual wire: the method and the body were already right,
+/// and the content type was still riding along.
+fn is_entity_header(name: &str) -> Bool {
+    stark_http_core::ascii_equal_ignore_case(name, "content-type") || stark_http_core::ascii_equal_ignore_case(
+        name,
+        "content-length",
+    ) || stark_http_core::ascii_equal_ignore_case(name, "content-encoding") || stark_http_core::ascii_equal_ignore_case(
+        name,
+        "content-language",
+    ) || stark_http_core::ascii_equal_ignore_case(name, "transfer-encoding")
+}
+
+/// The headers for the next hop.
+///
+/// `keep_credentials` false drops every sensitive header; `keep_body` false drops every header that
+/// describes a body. Both triggers are decided by the caller — from the origin comparison and the
+/// rewrite table respectively — so each rule and its reason stay separately readable.
+fn headers_for_next_hop(
+    map: &stark_http_core::HeaderMap,
+    keep_credentials: Bool,
+    keep_body: Bool,
+    policy: &RedirectPolicy,
+) -> stark_http_core::HeaderMap {
+    let mut out = new_header_map();
+    let mut i = 0u64;
+    while i < map.entries.len() {
+        let entry = &map.entries[i];
+        let sensitive = !keep_credentials && is_sensitive_header(entry.name.as_str(), policy);
+        let stale_entity = !keep_body && is_entity_header(entry.name.as_str());
+        let drop_it = sensitive || stale_entity;
+        if !drop_it {
+            match append_validated(&mut out, entry.name.as_str(), entry.value.as_str()) {
+                Ok(_added) => {}
+                Err(_error) => {}
+            }
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// One request/response exchange, with no redirect handling. Returns the response and the target it
+/// was sent to, since the caller needs the latter to resolve a relative `Location` and to compare
+/// origins.
+fn send_once(
+    client: &Client,
+    method: HttpMethod,
+    url: &str,
+    headers: stark_http_core::HeaderMap,
+    body: Vec<UInt8>,
+) -> Result<(HttpResponse, Target), HttpError> {
+    let target = parse_url(url)?;
 
     let resolved: Vec<ResolvedAddress>;
     match resolve(&target.host, target.port, default_resolve_limits()) {
@@ -717,14 +1044,13 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
         }
     }
 
+    let head = match method {
+        HttpMethod::Head => true,
+        _ => false,
+    };
+
     let built: HttpRequest;
-    match request(
-        builder.method,
-        target.path_and_query.as_str(),
-        HttpVersion::Http11,
-        builder.headers,
-        builder.body,
-    ) {
+    match request(method, target.path_and_query.as_str(), HttpVersion::Http11, headers, body) {
 
         Ok(value) => {
             built = value;
@@ -735,8 +1061,8 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
     }
 
     // The `Host` header omits the port when it is the scheme's default, so the default must come
-    // from the scheme rather than being fixed at 80 — otherwise every `https://host/` request would
-    // send `Host: host:443`, which is legal but not what any server logs or vhost config expects.
+    // from the scheme — otherwise every `https://host/` request would send `Host: host:443`, which
+    // is legal but not what any server logs or vhost config expects.
     let authority = HostAuthority {
         host: target.host.clone(),
         port: target.port,
@@ -752,21 +1078,20 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
         }
     }
 
-    let head = match built.method {
-        HttpMethod::Head => true,
-        _other => false,
-    };
-
     let tcp = connect_to_any(&resolved, &client.config)?;
 
     match target.scheme {
-        Scheme::Http => exchange_plain(
+        Scheme::Http => match exchange_plain(
             tcp,
             &wire[0u64..wire.len()],
             client.limits,
             client.config.max_response_bytes,
             head,
-        ),
+        ) {
+
+            Ok(response) => Ok((response, target)),
+            Err(error) => Err(error),
+        }
         Scheme::Https => {
             // The handshake CONSUMES the TCP stream on every path (CD-360). A failure here leaves
             // no reusable socket and nothing for this function to close — the TLS provider owns the
@@ -775,17 +1100,150 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
                 clone_root_store(&client.config.tls_root_store),
                 client.config.tls_handshake_timeout,
             );
-            match TlsStream::connect(tcp, target.host.clone(), tls_config) {
-                Ok(secure) => exchange_secure(
+            // Hoisted: `target.host.clone()` inline borrows `target` for the whole match, and the
+            // success arm has to MOVE it out as part of the returned pair.
+            let server_name = target.host.clone();
+            match TlsStream::connect(tcp, server_name, tls_config) {
+                Ok(secure) => match exchange_secure(
                     secure,
                     &wire[0u64..wire.len()],
                     client.limits,
                     client.config.max_response_bytes,
                     head,
-                ),
+                ) {
+
+                    Ok(response) => Ok((response, target)),
+                    Err(error) => Err(error),
+                }
                 Err(error) => Err(tls_at(error, HttpTimeoutPhase::TlsHandshake)),
             }
         }
+    }
+}
+
+/// Send a built request and return the response.
+///
+/// **The scheme is the only thing that decides whether the channel is verified**, and the caller
+/// makes that choice in the URL. There is no per-request TLS switch, no "insecure" flag, and no way
+/// to reach `https://` without certificate and hostname verification — HC10's requirement that no
+/// application-level distinction beyond the URL is needed, read in both directions.
+///
+/// **Redirects are followed only when `follow_redirects` is set**, and then only within
+/// `ClientConfig::redirects`. Off, a `3xx` is returned to the caller as the response it is — not an
+/// error, because a redirect IS a valid answer and a client that hid it would be lying about what
+/// the server said.
+pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
+    // Not following: one exchange, and a `3xx` comes back as the response it is.
+    if !client.config.follow_redirects {
+        // The fields are moved into LOCALS first, rather than passed as `builder.url.as_str()`
+        // alongside `builder.headers`. STARK's borrow checker is place-granular (DEV-154) and
+        // accepts the inline form — those are disjoint fields — but the generated projections take
+        // `&slot` and `&mut slot`, losing that granularity, so rustc rejects the generated code
+        // with E0502. DEV-160. `follow` below already had this shape, which is why only this path
+        // failed.
+        let url = builder.url;
+        let method = builder.method;
+        let headers = builder.headers;
+        let body = builder.body;
+        let once = send_once(client, method, url.as_str(), headers, body)?;
+        return Ok(once.0);
+    }
+    follow(client, builder)
+}
+
+/// The redirect loop. Separate from `send` so the non-following path pays none of its copying, and
+/// so the policy reads in one place.
+fn follow(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
+    let policy = &client.config.redirects;
+    let mut method = builder.method;
+    let mut url = builder.url;
+    let mut headers = builder.headers;
+    let mut body = builder.body;
+
+    // Every URL already visited, so a cycle is caught even when it is longer than one hop and
+    // shorter than the count bound. Those are different faults: a loop is a server defect, a long
+    // chain may be legitimate, and a caller raising the limit should fix only the second.
+    let mut visited: Vec<String> = Vec::new();
+    visited.push(url.clone());
+
+    let mut hops: UInt64 = 0u64;
+    let bound = policy.max_redirects as UInt64;
+    loop {
+        // Copies taken BEFORE the send, because `send_once` consumes the method, headers and body.
+        // The next hop is built from the REQUEST's headers, never the response's — carrying a
+        // server's `Set-Cookie` and `Content-Length` into the next request would be nonsense at
+        // best. Getting that wrong is easy and silent, so it is stated here.
+        let previous_method = clone_method(&method);
+        let previous_headers = headers_for_next_hop(&headers, true, true, policy);
+        let previous_body = clone_bytes(&body);
+
+        let outcome = send_once(client, method, url.as_str(), headers, body)?;
+        let response = outcome.0;
+        let from = outcome.1;
+
+        if !is_followable_redirect(response.status) {
+            return Ok(response);
+        }
+        if hops == bound {
+            return Err(HttpError::TooManyRedirects);
+        }
+
+        let location: String;
+        match stark_http_core::get_first(&response.headers, "location") {
+            Some(value) => {
+                location = value;
+            }
+            None => {
+                // A redirect status with nowhere to go. Reported rather than returned as a
+                // response: the caller asked to follow, and this cannot be followed.
+                return Err(HttpError::MissingLocation);
+            }
+        }
+
+        let next_url = resolve_location(&from, location.as_str())?;
+        // Through `parse_url`, so a redirect target faces exactly the limits a caller-supplied URL
+        // does — a server cannot use a redirect to reach a URL this client would have refused.
+        let to = parse_url(next_url.as_str())?;
+
+        // Refused BEFORE the connection is made, so a downgraded request never reaches the wire.
+        let downgrade = match from.scheme {
+            Scheme::Https => match to.scheme {
+                Scheme::Http => true,
+                Scheme::Https => false,
+            }
+            Scheme::Http => false,
+        };
+        if downgrade && !policy.allow_https_to_http {
+            return Err(HttpError::InsecureRedirect);
+        }
+
+        let mut seen = false;
+        let mut v = 0u64;
+        while v < visited.len() {
+            if visited[v].as_str() == next_url.as_str() {
+                seen = true;
+            }
+            v = v + 1u64;
+        }
+        if seen {
+            return Err(HttpError::RedirectLoop);
+        }
+        visited.push(next_url.clone());
+
+        let rewrite = redirect_method(response.status, &previous_method);
+        let keep_credentials = same_origin(&from, &to) || !policy.preserve_authorization_same_origin_only;
+
+        headers = headers_for_next_hop(&previous_headers, keep_credentials, rewrite.1, policy);
+        method = rewrite.0;
+        // Replay only when the status says to. The body is a buffered `Vec<UInt8>`, so replay costs
+        // bytes and nothing else — which is what makes honouring 307/308 safe here.
+        body = if rewrite.1 {
+            previous_body
+        } else {
+            Vec::new()
+        };
+        url = next_url;
+        hops = hops + 1u64;
     }
 }
 

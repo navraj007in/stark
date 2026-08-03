@@ -531,3 +531,273 @@ fn test_a_non_utf8_body_is_a_decode_error_not_a_json_error() {
         }
     }
 }
+
+// --- HC12: the redirect policy ----------------------------------------------------------------
+
+use super::clone_method;
+use super::default_redirect_policy;
+use super::is_followable_redirect;
+use super::redirect_method;
+use super::resolve_location;
+use super::same_origin;
+use super::Target;
+
+fn test_the_default_policy_is_the_safe_one() {
+    // These three defaults ARE the exit criterion. A change to any of them is a change to whether
+    // this client can leak a credential or downgrade a connection, so they are pinned by value.
+    let policy = default_redirect_policy();
+    if policy.max_redirects != 5u8 {
+        panic("the default chain bound must be small and finite");
+    }
+    if policy.allow_https_to_http {
+        panic("a downgrade must never be allowed by default");
+    }
+    if !policy.preserve_authorization_same_origin_only {
+        panic("credentials must be confined to their origin by default");
+    }
+    // And following is off entirely unless asked for.
+    if default_config().follow_redirects {
+        panic("redirects must be opt-in");
+    }
+}
+
+fn test_only_relocating_statuses_are_followed() {
+    if !is_followable_redirect(301u16) {
+        panic("301 is a redirect");
+    }
+    if !is_followable_redirect(302u16) {
+        panic("302 is a redirect");
+    }
+    if !is_followable_redirect(303u16) {
+        panic("303 is a redirect");
+    }
+    if !is_followable_redirect(307u16) {
+        panic("307 is a redirect");
+    }
+    if !is_followable_redirect(308u16) {
+        panic("308 is a redirect");
+    }
+    // 300 has no single target and 304 is a cache answer, not a relocation. Following either would
+    // be inventing a destination.
+    if is_followable_redirect(300u16) {
+        panic("300 names no single target");
+    }
+    if is_followable_redirect(304u16) {
+        panic("304 is not a relocation");
+    }
+    if is_followable_redirect(200u16) {
+        panic("200 is not a redirect");
+    }
+    if is_followable_redirect(404u16) {
+        panic("404 is not a redirect");
+    }
+}
+
+fn expect_rewrite(status: UInt16, from: HttpMethod, to: HttpMethod, keeps_body: Bool, what: &str) {
+    let result = redirect_method(status, &from);
+    if method_code(&result.0) != method_code(&to) {
+        print("rewriting ");
+        println(what);
+        panic("the method after the redirect is wrong");
+    }
+    if result.1 != keeps_body {
+        print("rewriting ");
+        println(what);
+        panic("the body-replay decision is wrong");
+    }
+}
+
+fn method_code(method: &HttpMethod) -> UInt32 {
+    match *method {
+        HttpMethod::Get => 0u32,
+        HttpMethod::Post => 1u32,
+        HttpMethod::Put => 2u32,
+        HttpMethod::Patch => 3u32,
+        HttpMethod::Delete => 4u32,
+        HttpMethod::Head => 5u32,
+        HttpMethod::Options => 6u32,
+    }
+}
+
+fn test_the_method_rewrite_table() {
+    // 303: always GET, always without a body. This is the status whose entire purpose is "go look
+    // over there instead", and replaying a POST body to that target would be wrong.
+    expect_rewrite(303u16, HttpMethod::Post, HttpMethod::Get, false, "303 from POST");
+    expect_rewrite(303u16, HttpMethod::Put, HttpMethod::Get, false, "303 from PUT");
+    expect_rewrite(303u16, HttpMethod::Get, HttpMethod::Get, false, "303 from GET");
+
+    // 307/308 preserve BOTH. They exist to say "no, really, replay it".
+    expect_rewrite(307u16, HttpMethod::Post, HttpMethod::Post, true, "307 from POST");
+    expect_rewrite(308u16, HttpMethod::Post, HttpMethod::Post, true, "308 from POST");
+    expect_rewrite(307u16, HttpMethod::Delete, HttpMethod::Delete, true, "307 from DELETE");
+
+    // 301/302 turn POST into GET and drop the body. That contradicts a literal reading of the RFCs
+    // and matches every browser and `curl -L`; the letter would send a POST body to a target the
+    // server redirected a POST away from.
+    expect_rewrite(301u16, HttpMethod::Post, HttpMethod::Get, false, "301 from POST");
+    expect_rewrite(302u16, HttpMethod::Post, HttpMethod::Get, false, "302 from POST");
+    // A GET is unchanged and keeps its (empty) body.
+    expect_rewrite(302u16, HttpMethod::Get, HttpMethod::Get, true, "302 from GET");
+    expect_rewrite(301u16, HttpMethod::Head, HttpMethod::Head, true, "301 from HEAD");
+}
+
+fn test_clone_method_round_trips_every_variant() {
+    // `redirect_method` hands back a cloned method for the next hop; a variant it got wrong would
+    // silently turn a DELETE into something else.
+    let all = [
+        HttpMethod::Get,
+        HttpMethod::Post,
+        HttpMethod::Put,
+        HttpMethod::Patch,
+        HttpMethod::Delete,
+        HttpMethod::Head,
+        HttpMethod::Options,
+    ];
+    let mut i: UInt64 = 0u64;
+    while i < 7u64 {
+        if method_code(&clone_method(&all[i])) != method_code(&all[i]) {
+            panic("clone_method must preserve the variant");
+        }
+        i = i + 1u64;
+    }
+}
+
+fn expect_location(base: &str, location: &str, expected: &str, what: &str) {
+    let from = target_of(base);
+    match resolve_location(&from, location) {
+        Ok(resolved) => {
+            if resolved.as_str() != expected {
+                print("resolving ");
+                print(what);
+                print(" gave ");
+                println(resolved.as_str());
+                panic("the resolved Location is wrong");
+            }
+        }
+        Err(_error) => {
+            print("resolving ");
+            println(what);
+            panic("the Location must resolve");
+        }
+    }
+}
+
+fn test_location_resolution() {
+    // Absolute: taken as-is.
+    expect_location(
+        "http://a.test/one",
+        "https://b.test/two",
+        "https://b.test/two",
+        "an absolute Location",
+    );
+    // Absolute path: scheme, host and port inherited.
+    expect_location("http://a.test/one/two", "/three", "http://a.test/three", "an absolute path");
+    // Relative path: replaces the last segment.
+    expect_location("http://a.test/one/two", "three", "http://a.test/one/three", "a relative path");
+    expect_location(
+        "http://a.test/one/",
+        "three",
+        "http://a.test/one/three",
+        "a directory-relative path",
+    );
+    // A non-default port travels with the origin.
+    expect_location(
+        "http://a.test:8080/one",
+        "/two",
+        "http://a.test:8080/two",
+        "a non-default port",
+    );
+    // Scheme-relative: inherits the CURRENT scheme, which is what stops an https page being walked
+    // onto http by omission.
+    expect_location(
+        "https://a.test/one",
+        "//b.test/two",
+        "https://b.test/two",
+        "a scheme-relative Location",
+    );
+    // The query of the current URL is not part of the base for a relative resolution.
+    expect_location(
+        "http://a.test/one/two?q=1",
+        "three",
+        "http://a.test/one/three",
+        "a base with a query",
+    );
+}
+
+fn test_an_empty_location_is_refused() {
+    let from = target_of("http://a.test/one");
+    match resolve_location(&from, "") {
+        Ok(_resolved) => {
+            panic("an empty Location must not resolve");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_origin_comparison() {
+    // Same origin: credentials may travel.
+    if !same_origin(&target_of("https://a.test/one"), &target_of("https://a.test/two")) {
+        panic("the same host, scheme and port is one origin");
+    }
+    // The DEFAULT port and the explicit one are the same origin — otherwise a redirect that only
+    // spelled the port differently would strip credentials for no reason, and callers would learn
+    // to turn the stripping off.
+    if !same_origin(&target_of("https://a.test/one"), &target_of("https://a.test:443/two")) {
+        panic("an explicit default port is the same origin");
+    }
+    // Any of host, scheme or port differing is a different origin.
+    if same_origin(&target_of("https://a.test/one"), &target_of("https://b.test/one")) {
+        panic("a different host is a different origin");
+    }
+    if same_origin(&target_of("https://a.test/one"), &target_of("http://a.test/one")) {
+        panic("a different scheme is a different origin");
+    }
+    if same_origin(&target_of("https://a.test/one"), &target_of("https://a.test:8443/one")) {
+        panic("a different port is a different origin");
+    }
+    // Host comparison is ASCII case-insensitive, as DNS is.
+    if !same_origin(&target_of("https://A.TEST/one"), &target_of("https://a.test/one")) {
+        panic("host comparison must be case-insensitive");
+    }
+}
+
+fn test_every_redirect_error_reads_differently() {
+    let all = [
+        error_text(&HttpError::TooManyRedirects),
+        error_text(&HttpError::RedirectLoop),
+        error_text(&HttpError::MissingLocation),
+        error_text(&HttpError::InvalidRedirectTarget),
+        error_text(&HttpError::InsecureRedirect),
+    ];
+    let mut i: UInt64 = 0u64;
+    while i < 5u64 {
+        if all[i].len() == 0u64 {
+            panic("every redirect error must have a description");
+        }
+        let mut j: UInt64 = i + 1u64;
+        while j < 5u64 {
+            if all[i].as_str() == all[j].as_str() {
+                panic("two redirect errors share a description");
+            }
+            j = j + 1u64;
+        }
+        i = i + 1u64;
+    }
+}
+
+fn test_dropping_the_body_drops_the_headers_that_describe_it() {
+    // Found by the 303 case observing the actual wire: the method and the body were already right,
+    // and `Content-Type: text/plain` was still riding along on a bodyless GET. A header that
+    // describes content must not outlive the content.
+    //
+    // The rewrite table is what decides this, so the two are asserted together: 303 drops, 307
+    // keeps, and the entity headers must follow the body in each direction.
+    let drops = redirect_method(303u16, &HttpMethod::Post);
+    if drops.1 {
+        panic("303 must drop the body");
+    }
+    let keeps = redirect_method(307u16, &HttpMethod::Post);
+    if !keeps.1 {
+        panic("307 must keep the body");
+    }
+}

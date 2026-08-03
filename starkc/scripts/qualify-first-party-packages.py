@@ -209,6 +209,18 @@ CASES = [
             "  https: a cleartext peer on the secure path is refused\n"
             "  https: POST with a JSON body and a bearer token arrived intact\n"
             "  https: JSON encoded, sent, echoed and parsed back identically\n"
+            # HC12. Three of these are refusals and one is a non-action (following is off), which
+            # together are the exit criterion: bounded, and no silent credential forwarding.
+            "  redirect: off by default, the 302 is returned as-is\n"
+            "  redirect: relative Location resolved and followed\n"
+            "  redirect: absolute Location followed\n"
+            "  redirect: a loop is detected and named\n"
+            "  redirect: the chain bound is enforced on distinct targets\n"
+            "  redirect: a 3xx with no Location is reported\n"
+            "  redirect: 303 converted POST to GET and dropped the body\n"
+            "  redirect: 307 preserved the method and replayed the body\n"
+            "  redirect: Authorization stripped when the origin changed\n"
+            "  redirect: https to http refused as a downgrade\n"
             "STARK_HTTP_CLIENT_RESOURCE_OK\n"
         ),
         resources=("TcpStream", "TlsStream"),
@@ -301,6 +313,11 @@ def echo_peer():
 # observes is the transport, not the fixture.
 #
 # `conn` is any object with `sendall` -- a plain socket or an `ssl.SSLSocket`.
+HTTP_PORT = 39188
+HTTPS_PORT = 39192
+HTTPS_UNTRUSTED_PORT = 39193
+
+
 def read_full_request(conn) -> bytes:
     """Head plus, if `Content-Length` says so, the body.
 
@@ -394,11 +411,49 @@ def respond_http_route(conn, target, request=b""):
             + b"\r\n\r\n"
             + reply
         )
+    # HC12 — redirect routes. Each isolates ONE rule, so a failure names one cause.
+    elif target == "/r-relative":
+        # A relative Location, resolved against this URL's directory.
+        conn.sendall(b"HTTP/1.1 302 Found\r\nLocation: fixed\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/r-absolute":
+        conn.sendall(
+            b"HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:"
+            + str(HTTP_PORT).encode()
+            + b"/fixed\r\nContent-Length: 0\r\n\r\n"
+        )
+    elif target == "/r-loop":
+        conn.sendall(b"HTTP/1.1 302 Found\r\nLocation: /r-loop\r\nContent-Length: 0\r\n\r\n")
+    elif target.startswith("/r-hop"):
+        # An ever-lengthening chain of DISTINCT targets: this exhausts the count bound without ever
+        # repeating a URL, so it proves the bound rather than the loop detector.
+        n = int(target[len("/r-hop"):] or "0")
+        conn.sendall(
+            b"HTTP/1.1 302 Found\r\nLocation: /r-hop"
+            + str(n + 1).encode()
+            + b"\r\nContent-Length: 0\r\n\r\n"
+        )
+    elif target == "/r-nowhere":
+        conn.sendall(b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/r-303":
+        conn.sendall(b"HTTP/1.1 303 See Other\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/r-307":
+        conn.sendall(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/r-cross-origin":
+        # Cleartext peer -> TLS peer: a DIFFERENT origin, so credentials must not travel.
+        conn.sendall(
+            b"HTTP/1.1 302 Found\r\nLocation: https://localhost:"
+            + str(HTTPS_PORT).encode()
+            + b"/echo\r\nContent-Length: 0\r\n\r\n"
+        )
+    elif target == "/r-downgrade":
+        # Served by the TLS peer: https -> http, which must be refused before anything is dialled.
+        conn.sendall(
+            b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:"
+            + str(HTTP_PORT).encode()
+            + b"/fixed\r\nContent-Length: 0\r\n\r\n"
+        )
     else:
         conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-
-
-HTTP_PORT = 39188
 
 
 @contextlib.contextmanager
@@ -455,10 +510,9 @@ def http_peer():
         thread.join(timeout=5)
 
 
-# HC10. The same four routes, behind TLS. `https_peers` serves the fixture chain for `stark.test`
-# on one port and a chain to a root the client is NOT given on another.
-HTTPS_PORT = 39192
-HTTPS_UNTRUSTED_PORT = 39193
+# HC10. The same routes, behind TLS. `https_peers` serves the fixture chain for `localhost` on one
+# port and a chain to a root the client is NOT given on another. (Ports are declared above, beside
+# the shared route table that now references them.)
 
 
 @contextlib.contextmanager

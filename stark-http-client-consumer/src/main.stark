@@ -23,8 +23,11 @@
 use stark_http_client::config_with_explicit_roots;
 use stark_http_client::error_text;
 use stark_http_client::default_config;
+use stark_http_client::default_redirect_policy;
+use stark_http_client::get;
 use stark_http_client::fetch;
 use stark_http_client::new_client;
+use stark_http_client::ClientConfig;
 use stark_http_client::json_body_error_text;
 use stark_http_client::post;
 use stark_http_client::send;
@@ -305,7 +308,212 @@ fn main() {
     }
     println("  https: JSON encoded, sent, echoed and parsed back identically");
 
+    // ------------------------------------------------------------------------------------------
+    // HC12 — redirects. Off by default; every case below opts in explicitly.
+    // ------------------------------------------------------------------------------------------
+
+    // 13. OFF by default: a 302 comes back as the response it IS, not as an error and not followed.
+    //     A client that followed without being asked turns one request the caller reasoned about
+    //     into several they did not.
+    match fetch(&client, "http://127.0.0.1:39188/r-relative") {
+        Ok(response) => {
+            if response.status != 302u16 {
+                panic("with following off, a redirect must be returned as a 302");
+            }
+        }
+        Err(_error) => {
+            panic("a redirect is a valid response, not an error");
+        }
+    }
+    println("  redirect: off by default, the 302 is returned as-is");
+
+    // 14. A RELATIVE Location, followed. The target is resolved against the current directory.
+    let follower = new_client(following(config_for_peer()));
+    let relative = require(&follower, "http://127.0.0.1:39188/r-relative", 200u16, "fixed-body-ok");
+    if relative.status != 200u16 {
+        panic("a relative redirect must reach the target");
+    }
+    println("  redirect: relative Location resolved and followed");
+
+    // 15. An ABSOLUTE Location, and a 301 rather than a 302.
+    let _absolute = require(&follower, "http://127.0.0.1:39188/r-absolute", 200u16, "fixed-body-ok");
+    println("  redirect: absolute Location followed");
+
+    // 16. A LOOP. Distinct from exhausting the bound: the chain revisits a target.
+    match fetch(&follower, "http://127.0.0.1:39188/r-loop") {
+        Ok(_response) => {
+            panic("a redirect loop must not be followed forever");
+        }
+        Err(error) => match error {
+            HttpError::RedirectLoop => {
+                println("  redirect: a loop is detected and named");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a loop must be reported as a loop");
+            }
+        }
+    }
+
+    // 17. The COUNT bound, exhausted by a chain of distinct targets — so this proves the bound
+    //     rather than the loop detector.
+    match fetch(&follower, "http://127.0.0.1:39188/r-hop1") {
+        Ok(_response) => {
+            panic("an unbounded chain must not be followed");
+        }
+        Err(error) => match error {
+            HttpError::TooManyRedirects => {
+                println("  redirect: the chain bound is enforced on distinct targets");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("an over-long chain must be reported as too many redirects");
+            }
+        }
+    }
+
+    // 18. A 3xx with no Location.
+    match fetch(&follower, "http://127.0.0.1:39188/r-nowhere") {
+        Ok(_response) => {
+            panic("a redirect with no Location cannot be followed");
+        }
+        Err(error) => match error {
+            HttpError::MissingLocation => {
+                println("  redirect: a 3xx with no Location is reported");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a missing Location must be named");
+            }
+        }
+    }
+
+    // 19. 303 converts POST to GET and DROPS the body. The echo route reflects what it received,
+    //     so this reads the method off the wire rather than trusting the rewrite table.
+    let mut post_303 = post("http://127.0.0.1:39188/r-303", body_bytes("discard-me"));
+    match append_validated(&mut post_303.headers, "Content-Type", "text/plain") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match send(&follower, post_303) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "GET|-|-|" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("303 must arrive as a GET with no body and no content type");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the 303 redirect must be followed");
+        }
+    }
+    println("  redirect: 303 converted POST to GET and dropped the body");
+
+    // 20. 307 PRESERVES both. Same peer, same echo route, opposite outcome — the pair is what makes
+    //     either assertion meaningful.
+    let mut post_307 = post("http://127.0.0.1:39188/r-307", body_bytes("keep-me"));
+    match append_validated(&mut post_307.headers, "Content-Type", "text/plain") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match send(&follower, post_307) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "POST|-|text/plain|keep-me" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("307 must replay the method, headers and body");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the 307 redirect must be followed");
+        }
+    }
+    println("  redirect: 307 preserved the method and replayed the body");
+
+    // 21. **CROSS-ORIGIN CREDENTIAL STRIPPING — the exit criterion.** The cleartext peer redirects
+    //     to the TLS peer, a different origin. The Authorization header must NOT arrive. The echo
+    //     route reflects it, so this observes the actual wire rather than trusting the policy flag.
+    let mut credentialed = get("http://127.0.0.1:39188/r-cross-origin");
+    match append_validated(&mut credentialed.headers, "Authorization", "Bearer do-not-forward") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Authorization header must be accepted");
+        }
+    }
+    match send(&follower, credentialed) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "GET|-|-|" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("the Authorization header crossed an origin boundary");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the cross-origin redirect must be followed, minus the credential");
+        }
+    }
+    println("  redirect: Authorization stripped when the origin changed");
+
+    // 22. An https -> http DOWNGRADE, refused before anything is dialled.
+    match fetch(&follower, "https://localhost:39192/r-downgrade") {
+        Ok(_response) => {
+            panic("a downgrade must not be followed");
+        }
+        Err(error) => match error {
+            HttpError::InsecureRedirect => {
+                println("  redirect: https to http refused as a downgrade");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a downgrade must be reported as an insecure redirect");
+            }
+        }
+    }
+
     println("STARK_HTTP_CLIENT_RESOURCE_OK");
+}
+
+fn body_bytes(text: &str) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let bytes = text.bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        out.push(bytes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// The explicit-roots configuration, so a follower can reach the TLS peer mid-chain.
+fn config_for_peer() -> ClientConfig {
+    config_with_explicit_roots(String::from(CA_PEM))
+}
+
+/// The same configuration with following turned ON, under the default (safe) policy.
+///
+/// Built as one literal rather than by assigning `follow_redirects` on a copy: assigning over a
+/// field whose old value is a drop unit aborts natively (DEV-158), and `tls_root_store` is one.
+fn following(config: ClientConfig) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: config.read_timeout,
+        write_timeout: config.write_timeout,
+        max_response_bytes: config.max_response_bytes,
+        follow_redirects: true,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: config.tls_handshake_timeout,
+        redirects: default_redirect_policy(),
+    }
 }
 
 /// A one-member object. `vec![..]` is not Core v1, so the Vec is built explicitly.
