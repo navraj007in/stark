@@ -1007,4 +1007,65 @@ mod tests {
         slot.write("still here".to_string());
         slot.finish_partial();
     }
+
+    /// **DEV-160's generated thunk, hand-written, so Miri can see it.**
+    ///
+    /// A thunk is *generated* code: it exists only inside a program the backend emits, and Miri
+    /// cannot run what has not been generated. So the shape is written out here — one slot arriving
+    /// as `&'a mut ValueSlot<T>`, ONE raw pointer derived from it, every access through that
+    /// pointer, and no reference to the slot reconstructed while a field borrow is alive.
+    ///
+    /// **A hand-written copy is only evidence while it stays a copy.** `starkc`'s
+    /// `dev160_call_site_thunk::the_miri_fixture_matches_what_the_generator_emits` reads
+    /// [`GENERATED_THUNK_SHAPE`] below and compares it to the primitives a freshly generated thunk
+    /// actually calls, in order. If the generator changes, that test fails here rather than leaving
+    /// this file quietly reassuring.
+    ///
+    /// Under Miri this checks what no ordinary run can: that the raw projections do not violate
+    /// Stacked Borrows — that deriving the pointer once from `&mut` and then reading one field
+    /// while moving out of another really is disjoint, rather than merely appearing to work.
+    // Read as TEXT by starkc's fixture-drift test, never called from Rust.
+    #[allow(dead_code)]
+    pub const GENERATED_THUNK_SHAPE: &[&str] =
+        &["field_ref_raw", "move_field_raw", "copy_field_raw"];
+
+    /// The callee. Takes exactly what a STARK function with `(&String, String, UInt32)` parameters
+    /// would --- `&String` rather than clippy's preferred `&str`, because the generated form is
+    /// whatever the STARK signature says and this fixture exists to mirror it.
+    #[allow(clippy::ptr_arg)]
+    fn callee(a: &String, b: String, c: u32) -> usize {
+        a.len() + b.len() + c as usize
+    }
+
+    /// The thunk. Every line here corresponds to something `emit_call_thunk::emit_thunk` renders.
+    fn thunk<'a>(s0: &'a mut ValueSlot<(String, String, u32)>) -> usize {
+        let p0: *mut ValueSlot<(String, String, u32)> = s0;
+        // SAFETY: one fixed projection per access into THIS slot's storage; the accesses are
+        // disjoint; no `&ValueSlot`/`&mut ValueSlot` is formed after `a0` exists.
+        unsafe {
+            let a0: &'a String = ValueSlot::field_ref_raw(p0, |p| core::ptr::addr_of_mut!((*p).0));
+            let a1: String = ValueSlot::move_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).1));
+            let a2: u32 = ValueSlot::copy_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).2));
+            callee(a0, a1, a2)
+        }
+    }
+
+    #[test]
+    fn the_generated_thunk_shape_is_sound_under_stacked_borrows() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("abc"), String::from("de"), 1u32));
+
+        assert_eq!(thunk(&mut slot), 3 + 2 + 1);
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // The survivors are destroyed the way generated drop elaboration destroys them: per unit,
+        // through raw projections, over storage a sibling has already left.
+        unsafe {
+            slot.drop_field_with(
+                |p| core::ptr::addr_of_mut!((*p).0),
+                |p: *mut String| core::ptr::drop_in_place(p),
+            );
+        }
+        slot.finish_partial();
+    }
 }

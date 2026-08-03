@@ -190,6 +190,47 @@ jobs:
           name: c65-mutation-evidence
           path: ${{ runner.temp }}/c65-mutations/
 
+  # DEV-160: the raw slot primitives, under Miri.
+  #
+  # `ValueSlot::field_ref_raw` and its siblings take a `*mut ValueSlot<T>` and hand back a borrow of
+  # one field while a SIBLING is moved out. Ordinary tests cannot tell a sound raw projection from
+  # one that merely happens to work: nothing in a normal run checks provenance or Stacked Borrows.
+  # Miri does, and it is the only thing here that does.
+  #
+  # It also covers a hand-written copy of a GENERATED thunk (`slot::tests::thunk`). Miri cannot run
+  # what the backend has not generated, so the shape is written out for it — and
+  # `dev160_call_site_thunk::the_miri_fixture_matches_what_the_generator_emits`, in the ordinary test
+  # job, fails if that copy stops matching what the compiler emits. Neither check is worth much
+  # without the other.
+  #
+  # **Pinned, not `nightly`.** Miri's aliasing model is under active development; a floating nightly
+  # would turn "our raw projections are sound" into "they are sound under whatever model shipped
+  # this morning", and a failure would be unattributable between our change and theirs. Moving the
+  # pin is a deliberate act with its own commit.
+  #
+  # `-Zmiri-ignore-leaks` is needed and is not a weakening of the aliasing check. Three `should_panic`
+  # tests hold heap values when the panic aborts them, which Miri reports as leaked memory; that is
+  # what those tests are for. Provenance checking stays strict.
+  dev160-miri:
+    name: DEV-160 raw slot primitives under Miri
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-20
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Miri over the slot primitives
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-ignore-leaks
+        run: cargo miri test -p stark-runtime --lib slot:: -- --nocapture
+
   # §16.4: two green corpus jobs are not agreement, for the same reason two green platform jobs are
   # not. `if: always()` for the same reason as the C6.4 comparison: a skipped comparison is an
   # absence a reader has to interpret, not a report.

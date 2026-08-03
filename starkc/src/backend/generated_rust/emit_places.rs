@@ -43,6 +43,14 @@ pub struct TyEnv<'a> {
     /// A borrow, not an owned value: `TyEnv` is `Copy`. Defaults to the built-in set, which is
     /// correct for every program that declares no package resource.
     pub program_resources: &'a crate::provider_bind::ResourceRegistry,
+    /// DEV-160: the call sites this program emits through a generated thunk, planned once by
+    /// `emit_call_thunk::collect_plans`.
+    ///
+    /// Carried on the environment rather than recomputed at the call: the plan decides which
+    /// projection wrappers exist, and a second derivation at emission is how DEV-162 named a
+    /// helper nothing had generated. Empty for every program with no such call, which is nearly
+    /// all of them.
+    pub thunks: &'a [super::emit_call_thunk::CallThunkPlan],
 }
 
 /// The built-in-only registry, borrowed by every `TyEnv` that was given no program registry.
@@ -64,6 +72,7 @@ impl<'a> TyEnv<'a> {
             layout,
             provider_calls: &[],
             program_resources: builtin_resources(),
+            thunks: &[],
         }
     }
 
@@ -83,6 +92,12 @@ impl<'a> TyEnv<'a> {
         resources: &'a crate::provider_bind::ResourceRegistry,
     ) -> Self {
         self.program_resources = resources;
+        self
+    }
+
+    /// DEV-160: the program's call-thunk plans.
+    pub fn with_thunks(mut self, thunks: &'a [super::emit_call_thunk::CallThunkPlan]) -> Self {
+        self.thunks = thunks;
         self
     }
 

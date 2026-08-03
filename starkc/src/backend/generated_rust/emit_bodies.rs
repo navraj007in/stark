@@ -34,6 +34,9 @@ use std::sync::Arc;
 /// A complete `fn name(params) -> ret { ... }` for an ordinary (non-entry) function. The entry
 /// instance is emitted separately, by `emit_program.rs`, as Rust's literal `fn main()` with the
 /// version-check prologue prepended -- `emit_block_body` is the shared piece both use.
+// DEV-160 adds one more program-wide table (the thunk plans). The alternative to another parameter
+// is a context struct, which is its own change.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_function(
     body: &MirBody,
     name: &str,
@@ -42,6 +45,7 @@ pub fn emit_function(
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
     program_resources: &crate::provider_bind::ResourceRegistry,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
     // WP-C6.1f "returning a reference" — OWN-RETURN-001 native encoding. When a function returns a
     // reference, Rust needs to know which input it borrows from. STARK's rule is the *shortest* of
@@ -77,6 +81,7 @@ pub fn emit_function(
         layout,
         provider_calls,
         program_resources,
+        thunks,
     )?;
     Ok(format!("fn {name}{generics}({params}) -> {ret_ty} {block}"))
 }
@@ -161,10 +166,12 @@ pub fn emit_block_body(
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
     program_resources: &crate::provider_bind::ResourceRegistry,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
     let env = &TyEnv::new(body, types, layout)
         .with_provider_calls(provider_calls)
-        .with_program_resources(program_resources);
+        .with_program_resources(program_resources)
+        .with_thunks(thunks);
     validate_ephemeral_references(body)?;
     let mut out = String::from("{\n");
 
@@ -326,8 +333,20 @@ fn emit_one_block(
     block: u32,
     mode: EmitMode<'_>,
 ) -> Result<(), BackendDiagnostic> {
+    let block_index = block;
     let block = &body.blocks[block as usize];
-    for (stmt, _) in &block.statements {
+    // DEV-160: a reference temporary the block's thunk performs itself. Emitting the `RefOf` here as
+    // well would leave that borrow live across the thunk's `&mut` -- which IS the conflict the thunk
+    // exists to resolve, so the suppression is part of the fix rather than an optimisation.
+    let absorbed: &[usize] =
+        match super::emit_call_thunk::plan_at(env.thunks, &body.instance.symbol, block_index) {
+            Some(plan) => &plan.absorbed,
+            None => &[],
+        };
+    for (index, (stmt, _)) in block.statements.iter().enumerate() {
+        if absorbed.contains(&index) {
+            continue;
+        }
         match stmt {
             Statement::Nop => {}
             Statement::Assign(place, rvalue) => {
@@ -360,6 +379,7 @@ fn emit_one_block(
         &block.terminator.1,
         env,
         mode,
+        block_index,
     )
 }
 
@@ -883,6 +903,9 @@ impl EmitMode<'_> {
     }
 }
 
+// DEV-160 adds the block index, which is half a call site's identity and cannot be derived from the
+// terminator itself.
+#[allow(clippy::too_many_arguments)]
 fn emit_terminator(
     body: &MirBody,
     files: &[Arc<SourceFile>],
@@ -894,6 +917,9 @@ fn emit_terminator(
     info: &SourceInfo,
     env: &TyEnv,
     mode: EmitMode<'_>,
+    // DEV-160: half of the call-site identity a thunk plan is keyed by. A `Call` is a terminator,
+    // so a block holds at most one and the index alone distinguishes it within the body.
+    block_index: u32,
 ) -> Result<(), BackendDiagnostic> {
     match terminator {
         Terminator::Goto { target } => {
@@ -989,6 +1015,7 @@ fn emit_terminator(
                 dest_ty,
                 env,
                 &super::emit_runtime::CallSite { file, line, col },
+                block_index,
             )?;
             out.push_str(&format!(
                 "                {}\n",
@@ -1075,7 +1102,21 @@ fn emit_call(
     dest_ty: &MirTy,
     env: &TyEnv,
     site: &super::emit_runtime::CallSite,
+    block_index: u32,
 ) -> Result<String, BackendDiagnostic> {
+    // DEV-160: a call that touches ONE slot-backed local several ways in one argument list cannot
+    // be emitted as ordinary borrows -- see `emit_call_thunk`. The plan was built by
+    // `collect_plans` before any body was emitted; it is looked up here, never rebuilt, so the
+    // wrappers this names are exactly the ones already generated.
+    //
+    // Every other call falls through to emission that is byte-identical to what it was before this
+    // existed, which is what keeps the change off the hot path.
+    if let Some(plan) =
+        super::emit_call_thunk::plan_at(env.thunks, &env.body.instance.symbol, block_index)
+    {
+        return Ok(super::emit_call_thunk::emit_call_site(plan));
+    }
+
     // Argument emission is IDENTICAL for direct and indirect calls (§9.2): the same left-to-right
     // move/copy operand handling MIR already sequenced. Only the callee expression differs.
     let mut arg_exprs = Vec::with_capacity(args.len());
@@ -1917,7 +1958,7 @@ pub(super) fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, Bac
 /// source type, neither of which `Operand` itself carries. WP-C5.3a: projected places resolve
 /// through `TyEnv`, so a switch on a struct field or an array element is no longer a special
 /// case that has to be refused.
-fn operand_mir_ty(operand: &Operand, env: &TyEnv) -> Result<MirTy, BackendDiagnostic> {
+pub(super) fn operand_mir_ty(operand: &Operand, env: &TyEnv) -> Result<MirTy, BackendDiagnostic> {
     match operand {
         Operand::Const(Constant::Bool(_)) => Ok(MirTy::Bool),
         Operand::Const(Constant::Int(_, ty)) => Ok(ty.clone()),

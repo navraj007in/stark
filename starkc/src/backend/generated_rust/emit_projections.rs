@@ -96,6 +96,12 @@ pub enum HelperOp {
     /// value — so a read after another field was moved out aborted, though the field being read
     /// was untouched. `copy_field` already covered the `Copy` case by value; this is the rest.
     Ref,
+    /// **DEV-160.** The `*mut ValueSlot<T>` twins of `Move`/`Copy`/`Ref`, used only by a generated
+    /// call-site thunk. See the primitives on `ValueSlot` for why a raw-pointer form is needed and
+    /// why it cannot simply replace the reference form.
+    MoveRaw,
+    CopyRaw,
+    RefRaw,
     /// **DEV-158.** Initialises ONE field of storage that may be partially moved:
     /// `ValueSlot::write_field`.
     ///
@@ -140,6 +146,9 @@ pub fn helper_name(base_ty: &MirTy, projection: &[Projection], op: HelperOp) -> 
         HelperOp::Drop => "drop",
         HelperOp::Write => "write",
         HelperOp::Ref => "ref",
+        HelperOp::MoveRaw => "moveraw",
+        HelperOp::CopyRaw => "copyraw",
+        HelperOp::RefRaw => "refraw",
     };
     let selector: Vec<String> = projection.iter().map(projection_token).collect();
     mangle::sanitize_symbol(&format!(
@@ -199,11 +208,21 @@ fn raw_selector_chain(
 pub fn collect(
     program: &MirProgram,
     layout: &crate::layout::TargetLayout,
+    // DEV-160: the calls a thunk owns. Their argument lists are NOT walked here -- the plan already
+    // named the raw wrappers they need, and collecting the ordinary safe forms as well would be the
+    // second, independent derivation the addendum forbids. It would also refuse programs the plan
+    // accepts, since some of these shapes have no safe form at all.
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<Vec<ProjectionHelper>, BackendDiagnostic> {
     let mut found: BTreeMap<String, ProjectionHelper> = BTreeMap::new();
+    for plan in thunks {
+        for helper in &plan.helpers {
+            found.insert(helper.name.clone(), helper.clone());
+        }
+    }
     for body in &program.bodies {
         let env = emit_places::TyEnv::new(body, &program.types, layout);
-        for block in &body.blocks {
+        for (block_index, block) in body.blocks.iter().enumerate() {
             for (statement, _) in &block.statements {
                 if let Statement::Assign(dest, rvalue) = statement {
                     // DEV-158: a PROJECTED destination into slot-backed storage is installed
@@ -239,7 +258,11 @@ pub fn collect(
                     }
                 }
             }
+            let thunked =
+                super::emit_call_thunk::plan_at(thunks, &body.instance.symbol, block_index as u32)
+                    .is_some();
             match &block.terminator.0 {
+                Terminator::Call { .. } if thunked => {}
                 Terminator::Call { args, .. } | Terminator::Checked { args, .. } => {
                     for arg in args {
                         collect_operand(arg, &env, &program.types, &mut found)?;
@@ -337,6 +360,17 @@ fn collect_ref_place(
         return Ok(());
     }
     collect_place(place, env, HelperOp::Ref, found)
+}
+
+/// DEV-160: the plan registers helpers through this. Public so the plan is the ONE place a call's
+/// helper requirements are derived — nothing downstream rediscovers them.
+pub fn collect_place_pub(
+    place: &Place,
+    env: &emit_places::TyEnv,
+    op: HelperOp,
+    found: &mut BTreeMap<String, ProjectionHelper>,
+) -> Result<(), BackendDiagnostic> {
+    collect_place(place, env, op, found)
 }
 
 fn collect_place(
@@ -453,8 +487,9 @@ pub fn collect_for_place(
 pub fn emit(
     helpers: &[ProjectionHelper],
     types: &TypeContext,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
-    if helpers.is_empty() {
+    if helpers.is_empty() && thunks.is_empty() {
         return Ok(String::new());
     }
     // The explanatory banner lives INSIDE the module: a comment above it would put the word
@@ -546,6 +581,37 @@ pub fn emit(
             // site: a wrapper is already per-(base type, projection), which fixes the field type,
             // which fixes the plan. It also keeps the call site free of glue, so an emitted MIR
             // body still contains no `unsafe` and no destruction logic of its own.
+            // DEV-160. The `*mut ValueSlot<T>` twin of the three read/move forms.
+            //
+            // Emitted alongside its reference-taking sibling rather than instead of it: an ordinary
+            // call keeps the reference form, and only a generated call-site THUNK — which holds the
+            // slot through one real `&mut` and derives a pointer from it — uses these. Keeping the
+            // pairing "one wrapper = one primitive + one fixed projection + one slot type" is what
+            // lets the primitives' safety contract be discharged by construction.
+            //
+            // `#![allow(unused)]` on the module covers the twins no thunk happens to need.
+            (HelperOp::MoveRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::move_field_raw`.\n    pub unsafe fn {name}(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::move_field_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            (HelperOp::CopyRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::copy_field_raw`.\n    pub unsafe fn {name}(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::copy_field_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            (HelperOp::RefRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::field_ref_raw`; the caller supplies `'a` from the slot it holds.\n    pub unsafe fn {name}<'a>(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> &'a {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::field_ref_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            // The raw twins exist only for raw chains; an enum payload has no raw projection.
+            (HelperOp::MoveRaw | HelperOp::CopyRaw | HelperOp::RefRaw, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a raw-pointer twin of an enum-payload projection is not supported ({:?})",
+                    helper.base_ty
+                )))
+            }
             // DEV-162. A shared borrow through the raw projection, tied to the slot borrow.
             (HelperOp::Ref, ProjectionForm::Raw) => out.push_str(&format!(
                 "\n    /// Borrows ONE field. Raw projection, so it is valid over storage a sibling \
@@ -615,6 +681,12 @@ pub fn emit(
                 )))
             }
         }
+    }
+    // DEV-160: the call thunks live INSIDE this module, alongside the wrappers they call and inside
+    // the one boundary a generated program's `unsafe` is allowed to cross (§7.8). Emitted from the
+    // same plans that produced the wrappers above, so a thunk cannot name one that is absent.
+    for plan in thunks {
+        out.push_str(&super::emit_call_thunk::emit_thunk(plan)?);
     }
     out.push_str("}\n\n");
     Ok(out)

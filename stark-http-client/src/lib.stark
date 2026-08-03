@@ -1212,9 +1212,14 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
         // The fields are moved into LOCALS first, rather than passed as `builder.url.as_str()`
         // alongside `builder.headers`. STARK's borrow checker is place-granular (DEV-154) and
         // accepts the inline form — those are disjoint fields — but the generated projections take
-        // `&slot` and `&mut slot`, losing that granularity, so rustc rejects the generated code
-        // with E0502. DEV-160. `follow` below already had this shape, which is why only this path
-        // failed.
+        // `&slot` and `&mut slot`, losing that granularity. DEV-160. `follow` below already had
+        // this shape, which is why only this path failed.
+        //
+        // CD-374 fixed the in-block form with a generated call thunk. This one is NOT in-block:
+        // `as_str()` is itself a call, so the `&str` it returns arrives from an earlier block and
+        // the thunk cannot take over its evaluation. The compiler now refuses that shape by name
+        // rather than emitting code rustc rejects, so this stays until cross-block absorption
+        // lands.
         let url = builder.url;
         let method = builder.method;
         let headers = builder.headers;

@@ -1,5 +1,157 @@
 # STARK Compiler STATE
 
+## CD-374 — DEV-160: the call thunk, and the two shapes it still refuses (2026-08-03)
+
+**DEV-160 is CLOSED for calls whose conflicting evaluation lives in one block, and refused BY NAME
+for the two shapes that do not.** The second half matters as much as the first: before this, both
+reached rustc as `E0502` inside `mod stark_proj` — a correct compiler error about code the user
+never wrote.
+
+### What a thunk is
+
+One generated function per conflicting call site, in `mod stark_proj` beside the wrappers it calls:
+
+```rust
+pub fn stark_thunk_23main_40_5b_5d_23bb2<'a>(
+    s0: &'a mut stark_runtime::slot::ValueSlot<stark_ty_230_40_5b_5d>,
+) -> u32 {
+    let p0: *mut stark_runtime::slot::ValueSlot<stark_ty_230_40_5b_5d> = s0;
+    unsafe {
+        let a0 = stark_refraw_23struct_230_23f0::<'a>(p0);
+        let a1 = stark_moveraw_23struct_230_23f1(p0);
+        let a2 = stark_copyraw_23struct_230_23f2(p0);
+        stark_consume_40_5b_5d(a0, a1, a2)
+    }
+}
+```
+
+The slot arrives ONCE through a real `&'a mut`, one raw pointer is derived from it, and every
+operand is evaluated through that pointer **in MIR order**. There is one `&mut` in existence, so
+there is nothing left to conflict with; `'a` comes from a real reference, so a borrow the thunk
+hands on has honest provenance. The call site is `stark_proj::NAME(&mut _1)` — one safe call, §7.8
+intact.
+
+### The part that was not in the plan: absorbing the borrow
+
+The conflicting `&` is usually **not in the argument list at all**. `f(&p.name, p.body)` lowers to a
+`RefOf` STATEMENT filling a temporary, and only the temporary is an argument. A thunk that took over
+the argument list alone would leave that borrow live beside its own `&mut` and change nothing.
+
+So the thunk takes over the borrow's statements too, and `emit_bodies` suppresses them. Three
+conditions gate it, and each was needed:
+
+```text
+same block          moving the RefOf inside the thunk must not move it past a branch
+projected base      a whole-slot borrow has no raw twin (and STARK rejects it beside a move anyway)
+every read is here  the definition is suppressed, so nothing may need the value afterwards
+```
+
+Delaying the borrow is sound because the front end has already proved nothing between it and the
+call can mutate what is borrowed. A *disjoint* sibling may be moved in that gap — and re-deriving
+through a raw projection reads the untouched field either way, which is exactly what a whole-value
+accessor could not do.
+
+**`let r = &p.name;` lowers to a PAIR** — `_8 = &_1.0` then `_7 = copy _8` — and only `_7` reaches
+the call. Following that chain, and suppressing every statement along it, is the difference between
+absorbing the reported idiom and absorbing nothing.
+
+### The two refusals, and why each is a refusal rather than a gap
+
+**A borrow that outlives the call.** `let r = &p.name; f(r, p.body); use(r);` cannot be absorbed —
+suppressing the definition breaks the later read — and cannot be left alone. Refused, naming the
+local and the field.
+
+**A borrow arriving through an earlier call.** This is the shape DEV-160 was reported as:
+
+```text
+send_once(builder.url.as_str(), builder.headers, builder.body)
+```
+
+`as_str` runs in an earlier block and returns a `&str` borrowing `builder`. By the outer call it is
+an ordinary non-slot local carrying no sign of where it came from, so the backend now **traces
+borrow provenance** — `RefOf` seeds it, copies and borrow-carrying aggregates propagate it
+(OWN-CARRY-001 makes provenance structural), and a call's result inherits its arguments', which is
+STARK's own shortest-input rule read as may-alias. A by-value argument whose type could carry a
+borrow and whose provenance meets a participating slot is refused by name, with the workaround
+stated.
+
+Absorbing it means absorbing the intermediate CALL, across a block boundary, turning that block's
+terminator into a `goto`. That is a second mechanism, not an extension of this one, and it changes
+control flow — **flagged for an owner ruling rather than taken unilaterally.** The HTTP client's
+`send()` workaround therefore stays, and the comment above it in `stark-http-client/src/lib.stark`
+now says which half of DEV-160 closed and which did not.
+
+Provenance over-approximates, filtered by type: without the type filter,
+`consume(p.taken, p.kept.len())` would be refused, because `len` takes `&p.kept` and the relation
+propagates — but the result is a `UInt64` and borrows nothing.
+
+### The provider audit
+
+A provider call never reaches `emit_call`. It is emitted as a statement SEQUENCE — one
+`let __prov_aN = ...;` per argument (A10/CD-200) — which has the SAME conflict: `__prov_a0` holding
+a shared borrow is a live local when `__prov_a1` moves a sibling through `&mut`. The thunk does not
+apply (there is no single expression to replace, and the ABI's out-parameters and handle transfers
+are not arguments a thunk could carry), so it is refused by name. This was the audit the addendum
+asked for, and it found a real path rather than confirming an unreachable one.
+
+### What bounds the change
+
+A call that does not conflict reaches none of this. Both mechanisms that could touch it — the plan
+lookup in `emit_call`, the statement suppression in `emit_one_block` — are gated on a plan existing,
+so `ordinary_calls_plan_nothing` asserts the detector stays silent on four shapes each ONE condition
+away from conflicting: two `Copy` reads, a lone borrow, a lone move, a whole-value move.
+
+One plan, three consumers. `emit_projections::collect` skips the argument lists the plans cover,
+`emit_projections::emit` renders the helpers each plan names, and `emit_call` looks its plan up. The
+addendum required this and it is not decoration: DEV-162 shipped an `E0425` precisely because the
+emitter named a helper the collector had never been asked for.
+
+### Miri, and keeping the fixture honest
+
+A thunk is generated code, and Miri cannot run what has not been generated. So `stark-runtime`
+carries a hand-written one and a pinned CI job (`nightly-2026-07-20`,
+`-Zmiri-strict-provenance`) runs the slot primitives under it — the only check here that can tell a
+sound raw projection from one that merely happens to work.
+
+That arrangement has an obvious failure mode: the generator changes, the fixture does not, and the
+Miri job keeps proving something about code the compiler no longer emits. So the fixture publishes
+`GENERATED_THUNK_SHAPE`, and `the_miri_fixture_matches_what_the_generator_emits` derives the same
+sequence from a freshly generated thunk by resolving each wrapper to the primitive inside it. The
+two must agree. **Neither check is worth much without the other.**
+
+`-Zmiri-ignore-leaks` is required and does not weaken the aliasing check: three `should_panic` tests
+hold heap values when the panic aborts them, which is what those tests are for.
+
+### Evidence
+
+```text
+8   DEV-160 tests -- 4 executed through HIR, MIR, native-debug AND native-release,
+                     2 refusal assertions, 1 bounding invariant, 1 fixture-drift check
+26  stark-runtime slot tests, all green under Miri with strict provenance
+23  suites re-run green locally: MIR lowering/verification/differential, the
+    three-engine differential, ownership, aggregates, generics, function values,
+    providers, host resources, and DEV-135/150/154/162
+```
+
+Local runs are scoped by design; `cargo test --workspace` belongs to CI, which is what the totals
+should be read from.
+
+The four executed cases are compared across engines rather than each asserted to exit 0 — including
+the ordering case, where the `Copy` read is deliberately the THIRD argument, after the move, so a
+reordered thunk would read storage a sibling had already left.
+
+### Status
+
+```text
+DEV-158  install through a whole-value accessor       CLOSED (CD-371)
+DEV-162  read through a whole-value accessor          CLOSED (CD-372)
+DEV-160  in-block conflicting evaluation              CLOSED (this)
+         borrow outliving the call                    REFUSED by name
+         borrow through an earlier call               REFUSED by name -- needs a ruling on
+                                                      cross-block absorption
+         provider-call argument sequences             REFUSED by name
+```
+
 ## CD-373 — DEV-160 foundation: the raw-slot primitives, and an order finding (2026-08-03)
 
 **Owner ruling accepted (raw-pointer call-site thunk; argument reordering PROHIBITED because CD-007

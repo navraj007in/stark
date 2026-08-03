@@ -132,10 +132,14 @@ because it is an API break.
 
 | id | what | status |
 | --- | --- | --- |
-| **DEV-160** | STARK's borrow checker is place-granular (DEV-154) and accepts disjoint-field borrows in one call — `f(builder.url.as_str(), builder.headers)`. The generated projections take `&slot` / `&mut slot`, losing that granularity, so **rustc rejects the generated code** with `E0502`. A correct program refused by the backend. Worked around by moving fields into locals first. | OPEN |
+| **DEV-160** | STARK's borrow checker is place-granular (DEV-154) and accepts disjoint-field borrows in one call — `f(builder.url.as_str(), builder.headers)`. The generated projections take `&slot` / `&mut slot`, losing that granularity, so **rustc rejects the generated code** with `E0502`. A correct program refused by the backend. Worked around by moving fields into locals first. | **PARTLY CLOSED (CD-374).** A generated call thunk fixes it when the conflicting evaluation is in ONE block. The idiom above is not — `as_str()` is itself a call in an earlier block — so it is now **refused by name** instead of reaching rustc, and the workaround stays until cross-block absorption is ruled on. |
 | — | DEV-158 and DEV-157 were both already known and neither bit again here: the consumer's config builder was written as a literal and the redirect arms nested from the start. | avoided |
 
 **DEV-160 is the same shape as DEV-158** — the slot abstraction is whole-value while STARK's
 ownership model is place-granular — and it is the third defect in this family. Whatever fixes the
 `Partial`/`Whole` transition should be scoped to look at projection granularity generally, not just
 at field assignment.
+
+That prediction held: DEV-158 (CD-371), DEV-162 (CD-372) and DEV-160 (CD-374) were one defect seen
+from three angles, and each was invisible to both interpreters. Only a native build could find any
+of them.
