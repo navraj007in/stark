@@ -229,7 +229,7 @@ jobs:
       - name: Miri over the slot primitives
         env:
           MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-ignore-leaks
-        run: cargo miri test -p stark-runtime --lib slot:: -- --nocapture
+        run: "cargo miri test -p stark-runtime --lib slot:: -- --nocapture"
 
   # §16.4: two green corpus jobs are not agreement, for the same reason two green platform jobs are
   # not. `if: always()` for the same reason as the C6.4 comparison: a skipped comparison is an
@@ -741,6 +741,7 @@ jobs:
       - c64-qualification
       - c65-corpus
       - c65-mutation-controls
+      - dev160-miri
       - c65-tier1-comparison
       - c64-tier1-comparison
       - c64-windows-gap
