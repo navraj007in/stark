@@ -1,5 +1,79 @@
 # STARK Compiler STATE
 
+## CD-372 — DEV-162 CLOSED; DEV-160's obvious fix does not work, and here is why (2026-08-03)
+
+### DEV-162 — reading a sibling field of partially-moved storage
+
+Sibling of DEV-158, same root cause. Once a field is moved out the storage is `Partial`, and a read
+of an UNTOUCHED sibling was emitted as `&slot.get().f1`, where `get` requires a complete value:
+
+```text
+_7.reinit(stark_proj::stark_move_23struct_230_23f0(&mut _1));
+_13 = (&_1.get().f1);   // aborts: the slot is PARTIAL
+```
+
+`copy_field` already covered the `Copy` case by value (WP-C6.1b). This is the rest: a non-`Copy`
+field, borrowed. `ValueSlot::field_ref` reads through a raw projection, so it never materialises a
+reference to the surrounding value. `HelperOp::Ref` joins Move/Copy/Drop/Write, and the emitted form
+is `(*stark_proj::stark_ref_…(&_1))` — dereferenced, because callers in `Borrow` mode prepend their
+own `&` and need a place expression.
+
+**The part missed first.** `Rvalue::RefOf` carries a PLACE, not an operand, so `rvalue_operands`
+returns nothing for it and the collector never generated the helper the emitter had already named.
+That surfaces as `E0425` inside the generated crate — a name error in code nobody wrote — not as any
+diagnostic the compiler produces. Collector and emitter must agree and nothing but a build proves
+it, which is now what the regression test does, across three engines.
+
+### DEV-160 — the obvious fix does NOT work, recorded before anyone tries it
+
+```stark
+consume(p.url.as_str(), p.headers, p.body)   // accepted by STARK, E0502 in generated Rust
+```
+
+The instinct — and my own first plan — is to hoist each argument into a temporary before the call:
+
+```rust
+let __a0 = stark_ref_…url(&_1);
+let __a1 = stark_move_…headers(&mut _1);   // still E0502
+```
+
+**It does not help.** `__a0` holds a shared borrow of `_1` that stays live until the call consumes
+it, so every later `&mut _1` still conflicts. Sequencing the statements changes nothing about the
+borrow's extent.
+
+Two options actually remain, and both have a real cost:
+
+```text
+reorder    emit every `&mut` argument BEFORE any borrow that lives into the call. Sound here —
+           a borrowed field and a moved field are necessarily disjoint or MIR would have refused
+           the program — but it changes ARGUMENT EVALUATION ORDER, which CD-007 fixes. Needs a
+           decision, not just an edit.
+
+raw ptr    give the helpers `*mut ValueSlot<T>` parameters, which do not participate in borrowck.
+           Conflicts with §7.8's rule that generated MIR bodies contain no `unsafe` of their own,
+           unless the unsafety is pushed entirely inside `mod stark_proj`.
+```
+
+Recorded rather than attempted. Getting this wrong quietly changes evaluation order for every
+call in the language.
+
+### Where the family stands
+
+```text
+DEV-158  install through a whole-value accessor      CLOSED (CD-371)
+DEV-162  read through a whole-value accessor         CLOSED (this)
+DEV-160  whole-slot borrows, disjoint projections    OPEN — needs an evaluation-order ruling
+```
+
+Two of three closed. The remaining one is not a bug to fix but a decision to take.
+
+### Evidence
+
+378 across the MIR, native, ownership and aggregate suites; 26 runtime; clippy clean; all 16
+packages green. `dev162_partial_field_read.rs` compares three engines rather than asserting each
+exits 0 separately, and covers the `Copy` sibling alongside the non-`Copy` one so a regression in
+either is visible against the other.
+
 ## CD-371 — DEV-158 CLOSED; the diagnosis was wrong twice before it was right (2026-08-03)
 
 **Assigning over a struct field whose old value is a drop unit now works natively.** Both HTTP

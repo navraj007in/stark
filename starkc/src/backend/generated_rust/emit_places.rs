@@ -402,6 +402,30 @@ fn emit_place_from(
             ));
         }
     }
+    // DEV-162: the same treatment for a NON-`Copy` field, which is BORROWED rather than copied.
+    // `&slot.get().f1` requires a complete value, so reading an untouched field aborted once a
+    // SIBLING had been moved out. The helper returns `&F`; dereferencing it keeps this a Rust place
+    // expression, which callers in `Borrow` mode rely on — they prepend their own `&`.
+    if matches!(mode, PlaceMode::Read | PlaceMode::Borrow)
+        && !place.projection.is_empty()
+        && is_slot_local(place.local.0, env)?
+    {
+        let base_ty = env.local_ty(place.local.0)?;
+        let field_ty = env.place_ty(place)?;
+        let raw_base =
+            super::emit_projections::chain_is_raw(&base_ty, &place.projection, env.types)?;
+        if raw_base && !emit_types::mir_ty_is_copy(&field_ty, env.types) {
+            let helper = super::emit_projections::collect_for_place(
+                place,
+                env,
+                super::emit_projections::HelperOp::Ref,
+            )?;
+            return Ok(format!(
+                "(*stark_proj::{helper}(&{}))",
+                local_name(place.local.0)
+            ));
+        }
+    }
     let mut rendered = if is_stored_ref_local(place.local.0, env)? {
         stored_ref_access(place.local.0, env)?
     } else {

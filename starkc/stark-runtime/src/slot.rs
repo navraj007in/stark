@@ -350,6 +350,30 @@ impl<T> ValueSlot<T> {
         unsafe { field.read() }
     }
 
+    /// **DEV-162: a shared borrow of ONE field of possibly-partial storage.**
+    ///
+    /// The read counterpart of [`write_field`](Self::write_field). Reading a sibling field was
+    /// emitted as `&slot.get().f1`, and `get` requires the value to be complete — so any read after
+    /// another field had been moved out aborted, even though the field being read was untouched.
+    /// `copy_field` already covered the `Copy` case by VALUE; this covers the rest by reference.
+    ///
+    /// Raw projection, so it never materialises a `&T` to the surrounding value and never asserts
+    /// that value is valid. The state is unchanged: reading borrows nothing away.
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and that field must be LIVE — not
+    /// moved out and not dropped. Neither is checkable here; per-field liveness lives in MIR's drop
+    /// flags, and the generated wrappers discharge it by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn field_ref<F>(&self, project: fn(*mut T) -> *mut F) -> &F {
+        self.require_accessible("field read from a dead slot");
+        let field = project(self.storage.as_ptr() as *mut T);
+        // SAFETY: as `copy_field`, but by reference — the caller guarantees the field is live, so
+        // its bytes are a valid `F`, and the borrow is tied to `&self`.
+        unsafe { &*field }
+    }
+
     /// Destroy ONE drop unit of a possibly-partial value, running `glue` on a pointer to it.
     ///
     /// The slot becomes `Partial`: after destroying a field the value is no longer complete, for

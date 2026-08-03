@@ -89,6 +89,13 @@ pub enum HelperOp {
     /// destruction plan is baked into the wrapper, because a wrapper is already per-(base type,
     /// projection) and that fixes the field type.
     Drop,
+    /// **DEV-162.** Borrows ONE field of storage that may be partially moved:
+    /// `ValueSlot::field_ref`.
+    ///
+    /// Reading a sibling field was emitted as `&slot.get().f1`, and `get` requires a COMPLETE
+    /// value — so a read after another field was moved out aborted, though the field being read
+    /// was untouched. `copy_field` already covered the `Copy` case by value; this is the rest.
+    Ref,
     /// **DEV-158.** Initialises ONE field of storage that may be partially moved:
     /// `ValueSlot::write_field`.
     ///
@@ -132,6 +139,7 @@ pub fn helper_name(base_ty: &MirTy, projection: &[Projection], op: HelperOp) -> 
         HelperOp::Copy => "copy",
         HelperOp::Drop => "drop",
         HelperOp::Write => "write",
+        HelperOp::Ref => "ref",
     };
     let selector: Vec<String> = projection.iter().map(projection_token).collect();
     mangle::sanitize_symbol(&format!(
@@ -218,6 +226,17 @@ pub fn collect(
                     for operand in rvalue_operands(rvalue) {
                         collect_operand(operand, &env, &program.types, &mut found)?;
                     }
+                    // DEV-162: `RefOf` carries a PLACE, not an operand, so `rvalue_operands`
+                    // returns nothing for it — and a borrow of a field is exactly the case that
+                    // needs a raw projection. Missing this named a helper the collector never
+                    // generated, which surfaces as E0425 in the generated crate rather than as
+                    // anything the compiler says.
+                    if let Rvalue::RefOf {
+                        place: borrowed, ..
+                    } = rvalue
+                    {
+                        collect_ref_place(borrowed, &env, &program.types, &mut found)?;
+                    }
                 }
             }
             match &block.terminator.0 {
@@ -289,7 +308,35 @@ fn collect_operand(
     if field_is_copy && chain_is_raw(&base_ty, &place.projection, env.types)? {
         return collect_place(place, env, HelperOp::Copy, found); // case 2
     }
+    // DEV-162, case 3: a NON-`Copy` field reached by a non-move operand is BORROWED, and the
+    // borrow must survive a sibling move for the same reason case 2 must. `&slot.get().f1` does
+    // not: `get` requires a complete value.
+    if !field_is_copy && chain_is_raw(&base_ty, &place.projection, env.types)? {
+        return collect_place(place, env, HelperOp::Ref, found); // case 3
+    }
     Ok(())
+}
+
+/// DEV-162: a BORROW of a non-`Copy` field over a raw-projectable base needs a `Ref` helper, for
+/// the same reason a `Copy` read needs a `Copy` one — it must survive a sibling move.
+fn collect_ref_place(
+    place: &Place,
+    env: &emit_places::TyEnv,
+    types: &TypeContext,
+    found: &mut BTreeMap<String, ProjectionHelper>,
+) -> Result<(), BackendDiagnostic> {
+    if place.projection.is_empty() || !emit_places::is_slot_local(place.local.0, env)? {
+        return Ok(());
+    }
+    let field_ty = env.place_ty(place)?;
+    if emit_types::mir_ty_is_copy(&field_ty, types) {
+        return Ok(());
+    }
+    let base_ty = env.local_ty(place.local.0)?;
+    if !chain_is_raw(&base_ty, &place.projection, env.types)? {
+        return Ok(());
+    }
+    collect_place(place, env, HelperOp::Ref, found)
 }
 
 fn collect_place(
@@ -499,6 +546,23 @@ pub fn emit(
             // site: a wrapper is already per-(base type, projection), which fixes the field type,
             // which fixes the plan. It also keeps the call site free of glue, so an emitted MIR
             // body still contains no `unsafe` and no destruction logic of its own.
+            // DEV-162. A shared borrow through the raw projection, tied to the slot borrow.
+            (HelperOp::Ref, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Borrows ONE field. Raw projection, so it is valid over storage a sibling \
+                 has\n    /// already been moved out of (DEV-162).\n    pub fn {}(slot: &stark_runtime::slot::ValueSlot<{base}>) -> &{field} {{\n         \
+                 \x20       // SAFETY: one fixed projection into THIS slot's storage; MIR's drop flags\n         \
+                 \x20       // guarantee the field is live.\n         \
+                 \x20       unsafe {{ slot.field_ref({projection}) }}\n    }}\n",
+                helper.name
+            )),
+            // An enum payload has no raw projection; a payload is read by matching the whole enum.
+            (HelperOp::Ref, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a projected Ref into the enum payload {:?} is not supported: a payload is \
+                     read by matching the whole enum",
+                    helper.base_ty
+                )))
+            }
             // DEV-158. `ptr::write`, not assignment: the field is uninitialised at every call
             // site the backend generates, because CD-012 requires the old unit to be moved out
             // before the new value is installed. Assigning would drop whatever bytes were there.
