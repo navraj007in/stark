@@ -1,5 +1,68 @@
 # STARK Compiler STATE
 
+## CD-373 — DEV-160 foundation: the raw-slot primitives, and an order finding (2026-08-03)
+
+**Owner ruling accepted (raw-pointer call-site thunk; argument reordering PROHIBITED because CD-007
+freezes left-to-right evaluation).** This lands the foundation only. **DEV-160 is still OPEN** — no
+thunk is generated yet and the HTTP workaround stays.
+
+### What landed
+
+Four `unsafe` raw-pointer primitives on `ValueSlot`: `field_ref_raw`, `move_field_raw`,
+`copy_field_raw`, `take_raw`. They take `*mut ValueSlot<T>` and never form a reference to the slot,
+so a borrow of one field and a move of a disjoint sibling can be live together — which the
+`&self`/`&mut self` forms cannot express, because each borrows the whole slot. That inexpressibility
+IS DEV-160.
+
+**The ruling's lifetime point was decisive and I would have got it wrong.** My plan was to change
+the existing helpers to take raw pointers and keep returning `&F`. A safe function returning a
+reference derived from a raw pointer alone has no lifetime source — the borrow would be unbounded
+and the signature a lie. So these are `unsafe`, carry an explicit `'a`, and are callable only from a
+generated thunk that takes the slot ONCE through a real `&'a mut ValueSlot<T>`, which is what
+anchors every reference it hands on.
+
+The aliasing rule is written into the module: inside such a thunk no `&ValueSlot` or
+`&mut ValueSlot` may be reconstructed after a field reference has been derived. Every access goes
+through the raw pointer for the thunk's whole body.
+
+Four tests, including the shape that motivates the whole thing — a field borrow and a sibling move
+alive simultaneously — plus dead-slot and partial-slot refusals through the raw path, so the checks
+are not skipped merely because the caller holds a pointer.
+
+### A finding the thunk design has to absorb
+
+Working through the emission, the thunk cannot take only the CONFLICTING slot and receive the other
+arguments pre-evaluated. Evaluating a non-conflicting argument at the call site would place it
+BEFORE the projections performed inside the thunk, which is the argument-order change the ruling
+prohibits.
+
+So the thunk must take **every distinct local an argument reads**, by `&mut ValueSlot<..>`, and
+perform **every** operand read inside itself, in MIR order. That is consistent with the ruling's
+"performs the fixed disjoint accesses internally ... in MIR order, and invokes the callee" — stated
+here because it is a bigger obligation than "hand the thunk the conflicting slot", and it decides
+the thunk's signature.
+
+Constants and non-slot scalar locals may still be passed by value: their reads are unobservable and
+order-insensitive.
+
+### Remaining for DEV-160
+
+```text
+conflict detector       same slot base in >= 2 argument places, at least one requiring &mut
+thunk plan identity     body/call-site, callee identity + signature, base slot type,
+                        ordered argument modes, ordered projection chains, return type
+thunk generation        into mod stark_proj, safe signature, raw body, MIR order, callee call
+call-site emission      one safe call, no unsafe in the generated MIR body
+negative controls       the owner's fifteen, incl. drop-exactly-once, overlap refusals,
+                        indirect/runtime/provider call audit, debug AND release agreement
+```
+
+### Evidence
+
+30 runtime tests, 161 across MIR verification, the three-engine differential and DEV-162's
+regression, clippy clean. Nothing behaves differently yet: the primitives are unreferenced by any
+emission path.
+
 ## CD-372 — DEV-162 CLOSED; DEV-160's obvious fix does not work, and here is why (2026-08-03)
 
 ### DEV-162 — reading a sibling field of partially-moved storage

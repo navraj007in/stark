@@ -350,6 +350,108 @@ impl<T> ValueSlot<T> {
         unsafe { field.read() }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // DEV-160 — raw-pointer projection primitives
+    // ---------------------------------------------------------------------------------------
+    //
+    // **These exist so a generated call-site thunk can touch several DISJOINT fields of one slot
+    // in one call expression.** The `&self`/`&mut self` forms above cannot: each borrows the WHOLE
+    // slot, so a shared borrow that lives into a call and a later move out of a sibling field are
+    // an `&`/`&mut` conflict to rustc, even though MIR has proved the fields disjoint. That is
+    // DEV-160, and it rejects correct programs.
+    //
+    // **Why raw pointers and not simply `*mut ValueSlot<T>` on the existing helpers.** A safe
+    // function returning `&F` from a raw pointer alone has no lifetime source — the borrow would be
+    // unbounded and the signature would be a lie. So these are `unsafe`, take an explicit lifetime,
+    // and are never called from generated MIR bodies. Only a generated `stark_proj` thunk calls
+    // them, and that thunk takes the slot ONCE through a real `&'a mut ValueSlot<T>`, which is what
+    // anchors every reference it hands on.
+    //
+    // **The aliasing rule these exist to keep.** Inside such a thunk, no `&ValueSlot` or
+    // `&mut ValueSlot` may be reconstructed after a field reference has been derived — doing so
+    // would materialise a reference to the whole, partially-borrowed slot. Every access therefore
+    // goes through the raw pointer for the thunk's whole body.
+    //
+    // Not reachable from STARK: `mod stark_proj` is private to the generated crate, and no STARK
+    // surface names these.
+
+    /// The storage pointer, from a raw slot pointer, without forming a reference to the slot.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>`.
+    unsafe fn storage_of(slot: *mut Self) -> *mut T {
+        // `MaybeUninit<ManuallyDrop<T>>` is layout-compatible with `T`, as `base_ptr` relies on.
+        unsafe { core::ptr::addr_of_mut!((*slot).storage) as *mut T }
+    }
+
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` whose state is not `Dead`.
+    unsafe fn require_accessible_raw(slot: *const Self, what: &str) {
+        if unsafe { (*slot).state } == SlotState::Dead {
+            slot_violation(what);
+        }
+    }
+
+    /// Borrow ONE field through a raw slot pointer. The caller supplies `'a`.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` that outlives `'a`; `project` must address a
+    /// field of THAT slot's storage; the field must be live; and no reference to the whole slot may
+    /// be formed while the result is alive.
+    pub unsafe fn field_ref_raw<'a, F>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> &'a F {
+        unsafe {
+            Self::require_accessible_raw(slot, "field read from a dead slot");
+            &*project(Self::storage_of(slot))
+        }
+    }
+
+    /// Move ONE drop unit out through a raw slot pointer, marking the storage `Partial`.
+    ///
+    /// # Safety
+    /// As [`field_ref_raw`](Self::field_ref_raw), and the unit must not already have been moved or
+    /// dropped.
+    pub unsafe fn move_field_raw<F>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> F {
+        unsafe {
+            Self::require_accessible_raw(slot, "sub-place move out of a dead slot");
+            (*slot).state = SlotState::Partial;
+            project(Self::storage_of(slot)).read()
+        }
+    }
+
+    /// Read ONE `Copy` field through a raw slot pointer, leaving liveness untouched.
+    ///
+    /// # Safety
+    /// As [`field_ref_raw`](Self::field_ref_raw).
+    pub unsafe fn copy_field_raw<F: Copy>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> F {
+        unsafe {
+            Self::require_accessible_raw(slot, "field read from a dead slot");
+            project(Self::storage_of(slot)).read()
+        }
+    }
+
+    /// Whole-value move out through a raw slot pointer. The slot becomes `Dead` BEFORE the value is
+    /// handed over, as [`take`](Self::take) does.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` whose state is `Whole`, and no reference to the
+    /// slot may be formed while this runs.
+    pub unsafe fn take_raw(slot: *mut Self) -> T {
+        unsafe {
+            match (*slot).state {
+                SlotState::Whole => {}
+                SlotState::Dead => slot_violation("take from a dead slot"),
+                SlotState::Partial => slot_violation(
+                    "take from a PARTIAL slot: a drop unit has been moved out, so the storage no \
+                     longer holds a valid complete value",
+                ),
+            }
+            (*slot).state = SlotState::Dead;
+            ManuallyDrop::take(
+                &mut *(core::ptr::addr_of_mut!((*slot).storage) as *mut ManuallyDrop<T>),
+            )
+        }
+    }
+
     /// **DEV-162: a shared borrow of ONE field of possibly-partial storage.**
     ///
     /// The read counterpart of [`write_field`](Self::write_field). Reading a sibling field was
@@ -771,6 +873,79 @@ mod tests {
         }
         let _ = unsafe { slot.move_field(p0) };
         let _ = unsafe { slot.move_field_whole(|v| &mut v.1) };
+    }
+
+    /// **DEV-160's primitives, exercised the way a generated thunk uses them.**
+    ///
+    /// One slot, a shared borrow of one field and a move of a DISJOINT sibling, both live at the
+    /// same time — which is precisely what the `&self`/`&mut self` forms cannot express, because
+    /// each borrows the whole slot. The raw pointer is derived ONCE from a real `&mut`, and no
+    /// reference to the slot is reconstructed while the field borrow is alive.
+    #[test]
+    fn raw_primitives_allow_a_borrow_and_a_disjoint_move_together() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("url"), String::from("headers"), 7u32));
+
+        let raw: *mut ValueSlot<(String, String, u32)> = &mut slot;
+        let (url, headers, n) = unsafe {
+            let url: &String = ValueSlot::field_ref_raw(raw, |p| core::ptr::addr_of_mut!((*p).0));
+            // A MOVE of a sibling, while `url` is still borrowed. The whole point.
+            let headers: String =
+                ValueSlot::move_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).1));
+            let n: u32 = ValueSlot::copy_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).2));
+            (url, headers, n)
+        };
+
+        assert_eq!(url, "url");
+        assert_eq!(headers, "headers");
+        assert_eq!(n, 7);
+        // The move made it partial, exactly as the `&mut self` form would have.
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // Clean up the units that remain, as generated drop elaboration would.
+        unsafe {
+            slot.drop_field_with(
+                |p| core::ptr::addr_of_mut!((*p).0),
+                |p: *mut String| {
+                    core::ptr::drop_in_place(p);
+                },
+            );
+        }
+        slot.finish_partial();
+    }
+
+    /// A dead slot is refused through the raw path too — the checks are not skipped just because
+    /// the caller holds a pointer rather than a reference.
+    #[test]
+    #[should_panic(expected = "dead slot")]
+    fn raw_field_ref_on_a_dead_slot_is_refused() {
+        let mut slot: ValueSlot<(String, String)> = ValueSlot::dead();
+        let raw: *mut ValueSlot<(String, String)> = &mut slot;
+        let _ = unsafe { ValueSlot::field_ref_raw(raw, |p| core::ptr::addr_of_mut!((*p).0)) };
+    }
+
+    /// `take_raw` refuses a PARTIAL slot for the same reason `take` does.
+    #[test]
+    #[should_panic(expected = "take from a PARTIAL slot")]
+    fn raw_take_on_a_partial_slot_is_refused() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("a"), String::from("b")));
+        let raw: *mut ValueSlot<(String, String)> = &mut slot;
+        unsafe {
+            let _ = ValueSlot::move_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).0));
+            let _ = ValueSlot::take_raw(raw);
+        }
+    }
+
+    /// `take_raw` on a whole slot yields the value and leaves the slot dead, matching `take`.
+    #[test]
+    fn raw_take_matches_the_reference_form() {
+        let mut slot = ValueSlot::dead();
+        slot.write(String::from("v"));
+        let raw: *mut ValueSlot<String> = &mut slot;
+        let got = unsafe { ValueSlot::take_raw(raw) };
+        assert_eq!(got, "v");
+        assert_eq!(slot.state(), SlotState::Dead);
     }
 
     /// **DEV-158's repair, at the level it lives.** A slot made partial by a field move is WHOLE
