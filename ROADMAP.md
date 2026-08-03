@@ -21,7 +21,7 @@ Two governance tracks remain **live alongside** it and are **not** superseded:
 | Track | Document | Why it is still live |
 | --- | --- | --- |
 | Compiler gates C0–C10 | `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` (+ `COMPILER-CHARTER.md`, `COMPILER-STATE.md`) | Gate C9 is OPEN. This roadmap does not define C9/C10 exit criteria, and §11 below assumes a functioning compiler-correctness lane. |
-| ~~HTTP client HC0–HC13~~ | `STARKLANG/docs/compiler/work-packages/WP-HTTP-CLIENT-ROADMAP.md` | **CLOSED 2026-08-03 (CD-375, corrected CD-376).** HC13 delivered the Tier-1 qualification this row was waiting on, so §1's "completed platform capability" claim is now paid for. The track is no longer live. What it did NOT settle is release readiness — DEV-165 (`connect_timeout` accepted and ignored) and the absent installer both block a public release, and neither belongs to this track. |
+| ~~HTTP client HC0–HC13~~ | `STARKLANG/docs/compiler/work-packages/WP-HTTP-CLIENT-ROADMAP.md` | **CLOSED 2026-08-03 (CD-375, corrected CD-376).** HC13 delivered the Tier-1 qualification this row was waiting on, so §1's "completed platform capability" claim is now paid for. The track is no longer live. What it did NOT settle is release readiness — DEV-165 (`connect_timeout` accepted and ignored) still blocks a public release, and does not belong to this track. The installer blocker has narrowed rather than cleared — see §1. |
 
 Current compiler position always comes from `COMPILER-STATE.md` (repo root), never from
 this file.
@@ -72,9 +72,28 @@ recorded is **paid**: 42 executed cases against controlled adversarial peers on 
 platforms, five evidence documents, and four defects found and fixed in the closing packets
 (DEV-163, DEV-164, SEC-HTTP-001, SEC-HTTP-002).
 
-Completed is not the same as releasable. `HC13-RELEASE-CHECKLIST.md` §0 lists what still blocks
-a public release, and none of it is HTTP work: DEV-165, and the absence of any installable
-toolchain.
+Completed is not the same as releasable. `HC13-RELEASE-CHECKLIST.md` §0 lists what still blocks a
+public release, and none of it is HTTP work:
+
+```text
+Installer Phase I / compiler distribution   IMPLEMENTED   tar.gz + pkg/deb/zip, versioned
+                                                          install, uninstall, `stark doctor`
+Standalone first-party toolchain            PARTIAL       the payload carries the compiler,
+                                                          runtime and provider ABI -- not the
+                                                          first-party package/provider set
+Offline package/provider build              NOT PROVEN    a clean machine cannot yet build an
+                                                          HTTP/TLS program without obtaining the
+                                                          packages separately
+Public signed distribution                  NOT PROVEN    the manifest establishes INTEGRITY,
+                                                          not AUTHENTICITY -- see below
+DEV-165                                     OPEN          connect_timeout accepted and ignored
+```
+
+**Integrity is not authenticity.** `stark doctor` re-hashes every payload file against
+`manifest.json`, which detects corruption and a partial extraction. It does not establish that the
+manifest came from a STARK release: anyone who can replace the payload can replace the manifest and
+the sidecar with it. A public distribution needs a signed manifest, a trusted release key,
+signature verification before installation, and platform notarisation.
 
 The next phase is not another continuous compiler sprint. It is a measured programme to turn
 STARK into a usable application platform with:

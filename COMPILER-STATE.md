@@ -1,5 +1,81 @@
 # STARK Compiler STATE
 
+## CD-377 — installer Phase I: the layout the compiler could not find (2026-08-03)
+
+**The installed toolchain could not build anything on macOS or Windows.** CI caught the symptom on
+Linux, where it was a stale path assertion; underneath it was a real defect that Linux alone would
+never have shown.
+
+### The installer and the compiler disagreed about the layout
+
+The installer now writes a VERSIONED tree — `lib/stark/current` → `versions/<v>`, payload beneath —
+and puts a **symlink** (Unix) or a **copy** (Windows) at `<prefix>/bin/stark`. `discover_runtime`
+searched only
+
+```text
+<bin>/../lib/stark/starkc/stark-runtime
+<bin>/../lib/stark/stark-runtime
+```
+
+neither of which exists in that tree.
+
+**It worked on Linux by accident.** `current_exe()` there resolves `/proc/self/exe`, so invoking the
+`bin/` symlink already reported the real location and the flat form matched. macOS does not resolve
+it; Windows installs a copy, so there is no link to resolve. Same package, three platforms, one
+working — the DEV-163 shape exactly.
+
+Reproduced without a Windows machine, by invoking both paths:
+
+```text
+/tmp/prefix/bin/stark build                      -> runtime installation is missing
+/tmp/prefix/lib/stark/current/bin/stark build    -> Built app
+```
+
+Fixed by teaching `discover_runtime` the versioned forms FIRST, so the lookup no longer depends on
+the exe path having been resolved through a symlink.
+
+**My earlier "verified end to end" missed this because I never set
+`STARK_REQUIRE_INSTALLED_RUNTIME=1`.** Without it the compiler falls back to a source checkout, so
+every one of those builds was proving the checkout worked. The environment variable is the whole
+experiment.
+
+### `stark doctor`, hardened
+
+Three findings from external review, all confirmed before fixing:
+
+- **Windows executable name.** `("bin", "bin/stark")` was hardcoded, and `install.ps1` runs
+  `stark.exe doctor --root` during staging and throws on failure — so a correct Windows package was
+  rejected with "staged STARK installation failed manifest verification". Install-blocking, and
+  invisible on Unix. Now read from the manifest's `host_target`, which also makes `doctor --root`
+  work when inspecting a package built for another platform.
+- **The manifest reader was formatting-dependent, and its failure mode was silence.** It split the
+  file array on the literal `"\n    {"`. A compact manifest yielded zero entries — and the old
+  binary reports that as `manifest_files: ok (0/0 files verified)`. **A verifier that silently
+  checks nothing and calls it a pass is worse than one that errors.** Replaced with a real
+  recursive-descent parser: escapes including surrogate pairs, bounded nesting, duplicate keys
+  rejected rather than last-wins, and sizes that must be whole and non-negative.
+- **Manifest paths are now validated.** Relative, no `..`, no drive or absolute form, and unique
+  after case folding — Windows and macOS filesystems are case-insensitive, so two entries differing
+  only in case name one file and the second certifies whatever the first wrote. A path escaping the
+  root would let a manifest certify a file the package never installed.
+
+`serde_json` was recommended and is **not** taken: `starkc` has three dependencies, and adding
+`serde` plus a proc-macro chain is a supply-chain decision for the owner, not a code fix. The
+defect is closed either way. Nine adversarial tests cover the parser and the path rules.
+
+### Classification — Phase I, not a distribution
+
+```text
+Installer Phase I / compiler distribution   IMPLEMENTED
+Standalone first-party toolchain            PARTIAL      packages are not in the payload
+Offline package/provider build              NOT PROVEN
+Public signed distribution                  NOT PROVEN   integrity, not authenticity
+```
+
+`manifest.json` detects corruption. It does not establish that the manifest came from a STARK
+release — anyone who can replace the payload replaces the manifest with it. Signing, a trusted key,
+verification before installation and notarisation are all outstanding.
+
 ## CD-376 — HC13 correction: two remote aborts, and a timeout claim counted wrong (2026-08-03)
 
 **External review of `bfceaa0`. Every point was correct and every one is verified in the code

@@ -351,8 +351,25 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
         }
     };
 
+    // **The executable name comes from the MANIFEST, not from this host.** `bin/stark` was
+    // hardcoded, so on Windows -- where the payload is `bin\stark.exe` -- `install.ps1` ran
+    // `stark.exe doctor --root ...` during staging, got a failure for a perfectly good package,
+    // and threw "staged STARK installation failed manifest verification". Install-blocking, and
+    // invisible on Unix.
+    //
+    // Reading the target also makes `doctor --root` work when INSPECTING a package built for
+    // another platform, which is how this was reproduced without a Windows machine.
+    let windows_payload = manifest
+        .as_ref()
+        .map(|m| m.target.contains("windows"))
+        .unwrap_or(cfg!(windows));
+    let stark_binary = if windows_payload {
+        "bin/stark.exe"
+    } else {
+        "bin/stark"
+    };
     for (name, relative) in [
-        ("bin", "bin/stark"),
+        ("bin", stark_binary),
         ("runtime", "lib/stark/stark-runtime/Cargo.toml"),
         ("provider_abi", "lib/stark/stark-provider-abi/Cargo.toml"),
     ] {
@@ -413,14 +430,343 @@ fn discover_install_root() -> Option<PathBuf> {
     .find(|candidate| candidate.join("manifest.json").is_file())
 }
 
+/// A minimal, complete JSON reader for the install manifest.
+///
+/// # Why this exists rather than `serde_json`
+///
+/// `starkc` has **three** dependencies (`sha2` and two path crates). Pulling in `serde` +
+/// `serde_json` + their proc-macro chain to read one file is a supply-chain decision, not a code
+/// decision, and this project pins its crypto dependencies exactly because it takes that seriously
+/// (CD-361). So the dependency question is the owner's; the *defect* is fixed here either way.
+///
+/// # What was wrong with what this replaces
+///
+/// The previous reader searched for `"key"` anywhere in the document and split the file array on
+/// the literal `"\n    {"`. That made it depend on `build-release.py`'s exact pretty-printing:
+/// a semantically identical manifest with different indentation, or compact output, parsed as
+/// **zero files** — and "0/0 files verified" is a PASS. A reader whose failure mode is silently
+/// verifying nothing is worse than one that errors.
+///
+/// It also could not see string escapes, so a path containing `\"` truncated the value, and
+/// key lookup was unscoped: a value appearing earlier in the document could answer for a key.
+///
+/// This is a real recursive-descent parser: escapes (including `\uXXXX` with surrogate pairs),
+/// nesting, and duplicate keys, which are rejected rather than last-wins.
+mod json {
+    use std::collections::BTreeMap;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Json {
+        Null,
+        Bool(bool),
+        Number(f64),
+        String(String),
+        Array(Vec<Json>),
+        Object(BTreeMap<String, Json>),
+    }
+
+    impl Json {
+        pub fn object(&self) -> Option<&BTreeMap<String, Json>> {
+            match self {
+                Json::Object(map) => Some(map),
+                _ => None,
+            }
+        }
+        pub fn array(&self) -> Option<&Vec<Json>> {
+            match self {
+                Json::Array(items) => Some(items),
+                _ => None,
+            }
+        }
+        pub fn string(&self) -> Option<&str> {
+            match self {
+                Json::String(text) => Some(text.as_str()),
+                _ => None,
+            }
+        }
+        /// A size is a count of bytes. Rejecting negative, fractional and out-of-range values here
+        /// means the manifest cannot express a size the verifier would then compare against.
+        pub fn u64(&self) -> Option<u64> {
+            match self {
+                Json::Number(n) if n.is_finite() && *n >= 0.0 && n.fract() == 0.0 => {
+                    let rounded = *n as u64;
+                    (rounded as f64 == *n).then_some(rounded)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    pub fn parse(text: &str) -> Result<Json, String> {
+        let bytes: Vec<char> = text.chars().collect();
+        let mut parser = Parser { bytes, at: 0 };
+        parser.skip_whitespace();
+        let value = parser.value(0)?;
+        parser.skip_whitespace();
+        if parser.at != parser.bytes.len() {
+            return Err(format!("trailing input at character {}", parser.at));
+        }
+        Ok(value)
+    }
+
+    struct Parser {
+        bytes: Vec<char>,
+        at: usize,
+    }
+
+    /// Bounded so a hostile manifest cannot exhaust the stack through nesting alone. The real
+    /// document is two levels deep.
+    const MAX_DEPTH: usize = 32;
+
+    impl Parser {
+        fn peek(&self) -> Option<char> {
+            self.bytes.get(self.at).copied()
+        }
+
+        fn skip_whitespace(&mut self) {
+            while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
+                self.at += 1;
+            }
+        }
+
+        fn expect(&mut self, ch: char) -> Result<(), String> {
+            if self.peek() == Some(ch) {
+                self.at += 1;
+                Ok(())
+            } else {
+                Err(format!("expected `{ch}` at character {}", self.at))
+            }
+        }
+
+        fn literal(&mut self, word: &str) -> Result<(), String> {
+            for ch in word.chars() {
+                self.expect(ch)?;
+            }
+            Ok(())
+        }
+
+        fn value(&mut self, depth: usize) -> Result<Json, String> {
+            if depth > MAX_DEPTH {
+                return Err("manifest nesting is too deep".to_string());
+            }
+            self.skip_whitespace();
+            match self.peek() {
+                Some('{') => self.object(depth),
+                Some('[') => self.array(depth),
+                Some('"') => Ok(Json::String(self.string()?)),
+                Some('t') => self.literal("true").map(|()| Json::Bool(true)),
+                Some('f') => self.literal("false").map(|()| Json::Bool(false)),
+                Some('n') => self.literal("null").map(|()| Json::Null),
+                Some(_) => self.number(),
+                None => Err("unexpected end of manifest".to_string()),
+            }
+        }
+
+        fn object(&mut self, depth: usize) -> Result<Json, String> {
+            self.expect('{')?;
+            let mut map = BTreeMap::new();
+            self.skip_whitespace();
+            if self.peek() == Some('}') {
+                self.at += 1;
+                return Ok(Json::Object(map));
+            }
+            loop {
+                self.skip_whitespace();
+                let key = self.string()?;
+                self.skip_whitespace();
+                self.expect(':')?;
+                let value = self.value(depth + 1)?;
+                // Last-wins would let a manifest carry two `sha256` values and leave which one is
+                // checked up to the reader's implementation.
+                if map.insert(key.clone(), value).is_some() {
+                    return Err(format!("duplicate key `{key}` in manifest object"));
+                }
+                self.skip_whitespace();
+                match self.peek() {
+                    Some(',') => self.at += 1,
+                    Some('}') => {
+                        self.at += 1;
+                        return Ok(Json::Object(map));
+                    }
+                    _ => return Err(format!("expected `,` or `}}` at character {}", self.at)),
+                }
+            }
+        }
+
+        fn array(&mut self, depth: usize) -> Result<Json, String> {
+            self.expect('[')?;
+            let mut items = Vec::new();
+            self.skip_whitespace();
+            if self.peek() == Some(']') {
+                self.at += 1;
+                return Ok(Json::Array(items));
+            }
+            loop {
+                items.push(self.value(depth + 1)?);
+                self.skip_whitespace();
+                match self.peek() {
+                    Some(',') => self.at += 1,
+                    Some(']') => {
+                        self.at += 1;
+                        return Ok(Json::Array(items));
+                    }
+                    _ => return Err(format!("expected `,` or `]` at character {}", self.at)),
+                }
+            }
+        }
+
+        fn string(&mut self) -> Result<String, String> {
+            self.expect('"')?;
+            let mut out = String::new();
+            loop {
+                let ch = self
+                    .peek()
+                    .ok_or_else(|| "unterminated string in manifest".to_string())?;
+                self.at += 1;
+                match ch {
+                    '"' => return Ok(out),
+                    '\\' => {
+                        let escape = self
+                            .peek()
+                            .ok_or_else(|| "unterminated escape in manifest".to_string())?;
+                        self.at += 1;
+                        match escape {
+                            '"' => out.push('"'),
+                            '\\' => out.push('\\'),
+                            '/' => out.push('/'),
+                            'b' => out.push('\u{8}'),
+                            'f' => out.push('\u{c}'),
+                            'n' => out.push('\n'),
+                            'r' => out.push('\r'),
+                            't' => out.push('\t'),
+                            'u' => out.push(self.unicode_escape()?),
+                            other => {
+                                return Err(format!("unknown escape `\\{other}` in manifest"));
+                            }
+                        }
+                    }
+                    // A control character must be escaped; accepting a raw one would let a
+                    // manifest path carry a newline and misalign anything that logs it.
+                    c if (c as u32) < 0x20 => {
+                        return Err("unescaped control character in manifest string".to_string());
+                    }
+                    c => out.push(c),
+                }
+            }
+        }
+
+        fn unicode_escape(&mut self) -> Result<char, String> {
+            let first = self.hex4()?;
+            // A surrogate is only meaningful as a PAIR; a lone one is not a character and
+            // `from_u32` would reject it with a less useful message.
+            if (0xD800..0xDC00).contains(&first) {
+                self.expect('\\')?;
+                self.expect('u')?;
+                let second = self.hex4()?;
+                if !(0xDC00..0xE000).contains(&second) {
+                    return Err("unpaired surrogate escape in manifest".to_string());
+                }
+                let combined = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
+                return char::from_u32(combined)
+                    .ok_or_else(|| "invalid surrogate pair in manifest".to_string());
+            }
+            char::from_u32(first).ok_or_else(|| "invalid \\u escape in manifest".to_string())
+        }
+
+        fn hex4(&mut self) -> Result<u32, String> {
+            let mut value = 0u32;
+            for _ in 0..4 {
+                let ch = self
+                    .peek()
+                    .ok_or_else(|| "truncated \\u escape in manifest".to_string())?;
+                let digit = ch
+                    .to_digit(16)
+                    .ok_or_else(|| format!("`{ch}` is not a hex digit in a \\u escape"))?;
+                value = value * 16 + digit;
+                self.at += 1;
+            }
+            Ok(value)
+        }
+
+        fn number(&mut self) -> Result<Json, String> {
+            let start = self.at;
+            if self.peek() == Some('-') {
+                self.at += 1;
+            }
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
+            {
+                self.at += 1;
+            }
+            let text: String = self.bytes[start..self.at].iter().collect();
+            text.parse::<f64>()
+                .map(Json::Number)
+                .map_err(|_| format!("`{text}` is not a number"))
+        }
+    }
+}
+
+use json::Json;
+
 fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let version = json_string_field(&text, "stark_version")
-        .ok_or_else(|| "manifest is missing stark_version".to_string())?;
-    let target = json_string_field(&text, "host_target")
-        .ok_or_else(|| "manifest is missing host_target".to_string())?;
-    let files = parse_manifest_files(&text)?;
+    let value = json::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let root = value.object().ok_or("manifest is not a JSON object")?;
+
+    let version = root
+        .get("stark_version")
+        .and_then(Json::string)
+        .ok_or("manifest is missing stark_version")?
+        .to_string();
+    let target = root
+        .get("host_target")
+        .and_then(Json::string)
+        .ok_or("manifest is missing host_target")?
+        .to_string();
+
+    let entries = root
+        .get("files")
+        .and_then(Json::array)
+        .ok_or("manifest is missing files")?;
+    let mut files = Vec::with_capacity(entries.len());
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in entries {
+        let object = entry
+            .object()
+            .ok_or("manifest file entry is not an object")?;
+        let file_path = object
+            .get("path")
+            .and_then(Json::string)
+            .ok_or("manifest file entry is missing path")?
+            .to_string();
+        // **A manifest path decides what gets hashed, so it decides what gets TRUSTED.** A path
+        // escaping the install root would let a manifest certify a file the package never
+        // installed -- verifying, say, the system `/bin/sh` and reporting the installation sound.
+        check_manifest_path(&file_path)?;
+        // Case-INSENSITIVE, because Windows and macOS default filesystems are: two entries
+        // differing only in case name one file there, and the second silently certifies whatever
+        // the first wrote.
+        if !seen.insert(file_path.to_lowercase()) {
+            return Err(format!(
+                "manifest lists {file_path} twice (case-insensitively); one entry would certify \
+                 the other's bytes"
+            ));
+        }
+        let sha256 = object
+            .get("sha256")
+            .and_then(Json::string)
+            .ok_or_else(|| format!("manifest file entry {file_path} is missing sha256"))?
+            .to_string();
+        let size = object
+            .get("size")
+            .and_then(Json::u64)
+            .ok_or_else(|| format!("manifest file entry {file_path} is missing size"))?;
+        files.push(ManifestFile {
+            path: file_path,
+            size,
+            sha256,
+        });
+    }
     Ok(InstallManifest {
         version,
         target,
@@ -428,68 +774,34 @@ fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
     })
 }
 
-fn json_string_field(text: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let start = text.find(&needle)?;
-    let after_key = &text[start + needle.len()..];
-    let colon = after_key.find(':')?;
-    let after_colon = after_key[colon + 1..].trim_start();
-    let value = after_colon.strip_prefix('"')?;
-    let end = value.find('"')?;
-    Some(value[..end].to_string())
-}
-
-fn parse_manifest_files(text: &str) -> Result<Vec<ManifestFile>, String> {
-    let files_key = text
-        .find("\"files\"")
-        .ok_or_else(|| "manifest is missing files".to_string())?;
-    let files_text = &text[files_key..];
-    let array_start = files_text
-        .find('[')
-        .ok_or_else(|| "manifest files is not an array".to_string())?;
-    let mut depth = 0i32;
-    let mut array_end = None;
-    for (index, ch) in files_text[array_start..].char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    array_end = Some(array_start + index);
-                    break;
-                }
-            }
-            _ => {}
+/// A manifest path must name something INSIDE the installation and nothing else.
+fn check_manifest_path(relative: &str) -> Result<(), String> {
+    if relative.is_empty() {
+        return Err("manifest file entry has an empty path".to_string());
+    }
+    let candidate = Path::new(relative);
+    if candidate.is_absolute() || relative.starts_with('/') || relative.starts_with('\\') {
+        return Err(format!("manifest path {relative} is absolute"));
+    }
+    // Windows accepts `C:\..` and treats `\` as a separator; a check written only against `/`
+    // would pass a path that escapes on the platform where the installer runs.
+    if relative.contains(':') {
+        return Err(format!("manifest path {relative} names a drive or stream"));
+    }
+    for component in relative.split(['/', '\\']) {
+        if component == ".." {
+            return Err(format!("manifest path {relative} escapes the install root"));
         }
     }
-    let array_end = array_end.ok_or_else(|| "manifest files array is not closed".to_string())?;
-    let mut files = Vec::new();
-    for object in files_text[array_start + 1..array_end]
-        .split("\n    {")
-        .skip(1)
-    {
-        let path = json_string_field(object, "path")
-            .ok_or_else(|| "manifest file entry is missing path".to_string())?;
-        let sha256 = json_string_field(object, "sha256")
-            .ok_or_else(|| format!("manifest file entry {path} is missing sha256"))?;
-        let size = json_number_field(object, "size")
-            .ok_or_else(|| format!("manifest file entry {path} is missing size"))?;
-        files.push(ManifestFile { path, size, sha256 });
+    if candidate.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::RootDir
+        )
+    }) {
+        return Err(format!("manifest path {relative} escapes the install root"));
     }
-    Ok(files)
-}
-
-fn json_number_field(text: &str, key: &str) -> Option<u64> {
-    let needle = format!("\"{key}\"");
-    let start = text.find(&needle)?;
-    let after_key = &text[start + needle.len()..];
-    let colon = after_key.find(':')?;
-    let after_colon = after_key[colon + 1..].trim_start();
-    let digits: String = after_colon
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+    Ok(())
 }
 
 fn verify_manifest_file(path: &Path, file: &ManifestFile) -> Result<(), String> {
@@ -1471,4 +1783,153 @@ fn open_in_browser(path: &Path) -> std::io::Result<()> {
             .status()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+
+    fn manifest(files: &str) -> String {
+        format!(
+            r#"{{"stark_version":"0.1.0","host_target":"x86_64-unknown-linux-gnu","files":[{files}]}}"#
+        )
+    }
+
+    fn entry(path: &str) -> String {
+        format!(r#"{{"path":"{path}","size":1,"sha256":"ab"}}"#)
+    }
+
+    /// **The defect that mattered most: the old reader did not FAIL on a reformatted manifest, it
+    /// reported `manifest_files: ok (0/0 files verified)`.**
+    ///
+    /// It split the file array on the literal `"\n    {"`, so compact JSON yielded no entries — and
+    /// zero of zero verified is a pass. A verifier whose failure mode is silently checking nothing
+    /// is worse than one that errors, because the operator is told the installation is sound.
+    #[test]
+    fn compact_and_pretty_manifests_parse_identically() {
+        let compact = manifest(&entry("bin/stark"));
+        let pretty = "{\n  \"stark_version\" : \"0.1.0\",\n  \"host_target\":\n\
+                      \t\"x86_64-unknown-linux-gnu\",\n  \"files\" : [\n        {\n\
+                      \"path\":\"bin/stark\", \"size\" : 1, \"sha256\":\"ab\"\n  }\n ]\n}";
+        let a = json::parse(&compact).expect("compact");
+        let b = json::parse(pretty).expect("pretty");
+        assert_eq!(a, b, "whitespace must not change the value");
+        assert_eq!(
+            a.object()
+                .unwrap()
+                .get("files")
+                .unwrap()
+                .array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// A path containing an escaped quote truncated at the escape under the old reader.
+    #[test]
+    fn string_escapes_survive() {
+        let value = json::parse(r#"{"a":"x\"y\\z\u0041\n","b":"\uD83D\uDE00"}"#).expect("parse");
+        let object = value.object().unwrap();
+        assert_eq!(object.get("a").unwrap().string().unwrap(), "x\"y\\zA\n");
+        assert_eq!(object.get("b").unwrap().string().unwrap(), "😀");
+    }
+
+    /// Last-wins would leave it to the reader which `sha256` is checked.
+    #[test]
+    fn duplicate_keys_are_refused() {
+        let error = json::parse(r#"{"sha256":"aa","sha256":"bb"}"#).unwrap_err();
+        assert!(error.contains("duplicate key"), "{error}");
+    }
+
+    #[test]
+    fn malformed_input_is_refused_rather_than_partially_read() {
+        for bad in [
+            r#"{"a":1"#,
+            r#"{"a" 1}"#,
+            "{\"a\":\"unterminated",
+            r#"{"a":"raw
+control"}"#,
+            r#"{"a":"\uD800"}"#,
+            r#"{"a":"\q"}"#,
+            r#"{} trailing"#,
+        ] {
+            assert!(json::parse(bad).is_err(), "must refuse: {bad}");
+        }
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        assert!(
+            json::parse(&deep).is_err(),
+            "unbounded nesting must be refused"
+        );
+    }
+
+    /// A size is a byte count. Anything else must not reach the comparison.
+    #[test]
+    fn only_whole_non_negative_sizes_are_accepted() {
+        let value = json::parse(r#"{"a":-1,"b":1.5,"c":7,"d":"7"}"#).unwrap();
+        let object = value.object().unwrap();
+        assert_eq!(object.get("c").unwrap().u64(), Some(7));
+        for key in ["a", "b", "d"] {
+            assert_eq!(
+                object.get(key).unwrap().u64(),
+                None,
+                "{key} must not be a size"
+            );
+        }
+    }
+
+    /// **A manifest path decides what gets hashed, so it decides what gets trusted.** One escaping
+    /// the root would let a manifest certify a file the package never installed.
+    #[test]
+    fn manifest_paths_may_not_escape_the_install_root() {
+        for bad in [
+            "../outside",
+            "bin/../../outside",
+            "/etc/passwd",
+            "\\windows\\system32",
+            "C:/windows",
+            "bin\\..\\..\\outside",
+            "",
+        ] {
+            assert!(
+                check_manifest_path(bad).is_err(),
+                "must refuse manifest path: {bad:?}"
+            );
+        }
+        for good in [
+            "bin/stark",
+            "lib/stark/stark-runtime/Cargo.toml",
+            "README.md",
+        ] {
+            assert!(check_manifest_path(good).is_ok(), "must accept: {good}");
+        }
+    }
+
+    /// Windows and macOS default filesystems are case-insensitive, so two entries differing only in
+    /// case name ONE file — and the second silently certifies whatever the first wrote.
+    #[test]
+    fn case_colliding_paths_are_refused() {
+        let text = manifest(&format!("{},{}", entry("bin/stark"), entry("bin/STARK")));
+        let temp =
+            std::env::temp_dir().join(format!("stark-doctor-case-{}.json", std::process::id()));
+        std::fs::write(&temp, text).unwrap();
+        let error = read_install_manifest(&temp).unwrap_err();
+        let _ = std::fs::remove_file(&temp);
+        assert!(error.contains("twice"), "{error}");
+    }
+
+    /// A manifest with no `files` key must be an ERROR, never an empty verification that passes.
+    #[test]
+    fn a_manifest_without_files_is_an_error_not_an_empty_pass() {
+        let temp =
+            std::env::temp_dir().join(format!("stark-doctor-nofiles-{}.json", std::process::id()));
+        std::fs::write(&temp, r#"{"stark_version":"0.1.0","host_target":"t"}"#).unwrap();
+        let error = read_install_manifest(&temp).unwrap_err();
+        let _ = std::fs::remove_file(&temp);
+        assert!(error.contains("missing files"), "{error}");
+    }
 }

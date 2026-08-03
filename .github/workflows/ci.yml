@@ -387,7 +387,12 @@ jobs:
           package_root="$(find "$RUNNER_TEMP/stark-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           "$package_root/install.sh" --prefix "$RUNNER_TEMP/stark-install"
           "$RUNNER_TEMP/stark-install/bin/stark" --help
-          test -f "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime/src/lib.rs"
+          # The installed layout is VERSIONED: `lib/stark/current` -> `versions/<v>`, with the
+          # payload beneath it. Asserting the old flat path here is what broke this job when the
+          # installer changed, and `stark doctor` is the check that does not have to be kept in
+          # step by hand -- it reads the manifest and re-hashes every file the package shipped.
+          "$RUNNER_TEMP/stark-install/bin/stark" doctor
+          test -f "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime/src/lib.rs"
           (
             cd tests/fixtures/c5-native-workspace/app
             "$RUNNER_TEMP/stark-install/bin/stark" run
@@ -403,8 +408,8 @@ jobs:
         env:
           STARK_REQUIRE_INSTALLED_RUNTIME: "1"
         run: |
-          test -d "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
-          mv "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
+          test -d "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
           test -f stark-runtime/Cargo.toml   # the checkout IS still here, at the compiled-in path
           set +e
           (
@@ -413,7 +418,7 @@ jobs:
           ) >"$RUNNER_TEMP/negative.out" 2>&1
           status=$?
           set -e
-          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
           cat "$RUNNER_TEMP/negative.out"
           if [ $status -eq 0 ]; then
             echo "FAIL: installed stark built with no installed runtime — it fell back to the checkout" >&2
@@ -442,7 +447,11 @@ jobs:
           $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
           & (Join-Path $packageRoot.FullName "install.ps1") -Prefix $prefix -NoPathUpdate
           & (Join-Path $prefix "bin/stark.exe") --help
-          if (-not (Test-Path (Join-Path $prefix "lib/stark/stark-runtime/src/lib.rs"))) {
+          # `doctor` on Windows is the regression guard for the hardcoded `bin/stark` lookup that
+          # made install.ps1 reject a correct package.
+          & (Join-Path $prefix "bin/stark.exe") doctor
+          if ($LASTEXITCODE -ne 0) { throw "installed toolchain failed doctor" }
+          if (-not (Test-Path (Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime/src/lib.rs"))) {
             throw "installed native runtime is missing"
           }
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
@@ -463,7 +472,7 @@ jobs:
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
-          $runtime = Join-Path $prefix "lib/stark/stark-runtime"
+          $runtime = Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime"
           $hidden = Join-Path $env:RUNNER_TEMP "runtime-hidden"
           if (-not (Test-Path $runtime)) { throw "installed runtime was expected to exist" }
           Move-Item $runtime $hidden

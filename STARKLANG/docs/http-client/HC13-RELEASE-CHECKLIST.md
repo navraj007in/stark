@@ -22,17 +22,23 @@ blocks a release:
 | --- | --- |
 | SEC-HTTP-001, SEC-HTTP-002 | **fixed** in CD-376, with falsifiers; they were remote aborts |
 | DEV-165 — `connect_timeout` accepted and ignored | open; either enforce it or remove the field |
-| installer / distribution | absent — see §0.1 |
+| installer / distribution | **Phase I implemented** — see §0.1. Not yet a standalone signed distribution. |
 
-## 0.1 Before anything else — what "release" means here
+## 0.1 What "release" means here — installer Phase I
 
-**There is currently no installable STARK toolchain.** No release has been published, there is no
-release workflow, and `build-release.py` does not stage the provider crates a native build needs.
-Everything below assumes a toolchain built from source.
+An installable toolchain now exists (CD-377): `.tar.gz` plus a native installer per platform, a
+versioned install tree with a `current` symlink, uninstall scripts, and `stark doctor` verifying
+every payload file against a SHA-256 manifest. Verified on a clean prefix with
+`STARK_REQUIRE_INSTALLED_RUNTIME=1`, which is what makes the check mean anything — without it the
+compiler silently falls back to a source checkout and the installation proves nothing.
 
-Releasing the *packages* without a way to install the *compiler* would produce a client nobody can
-run. That gap is tracked separately and is a precondition for a real release, not an item on this
-list.
+**It is Phase I, and the remaining distance is not small:**
+
+| | |
+| --- | --- |
+| **Packages are not distributed** | the payload carries the compiler, `stark-runtime` and `stark-provider-abi`. It does not carry the first-party packages or their provider crates, so a clean machine cannot build an HTTP/TLS program without obtaining `stark-http-client`, `stark-tls`, `stark-net` and the rest separately. Verified: a fresh install plus a package with a `path` dependency to something absent fails at manifest resolution, as it should. |
+| **Unsigned** | `manifest.json` establishes **integrity**, not **authenticity**. It detects corruption and partial extraction. It does not establish that the manifest came from a STARK release — an attacker replacing the payload replaces the manifest and the sidecar with it. A public distribution needs a signed manifest, a trusted release key, verification *before* installation, and platform notarisation. |
+| **No release workflow** | nothing publishes these artefacts; they are built on demand. |
 
 ---
 
@@ -133,5 +139,6 @@ its bind rather than attempting it.
 [ ] 4.1-4.6   supply chain pinned; advisories checked BY HAND
 [ ] 5.1-5.3   known breaking changes deliberately deferred or taken
 [ ] 6.1-6.2   partial claims still reported as partial
-[ ] 0         an installable toolchain exists, or the release is source-only and says so
+[ ] 0         installer Phase I verified on all three platforms; the release states plainly
+              that it is unsigned and that packages are obtained separately
 ```
