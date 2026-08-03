@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,10 @@ class PackageCase:
     resource_expected_stdout: str | None = None
     needs_echo_peer: bool = False
     needs_http_peer: bool = False
+    # HC9. Three TLS peers with a controlled certificate chain, so `stark-tls`'s lifecycle evidence
+    # covers a VERIFIED session and a rejected one. Certificates come from `stark-tls/fixtures`,
+    # generated with absolute validity windows -- see that directory's `generate.sh`.
+    needs_tls_peer: bool = False
     # A package whose ENTIRE surface requires a provider has no consumer that can run under step 5:
     # the interpreter has no provider layer, so `stark run` cannot reach any of it. Such a case
     # sets this, and its execution evidence comes from the resource block instead.
@@ -199,6 +204,29 @@ CASES = [
             "STARK_HTTP_CLIENT_RESOURCE_OK\n"
         ),
         needs_http_peer=True,
+    ),
+    # HC9 — the first package built on a CROSS-PROVIDER TRANSFER (CD-360). Its consumer is also its
+    # resource consumer, for the same reason `stark-http-client`'s is: every useful operation needs
+    # a socket and a handshake, so there is no pure surface worth running under `stark run`.
+    #
+    # The expected output is the evidence, line by line. Both protocol versions are named because a
+    # client that cannot tell 1.2 from 1.3 cannot claim either; the rejection line is there because
+    # "it failed" is not the claim -- "it failed with the specific, actionable error" is.
+    PackageCase(
+        package="stark-tls",
+        consumer="stark-tls-consumer",
+        expected_stdout=None,
+        interpreter_exempt=True,
+        resources=("TlsStream",),
+        resource_consumer="stark-tls-consumer",
+        resource_expected_stdout=(
+            "  tls: TLS 1.3 session verified, used and closed explicitly\n"
+            "  tls: TLS 1.2 session verified, used and closed explicitly\n"
+            "  tls: untrusted root rejected as certificate issuer is not trusted\n"
+            "  tls: drop released the session and the socket under it\n"
+            "STARK_TLS_RESOURCE_OK\n"
+        ),
+        needs_tls_peer=True,
     ),
 ]
 
@@ -351,6 +379,114 @@ def http_peer():
         stop.set()
         server.close()
         thread.join(timeout=5)
+
+
+TLS_PORT_TLS13 = 39189
+TLS_PORT_TLS12 = 39190
+TLS_PORT_UNTRUSTED = 39191
+
+@contextlib.contextmanager
+def tls_peer(fixtures: Path):
+    """Three loopback TLS peers with a controlled certificate chain (HC9).
+
+    HC13 forbids qualification depending on public internet services, and HC9's claims are
+    unreachable without a peer whose certificate the tester controls: nobody operates an
+    untrusted-root endpoint for testing, and "TLS 1.3 was negotiated" means nothing unless another
+    peer could have answered with 1.2.
+
+        39189  a trusted chain, TLS 1.3 only
+        39190  the same chain, TLS 1.2 only
+        39191  a chain to a root the client does not trust
+
+    The versions are PINNED rather than left to the library's defaults, which is what makes the
+    consumer's version assertions deterministic across Python and OpenSSL releases.
+
+    The certificates are checked in with absolute validity windows (`fixtures/generate.sh`), so this
+    needs no `openssl` and no `cryptography` module -- only the standard library's `ssl`.
+
+    As with the other peers, binding is asserted rather than attempted. A skipped peer would
+    silently downgrade lifecycle evidence to lowering evidence while the gate still reported
+    success (CD-348).
+    """
+    servers = []
+    threads = []
+    stop = threading.Event()
+
+    def context(cert: str, key: str, version) -> ssl.SSLContext:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(fixtures / cert), str(fixtures / key))
+        ctx.minimum_version = version
+        ctx.maximum_version = version
+        return ctx
+
+    def recv_exactly(sock, count: int) -> bytes | None:
+        out = b""
+        while len(out) < count:
+            chunk = sock.recv(count - len(out))
+            if not chunk:
+                return None
+            out += chunk
+        return out
+
+    def handle(raw, ctx: ssl.SSLContext) -> None:
+        try:
+            raw.settimeout(15)
+            with ctx.wrap_socket(raw, server_side=True) as tls:
+                while True:
+                    head = recv_exactly(tls, 8)
+                    if head is None:
+                        return
+                    body = recv_exactly(tls, int.from_bytes(head, "big"))
+                    if body is None:
+                        return
+                    tls.sendall(head)
+                    tls.sendall(body)
+        except (OSError, ssl.SSLError):
+            # An untrusted-root peer sees the client abort the handshake. That is the expected
+            # outcome for 39191, not a harness failure.
+            pass
+
+    def serve(server, ctx: ssl.SSLContext) -> None:
+        while not stop.is_set():
+            try:
+                raw, _addr = server.accept()
+            except (TimeoutError, OSError):
+                return
+            threading.Thread(target=handle, args=(raw, ctx), daemon=True).start()
+
+    plan = [
+        (TLS_PORT_TLS13, "server.cert.pem", "server.key.pem", ssl.TLSVersion.TLSv1_3),
+        (TLS_PORT_TLS12, "server.cert.pem", "server.key.pem", ssl.TLSVersion.TLSv1_2),
+        (TLS_PORT_UNTRUSTED, "untrusted.cert.pem", "untrusted.key.pem", ssl.TLSVersion.TLSv1_3),
+    ]
+    try:
+        for port, cert, key, version in plan:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server.bind(("127.0.0.1", port))
+            except OSError as exc:
+                server.close()
+                raise SystemExit(
+                    f"qualification cannot bind the TLS peer on 127.0.0.1:{port}: {exc}. "
+                    f"A resource package's lifecycle evidence needs a live peer; refusing to fall "
+                    f"back to a failure-only path (CD-348)."
+                ) from exc
+            server.listen(8)
+            server.settimeout(30)
+            servers.append(server)
+            thread = threading.Thread(
+                target=serve, args=(server, context(cert, key, version)), daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+        yield
+    finally:
+        stop.set()
+        for server in servers:
+            server.close()
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 def run(cmd: list[str], cwd: Path, expected_stdout: str | None = None) -> None:
@@ -549,10 +685,18 @@ def main() -> int:
                 / "debug"
                 / f"{case.resource_consumer}{args.exe_suffix}"
             )
-            if case.needs_echo_peer or case.needs_http_peer:
+            if case.needs_echo_peer or case.needs_http_peer or case.needs_tls_peer:
                 # The peer is started AFTER the build and torn down after the run: the build takes
                 # seconds, and a listener held open across it is a socket kept for no reason.
-                peer = http_peer if case.needs_http_peer else echo_peer
+                # The fixtures directory comes from `--repo-root`, not from this file's own
+                # location: every other path in this script does, and deriving one of them
+                # differently is how a copy of the script run from elsewhere half-works.
+                if case.needs_tls_peer:
+                    peer = lambda: tls_peer(repo_root / "stark-tls" / "fixtures")
+                elif case.needs_http_peer:
+                    peer = http_peer
+                else:
+                    peer = echo_peer
                 with peer():
                     run(
                         [str(resource_artifact)],

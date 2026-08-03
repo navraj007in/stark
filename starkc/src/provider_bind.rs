@@ -394,16 +394,23 @@ pub fn plan(
             // from the consumer would hand the provider a tag naming a different resource, or fail
             // to resolve at all. So the owner is looked up first, and only a resource that is
             // neither owned nor declared-foreign is an error.
+            //
+            // The owner NAME comes from `provider_sig::owner_of`, the one place the rule lives.
+            // It was restated here and in the MIR verifier independently, and the two disagreed —
+            // see that function for what that cost. The owner's resource-type LIST still comes
+            // from the match below, because only the foreign record carries it.
             let foreign = call
                 .foreign_resources
                 .iter()
                 .find(|f| &f.resource == resource_type);
-            let (owner_name, owner_types): (&str, &[String]) = match foreign {
-                Some(f) => (f.provider.as_str(), f.owner_resource_types.as_slice()),
-                None => (
-                    call.provider.name.as_str(),
-                    call.provider_resource_types.as_slice(),
-                ),
+            let owner_name = crate::mir::provider_sig::owner_of(
+                resource_type,
+                call.provider.name.as_str(),
+                &call.foreign_resources,
+            );
+            let owner_types: &[String] = match foreign {
+                Some(f) => f.owner_resource_types.as_slice(),
+                None => call.provider_resource_types.as_slice(),
             };
             let mir_type = registry
                 .resolve_ty(resource_type, owner_name)

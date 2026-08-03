@@ -209,11 +209,24 @@ fn provider_layer_for_build(
             continue;
         }
 
-        let resource_nominal: std::collections::BTreeMap<String, String> = api
+        // What this package OWNS: each becomes a synthesized zero-variant nominal (CD-234).
+        let owned_nominal: std::collections::BTreeMap<String, String> = api
             .resources
             .iter()
             .map(|r| (r.resource.clone(), r.nominal.clone()))
             .collect();
+        // HC9 — what this package may NAME but does not own. These render as qualified paths
+        // (`stark_net::TcpStream`) and synthesize nothing: the nominal exists in the owning
+        // package, and a second one would be a second type the program could not pass a handle
+        // between.
+        let foreign_nominal: std::collections::BTreeMap<String, String> = api
+            .foreign_resources
+            .iter()
+            .map(|f| (f.resource.clone(), f.qualified_nominal()))
+            .collect();
+        // Derivation sees both: a signature naming either must resolve.
+        let mut resource_nominal = owned_nominal.clone();
+        resource_nominal.extend(foreign_nominal.iter().map(|(k, v)| (k.clone(), v.clone())));
         let errors: std::collections::BTreeMap<String, String> =
             api.errors.iter().cloned().collect();
         let mut raw_bindings = Vec::new();
@@ -240,10 +253,15 @@ fn provider_layer_for_build(
                 },
             )?;
 
+        // Synthesis gets the two sets SEPARATELY: `owned_nominal` is what it generates, and
+        // `foreign_nominal` is what it merely accepts as already existing. Passing the union would
+        // generate a duplicate nominal for every foreign resource, which is the bug this split
+        // exists to prevent.
         let layer = crate::provider_synth::synthesize_with_resources(
             &signatures,
             &vocabularies,
-            &resource_nominal,
+            &owned_nominal,
+            &foreign_nominal,
         )
         .map_err(|error| {
             BuildCommandError::Capability(format!(

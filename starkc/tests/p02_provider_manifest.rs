@@ -347,8 +347,8 @@ fn every_built_in_provider_loads_and_validates_through_the_manifest_path() {
     let providers = starkc::provider_registry::first_party();
     assert_eq!(
         providers.len(),
-        5,
-        "the built-in set must still supply clock, env, file, net and random"
+        6,
+        "the built-in set must still supply clock, env, file, net, random and tls"
     );
     for provider in &providers {
         assert_eq!(
@@ -390,6 +390,9 @@ fn the_built_in_set_supplies_the_expected_capabilities() {
             "process.env".to_string(),
             "random".to_string(),
             "tcp".to_string(),
+            // HC9 (CD-365). `tls` is supplied by `stark-tls-native`, the first built-in provider
+            // that CONSUMES another provider's resource.
+            "tls".to_string(),
         ]
     );
 }

@@ -221,7 +221,11 @@ fn a_signature_touching_an_unbound_resource_is_refused() {
     let e = synthesize(&[file_open], &vocab(&[("filesystem", &[])]))
         .expect_err("a resource the package does not bind must be refused");
     assert!(e.contains("File"), "{e}");
-    assert!(e.contains("does not bind"), "{e}");
+    // HC9 widened the rule: a nominal is admissible if the package BINDS it or declares it FOREIGN.
+    // The refusal must name both routes, or an author who declared neither is told to do half of
+    // what would fix it.
+    assert!(e.contains("neither binds nor declares"), "{e}");
+    assert!(e.contains("foreign_resources"), "{e}");
     assert!(e.contains("file::open_raw"), "{e}");
 }
 
@@ -473,6 +477,7 @@ fn a_resource_nominal_is_a_zero_variant_enum() {
         &[],
         &BTreeMap::new(),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("synthesizes");
 
@@ -496,6 +501,7 @@ fn the_nominal_cannot_be_constructed_or_matched_into_existence() {
         &[],
         &BTreeMap::new(),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("synthesizes");
 
@@ -536,10 +542,15 @@ fn a_signature_naming_an_unbound_nominal_is_refused() {
         &[sig],
         &vocab(&[("filesystem", &[])]),
         &BTreeMap::new(),
+        &BTreeMap::new(),
     )
     .expect_err("an unbound nominal must be refused");
     assert!(e.contains("File"), "{e}");
-    assert!(e.contains("does not bind"), "{e}");
+    // HC9 widened the rule: a nominal is admissible if the package BINDS it or declares it
+    // FOREIGN. The refusal must name both routes, or an author who declared neither is told to
+    // do only half of what would fix it.
+    assert!(e.contains("neither binds nor declares"), "{e}");
+    assert!(e.contains("foreign_resources"), "{e}");
 }
 
 /// With the nominal bound, the same signature synthesizes and compiles — so the refusal above is
@@ -559,6 +570,7 @@ fn a_bound_nominal_lets_a_resource_signature_synthesize() {
         &[sig],
         &vocab(&[("filesystem", &[])]),
         &BTreeMap::from([("file".to_string(), "File".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("synthesizes");
 

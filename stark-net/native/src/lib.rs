@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 pub use stark_provider_abi::{
-    BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle,
+    BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawOsHandle, RawResourceHandle,
 };
 
 pub const TCP_LISTENER_RESOURCE_TYPE: u32 = 0;
@@ -134,7 +134,9 @@ fn map_dns_error(error: &std::io::Error) -> ProviderStatus {
 
 fn resolve_records(host: &str) -> Result<Vec<[u8; DNS_RECORD_WIDTH]>, ProviderStatus> {
     let mut records = Vec::new();
-    let addrs = (host, 0u16).to_socket_addrs().map_err(|error| map_dns_error(&error))?;
+    let addrs = (host, 0u16)
+        .to_socket_addrs()
+        .map_err(|error| map_dns_error(&error))?;
     for addr in addrs {
         let mut record = [0u8; DNS_RECORD_WIDTH];
         match addr.ip() {
@@ -468,6 +470,83 @@ pub unsafe extern "C" fn stark_dns_resolve_fill(
     ProviderStatus::SUCCESS
 }
 
+/// **HC9 — `stark_tcp_stream_detach`: this provider's half of a cross-provider transfer.**
+///
+/// Not an ABI v0.1 entry point, and deliberately absent from the provider manifest. No package
+/// binds it and lowering never emits it; it is called by another PROVIDER, resolved by the linker
+/// inside the one binary every provider is statically linked into. See
+/// `stark_provider_abi::RawOsHandle` for why the convention lives there rather than in the
+/// manifest's callable surface.
+///
+/// The visible declaration of this relationship is the consumer's
+/// `consumes: [{ "provider": "stark-std-net", "resource": "tcp_stream" }]`, which
+/// `provider_abi::validate` and `ProviderSet::select` check from both ends (CD-360).
+///
+/// # What it does, and what the caller then owes
+///
+/// Removes the stream from this provider's table and yields the underlying socket **without
+/// closing it** — `into_raw_fd`/`into_raw_socket`, not `as_raw_fd`, so no destructor runs. The
+/// caller owns the socket from the moment this returns `SUCCESS` and must eventually close it.
+///
+/// After a successful detach this provider knows nothing about the handle. A subsequent
+/// `stark_tcp_stream_close` for it aborts, which is correct: CD-360's lowering clears the caller's
+/// drop flag at transfer call entry, so a close reaching here for a detached handle means the
+/// ownership rule was broken somewhere, and aborting names it at the point of breach rather than
+/// letting a recycled descriptor be closed twice much later.
+///
+/// A handle this provider does not hold aborts for the same reason `close` does — a stale id is
+/// indistinguishable from a forged one.
+///
+/// # Safety
+/// `handle` must be a handle this provider issued and has not yet closed or detached; its
+/// `resource_type` is checked, but a stale id is not detectable and aborts.
+/// `out_handle` must be non-null, properly aligned and owned by the caller for this call; it is
+/// written only on success.
+#[no_mangle]
+pub unsafe extern "C" fn stark_tcp_stream_detach(
+    handle: RawResourceHandle,
+    out_handle: *mut RawOsHandle,
+) -> ProviderStatus {
+    validate(handle, TCP_STREAM_RESOURCE_TYPE);
+    let mut table = table().lock().unwrap_or_else(|_| abort_contract());
+    let Some(stream) = table.streams.remove(&handle.id) else {
+        abort_contract();
+    };
+    drop(table);
+    unsafe { write_scalar(out_handle, RawOsHandle::socket(into_raw_socket(stream))) };
+    ProviderStatus::SUCCESS
+}
+
+/// The socket, with its Rust owner consumed and no destructor run.
+#[cfg(unix)]
+fn into_raw_socket(stream: TcpStream) -> i64 {
+    use std::os::fd::IntoRawFd;
+    stream.into_raw_fd() as i64
+}
+
+#[cfg(windows)]
+fn into_raw_socket(stream: TcpStream) -> i64 {
+    use std::os::windows::io::IntoRawSocket;
+    // `SOCKET` is `UINT_PTR`. On 64-bit this is a lossless bit-pattern reinterpretation, and
+    // `INVALID_SOCKET` (`(UINT_PTR)(-1)`) arrives as `-1` — which `is_valid_socket` refuses,
+    // matching Unix's error value without a per-platform comparison.
+    stream.into_raw_socket() as i64
+}
+
+/// Whether this provider still holds the stream with this id.
+///
+/// Test support for the OTHER side of a transfer. After `stark_tcp_stream_detach` the answer must
+/// be `false`, and nothing else can observe that: the table is private, and a consuming provider
+/// asserting "the socket left the owner" has no other way to say it. Without this, a detach that
+/// yielded a duplicate rather than moving the socket would pass every test in both crates.
+pub fn holds_stream(id: u64) -> bool {
+    table()
+        .lock()
+        .unwrap_or_else(|_| abort_contract())
+        .streams
+        .contains_key(&id)
+}
+
 #[derive(Debug)]
 pub enum HarnessError {
     Io(std::io::Error),
@@ -750,6 +829,10 @@ mod tests {
             ) -> ProviderStatus;
             pub fn stark_tcp_listener_close(handle: RawResourceHandle) -> ProviderStatus;
             pub fn stark_tcp_stream_close(handle: RawResourceHandle) -> ProviderStatus;
+            pub fn stark_tcp_stream_detach(
+                handle: RawResourceHandle,
+                out_handle: *mut super::RawOsHandle,
+            ) -> ProviderStatus;
             pub fn stark_dns_resolve_len(
                 host: BorrowedBuffer,
                 out_required_len: *mut u64,
@@ -783,6 +866,68 @@ mod tests {
         assert_eq!(declared, exported);
         assert!(declared.iter().all(|name| portable_c_identifier(name)));
         assert_eq!(metadata.resource_types, vec!["tcp_listener", "tcp_stream"]);
+    }
+
+    /// **The shipped JSON manifest is the authority (P0.2), so THAT is what the exports are checked
+    /// against.**
+    ///
+    /// `metadata_validates_and_symbols_match` above compares two hand-written literals in this
+    /// file. They agree, and they have to — but agreement between a mirror and a list of the same
+    /// mirror's contents is precisely the CD-219 failure: both drifted from the real export set
+    /// together, and neither could see it. `stark_tcp_stream_set_read_timeout` and its write twin
+    /// were added under HC4, are in the JSON manifest, are exported here, and appear in NEITHER
+    /// literal above — undetected until this test was written.
+    ///
+    /// This reads the manifest the compiler actually embeds and compares it against the symbols
+    /// this crate actually links, which is the comparison that can fail.
+    #[test]
+    fn the_shipped_manifest_matches_the_symbols_this_crate_links() {
+        let text = include_str!("../../../starkc/providers/stark-net-native.json");
+        let provider = starkc::provider_manifest::parse_provider_manifest(text, "stark-net-native")
+            .expect("the shipped manifest must parse");
+        assert_eq!(
+            starkc::provider_abi::validate(&provider.metadata),
+            Ok(()),
+            "the shipped manifest must satisfy the ABI validator"
+        );
+
+        // Every symbol the manifest declares must resolve at link time. Calling each with a
+        // deliberately invalid handle is not viable — several would abort — so the linkage is
+        // proven by the `extern` block in `linked` below, which the compiler resolves for the whole
+        // module. What this asserts is the SET.
+        let declared: HashSet<&str> = provider
+            .metadata
+            .functions
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        let exported = HashSet::from([
+            "stark_tcp_listener_bind",
+            "stark_tcp_listener_accept",
+            "stark_tcp_stream_connect",
+            "stark_tcp_stream_read",
+            "stark_tcp_stream_write",
+            "stark_tcp_stream_set_read_timeout",
+            "stark_tcp_stream_set_write_timeout",
+            "stark_tcp_listener_close",
+            "stark_tcp_stream_close",
+            "stark_dns_resolve_len",
+            "stark_dns_resolve_fill",
+        ]);
+        assert_eq!(
+            declared, exported,
+            "the shipped manifest and this crate's callable exports must name the same set"
+        );
+
+        // HC9's transfer surface is exported but NOT in the manifest, by design — see
+        // `stark_tcp_stream_detach`. Asserted explicitly so "absent from the manifest" stays a
+        // decision with a test behind it rather than an omission nobody would notice.
+        assert!(
+            !declared.contains("stark_tcp_stream_detach"),
+            "`detach` is a provider-to-provider convention, not a STARK-callable ABI function; \
+             putting it in the manifest would place a permanently unreachable symbol into the \
+             surface the validator governs"
+        );
     }
 
     #[test]
@@ -820,9 +965,8 @@ mod tests {
         let mut required_len = 123u64;
         let mut count = 456u64;
 
-        let empty = unsafe {
-            linked::stark_dns_resolve_len(buf(b""), &mut required_len, &mut count)
-        };
+        let empty =
+            unsafe { linked::stark_dns_resolve_len(buf(b""), &mut required_len, &mut count) };
         assert_eq!(empty, STATUS_DNS_INVALID_HOST);
         assert_eq!(required_len, 123);
         assert_eq!(count, 456);
@@ -932,6 +1076,108 @@ mod tests {
             unsafe { linked::stark_tcp_listener_close(listener_handle) },
             ProviderStatus::SUCCESS
         );
+    }
+
+    /// **HC9's transfer half, proved against a live peer.**
+    ///
+    /// A detached socket must still WORK — the point of a transfer is that the consuming provider
+    /// continues using the connection, so a detach that yields a closed or duplicated descriptor
+    /// would pass a shallow "did it return SUCCESS" check and fail at the first handshake byte.
+    /// This one detaches, rebuilds a `TcpStream` from the raw handle, and completes a round trip
+    /// over it.
+    #[test]
+    fn a_detached_socket_is_live_and_this_provider_has_forgotten_it() {
+        let server = EchoServer::spawn().unwrap();
+        let address_text = server.address.to_string();
+
+        let mut handle = RawResourceHandle {
+            id: 0,
+            resource_type: TCP_STREAM_RESOURCE_TYPE,
+        };
+        assert_eq!(
+            unsafe { linked::stark_tcp_stream_connect(buf(address_text.as_bytes()), &mut handle) },
+            ProviderStatus::SUCCESS
+        );
+
+        let id = handle.id;
+        assert!(
+            table().lock().unwrap().streams.contains_key(&id),
+            "the provider must hold the stream before the transfer"
+        );
+
+        let mut detached = RawOsHandle::NONE;
+        assert_eq!(
+            unsafe { linked::stark_tcp_stream_detach(handle, &mut detached) },
+            ProviderStatus::SUCCESS
+        );
+        assert!(
+            detached.is_valid_socket(),
+            "a successful detach must yield a usable socket, got {detached:?}"
+        );
+        assert!(
+            !table().lock().unwrap().streams.contains_key(&id),
+            "after a transfer the owner must hold nothing: a later close for this handle would be \
+             a double release, and the abort that would follow is the correct outcome"
+        );
+
+        // The load-bearing part: adopt the raw socket and use it. `into_raw_fd` ran, so no
+        // destructor closed it, and this is the only owner.
+        let mut adopted = adopt(detached);
+        adopted
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        adopted.write_all(&5u64.to_be_bytes()).unwrap();
+        adopted.write_all(b"hello").unwrap();
+        let mut len_bytes = [0u8; 8];
+        adopted.read_exact(&mut len_bytes).unwrap();
+        assert_eq!(u64::from_be_bytes(len_bytes), 5);
+        let mut echoed = [0u8; 5];
+        adopted.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"hello");
+
+        drop(adopted);
+        server.shutdown().unwrap();
+    }
+
+    /// Two detaches of one handle must not both succeed. The second finds nothing in the table and
+    /// aborts, so it cannot be asserted in-process without killing the test runner — what IS
+    /// assertable is that the first removed the entry, which is the property the abort rests on.
+    #[test]
+    fn a_detach_removes_the_entry_so_a_second_one_cannot_find_it() {
+        let server = EchoServer::spawn().unwrap();
+        let mut handle = RawResourceHandle {
+            id: 0,
+            resource_type: TCP_STREAM_RESOURCE_TYPE,
+        };
+        assert_eq!(
+            unsafe {
+                linked::stark_tcp_stream_connect(
+                    buf(server.address.to_string().as_bytes()),
+                    &mut handle,
+                )
+            },
+            ProviderStatus::SUCCESS
+        );
+        let mut detached = RawOsHandle::NONE;
+        assert_eq!(
+            unsafe { linked::stark_tcp_stream_detach(handle, &mut detached) },
+            ProviderStatus::SUCCESS
+        );
+        assert!(!table().lock().unwrap().streams.contains_key(&handle.id));
+        drop(adopt(detached));
+        server.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    fn adopt(handle: RawOsHandle) -> TcpStream {
+        use std::os::fd::FromRawFd;
+        unsafe { TcpStream::from_raw_fd(handle.value as std::os::fd::RawFd) }
+    }
+
+    #[cfg(windows)]
+    fn adopt(handle: RawOsHandle) -> TcpStream {
+        use std::os::windows::io::FromRawSocket;
+        unsafe { TcpStream::from_raw_socket(handle.value as std::os::windows::io::RawSocket) }
     }
 
     #[test]

@@ -69,6 +69,14 @@ const BUILT_IN_MANIFESTS: &[(&str, &str)] = &[
         "stark-random-native",
         include_str!("../providers/stark-random-native.json"),
     ),
+    // HC9. The first provider that CONSUMES another's resource (CD-360): its manifest declares
+    // `consumes: [{ "provider": "stark-std-net", "resource": "tcp_stream" }]`, and
+    // `ProviderSet::select` refuses the build if that owner is not uniquely present in the
+    // selected set.
+    (
+        "stark-tls-native",
+        include_str!("../providers/stark-tls-native.json"),
+    ),
 ];
 
 /// The default provider set: the built-in manifests, parsed through the same loader an external

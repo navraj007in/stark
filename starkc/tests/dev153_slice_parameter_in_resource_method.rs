@@ -106,6 +106,7 @@ fn provider_layer() -> String {
         &[connect_sig],
         &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("resource nominal and free connect binding synthesize")
     .source

@@ -1,5 +1,134 @@
 # STARK Compiler STATE
 
+## CD-365 — HC9 CLOSED: verified TLS, and CD-360's rule found in a fourth place (2026-08-03)
+
+**A STARK program can now establish a verified TLS 1.2/1.3 stream over a `stark-net` TCP connection
+and release both layers exactly once, without touching a raw ABI symbol.** rustls 0.23.43 over
+aws-lc-rs 1.17.3, Profile N, exactly the versions CD-361 observed.
+
+Full record: `STARKLANG/docs/http-client/HC9-TLS-EVIDENCE.md`.
+
+### CD-360's rule had a FOURTH site, and it was the verifier
+
+CD-360 found the transfer-ownership rule implemented in three places and fixed each separately. The
+MIR verifier was a fourth. It stayed hidden because CD-360's fixture built its
+`ValidatedProviderCall` by hand and emitted from it — never running the verifier over a transfer.
+HC9's first native build:
+
+```text
+MIR-0005 stark_tls::connect bb53: call argument:
+  expected HostResource(… provider: "stark-std-tls", resource: "tcp_stream"),
+  found    HostResource(… provider: "stark-std-net", resource: "tcp_stream")
+```
+
+**The planner was right and the verifier was wrong** — a correct program refused by the compiler,
+which is the worse of the two ways to be inconsistent. The rule now lives in ONE function,
+`mir::provider_sig::owner_of`, which both callers use. A fifth site cannot restate it slightly
+differently, and a test asserts the planner's actual type and the verifier's expected type are the
+same value rather than each being separately plausible.
+
+**The lesson is about the fixture, not the code.** A hand-built `ValidatedProviderCall` skips every
+stage between planning and emission. Three sites were fixed, the ruling was recorded as implemented,
+and the first real caller found the fourth immediately.
+
+### A package can now NAME another package's resource
+
+The gap CD-360 did not reach: the derived signature for `stark_tls_stream_connect` takes a
+`TcpStream`, which is `stark-net`'s nominal, so derivation failed with
+`UnboundResourceInSignature`. A transfer was declarable in a *provider* manifest and not in a
+*package* one.
+
+```json
+"foreign_resources": { "tcp_stream": { "package": "stark_net", "nominal": "TcpStream" } }
+```
+
+Resolves to `stark_net::TcpStream` and **synthesizes nothing**. Binding it as an ordinary resource
+instead would generate a SECOND `enum TcpStream {}` — a distinct `ItemId`, the same spelling, and a
+handle the program could not pass anywhere. Inferring the owner from the graph would make a typo
+resolve to nothing far from its cause. So it is declared, names the owner, and is refused if the
+alias is not a dependency, if the resource is also owned, or if it is a Core type.
+
+### How the socket physically crosses
+
+CD-360 conveyed ownership but not the object: a `RawResourceHandle` indexes the OWNER's private
+table. `stark_provider_abi::RawOsHandle` now documents a detach convention —
+`stark_<resource>_detach(handle, *mut RawOsHandle)` — resolved **by the linker**, since every
+provider is statically linked into one binary. No Cargo edge, no path assumption, and deliberately
+NOT in the provider manifest: a manifest describes the STARK-callable surface, and `detach` is
+callable by no package and emitted by no lowering.
+
+**Open, recorded rather than rediscovered:** a missing detach symbol is a LINK error naming a
+symbol, not a compiler diagnostic.
+
+### The ordering inside `connect` is the cleanup story
+
+```text
+detach the socket FIRST  ->  validate  ->  handshake
+```
+
+The handle is consumed whatever the function returns, so any early return before the socket is
+adopted strands it in the net provider's table. Detaching first makes every later error path a plain
+Rust drop. There is no cleanup code in that function, and its absence is the design.
+
+### Evidence
+
+19 provider tests (the full certificate matrix, both protocol versions distinguishable, handshake
+deadline, peer-close, fragmented records, leak-freedom on every failure path), 16 new compiler tests,
+8 package tests, and `stark-tls` as the **16th package** in the qualification gate — declared surface
+14 callables, all called. All provider-related starkc suites re-run green.
+
+**CD-360's runtime proving case is closed by this**: a real transfer against a live peer, both
+outcomes, release observed exactly once.
+
+### DEV-156 — `stark fmt` evicts member doc comments (OPEN)
+
+A doc comment on a struct FIELD is relocated to after the struct; one on an `impl` METHOD is
+relocated INSIDE the body. Reproducer:
+
+```stark
+pub struct Config {
+    pub first: UInt32,
+    /// PROBE DOC
+    pub last: UInt32,
+}
+```
+
+becomes `pub struct Config { pub first: UInt32, pub last: UInt32 }` followed by a dangling
+`/// PROBE DOC`.
+
+Cause: `printer::field_def` never consumes leading comments, so they survive only via
+`CommentStream::take_rest`'s no-loss net, which flushes at the next position the printer does
+attach. `item_seq` calls `emit_leading_comments` correctly, which is why top-level items are fine.
+Fixing it needs `measure_flat` to snapshot the comment cursor, a member comment to force the
+multi-line branch, and per-member emission in that branch.
+
+**Both forms are idempotent after one pass, so `fmt --check` passes and the gate never noticed.**
+`stark-net` has its method commentary inside method bodies — almost certainly this defect, absorbed
+rather than reported.
+
+Not fixed under HC9: it changes canonical form repo-wide, so every affected package must be
+reformatted in the same commit, and this checkout is shared. `stark-tls` uses the surviving
+placement with an inline note pointing at this entry.
+
+**On reducing it:** three attempts reported "PRESERVED" falsely, because the baseline copy was kept
+INSIDE the package directory and `stark fmt` formats every `.stark` file in a package — mangling the
+baseline identically and emptying the diff. A formatter reducer must keep its baseline outside.
+
+### Two other findings
+
+* **DEV-157** — the native backend has no representation for `MirTy::Never`, so
+  `Err(_) => panic(..)` in match-arm VALUE position checks and then fails to build. Known C5.3 gap;
+  `stark-tls-consumer` nests instead, as `stark-net-resource-consumer` already does.
+* `c788_resource_lifecycle::build_driver_selects_closes_for_bound_resource_nominals` fails in this
+  checkout with "Cargo succeeded but the expected binary is missing". **Verified pre-existing on
+  HEAD** by stashing every HC9 change. Environmental, tied to the shared `target/`.
+
+### Not claimed
+
+`SystemRoots`/`BundledRoots` are declared and REFUSED — HC10's, and refused by name rather than
+silently substituted. Profile F is not qualified: it needs CMake and Go, neither present. HTTPS is
+HC10.
+
 ## CD-364 — `crate_location` deleted; P0.2 complete (2026-08-03)
 
 **The last piece of the mechanism that made every native capability a compiler-source change is

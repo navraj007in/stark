@@ -1,0 +1,379 @@
+// HC9 — `stark-tls`: a verified TLS client stream over a `stark-net` TCP connection.
+//
+// The protocol is not implemented here and must not be. CD-361 selected rustls over aws-lc-rs as
+// STARK's one cryptographic foundation, and this package's whole job is to give that a STARK-shaped
+// surface: an affine resource, a declared error taxonomy, and a configuration that cannot express
+// an unsafe request.
+//
+// # What the API forbids, by having no way to say it
+//
+// There is no "accept invalid certificate" switch, no verification callback, no way to disable
+// hostname checking, and no client-certificate path. Each of those is absent rather than defaulted
+// off: a flag that exists is a flag that gets set in a hurry and never unset, and a callback is a
+// verifier written by someone who is not writing a verifier.
+//
+// # Ownership
+//
+// `TlsStream::connect` CONSUMES its `TcpStream`. Ownership passes at call entry and does not come
+// back on failure (CD-360) — a failed handshake leaves no reusable socket, and a retry needs a new
+// connection. One `TlsStream` close performs the TLS shutdown and the socket close; there is
+// exactly one release path for both effects.
+
+use stark_time::Duration;
+
+/// The protocol versions this package admits. TLS 1.0 and 1.1 are absent, not deprecated: a range
+/// that cannot name them cannot be configured down to them.
+pub enum TlsVersion {
+    Tls12,
+    Tls13,
+}
+
+/// Where trust anchors come from.
+///
+/// CD-361: root acquisition is POLICY, separate from engine selection. `ExplicitRoots` carries the
+/// anchors directly and is what HC9's controlled fixture uses. `SystemRoots` and `BundledRoots` are
+/// declared here and REFUSED by the provider — HC10 implements them. They are named now so the
+/// shape of the decision is visible, and refused rather than silently substituted, because a client
+/// that believes it is checking the machine's trust store while checking something else is worse
+/// than one that will not start.
+pub enum RootStorePolicy {
+    SystemRoots,
+    BundledRoots,
+    ExplicitRoots(String),
+}
+
+/// How a TLS session is to be established.
+///
+/// `handshake_timeout` bounds the WHOLE handshake, not each read within it. That is HC4's
+/// distinction and this is where it first bites: a per-read socket timeout is an idle bound, so a
+/// peer sending one handshake byte at a time stays under it forever. Zero is refused — see
+/// `handshake_timeout_nanos`.
+///
+/// (Documented on the type rather than on the field because `stark fmt` evicts a doc comment from
+/// a struct field to after the struct — DEV-156. Recorded so the placement is not read as
+/// preference.)
+pub struct TlsClientConfig {
+    pub min_version: TlsVersion,
+    pub max_version: TlsVersion,
+    pub root_store: RootStorePolicy,
+    pub handshake_timeout: Duration,
+}
+
+/// Every way a TLS operation can fail, as one closed set.
+///
+/// Each certificate rejection is its OWN variant rather than a shared "bad certificate". An
+/// operator reading a failure needs to tell a clock problem from a trust problem from a name
+/// problem, and a client that reports all three identically sends people to the wrong place.
+pub enum TlsError {
+    ConnectionReset,
+    BrokenPipe,
+    TimedOut,
+    WouldBlock,
+    EndOfStream,
+    InvalidInput,
+    Unsupported,
+    HandshakeFailed,
+    CertificateInvalid,
+    CertificateExpired,
+    CertificateNotYetValid,
+    CertificateUnknownIssuer,
+    HostnameMismatch,
+    ProtocolVersionUnsupported,
+    HandshakeTimeout,
+    PeerClosedDuringHandshake,
+    InvalidServerName,
+    InvalidConfiguration,
+    Other,
+}
+
+// The provider's wire encoding for the two enum-valued configuration inputs. Mirrored here because
+// the ABI carries scalars, not STARK enums; kept adjacent to the mapping functions so a change to
+// either is visibly a change to both.
+const VERSION_TLS12: UInt32 = 0u32;
+const VERSION_TLS13: UInt32 = 1u32;
+const ROOTS_SYSTEM: UInt32 = 0u32;
+const ROOTS_BUNDLED: UInt32 = 1u32;
+const ROOTS_EXPLICIT: UInt32 = 2u32;
+
+/// Thirty seconds. Long enough for a slow network and a long chain, short enough that a stuck
+/// connection is noticed rather than inherited by whatever runs next.
+const DEFAULT_HANDSHAKE_SECONDS: UInt64 = 30u64;
+
+/// The default handshake bound, so a caller who has no opinion still gets a finite one.
+pub fn default_handshake_timeout() -> Duration {
+    Duration::from_seconds(DEFAULT_HANDSHAKE_SECONDS)
+}
+
+/// The ordinary configuration: both protocol versions, explicit trust anchors, a finite handshake
+/// bound.
+///
+/// A constructor rather than a struct literal at every call site, because the safe combination
+/// should be the short one to write.
+pub fn explicit_roots_config(roots_pem: String, handshake_timeout: Duration) -> TlsClientConfig {
+    TlsClientConfig {
+        min_version: TlsVersion::Tls12,
+        max_version: TlsVersion::Tls13,
+        root_store: RootStorePolicy::ExplicitRoots(roots_pem),
+        handshake_timeout: handshake_timeout,
+    }
+}
+
+impl TlsStream {
+    pub fn connect(tcp: stark_net::TcpStream, server_name: String, config: TlsClientConfig) -> Result<TlsStream, TlsError> {
+        // Establishes a verified TLS session over `tcp`, which this call CONSUMES.
+        //
+        // `server_name` is used for SNI and is the name the certificate is verified against. It is not
+        // derived from the socket's address on purpose: the address says where the bytes went, and the
+        // name says who the caller intended to talk to. Only the second is a security statement.
+        connect(tcp, server_name, config)
+    }
+    pub fn read(&mut self, output: &mut [UInt8]) -> Result<UInt64, TlsError> {
+        // Reads decrypted application bytes. Returns `0` only at a clean end of stream — a truncated
+        // connection is `TlsError::EndOfStream`, which is a different event and must stay one.
+        match tls_stream_read_raw(self, output) {
+            Ok(count) => Ok(count),
+            Err(error) => Err(map_tls_error(error)),
+        }
+    }
+    pub fn write(&mut self, input: &[UInt8]) -> Result<UInt64, TlsError> {
+        // Writes application bytes. May accept fewer than offered; see `write_all`.
+        match tls_stream_write_raw(self, input) {
+            Ok(count) => Ok(count),
+            Err(error) => Err(map_tls_error(error)),
+        }
+    }
+    pub fn write_all(&mut self, input: &[UInt8]) -> Result<(), TlsError> {
+        // Writes every byte, or fails.
+        //
+        // A zero-length accepted write ends this as `EndOfStream` rather than spinning: a stream that
+        // accepts nothing will not start accepting something, and the loop that assumes otherwise is
+        // the one that hangs a request forever.
+        let mut written: UInt64 = 0u64;
+        while written < input.len() {
+            let remaining = &input[written..input.len()];
+            let count = self.write(remaining)?;
+            if count == 0u64 {
+                return Err(TlsError::EndOfStream);
+            }
+            written = written + count;
+        }
+        Ok(())
+    }
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TlsError> {
+        // Bounds each blocking read on the established session.
+        //
+        // **Terminal, per HC4.** A timeout here ends the connection: the caller must drop the stream
+        // rather than read again. Nothing in this package retries, and nothing should — a retry after
+        // a timeout resumes a session whose record boundaries are no longer known to be aligned with
+        // the caller's expectations.
+        let nanos = timeout_nanos(timeout)?;
+        match tls_stream_set_read_timeout_raw(self, nanos) {
+            Ok(_unit) => Ok(()),
+            Err(error) => Err(map_tls_error(error)),
+        }
+    }
+    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TlsError> {
+        // Bounds each blocking write on the established session. Terminal, as `set_read_timeout` is.
+        let nanos = timeout_nanos(timeout)?;
+        match tls_stream_set_write_timeout_raw(self, nanos) {
+            Ok(_unit) => Ok(()),
+            Err(error) => Err(map_tls_error(error)),
+        }
+    }
+    pub fn peer_version(&self) -> Result<TlsVersion, TlsError> {
+        // The version actually negotiated.
+        //
+        // Purely observational, so it takes a shared borrow. It exists because "TLS 1.3 was
+        // negotiated" is otherwise unobservable from STARK, and a qualification claim that both
+        // versions work cannot be made by a program that cannot tell them apart.
+        match tls_stream_peer_version_raw(self) {
+            Ok(code) => {
+                if code == VERSION_TLS13 {
+                    Ok(TlsVersion::Tls13)
+                } else if code == VERSION_TLS12 {
+                    Ok(TlsVersion::Tls12)
+                } else {
+                    // Unreachable through this surface: a `TlsStream` exists only after a completed
+                    // handshake, and a completed handshake has a version. Reported rather than
+                    // asserted, because a provider that returned something else would be wrong in a
+                    // way a panic would not explain.
+                    Err(TlsError::Other)
+                }
+            }
+            Err(error) => Err(map_tls_error(error)),
+        }
+    }
+}
+
+/// The free form of `TlsStream::connect`, for callers composing rather than chaining.
+pub fn connect(tcp: stark_net::TcpStream, server_name: String, config: TlsClientConfig) -> Result<TlsStream, TlsError> {
+    // Everything checkable in STARK is checked BEFORE the transfer, because a refusal here still
+    // costs the caller their socket: `tls_stream_connect_raw` consumes `tcp` unconditionally
+    // (CD-360), so a late refusal and an early one differ only in whether the caller learns the
+    // reason. They do not differ in what it costs.
+    let min = version_code(&config.min_version);
+    let max = version_code(&config.max_version);
+    if min > max {
+        return Err(TlsError::InvalidConfiguration);
+    }
+    if server_name.len() == 0u64 {
+        return Err(TlsError::InvalidServerName);
+    }
+    let handshake_nanos = handshake_timeout_nanos(&config.handshake_timeout)?;
+
+    // The PEM is brought into ONE owned local so the slice handed across the ABI has a single,
+    // obvious lifetime. `roots` is empty for the two policies the provider refuses; it is not a
+    // substitute trust set, and the provider does not read it for them.
+    let policy: UInt32;
+    let roots: String;
+    match config.root_store {
+        RootStorePolicy::SystemRoots => {
+            policy = ROOTS_SYSTEM;
+            roots = String::new();
+        }
+        RootStorePolicy::BundledRoots => {
+            policy = ROOTS_BUNDLED;
+            roots = String::new();
+        }
+        RootStorePolicy::ExplicitRoots(pem) => {
+            policy = ROOTS_EXPLICIT;
+            roots = pem;
+        }
+    }
+
+    // Both slices are hoisted into locals before the call. Two temporaries in one argument list
+    // overlap, and DEV-150 rejects that uniformly rather than case by case.
+    let name_bytes = server_name.as_str().bytes();
+    let roots_bytes = roots.as_str().bytes();
+    match tls_stream_connect_raw(tcp, name_bytes, roots_bytes, min, max, policy, handshake_nanos) {
+
+        Ok(stream) => Ok(stream),
+        Err(error) => Err(map_tls_error(error)),
+    }
+}
+
+/// Releases the session.
+///
+/// Consuming the affine resource IS the close. MIR drop elaboration emits
+/// `stark_tls_stream_close` exactly once for this owned `TlsStream`, which sends `close_notify`
+/// and closes the socket underneath it. The raw close symbol is deliberately NOT bound in the
+/// manifest: a package-callable close would be a second destruction path for one resource, and
+/// exactly-once is the property the whole resource model rests on.
+pub fn close(stream: TlsStream) -> Result<(), TlsError> {
+    let _owned = stream;
+    Ok(())
+}
+
+/// A short, stable description, for programs that report a failure rather than branch on it.
+pub fn tls_error_text(error: &TlsError) -> String {
+    match *error {
+        TlsError::ConnectionReset => String::from("connection reset"),
+        TlsError::BrokenPipe => String::from("broken pipe"),
+        TlsError::TimedOut => String::from("timed out"),
+        TlsError::WouldBlock => String::from("would block"),
+        TlsError::EndOfStream => String::from("end of stream"),
+        TlsError::InvalidInput => String::from("invalid input"),
+        TlsError::Unsupported => String::from("unsupported"),
+        TlsError::HandshakeFailed => String::from("handshake failed"),
+        TlsError::CertificateInvalid => String::from("certificate invalid"),
+        TlsError::CertificateExpired => String::from("certificate expired"),
+        TlsError::CertificateNotYetValid => String::from("certificate not yet valid"),
+        TlsError::CertificateUnknownIssuer => String::from("certificate issuer is not trusted"),
+        TlsError::HostnameMismatch => String::from("certificate is not valid for this hostname"),
+        TlsError::ProtocolVersionUnsupported => String::from("no shared protocol version"),
+        TlsError::HandshakeTimeout => String::from("handshake timed out"),
+        TlsError::PeerClosedDuringHandshake => String::from("peer closed during handshake"),
+        TlsError::InvalidServerName => String::from("invalid server name"),
+        TlsError::InvalidConfiguration => String::from("invalid TLS configuration"),
+        TlsError::Other => String::from("other"),
+    }
+}
+
+/// `TlsVersion` in the provider's encoding. Ordered, so a range check is a comparison.
+pub fn version_code(version: &TlsVersion) -> UInt32 {
+    match *version {
+        TlsVersion::Tls12 => VERSION_TLS12,
+        TlsVersion::Tls13 => VERSION_TLS13,
+    }
+}
+
+/// The handshake bound, in nanoseconds.
+///
+/// **Zero is refused rather than meaning "no timeout".** The ABI reads zero as unbounded, and that
+/// is the one value where a caller's intent cannot be inferred: a `Duration::zero()` written
+/// deliberately means "do not wait", and one arrived at by arithmetic means a bug. Mapping either
+/// to "wait forever" turns a bound into its exact opposite. An unbounded handshake is not
+/// something this package offers, so there is no spelling for it.
+pub fn handshake_timeout_nanos(timeout: &Duration) -> Result<UInt64, TlsError> {
+    if timeout.is_zero() {
+        return Err(TlsError::InvalidConfiguration);
+    }
+    match timeout.as_nanos() {
+        Some(nanos) => {
+            if nanos == 0u64 {
+                return Err(TlsError::InvalidConfiguration);
+            }
+            Ok(nanos)
+        }
+        // A duration too large to express in nanoseconds fails cleanly rather than truncating into
+        // a much shorter bound than was asked for.
+        None => Err(TlsError::InvalidConfiguration),
+    }
+}
+
+/// `Option<Duration>` to the provider's nanosecond encoding, for the post-handshake socket bounds.
+///
+/// Here `None` IS "no timeout" — a blocking read on an established session is a legitimate thing to
+/// ask for, unlike an unbounded handshake. A zero `Some` is still refused, for the same reason as
+/// above.
+fn timeout_nanos(timeout: Option<Duration>) -> Result<UInt64, TlsError> {
+    match timeout {
+        None => Ok(0u64),
+        Some(duration) => {
+            if duration.is_zero() {
+                return Err(TlsError::InvalidConfiguration);
+            }
+            match duration.as_nanos() {
+                Some(nanos) => {
+                    if nanos == 0u64 {
+                        return Err(TlsError::InvalidConfiguration);
+                    }
+                    Ok(nanos)
+                }
+                None => Err(TlsError::InvalidConfiguration),
+            }
+        }
+    }
+}
+
+/// The raw status vocabulary to the public one.
+///
+/// Exhaustive and one-to-one. `RawTlsError` is generated by the compiler from the provider
+/// manifest's status map (CD-225 §7.2), so a code added there without a case here is a compile
+/// error in this function — which is the point of keeping the mapping in ordinary STARK rather than
+/// in the manifest.
+fn map_tls_error(error: RawTlsError) -> TlsError {
+    match error {
+        RawTlsError::ConnectionReset => TlsError::ConnectionReset,
+        RawTlsError::BrokenPipe => TlsError::BrokenPipe,
+        RawTlsError::TimedOut => TlsError::TimedOut,
+        RawTlsError::WouldBlock => TlsError::WouldBlock,
+        RawTlsError::EndOfStream => TlsError::EndOfStream,
+        RawTlsError::InvalidInput => TlsError::InvalidInput,
+        RawTlsError::Unsupported => TlsError::Unsupported,
+        RawTlsError::Other => TlsError::Other,
+        RawTlsError::HandshakeFailed => TlsError::HandshakeFailed,
+        RawTlsError::CertificateInvalid => TlsError::CertificateInvalid,
+        RawTlsError::CertificateExpired => TlsError::CertificateExpired,
+        RawTlsError::CertificateNotYetValid => TlsError::CertificateNotYetValid,
+        RawTlsError::CertificateUnknownIssuer => TlsError::CertificateUnknownIssuer,
+        RawTlsError::HostnameMismatch => TlsError::HostnameMismatch,
+        RawTlsError::ProtocolVersionUnsupported => TlsError::ProtocolVersionUnsupported,
+        RawTlsError::HandshakeTimeout => TlsError::HandshakeTimeout,
+        RawTlsError::PeerClosedDuringHandshake => TlsError::PeerClosedDuringHandshake,
+        RawTlsError::InvalidServerName => TlsError::InvalidServerName,
+        RawTlsError::InvalidConfiguration => TlsError::InvalidConfiguration,
+    }
+}
+
+mod tests;

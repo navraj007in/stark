@@ -226,6 +226,7 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
         &[connect_sig],
         &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("resource nominal and free connect binding synthesize");
     let source = format!("{}\nfn main() {{ }}\n", layer.source);

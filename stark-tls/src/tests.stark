@@ -1,0 +1,189 @@
+// HC9 — the part of `stark-tls` that can be tested without a provider.
+//
+// `stark test` runs on the reference interpreter, which has no provider layer, so nothing here can
+// perform a handshake. What IS testable is every decision this package makes BEFORE the ABI: the
+// version encoding, the handshake-bound rules, the configuration constructor, and the error
+// vocabulary. The handshake itself, the certificate matrix and the resource lifecycle are proved
+// natively — by `stark-tls-native`'s own suite and by `stark-tls-consumer` under the package gate.
+
+use super::default_handshake_timeout;
+use super::explicit_roots_config;
+use super::handshake_timeout_nanos;
+use super::tls_error_text;
+use super::version_code;
+use super::RootStorePolicy;
+use super::TlsError;
+use super::TlsVersion;
+use super::Duration;
+
+fn test_version_codes_are_ordered() {
+    // The range check in `connect` is `min > max`, which is only meaningful if the encoding is
+    // ordered. A reversal here would silently make `Tls13..Tls12` a valid range.
+    if version_code(&TlsVersion::Tls12) >= version_code(&TlsVersion::Tls13) {
+        panic("the version encoding must be ordered, oldest first");
+    }
+    if version_code(&TlsVersion::Tls12) != 0u32 {
+        panic("TLS 1.2 must encode as 0");
+    }
+    if version_code(&TlsVersion::Tls13) != 1u32 {
+        panic("TLS 1.3 must encode as 1");
+    }
+}
+
+fn test_a_zero_handshake_bound_is_refused() {
+    // Zero reaches the ABI as "no timeout". Refusing it here is what keeps an unbounded handshake
+    // unspellable from STARK.
+    match handshake_timeout_nanos(&Duration::zero()) {
+        Ok(_nanos) => {
+            panic("a zero handshake bound must be refused, not read as unbounded");
+        }
+        Err(error) => match error {
+            TlsError::InvalidConfiguration => {}
+            _other => {
+                panic("a zero handshake bound must be InvalidConfiguration");
+            }
+        }
+    }
+}
+
+fn test_a_finite_handshake_bound_converts() {
+    match handshake_timeout_nanos(&Duration::from_seconds(2u64)) {
+        Ok(nanos) => {
+            if nanos != 2000000000u64 {
+                panic("two seconds must be two billion nanoseconds");
+            }
+        }
+        Err(_error) => {
+            panic("a finite handshake bound must convert");
+        }
+    }
+}
+
+fn test_an_unrepresentable_handshake_bound_is_refused() {
+    // `as_nanos` returns None on overflow. Truncating instead would hand the provider a bound far
+    // SHORTER than the caller asked for, which is the dangerous direction to be wrong in.
+    //
+    // The BOUNDARY is asserted, not a comfortably-large number. 18446744073 seconds is the largest
+    // whole second count whose nanoseconds still fit in a UInt64; one more does not. A test that
+    // only checked something enormous would pass just as well against a conversion that overflowed
+    // one second early or one second late. (Written first with the largest value and no successor
+    // check -- it failed, because that value converts fine.)
+    match handshake_timeout_nanos(&Duration::from_seconds(18446744073u64)) {
+        Ok(nanos) => {
+            if nanos != 18446744073000000000u64 {
+                panic("the largest representable bound must convert exactly");
+            }
+        }
+        Err(_error) => {
+            panic("the largest representable bound must convert, not be refused");
+        }
+    }
+
+    match handshake_timeout_nanos(&Duration::from_seconds(18446744074u64)) {
+        Ok(_nanos) => {
+            panic("a duration too large for nanoseconds must be refused, not truncated");
+        }
+        Err(error) => match error {
+            TlsError::InvalidConfiguration => {}
+            _other => {
+                panic("an unrepresentable bound must be InvalidConfiguration");
+            }
+        }
+    }
+}
+
+fn test_the_default_handshake_bound_is_finite_and_convertible() {
+    let default = default_handshake_timeout();
+    if default.is_zero() {
+        panic("the default handshake bound must not be zero");
+    }
+    match handshake_timeout_nanos(&default) {
+        Ok(_nanos) => {}
+        Err(_error) => {
+            panic("the default handshake bound must be usable");
+        }
+    }
+}
+
+fn test_the_constructor_admits_both_versions_and_explicit_roots() {
+    let config = explicit_roots_config(
+        String::from("-----BEGIN CERTIFICATE-----\n"),
+        default_handshake_timeout(),
+    );
+    if version_code(&config.min_version) != 0u32 {
+        panic("the ordinary configuration must admit TLS 1.2");
+    }
+    if version_code(&config.max_version) != 1u32 {
+        panic("the ordinary configuration must admit TLS 1.3");
+    }
+    match config.root_store {
+        RootStorePolicy::ExplicitRoots(pem) => {
+            if pem.len() == 0u64 {
+                panic("the constructor must carry the roots it was given");
+            }
+        }
+        RootStorePolicy::SystemRoots => {
+            panic("the ordinary configuration must use explicit roots");
+        }
+        RootStorePolicy::BundledRoots => {
+            panic("the ordinary configuration must use explicit roots");
+        }
+    }
+}
+
+fn test_every_error_has_its_own_text() {
+    // Nineteen variants, nineteen distinct strings. A shared message would collapse exactly the
+    // distinctions the taxonomy exists to make -- an operator cannot act on "TLS error".
+    let all = [
+        tls_error_text(&TlsError::ConnectionReset),
+        tls_error_text(&TlsError::BrokenPipe),
+        tls_error_text(&TlsError::TimedOut),
+        tls_error_text(&TlsError::WouldBlock),
+        tls_error_text(&TlsError::EndOfStream),
+        tls_error_text(&TlsError::InvalidInput),
+        tls_error_text(&TlsError::Unsupported),
+        tls_error_text(&TlsError::HandshakeFailed),
+        tls_error_text(&TlsError::CertificateInvalid),
+        tls_error_text(&TlsError::CertificateExpired),
+        tls_error_text(&TlsError::CertificateNotYetValid),
+        tls_error_text(&TlsError::CertificateUnknownIssuer),
+        tls_error_text(&TlsError::HostnameMismatch),
+        tls_error_text(&TlsError::ProtocolVersionUnsupported),
+        tls_error_text(&TlsError::HandshakeTimeout),
+        tls_error_text(&TlsError::PeerClosedDuringHandshake),
+        tls_error_text(&TlsError::InvalidServerName),
+        tls_error_text(&TlsError::InvalidConfiguration),
+        tls_error_text(&TlsError::Other),
+    ];
+    let mut i: UInt64 = 0u64;
+    while i < 19u64 {
+        if all[i].len() == 0u64 {
+            panic("every TLS error must have a description");
+        }
+        let mut j: UInt64 = i + 1u64;
+        while j < 19u64 {
+            if all[i].as_str() == all[j].as_str() {
+                panic("two TLS errors share a description; the taxonomy is not distinguishable");
+            }
+            j = j + 1u64;
+        }
+        i = i + 1u64;
+    }
+}
+
+fn test_the_three_certificate_failures_read_differently() {
+    // The specific distinction an operator acts on: a clock problem, a trust problem and a name
+    // problem must not read the same.
+    let expired = tls_error_text(&TlsError::CertificateExpired);
+    let issuer = tls_error_text(&TlsError::CertificateUnknownIssuer);
+    let hostname = tls_error_text(&TlsError::HostnameMismatch);
+    if expired.as_str() == issuer.as_str() {
+        panic("expiry and trust must be distinguishable");
+    }
+    if issuer.as_str() == hostname.as_str() {
+        panic("trust and hostname must be distinguishable");
+    }
+    if expired.as_str() == hostname.as_str() {
+        panic("expiry and hostname must be distinguishable");
+    }
+}

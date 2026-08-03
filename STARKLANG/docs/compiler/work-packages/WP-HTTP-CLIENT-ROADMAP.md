@@ -143,7 +143,7 @@ HC5  Implement HTTP core types
 HC6  Implement request serializer
 HC7  Implement incremental response parser
 HC8  Deliver plain HTTP client
-HC9  Add TLS provider and secure stream
+HC9  Add TLS provider and secure stream          CLOSED (CD-365)
 HC10 Deliver HTTPS client
 HC11 Add JSON convenience API
 HC12 Add redirects policy
@@ -972,6 +972,11 @@ A STARK application can call a local or explicitly insecure HTTP API by hostname
 
 # HC9 — Implement `stark-tls`
 
+**STATUS: CLOSED 2026-08-03 (CD-365).** Evidence and exact boundary in
+`STARKLANG/docs/http-client/HC9-TLS-EVIDENCE.md`. Delivered: `stark-tls`, `stark-tls-native`,
+`stark-tls-consumer`, and the certificate fixtures in `stark-tls/fixtures`. `SystemRoots` and
+`BundledRoots` are declared and REFUSED — they are HC10's. Profile F is not qualified.
+
 ## Objective
 
 Provide a safe, provider-backed TLS client stream.
@@ -1152,6 +1157,9 @@ These requirements must be visible in package/provider metadata.
 ## Exit criteria
 
 A STARK program can establish a verified TLS stream to a hostname without accessing raw provider symbols.
+
+**MET.** `stark-tls-consumer` does exactly this natively against three controlled peers, on both
+release paths, and is the 16th case in the first-party package gate.
 
 ---
 

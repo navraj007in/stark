@@ -521,6 +521,9 @@ fn every_built_in_crate_path_is_contained() {
         );
     }
     // The manifests themselves are the authority; parsing them is what enforces containment, and
-    // `first_party()` panics on a malformed built-in — so reaching here means all five passed.
-    assert_eq!(starkc::provider_registry::first_party().len(), 5);
+    // `first_party()` panics on a malformed built-in — so reaching here means every one passed.
+    //
+    // The count is asserted so ADDING a provider is a deliberate edit here rather than a silent
+    // widening of the built-in set. Six since HC9 added `stark-tls-native` (CD-365).
+    assert_eq!(starkc::provider_registry::first_party().len(), 6);
 }

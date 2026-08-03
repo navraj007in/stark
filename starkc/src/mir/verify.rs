@@ -1181,6 +1181,12 @@ impl<'a> BodyCx<'a> {
                                 &call.function.params,
                                 &program_resource_registry(self.program),
                                 &call.provider.name,
+                                // CD-360: a transferred handle carries its OWNER's identity, so the
+                                // expected type must be derived the same way the planner derives
+                                // the actual one. Without this the verifier rejects every
+                                // cross-provider transfer -- correct programs refused by the
+                                // compiler, which is how HC9's first native build failed.
+                                &call.foreign_resources,
                             ) {
                                 Ok(sig) => Some(sig),
                                 Err(unmapped) => {

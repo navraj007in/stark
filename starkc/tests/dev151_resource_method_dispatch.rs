@@ -229,6 +229,7 @@ fn a_method_on_a_resource_receiver_lowers() {
         &[connect_sig],
         &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("resource nominal and free connect binding synthesize");
 

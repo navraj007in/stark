@@ -49,6 +49,12 @@ def capability_summary(manifest):
         "args_env_e2e": manifest["stark_env"]["native_e2e"],
         "file_e2e": manifest["stark_file"]["native_e2e"],
         "tcp_e2e": manifest["stark_net"]["native_e2e"],
+        # HC9 (CD-365). `tls_transfer` is a SEPARATE row from `tls_e2e` deliberately: "TLS works"
+        # and "a resource crossed from one provider to another and was released exactly once" are
+        # different claims, and CD-360 left the second one open for HC9 to close.
+        "tls": manifest["stark_tls"]["provider_metadata"],
+        "tls_e2e": manifest["stark_tls"]["native_e2e"],
+        "tls_transfer": manifest["stark_tls"]["cross_provider_transfer"],
     }
 
 
