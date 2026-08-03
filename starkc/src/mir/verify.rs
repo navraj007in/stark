@@ -469,6 +469,21 @@ impl<'a> BodyCx<'a> {
                         );
                     }
                 }
+                // MIR-0036 (DEV-158). Same rule, same reason: declaring "part of" a local's storage
+                // complete is not a thing MIR can mean.
+                Statement::StorageWhole(place) => {
+                    if !place.projection.is_empty() {
+                        self.err(
+                            "MIR-0036",
+                            bi,
+                            format!(
+                                "storage_whole names the projected place _{}{:?}; storage liveness \
+                                 belongs to a whole local",
+                                place.local.0, place.projection
+                            ),
+                        );
+                    }
+                }
             }
         }
         let (term, info) = &block.terminator;

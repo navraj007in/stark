@@ -106,17 +106,25 @@ pub enum HttpError {
     MissingLocation,
     InvalidRedirectTarget,
     InsecureRedirect,
+    AmbiguousLocation,
 }
-/// The chain exceeded `max_redirects`.
 
-/// A target repeated. Distinct from `TooManyRedirects` because a loop is a server defect and a
-/// long chain may be legitimate — a caller raising the limit fixes one and not the other.
-
-/// A `3xx` that redirects carried no `Location`.
-
-/// A `Location` that does not resolve to a URL this client will dial.
-
-/// An `https://` response redirected to `http://` and the policy forbids it.
+// The redirect variants, documented here because `stark fmt` evicts a variant's doc comment to
+// after the enum (DEV-156):
+//
+//   TooManyRedirects       the chain exceeded `max_redirects`
+//   RedirectLoop           a target repeated. DISTINCT from the count bound: a loop is a server
+//                          defect and a long chain may be legitimate, so a caller raising the
+//                          limit should fix one and not the other
+//   MissingLocation        a `3xx` that redirects carried no `Location`
+//   InvalidRedirectTarget  a `Location` that does not resolve to a URL this client will dial —
+//                          including an absolute URI in a scheme it does not speak, and a
+//                          fragment-only reference, both of which name nothing fetchable
+//   InsecureRedirect       an `https://` response redirected to `http://` under a policy that
+//                          forbids it
+//   AmbiguousLocation      two `Location` headers. Following the first would be a silent choice
+//                          between two things the server said, which is the class of disagreement
+//                          request smuggling is built on
 
 pub fn timeout_phase_text(phase: &HttpTimeoutPhase) -> String {
     match *phase {
@@ -165,6 +173,9 @@ pub fn error_text(error: &HttpError) -> String {
         HttpError::InvalidRedirectTarget => String::from("the redirect target is not a usable URL"),
         HttpError::InsecureRedirect => {
             String::from("refusing to follow https:// to http:// (a downgrade)")
+        }
+        HttpError::AmbiguousLocation => {
+            String::from("the response carried more than one Location")
         }
     }
 }
@@ -886,6 +897,19 @@ pub fn resolve_location(base: &Target, location: &str) -> Result<String, HttpErr
     if starts_with(bytes, "http://".bytes()) || starts_with(bytes, "https://".bytes()) {
         return Ok(String::from(location));
     }
+    // An absolute URI in a scheme this client does NOT dial — `ftp://`, `mailto:`, `data:`.
+    //
+    // Refused, because the relative-path branch below would otherwise glue it onto the current
+    // directory and produce `http://a.test/one/ftp://other.test/file`: a request the server never
+    // asked for, sent to the wrong place. Not dialling FTP is not the same as being correct.
+    if has_uri_scheme(bytes) {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
+    // A fragment-only reference addresses a position in the CURRENT document. There is nothing to
+    // fetch, so a server sending one as a redirect target has said nothing followable.
+    if bytes[0u64] == 35u8 {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
     // Scheme-relative `//host/path`: inherits the current scheme, which is what keeps an
     // https:// page from being walked onto http:// by omission.
     if bytes.len() >= 2u64 && bytes[0u64] == 47u8 && bytes[1u64] == 47u8 {
@@ -901,6 +925,14 @@ pub fn resolve_location(base: &Target, location: &str) -> Result<String, HttpErr
     }
     if bytes[0u64] == 47u8 {
         // Absolute path.
+        out.push_str(location);
+        return Ok(out);
+    }
+    // A query-only reference keeps the WHOLE current path and replaces only the query. Treating it
+    // as a relative path segment — which is what the branch below would do — turns
+    // `/one/two` + `?page=2` into `/one/?page=2`, silently requesting a different resource.
+    if bytes[0u64] == 63u8 {
+        out.push_str(path_without_query(base.path_and_query.as_str()).as_str());
         out.push_str(location);
         return Ok(out);
     }
@@ -931,6 +963,53 @@ pub fn resolve_location(base: &Target, location: &str) -> Result<String, HttpErr
     }
     out.push_str(location);
     Ok(out)
+}
+
+/// Whether a reference begins with `scheme:`, per RFC 3986: an ALPHA followed by
+/// `ALPHA / DIGIT / "+" / "-" / "."`, then a colon.
+///
+/// The colon must come before any `/`, `?` or `#` — otherwise `foo/bar:baz` would read as a scheme,
+/// and a perfectly ordinary relative path would be refused.
+fn has_uri_scheme(bytes: &[UInt8]) -> Bool {
+    let first = bytes[0u64];
+    let alpha = first >= 65u8 && first <= 90u8 || first >= 97u8 && first <= 122u8;
+    if !alpha {
+        return false;
+    }
+    let mut i = 1u64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 58u8 {
+            return true;
+        }
+        let ok = b >= 65u8 && b <= 90u8 || b >= 97u8 && b <= 122u8 || b >= 48u8 && b <= 57u8 || b == 43u8 || b == 45u8 || b == 46u8;
+        if !ok {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// The path part of a path-and-query, without the `?` and anything after it.
+fn path_without_query(path_and_query: &str) -> String {
+    let bytes = path_and_query.bytes();
+    let mut out = String::new();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 63u8 {
+            i = bytes.len();
+        } else {
+            match Char::from_u32(bytes[i] as UInt32) {
+                Some(ch) => {
+                    out.push(ch);
+                }
+                None => {}
+            }
+            i = i + 1u64;
+        }
+    }
+    out
 }
 
 fn u16_decimal(value: UInt16) -> String {
@@ -1003,7 +1082,7 @@ fn headers_for_next_hop(
     keep_credentials: Bool,
     keep_body: Bool,
     policy: &RedirectPolicy,
-) -> stark_http_core::HeaderMap {
+) -> Result<stark_http_core::HeaderMap, HttpError> {
     let mut out = new_header_map();
     let mut i = 0u64;
     while i < map.entries.len() {
@@ -1012,14 +1091,20 @@ fn headers_for_next_hop(
         let stale_entity = !keep_body && is_entity_header(entry.name.as_str());
         let drop_it = sensitive || stale_entity;
         if !drop_it {
+            // A failure here is REPORTED, not skipped. Silently omitting a header would send a
+            // different request than the caller built and than the previous hop carried, with
+            // nothing anywhere saying so — and "the second request quietly lost a header" is
+            // indistinguishable from a server bug at the far end.
             match append_validated(&mut out, entry.name.as_str(), entry.value.as_str()) {
                 Ok(_added) => {}
-                Err(_error) => {}
+                Err(_error) => {
+                    return Err(HttpError::InvalidRequest(entry.name.clone()));
+                }
             }
         }
         i = i + 1u64;
     }
-    out
+    Ok(out)
 }
 
 /// One request/response exchange, with no redirect handling. Returns the response and the target it
@@ -1174,7 +1259,7 @@ fn follow(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Http
         // server's `Set-Cookie` and `Content-Length` into the next request would be nonsense at
         // best. Getting that wrong is easy and silent, so it is stated here.
         let previous_method = clone_method(&method);
-        let previous_headers = headers_for_next_hop(&headers, true, true, policy);
+        let previous_headers = headers_for_next_hop(&headers, true, true, policy)?;
         let previous_body = clone_bytes(&body);
 
         let outcome = send_once(client, method, url.as_str(), headers, body)?;
@@ -1188,8 +1273,20 @@ fn follow(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Http
             return Err(HttpError::TooManyRedirects);
         }
 
+        // `get_singleton`, not `get_first`. Two `Location` headers are two different destinations,
+        // and picking one silently is a choice between things the server said — the class of
+        // disagreement request smuggling is built on.
+        let found: Option<String>;
+        match stark_http_core::get_singleton(&response.headers, "location") {
+            Ok(value) => {
+                found = value;
+            }
+            Err(_error) => {
+                return Err(HttpError::AmbiguousLocation);
+            }
+        }
         let location: String;
-        match stark_http_core::get_first(&response.headers, "location") {
+        match found {
             Some(value) => {
                 location = value;
             }
@@ -1233,7 +1330,7 @@ fn follow(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Http
         let rewrite = redirect_method(response.status, &previous_method);
         let keep_credentials = same_origin(&from, &to) || !policy.preserve_authorization_same_origin_only;
 
-        headers = headers_for_next_hop(&previous_headers, keep_credentials, rewrite.1, policy);
+        headers = headers_for_next_hop(&previous_headers, keep_credentials, rewrite.1, policy)?;
         method = rewrite.0;
         // Replay only when the status says to. The body is a buffered `Vec<UInt8>`, so replay costs
         // bytes and nothing else — which is what makes honouring 307/308 safe here.

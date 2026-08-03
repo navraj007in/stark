@@ -187,7 +187,7 @@ pub fn visit_instance_refs<F: FnMut(&Instance, RefKind)>(body: &MirBody, f: &mut
             match stmt {
                 Statement::Assign(_place, rvalue) => visit_rvalue(rvalue, f),
                 // A12: names a local, references no instance.
-                Statement::StorageDead(..) => {}
+                Statement::StorageDead(..) | Statement::StorageWhole(..) => {}
                 Statement::Nop => {}
             }
         }

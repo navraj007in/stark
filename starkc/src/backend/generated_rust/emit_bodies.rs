@@ -343,6 +343,13 @@ fn emit_one_block(
                     out.push_str(&format!("                {line}\n"));
                 }
             }
+            // DEV-158. Only a slot-backed local has whole-storage state to correct; for anything
+            // else this is genuinely nothing, exactly as `StorageDead` is.
+            Statement::StorageWhole(place) => {
+                if let Some(line) = emit_storage_whole(place, env)? {
+                    out.push_str(&format!("                {line}\n"));
+                }
+            }
         }
     }
     emit_terminator(
@@ -1514,6 +1521,41 @@ pub(super) fn emit_storage_dead(
         crate::mir::StorageEnd::Accounted => format!("{name}.finish_partial();"),
         crate::mir::StorageEnd::OwnsNothing => format!("let _ = {name}.take();"),
     }))
+}
+
+/// DEV-158: `StorageWhole`, gated exactly as `emit_storage_dead` is.
+///
+/// The gating is copied rather than generalised because the REASONS differ and both are load
+/// bearing: a stored-ref or non-slot local has no whole-storage state at all, and a no-drop slot is
+/// written with `reinit` (which has no state to correct) — so for those this must emit nothing
+/// rather than assert something the write path never asks about.
+pub(super) fn emit_storage_whole(
+    place: &crate::mir::Place,
+    env: &TyEnv,
+) -> Result<Option<String>, BackendDiagnostic> {
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "storage_whole names a projected place ({place:?}); storage liveness is a property of a \
+             whole local. MIR-0036 rejects this, so reaching the backend with one is a compiler \
+             defect"
+        )));
+    }
+    if emit_places::is_stored_ref_local(place.local.0, env)?
+        || !emit_places::is_slot_local(place.local.0, env)?
+    {
+        return Ok(None);
+    }
+    let ty = env.local_ty(place.local.0)?;
+    if crate::mir::drop_plan::plan_for(&ty, env.types)
+        .map(|plan| plan.is_noop())
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{}.mark_whole();",
+        emit_places::local_name(place.local.0)
+    )))
 }
 
 /// Emit one assignment statement, choosing the form the destination requires.

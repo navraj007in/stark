@@ -51,6 +51,7 @@ fn consumers_of(stmt: &Statement) -> &'static [&'static str] {
         Statement::Assign(..) => CONSUMERS,
         Statement::Nop => CONSUMERS,
         Statement::StorageDead(..) => CONSUMERS,
+        Statement::StorageWhole(..) => CONSUMERS,
     }
 }
 
@@ -117,6 +118,12 @@ fn every_statement_variant_survives_every_consumer() {
                 match stmt {
                     Statement::Assign(..) => seen_assign = true,
                     Statement::StorageDead(..) => seen_storage_dead = true,
+                    // DEV-158: `StorageWhole` is DEFINED and wired through every consumer, but
+                    // lowering does not emit it yet, so the fixture cannot contain one. This must
+                    // become a `seen_` requirement the moment lowering does — otherwise the
+                    // "fixture contains every variant" guarantee this test rests on is quietly
+                    // weaker than it reads.
+                    Statement::StorageWhole(..) => {}
                     Statement::Nop => {}
                 }
             }

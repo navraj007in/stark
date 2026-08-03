@@ -768,14 +768,15 @@ fn test_every_redirect_error_reads_differently() {
         error_text(&HttpError::MissingLocation),
         error_text(&HttpError::InvalidRedirectTarget),
         error_text(&HttpError::InsecureRedirect),
+        error_text(&HttpError::AmbiguousLocation),
     ];
     let mut i: UInt64 = 0u64;
-    while i < 5u64 {
+    while i < 6u64 {
         if all[i].len() == 0u64 {
             panic("every redirect error must have a description");
         }
         let mut j: UInt64 = i + 1u64;
-        while j < 5u64 {
+        while j < 6u64 {
             if all[i].as_str() == all[j].as_str() {
                 panic("two redirect errors share a description");
             }
@@ -800,4 +801,70 @@ fn test_dropping_the_body_drops_the_headers_that_describe_it() {
     if !keeps.1 {
         panic("307 must keep the body");
     }
+}
+
+// --- HC12.1: the URI-reference forms the first pass mis-resolved ------------------------------
+
+fn expect_location_refused(base: &str, location: &str, what: &str) {
+    let from = target_of(base);
+    match resolve_location(&from, location) {
+        Ok(resolved) => {
+            print("resolved ");
+            print(what);
+            print(" to ");
+            println(resolved.as_str());
+            panic("a Location that names nothing fetchable must be refused");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_a_query_only_reference_keeps_the_whole_path() {
+    // The first pass treated `?page=2` as a relative PATH segment, turning `/one/two` into
+    // `/one/?page=2` — silently requesting a different resource. A query-only reference replaces
+    // only the query.
+    expect_location(
+        "http://a.test/one/two?q=1",
+        "?page=2",
+        "http://a.test/one/two?page=2",
+        "a query-only reference",
+    );
+    expect_location(
+        "http://a.test/one/two",
+        "?page=2",
+        "http://a.test/one/two?page=2",
+        "a query-only reference with no existing query",
+    );
+}
+
+fn test_an_absolute_uri_in_another_scheme_is_refused() {
+    // The first pass fell through to the relative-path branch and produced
+    // `http://a.test/one/ftp://other.test/file` — a request the server never asked for, sent to the
+    // wrong place. Not dialling FTP is not the same as being correct.
+    expect_location_refused("http://a.test/one/two", "ftp://other.test/file", "an ftp:// target");
+    expect_location_refused("http://a.test/one/two", "mailto:someone@a.test", "a mailto: target");
+    expect_location_refused("http://a.test/one/two", "data:text/plain,hi", "a data: target");
+    expect_location_refused("http://a.test/one/two", "javascript:alert(1)", "a javascript: target");
+}
+
+fn test_a_fragment_only_reference_is_refused() {
+    // It addresses a position in the CURRENT document. There is nothing to fetch.
+    expect_location_refused("http://a.test/one/two", "#section", "a fragment-only reference");
+}
+
+fn test_an_ordinary_relative_path_containing_a_colon_still_resolves() {
+    // The scheme check must not swallow legitimate paths. A colon AFTER a `/` is not a scheme.
+    expect_location(
+        "http://a.test/one/two",
+        "a/b:c",
+        "http://a.test/one/a/b:c",
+        "a relative path with a colon after a slash",
+    );
+    // A leading digit cannot begin a scheme, so this is a path.
+    expect_location(
+        "http://a.test/one/two",
+        "2fa:setup",
+        "http://a.test/one/2fa:setup",
+        "a path whose first character is a digit",
+    );
 }

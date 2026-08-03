@@ -45,13 +45,16 @@ already right, and `Content-Type: text/plain` was still riding along on a bodyle
 about content that is not there. The pure test alone would not have caught it; the peer reflecting
 what it received did.
 
-### Location resolution — four forms, nothing guessed
+### Location resolution — the forms handled, and the ones refused
 
 ```text
-https://host/path   absolute         taken as-is
-//host/path         scheme-relative  inherits the CURRENT scheme
-/path               absolute path    inherits scheme, host and port
-path                relative path    replaces the last segment
+https://host/path   absolute            taken as-is
+//host/path         scheme-relative     inherits the CURRENT scheme
+/path               absolute path       inherits scheme, host and port
+?q=1                query-only          keeps the whole path, replaces the query
+path                relative path       replaces the last segment
+ftp://host/f        foreign scheme      REFUSED (HC12.1)
+#frag               fragment-only       REFUSED — nothing to fetch (HC12.1)
 ```
 
 Scheme-relative inheriting the current scheme is what stops an `https://` page being walked onto
@@ -76,7 +79,7 @@ reaches the wire.
 
 | what | where | count |
 | --- | --- | --- |
-| policy defaults, status set, rewrite table, resolution, origin, errors | `stark-http-client/src/tests.stark` | 38 total (9 new) |
+| policy defaults, status set, rewrite table, resolution, origin, errors | `stark-http-client/src/tests.stark` | 42 total (13 new, incl. HC12.1) |
 | executed native lifecycle | `stark-http-client-consumer` under the gate | 22 cases (10 new) |
 
 The consumer's ten redirect cases, all against live peers:
@@ -108,6 +111,22 @@ and not the other.
 opposite outcomes — one converts and drops, the other preserves and replays.
 
 ---
+
+## 3a. HC12.1 — hardening from an external review (CD-369)
+
+Three findings, all real. The first predates HC12 and was verified by exploit before being fixed.
+
+| | |
+| --- | --- |
+| **P0 CRLF header injection** | `Header`'s fields and `HeaderMap.entries` are public, so the constructor's validation was bypassable and the serializer trusted it. A value of `safe\r\nInjected: yes` produced a genuine extra header line. **Fixed**: every header is revalidated at the serializer boundary, `SerializeError::InvalidHeader(name)` carries the name only. The regression test is the exploit. |
+| **P1 query-only reference** | `/one/two?q=1` + `?page=2` resolved to `/one/?page=2` — a different resource. **Fixed.** |
+| **P1 foreign absolute URI** | `ftp://other.test/f` fell through to the relative branch. **Fixed**: refused, along with fragment-only references. |
+| **P1 duplicate `Location`** | was first-wins; now `get_singleton` and `AmbiguousLocation`. |
+
+**Still open:** dot-segment (`.`/`..`) removal, and making `Header`/`HeaderMap.entries` private
+behind validated accessors. Both belong in their own packets — the first as a bounded RFC 3986
+resolver in `stark-url` rather than a second URL implementation inside the HTTP client, the second
+because it is an API break.
 
 ## 4. Findings
 

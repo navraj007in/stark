@@ -387,6 +387,8 @@ impl<'a> Interp<'a> {
                     // partially moved storage, so there is no state for a storage end to correct.
                     // Deliberately inert rather than unimplemented — see `Statement::StorageDead`.
                     Statement::StorageDead(..) => {}
+                    // Inert here too: this interpreter has no partial-storage state to correct.
+                    Statement::StorageWhole(..) => {}
                 }
             }
             match &bb.terminator.0 {

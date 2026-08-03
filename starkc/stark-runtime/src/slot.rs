@@ -386,6 +386,43 @@ impl<T> ValueSlot<T> {
             ),
         }
     }
+
+    /// **DEV-158: mark a `Partial` slot WHOLE again, once MIR has re-initialised every drop unit.**
+    ///
+    /// The mirror of [`finish_partial`](Self::finish_partial), and it exists for the same reason:
+    /// this type tracks whole-storage state only, so it cannot itself know that the units moved out
+    /// have been written back. Only generated code following MIR's drop flags can.
+    ///
+    /// # Why it is needed
+    ///
+    /// An overwriting assignment to a field lowers to *move the old unit into a temp, install the
+    /// new value, drop the temp* (CD-012: the new value installs before the old is destroyed). The
+    /// move-out sets `Partial`; the install writes the field back; and before this existed nothing
+    /// set the state back, so the next whole-value use of the local aborted. The interpreter has no
+    /// slot model and accepted the same program, which is what made it a three-engine divergence
+    /// rather than a visible failure.
+    ///
+    /// # Safety contract
+    ///
+    /// **Every drop unit of this storage must be live at the point of the call.** That is not
+    /// checkable here — per-unit liveness lives in MIR's drop flags, and folding it into this type
+    /// is exactly the conflation the three-state design exists to prevent. The caller discharges it
+    /// by emitting this only under a runtime conjunction of all of the local's drop flags.
+    ///
+    /// Calling it with a unit still moved out would re-admit `get`/`take`/`drop_value` on storage
+    /// that is not a valid `T` — the original unsoundness. The guard is the whole safety argument.
+    ///
+    /// `Whole` is idempotent, so lowering need not prove which path reached it. `Dead` is a
+    /// violation: dead storage holds nothing, and there is no value to declare complete.
+    pub fn mark_whole(&mut self) {
+        match self.state {
+            SlotState::Partial | SlotState::Whole => self.state = SlotState::Whole,
+            SlotState::Dead => slot_violation(
+                "mark_whole on a DEAD slot: there is no value to declare complete, and admitting \
+                 one would hand out a reference to uninitialised storage",
+            ),
+        }
+    }
 }
 
 impl<T> Default for ValueSlot<T> {
@@ -680,6 +717,58 @@ mod tests {
         }
         let _ = unsafe { slot.move_field(p0) };
         let _ = unsafe { slot.move_field_whole(|v| &mut v.1) };
+    }
+
+    /// **DEV-158's repair, at the level it lives.** A slot made partial by a field move is WHOLE
+    /// again once the field is written back, and every whole-value operation works afterwards.
+    ///
+    /// `base_ptr` is private to the impl and reachable here because this module is its child. That
+    /// is deliberate: writing a field back is something only GENERATED code does, through the
+    /// per-type projection helpers, so exposing it publicly would invite a caller to create exactly
+    /// the partial state this operation exists to end.
+    #[test]
+    fn mark_whole_restores_a_partial_slot() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("a"), String::from("b")));
+        let moved = unsafe { slot.move_field(|p| core::ptr::addr_of_mut!((*p).0)) };
+        assert_eq!(moved, "a");
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // What generated code does next: write the field back, then declare the value complete.
+        unsafe {
+            core::ptr::write(
+                core::ptr::addr_of_mut!((*slot.base_ptr()).0),
+                String::from("a2"),
+            );
+        }
+        slot.mark_whole();
+        assert_eq!(slot.state(), SlotState::Whole);
+
+        // The operations that aborted before now work, and see the NEW field value.
+        assert_eq!(slot.get().0, "a2");
+        assert_eq!(slot.get().1, "b");
+        assert_eq!(slot.take(), (String::from("a2"), String::from("b")));
+        assert_eq!(slot.state(), SlotState::Dead);
+    }
+
+    /// Idempotent on a whole slot, so lowering need not prove which path reached it.
+    #[test]
+    fn mark_whole_is_idempotent_on_a_whole_slot() {
+        let mut slot = ValueSlot::dead();
+        slot.write(String::from("x"));
+        slot.mark_whole();
+        slot.mark_whole();
+        assert_eq!(slot.state(), SlotState::Whole);
+        assert_eq!(slot.take(), "x");
+    }
+
+    /// Dead storage holds nothing. Declaring it complete would hand out a reference to
+    /// uninitialised memory, so it is a violation rather than a no-op.
+    #[test]
+    #[should_panic(expected = "mark_whole on a DEAD slot")]
+    fn mark_whole_on_a_dead_slot_is_refused() {
+        let mut slot: ValueSlot<String> = ValueSlot::dead();
+        slot.mark_whole();
     }
 
     #[test]

@@ -1,5 +1,83 @@
 # STARK Compiler STATE
 
+## CD-369 — HC12.1: a proven CRLF-injection hole closed, plus two P1 redirect gaps (2026-08-03)
+
+**From an external Codex review of CD-368. All three findings were real; the first is a security
+defect that predates HC12 and I verified it by exploit before fixing it.**
+
+### P0 — header validation was bypassable, and it was reachable
+
+`stark-http-core::header()` validates on construction, and the serializer trusted that. But
+`Header`'s fields and `HeaderMap.entries` are PUBLIC, so a header can come into being without ever
+touching the constructor. Written as a probe and run:
+
+```text
+value: "safe\r\nInjected: yes"
+
+GET / HTTP/1.1\r\n
+Host: a.test\r\n
+X-Test: safe\r\n
+Injected: yes\r\n        <- a header the caller never wrote
+Connection: close\r\n
+```
+
+CRLF header injection, from safe STARK, no `unsafe` and no provider.
+
+**The invariant is now enforced where the bytes are emitted**, because that is the only place that
+cannot be bypassed by constructing the value differently. `SerializeError::InvalidHeader(name)`
+carries the NAME only — a value rejected for containing CRLF is attacker-influenced by definition,
+and echoing it into a log moves the injection one layer out instead of stopping it.
+
+The regression test IS the exploit, plus bare CR, bare LF, NUL, and four invalid name shapes — and
+one control asserting a well-formed hand-built header still serializes, so the repair rejects what
+cannot be written rather than everything built without the constructor.
+
+**Still open, recorded not fixed:** making `Header`/`HeaderMap.entries` private behind validated
+accessors. That is an API break and belongs in its own change; this closes the hole.
+
+### P1 — two URI-reference forms were silently mis-resolved
+
+| base + Location | was | now |
+| --- | --- | --- |
+| `/one/two?q=1` + `?page=2` | `/one/?page=2` — a DIFFERENT resource | `/one/two?page=2` |
+| `/one/two` + `ftp://other.test/f` | `http://a.test/one/ftp://other.test/f` | refused |
+
+The first silently requested something the server did not name. The second fell through to the
+relative-path branch: not dialling FTP is not the same as being correct. Fragment-only references
+are refused too — they address a position in the current document, so there is nothing to fetch.
+
+The scheme check follows RFC 3986 (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`, colon before
+any `/?#`), so ordinary paths containing a colon still resolve — pinned by test, because a check
+that swallowed `a/b:c` would be its own bug.
+
+### P1 — a duplicate `Location` was first-wins
+
+Now `get_singleton`, and `AmbiguousLocation`. Two `Location` headers are two destinations, and
+picking one silently is a choice between things the server said — the class of disagreement request
+smuggling is built on. `headers_for_next_hop` also propagates a validation failure instead of
+silently omitting the header, since "the second request quietly lost a header" is indistinguishable
+from a bug at the far end.
+
+### Still open from the review
+
+**Dot-segment removal (`.` / `..`) is not implemented.** Codex is right that the real answer is a
+bounded RFC 3986 resolver in `stark-url` rather than a second URL implementation growing inside the
+HTTP client, and a half-written normaliser is worse than none. Recorded for HC13's packet.
+
+### DEV-158 — the fix is in progress, not landed
+
+`ValueSlot::mark_whole` exists and is proven (3 tests: partial→whole with the field written back and
+every whole-value operation working afterwards, idempotent on whole, refused on dead).
+`Statement::StorageWhole` is defined and wired through the verifier (MIR-0036), the interpreter
+(inert), linkage and the emitter. **Lowering does not emit it yet**, so nothing behaves differently
+and the workarounds stay.
+
+One finding while sizing it: the cheap static shortcut — "if the assigned place covers all the
+local's drop units, wholeness follows" — is TOO WEAK. `RequestBuilder` has three droppable fields,
+so `out.body = body` covers one of three: exactly HC11's case, still broken. It would have looked
+like a fix and left the motivating instance failing. The real emission needs the runtime conjunction
+of the local's drop flags, which is what remains.
+
 ## CD-368 — HC12 CLOSED: safe redirects; DEV-160 found (2026-08-03)
 
 **Redirect support is opt-in, bounded, and cannot silently forward credentials to another origin.**
