@@ -226,10 +226,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: starkc
+      # `+nightly-...` is LOAD-BEARING and cannot be dropped. `starkc/rust-toolchain.toml` pins
+      # `channel = "stable"`, and this job's `working-directory: starkc` means every bare `cargo`
+      # here honours that file rather than whatever the toolchain action made default -- which is
+      # how the first attempt reached "the 'miri' component ... is not available for the
+      # 'stable-x86_64-unknown-linux-gnu' toolchain". An explicit `+toolchain` overrides the file.
+      #
+      # The toolchain name must stay in step with the `toolchain:` above.
       - name: Miri over the slot primitives
         env:
           MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-ignore-leaks
-        run: "cargo miri test -p stark-runtime --lib slot:: -- --nocapture"
+        run: "cargo +nightly-2026-07-20 miri test -p stark-runtime --lib slot:: -- --nocapture"
 
   # §16.4: two green corpus jobs are not agreement, for the same reason two green platform jobs are
   # not. `if: always()` for the same reason as the C6.4 comparison: a skipped comparison is an
