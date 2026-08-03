@@ -17,6 +17,11 @@
       "package": "stark-json",
       "path": "../stark-json",
       "version": "0.1.0"
+    },
+    "stark_time": {
+      "package": "stark-time",
+      "path": "../stark-time",
+      "version": "0.1.0"
     }
   }
 }

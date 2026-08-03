@@ -221,6 +221,37 @@ CASES = [
             "  redirect: 307 preserved the method and replayed the body\n"
             "  redirect: Authorization stripped when the origin changed\n"
             "  redirect: https to http refused as a downgrade\n"
+            # HC13. Fifteen adversarial responses and three stalls, each refused for a NAMED
+            # reason. The reason is the assertion: eighteen cases all reporting "the response was
+            # bad" would also pass against a client that rejected the twenty-one valid responses
+            # above. Several of these are desync primitives rather than formatting faults --
+            # obs-fold, bare LF, and the Content-Length/Transfer-Encoding pair are how request
+            # smuggling is built.
+            "  --- HC13: malformed responses ---\n"
+            "  http://127.0.0.1:39188/bad-status -> response parsing failed: malformed status line\n"
+            "  http://127.0.0.1:39188/bad-version -> response parsing failed: unsupported HTTP version\n"
+            "  http://127.0.0.1:39188/bad-header-name -> response parsing failed: invalid header name\n"
+            "  http://127.0.0.1:39188/bad-obs-fold -> response parsing failed: obsolete line folding is rejected\n"
+            "  http://127.0.0.1:39188/bad-bare-lf -> response parsing failed: bare LF line ending is rejected\n"
+            "  http://127.0.0.1:39188/bad-two-lengths -> response parsing failed: conflicting Content-Length headers\n"
+            "  http://127.0.0.1:39188/bad-length-and-te -> response parsing failed: Content-Length with Transfer-Encoding is ambiguous framing\n"
+            "  http://127.0.0.1:39188/bad-length-value -> response parsing failed: invalid Content-Length\n"
+            "  http://127.0.0.1:39188/bad-transfer-encoding -> response parsing failed: unsupported transfer coding\n"
+            "  http://127.0.0.1:39188/bad-chunk-size -> response parsing failed: invalid chunk size\n"
+            "  http://127.0.0.1:39188/bad-chunk-terminator -> response parsing failed: chunk not terminated by CRLF\n"
+            # A limit only ever tested with compliant input is a constant, not a limit.
+            "  --- HC13: oversized responses ---\n"
+            "  http://127.0.0.1:39188/big-status-line -> response parsing failed: status line exceeds its limit\n"
+            "  http://127.0.0.1:39188/big-header-line -> response parsing failed: header line exceeds its limit\n"
+            "  http://127.0.0.1:39188/big-header-count -> response parsing failed: too many headers\n"
+            "  http://127.0.0.1:39188/big-body -> response exceeded max_response_bytes\n"
+            # DEV-163 lives here. Before it, the two read stalls reported "the connection failed" on
+            # Unix and "timed out reading the response" on Windows -- for the identical peer. The
+            # PHASE is the assertion, not the failure.
+            "  --- HC13: phase-specific timeouts ---\n"
+            "  http://127.0.0.1:39188/slow-headers -> timed out reading the response\n"
+            "  http://127.0.0.1:39188/slow-body -> timed out reading the response\n"
+            "  https://localhost:39194/fixed -> timed out the TLS handshake\n"
             "STARK_HTTP_CLIENT_RESOURCE_OK\n"
         ),
         resources=("TcpStream", "TlsStream"),
@@ -314,6 +345,13 @@ def echo_peer():
 #
 # `conn` is any object with `sendall` -- a plain socket or an `ssl.SSLSocket`.
 HTTP_PORT = 39188
+# HC13. Longer than any timeout the consumer configures for a `/slow-*` route, so the client's
+# timeout is what ends the exchange -- never the peer giving up first, which would prove the peer
+# rather than the client.
+SLOW_STALL_SECONDS = 12
+# A TCP listener that accepts and then says nothing, addressed as `https://`. The TLS handshake
+# never starts, so the handshake timeout is the only thing that can end it.
+TLS_STALL_PORT = 39194
 HTTPS_PORT = 39192
 HTTPS_UNTRUSTED_PORT = 39193
 
@@ -452,6 +490,114 @@ def respond_http_route(conn, target, request=b""):
             + str(HTTP_PORT).encode()
             + b"/fixed\r\nContent-Length: 0\r\n\r\n"
         )
+    # ------------------------------------------------------------------------------------------
+    # HC13 — the adversarial routes.
+    #
+    # `stark-http-parser` has 34 unit tests over an error type with 23 variants -- but they assert
+    # that malformed input is REJECTED, not WHICH error it produces, and they hand the parser a
+    # literal rather than delivering it over a socket in pieces after a plausible status line, which
+    # is the only form an attacker can actually deliver. These routes close both gaps: every one is
+    # a real server sending real bytes that a real client must refuse for a NAMED reason.
+    #
+    # Each isolates ONE rule, so a failure names one cause rather than "the response was bad".
+
+    # -- malformed framing ---------------------------------------------------------------------
+    elif target == "/bad-status":
+        # No status code at all where one is mandatory.
+        conn.sendall(b"HTTP/1.1 OK\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/bad-version":
+        conn.sendall(b"HTTP/9.9 200 OK\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/bad-header-name":
+        # A space inside a field name. Accepting this is how request smuggling starts.
+        conn.sendall(b"HTTP/1.1 200 OK\r\nBad Header: x\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/bad-obs-fold":
+        # RFC 7230's deprecated line folding. Deprecated is not the reason to refuse it; the
+        # reason is that two implementations disagreeing about where a value ends is a smuggling
+        # primitive.
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nX-Folded: one\r\n continued\r\nContent-Length: 0\r\n\r\n"
+        )
+    elif target == "/bad-bare-lf":
+        # A bare LF terminating a header line. Front ends and back ends have historically split on
+        # exactly this, which is what makes it a desync rather than a formatting quibble.
+        conn.sendall(b"HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n")
+    elif target == "/bad-two-lengths":
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 9\r\n\r\nhello"
+        )
+    elif target == "/bad-length-and-te":
+        # The classic smuggling pair: one hop believes the length, the next believes the chunks.
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+        )
+    elif target == "/bad-length-value":
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: not-a-number\r\n\r\n")
+    elif target == "/bad-transfer-encoding":
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n"
+        )
+    elif target == "/bad-chunk-size":
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbody\r\n0\r\n\r\n"
+        )
+    elif target == "/bad-chunk-terminator":
+        # A chunk whose data is not followed by CRLF. A parser trusting the declared size and
+        # skipping the terminator check reads the next chunk from the wrong offset.
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nbodyXX0\r\n\r\n"
+        )
+
+    # -- oversized -----------------------------------------------------------------------------
+    #
+    # Sized against `stark_http_core::default_limits()`. Each exceeds ONE limit and stays inside
+    # the others, so the error names the limit that was actually hit.
+    elif target == "/big-status-line":
+        # max_status_line_bytes = 8192.
+        conn.sendall(b"HTTP/1.1 200 " + b"O" * 9000 + b"\r\nContent-Length: 0\r\n\r\n")
+    elif target == "/big-header-line":
+        # max_header_line_bytes = 8192.
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nX-Huge: " + b"v" * 9000 + b"\r\nContent-Length: 0\r\n\r\n"
+        )
+    elif target == "/big-header-count":
+        # max_header_count = 100. Each line is small, so only the COUNT is exceeded.
+        head = b"HTTP/1.1 200 OK\r\n"
+        for i in range(150):
+            head += b"X-N" + str(i).encode() + b": v\r\n"
+        conn.sendall(head + b"Content-Length: 0\r\n\r\n")
+    elif target == "/big-body":
+        # The client's `max_response_bytes` (8 MiB by default) is enforced on TOTAL BYTES READ,
+        # not on the parsed body -- so a peer cannot evade it by lying in Content-Length. This
+        # route declares a size beyond the limit and then actually sends it, which is what
+        # distinguishes enforcement from a header check.
+        declared = 12 * 1024 * 1024
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(declared).encode() + b"\r\n\r\n"
+        )
+        sent = 0
+        block = b"x" * 65536
+        try:
+            while sent < declared:
+                conn.sendall(block)
+                sent += len(block)
+        except OSError:
+            # Expected: the client hits its limit and closes on us. That IS the pass condition.
+            pass
+
+    # -- delayed -------------------------------------------------------------------------------
+    #
+    # A timeout is only meaningful if it names the PHASE it expired in: "the request timed out"
+    # sends an operator to look at the wrong thing. These stall in two different places.
+    elif target == "/slow-headers":
+        # Accepted, then silent. Nothing about the response ever arrives.
+        time.sleep(SLOW_STALL_SECONDS)
+    elif target == "/slow-body":
+        # A complete, plausible head -- then the body stops arriving part way through. A client
+        # that only applies its read timeout while waiting for headers hangs here indefinitely.
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\npartial")
+        time.sleep(SLOW_STALL_SECONDS)
+
     else:
         conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
 
@@ -507,6 +653,65 @@ def http_peer():
     finally:
         stop.set()
         server.close()
+        thread.join(timeout=5)
+
+
+# HC13. A TCP listener that accepts and then says nothing at all.
+
+
+@contextlib.contextmanager
+def tls_stall_peer():
+    """A socket that completes the TCP connect and never speaks TLS (HC13).
+
+    This is the only phase timeout that can be proved deterministically on a loopback. A CONNECT
+    timeout needs a host that black-holes SYN packets, and a RESOLVE timeout needs a DNS server
+    that stalls; both are environment-dependent, and a flaky negative test is worse than an absent
+    one because it teaches people to re-run the suite. So this peer proves `TlsHandshake`
+    specifically, and HC13-KNOWN-LIMITATIONS.md records the two phases that are covered by unit
+    tests only.
+
+    A client whose handshake timeout is unwired blocks here forever, which is the failure this
+    exists to catch: an unset socket deadline looks identical to a working one until a peer
+    declines to speak.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", TLS_STALL_PORT))
+    except OSError as exc:
+        server.close()
+        raise SystemExit(
+            f"qualification cannot bind the TLS-stall peer on 127.0.0.1:{TLS_STALL_PORT}: {exc}. "
+            f"Binding is asserted rather than attempted: a skipped peer would leave the handshake "
+            f"timeout unproven while the gate still reported success (CD-348)."
+        ) from exc
+    server.listen(8)
+    server.settimeout(30)
+    stop = threading.Event()
+    held = []
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _addr = server.accept()
+            except (TimeoutError, OSError):
+                return
+            # HELD, not closed. Closing would give the client a connection error, which is a
+            # different outcome from a handshake that never progresses -- and the wrong one.
+            held.append(conn)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        server.close()
+        for conn in held:
+            try:
+                conn.close()
+            except OSError:
+                pass
         thread.join(timeout=5)
 
 
@@ -604,7 +809,10 @@ def http_and_https_peers(fixtures: Path):
     """
     with http_peer():
         with https_peers(fixtures):
-            yield
+            # HC13's handshake-timeout peer joins the same context: the consumer is one program, so
+            # every peer it needs has to be up for the whole of it.
+            with tls_stall_peer():
+                yield
 
 
 TLS_PORT_TLS13 = 39189

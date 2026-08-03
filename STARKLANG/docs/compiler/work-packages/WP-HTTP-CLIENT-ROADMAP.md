@@ -1374,6 +1374,10 @@ dialled.
 
 # HC13 — Qualification, Documentation, and Release
 
+**Status: CLOSED 2026-08-03 (CD-375).** Evidence in `STARKLANG/docs/http-client/HC13-*.md`.
+One acceptance criterion is **partial** and reported as partial: two of five timeout phases have no
+stalling peer. Found and fixed on the way: DEV-163.
+
 ## Objective
 
 Produce defensible evidence for the complete client stack.

@@ -118,6 +118,25 @@ fn map_io_error(error: &std::io::Error) -> ProviderStatus {
     }
 }
 
+/// The same mapping for a STREAM read or write, where `WouldBlock` means one specific thing.
+///
+/// **DEV-163.** A provider stream is always blocking; the only non-blocking socket in this file is
+/// the test harness's listener. So `read`/`write` can return `WouldBlock` for exactly one reason:
+/// `SO_RCVTIMEO`/`SO_SNDTIMEO` expired. Unix reports that as `EAGAIN` (`WouldBlock`) and Windows
+/// reports it as `WSAETIMEDOUT` (`TimedOut`) — the same event, two error kinds.
+///
+/// Passing both through unchanged made a configured `read_timeout` surface as
+/// `NetworkError::Interrupted` on Unix and `NetworkError::TimedOut` on Windows, so
+/// `stark-http-client` reported "the connection failed" on macOS and Linux and "timed out reading
+/// the response" on Windows — for the identical peer. Found by HC13's stalling peer; invisible to
+/// every test that used a peer which answers.
+fn map_stream_io_error(error: &std::io::Error) -> ProviderStatus {
+    match error.kind() {
+        std::io::ErrorKind::WouldBlock => STATUS_TIMED_OUT,
+        _ => map_io_error(error),
+    }
+}
+
 fn map_dns_error(error: &std::io::Error) -> ProviderStatus {
     match error.kind() {
         std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
@@ -292,7 +311,7 @@ pub unsafe extern "C" fn stark_tcp_stream_read(
     };
     let read = match stream_ref.read(slice) {
         Ok(read) => read,
-        Err(error) => return map_io_error(&error),
+        Err(error) => return map_stream_io_error(&error),
     };
     unsafe { write_scalar(out_written, read as u64) };
     ProviderStatus::SUCCESS
@@ -318,7 +337,7 @@ pub unsafe extern "C" fn stark_tcp_stream_write(
     };
     let written = match stream_ref.write(data) {
         Ok(written) => written,
-        Err(error) => return map_io_error(&error),
+        Err(error) => return map_stream_io_error(&error),
     };
     unsafe { write_scalar(out_accepted, written as u64) };
     ProviderStatus::SUCCESS
@@ -656,6 +675,28 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// **Every test that touches the provider's global table takes this first.**
+    ///
+    /// `TABLE` is process-global and `cargo test` runs tests in parallel in one process, so these
+    /// tests are not independent however carefully each is written. Two of them additionally hand a
+    /// raw socket out of the provider (`detach` -> `into_raw_fd` -> `adopt`), which means a live fd
+    /// exists outside any Rust owner for a window; a third concurrently opening and closing sockets
+    /// makes that window observable.
+    ///
+    /// The symptom was a detached socket that connected, accepted writes, and then reported EOF
+    /// instead of the echo — a failure in a test that was itself correct, roughly one run in five,
+    /// and green in twelve consecutive runs before the third test existed. **Serialising the
+    /// WRITERS is the fix, not serialising the assertions**: a test that merely opens a socket
+    /// perturbs a test that asserts on the table just as much as one that reads it.
+    static PROVIDER_TABLE: Mutex<()> = Mutex::new(());
+
+    /// Held for the body of a test. Poisoning is ignored: a panicking test has already failed, and
+    /// propagating its poison would convert one failure into every subsequent test failing for an
+    /// unrelated reason.
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        PROVIDER_TABLE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn buf(bytes: &[u8]) -> BorrowedBuffer {
         BorrowedBuffer {
             ptr: bytes.as_ptr(),
@@ -827,6 +868,12 @@ mod tests {
                 data: BorrowedBuffer,
                 out_accepted: *mut u64,
             ) -> ProviderStatus;
+            // DEV-163's regression test drives the deadline through the LINKED symbol, like every
+            // other call here, so it exercises the exported entry point rather than the Rust fn.
+            pub fn stark_tcp_stream_set_read_timeout(
+                stream: RawResourceHandle,
+                nanos: u64,
+            ) -> ProviderStatus;
             pub fn stark_tcp_listener_close(handle: RawResourceHandle) -> ProviderStatus;
             pub fn stark_tcp_stream_close(handle: RawResourceHandle) -> ProviderStatus;
             pub fn stark_tcp_stream_detach(
@@ -981,6 +1028,7 @@ mod tests {
 
     #[test]
     fn harness_echoes_binary_large_repeated_and_parallel_instances() {
+        let _exclusive = exclusive();
         let a = EchoServer::spawn().unwrap();
         let b = EchoServer::spawn().unwrap();
         assert!(a.address.ip().is_loopback());
@@ -1008,6 +1056,7 @@ mod tests {
 
     #[test]
     fn provider_loopback_bind_connect_accept_send_receive() {
+        let _exclusive = exclusive();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
@@ -1087,6 +1136,7 @@ mod tests {
     /// over it.
     #[test]
     fn a_detached_socket_is_live_and_this_provider_has_forgotten_it() {
+        let _exclusive = exclusive();
         let server = EchoServer::spawn().unwrap();
         let address_text = server.address.to_string();
 
@@ -1144,6 +1194,7 @@ mod tests {
     /// assertable is that the first removed the entry, which is the property the abort rests on.
     #[test]
     fn a_detach_removes_the_entry_so_a_second_one_cannot_find_it() {
+        let _exclusive = exclusive();
         let server = EchoServer::spawn().unwrap();
         let mut handle = RawResourceHandle {
             id: 0,
@@ -1182,6 +1233,7 @@ mod tests {
 
     #[test]
     fn malformed_address_and_connection_refused_are_recoverable() {
+        let _exclusive = exclusive();
         let mut handle = RawResourceHandle {
             id: 0,
             resource_type: TCP_STREAM_RESOURCE_TYPE,
@@ -1197,5 +1249,74 @@ mod tests {
             linked::stark_tcp_stream_connect(buf(address.to_string().as_bytes()), &mut handle)
         };
         assert!(matches!(status.code, 1 | 11));
+    }
+
+    /// **DEV-163: an expired socket deadline must report as a TIMEOUT on every platform.**
+    ///
+    /// `SO_RCVTIMEO` expiring produces two different error kinds:
+    ///
+    /// ```text
+    /// Unix     EAGAIN        -> std::io::ErrorKind::WouldBlock
+    /// Windows  WSAETIMEDOUT  -> std::io::ErrorKind::TimedOut
+    /// ```
+    ///
+    /// Passing both through unchanged made `stark-http-client` report "the connection failed" on
+    /// Linux and macOS and "timed out reading the response" on Windows — same peer, same STARK
+    /// source. An operator reading the Unix message would go and look at the network instead of at
+    /// the peer that was deliberately holding the socket.
+    ///
+    /// The peer here **holds** the accepted connection rather than closing it. Closing would give a
+    /// clean EOF, which is a different outcome and the one that already worked — the whole defect
+    /// lives in the case where a peer accepts and then says nothing at all.
+    #[test]
+    fn an_expired_read_deadline_reports_as_a_timeout() {
+        let _exclusive = exclusive();
+        // The peer is accepted and then simply HELD, in this thread's own scope. No helper thread
+        // and no sleep: the 200 ms deadline is the only thing that ends the read, so the test costs
+        // its own timeout and nothing more. An earlier version parked a thread for three seconds,
+        // which perturbed the scheduling of the whole suite -- see the note on `EchoServer`.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let mut handle = RawResourceHandle {
+            id: 0,
+            resource_type: TCP_STREAM_RESOURCE_TYPE,
+        };
+        assert_eq!(
+            unsafe {
+                linked::stark_tcp_stream_connect(buf(address.to_string().as_bytes()), &mut handle)
+            },
+            ProviderStatus::SUCCESS
+        );
+        // Accepted and kept alive for the rest of the test. Dropping it would close the connection
+        // and turn the timeout under test into a clean EOF -- a different outcome, and the one that
+        // already worked.
+        let _accepted = listener.accept().unwrap();
+
+        assert_eq!(
+            unsafe { linked::stark_tcp_stream_set_read_timeout(handle, 200_000_000) },
+            ProviderStatus::SUCCESS
+        );
+
+        let mut bytes = [0u8; 16];
+        let mut written = 0u64;
+        let status = unsafe {
+            linked::stark_tcp_stream_read(
+                handle,
+                BorrowedBufferMut {
+                    ptr: bytes.as_mut_ptr(),
+                    len: bytes.len(),
+                },
+                &mut written,
+            )
+        };
+        assert_eq!(
+            status, STATUS_TIMED_OUT,
+            "an expired read deadline must be STATUS_TIMED_OUT. Before DEV-163 this was \
+             STATUS_WOULD_BLOCK on Unix, which stark-net maps to NetworkError::Interrupted and \
+             every caller above reports as a connection failure"
+        );
+
+        unsafe { linked::stark_tcp_stream_close(handle) };
     }
 }

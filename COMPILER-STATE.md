@@ -1,5 +1,130 @@
 # STARK Compiler STATE
 
+## CD-375 — HC13 CLOSED: adversarial peers, DEV-163 and DEV-164 (2026-08-03)
+
+**The HTTP client track is complete: HC0–HC13.** HC13's job was to prove the client **fails
+correctly**, which is a different property from proving it works and the one that had never been
+tested end to end.
+
+### The finding, which is the point of the packet
+
+**DEV-163 — a read timeout did not report as a timeout on Unix.**
+
+```text
+Unix     SO_RCVTIMEO expires -> EAGAIN       -> ErrorKind::WouldBlock -> NetworkError::Interrupted
+Windows  SO_RCVTIMEO expires -> WSAETIMEDOUT -> ErrorKind::TimedOut   -> NetworkError::TimedOut
+```
+
+So `stark-http-client` reported **"the connection failed"** on Linux and macOS and **"timed out
+reading the response"** on Windows — identical peer, identical STARK source. An operator reading the
+Unix message would have gone to look at the network instead of at the peer deliberately holding the
+socket.
+
+The deadline always worked. Only its **report** was wrong, which is exactly why nothing caught it:
+every test through HC0–HC12 used a peer that *answers*, and a timeout that never fires cannot
+misreport. It was found within an hour of a peer existing that stalls.
+
+Fixed in `stark-net`'s native provider, where the socket mode is known. A provider stream is always
+blocking — the only `set_nonblocking(true)` in that file is the test harness's listener — so
+`WouldBlock` from a read or write can mean one thing: the deadline expired. Both platforms now
+report `STATUS_TIMED_OUT`.
+
+### What was built
+
+```text
+11 malformed routes    status line, version, header name, obs-fold, bare LF, two lengths,
+                       length+TE, length value, transfer coding, chunk size, chunk terminator
+ 4 oversized routes    status line, header line, header count, body ceiling
+ 3 stalls              slow headers, slow body, a TCP peer that never speaks TLS
+```
+
+`stark-http-parser` already had 34 unit tests over an error type with 23 variants — but they assert
+that malformed input is *rejected*, not *which* error it produces, and they hand the parser a
+literal rather than delivering it over a socket. **No test anywhere would have noticed a bare LF
+being reported as a chunk-size error.** These eighteen do, on the wire.
+
+**Each case asserts the NAMED reason, not merely failure.** Eighteen cases all reporting "the
+response was bad" would also pass against a client that rejected the valid responses above them in
+the same run. The reason is what distinguishes a parser from a wall.
+
+Two design points worth keeping:
+
+- `/big-body` declares 12 MiB and **actually sends it**, against a lowered ceiling. The limit is
+  enforced on total bytes read, not on the parsed body, so a peer cannot evade it by under-declaring
+  `Content-Length`. A header check alone would pass the peer that lies.
+- `tls_stall_peer` **holds** each accepted connection rather than closing it. Closing gives a
+  connection error, which is a different outcome from a handshake that never progresses — and the
+  wrong one to be testing.
+
+### A second finding, from my own test: DEV-164
+
+Adding the DEV-163 regression test made `a_detached_socket_is_live_and_this_provider_has_forgotten_it`
+fail about **one run in five**. It was green in twelve consecutive runs without the new test, so
+this was mine — not a flake I merely uncovered.
+
+`stark-net`'s provider table is process-global and `cargo test` runs tests in parallel in one
+process. Two tests hand a raw socket OUT of the provider (`detach` -> `into_raw_fd` -> `adopt`),
+which leaves a live fd outside any Rust owner for a window; a third test opening and closing sockets
+alongside them makes that window observable. The symptom was a detached socket that connected,
+accepted its writes, and then reported `UnexpectedEof` instead of the echo.
+
+**The product is not at fault** — `next_id` is monotonic under the lock so handle ids are never
+reused, and `detach` consumes the stream with `into_raw_fd` so nothing closes the fd. The defect is
+in the test suite's sharing of process-global state. Fixed with the writer-serialising mutex this
+repository already uses for the TLS lifecycle tests: **every test that opens a socket takes it, not
+only the ones that assert on the table.** A test that merely opens a socket perturbs a table
+assertion just as much as one that reads it.
+
+Verified 0/20 with the guard against ~1/5 without.
+
+Two things went wrong on the way to that, and both are worth recording because they cost the most
+time:
+
+- I first blamed the echo harness's 5-second handler timeout and **tested it** — raised it to 60s,
+  and the failure persisted. Refuted in one run; had I "fixed" it instead, I would have shipped a
+  change that did nothing and claimed a cause.
+- My first version of the test parked a thread for three seconds. Removing that made the failure
+  *rarer* rather than gone, which is the worst possible outcome and was only caught by running the
+  suite twenty times instead of once.
+
+### One criterion is partial, and says so
+
+Three of five timeout phases are proved on the wire. `Connect` and `Resolve` are not: a loopback
+cannot black-hole a SYN deterministically, and a flaky negative test is worse than an absent one
+because it teaches people to re-run the suite. They are recorded as **unproven**, not as working —
+which is the distinction DEV-163 exists to justify.
+
+Marking the criterion ✅ on three of five would be exactly the overstatement this packet punished.
+
+### Evidence
+
+```text
+40  executed cases for stark-http-client, all native, all against live loopback peers
+    (18 of them new: 11 malformed, 4 oversized, 3 stalls)
+16  first-party packages through the full gate, exit 0
+ 3  Tier-1 platforms, no platform gating anywhere in the harness
+10  of 10 required fixture servers built
+ 5  evidence documents
+```
+
+Every peer **asserts its bind rather than attempting it**. A skipped peer would silently downgrade
+lifecycle evidence to lowering evidence while the gate still reported success — which matters most
+on Windows, where a loopback TLS listener is likeliest to fail to bind.
+
+### Status
+
+```text
+HC0-HC12  CLOSED
+HC13      CLOSED -- one acceptance criterion partial and reported as partial
+DEV-163   CLOSED (this)
+DEV-164   CLOSED (this) -- provider test suite shared process-global state
+```
+
+Still open from the track, each deliberately in its own packet: dot-segment resolution in
+`stark-url`; making `Header`/`HeaderMap.entries` private (an API break); and **no installable
+toolchain** — no release has been published and `build-release.py` does not stage provider crates,
+so a package release would produce a client nobody can run.
+
 ## CD-374 — DEV-160: the call thunk, and the shapes it still refuses (2026-08-03)
 
 **Owner ruling accepted (2026-08-03): DEV-160 is NOT closed as a family.** The call-thunk

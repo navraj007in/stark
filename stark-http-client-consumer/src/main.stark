@@ -39,6 +39,9 @@ use stark_json::encode;
 use stark_json::JsonMember;
 use stark_json::JsonValue;
 use stark_http_core::HttpResponse;
+use stark_time::Duration;
+use stark_time::duration_millis;
+use stark_time::duration_seconds;
 
 // The fixture root, the ONLY trust anchor these HTTPS sessions are given. Nothing here consults
 // the machine's trust store; `default_config()` would, and that is the right default for a real
@@ -480,6 +483,68 @@ fn main() {
         }
     }
 
+    // ------------------------------------------------------------------------------------------
+    // HC13. Malformed framing, over the wire, from a peer that already looks plausible.
+    //
+    // Each route breaks exactly ONE rule and the assertion names it, so a failure points at one
+    // cause. Several of these are not style violations but desync primitives: two hops disagreeing
+    // about where a message ends is what request smuggling is built from.
+    println("  --- HC13: malformed responses ---");
+    refuse(&client, "http://127.0.0.1:39188/bad-status", "malformed status line");
+    refuse(&client, "http://127.0.0.1:39188/bad-version", "unsupported HTTP version");
+    refuse(&client, "http://127.0.0.1:39188/bad-header-name", "invalid header name");
+    refuse(&client, "http://127.0.0.1:39188/bad-obs-fold", "obsolete line folding is rejected");
+    refuse(&client, "http://127.0.0.1:39188/bad-bare-lf", "bare LF line ending is rejected");
+    refuse(&client, "http://127.0.0.1:39188/bad-two-lengths", "conflicting Content-Length headers");
+    refuse(
+        &client,
+        "http://127.0.0.1:39188/bad-length-and-te",
+        "Content-Length with Transfer-Encoding is ambiguous framing",
+    );
+    refuse(&client, "http://127.0.0.1:39188/bad-length-value", "invalid Content-Length");
+    refuse(&client, "http://127.0.0.1:39188/bad-transfer-encoding", "unsupported transfer coding");
+    refuse(&client, "http://127.0.0.1:39188/bad-chunk-size", "invalid chunk size");
+    refuse(&client, "http://127.0.0.1:39188/bad-chunk-terminator", "chunk not terminated by CRLF");
+
+    // ------------------------------------------------------------------------------------------
+    // HC13. Limits, enforced against a peer that is actively trying to exceed them.
+    //
+    // A limit that is only ever tested with compliant input is a constant, not a limit.
+    println("  --- HC13: oversized responses ---");
+    refuse(&client, "http://127.0.0.1:39188/big-status-line", "status line exceeds its limit");
+    refuse(&client, "http://127.0.0.1:39188/big-header-line", "header line exceeds its limit");
+    refuse(&client, "http://127.0.0.1:39188/big-header-count", "too many headers");
+
+    // The body ceiling is enforced on TOTAL BYTES READ, not on the parsed body — so a peer cannot
+    // evade it by lying in `Content-Length`. This peer declares 12 MiB and really sends it; the
+    // ceiling is lowered to 64 KiB here so the proof costs milliseconds rather than megabytes.
+    let capped = new_client(with_ceiling(default_config(), 65536u64));
+    refuse(&capped, "http://127.0.0.1:39188/big-body", "response exceeded max_response_bytes");
+
+    // ------------------------------------------------------------------------------------------
+    // HC13. Timeouts, and the PHASE each expired in.
+    //
+    // "The request timed out" sends an operator to look at the wrong thing. A handshake that never
+    // starts, a header that never arrives and a body that stops half way are three different
+    // faults with three different owners, and the error has to say which.
+    println("  --- HC13: phase-specific timeouts ---");
+    let impatient = new_client(
+        with_deadlines(config_for_peer(), duration_millis(1500u64), duration_millis(1500u64)),
+    );
+
+    // Accepted, then silence. Nothing of the response ever arrives.
+    refuse(&impatient, "http://127.0.0.1:39188/slow-headers", "timed out reading the response");
+
+    // A complete, plausible head — then the body stops. A client that applies its read deadline
+    // only while waiting for HEADERS hangs here for as long as the peer cares to hold the socket.
+    refuse(&impatient, "http://127.0.0.1:39188/slow-body", "timed out reading the response");
+
+    // A peer that completes the TCP connect and never speaks TLS. An unwired handshake deadline is
+    // indistinguishable from a working one until a peer declines to talk — this is the only phase
+    // besides the read deadline that a loopback can prove deterministically, and
+    // HC13-KNOWN-LIMITATIONS.md records the ones it cannot.
+    refuse(&impatient, "https://localhost:39194/fixed", "timed out the TLS handshake");
+
     println("STARK_HTTP_CLIENT_RESOURCE_OK");
 }
 
@@ -492,6 +557,115 @@ fn body_bytes(text: &str) -> Vec<UInt8> {
         i = i + 1u64;
     }
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// HC13 — the adversarial half.
+//
+// `stark-http-parser` has 34 unit tests over an error type with 23 variants — but they assert that
+// malformed input is REJECTED, not WHICH error it produces, and they hand the parser a literal
+// rather than delivering it over a socket. Nothing before this would have noticed a bare LF being
+// reported as a chunk-size error. Everything below is a real peer sending real bytes, and every
+// case asserts the reason.
+
+/// Does `haystack` contain `needle`? Written out because Core v1's `str` has no `contains`.
+fn contains(haystack: &str, needle: &str) -> Bool {
+    let h = haystack.bytes();
+    let n = needle.bytes();
+    if n.len() == 0u64 {
+        return true;
+    }
+    if n.len() > h.len() {
+        return false;
+    }
+    let last = h.len() - n.len();
+    let mut i = 0u64;
+    while i <= last {
+        let mut j = 0u64;
+        let mut same = true;
+        while j < n.len() {
+            if h[i + j] != n[j] {
+                same = false;
+                j = n.len();
+            } else {
+                j = j + 1u64;
+            }
+        }
+        if same {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// A response that must be REFUSED, and refused for a NAMED reason.
+///
+/// Asserting the reason rather than merely the failure is the whole point. Fifteen adversarial
+/// routes that each reported "the response was bad" would also pass against a client that rejected
+/// everything — including the valid responses proved above. The reason is what distinguishes a
+/// parser from a wall.
+fn refuse(client: &Client, url: &str, expected: &str) {
+    let mut text = String::new();
+    let mut refused = false;
+    match fetch(client, url) {
+        Ok(_response) => {}
+        Err(error) => {
+            text = error_text(&error);
+            refused = true;
+        }
+    }
+    if !refused {
+        print("ACCEPTED what it must refuse: ");
+        println(url);
+        panic("an adversarial response was accepted (HC13)");
+    }
+    if !contains(text.as_str(), expected) {
+        print("wrong reason for ");
+        print(url);
+        print(" — expected \"");
+        print(expected);
+        print("\", got \"");
+        print(text.as_str());
+        println("\"");
+        panic("an adversarial response was refused for the wrong reason (HC13)");
+    }
+    print("  ");
+    print(url);
+    print(" -> ");
+    println(text.as_str());
+}
+
+/// A configuration whose deadlines are short enough to expire inside a test run.
+///
+/// Built as one literal rather than by field assignment because `tls_root_store` is a drop unit
+/// (see `following` above).
+fn with_deadlines(config: ClientConfig, read: Duration, handshake: Duration) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: read,
+        write_timeout: config.write_timeout,
+        max_response_bytes: config.max_response_bytes,
+        follow_redirects: false,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: handshake,
+        redirects: default_redirect_policy(),
+    }
+}
+
+/// The same, with a small response ceiling — so the oversized case proves enforcement in
+/// milliseconds instead of megabytes.
+fn with_ceiling(config: ClientConfig, ceiling: UInt64) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: config.read_timeout,
+        write_timeout: config.write_timeout,
+        max_response_bytes: ceiling,
+        follow_redirects: false,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: config.tls_handshake_timeout,
+        redirects: default_redirect_policy(),
+    }
 }
 
 /// The explicit-roots configuration, so a follower can reach the TLS peer mid-chain.

@@ -2,7 +2,7 @@
 
 **Status:** CLOSED 2026-08-03
 **Depends on:** HC10 (HTTPS client)
-**Enables:** HC13 (release)
+**Enables:** HC13 (qualification and release) — CLOSED 2026-08-03
 
 ---
 

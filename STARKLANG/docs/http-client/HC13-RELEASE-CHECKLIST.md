@@ -1,0 +1,118 @@
+# HC13 — release checklist
+
+**Status:** current as of 2026-08-03
+
+This is the list to work through before tagging a release of the HTTP client stack. It is written as
+checks with **falsifiers**, not as intentions: each line says what to run and what a failure looks
+like, so it can be executed by someone who did not write the code.
+
+---
+
+## 0. Before anything else — what "release" means here
+
+**There is currently no installable STARK toolchain.** No release has been published, there is no
+release workflow, and `build-release.py` does not stage the provider crates a native build needs.
+Everything below assumes a toolchain built from source.
+
+Releasing the *packages* without a way to install the *compiler* would produce a client nobody can
+run. That gap is tracked separately and is a precondition for a real release, not an item on this
+list.
+
+---
+
+## 1. Gate
+
+| # | check | command | failure looks like |
+| --- | --- | --- | --- |
+| 1.1 | 16-package qualification, all three Tier-1 lanes | CI: `first-party package qualification` | any lane red; `fail-fast: false` means the others still report |
+| 1.2 | full workspace test | CI: `fmt, clippy, test` | any of the three platforms red |
+| 1.3 | `ci-complete` green | CI | it gates on an explicit `needs:` list — **check the new job is in it** |
+| 1.4 | Miri over the raw slot primitives | CI: `DEV-160 raw slot primitives under Miri` | a Stacked Borrows violation, or a toolchain that silently ran stable |
+| 1.5 | spec fixture conformance | CI | grammar and examples out of step |
+
+**On 1.3 and 1.4 together.** Both have failed for reasons that had nothing to do with the code:
+`ci-complete` gates on a hand-maintained list, so a new job is outside it until someone adds it; and
+a bare `cargo` inside `starkc/` honours `rust-toolchain.toml` over whatever a CI action installed,
+so a Miri job can run stable and report a component error. **Adding a job is not the same as gating
+on it, and installing a toolchain is not the same as using it.**
+
+---
+
+## 2. Evidence documents
+
+| # | document | current |
+| --- | --- | --- |
+| 2.1 | HC13-QUALIFICATION-REPORT.md | ✅ |
+| 2.2 | HC13-PLATFORM-MATRIX.md | ✅ |
+| 2.3 | HC13-THREAT-MODEL.md | ✅ |
+| 2.4 | HC13-KNOWN-LIMITATIONS.md | ✅ |
+| 2.5 | HC13-RELEASE-CHECKLIST.md | ✅ (this) |
+
+**2.6 — cross-reference sweep.** Before tagging, confirm: every count stated in prose matches its
+list; no table contradicts the paragraph next to it; every "see §N" points at a section that exists;
+and every limitation named in the report also appears in the limitations document. Counts and
+cross-references are the first thing an external reviewer finds wrong.
+
+---
+
+## 3. Security
+
+| # | check | falsifier |
+| --- | --- | --- |
+| 3.1 | header injection refused at the **serializer**, not only at construction | HC12.1's regression test IS the working exploit — it produced a real injected header line before the fix |
+| 3.2 | credentials stripped on origin change, **asserted from the wire** | `/echo` reflects what the peer received; `GET|-|-|` proves absence, a boolean does not |
+| 3.3 | downgrade refused before DNS and before connect | no SYN reaches the http target |
+| 3.4 | hostname verification independent of chain validity | the mismatch peer's chain is **valid** |
+| 3.5 | every smuggling primitive refused on the wire | HC13-THREAT-MODEL.md §2, table T4 |
+| 3.6 | no `unsafe` outside the provider crates and `mod stark_proj` | generated MIR bodies contain none |
+
+---
+
+## 4. Supply chain
+
+| # | check | current |
+| --- | --- | --- |
+| 4.1 | one cryptographic backend, not two | `rustls` with `default-features = false` + `aws_lc_rs`; `ring` not compiled in |
+| 4.2 | exact pins in the manifest, not ranges | `=0.23.43`, `=2.2.0`, `=1.15.1`, `=0.8.2` |
+| 4.3 | transitive crypto pinned by lockfile | `aws-lc-rs 1.17.3`, `aws-lc-sys 0.43.0` |
+| 4.4 | `Cargo.lock` committed for every provider crate | ✅ |
+| 4.5 | provider versions recorded in the platform matrix | HC13-PLATFORM-MATRIX.md §4 |
+| 4.6 | audit for advisories against the pinned set | **not automated — do this by hand before tagging** |
+
+---
+
+## 5. Compatibility
+
+| # | check | note |
+| --- | --- | --- |
+| 5.1 | `Header` / `HeaderMap.entries` still public | a known weakness; making them private is a **breaking** change and must not slip into a patch release |
+| 5.2 | dot-segment resolution still absent | belongs in `stark-url`; adding it changes redirect targets, so it is behaviour-visible |
+| 5.3 | DEV-160b workaround still present in `send()` | remove only when cross-block absorption lands, and only after the original source form builds natively |
+
+---
+
+## 6. The two things most likely to be got wrong
+
+**6.1 — Do not mark phase-specific timeouts as fully proved.** Three of five phases have a stalling
+peer. `Connect` and `Resolve` do not, and DEV-163 was precisely a phase that *looked* fine and
+reported the wrong thing on two of three platforms. The qualification report marks this criterion
+⚠️ partial; keep it that way until a peer exists.
+
+**6.2 — Do not treat a green single-platform run as a matrix.** DEV-163 was green on Windows and
+wrong on Unix, from identical source, and no amount of re-running one platform would have shown it.
+If a lane is skipped, the release is not qualified — which is why every peer in the harness asserts
+its bind rather than attempting it.
+
+---
+
+## 7. Sign-off
+
+```text
+[ ] 1.1-1.5   gate green on all three Tier-1 platforms
+[ ] 2.1-2.6   evidence documents present and cross-referenced
+[ ] 3.1-3.6   security falsifiers pass
+[ ] 4.1-4.6   supply chain pinned; advisories checked BY HAND
+[ ] 5.1-5.3   known breaking changes deliberately deferred or taken
+[ ] 6.1-6.2   partial claims still reported as partial
+[ ] 0         an installable toolchain exists, or the release is source-only and says so
+```
