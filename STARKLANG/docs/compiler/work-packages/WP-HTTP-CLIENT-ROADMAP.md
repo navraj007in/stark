@@ -2,7 +2,10 @@
 
 **Document type:** Frozen implementation roadmap and work-package plan  
 **Audience:** Claude Code, Codex, compiler/package maintainers  
-**Status:** FROZEN FOR EXECUTION
+**Status:** **CLOSED 2026-08-03 — HC0–HC13 delivered** (CD-375; corrected CD-376). Executed
+against this plan without amendment. The client is **feature-track complete, not
+security-release complete**: see §0 of `STARKLANG/docs/http-client/HC13-RELEASE-CHECKLIST.md`
+for what still blocks a public release (DEV-165, and no installer).
 **Target:** A synchronous, blocking, cross-platform HTTPS client written primarily in STARK  
 **Concurrency:** Explicitly out of scope  
 **Primary milestone:** A STARK application can perform bounded `GET` and `POST` requests to ordinary hostname-based HTTPS REST APIs and safely decode JSON responses.
