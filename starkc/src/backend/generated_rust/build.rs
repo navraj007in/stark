@@ -101,13 +101,32 @@ pub fn build_and_link(
     // adds the other half: Cargo must accept the lock as written rather than update it, so a
     // dependency appearing in the generated graph fails the build instead of being resolved
     // silently.
+    //
+    // **`--target-dir` is PASSED EXPLICITLY, and that is not redundant.** Cargo's default is
+    // `<manifest dir>/target`, which is where the binary is looked for below — but an ambient
+    // `CARGO_TARGET_DIR` in the environment silently overrides it, and the child process inherits
+    // it. The build then succeeds, writes the executable somewhere else entirely, and this function
+    // reports "Cargo succeeded but the expected binary is missing" — a diagnostic that names
+    // neither the cause nor the variable.
+    //
+    // `CARGO_TARGET_DIR` is a common global setting (a shared build cache across projects), so this
+    // is not a corner case: any such user could not `stark build` at all. Found because it broke
+    // two of this repository's own tests, which were twice misdiagnosed as environmental
+    // pre-existing failures — the control run had the same variable set.
+    //
+    // An explicit flag rather than clearing the variable: the path the build WRITES and the path
+    // this function READS are then derived from the same value, and nothing about the caller's
+    // environment can separate them.
     let manifest_path = crate_dir.join("Cargo.toml");
+    let target_dir = crate_dir.join("target");
     let mut cargo_args = vec![
         OsString::from("build"),
         OsString::from("--locked"),
         OsString::from("--offline"),
         OsString::from("--manifest-path"),
         manifest_path.into_os_string(),
+        OsString::from("--target-dir"),
+        target_dir.clone().into_os_string(),
     ];
     if options.profile.is_release() {
         cargo_args.push(OsString::from("--release"));
@@ -214,7 +233,9 @@ pub fn build_and_link(
     // Cargo puts a `--release` build under `target/release/`, and a `--target`ed build under
     // `target/<triple>/<profile>/`. Reading the wrong one would find a STALE binary from an earlier
     // profile rather than failing, so the path is derived from the same options the command was.
-    let mut binary_dir = crate_dir.join("target");
+    // The SAME value passed as `--target-dir` above, so the write path and the read path cannot
+    // diverge however the environment is configured.
+    let mut binary_dir = target_dir;
     if let Some(triple) = &options.target_triple {
         binary_dir = binary_dir.join(triple);
     }

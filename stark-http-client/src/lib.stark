@@ -31,6 +31,7 @@ use stark_http_core::HttpResponse;
 use stark_http_core::HttpVersion;
 use stark_http_core::append_validated;
 use stark_http_core::get_first;
+use stark_http_core::get_singleton;
 use stark_http_core::new_header_map;
 use stark_http_core::request;
 use stark_http_parser::finish;
@@ -1364,8 +1365,10 @@ pub fn fetch(client: &Client, url: &str) -> Result<HttpResponse, HttpError> {
 pub enum JsonBodyError {
     NotUtf8(stark_http_core::TextDecodeError),
     UnexpectedContentType(String),
+    AmbiguousContentType,
     Invalid(stark_json::JsonError),
 }
+/// Two `Content-Type` headers: two contradictory claims about the same bytes.
 
 pub fn json_body_error_text(error: &JsonBodyError) -> String {
     match *error {
@@ -1374,6 +1377,9 @@ pub fn json_body_error_text(error: &JsonBodyError) -> String {
             let mut out = String::from("expected a JSON content type, got: ");
             out.push_str(seen.as_str());
             out
+        }
+        JsonBodyError::AmbiguousContentType => {
+            String::from("the response carried more than one Content-Type")
         }
         JsonBodyError::Invalid(_why) => String::from("the body is not valid JSON"),
     }
@@ -1447,6 +1453,16 @@ impl RequestBuilder {
         // whole-struct use aborts (DEV-158). It cost a green interpreter run and a failed native
         // one to find that here a second time; the literal form is the one that works.
         let mut headers = self.headers;
+        // A caller who already set `Content-Type` gets a REFUSAL, not a second one. Appending would
+        // put two contradictory claims about the same bytes on the wire and leave which one wins to
+        // the server — the same ambiguity `json_checked` refuses to resolve on the way back in.
+        if stark_http_core::contains(&headers, "content-type") {
+            return Err(
+                HttpError::InvalidRequest(
+                    String::from("the request already declares a Content-Type"),
+                ),
+            );
+        }
         // Hoisted out of the match scrutinee: a scrutinee's temporaries live for the whole match,
         // so `&mut headers` taken inline would still be borrowed in the arm that must move it.
         let declared = append_validated(&mut headers, "Content-Type", "application/json");
@@ -1489,8 +1505,20 @@ impl HttpResponse {
         /// an HTML error page from a proxy, for instance, which occasionally parses as a JSON string
         /// and would otherwise be returned as if it were the answer.
 
+        // `get_singleton`, not `get_first`. Two `Content-Type` headers are two contradictory
+        // claims about the same bytes, and silently believing the first is the same class of
+        // choice as picking one of two `Location`s. Same policy, applied consistently.
+        let found: Option<String>;
+        match get_singleton(&self.headers, "content-type") {
+            Ok(value) => {
+                found = value;
+            }
+            Err(_error) => {
+                return Err(JsonBodyError::AmbiguousContentType);
+            }
+        }
         let seen: String;
-        match get_first(&self.headers, "content-type") {
+        match found {
             Some(value) => {
                 seen = value;
             }

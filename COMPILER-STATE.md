@@ -1,5 +1,73 @@
 # STARK Compiler STATE
 
+## CD-370 — the diagnostic-injection hole I opened while closing the wire one; DEV-161 (2026-08-03)
+
+**From a second Codex review of CD-369. Both findings were right, and the first is a mistake worth
+naming precisely.**
+
+### The repair reintroduced the injection one layer out
+
+CD-369's commit message argued that a rejected VALUE must never be echoed, because it is
+attacker-influenced and echoing it moves the injection into the log. Correct — and then the same
+commit carried the rejected NAME verbatim into the error text. An invalid name may itself contain
+CRLF. My own regression test asserted the reported name was exactly `X-Test\r\nInjected`.
+
+So the reasoning was right and the code did the opposite of it, in the adjacent case.
+
+Fixed **structurally** rather than by escaping:
+
+```stark
+InvalidHeaderName            carries NOTHING — the name is what failed, so there is no safe
+                             version of it to report
+InvalidHeaderValue(name)     carries the name, safe HERE and only here because the name is
+                             checked FIRST and this variant is unreachable until it passed
+```
+
+The order of the two checks is the safety argument, and it is stated in the source. Escaping was
+rejected as the primary fix: a sanitiser is something a future call site can forget, whereas a
+variant carrying no string cannot leak one. The new test renders the error and scans it for control
+bytes, so it asserts the property rather than the shape.
+
+### `Content-Type` gets the same singleton policy as `Location`
+
+`json_checked` used `get_first`; two `Content-Type` headers are two contradictory claims about the
+same bytes, which is the same class of silent choice. Now `AmbiguousContentType`. And
+`RequestBuilder::json` REFUSES when the caller already set one, rather than appending a second —
+appending would put the contradiction on the wire and leave the winner to the server.
+
+### DEV-161 — an ambient `CARGO_TARGET_DIR` breaks every native build
+
+Cargo's default output is `<manifest dir>/target`, which is where the backend looks. An exported
+`CARGO_TARGET_DIR` overrides it, the child inherits it, the build SUCCEEDS elsewhere, and the
+backend reports "Cargo succeeded but the expected binary is missing" — naming neither the cause nor
+the variable. `CARGO_TARGET_DIR` is a common global setting, so any developer with it exported could
+not `stark build` at all.
+
+Fixed by passing `--target-dir` explicitly, with the read path reusing the same value, so nothing
+about the environment can separate where the build writes from where the backend looks.
+
+**How it was found is the uncomfortable part.** It broke `mir_statement_consumers` and
+`c788_resource_lifecycle`, and I reported both as pre-existing environmental failures unrelated to
+my changes — twice. The second time I "confirmed" it by stashing every change and re-running. **That
+control was worthless: the stashed run had the same variable exported.** Controlling for the code
+while holding the environment fixed proves nothing about the environment. The review pushed back on
+the dismissal, which is the only reason it got looked at.
+
+Both suites now pass, including under the hostile variable. `StorageWhole`'s handling by every
+statement consumer is therefore execution-evidenced, not merely compile-evidenced — which was the
+review's specific concern.
+
+### Still open, unchanged
+
+```text
+dot-segment reference resolution   bounded RFC 3986 resolver, belongs in stark-url
+Header/HeaderMap field privacy     an API break, its own change
+DEV-158                            lowering + runtime guard, the hard half
+DEV-160                            field-granular generated projections
+DEV-159                            native build racing its own dependency build
+HC13                               not started
+```
+
 ## CD-369 — HC12.1: a proven CRLF-injection hole closed, plus two P1 redirect gaps (2026-08-03)
 
 **From an external Codex review of CD-368. All three findings were real; the first is a security

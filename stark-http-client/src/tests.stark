@@ -868,3 +868,73 @@ fn test_an_ordinary_relative_path_containing_a_colon_still_resolves() {
         "a path whose first character is a digit",
     );
 }
+
+fn test_the_singleton_policy_applies_to_content_type_too() {
+    // Same policy as `Location`, applied consistently. Two `Content-Type` headers are two
+    // contradictory claims about the same bytes, and silently believing the first is a choice
+    // between things the server said.
+    let mut headers = new_header_map();
+    match append_validated(&mut headers, "Content-Type", "application/json") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match append_validated(&mut headers, "Content-Type", "text/html") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    let mut body: Vec<UInt8> = Vec::new();
+    let bytes = "{\"a\":1}".bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        body.push(bytes[i]);
+        i = i + 1u64;
+    }
+    let response = HttpResponse {
+        version: HttpVersion::Http11,
+        status: 200u16,
+        reason: String::from("OK"),
+        headers: headers,
+        body: body,
+    };
+    match response.json_checked() {
+        Ok(_value) => {
+            panic("two Content-Type headers must not resolve to the first");
+        }
+        Err(error) => match error {
+            JsonBodyError::AmbiguousContentType => {}
+            _ => {
+                panic("a duplicate Content-Type must be reported as ambiguous");
+            }
+        }
+    }
+    // The permissive form still parses: it makes no claim about the content type at all, so a
+    // contradiction in one cannot make it fail.
+    match response.json() {
+        Ok(_value) => {}
+        Err(_error) => {
+            panic("json() must not consult the content type");
+        }
+    }
+}
+
+fn test_json_refuses_to_add_a_second_content_type() {
+    // Appending would put two contradictory claims on the wire and leave the winner to the server —
+    // the same ambiguity `json_checked` refuses to resolve on the way back in.
+    let mut builder = get("http://example.com/x");
+    match append_validated(&mut builder.headers, "Content-Type", "text/plain") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match builder.json(&JsonValue::Null) {
+        Ok(_out) => {
+            panic("json() must not append a second Content-Type");
+        }
+        Err(_error) => {}
+    }
+}

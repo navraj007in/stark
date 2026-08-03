@@ -35,14 +35,22 @@ pub enum SerializeError {
     ConflictingFramingHeader,
     BodyOnBodylessMethod,
     RequestTooLarge,
-    InvalidHeader(String),
+    InvalidHeaderName,
+    InvalidHeaderValue(String),
     Core(String),
 }
-/// **A header name or value that must never reach the wire.**
-///
-/// Carries the offending NAME, never the value: a value rejected for containing CRLF is
-/// attacker-influenced by definition, and echoing it into a log or an error message moves the
-/// injection one layer out instead of stopping it.
+
+// The two header refusals, documented here because `stark fmt` evicts a variant's doc comment to
+// after the enum (DEV-156):
+//
+//   InvalidHeaderName        carries NOTHING. The name is what failed validation, so there is no
+//                            safe version of it to report. The first attempt DID carry it, which
+//                            reintroduced the injection one layer out — into whatever reads the
+//                            log line — after the commit message had argued against exactly that
+//                            for values. Caught in review.
+//   InvalidHeaderValue(name) carries the name, which is safe HERE and only here: the name is
+//                            checked FIRST, so this variant is unreachable until it passed. The
+//                            order of the two checks is the safety argument, not an accident.
 
 /// The framing headers this serializer owns. A caller setting any of them is a conflict, not a
 /// customisation: each one, emitted twice with different values, changes where a peer believes the
@@ -65,10 +73,14 @@ pub fn error_text(error: &SerializeError) -> String {
             String::from("a body was supplied for a method that forbids one")
         }
         SerializeError::RequestTooLarge => String::from("serialized request exceeds its limit"),
-        SerializeError::InvalidHeader(name) => {
-            // The NAME only. A rejected value is attacker-influenced by definition, and echoing it
-            // moves the injection one layer out instead of stopping it.
-            let mut out = String::from("header is not valid on the wire: ");
+        SerializeError::InvalidHeaderName => {
+            // Nothing interpolated. An invalid name is attacker-influenced by definition and may
+            // itself contain CRLF; rendering it would inject into whatever reads this line.
+            String::from("a header name is not valid on the wire")
+        }
+        SerializeError::InvalidHeaderValue(name) => {
+            // Safe: this variant is unreachable until the name has passed validation.
+            let mut out = String::from("the value of this header is not valid on the wire: ");
             out.push_str(name.as_str());
             out
         }
@@ -193,11 +205,13 @@ pub fn serialize_request(request: &HttpRequest, authority: &HostAuthority, limit
     let mut i = 0u64;
     while i < n {
         let entry = &request.headers.entries[i];
+        // NAME FIRST, and the order is load-bearing: `InvalidHeaderValue` carries the name, which
+        // is only safe because reaching it means the name already passed.
         if !is_valid_header_name(entry.name.as_str()) {
-            return Err(SerializeError::InvalidHeader(entry.name.clone()));
+            return Err(SerializeError::InvalidHeaderName);
         }
         if !is_valid_header_value(entry.value.as_str()) {
-            return Err(SerializeError::InvalidHeader(entry.name.clone()));
+            return Err(SerializeError::InvalidHeaderValue(entry.name.clone()));
         }
         // A caller may not set what this serializer owns.
         if is_reserved_framing_header(entry.name.as_str()) {
