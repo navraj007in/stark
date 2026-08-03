@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use starkc::diag::Severity;
 use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
@@ -52,6 +53,9 @@ Usage:
                                  Generate API documentation for the current
                                  package's public items into <dir> (default:
                                  docs/). --open opens index.html afterward.
+  stark doctor [--root <dir>] [--json]
+                                 Inspect the installed toolchain layout and
+                                 verify manifest-listed files.
   stark --help                  Show this help.
 ";
 
@@ -88,6 +92,10 @@ fn main() -> ExitCode {
 
     if cmd == "cache" {
         return cmd_cache(&args[1..]);
+    }
+
+    if cmd == "doctor" {
+        return cmd_doctor(&args[1..]);
     }
 
     if cmd != "check" && cmd != "run" {
@@ -257,6 +265,325 @@ fn main() -> ExitCode {
     }
     eprintln!("{}: package compilation failed", root_pkg.name);
     ExitCode::FAILURE
+}
+
+#[derive(Debug)]
+struct ManifestFile {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Debug)]
+struct InstallManifest {
+    version: String,
+    target: String,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Debug)]
+struct DoctorCheck {
+    name: String,
+    ok: bool,
+    detail: String,
+}
+
+fn cmd_doctor(args: &[String]) -> ExitCode {
+    let mut explicit_root = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--root" => {
+                if i + 1 >= args.len() {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+                explicit_root = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let root = match explicit_root {
+        Some(root) => root,
+        None => match discover_install_root() {
+            Some(root) => root,
+            None => {
+                let detail = "could not locate manifest.json beside the running stark executable";
+                if json {
+                    println!("{{\"ok\":false,\"error\":\"{}\"}}", json_escape(detail));
+                } else {
+                    eprintln!("STARK doctor: FAIL");
+                    eprintln!("  install root: unresolved");
+                    eprintln!("  manifest: {detail}");
+                }
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let mut checks = Vec::new();
+    let manifest_path = root.join("manifest.json");
+    let manifest = match read_install_manifest(&manifest_path) {
+        Ok(manifest) => {
+            checks.push(DoctorCheck {
+                name: "manifest".to_string(),
+                ok: true,
+                detail: manifest_path.display().to_string(),
+            });
+            Some(manifest)
+        }
+        Err(detail) => {
+            checks.push(DoctorCheck {
+                name: "manifest".to_string(),
+                ok: false,
+                detail,
+            });
+            None
+        }
+    };
+
+    for (name, relative) in [
+        ("bin", "bin/stark"),
+        ("runtime", "lib/stark/stark-runtime/Cargo.toml"),
+        ("provider_abi", "lib/stark/stark-provider-abi/Cargo.toml"),
+    ] {
+        let path = root.join(relative);
+        checks.push(DoctorCheck {
+            name: name.to_string(),
+            ok: path.is_file(),
+            detail: path.display().to_string(),
+        });
+    }
+
+    if let Some(manifest) = &manifest {
+        let mut verified = 0usize;
+        for file in &manifest.files {
+            let path = root.join(&file.path);
+            match verify_manifest_file(&path, file) {
+                Ok(()) => verified += 1,
+                Err(detail) => checks.push(DoctorCheck {
+                    name: format!("file:{}", file.path),
+                    ok: false,
+                    detail,
+                }),
+            }
+        }
+        checks.push(DoctorCheck {
+            name: "manifest_files".to_string(),
+            ok: verified == manifest.files.len(),
+            detail: format!("{verified}/{} files verified", manifest.files.len()),
+        });
+    }
+
+    let ok = checks.iter().all(|check| check.ok);
+    if json {
+        print_doctor_json(&root, manifest.as_ref(), &checks, ok);
+    } else {
+        print_doctor_human(&root, manifest.as_ref(), &checks, ok);
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn discover_install_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bin = exe.parent()?;
+    // Two shapes, in order: an extracted tarball run in place (`<root>/bin/stark`), and an
+    // installed prefix whose `bin/` is a symlink farm into `lib/stark/current`. The manifest is
+    // what identifies a root, so probing for it distinguishes them without either path needing to
+    // know which one it is.
+    [
+        bin.parent().map(Path::to_path_buf),
+        Some(bin.join("../lib/stark/current")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| candidate.join("manifest.json").is_file())
+}
+
+fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let version = json_string_field(&text, "stark_version")
+        .ok_or_else(|| "manifest is missing stark_version".to_string())?;
+    let target = json_string_field(&text, "host_target")
+        .ok_or_else(|| "manifest is missing host_target".to_string())?;
+    let files = parse_manifest_files(&text)?;
+    Ok(InstallManifest {
+        version,
+        target,
+        files,
+    })
+}
+
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle)?;
+    let after_key = &text[start + needle.len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    let value = after_colon.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].to_string())
+}
+
+fn parse_manifest_files(text: &str) -> Result<Vec<ManifestFile>, String> {
+    let files_key = text
+        .find("\"files\"")
+        .ok_or_else(|| "manifest is missing files".to_string())?;
+    let files_text = &text[files_key..];
+    let array_start = files_text
+        .find('[')
+        .ok_or_else(|| "manifest files is not an array".to_string())?;
+    let mut depth = 0i32;
+    let mut array_end = None;
+    for (index, ch) in files_text[array_start..].char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    array_end = Some(array_start + index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let array_end = array_end.ok_or_else(|| "manifest files array is not closed".to_string())?;
+    let mut files = Vec::new();
+    for object in files_text[array_start + 1..array_end]
+        .split("\n    {")
+        .skip(1)
+    {
+        let path = json_string_field(object, "path")
+            .ok_or_else(|| "manifest file entry is missing path".to_string())?;
+        let sha256 = json_string_field(object, "sha256")
+            .ok_or_else(|| format!("manifest file entry {path} is missing sha256"))?;
+        let size = json_number_field(object, "size")
+            .ok_or_else(|| format!("manifest file entry {path} is missing size"))?;
+        files.push(ManifestFile { path, size, sha256 });
+    }
+    Ok(files)
+}
+
+fn json_number_field(text: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle)?;
+    let after_key = &text[start + needle.len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    let digits: String = after_colon
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+fn verify_manifest_file(path: &Path, file: &ManifestFile) -> Result<(), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| format!("{}: missing or unreadable: {e}", path.display()))?;
+    if metadata.len() != file.size {
+        return Err(format!(
+            "{}: size mismatch: expected {}, actual {}",
+            path.display(),
+            file.size,
+            metadata.len()
+        ));
+    }
+    let digest = sha256_path(path)?;
+    if digest != file.sha256 {
+        return Err(format!(
+            "{}: sha256 mismatch: expected {}, actual {}",
+            path.display(),
+            file.sha256,
+            digest
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_path(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(hex)
+}
+
+fn print_doctor_human(
+    root: &Path,
+    manifest: Option<&InstallManifest>,
+    checks: &[DoctorCheck],
+    ok: bool,
+) {
+    println!("STARK doctor: {}", if ok { "OK" } else { "FAIL" });
+    println!("  install root: {}", root.display());
+    if let Some(manifest) = manifest {
+        println!("  version: {}", manifest.version);
+        println!("  host target: {}", manifest.target);
+    }
+    for check in checks {
+        println!(
+            "  {}: {} ({})",
+            check.name,
+            if check.ok { "ok" } else { "fail" },
+            check.detail
+        );
+    }
+}
+
+fn print_doctor_json(
+    root: &Path,
+    manifest: Option<&InstallManifest>,
+    checks: &[DoctorCheck],
+    ok: bool,
+) {
+    println!("{{");
+    println!("  \"ok\": {ok},");
+    println!(
+        "  \"install_root\": \"{}\",",
+        json_escape(&root.display().to_string())
+    );
+    if let Some(manifest) = manifest {
+        println!("  \"version\": \"{}\",", json_escape(&manifest.version));
+        println!("  \"host_target\": \"{}\",", json_escape(&manifest.target));
+    }
+    println!("  \"checks\": [");
+    for (index, check) in checks.iter().enumerate() {
+        let comma = if index + 1 == checks.len() { "" } else { "," };
+        println!(
+            "    {{\"name\":\"{}\",\"ok\":{},\"detail\":\"{}\"}}{}",
+            json_escape(&check.name),
+            check.ok,
+            json_escape(&check.detail),
+            comma
+        );
+    }
+    println!("  ]");
+    println!("}}");
+}
+
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 /// WP-C7.3. One `cache` command with two verbs rather than two top-level commands — the smallest
