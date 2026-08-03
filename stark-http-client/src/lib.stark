@@ -29,6 +29,8 @@ use stark_http_core::HttpMethod;
 use stark_http_core::HttpRequest;
 use stark_http_core::HttpResponse;
 use stark_http_core::HttpVersion;
+use stark_http_core::append_validated;
+use stark_http_core::get_first;
 use stark_http_core::new_header_map;
 use stark_http_core::request;
 use stark_http_parser::finish;
@@ -51,6 +53,8 @@ use stark_net::DnsError;
 use stark_net::NetworkError;
 use stark_net::ResolvedAddress;
 use stark_net::TcpStream;
+use stark_json::encode;
+use stark_json::JsonValue;
 use stark_time::duration_seconds;
 use stark_time::Duration;
 use stark_tls::clone_root_store;
@@ -788,6 +792,162 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Ht
 /// `GET` in one call.
 pub fn fetch(client: &Client, url: &str) -> Result<HttpResponse, HttpError> {
     send(client, get(url))
+}
+
+// --- HC11: JSON convenience -------------------------------------------------------------------
+//
+// The point is to remove the two lines of ceremony every JSON call otherwise repeats — encode to
+// bytes, set the header — WITHOUT coupling HTTP to JSON internals. `stark-http-core` still knows
+// nothing about JSON; this sits in the composition package, which is the only place that already
+// depends on both.
+
+/// Why a JSON body could not be read.
+///
+/// Three distinct causes, kept apart because they are fixed in different places: the bytes were not
+/// text, the server said it was not sending JSON, or the JSON itself is malformed. Collapsing them
+/// would send a caller to the wrong one.
+pub enum JsonBodyError {
+    NotUtf8(stark_http_core::TextDecodeError),
+    UnexpectedContentType(String),
+    Invalid(stark_json::JsonError),
+}
+
+pub fn json_body_error_text(error: &JsonBodyError) -> String {
+    match *error {
+        JsonBodyError::NotUtf8(why) => stark_http_core::text_decode_error_text(&why),
+        JsonBodyError::UnexpectedContentType(seen) => {
+            let mut out = String::from("expected a JSON content type, got: ");
+            out.push_str(seen.as_str());
+            out
+        }
+        JsonBodyError::Invalid(_why) => String::from("the body is not valid JSON"),
+    }
+}
+
+/// Whether a `Content-Type` names JSON.
+///
+/// Compared against the part BEFORE any `;`, because `application/json; charset=utf-8` is the same
+/// media type as `application/json` and a client that rejected the first would be wrong about a
+/// large share of real servers. The comparison is ASCII case-insensitive, as media types are.
+pub fn is_json_content_type(value: &str) -> Bool {
+    let bytes = value.bytes();
+    let n = bytes.len();
+    let mut end = n;
+    let mut i = 0u64;
+    while i < n {
+        if bytes[i] == 59u8 {
+            end = i;
+            i = n;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    let target = "application/json".bytes();
+    let mut start = 0u64;
+    while start < end && bytes[start] == 32u8 {
+        start = start + 1u64;
+    }
+    let mut stop = end;
+    while stop > start && bytes[stop - 1u64] == 32u8 {
+        stop = stop - 1u64;
+    }
+    if stop - start != target.len() {
+        return false;
+    }
+    let mut k = 0u64;
+    while k < target.len() {
+        let mut got = bytes[start + k];
+        if got >= 65u8 && got <= 90u8 {
+            got = got + 32u8;
+        }
+        if got != target[k] {
+            return false;
+        }
+        k = k + 1u64;
+    }
+    true
+}
+
+impl RequestBuilder {
+    pub fn json(self, value: &stark_json::JsonValue) -> Result<RequestBuilder, HttpError> {
+        /// Attach `value` as a JSON body and declare it.
+        ///
+        /// Sets `Content-Type: application/json`. Consumes and returns the builder so a call chain
+        /// reads in one direction, which is the frozen request-construction spelling (roadmap §Freeze).
+        ///
+        /// Serialization is `stark-json`'s, so object member order is whatever the value carries —
+        /// deterministic for a given value, which is what makes a byte-exact request snapshot testable.
+
+        let encoded = encode(value);
+        let bytes = encoded.as_str().bytes();
+        let mut body: Vec<UInt8> = Vec::new();
+        let mut i = 0u64;
+        while i < bytes.len() {
+            body.push(bytes[i]);
+            i = i + 1u64;
+        }
+        // Fields are MOVED out and a new builder is constructed, rather than `out.body = body` on
+        // a copy of `self`. Assigning over a field whose old value is a drop unit — and `body` is a
+        // `Vec<UInt8>` — leaves the slot permanently PARTIAL in native code, and the next
+        // whole-struct use aborts (DEV-158). It cost a green interpreter run and a failed native
+        // one to find that here a second time; the literal form is the one that works.
+        let mut headers = self.headers;
+        // Hoisted out of the match scrutinee: a scrutinee's temporaries live for the whole match,
+        // so `&mut headers` taken inline would still be borrowed in the arm that must move it.
+        let declared = append_validated(&mut headers, "Content-Type", "application/json");
+        match declared {
+            Ok(_added) => Ok(
+                RequestBuilder { method: self.method, url: self.url, headers: headers, body: body },
+            ),
+            Err(error) => Err(HttpError::InvalidRequest(stark_http_core::error_text(&error))),
+        }
+    }
+}
+
+impl HttpResponse {
+    pub fn json(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+        /// The body parsed as JSON, whatever the server called it.
+        ///
+        /// The content type is NOT required here. Servers mislabel JSON often enough that refusing on
+        /// that alone would break working integrations, and the parse itself is the real check — see
+        /// `json_checked` for the strict form. Depth and allocation limits are `stark-json`'s defaults
+        /// and stay active; the body was already bounded by `max_response_bytes` when it was read.
+
+        let text: String;
+        match self.body_text() {
+            Ok(value) => {
+                text = value;
+            }
+            Err(error) => {
+                return Err(JsonBodyError::NotUtf8(error));
+            }
+        }
+        match stark_json::parse(text.as_str()) {
+            Ok(value) => Ok(value),
+            Err(error) => Err(JsonBodyError::Invalid(error)),
+        }
+    }
+    pub fn json_checked(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+        /// `json`, but the server must have said `application/json`.
+        ///
+        /// For a caller who would rather fail than parse something an endpoint did not claim was JSON —
+        /// an HTML error page from a proxy, for instance, which occasionally parses as a JSON string
+        /// and would otherwise be returned as if it were the answer.
+
+        let seen: String;
+        match get_first(&self.headers, "content-type") {
+            Some(value) => {
+                seen = value;
+            }
+            None => {
+                return Err(JsonBodyError::UnexpectedContentType(String::from("(absent)")));
+            }
+        }
+        if !is_json_content_type(seen.as_str()) {
+            return Err(JsonBodyError::UnexpectedContentType(seen));
+        }
+        self.json()
+    }
 }
 
 mod tests;

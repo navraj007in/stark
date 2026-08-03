@@ -145,7 +145,7 @@ HC7  Implement incremental response parser
 HC8  Deliver plain HTTP client
 HC9  Add TLS provider and secure stream          CLOSED (CD-365)
 HC10 Deliver HTTPS client                       CLOSED (CD-366)
-HC11 Add JSON convenience API
+HC11 Add JSON convenience API                   CLOSED (CD-367)
 HC12 Add redirects policy
 HC13 Cross-platform qualification and release
 ```
@@ -1248,6 +1248,11 @@ verification entirely.
 
 # HC11 — Add JSON Convenience Integration
 
+**STATUS: CLOSED 2026-08-03 (CD-367).** Evidence in
+`STARKLANG/docs/http-client/HC11-JSON-EVIDENCE.md`. `body_text` and the strict UTF-8 decoder landed
+in `stark-http-core`; the JSON half is in `stark-http-client`, because core must not depend on
+`stark-json`. Typed codecs remain out of scope.
+
 ## Objective
 
 Make common REST calls concise without coupling HTTP core to JSON internals.
@@ -1303,6 +1308,9 @@ impl HttpResponse {
 ## Exit criteria
 
 Common JSON REST calls no longer require manual byte conversion or header construction.
+
+**MET.** `post(url, empty).json(&value)?` then `response.json_checked()?`, exercised natively over a
+verified TLS session as the consumer's twelfth case.
 
 ---
 

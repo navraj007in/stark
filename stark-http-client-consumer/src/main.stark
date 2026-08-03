@@ -25,12 +25,16 @@ use stark_http_client::error_text;
 use stark_http_client::default_config;
 use stark_http_client::fetch;
 use stark_http_client::new_client;
+use stark_http_client::json_body_error_text;
 use stark_http_client::post;
 use stark_http_client::send;
 use stark_http_client::Client;
 use stark_http_client::HttpError;
 use stark_http_core::append_validated;
 use stark_http_core::get_first;
+use stark_json::encode;
+use stark_json::JsonMember;
+use stark_json::JsonValue;
 use stark_http_core::HttpResponse;
 
 // The fixture root, the ONLY trust anchor these HTTPS sessions are given. Nothing here consults
@@ -254,5 +258,59 @@ fn main() {
     }
     println("  https: POST with a JSON body and a bearer token arrived intact");
 
+    // 12. HC11 — the JSON convenience API, end to end over TLS.
+    //
+    //     `RequestBuilder::json` encodes and declares; `HttpResponse::json_checked` requires the
+    //     server to have said so and then parses. The peer echoes what it received, so this
+    //     asserts the encoded request reached it AND that the reply parsed back — a round trip
+    //     through encode, TLS, decode and parse, with a four-byte scalar in it so a Latin-1
+    //     shortcut anywhere on that path would corrupt it.
+    let json_payload = JsonValue::Object(
+        vec_of_member(String::from("greeting"), JsonValue::String(String::from("héllo 😀"))),
+    );
+    let empty_body: Vec<UInt8> = Vec::new();
+    // Nested rather than routed through a helper: a helper's `Err(_) => panic(..)` arm is a
+    // value-position `!`, and the native backend has no representation for `MirTy::Never`
+    // (DEV-157). Every other case in this file nests for the same reason.
+    match post("https://localhost:39192/echo-json", empty_body).json(&json_payload) {
+        Ok(json_builder) => match send(&secure_client, json_builder) {
+            Ok(response) => {
+                if response.status != 200u16 {
+                    panic("the echo-json route did not answer 200");
+                }
+                match response.json_checked() {
+                    Ok(value) => {
+                        // The peer reflects the body verbatim under a JSON content type, so what
+                        // comes back must re-encode to exactly what went out.
+                        if encode(&value).as_str() != encode(&json_payload).as_str() {
+                            print("came back: ");
+                            println(encode(&value).as_str());
+                            panic("the JSON did not survive the round trip");
+                        }
+                    }
+                    Err(error) => {
+                        println(json_body_error_text(&error).as_str());
+                        panic("the echoed JSON must parse under the strict content-type policy");
+                    }
+                }
+            }
+            Err(error) => {
+                println(error_text(&error).as_str());
+                panic("the JSON POST must succeed");
+            }
+        }
+        Err(_error) => {
+            panic("attaching a JSON body must succeed");
+        }
+    }
+    println("  https: JSON encoded, sent, echoed and parsed back identically");
+
     println("STARK_HTTP_CLIENT_RESOURCE_OK");
+}
+
+/// A one-member object. `vec![..]` is not Core v1, so the Vec is built explicitly.
+fn vec_of_member(key: String, value: JsonValue) -> Vec<JsonMember> {
+    let mut out: Vec<JsonMember> = Vec::new();
+    out.push(JsonMember { key: key, value: value });
+    out
 }

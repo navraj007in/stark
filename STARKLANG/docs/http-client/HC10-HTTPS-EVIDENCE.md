@@ -106,6 +106,25 @@ name: the only variable is the name check.
 `Authorization` header, the `Content-Type` and the body it actually received. A route returning a
 constant would pass for a client that sent nothing.
 
+### Independent corroboration, outside the gate
+
+A separate reviewer wrote their own client against the public API only and ran it against real
+hosts: `GET https://api.github.com/rate_limit` returned 200 with JSON, over TLS validated against
+the **system** trust store, with request headers reaching the server and response headers parsed
+back. Two calls hit different backends (Varnish and fasthttp) and both framed correctly; an earlier
+call returned GitHub's 403 rate-limit JSON, which is itself strong evidence — an application-layer
+answer means the chain verified and the response was framed and decoded.
+
+**This is corroboration, not gate evidence, and the distinction is deliberate.** HC13 forbids
+qualification depending on public internet services, so nothing in the gate may rely on it. It is
+recorded because it covers the one direction the offline tests cannot: `SystemRoots` is tested here
+NEGATIVELY — the fixture CA is not in any machine's store — and only a real chain against a real
+store shows the positive.
+
+The same exercise confirmed the cleartext behaviours the gate already asserts (Content-Length,
+chunked reassembly, 404 surfaced as a status rather than an error, POST echo, typed connect-refused
+and DNS-failure errors) and the documented IPv6-literal refusal.
+
 ### Why the fixtures differ from HC9's
 
 `stark-tls`'s own consumer dials 127.0.0.1 and presents `stark.test` separately, so it needs no
@@ -122,6 +141,8 @@ DNS, before the certificate check the case existed for.
 | **DEV-158** | Assigning over a struct field whose old value is a **drop unit**, then using the struct as a whole, aborts in native code with "mutable access to a dead slot: the slot is PARTIAL". **The interpreter accepts the same program** — a three-engine divergence. See `COMPILER-STATE.md` CD-366 for the reduced case, the real mechanism (a move-out to a temp in `lower_overwriting_assign`, not a drop-in-place), and the candidate fix. | OPEN |
 | **CE-shaped** | Core v1 has no mutable binding of an enum payload in a pattern (`ref mut`). This is what makes a single `Transport` abstraction impossible; two parallel flows are the consequence. A **language** question for the owner, not a defect. | RAISED |
 | — | `stark-http-client` now declares the `tls` capability and depends on `stark-tls`. Its resource set is `("TcpStream", "TlsStream")` in the gate. | done |
+| **DEV-159** | A native build can FAIL once and succeed on retry: the generated crate raced its own `aws-lc-rs` dependency build. Reported by an independent reviewer building an HTTPS program at this HEAD. A user hitting this sees a confusing failure; at minimum the diagnostic should say to retry, and better, the build should not race. | OPEN |
+| — | **An ergonomics gap two people hit independently:** with no `body_text`, both reached for a method that did not exist and then copied the same manual `Char::from_u32` byte loop out of an existing consumer. That loop is Latin-1, not UTF-8 — silently wrong for any non-ASCII body. Closed by HC11's `HttpResponse::body_text()` and its strict decoder. | closed by HC11 |
 
 **HC10's workaround for DEV-158** is `config_with_explicit_roots` building one struct literal rather
 than assigning over a field of `default_config()`. Same semantics, same API — an implementation

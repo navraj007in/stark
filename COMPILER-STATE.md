@@ -1,5 +1,81 @@
 # STARK Compiler STATE
 
+## CD-367 — HC11 CLOSED: JSON convenience, and a strict UTF-8 decoder (2026-08-03)
+
+**Common JSON REST calls no longer require manual byte conversion or header construction, and HTTP
+core still knows nothing about JSON.** Full record:
+`STARKLANG/docs/http-client/HC11-JSON-EVIDENCE.md`.
+
+```text
+stark-http-core     TextDecodeError, decode_utf8, HttpResponse::body_text
+stark-http-client   RequestBuilder::json, HttpResponse::json / json_checked, JsonBodyError
+```
+
+The split is forced: `stark-http-core` must not depend on `stark-json`, or everything that parses a
+header pulls in a JSON parser. `body_text` lives in core because `HttpResponse` is declared there.
+
+### The substantial part was a UTF-8 decoder
+
+There is no `String::from_utf8` in the core surface, so HC11 wrote one. The accepted set is explicit
+RANGES, not "leading byte then N continuations", because the short form accepts three things it must
+not: overlong forms (`C0 80` is NUL in two bytes, invisible to a checker scanning decoded text),
+surrogates (`ED A0 80`–`ED BF BF`), and anything above `U+10FFFF`. Each is a documented
+parser-differential bug class — two components disagreeing about what a byte string means is how a
+filter gets bypassed.
+
+Strict also means **no replacement characters**. An invalid sequence is an error carrying the byte
+offset; substituting `U+FFFD` would hand a caller a body that differs from what the server sent,
+undetectably.
+
+**The gap was found twice, independently.** Before HC11 there was no `body_text`, and two people —
+the author of the first consumer and an outside reviewer writing their own client — each looked for
+the obvious method, did not find it, and copied the same manual
+`Char::from_u32(body[i] as UInt32)` loop out of an existing consumer. That loop is Latin-1: it
+treats each byte as a code point, so `é` returns as two garbage characters. Fine for ASCII, silently
+wrong otherwise. Two people reaching the same wrong idiom is the argument the helper had to exist.
+
+### Independent corroboration of HC10, recorded but NOT gate evidence
+
+An outside reviewer built their own client at the HC10 HEAD and ran it against real hosts:
+`GET https://api.github.com/rate_limit` returned 200 over TLS validated against the **system** trust
+store, headers reaching the server and response headers parsed back. That covers the one direction
+the offline tests cannot — `SystemRoots` is tested here NEGATIVELY, since the fixture CA is in no
+machine's store. HC13 forbids qualification depending on internet services, so it stays
+corroboration.
+
+### A coherence hazard, noted not exploited further
+
+STARK permits an inherent `impl` on a FOREIGN type — verified, and that is how `HttpResponse::json`
+is declared from the client package. Rust forbids it. Nothing stops two packages adding a `json`
+method to the same foreign type and colliding. Harmless today, and it is what let the roadmap's
+frozen call shape be matched exactly, but it is a real gap in the orphan rule.
+
+### DEV-158 hit a SECOND time, and that is the finding
+
+`RequestBuilder::json` did `out.body = body` — assigning over a `Vec<UInt8>`, a drop unit. Green
+under the interpreter, aborted natively. Same workaround: build the struct as a literal from moved
+fields.
+
+**Two workarounds for one defect in one work package, both caught only by a native run.** The
+three-engine divergence means the cheap engine cannot be trusted to find it, and every future
+package writing `x.field = <owned value>` is exposed. This is the argument for prioritising the fix
+recorded in CD-366.
+
+### DEV-159 — a native build can race its own dependency build
+
+Reported by the same outside reviewer: a first native build of an HTTPS program FAILED and succeeded
+on retry, the generated crate having raced its `aws-lc-rs` dependency build. A user hitting this
+sees a confusing failure. At minimum the diagnostic should say to retry; better, the build should
+not race.
+
+### Evidence
+
+29 `stark-http-core` tests (10 new, the decoder's), 29 `stark-http-client` tests (8 new), and a
+twelfth consumer case that encodes a value containing a four-byte scalar, POSTs it over verified
+TLS, and re-encodes what comes back. Comparing RE-ENCODED values rather than destructuring is
+deliberate: it exercises decode and encode together, so a decoder and an encoder wrong in the same
+direction cannot agree their way past it.
+
 ## CD-366 — HC10 CLOSED: HTTPS from the URL alone; DEV-158 found (2026-08-03)
 
 **`Client::send` now selects HTTP or HTTPS from the scheme, and there is no other way to ask.** No

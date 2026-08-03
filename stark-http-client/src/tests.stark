@@ -289,3 +289,245 @@ fn test_the_scheme_refusal_names_both_supported_schemes() {
         panic("the unsupported-scheme message must name both supported schemes");
     }
 }
+
+// --- HC11: the JSON convenience API -----------------------------------------------------------
+
+use super::is_json_content_type;
+use super::json_body_error_text;
+use super::JsonBodyError;
+use super::append_validated;
+use super::get_first;
+use super::new_header_map;
+use super::HttpResponse;
+use super::HttpVersion;
+use super::encode;
+use super::JsonValue;
+
+fn json_response(content_type: &str, body_text: &str) -> HttpResponse {
+    let mut headers = new_header_map();
+    if content_type.bytes().len() > 0u64 {
+        match append_validated(&mut headers, "Content-Type", content_type) {
+            Ok(_added) => {}
+            Err(_error) => {
+                panic("test header must be valid");
+            }
+        }
+    }
+    let mut body: Vec<UInt8> = Vec::new();
+    let bytes = body_text.bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        body.push(bytes[i]);
+        i = i + 1u64;
+    }
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: 200u16,
+        reason: String::from("OK"),
+        headers: headers,
+        body: body,
+    }
+}
+
+fn test_a_json_body_is_encoded_and_declared() {
+    // The request builder must do BOTH things: carry the bytes and say what they are. A body
+    // without the header is what a server rejects with 415 and a developer debugs for an hour.
+    let value = JsonValue::String(String::from("hi"));
+    match get("http://example.com/x").json(&value) {
+        Ok(builder) => {
+            if builder.body.len() != 4u64 {
+                panic("the encoded body must be the JSON text");
+            }
+            match get_first(&builder.headers, "content-type") {
+                Some(seen) => {
+                    if seen.as_str() != "application/json" {
+                        panic("json() must declare application/json");
+                    }
+                }
+                None => {
+                    panic("json() must set a Content-Type");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("a JSON body must attach");
+        }
+    }
+}
+
+fn test_a_json_response_parses() {
+    let response = json_response("application/json", "{\"a\":1}");
+    match response.json() {
+        Ok(value) => match value {
+            JsonValue::Object(members) => {
+                if members.len() != 1u64 {
+                    panic("the parsed object must have one member");
+                }
+            }
+            _other => {
+                panic("the body is an object");
+            }
+        }
+        Err(_error) => {
+            panic("valid JSON must parse");
+        }
+    }
+}
+
+fn test_unicode_survives_the_round_trip() {
+    // A four-byte scalar through encode -> bytes -> decode -> parse. This is the path that a
+    // Latin-1 shortcut in the decoder would corrupt while every ASCII test still passed.
+    let response = json_response("application/json", "{\"emoji\":\"😀\"}");
+    match response.json() {
+        Ok(value) => match value {
+            JsonValue::Object(members) => {
+                // Re-ENCODED rather than destructured. Matching `members[0]` by value moves out
+                // of an indexed place, and binding the payload through a reference is refused too
+                // ("bind by reference or match a Copy field instead"). Comparing the re-encoded
+                // value is the stronger assertion anyway: it exercises decode AND encode, so a
+                // decoder and an encoder that were wrong in the same direction could not agree
+                // their way past it.
+                let first = &members[0u64];
+                if first.key.as_str() != "emoji" {
+                    panic("the member key did not survive");
+                }
+                if encode(&first.value).as_str() != "\"😀\"" {
+                    panic("the four-byte scalar did not survive");
+                }
+            }
+            _other => {
+                panic("the body is an object");
+            }
+        }
+        Err(_error) => {
+            panic("unicode JSON must parse");
+        }
+    }
+}
+
+fn test_invalid_json_is_reported_as_invalid() {
+    let response = json_response("application/json", "{\"a\":");
+    match response.json() {
+        Ok(_value) => {
+            panic("truncated JSON must not parse");
+        }
+        Err(error) => match error {
+            JsonBodyError::Invalid(_why) => {}
+            _other => {
+                panic("malformed JSON must be reported as Invalid, not as a decode or type error");
+            }
+        }
+    }
+}
+
+fn test_an_empty_body_is_not_valid_json() {
+    // Empty is valid UTF-8 and is NOT valid JSON. A client that returned Null here would invent a
+    // value the server never sent.
+    let response = json_response("application/json", "");
+    match response.json() {
+        Ok(_value) => {
+            panic("an empty body must not parse as JSON");
+        }
+        Err(error) => match error {
+            JsonBodyError::Invalid(_why) => {}
+            _other => {
+                panic("an empty body is a JSON error, not a decode error");
+            }
+        }
+    }
+}
+
+fn test_the_content_type_policy_has_two_settings() {
+    // Mislabelled JSON: `json()` accepts it, `json_checked()` refuses. Both behaviours are
+    // deliberate, so both are pinned — a change to either is a change a reader should see.
+    let response = json_response("text/plain", "{\"a\":1}");
+    match response.json() {
+        Ok(_value) => {}
+        Err(_error) => {
+            panic("json() must not require a content type");
+        }
+    }
+    match response.json_checked() {
+        Ok(_value) => {
+            panic("json_checked() must require a JSON content type");
+        }
+        Err(error) => match error {
+            JsonBodyError::UnexpectedContentType(seen) => {
+                if seen.as_str() != "text/plain" {
+                    panic("the refusal must quote what the server actually said");
+                }
+            }
+            _other => {
+                panic("a mislabelled body must be a content-type error");
+            }
+        }
+    }
+
+    // An absent content type is refused by the strict form too, and says so distinctly.
+    let bare = json_response("", "{\"a\":1}");
+    match bare.json_checked() {
+        Ok(_value) => {
+            panic("an absent content type must be refused by the strict form");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_a_charset_parameter_is_still_json() {
+    // `application/json; charset=utf-8` is the same media type. A client that refused it would be
+    // wrong about a large share of real servers.
+    if !is_json_content_type("application/json; charset=utf-8") {
+        panic("a charset parameter must not change the media type");
+    }
+    if !is_json_content_type("APPLICATION/JSON") {
+        panic("media types are case-insensitive");
+    }
+    if !is_json_content_type("  application/json  ") {
+        panic("surrounding space must be tolerated");
+    }
+    if is_json_content_type("application/jsonx") {
+        panic("a longer type must not match");
+    }
+    if is_json_content_type("text/json") {
+        panic("text/json is a different media type");
+    }
+    let checked = json_response("application/json; charset=utf-8", "{\"a\":1}");
+    match checked.json_checked() {
+        Ok(_value) => {}
+        Err(_error) => {
+            panic("a charset parameter must not fail the strict form");
+        }
+    }
+}
+
+fn test_a_non_utf8_body_is_a_decode_error_not_a_json_error() {
+    // The distinction matters: bad bytes and bad JSON are fixed in different places.
+    let mut body: Vec<UInt8> = Vec::new();
+    body.push(255u8);
+    let response = HttpResponse {
+        version: HttpVersion::Http11,
+        status: 200u16,
+        reason: String::from("OK"),
+        headers: new_header_map(),
+        body: body,
+    };
+    match response.json() {
+        Ok(_value) => {
+            panic("invalid UTF-8 must not parse as JSON");
+        }
+        Err(error) => {
+            // Rendered BEFORE the match: an arm binding a payload moves the error, so `&error`
+            // afterwards would be a use of a moved value.
+            let rendered = json_body_error_text(&error);
+            if rendered.len() == 0u64 {
+                panic("a decode error must render");
+            }
+            match error {
+                JsonBodyError::NotUtf8(_why) => {}
+                _ => {
+                    panic("invalid UTF-8 must be a decode error, not a JSON error");
+                }
+            }
+        }
+    }
+}

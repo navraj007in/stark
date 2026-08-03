@@ -1,6 +1,7 @@
 // HC5 tests. Every rule the roadmap lists, plus the byte-level edges that make each rule matter.
 
 use super::append_validated;
+use super::HttpResponse;
 use super::ascii_equal_ignore_case;
 use super::check_body_within;
 use super::check_headers_within;
@@ -252,4 +253,191 @@ fn test_bodyless_methods_are_identified() {
     expect(method_forbids_body(&HttpMethod::Get), "GET should forbid a body");
     expect(method_forbids_body(&HttpMethod::Head), "HEAD should forbid a body");
     expect(!method_forbids_body(&HttpMethod::Post), "POST should allow a body");
+}
+
+// --- HC11: strict UTF-8 decoding --------------------------------------------------------------
+
+use super::decode_utf8;
+use super::text_decode_error_text;
+use super::TextDecodeError;
+
+fn bytes_of(values: [UInt8; 8], count: UInt64) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < count {
+        out.push(values[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+fn expect_decodes(values: [UInt8; 8], count: UInt64, expected: &str, what: &str) {
+    let input = bytes_of(values, count);
+    match decode_utf8(&input[0u64..input.len()]) {
+        Ok(text) => {
+            if text.as_str() != expected {
+                print("decoding ");
+                println(what);
+                panic("decoded text did not match");
+            }
+        }
+        Err(_error) => {
+            print("decoding ");
+            println(what);
+            panic("valid UTF-8 was rejected");
+        }
+    }
+}
+
+fn expect_rejected(values: [UInt8; 8], count: UInt64, what: &str) {
+    let input = bytes_of(values, count);
+    match decode_utf8(&input[0u64..input.len()]) {
+        Ok(_text) => {
+            print("accepted ");
+            println(what);
+            panic("invalid UTF-8 was accepted");
+        }
+        Err(_error) => {}
+    }
+}
+
+fn test_ascii_and_multibyte_decode() {
+    expect_decodes([72u8, 105u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "Hi", "ASCII");
+    // U+00E9 é, two bytes.
+    expect_decodes([195u8, 169u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "é", "two-byte");
+    // U+20AC €, three bytes.
+    expect_decodes([226u8, 130u8, 172u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "€", "three-byte");
+    // U+1F600 grinning face, four bytes — the case a UCS-2-era decoder gets wrong.
+    expect_decodes([240u8, 159u8, 152u8, 128u8, 0u8, 0u8, 0u8, 0u8], 4u64, "😀", "four-byte");
+}
+
+fn test_the_boundaries_decode() {
+    // U+0080, the first two-byte scalar, and U+07FF, the last.
+    expect_decodes([194u8, 128u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "\u{80}", "U+0080");
+    expect_decodes([223u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "\u{7FF}", "U+07FF");
+    // U+FFFF, the last three-byte scalar, and U+10FFFF, the highest scalar there is.
+    expect_decodes([239u8, 191u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "\u{FFFF}", "U+FFFF");
+    expect_decodes([244u8, 143u8, 191u8, 191u8, 0u8, 0u8, 0u8, 0u8], 4u64, "\u{10FFFF}", "U+10FFFF");
+}
+
+fn test_overlong_forms_are_rejected() {
+    // `C0 80` is NUL written in two bytes. A checker that scans the DECODED text for a forbidden
+    // character never sees it if the decoder accepts this — the classic filter bypass.
+    expect_rejected([192u8, 128u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "C0 80, overlong NUL");
+    expect_rejected([193u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "C1 BF, overlong");
+    // `E0 80 AF` and `E0 9F BF` are overlong three-byte forms of scalars that fit in two.
+    expect_rejected([224u8, 128u8, 175u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "E0 80 AF, overlong");
+    expect_rejected([224u8, 159u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "E0 9F BF, overlong");
+    // `F0 80 80 80` and `F0 8F BF BF` are overlong four-byte forms.
+    expect_rejected([240u8, 128u8, 128u8, 128u8, 0u8, 0u8, 0u8, 0u8], 4u64, "F0 80 80 80, overlong");
+    expect_rejected([240u8, 143u8, 191u8, 191u8, 0u8, 0u8, 0u8, 0u8], 4u64, "F0 8F BF BF, overlong");
+}
+
+fn test_surrogates_are_rejected() {
+    // ED A0 80 .. ED BF BF encode U+D800..U+DFFF, which are not scalar values. A decoder that
+    // admits them produces a `String` holding something no encoder should ever have written.
+    expect_rejected([237u8, 160u8, 128u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "ED A0 80, U+D800");
+    expect_rejected([237u8, 191u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "ED BF BF, U+DFFF");
+    // ED 9F BF is U+D7FF — just BELOW the surrogate range, and must still decode.
+    expect_decodes([237u8, 159u8, 191u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "\u{D7FF}", "U+D7FF");
+}
+
+fn test_values_above_the_maximum_scalar_are_rejected() {
+    // F4 90 80 80 is U+110000, one past the top.
+    expect_rejected([244u8, 144u8, 128u8, 128u8, 0u8, 0u8, 0u8, 0u8], 4u64, "F4 90 80 80");
+    // F5..FF cannot begin any valid sequence.
+    expect_rejected([245u8, 128u8, 128u8, 128u8, 0u8, 0u8, 0u8, 0u8], 4u64, "F5 lead");
+    expect_rejected([255u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 1u64, "FF lead");
+}
+
+fn test_truncated_and_stray_sequences_are_rejected() {
+    // A multi-byte sequence cut short at the end of the buffer.
+    expect_rejected([226u8, 130u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 2u64, "truncated three-byte");
+    expect_rejected([240u8, 159u8, 152u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "truncated four-byte");
+    // A continuation byte with no lead.
+    expect_rejected([128u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8], 1u64, "bare continuation");
+    // A lead followed by something that is not a continuation.
+    expect_rejected([226u8, 65u8, 172u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64, "lead then ASCII");
+}
+
+fn test_an_empty_body_decodes_to_an_empty_string() {
+    let empty: Vec<UInt8> = Vec::new();
+    match decode_utf8(&empty[0u64..0u64]) {
+        Ok(text) => {
+            if text.len() != 0u64 {
+                panic("an empty body must decode to an empty string");
+            }
+        }
+        Err(_error) => {
+            panic("an empty body is valid UTF-8");
+        }
+    }
+}
+
+fn test_the_error_names_the_offset() {
+    // "Hi" then a bare continuation: the report must point at byte 2, not at 0. An error that
+    // cannot say WHERE is nearly useless on a large body.
+    let input = bytes_of([72u8, 105u8, 128u8, 0u8, 0u8, 0u8, 0u8, 0u8], 3u64);
+    match decode_utf8(&input[0u64..input.len()]) {
+        Ok(_text) => {
+            panic("a bare continuation must be rejected");
+        }
+        Err(error) => match error {
+            TextDecodeError::InvalidUtf8(offset) => {
+                if offset != 2u64 {
+                    panic("the reported offset must be where the bad sequence starts");
+                }
+                let rendered = text_decode_error_text(&error);
+                if rendered.len() == 0u64 {
+                    panic("a decode error must render");
+                }
+            }
+        }
+    }
+}
+
+fn test_body_text_decodes_a_response_body() {
+    // The METHOD, not just `decode_utf8`. The surface gate caught this: the decoder had ten tests
+    // and `HttpResponse::body_text` had none, so the one thing callers actually reach for was
+    // declared, documented and never executed — precisely the DEV-146/DEV-151 shape.
+    let mut body: Vec<UInt8> = Vec::new();
+    let bytes = "héllo 😀".bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        body.push(bytes[i]);
+        i = i + 1u64;
+    }
+    let response = HttpResponse {
+        version: HttpVersion::Http11,
+        status: 200u16,
+        reason: String::from("OK"),
+        headers: new_header_map(),
+        body: body,
+    };
+    match response.body_text() {
+        Ok(text) => {
+            if text.as_str() != "héllo 😀" {
+                panic("body_text must decode multi-byte scalars, not bytes");
+            }
+        }
+        Err(_error) => {
+            panic("a valid UTF-8 body must decode");
+        }
+    }
+
+    let mut bad: Vec<UInt8> = Vec::new();
+    bad.push(255u8);
+    let broken = HttpResponse {
+        version: HttpVersion::Http11,
+        status: 200u16,
+        reason: String::from("OK"),
+        headers: new_header_map(),
+        body: bad,
+    };
+    match broken.body_text() {
+        Ok(_text) => {
+            panic("an invalid body must not decode to a replacement character");
+        }
+        Err(_error) => {}
+    }
 }

@@ -42,6 +42,11 @@
       "package": "stark-tls",
       "path": "../stark-tls",
       "version": "0.1.0"
+    },
+    "stark_json": {
+      "package": "stark-json",
+      "path": "../stark-json",
+      "version": "0.1.0"
     }
   }
 }

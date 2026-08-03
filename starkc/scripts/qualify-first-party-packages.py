@@ -208,6 +208,7 @@ CASES = [
             "  https: hostname mismatch refused, though the chain itself is trusted\n"
             "  https: a cleartext peer on the secure path is refused\n"
             "  https: POST with a JSON body and a bearer token arrived intact\n"
+            "  https: JSON encoded, sent, echoed and parsed back identically\n"
             "STARK_HTTP_CLIENT_RESOURCE_OK\n"
         ),
         resources=("TcpStream", "TlsStream"),
@@ -359,6 +360,16 @@ def respond_http_route(conn, target, request=b""):
     elif target == "/close-early":
         conn.sendall(
             b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly-a-few-bytes"
+        )
+    elif target == "/echo-json":
+        # HC11. Reflects the request body VERBATIM under a JSON content type, so a client can
+        # assert its encoded value made the trip and parsed back identically.
+        _, _, body = request.partition(b"\r\n\r\n")
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+            + body
         )
     elif target == "/echo":
         # HC10. Reflects what the peer actually RECEIVED, so the consumer can assert that its
@@ -815,7 +826,7 @@ def main() -> int:
             )
         else:
             run([str(stark), "run"], consumer_dir, expected_stdout=case.expected_stdout)
-            run([str(stark), "build", "--no-build-cache"], consumer_dir)
+            run([str(stark), "build", "--no-build-cache", "--verbose"], consumer_dir)
             artifact = (
                 consumer_dir / "target" / "stark" / "debug" / f"{case.consumer}{args.exe_suffix}"
             )
@@ -838,7 +849,7 @@ def main() -> int:
                 )
             run([str(stark), "check"], resource_dir)
             run([str(stark), "fmt", "--check"], resource_dir)
-            run([str(stark), "build", "--no-build-cache"], resource_dir)
+            run([str(stark), "build", "--no-build-cache", "--verbose"], resource_dir)
             resource_artifact = (
                 resource_dir
                 / "target"
