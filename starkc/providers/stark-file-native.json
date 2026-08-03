@@ -5,6 +5,7 @@
     "abi": "0.1",
     "identity": "stark-std-file",
     "crate": "stark-file-native",
+    "crate_path": "stark-file/native",
     "capabilities": ["filesystem"],
     "targets": [
       "aarch64-apple-darwin",

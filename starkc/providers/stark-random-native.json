@@ -5,6 +5,7 @@
     "abi": "0.1",
     "identity": "stark-std-random",
     "crate": "stark-random-native",
+    "crate_path": "stark-random/native",
     "capabilities": ["random"],
     "targets": [
       "aarch64-apple-darwin",

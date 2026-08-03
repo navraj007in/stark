@@ -205,8 +205,14 @@ fn a_consuming_transfer_is_declarable_in_a_manifest() {
         }"#,
     );
     assert_eq!(provider.metadata.foreign_resources.len(), 1);
-    assert_eq!(provider.metadata.foreign_resources[0].provider, "stark-std-net");
-    assert_eq!(provider.metadata.foreign_resources[0].resource, "tcp_stream");
+    assert_eq!(
+        provider.metadata.foreign_resources[0].provider,
+        "stark-std-net"
+    );
+    assert_eq!(
+        provider.metadata.foreign_resources[0].resource,
+        "tcp_stream"
+    );
     assert_eq!(
         validate(&provider.metadata),
         Ok(()),
@@ -239,7 +245,8 @@ fn a_parseable_manifest_with_an_invalid_abi_is_refused_by_the_validator() {
           }
         }"#,
     );
-    let violations = validate(&provider.metadata).expect_err("a closeless resource must be refused");
+    let violations =
+        validate(&provider.metadata).expect_err("a closeless resource must be refused");
     assert!(
         violations.iter().any(|v| matches!(
             v,

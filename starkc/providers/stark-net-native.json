@@ -5,6 +5,7 @@
     "abi": "0.1",
     "identity": "stark-std-net",
     "crate": "stark-net-native",
+    "crate_path": "stark-net/native",
     "capabilities": ["tcp", "dns"],
     "targets": [
       "aarch64-apple-darwin",

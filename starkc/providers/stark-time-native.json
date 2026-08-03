@@ -5,6 +5,7 @@
     "abi": "0.1",
     "identity": "stark-std-time",
     "crate": "stark-time-native",
+    "crate_path": "stark-time/native",
     "capabilities": ["clock"],
     "targets": [
       "aarch64-apple-darwin",

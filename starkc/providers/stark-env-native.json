@@ -5,6 +5,7 @@
     "abi": "0.1",
     "identity": "stark-std-env",
     "crate": "stark-env-native",
+    "crate_path": "stark-env/native",
     "capabilities": ["process.args", "process.env"],
     "targets": [
       "aarch64-apple-darwin",

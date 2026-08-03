@@ -1,5 +1,79 @@
 # STARK Compiler STATE
 
+## CD-363 — P0.2 external provider discovery, trust tiers, and `crate_path` containment (2026-08-03)
+
+### The crate-location ruling
+
+> **A provider's manifest declares its crate path, resolved against a root the caller supplies —
+> the compiler's own root for a built-in, the manifest's directory for an external one.**
+> `crate_location()` is deleted.
+
+One RULE, two roots. The alternative considered and rejected was keeping a layout convention for
+built-ins: that is the `first_party()` shape again — a hardcoded path surviving beside a declared
+one — merely moved rather than removed. The root differs by how the provider was ADMITTED, which is
+already a first-class distinction (`ProviderTrust`), so it is a visible parameter rather than a
+hidden special case.
+
+Neutral on an existing fragility, not worse: built-in `crate_path` values are repo-layout relative,
+which is exactly what `crate_location`'s match arms already assumed. Moving it from Rust to JSON
+makes it visible and fixable without a compiler change — worth something given a stale install
+layout has dropped a provider before.
+
+### `crate_path` containment — a gap found while implementing, not while designing
+
+Nothing in the ruling as chosen constrained `crate_path` to be relative. An external manifest is
+written by a third party BY DEFINITION, and `"crate_path": "/etc"` or `"../../elsewhere"` would
+escape the root it was admitted under — **the only containment this mechanism has.**
+
+Now refused, and stricter than the obvious form:
+
+* enforced at BOTH the parse and the resolution entry point, so neither is a route around the other;
+* checked on the STRING, not the joined path — `provider/../../elsewhere` normalises into something
+  that looks contained, so canonicalising first is how the check gets defeated, and a symlink beats
+  post-hoc canonicalisation anyway. Refusing the components does not depend on the filesystem's
+  cooperation;
+* Windows drive prefixes refused on every host, since a manifest may have been written elsewhere.
+
+### Trust is explicit, not enforced
+
+```text
+pure STARK package             no native code, no provider
+first-party native provider    ships with the compiler, versioned with it
+approved third-party provider  declared by the APPLICATION, pinned by version AND checksum
+untrusted / local provider     path-based, development only, never in a release build
+```
+
+**No sandboxing is attempted** — a partial isolation story invites misplaced confidence, whereas a
+visible tier is honest and achievable now. What the mechanism guarantees is that native third-party
+code cannot enter a build BY ACCIDENT: every route in is deliberate, recorded, pinned and refusable.
+
+Four properties, all refusal-tested:
+
+1. **off by default** — declaring a provider is not enough;
+2. **no transitive activation** — only the application may activate one. A library must not pull
+   native code into a program that never asked for it, which is the difference between a dependency
+   graph and an attack surface;
+3. **pinned exactly** — version and checksum both, or the provider on disk is not the provider that
+   was approved. Both hashes are reported so the reader can tell which artefact moved;
+4. **development trust does not survive release** — an unpinned path provider works while developing
+   and is refused in a release build.
+
+Every failing provider is reported, not just the first: an application pinning three wrongly should
+learn all three in one build.
+
+### Evidence
+
+32 tests across `p02_provider_manifest.rs` (11) and `p02_external_provider_trust.rs` (21). The
+15-package gate is green through the manifest path, including native builds and live-peer resource
+lifecycles.
+
+### Still open in P0.2
+
+Wiring discovery into `native_build.rs` and deleting `crate_location`, which has four real callers.
+Deliberately not sprinted: that path produced two red CI runs this session, and it is the wrong
+place for blind edits. The discovery surface exists and is tested; the old path still works; nothing
+is half-rewired.
+
 ## CD-361 — joint HC9/CRYPTO0 decision: rustls + aws-lc-rs (2026-08-03)
 
 > **Select `rustls` with `aws-lc-rs` as STARK's TLS and general native-cryptography foundation.
