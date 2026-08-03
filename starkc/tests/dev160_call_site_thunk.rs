@@ -245,8 +245,9 @@ fn main() {
         "the refusal must say what the program does, not what rustc thinks of the output: {message}"
     );
     assert!(
-        message.contains("DEV-160"),
-        "the refusal must carry the defect id so the limit is findable: {message}"
+        message.contains("DEV-160d"),
+        "the refusal must carry the SUB-id from the owner's 2026-08-03 taxonomy, not the family \
+         name -- three shapes are deferred and a reader hitting one needs to know which: {message}"
     );
 }
 
@@ -421,6 +422,10 @@ fn main() {
     assert!(
         refusal.contains("Bind the fields to locals before the call"),
         "the refusal must state the workaround; a limit with no way round it is a wall: {refusal}"
+    );
+    assert!(
+        refusal.contains("DEV-160b"),
+        "the refusal must carry the SUB-id from the owner's 2026-08-03 taxonomy: {refusal}"
     );
 }
 

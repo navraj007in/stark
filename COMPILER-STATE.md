@@ -1,11 +1,22 @@
 # STARK Compiler STATE
 
-## CD-374 — DEV-160: the call thunk, and the two shapes it still refuses (2026-08-03)
+## CD-374 — DEV-160: the call thunk, and the shapes it still refuses (2026-08-03)
 
-**DEV-160 is CLOSED for calls whose conflicting evaluation lives in one block, and refused BY NAME
-for the two shapes that do not.** The second half matters as much as the first: before this, both
-reached rustc as `E0502` inside `mod stark_proj` — a correct compiler error about code the user
-never wrote.
+**Owner ruling accepted (2026-08-03): DEV-160 is NOT closed as a family.** The call-thunk
+architecture, the Miri evidence mechanism and the named-refusal boundaries are approved; the defect
+splits into four, of which one closes here. Cross-block absorption is DEFERRED to its own work
+package, and the HTTP workaround is KEPT.
+
+```text
+DEV-160a  same-block direct-call disjoint projections      CLOSED (this)
+DEV-160b  borrow returned by an EARLIER call               OPEN / DEFERRED
+DEV-160c  conflicting provider-call argument sequence      OPEN / DEFERRED
+DEV-160d  borrow surviving beyond the sibling move/call    OPEN / DEFERRED
+```
+
+**b, c and d are over-refusals, not unsound execution.** Each is refused by name before rustc, which
+is the correct outcome for a shape the backend cannot emit: without it they reach the user as
+`E0502` inside `mod stark_proj` — a correct compiler error about code they never wrote.
 
 ### What a thunk is
 
@@ -55,13 +66,13 @@ accessor could not do.
 the call. Following that chain, and suppressing every statement along it, is the difference between
 absorbing the reported idiom and absorbing nothing.
 
-### The two refusals, and why each is a refusal rather than a gap
+### DEV-160d and DEV-160b, and why each is a refusal rather than a gap
 
-**A borrow that outlives the call.** `let r = &p.name; f(r, p.body); use(r);` cannot be absorbed —
+**DEV-160d — a borrow that outlives the call.** `let r = &p.name; f(r, p.body); use(r);` cannot be absorbed —
 suppressing the definition breaks the later read — and cannot be left alone. Refused, naming the
 local and the field.
 
-**A borrow arriving through an earlier call.** This is the shape DEV-160 was reported as:
+**DEV-160b — a borrow arriving through an earlier call.** This is the shape DEV-160 was reported as:
 
 ```text
 send_once(builder.url.as_str(), builder.headers, builder.body)
@@ -85,7 +96,7 @@ Provenance over-approximates, filtered by type: without the type filter,
 `consume(p.taken, p.kept.len())` would be refused, because `len` takes `&p.kept` and the relation
 propagates — but the result is a `UInt64` and borrows nothing.
 
-### The provider audit
+### DEV-160c — the provider audit
 
 A provider call never reaches `emit_call`. It is emitted as a statement SEQUENCE — one
 `let __prov_aN = ...;` per argument (A10/CD-200) — which has the SAME conflict: `__prov_a0` holding
@@ -143,14 +154,20 @@ reordered thunk would read storage a sibling had already left.
 ### Status
 
 ```text
-DEV-158  install through a whole-value accessor       CLOSED (CD-371)
-DEV-162  read through a whole-value accessor          CLOSED (CD-372)
-DEV-160  in-block conflicting evaluation              CLOSED (this)
-         borrow outliving the call                    REFUSED by name
-         borrow through an earlier call               REFUSED by name -- needs a ruling on
-                                                      cross-block absorption
-         provider-call argument sequences             REFUSED by name
+DEV-158   install through a whole-value accessor      CLOSED (CD-371)
+DEV-162   read through a whole-value accessor         CLOSED (CD-372)
+DEV-160a  same-block conflicting evaluation           CLOSED (this)
+DEV-160b  borrow through an earlier call              REFUSED by name; DEFERRED by ruling
+DEV-160c  provider-call argument sequences            REFUSED by name; DEFERRED by ruling
+DEV-160d  borrow outliving the call                   REFUSED by name; DEFERRED by ruling
 ```
+
+### Why DEV-160b is a work package and not a follow-up commit
+
+It is not an extension of the thunk. It has to absorb an EARLIER call terminator, replace that
+terminator with a `goto`, preserve the failure and control-flow behaviour of the call it absorbed,
+preserve the returned reference's provenance, potentially span several blocks, and coordinate more
+than one call result. Every one of those is a property the current mechanism does not touch.
 
 ## CD-373 — DEV-160 foundation: the raw-slot primitives, and an order finding (2026-08-03)
 

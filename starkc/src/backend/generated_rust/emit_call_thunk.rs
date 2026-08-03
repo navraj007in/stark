@@ -30,6 +30,19 @@
 //! exists to avoid. Only observationally inert reads (constants, unprojected non-slot `Copy`
 //! locals) may be evaluated at the call site and passed by value.
 //!
+//! # Scope (owner ruling, 2026-08-03)
+//!
+//! ```text
+//! DEV-160a  same-block direct-call disjoint projections      CLOSED -- this module
+//! DEV-160b  borrow returned by an EARLIER call               refused by name; DEFERRED
+//! DEV-160c  conflicting provider-call argument sequence      refused by name; DEFERRED
+//! DEV-160d  borrow surviving beyond the sibling move/call    refused by name; DEFERRED
+//! ```
+//!
+//! b, c and d are **over-refusals, not unsound execution**. Each is named before rustc sees the
+//! program, because the alternative is `E0502` inside this generated module — a correct compiler
+//! error about code the user never wrote.
+//!
 //! # Why a plan
 //!
 //! Detection, helper collection and emission all consume ONE [`CallThunkPlan`]. They must not
@@ -185,8 +198,8 @@ pub fn plan_for_call(
         return Err(BackendDiagnostic::Unsupported(format!(
             "provider call #{} accesses one slot-backed local several ways in one argument list. \
              A provider call is emitted as a statement sequence with named borrow temporaries \
-             (A10/CD-200), so the DEV-160 call thunk does not apply to it. Bind the fields to \
-             locals before the call",
+             (A10/CD-200), so the call thunk does not apply to it. Bind the fields to locals \
+             before the call. DEV-160c, deferred to its own work package",
             id.0
         )));
     }
@@ -201,8 +214,8 @@ pub fn plan_for_call(
             "a borrow of _{}{:?} outlives a call that moves out of a sibling field of the same \
              local (_{local} is read again after the call). STARK accepts this -- the accesses are \
              disjoint -- but the native backend cannot yet emit it: the thunk that resolves the \
-             conflict (DEV-160) can only take over a borrow whose every use is an argument of the \
-             one call",
+             conflict can only take over a borrow whose every use is an argument of the one call. \
+             DEV-160d, deferred to its own work package",
             borrow.source.local.0, borrow.source.projection
         )));
     }
@@ -332,9 +345,10 @@ pub fn plan_for_call(
                 "the call in bb{block_index} of `{}` passes a reference (_{local}) that borrows \
                  _{slot} while also moving out of _{slot}'s fields. STARK accepts this -- the \
                  accesses are disjoint -- but the reference reaches the call through an earlier \
-                 block (typically an intermediate call such as `.as_str()`), and the DEV-160 thunk \
+                 block (typically an intermediate call such as `.as_str()`), and the call thunk \
                  can only take over evaluation within the call's OWN block. Bind the fields to \
-                 locals before the call as a workaround",
+                 locals before the call as a workaround. DEV-160b, deferred to its own work \
+                 package",
                 body.instance.symbol
             )));
         }
