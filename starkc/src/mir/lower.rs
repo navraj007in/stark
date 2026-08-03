@@ -2741,6 +2741,54 @@ impl<'a> FnLowerer<'a> {
                 self.synthetic(span, SyntheticKind::DropFlagInit),
             );
         }
+
+        // **DEV-158: the storage holds a complete value again — if every unit is live.**
+        //
+        // Step 1 above moved the covered units out, which makes a slot-backed local PARTIAL. Step 2
+        // wrote them back. Nothing said so, and the next whole-value use aborted with
+        // "mutable access to a dead slot: the slot is PARTIAL". The reference interpreter has no
+        // slot model and accepted the same program, so this was a three-engine divergence: green
+        // under `stark test`, aborting only in a native build, at runtime.
+        //
+        // **The condition is EVERY unit of the local, not the ones this assignment covered.** A
+        // sibling unit may have been moved out earlier and never restored, in which case the
+        // storage is legitimately still partial and must stay that way. Deriving wholeness from
+        // coverage alone was tried and rejected: `RequestBuilder` has three droppable fields, so
+        // `builder.body = bytes` covers one of three and the shortcut would have left exactly the
+        // case that motivated this still broken, while looking like a fix.
+        //
+        // MIR already holds per-unit liveness as ordinary locals, so the guard is a conjunction of
+        // the local's drop flags. That is the whole safety argument for `ValueSlot::mark_whole`,
+        // whose precondition this discharges — the storage type cannot check it, and folding
+        // per-unit liveness into it is the conflation the three-state design exists to prevent.
+        let all_units: Vec<DropUnit> = match self.drop_info.get(&place.local.0) {
+            Some(units) => units.clone(),
+            None => Vec::new(),
+        };
+        if !all_units.is_empty() {
+            let mark = self.new_block();
+            let join = self.new_block();
+            for (index, unit) in all_units.iter().enumerate() {
+                // The last check falls through to `mark`; every earlier one to the next check. Any
+                // false flag short-circuits to `join`, leaving the slot partial.
+                let next = if index + 1 == all_units.len() {
+                    mark
+                } else {
+                    self.new_block()
+                };
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(unit.flag)),
+                        arms: vec![(1, next)],
+                        otherwise: join,
+                    },
+                    info,
+                    next,
+                );
+            }
+            self.emit(Statement::StorageWhole(Place::local(place.local)), info);
+            self.terminate(Terminator::Goto { target: join }, info, join);
+        }
         Ok(())
     }
 

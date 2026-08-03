@@ -1545,13 +1545,17 @@ pub(super) fn emit_storage_whole(
     {
         return Ok(None);
     }
-    let ty = env.local_ty(place.local.0)?;
-    if crate::mir::drop_plan::plan_for(&ty, env.types)
-        .map(|plan| plan.is_noop())
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
+    // **No no-op-drop-plan gate here, unlike `emit_storage_dead`.**
+    //
+    // That gate exists because a no-drop slot is written with `reinit`, which has no dead-slot
+    // check for a storage END to satisfy. The reasoning does not carry over: a slot is made
+    // `Partial` by a field MOVE, and `take` aborts on a partial slot whether or not the whole-type
+    // drop plan is a no-op.
+    //
+    // And a no-op whole-type plan is the COMMON case here, not a corner: MIR decomposes an
+    // aggregate's drop into per-unit flag-guarded drops, so the whole-type plan has nothing left to
+    // do. Copying the gate across suppressed the emission for exactly the shape DEV-158 is about —
+    // the reproducer's `Config` reported `plan noop = true`, and `mark_whole` was never emitted.
     Ok(Some(format!(
         "{}.mark_whole();",
         emit_places::local_name(place.local.0)
@@ -1606,6 +1610,30 @@ pub(super) fn emit_assignment(
         let method = if no_drop { "reinit" } else { "write" };
         return Ok(format!(
             "{}.{method}({value});",
+            emit_places::local_name(place.local.0)
+        ));
+    }
+    // **DEV-158: a PROJECTED destination in slot-backed storage goes through a raw field write.**
+    //
+    // `emit_place_mut` renders `_1.get_mut().f0`, and `get_mut` requires the slot to be WHOLE. But
+    // an overwriting field assignment MOVED the old unit out first (CD-012), which made the slot
+    // `Partial` — so the install aborted before it ran:
+    //
+    //     _7.reinit(stark_proj::stark_move_...f0(&mut _3));   // slot -> PARTIAL
+    //     _3.get_mut().f0 = _6.take();                        // aborts: needs WHOLE
+    //
+    // A raw projection never materialises a `&mut T`, so it is valid over partially-moved storage.
+    // Restoring the state afterwards (`StorageWhole`) is also needed and is NOT sufficient on its
+    // own: it runs after this line, which never got that far.
+    if emit_places::is_slot_local(place.local.0, env)? && !place.projection.is_empty() {
+        let base_ty = env.local_ty(place.local.0)?;
+        let helper = emit_projections::helper_name(
+            &base_ty,
+            &place.projection,
+            emit_projections::HelperOp::Write,
+        );
+        return Ok(format!(
+            "stark_proj::{helper}(&mut {}, {value});",
             emit_places::local_name(place.local.0)
         ));
     }

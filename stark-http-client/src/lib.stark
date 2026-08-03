@@ -288,24 +288,12 @@ pub fn default_config() -> ClientConfig {
 /// This is what a test fixture uses, and what an application talking to a private CA uses. It is a
 /// constructor rather than a field edit so the anchors and the policy cannot disagree.
 pub fn config_with_explicit_roots(roots_pem: String) -> ClientConfig {
-    // Built as ONE literal rather than `default_config()` with the field reassigned.
-    //
-    // Not style: assigning over a struct field whose old value is a drop unit leaves the slot
-    // permanently PARTIAL in native code, and the next whole-struct use aborts —
-    // "mutable access to a dead slot". DEV-158, and it is a THREE-ENGINE DIVERGENCE: the
-    // interpreter accepts the same program. The base values are duplicated here rather than read
-    // from `default_config()`, so this constructor cannot silently drift from it — the two are
-    // adjacent and a reviewer sees both.
-    ClientConfig {
-        connect_timeout: duration_seconds(10u64),
-        read_timeout: duration_seconds(30u64),
-        write_timeout: duration_seconds(30u64),
-        max_response_bytes: 8388608u64,
-        follow_redirects: false,
-        tls_root_store: RootStorePolicy::ExplicitRoots(roots_pem),
-        tls_handshake_timeout: duration_seconds(30u64),
-        redirects: default_redirect_policy(),
-    }
+    // Was a hand-copied struct literal, because assigning over a field whose old value is a drop
+    // unit aborted natively (DEV-158). That is fixed, so this reads from `default_config()` again
+    // and cannot drift from it.
+    let mut config = default_config();
+    config.tls_root_store = RootStorePolicy::ExplicitRoots(roots_pem);
+    config
 }
 
 pub fn new_client(config: ClientConfig) -> Client {
@@ -1447,16 +1435,15 @@ impl RequestBuilder {
             body.push(bytes[i]);
             i = i + 1u64;
         }
-        // Fields are MOVED out and a new builder is constructed, rather than `out.body = body` on
-        // a copy of `self`. Assigning over a field whose old value is a drop unit — and `body` is a
-        // `Vec<UInt8>` — leaves the slot permanently PARTIAL in native code, and the next
-        // whole-struct use aborts (DEV-158). It cost a green interpreter run and a failed native
-        // one to find that here a second time; the literal form is the one that works.
-        let mut headers = self.headers;
+        // Was a hand-built literal from moved fields, because `out.body = body` assigned over a
+        // `Vec<UInt8>` — a drop unit — and aborted natively (DEV-158). Fixed, so this mutates in
+        // place again.
+        let mut out = self;
+        out.body = body;
         // A caller who already set `Content-Type` gets a REFUSAL, not a second one. Appending would
         // put two contradictory claims about the same bytes on the wire and leave which one wins to
         // the server — the same ambiguity `json_checked` refuses to resolve on the way back in.
-        if stark_http_core::contains(&headers, "content-type") {
+        if stark_http_core::contains(&out.headers, "content-type") {
             return Err(
                 HttpError::InvalidRequest(
                     String::from("the request already declares a Content-Type"),
@@ -1464,12 +1451,10 @@ impl RequestBuilder {
             );
         }
         // Hoisted out of the match scrutinee: a scrutinee's temporaries live for the whole match,
-        // so `&mut headers` taken inline would still be borrowed in the arm that must move it.
-        let declared = append_validated(&mut headers, "Content-Type", "application/json");
+        // so `&mut out.headers` taken inline would still be borrowed in the arm that must move it.
+        let declared = append_validated(&mut out.headers, "Content-Type", "application/json");
         match declared {
-            Ok(_added) => Ok(
-                RequestBuilder { method: self.method, url: self.url, headers: headers, body: body },
-            ),
+            Ok(_added) => Ok(out),
             Err(error) => Err(HttpError::InvalidRequest(stark_http_core::error_text(&error))),
         }
     }

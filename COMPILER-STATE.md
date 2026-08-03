@@ -1,5 +1,80 @@
 # STARK Compiler STATE
 
+## CD-371 — DEV-158 CLOSED; the diagnosis was wrong twice before it was right (2026-08-03)
+
+**Assigning over a struct field whose old value is a drop unit now works natively.** Both HTTP
+workarounds are removed and the packages still build and pass.
+
+### The defect was in TWO places, and I had only found the second
+
+I documented DEV-158 twice as "no operation returns a slot from `Partial` to `Whole`". True, and not
+the abort. Reading the generated Rust — which is what I should have done first — showed it:
+
+```rust
+_7.reinit(stark_proj::stark_move_23struct_231_23f0(&mut _3));  // slot -> PARTIAL
+_3.get_mut().f0 = _6.take();                                   // <- ABORTS: get_mut needs WHOLE
+```
+
+The INSTALL uses a whole-value accessor on storage the matching move-out just made partial. The
+missing state transition is real and necessary, and it runs after a line that never completed. So
+the fix is two halves:
+
+```text
+ValueSlot::write_field    a raw-projection field write, valid over partially-moved storage
+ValueSlot::mark_whole     the state transition, guarded by MIR's drop flags
+```
+
+`HelperOp::Write` joins Move/Copy/Drop in the projection-wrapper generator, and `emit_assignment`
+routes a projected destination in slot-backed storage through it. `ptr::write`, not assignment: the
+field is uninitialised at every generated call site because CD-012 requires the old unit to be moved
+out first, so there is nothing to drop and assigning would drop garbage.
+
+### A gate copied without re-deriving its reason
+
+`emit_storage_whole` was written by copying `emit_storage_dead`'s gating, including its no-op
+drop-plan check. That check is right for `finish_partial` — a no-drop slot is written with `reinit`,
+which has no dead-slot check for a storage END to satisfy — and **wrong** for `mark_whole`: a slot is
+made partial by a field MOVE, and `take` aborts on it whether or not the whole-type plan is a no-op.
+
+Worse, a no-op whole-type plan is the COMMON case, because MIR decomposes an aggregate's drop into
+per-unit flag-guarded drops. So the copied gate suppressed emission for exactly the shape DEV-158 is
+about. The reproducer's `Config` reported `plan noop = true` and `mark_whole` was never emitted — the
+statement was in the MIR and produced no code. Found by instrumenting rather than by reading it
+again.
+
+### The guard is correct in both directions
+
+Proved, not asserted. A struct with two droppable fields, one moved out and never restored, the
+other assigned: the guard must NOT fire, and a wrong fire is observable rather than silent — the
+scope-end `finish_partial` would hit a WHOLE slot and abort by name. It passes.
+
+### What this did NOT fix
+
+**Reading one field of partially-moved storage still aborts.** `t.b.as_str()` after `t.a` was moved
+out goes through `get()`, which requires WHOLE. Same family — a whole-value accessor over partial
+storage — and the same family as DEV-160's whole-slot borrows. Filed as DEV-162.
+
+That makes three in one class, and they want one fix rather than three:
+
+```text
+DEV-158  install through a whole-value accessor        CLOSED
+DEV-162  READ through a whole-value accessor           OPEN
+DEV-160  whole-slot borrows for disjoint projections   OPEN
+```
+
+### Evidence
+
+3 new runtime tests (write_field's siblings survive, mark_whole in all three states), 315 across the
+MIR and native suites, 26 runtime, clippy clean, all 16 packages green. The original reproducer and
+the HC11 three-field shape both run natively and agree with the interpreter, and both HTTP
+workarounds are deleted rather than merely marked removable.
+
+### The process note
+
+Three diagnoses, two wrong, and the two wrong ones were both reasoning from the source rather than
+from the artefact. The generated Rust was available the whole time and named the failing line in one
+read. When a backend defect is about what the backend EMITS, read the emission first.
+
 ## CD-370 — the diagnostic-injection hole I opened while closing the wire one; DEV-161 (2026-08-03)
 
 **From a second Codex review of CD-369. Both findings were right, and the first is a mistake worth

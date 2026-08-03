@@ -387,6 +387,36 @@ impl<T> ValueSlot<T> {
         }
     }
 
+    /// **DEV-158: initialise ONE field of storage that may be partially moved.**
+    ///
+    /// The write half of the repair, and the half that was missing. An overwriting field assignment
+    /// lowers to *move the old unit into a temp, install the new value, drop the temp*. The move
+    /// makes the slot `Partial` — and the install was emitted as `slot.get_mut().f0 = value`, a
+    /// WHOLE-value accessor, which aborts on a partial slot before anything else can go wrong. That
+    /// is the actual failure DEV-158 names; restoring the state afterwards is necessary and, on its
+    /// own, reached too late to matter.
+    ///
+    /// Writes through a raw projection, which never materialises a `&mut T` and so never asserts
+    /// that the surrounding value is valid. The state is left UNCHANGED: this function initialises
+    /// one field and knows nothing about the others, so declaring the value complete is
+    /// [`mark_whole`](Self::mark_whole)'s job, under MIR's drop-flag guard.
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and that field must currently be
+    /// **uninitialised** — moved out, or never written. `ptr::write` does not drop what was there,
+    /// so calling this over a live drop unit leaks it.
+    ///
+    /// MIR discharges that: CD-012 requires an overwriting assignment to move the old unit out
+    /// before installing the new one, so the field is uninitialised at every call site the backend
+    /// generates. A field with no drop unit has nothing to leak either way.
+    pub unsafe fn write_field<F>(&mut self, project: fn(*mut T) -> *mut F, value: F) {
+        self.require_accessible("field write into a dead slot");
+        unsafe {
+            core::ptr::write(project(self.base_ptr()), value);
+        }
+    }
+
     /// **DEV-158: mark a `Partial` slot WHOLE again, once MIR has re-initialised every drop unit.**
     ///
     /// The mirror of [`finish_partial`](Self::finish_partial), and it exists for the same reason:

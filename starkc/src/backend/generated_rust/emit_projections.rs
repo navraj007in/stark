@@ -89,6 +89,14 @@ pub enum HelperOp {
     /// destruction plan is baked into the wrapper, because a wrapper is already per-(base type,
     /// projection) and that fixes the field type.
     Drop,
+    /// **DEV-158.** Initialises ONE field of storage that may be partially moved:
+    /// `ValueSlot::write_field`.
+    ///
+    /// The install half of an overwriting field assignment. It was emitted as
+    /// `slot.get_mut().f0 = value` — a WHOLE-value accessor on a slot the matching move-out had
+    /// just made `Partial`, which aborts before anything else can happen. A raw projection never
+    /// materialises a `&mut T`, so it is valid over partially-moved storage.
+    Write,
 }
 
 /// One helper to generate. WP-C6.1b: `projection` is the FULL chain (depth ≥1). A pure-`Raw` chain
@@ -123,6 +131,7 @@ pub fn helper_name(base_ty: &MirTy, projection: &[Projection], op: HelperOp) -> 
         HelperOp::Move => "move",
         HelperOp::Copy => "copy",
         HelperOp::Drop => "drop",
+        HelperOp::Write => "write",
     };
     let selector: Vec<String> = projection.iter().map(projection_token).collect();
     mangle::sanitize_symbol(&format!(
@@ -188,7 +197,15 @@ pub fn collect(
         let env = emit_places::TyEnv::new(body, &program.types, layout);
         for block in &body.blocks {
             for (statement, _) in &block.statements {
-                if let Statement::Assign(_, rvalue) = statement {
+                if let Statement::Assign(dest, rvalue) = statement {
+                    // DEV-158: a PROJECTED destination into slot-backed storage is installed
+                    // through a raw field write, because the matching move-out has already made
+                    // the slot partial and a whole-value accessor aborts on one.
+                    if !dest.projection.is_empty()
+                        && emit_places::is_slot_local(dest.local.0, &env)?
+                    {
+                        collect_place(dest, &env, HelperOp::Write, &mut found)?;
+                    }
                     // WP-C6.1c: a variant-payload decomposition aggregate emits as one
                     // `take()`+destructure match, needing no per-field projection helper — its
                     // `VariantField` operands must NOT be collected (they cannot be raw-projected,
@@ -482,6 +499,27 @@ pub fn emit(
             // site: a wrapper is already per-(base type, projection), which fixes the field type,
             // which fixes the plan. It also keeps the call site free of glue, so an emitted MIR
             // body still contains no `unsafe` and no destruction logic of its own.
+            // DEV-158. `ptr::write`, not assignment: the field is uninitialised at every call
+            // site the backend generates, because CD-012 requires the old unit to be moved out
+            // before the new value is installed. Assigning would drop whatever bytes were there.
+            (HelperOp::Write, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Initialises ONE field, leaving its siblings alone. Raw projection, so it \
+                 is\n    /// valid over storage a sibling has already been moved out of \
+                 (DEV-158).\n    pub fn {}(slot: &mut stark_runtime::slot::ValueSlot<{base}>, value: {field}) {{\n         \
+                 \x20       // SAFETY: one fixed projection into THIS slot's storage; the field is\n         \
+                 \x20       // uninitialised here, because MIR moved the old unit out first.\n         \
+                 \x20       unsafe {{ slot.write_field({projection}, value) }}\n    }}\n",
+                helper.name
+            )),
+            // An enum payload has no raw projection. MIR never asks: a payload is installed by
+            // writing the WHOLE enum value, not by projecting into one.
+            (HelperOp::Write, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a projected Write into the enum payload {:?} is not supported: an enum's \
+                     payload is installed by writing the whole enum",
+                    helper.base_ty
+                )))
+            }
             (HelperOp::Drop, ProjectionForm::Raw) => {
                 let plan = crate::mir::drop_plan::plan_for(&helper.field_ty, types)
                     .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
