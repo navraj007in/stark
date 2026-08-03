@@ -28,9 +28,9 @@ wire.
 HC13 adds three peer behaviours, and the third found a defect within an hour of existing.
 
 ```text
-malformed   11 routes, each breaking exactly ONE framing rule
+malformed   13 routes, each breaking exactly ONE framing rule
 oversized    4 routes, each exceeding exactly ONE limit
-delayed      3 stalls, in three different phases
+delayed      3 stalls, proving TWO distinct phases (both read stalls are ReadResponse)
 ```
 
 Each is asserted on the **named reason**, not merely on failure. Eighteen cases all reporting "the
@@ -67,10 +67,24 @@ blocking — the only `set_nonblocking(true)` in the file is the test harness's 
 `WouldBlock` from a read or write can mean exactly one thing: the deadline expired. Both platforms
 now return `STATUS_TIMED_OUT`.
 
-**Two phases remain unproven for the same reason DEV-163 was invisible.** `Connect` and `Resolve`
-have no stalling peer, because a loopback cannot black-hole a SYN deterministically. They are
-recorded in HC13-KNOWN-LIMITATIONS.md §1.1 as *unproven*, not as working — the distinction DEV-163
-exists to justify.
+### 3b. The timeout phases, counted correctly
+
+```text
+ReadResponse    PROVEN            two stalling peers -- headers, and mid-body
+TlsHandshake    PROVEN            a TCP peer that accepts and never speaks TLS
+WriteRequest    UNPROVEN          deadline installed; no peer fills a receive window
+Connect         NOT IMPLEMENTED   DEV-165 -- `connect_timeout` is read by nothing
+Resolve         ABSENT            no mechanism could produce it
+```
+
+Three stalling routes prove **two** phases, not three: `/slow-headers` and `/slow-body` both report
+`ReadResponse`.
+
+`Connect` is a **defect, not a gap in testing**. The client calls `connect_no_timeout` and
+`stark-net::connect` refuses every non-zero timeout with `Unsupported`, so a caller setting
+`connect_timeout` gets no error and no effect. `Resolve` has no deadline parameter anywhere in the
+resolve path. Both are detailed in HC13-KNOWN-LIMITATIONS.md §1.1; neither should be read as
+"implemented but untested".
 
 ---
 
@@ -106,7 +120,7 @@ each exiting 0 while printing three different things is not agreement.
 | --- | --- | --- |
 | `stark-net` | loopback echo | connect, read, write, close, drop |
 | `stark-tls` | 3 TLS peers (1.3, 1.2, untrusted root) | version pinned per peer; rejection named |
-| `stark-http-client` | HTTP + 2 HTTPS + TLS-stall | 40 executed cases (see §5) |
+| `stark-http-client` | HTTP + 2 HTTPS + TLS-stall | 42 executed cases (see §5) |
 
 ### 4.3 The 16-package gate
 
@@ -118,7 +132,7 @@ against a live peer with the process-global live-stream count asserted around it
 
 ## 5. `stark-http-client` — the executed surface
 
-**40 cases, all native, all against live loopback peers.**
+**42 cases, all native, all against live loopback peers.**
 
 ```text
  4  plain HTTP framing      fixed, chunked, fragmented, close-early
@@ -130,7 +144,7 @@ against a live peer with the process-global live-stream count asserted around it
 11  malformed (HC13)        status line, version, header name, obs-fold, bare LF, two lengths,
                             length+TE, length value, transfer coding, chunk size, chunk terminator
  4  oversized (HC13)        status line, header line, header count, body ceiling
- 3  timeouts (HC13)         slow headers, slow body, TLS handshake stall
+ 3  timeouts (HC13)         slow headers, slow body (both ReadResponse), TLS handshake stall
 ```
 
 Two properties of this list are load-bearing:
@@ -155,9 +169,9 @@ not the other.
 | untrusted certificates rejected | ✅ | untrusted-root peer |
 | DNS on all Tier-1 platforms | ✅ | `stark-net` resource consumer |
 | fixed and chunked responses | ✅ | `/fixed`, `/chunked`, plus both inside TLS |
-| documented malformed responses rejected | ✅ | 11 wire routes, each named |
+| documented malformed responses rejected | ✅ | 13 wire routes, each named |
 | body and header limits enforced | ✅ | 4 wire routes; body ceiling on **total bytes read** |
-| timeouts are phase-specific | ⚠️ **partial** | 3 phases proved; `Connect` and `Resolve` unproven — §3 |
+| timeouts are phase-specific | ⚠️ **partial** | `ReadResponse` and `TlsHandshake` proved; `WriteRequest` unproven; `Connect` NOT IMPLEMENTED (DEV-165); `Resolve` ABSENT — §3b |
 | no resource leak or duplicate close | ✅ | live-stream count asserted around every consumer run |
 | provider APIs unreachable without manifest declarations | ✅ | `c78_capability_declaration` |
 | application code cannot call raw ABI symbols | ✅ | declared-surface gate |
@@ -166,7 +180,9 @@ not the other.
 | all public exclusions documented | ✅ | HC13-KNOWN-LIMITATIONS.md |
 
 **One criterion is partial and is reported as partial.** Marking phase-specific timeouts ✅ on the
-strength of three proved phases out of five would be exactly the overstatement DEV-163 punished.
+strength of two proved phases out of five would be exactly the overstatement DEV-163 punished — and
+an earlier draft of this report said *three*, by counting the header and body stalls as separate
+phases when both report `ReadResponse`.
 
 ---
 

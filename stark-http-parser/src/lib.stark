@@ -474,10 +474,21 @@ fn parse_decimal(text: &str) -> Result<UInt64, HttpParseError> {
         if !is_digit(bytes[i]) {
             return Err(HttpParseError::InvalidContentLength);
         }
+        // SEC-HTTP-001. `u64::MAX` is 18446744073709551615, so the last accumulation that fits is
+        // 1844674407370955161 * 10 + 5. The magnitude guard alone admits the boundary value and
+        // then adds a digit up to 9 on top of ...610 — which OVERFLOWS, and STARK traps on integer
+        // overflow in every build mode, so `Content-Length: 18446744073709551616` aborted the
+        // process. A remote peer choosing the response could stop the client.
+        //
+        // The final digit therefore needs its own check: at the boundary only 0-5 can still fit.
+        let digit = (bytes[i] - 48u8) as UInt64;
         if value > 1844674407370955161u64 {
             return Err(HttpParseError::InvalidContentLength);
         }
-        value = value * 10u64 + (bytes[i] - 48u8) as UInt64;
+        if value == 1844674407370955161u64 && digit > 5u64 {
+            return Err(HttpParseError::InvalidContentLength);
+        }
+        value = value * 10u64 + digit;
         i = i + 1u64;
     }
     Ok(value)
@@ -793,7 +804,26 @@ fn run(parser: &mut HttpResponseParser) -> Result<ParseProgress, HttpParseError>
                             // desynchronise a reused connection.
                             parser.state = ParserState::Trailers;
                         } else {
-                            if parser.body.len() + size > parser.limits.max_body_bytes {
+                            // SEC-HTTP-002. `parse_chunk_size` can legitimately return `u64::MAX`
+                            // (`FFFFFFFFFFFFFFFF` accumulates to exactly the maximum without
+                            // overflowing), so the sum `body.len() + size` overflows whenever any
+                            // earlier chunk left bytes behind — and STARK traps on overflow in
+                            // every build mode, so the client aborted instead of reporting
+                            // `BodyTooLarge`. Two chunks are enough: a one-byte chunk, then this.
+                            //
+                            // Rewritten as a SUBTRACTION, which cannot overflow: `body.len()` is
+                            // never above the ceiling, because nothing is appended without passing
+                            // this check first.
+                            // The `>=` is not redundant: a subtraction that underflows traps
+                            // exactly as an addition that overflows does, so swapping one for the
+                            // other without this guard would move the defect rather than fix it.
+                            // (At equality any non-zero chunk is over the ceiling anyway, and
+                            // `size == 0` was handled above as the terminator.)
+                            if parser.body.len() >= parser.limits.max_body_bytes {
+                                return Err(HttpParseError::BodyTooLarge);
+                            }
+                            let room = parser.limits.max_body_bytes - parser.body.len();
+                            if size > room {
                                 return Err(HttpParseError::BodyTooLarge);
                             }
                             parser.remaining = size;

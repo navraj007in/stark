@@ -18,32 +18,52 @@ The third kind is the one that gets people hurt, so it is listed first.
 
 ## 1. Unproven
 
-### 1.1 The `Connect` and `Resolve` timeout phases
+### 1.1 Timeout phases — what is proved, what is unproven, what is absent
 
-`HttpTimeoutPhase` has five values. Three are proved on the wire by a stalling peer
-(`TlsHandshake`, and `ReadResponse` in both its header and body positions). Two are **not**:
+`HttpTimeoutPhase` has five values. **Two are proved. One is unproven. Two are not implemented at
+all**, and conflating the last two categories is the mistake this section previously made.
 
 ```text
-Resolve        no test stalls a DNS server
-Connect        no test black-holes a SYN
-WriteRequest   no test fills a peer's receive window
+ReadResponse    PROVEN        two stalling peers -- headers, and mid-body
+TlsHandshake    PROVEN        a TCP peer that accepts and never speaks TLS
+WriteRequest    UNPROVEN      the deadline IS installed on the socket; no peer fills a receive
+                              window, so expiry has never been observed end to end
+Connect         NOT IMPLEMENTED   see DEV-165 below
+Resolve         ABSENT            no mechanism exists that could produce it
 ```
 
-These are not proved because a loopback cannot produce them deterministically. Reaching a
-black-holed address depends on the network the test runs on; a flaky negative test is worse than an
-absent one, because it teaches people to re-run the suite until it passes.
+`ReadResponse` counts once, not twice. The three stalling routes prove **two distinct phases**;
+`/slow-headers` and `/slow-body` both report `ReadResponse`, and describing them as three phases
+overstated the evidence.
 
-`connect_timeout` and `write_timeout` **are** applied to the socket — that much is visible in
-`stark-net`'s `set_read_timeout`/`set_write_timeout` calls and is covered by unit tests. What is
-unproven is the end-to-end claim that expiry surfaces as `Timeout(Connect)` rather than as some
-other error.
+**DEV-165 — `ClientConfig.connect_timeout` is advertised but not enforced.** The client calls
+`connect_no_timeout(target)` and installs read and write deadlines only *after* the connection
+completes. `config.connect_timeout` is read by nothing. Underneath, `stark-net::connect` refuses
+every non-zero timeout outright:
 
-**This is not hypothetical.** DEV-163 was exactly that failure in the phase that *is* now tested:
-a read timeout surfaced as `NetworkError::Interrupted` on Unix and `NetworkError::TimedOut` on
-Windows, so the same peer produced "the connection failed" on macOS and "timed out reading the
-response" on Windows. It was invisible to every test using a peer that answers, and it was found
-the day a peer that stalls was written. **The two untested phases are the same shape of risk, and
-nobody should assume they are right because the tested one now is.**
+```stark
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    if !timeout.is_zero() {
+        return Err(NetworkError::Unsupported);
+    }
+    connect_socket_address(&address)
+}
+```
+
+So this is an **implementation gap, not an untested success**: a caller setting `connect_timeout`
+gets no error and no effect. Deferred to the networking roadmap — enforcing it needs a non-blocking
+connect plus a poll, which is a provider ABI change, not a client fix.
+
+**`Resolve` is ABSENT, not merely unproven.** `stark-net::resolve` takes a host, a port and
+size/count limits, and passes no duration or deadline to the DNS provider. There is no mechanism
+that could produce `Timeout(Resolve)`. Implementing one likely needs either a different provider ABI
+or a bounded resolver worker, because ordinary blocking system resolution exposes no portable
+per-call timeout.
+
+**Why the distinction is load-bearing.** DEV-163 was a phase whose deadline *worked* and whose
+*report* was wrong, and it took a stalling peer to find. A phase with no deadline at all fails
+differently and is not the same risk — but a document that files both under "unproven" invites a
+reader to assume both merely lack a test.
 
 ### 1.2 Cross-compilation
 
@@ -64,6 +84,7 @@ natively on their own platform, in CI. Nothing here has been cross-compiled.
 | Client certificates | server authentication only. |
 | Streaming bodies | a body is a buffered `Vec<UInt8>`, bounded by `max_response_bytes`. There is no incremental reader, so a response larger than the ceiling cannot be processed at all — only refused. |
 | Dot-segment resolution | `.` and `..` in a redirect `Location` are not removed (HC12.1). Deferred to a bounded RFC 3986 resolver in `stark-url`, rather than a second URL implementation inside the client. |
+| Connect and resolve deadlines | `connect_timeout` is accepted and ignored (DEV-165); no resolve deadline exists at all. See §1.1. |
 
 ---
 
@@ -120,6 +141,7 @@ package source and a reader will otherwise wonder why the code is shaped oddly.
 | **DEV-159** | a native build can race its own dependency build. Unreproduced. |
 | **DEV-163** | a socket read deadline reported as a connection failure on Unix. **Fixed** in CD-375; listed because it explains why §1.1's untested phases are called *unproven* rather than *working*. |
 | **DEV-164** | `stark-net`'s provider tests shared process-global state under `cargo test`'s parallelism. **Fixed** in CD-375 by serialising every test that opens a socket. |
+| **DEV-165** | `ClientConfig.connect_timeout` is advertised and never enforced — see §1.1. **Open**, deferred to the networking roadmap. |
 
 ---
 

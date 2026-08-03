@@ -1,5 +1,83 @@
 # STARK Compiler STATE
 
+## CD-376 — HC13 correction: two remote aborts, and a timeout claim counted wrong (2026-08-03)
+
+**External review of `bfceaa0`. Every point was correct and every one is verified in the code
+below, not accepted on assertion.** The HTTP client is reclassified **feature-track complete, not
+security-release complete**.
+
+### SEC-HTTP-001 and SEC-HTTP-002 — availability vulnerabilities, not parse errors
+
+STARK traps on integer overflow in **every build mode**, so an arithmetic boundary in the parser is
+not a wrong error message — it is a **remote process abort**. A hostile server choosing its own
+response could stop any client reading it.
+
+```text
+SEC-HTTP-001   Content-Length: 18446744073709551616
+               guard rejected `value > 1844674407370955161` but ADMITTED the boundary, then added
+               a digit up to 9 on top of ...610
+SEC-HTTP-002   chunked: "1\r\nx\r\nFFFFFFFFFFFFFFFF"
+               `FFFFFFFFFFFFFFFF` accumulates to exactly u64::MAX WITHOUT overflowing, so the size
+               parses legitimately; `body.len() + size` then overflowed on any non-empty body
+```
+
+**Why HC13's eleven malformed routes missed them.** Both sit exactly where the magnitude guard
+stops and the final accumulation still happens. `not-a-number` and `zz` are refused long before the
+boundary, so ordinary malformed-input coverage cannot reach either. Adversarial infrastructure is
+necessary and not sufficient; the routes have to be aimed at the arithmetic.
+
+Fixed: the Content-Length guard now checks the final digit at the boundary, and the cumulative chunk
+check is a **subtraction** — with a `>=` guard first, because a subtraction that underflows traps
+exactly as an addition that overflows does, and swapping one for the other would have moved the
+defect rather than fixed it.
+
+**Falsified.** Reverting either fix makes its test fail with `integer overflow`. Two new wire routes
+(`/bad-length-overflow`, `/bad-chunk-cumulative-overflow`) prove the same against a live peer — and
+there, reaching the *next line of output at all* is half the assertion, because before the fix the
+process died.
+
+### The timeout evidence was counted wrong, by me
+
+Three stalling routes prove **two** phases, not three: `/slow-headers` and `/slow-body` both report
+`ReadResponse`. The report said "three different phases" while its own case inventory showed
+otherwise, and the limitations document said "two are not proved" and then listed three.
+
+Worse than the arithmetic: **two of those were filed as "unproven" when they are not implemented.**
+
+```text
+ReadResponse    PROVEN
+TlsHandshake    PROVEN
+WriteRequest    UNPROVEN          deadline installed; no peer fills a receive window
+Connect         NOT IMPLEMENTED   DEV-165
+Resolve         ABSENT            no mechanism could produce it
+```
+
+**DEV-165 — `ClientConfig.connect_timeout` is advertised and never enforced.** The client calls
+`connect_no_timeout`, and `stark-net::connect` refuses every non-zero timeout with `Unsupported`.
+A caller setting it gets no error and no effect. My limitations document claimed it "IS applied to
+the socket" — that was simply false, and it is the worst kind of documentation error because it
+reads as reassurance. Deferred to the networking roadmap (it needs a non-blocking connect and a
+poll, i.e. a provider ABI change), but the false claim is removed now.
+
+**`Resolve` is ABSENT.** `stark-net::resolve` takes a host, a port and size/count limits, and passes
+no duration to the provider. Filing it under "unproven" invited a reader to assume it merely lacked
+a test.
+
+### Status
+
+```text
+HC0-HC12 feature programme        CLOSED
+HC13 adversarial qualification    CLOSED (corrected here)
+HTTP client FEATURE track         COMPLETE
+SEC-HTTP-001, SEC-HTTP-002        CLOSED (this)
+DEV-163, DEV-164                  CLOSED (CD-375)
+DEV-165                           OPEN -- deferred to the networking roadmap
+PUBLIC RELEASE readiness          BLOCKED -- DEV-165, and no installer exists
+```
+
+Evidence: 42 executed cases (13 malformed, 4 oversized, 3 stalls), 36 parser unit tests, 16
+packages through the full gate.
+
 ## CD-375 — HC13 CLOSED: adversarial peers, DEV-163 and DEV-164 (2026-08-03)
 
 **The HTTP client track is complete: HC0–HC13.** HC13's job was to prove the client **fails

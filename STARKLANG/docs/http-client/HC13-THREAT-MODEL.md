@@ -111,6 +111,8 @@ fail these.
 | `max_header_count` | `/big-header-count` |
 | `max_response_bytes` | `/big-body` |
 | `max_redirects` and loop detection | `/r-hopN` and `/r-loop`, separately |
+| `Content-Length` accumulation cannot trap | `/bad-length-overflow` (SEC-HTTP-001) |
+| cumulative chunk size cannot trap | `/bad-chunk-cumulative-overflow` (SEC-HTTP-002) |
 
 `max_response_bytes` is enforced on **total bytes read**, not on the parsed body, so a peer cannot
 evade it by lying in `Content-Length`. `/big-body` declares 12 MiB and actually sends it; the client
@@ -122,15 +124,28 @@ ever-lengthening chain of distinct targets. One test could not distinguish the c
 loop detector, and the two errors exist because a caller raising the limit should fix one and not
 the other.
 
+**Two of these were availability VULNERABILITIES, not limit checks.** STARK traps on integer
+overflow in every build mode, so `Content-Length: 18446744073709551616` and a chunked body whose
+second size is `FFFFFFFFFFFFFFFF` each **aborted the client process**. A hostile server choosing its
+own response could stop any client reading it — strictly worse than a parse error, and reachable
+with no privilege at all.
+
+Both sat exactly where the magnitude guard stops and the final accumulation still happens, which is
+why the eleven ordinary malformed routes never reached them: `not-a-number` and `zz` are refused
+long before the boundary. Fixed and falsified — reverting either fix reproduces `integer overflow`
+in the parser's own unit tests.
+
 ### T6 — Hanging the client
 
 *Accept the connection and then say nothing.*
 
 | phase | falsifier |
 | --- | --- |
-| TLS handshake | a TCP peer that accepts and never speaks TLS |
-| reading headers | `/slow-headers` |
-| reading the body | `/slow-body` |
+| `TlsHandshake` | a TCP peer that accepts and never speaks TLS |
+| `ReadResponse`, headers | `/slow-headers` |
+| `ReadResponse`, body | `/slow-body` |
+
+Three routes, **two** distinct phases: both read stalls report `ReadResponse`.
 
 `/slow-body` is the sharp one: a complete, plausible head arrives, and *then* the body stops. A
 client that applies its read deadline only while waiting for headers hangs here for as long as the
@@ -142,8 +157,11 @@ and "timed out reading the response" on Windows. The deadline worked; its *repor
 operator would have looked at the network instead of the peer. Invisible to every test that used a
 peer which answers.
 
-Two phases — `Connect` and `Resolve` — are **not** proved. See HC13-KNOWN-LIMITATIONS.md §1.1; they
-are the same shape of risk that DEV-163 turned out to be.
+`WriteRequest` is unproven; **`Connect` is not implemented** (DEV-165 — `connect_timeout` is
+accepted and ignored) and **`Resolve` is absent** (no deadline reaches the resolver at all). See
+HC13-KNOWN-LIMITATIONS.md §1.1. Only the first of the three is the shape of risk DEV-163 was; the
+other two are missing mechanism, and a client relying on them today gets no protection and no
+error.
 
 ### T7 — Truncation passed off as a complete response
 

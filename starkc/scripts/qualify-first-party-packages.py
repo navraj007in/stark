@@ -239,6 +239,11 @@ CASES = [
             "  http://127.0.0.1:39188/bad-transfer-encoding -> response parsing failed: unsupported transfer coding\n"
             "  http://127.0.0.1:39188/bad-chunk-size -> response parsing failed: invalid chunk size\n"
             "  http://127.0.0.1:39188/bad-chunk-terminator -> response parsing failed: chunk not terminated by CRLF\n"
+            # SEC-HTTP-001 and SEC-HTTP-002. Both aborted the client before the fix, so a
+            # regression here is not a wrong error message -- it is the process dying. Reaching the
+            # next line at all is half the assertion.
+            "  http://127.0.0.1:39188/bad-length-overflow -> response parsing failed: invalid Content-Length\n"
+            "  http://127.0.0.1:39188/bad-chunk-cumulative-overflow -> response parsing failed: body exceeds its limit\n"
             # A limit only ever tested with compliant input is a constant, not a limit.
             "  --- HC13: oversized responses ---\n"
             "  http://127.0.0.1:39188/big-status-line -> response parsing failed: status line exceeds its limit\n"
@@ -540,6 +545,21 @@ def respond_http_route(conn, target, request=b""):
     elif target == "/bad-chunk-size":
         conn.sendall(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbody\r\n0\r\n\r\n"
+        )
+    elif target == "/bad-length-overflow":
+        # SEC-HTTP-001. One past `u64::MAX`. This sits exactly where the magnitude guard stops and
+        # the last accumulation still happens, so `/bad-length-value`'s "not-a-number" never
+        # reaches it. Before the fix this ABORTED the client rather than returning an error --
+        # STARK traps on integer overflow in every build mode.
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551616\r\n\r\n")
+    elif target == "/bad-chunk-cumulative-overflow":
+        # SEC-HTTP-002. `FFFFFFFFFFFFFFFF` accumulates to exactly `u64::MAX` without overflowing,
+        # so the SIZE parses legitimately; the cumulative `body.len() + size` was what overflowed.
+        # The one-byte chunk first is the whole point -- with an empty body there is nothing to
+        # overflow with, which is why `/bad-chunk-size` never found this.
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"1\r\nx\r\nFFFFFFFFFFFFFFFF\r\n"
         )
     elif target == "/bad-chunk-terminator":
         # A chunk whose data is not followed by CRLF. A parser trusting the declared size and

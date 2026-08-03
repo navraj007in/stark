@@ -8,7 +8,23 @@ like, so it can be executed by someone who did not write the code.
 
 ---
 
-## 0. Before anything else — what "release" means here
+## 0. Classification
+
+```text
+HTTP client FEATURE track      COMPLETE   HC0-HC13
+PUBLIC RELEASE readiness       BLOCKED
+```
+
+The two are not the same thing and this document exists because they were briefly conflated. What
+blocks a release:
+
+| blocker | state |
+| --- | --- |
+| SEC-HTTP-001, SEC-HTTP-002 | **fixed** in CD-376, with falsifiers; they were remote aborts |
+| DEV-165 — `connect_timeout` accepted and ignored | open; either enforce it or remove the field |
+| installer / distribution | absent — see §0.1 |
+
+## 0.1 Before anything else — what "release" means here
 
 **There is currently no installable STARK toolchain.** No release has been published, there is no
 release workflow, and `build-release.py` does not stage the provider crates a native build needs.
@@ -65,6 +81,7 @@ cross-references are the first thing an external reviewer finds wrong.
 | 3.4 | hostname verification independent of chain validity | the mismatch peer's chain is **valid** |
 | 3.5 | every smuggling primitive refused on the wire | HC13-THREAT-MODEL.md §2, table T4 |
 | 3.6 | no `unsafe` outside the provider crates and `mod stark_proj` | generated MIR bodies contain none |
+| 3.7 | parser arithmetic cannot trap on hostile input | `/bad-length-overflow`, `/bad-chunk-cumulative-overflow`; reverting either fix reproduces `integer overflow` (SEC-HTTP-001/002) |
 
 ---
 
@@ -88,15 +105,17 @@ cross-references are the first thing an external reviewer finds wrong.
 | 5.1 | `Header` / `HeaderMap.entries` still public | a known weakness; making them private is a **breaking** change and must not slip into a patch release |
 | 5.2 | dot-segment resolution still absent | belongs in `stark-url`; adding it changes redirect targets, so it is behaviour-visible |
 | 5.3 | DEV-160b workaround still present in `send()` | remove only when cross-block absorption lands, and only after the original source form builds natively |
+| 5.4 | `ClientConfig.connect_timeout` still accepted and ignored | DEV-165. Either enforce it or remove the field — shipping a deadline that silently does nothing is the worse of the three options |
 
 ---
 
 ## 6. The two things most likely to be got wrong
 
-**6.1 — Do not mark phase-specific timeouts as fully proved.** Three of five phases have a stalling
-peer. `Connect` and `Resolve` do not, and DEV-163 was precisely a phase that *looked* fine and
-reported the wrong thing on two of three platforms. The qualification report marks this criterion
-⚠️ partial; keep it that way until a peer exists.
+**6.1 — Do not mark phase-specific timeouts as fully proved, and do not count the routes as
+phases.** TWO of five phases are proved (`ReadResponse`, `TlsHandshake`) by three routes — both
+read stalls report `ReadResponse`. An earlier draft of the report said three by counting routes.
+`WriteRequest` is unproven, `Connect` is **not implemented** (DEV-165) and `Resolve` is **absent**.
+Filing the last two as "unproven" invites a reader to assume they merely lack a test.
 
 **6.2 — Do not treat a green single-platform run as a matrix.** DEV-163 was green on Windows and
 wrong on Unix, from identical source, and no amount of re-running one platform would have shown it.

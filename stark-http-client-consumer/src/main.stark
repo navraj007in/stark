@@ -506,6 +506,18 @@ fn main() {
     refuse(&client, "http://127.0.0.1:39188/bad-chunk-size", "invalid chunk size");
     refuse(&client, "http://127.0.0.1:39188/bad-chunk-terminator", "chunk not terminated by CRLF");
 
+    // SEC-HTTP-001 and SEC-HTTP-002: two ARITHMETIC boundaries, both of which ABORTED this process
+    // before they were fixed. STARK traps on integer overflow in every build mode, so a hostile
+    // server could stop any client reading its response — worse than a parse error, and invisible
+    // to the eleven routes above because both sit exactly where the magnitude guard stops and the
+    // final accumulation still happens.
+    refuse(&client, "http://127.0.0.1:39188/bad-length-overflow", "invalid Content-Length");
+    refuse(
+        &client,
+        "http://127.0.0.1:39188/bad-chunk-cumulative-overflow",
+        "body exceeds its limit",
+    );
+
     // ------------------------------------------------------------------------------------------
     // HC13. Limits, enforced against a peer that is actively trying to exceed them.
     //
