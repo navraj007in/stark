@@ -414,6 +414,7 @@ use starkc::provider_resolve::{DeclaredProvider, ProviderSet, ResolveError};
 
 fn declared(metadata: ProviderMetadata) -> DeclaredProvider {
     DeclaredProvider {
+        crate_path: "native".to_string(),
         metadata,
         crate_name: "test-native".to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),

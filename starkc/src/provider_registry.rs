@@ -90,19 +90,19 @@ pub fn first_party() -> Vec<DeclaredProvider> {
         .collect()
 }
 
-/// Resolves a provider crate name to its location on this machine.
+/// Where a BUILT-IN provider's crate lives, resolved against `root`.
 ///
-/// Locations are **not** part of the provider set above, and not part of MIR: a crate's path is a
-/// property of the checkout doing the build, while its name is a property of the program. Keeping
-/// them apart is what lets a verified MIR artefact stay relocation-stable while still naming the
-/// providers it needs.
-pub fn crate_location(crate_name: &str, repo_root: &std::path::Path) -> Option<PathBuf> {
-    match crate_name {
-        "stark-time-native" => Some(repo_root.join("stark-time").join("native")),
-        "stark-env-native" => Some(repo_root.join("stark-env").join("native")),
-        "stark-file-native" => Some(repo_root.join("stark-file").join("native")),
-        "stark-net-native" => Some(repo_root.join("stark-net").join("native")),
-        "stark-random-native" => Some(repo_root.join("stark-random").join("native")),
-        _ => None,
-    }
+/// CD-363 deleted `crate_location`, whose hardcoded `match` over five names was the last piece of
+/// the mechanism that made every native capability a compiler-source change. This is not that
+/// returning: it is a lookup OVER the manifests, so the path data still lives in exactly one place
+/// and this function cannot disagree with it. Adding a provider means adding a manifest, and
+/// nothing here changes.
+///
+/// Built-in only, by design. An external provider's root comes from the application's declaration,
+/// which is what makes it containable — see `provider_manifest::AdmittedProvider`.
+pub fn built_in_crate_location(crate_name: &str, root: &std::path::Path) -> Option<PathBuf> {
+    first_party()
+        .into_iter()
+        .find(|provider| provider.crate_name == crate_name)
+        .map(|provider| root.join(provider.crate_path))
 }

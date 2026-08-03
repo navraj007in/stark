@@ -380,6 +380,7 @@ pub fn parse_provider_manifest(
             functions,
         },
         crate_name,
+        crate_path,
         status_binding,
         origin: origin.to_string(),
     })

@@ -1,5 +1,57 @@
 # STARK Compiler STATE
 
+## CD-364 — `crate_location` deleted; P0.2 complete (2026-08-03)
+
+**The last piece of the mechanism that made every native capability a compiler-source change is
+gone.** A provider's crate location now comes from its manifest, resolved against a root the caller
+supplies — the compiler's own root for a built-in, the manifest's directory for an external one.
+
+```rust
+// before: a hardcoded match over five names
+crate_location("stark-net-native", repo_root) -> repo_root/stark-net/native
+
+// after: the manifest says
+repo_root.join(&provider.crate_path)
+```
+
+`crate_path` is constrained at parse time to be relative and free of `..`, so the join cannot escape
+the root. For an external provider that root is the only containment there is.
+
+**`built_in_crate_location` is not `crate_location` returning under a new name.** It is a lookup
+OVER the manifests, so the path data still lives in exactly one place and the function cannot
+disagree with it. Adding a provider means adding a manifest and nothing else. Built-in only, by
+design: an external provider's root comes from the application's declaration, which is what makes it
+containable.
+
+### P0.2 exit criteria
+
+| | |
+| --- | --- |
+| a provider supplied outside the compiler repo is discovered, validated, linked | DONE |
+| `first_party()` expressed the same way an external provider is | DONE (CD-362) |
+| ABI mismatch, unsupported target, duplicate capability, missing checksum each refused by name | DONE |
+| a provider not enabled in the application manifest cannot be activated by a dependency | DONE |
+| release builds record provider hashes | `AdmittedProvider` carries identity, version and hash; **wiring into build metadata remains** |
+
+### Verification
+
+`cargo clippy --all-targets` clean (0 warnings), `cargo fmt --check` clean, the four P0.2/CD-360
+suites green (51 tests), and the 15-package gate green — including native builds and live-peer
+resource lifecycles, which is the evidence that matters, since it exercises the new location path
+end to end.
+
+### Two process notes worth keeping
+
+**Clippy earned its place three times in this stretch alone** — `derivable_impls`, then two rounds of
+`crate_location` callers that `cargo build` and targeted `cargo test` never compiled. `--all-targets`
+is the only local command that compiles what CI compiles.
+
+**Twice I let a partial signal stand in for a complete one.** A fix loop that grepped for ONE error
+kind reported "no more sites" when the build had failed for a different reason; and I chased
+`crate_location` callers one clippy run at a time — three four-minute runs to find five callers that
+`grep -rn` listed in one second. The compiler's output is deliberately truncated; the tree is not.
+Ask the source directly.
+
 ## CD-363 — P0.2 external provider discovery, trust tiers, and `crate_path` containment (2026-08-03)
 
 ### The crate-location ruling

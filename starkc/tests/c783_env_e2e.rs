@@ -184,7 +184,7 @@ fn stark_env_args_len_executes_natively() {
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-env-native".to_string(),
-        provider_registry::crate_location("stark-env-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-env-native", &repo_root())
             .expect("stark-env-native must be locatable"),
     );
 

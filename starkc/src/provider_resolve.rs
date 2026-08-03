@@ -44,6 +44,15 @@ pub struct DeclaredProvider {
     /// not carry code meanings, because they are a *package* concern. Empty is meaningful — it
     /// says every nonzero status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// CD-363: where this provider's Cargo crate lives, RELATIVE to a root the caller supplies —
+    /// the compiler's own root for a built-in, the manifest's directory for an external one.
+    ///
+    /// **A location, never part of MIR.** `crate_location`'s original doc had this right and it
+    /// survives its deletion: a crate's path is a property of the machine doing the build, its name
+    /// a property of the program, and keeping them apart is what lets a verified MIR artefact stay
+    /// relocation-stable. Constrained to be relative and free of `..` at parse time, because for an
+    /// external provider the root is the only containment there is.
+    pub crate_path: String,
     /// Human-readable provenance for diagnostics, e.g. a manifest path. Never load-bearing for
     /// selection — two providers with identical origins still conflict, and one with no
     /// meaningful origin still resolves.

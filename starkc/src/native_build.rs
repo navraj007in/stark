@@ -161,12 +161,14 @@ fn provider_crates_for_set(
     let mut out = std::collections::BTreeMap::new();
     for provider in set.providers() {
         let name = &provider.crate_name;
-        let path = crate::provider_registry::crate_location(name, &repo_root).ok_or_else(|| {
-            BuildCommandError::Capability(format!(
-                "provider `{}` needs crate `{name}`, which this build has no location for",
-                provider.metadata.identity.name
-            ))
-        })?;
+        // CD-363: the provider's MANIFEST says where its crate lives, resolved against a root the
+        // caller supplies. This replaced a hardcoded match over five names — the last piece of the
+        // mechanism that made every native capability a compiler-source change.
+        //
+        // `crate_path` is constrained at parse time to be relative and free of `..`, so joining it
+        // here cannot escape the root. For an external provider that root is the only containment
+        // there is.
+        let path = repo_root.join(&provider.crate_path);
         if !path.join("Cargo.toml").is_file() {
             return Err(BuildCommandError::Capability(format!(
                 "provider crate `{name}` is not present at {}",
@@ -1112,7 +1114,7 @@ mod tests {
             "a directory holding stark-time/native/Cargo.toml is one"
         );
         assert_eq!(
-            crate::provider_registry::crate_location("stark-time-native", &root),
+            crate::provider_registry::built_in_crate_location("stark-time-native", &root),
             Some(root.join("stark-time").join("native")),
             "the installed root mirrors the repository shape, so one locator serves both"
         );

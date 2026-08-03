@@ -249,7 +249,7 @@ fn run_clock(function: &str, scalar: MirTy, printer: RuntimeFn, extra: Option<Mi
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-time-native".to_string(),
-        provider_registry::crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
             .expect("stark-time-native must be locatable"),
     );
 
@@ -355,7 +355,7 @@ fn the_recorded_blocker_is_discharged_at_its_own_terms() {
     // "the native crate is a standalone, unlinked Rust library" -- no longer: it has a location the
     // build resolves, and the two e2e tests above link and run it.
     assert!(
-        provider_registry::crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
             .expect("locatable")
             .join("Cargo.toml")
             .is_file()
