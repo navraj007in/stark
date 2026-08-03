@@ -1,7 +1,15 @@
-# STARK Implementation Roadmap
+# STARK Implementation Roadmap (Gates 1–7 — historical)
 
-**Status:** active planning document  
-**Current objective:** prove that STARK can catch deployment-pipeline defects
+> **NOT the live roadmap.** The single forward plan for STARK is `ROADMAP.md` at the
+> **repository root** (STARK Consolidated Roadmap, August 2026 – February 2027). This file
+> is the historical record of the pre-existing Gate 1–7 sequence — **all seven gates are
+> closed**, Gate 7 recording RETAIN AS RESEARCH LANGUAGE (2026-07-16). It is retained for
+> its ~70 inbound citations and for the pre-existing non-goals in §4. Do not schedule new
+> work from it. For compiler-track work, see `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`
+> and the repo-root `COMPILER-STATE.md`.
+
+**Status:** historical record — superseded as a forward plan on 2026-08-03  
+**Original objective:** prove that STARK can catch deployment-pipeline defects
 before execution while producing a practical native inference program.
 
 This roadmap defines the evidence required to advance the project. It does not

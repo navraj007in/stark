@@ -1,0 +1,107 @@
+{
+  "name": "stark-tls-native",
+  "version": "0.1.0",
+  "provider": {
+    "abi": "0.1",
+    "identity": "stark-std-tls",
+    "crate": "stark-tls-native",
+    "crate_path": "stark-tls/native",
+    "capabilities": ["tls"],
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ],
+    "resources": [{ "name": "tls_stream" }],
+    "consumes": [{ "provider": "stark-std-net", "resource": "tcp_stream" }],
+    "status": {
+      "1": "TlsError::ConnectionReset",
+      "2": "TlsError::BrokenPipe",
+      "3": "TlsError::TimedOut",
+      "4": "TlsError::WouldBlock",
+      "5": "TlsError::EndOfStream",
+      "6": "TlsError::InvalidInput",
+      "7": "TlsError::Unsupported",
+      "8": "TlsError::Other",
+      "20": "TlsError::HandshakeFailed",
+      "21": "TlsError::CertificateInvalid",
+      "22": "TlsError::CertificateExpired",
+      "23": "TlsError::CertificateNotYetValid",
+      "24": "TlsError::CertificateUnknownIssuer",
+      "25": "TlsError::HostnameMismatch",
+      "26": "TlsError::ProtocolVersionUnsupported",
+      "27": "TlsError::HandshakeTimeout",
+      "28": "TlsError::PeerClosedDuringHandshake",
+      "29": "TlsError::InvalidServerName",
+      "30": "TlsError::InvalidConfiguration"
+    },
+    "functions": [
+      {
+        "symbol": "stark_tls_stream_connect",
+        "capability": "tls",
+        "may_block": true,
+        "params": [
+          { "form": "handle_consumed", "resource": "tcp_stream" },
+          { "form": "buffer_in" },
+          { "form": "buffer_in" },
+          { "form": "scalar_in", "type": "u32" },
+          { "form": "scalar_in", "type": "u32" },
+          { "form": "scalar_in", "type": "u32" },
+          { "form": "scalar_in", "type": "u64" },
+          { "form": "handle_out", "resource": "tls_stream" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_read",
+        "capability": "tls",
+        "may_block": true,
+        "params": [
+          { "form": "handle_borrowed", "resource": "tls_stream" },
+          { "form": "buffer_in_out" },
+          { "form": "scalar_out", "type": "u64" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_write",
+        "capability": "tls",
+        "may_block": true,
+        "params": [
+          { "form": "handle_borrowed", "resource": "tls_stream" },
+          { "form": "buffer_in" },
+          { "form": "scalar_out", "type": "u64" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_set_read_timeout",
+        "capability": "tls",
+        "params": [
+          { "form": "handle_borrowed", "resource": "tls_stream" },
+          { "form": "scalar_in", "type": "u64" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_set_write_timeout",
+        "capability": "tls",
+        "params": [
+          { "form": "handle_borrowed", "resource": "tls_stream" },
+          { "form": "scalar_in", "type": "u64" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_peer_version",
+        "capability": "tls",
+        "params": [
+          { "form": "handle_borrowed", "resource": "tls_stream" },
+          { "form": "scalar_out", "type": "u32" }
+        ]
+      },
+      {
+        "symbol": "stark_tls_stream_close",
+        "capability": "tls",
+        "close_for": "tls_stream",
+        "params": [{ "form": "handle_consumed", "resource": "tls_stream" }]
+      }
+    ]
+  }
+}

@@ -2,7 +2,12 @@
 
 **Status: SUPERSEDED — retained for historical reference only.**
 
-Everything in this directory describes the original, pre-pivot STARK design
+> **Note on `roadmaps/`.** That subdirectory is a later addition and is *not* pre-pivot
+> material. It holds post-pivot package and ecosystem roadmaps that were consolidated on
+> 2026-08-03 into the single live roadmap, `ROADMAP.md` at the repository root. See
+> `roadmaps/README.md`. Everything else in this directory is pre-pivot as described below.
+
+Everything else in this directory describes the original, pre-pivot STARK design
 (the "AI-native, cloud-first" language with actors, a hybrid GC memory model,
 lowercase primitive types like `i32`/`f32`, a `Package.stark` TOML manifest,
 ML pipeline DSLs, and cloud/serverless annotations). In early 2026 the project

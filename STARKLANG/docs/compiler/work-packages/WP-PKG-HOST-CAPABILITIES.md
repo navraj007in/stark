@@ -4,7 +4,11 @@
 **Prepared:** 2026-07-31  
 **Repository:** `navraj007in/stark`  
 **Scope:** Secure randomness, standard streams, buffered I/O, signal handling, DNS, and process spawning  
-**Relationship:** Companion to `WP-PKG-ROADMAP` and `WP-PKG-OPS-ROADMAP`
+**Relationship:** Originally a companion to `WP-PKG-ROADMAP` and `WP-PKG-OPS-ROADMAP`, both
+archived 2026-08-03 to `STARKLANG/docs/archive/roadmaps/`. **This document stays live** — its
+Part E is the authoritative DNS provider ABI, cited as normative by `WP-HTTP-CLIENT-ROADMAP.md`
+and the HC evidence records. Treat it as a capability/ABI specification, not a schedule:
+sequencing for these capabilities now comes from `ROADMAP.md` (repository root).
 
 ---
 

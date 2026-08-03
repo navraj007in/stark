@@ -15,9 +15,19 @@ elif [ "$#" -ne 0 ]; then
 fi
 
 rm -f "$prefix/bin/stark" "$prefix/bin/starkc" "$prefix/bin/starkide"
+if [ -L "$prefix/lib/stark/current" ]; then
+    current_target=$(readlink "$prefix/lib/stark/current")
+    case "$current_target" in
+        versions/*)
+            rm -rf "$prefix/lib/stark/$current_target"
+            ;;
+    esac
+fi
+rm -f "$prefix/lib/stark/current"
+rm -f "$prefix/lib/stark/uninstall.sh"
 rm -rf "$prefix/lib/stark/stark-runtime"
 rm -rf "$prefix/lib/stark/stark-provider-abi"
-rm -f "$prefix/lib/stark/uninstall.sh"
+rmdir "$prefix/lib/stark/versions" 2>/dev/null || true
 rmdir "$prefix/lib/stark" 2>/dev/null || true
 
 echo "Removed STARK from $prefix"

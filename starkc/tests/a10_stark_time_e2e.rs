@@ -57,7 +57,10 @@ fn stark_time_crate() -> PathBuf {
 /// that crate is what keeps this mirror honest.
 fn stark_time_provider() -> DeclaredProvider {
     DeclaredProvider {
+        crate_path: "native".to_string(),
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-time".to_string(),
                 semver: (0, 1, 0),

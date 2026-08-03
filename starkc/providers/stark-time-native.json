@@ -1,0 +1,29 @@
+{
+  "name": "stark-time-native",
+  "version": "0.1.0",
+  "provider": {
+    "abi": "0.1",
+    "identity": "stark-std-time",
+    "crate": "stark-time-native",
+    "crate_path": "stark-time/native",
+    "capabilities": ["clock"],
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ],
+    "functions": [
+      {
+        "symbol": "stark_time_monotonic_now_ns",
+        "capability": "clock",
+        "params": [{ "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_time_unix_now",
+        "capability": "clock",
+        "params": [{ "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "u32" }]
+      }
+    ]
+  }
+}

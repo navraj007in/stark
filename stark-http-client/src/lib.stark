@@ -1,11 +1,27 @@
-// HC8 — a plain `http://` client, composing every stage below it.
+// HC8/HC10 — an `http://` and `https://` client, composing every stage below it.
 //
-//   parse URL -> require http -> resolve host -> attempt addresses -> connect -> set timeouts
-//   -> serialize -> write_all -> read incrementally -> parse -> enforce body limit -> close
+//   parse URL -> resolve host -> attempt addresses -> connect -> set timeouts
+//     -> [https only] TLS handshake with hostname verification
+//     -> serialize -> write_all -> read incrementally -> parse -> enforce body limit -> close
 //
 // This package owns POLICY. Every stage under it is pure or mechanical; the decisions that make a
 // client behave predictably — which address is tried, how long anything may take, what happens when
-// a peer closes early — live here and nowhere else, so they can be read in one place.
+// a peer closes early, which scheme gets a verified channel — live here and nowhere else, so they
+// can be read in one place.
+//
+// # Why the transport is not abstracted
+//
+// The plain and secure flows are written out TWICE rather than over a common `Transport`. Core v1
+// has no trait objects and no closures, and the obvious remaining shape —
+// `enum Transport { Plain(TcpStream), Secure(TlsStream) }` — cannot work: a pattern binds an enum
+// payload by value or by SHARED borrow, and there is no `ref mut`, so a `&mut self` method can
+// never reach the stream inside. Probed and confirmed (E0400, "mutable method receiver requires a
+// mutable place"). Mutable payload binding is a LANGUAGE question, not a defect, and is recorded
+// for the owner rather than worked around silently.
+//
+// So `exchange_plain` and `exchange_secure` are deliberately parallel: same order, same names, same
+// comments. A change to one is a change to both, and reading them side by side is how that stays
+// true.
 
 use stark_http_core::default_limits;
 use stark_http_core::HttpLimits;
@@ -13,6 +29,9 @@ use stark_http_core::HttpMethod;
 use stark_http_core::HttpRequest;
 use stark_http_core::HttpResponse;
 use stark_http_core::HttpVersion;
+use stark_http_core::append_validated;
+use stark_http_core::get_first;
+use stark_http_core::get_singleton;
 use stark_http_core::new_header_map;
 use stark_http_core::request;
 use stark_http_parser::finish;
@@ -31,66 +50,226 @@ use stark_net::read;
 use stark_net::resolve;
 use stark_net::socket_address;
 use stark_net::write_all;
+use stark_net::DnsError;
 use stark_net::NetworkError;
 use stark_net::ResolvedAddress;
 use stark_net::TcpStream;
+use stark_json::encode;
+use stark_json::JsonValue;
 use stark_time::duration_seconds;
 use stark_time::Duration;
+use stark_tls::clone_root_store;
+use stark_tls::config_with_roots;
+use stark_tls::RootStorePolicy;
+use stark_tls::TlsError;
+use stark_tls::TlsStream;
 
-pub enum ClientError {
+/// Which transport a URL asks for. HC10's whole public change is that both are now reachable.
+pub enum Scheme {
+    Http,
+    Https,
+}
+
+/// The phase a timeout happened in.
+///
+/// A bare "timed out" is nearly useless to operate on: resolution, connection, handshake, request
+/// and response fail for different reasons and are fixed in different places. The roadmap requires
+/// timeouts to be phase-specific, and this is that requirement as a type.
+pub enum HttpTimeoutPhase {
+    Resolve,
+    Connect,
+    TlsHandshake,
+    WriteRequest,
+    ReadResponse,
+}
+
+/// Every way a request can fail.
+///
+/// Each layer's error is CARRIED rather than flattened to a string: a caller that wants to retry on
+/// `NetworkError::ConnectionReset` but not on a certificate failure needs to see which it got, and
+/// a rendered message cannot be matched on. `error_text` exists for reporting, not for branching.
+pub enum HttpError {
     InvalidUrl,
     UnsupportedScheme,
-    ResolveFailed,
+    Dns(DnsError),
+    Network(NetworkError),
+    Tls(TlsError),
     NoAddresses,
     ConnectFailed,
     TimeoutSetupFailed,
-    SerializeFailed(String),
-    WriteFailed,
-    ReadFailed,
-    ParseFailed(String),
+    InvalidRequest(String),
+    InvalidResponse(String),
     ResponseTooLarge,
     ClosedEarly,
-    RedirectsUnsupported,
+    Timeout(HttpTimeoutPhase),
+    TooManyRedirects,
+    RedirectLoop,
+    MissingLocation,
+    InvalidRedirectTarget,
+    InsecureRedirect,
+    AmbiguousLocation,
 }
 
-pub fn client_error_text(error: &ClientError) -> String {
+// The redirect variants, documented here because `stark fmt` evicts a variant's doc comment to
+// after the enum (DEV-156):
+//
+//   TooManyRedirects       the chain exceeded `max_redirects`
+//   RedirectLoop           a target repeated. DISTINCT from the count bound: a loop is a server
+//                          defect and a long chain may be legitimate, so a caller raising the
+//                          limit should fix one and not the other
+//   MissingLocation        a `3xx` that redirects carried no `Location`
+//   InvalidRedirectTarget  a `Location` that does not resolve to a URL this client will dial —
+//                          including an absolute URI in a scheme it does not speak, and a
+//                          fragment-only reference, both of which name nothing fetchable
+//   InsecureRedirect       an `https://` response redirected to `http://` under a policy that
+//                          forbids it
+//   AmbiguousLocation      two `Location` headers. Following the first would be a silent choice
+//                          between two things the server said, which is the class of disagreement
+//                          request smuggling is built on
+
+pub fn timeout_phase_text(phase: &HttpTimeoutPhase) -> String {
+    match *phase {
+        HttpTimeoutPhase::Resolve => String::from("resolving the host"),
+        HttpTimeoutPhase::Connect => String::from("connecting"),
+        HttpTimeoutPhase::TlsHandshake => String::from("the TLS handshake"),
+        HttpTimeoutPhase::WriteRequest => String::from("writing the request"),
+        HttpTimeoutPhase::ReadResponse => String::from("reading the response"),
+    }
+}
+
+pub fn error_text(error: &HttpError) -> String {
     match *error {
-        ClientError::InvalidUrl => String::from("the URL could not be parsed"),
-        ClientError::UnsupportedScheme => String::from("only http:// is supported in v0.1"),
-        ClientError::ResolveFailed => String::from("host resolution failed"),
-        ClientError::NoAddresses => String::from("host resolved to no addresses"),
-        ClientError::ConnectFailed => String::from("no address accepted a connection"),
-        ClientError::TimeoutSetupFailed => String::from("socket timeouts could not be set"),
-        ClientError::SerializeFailed(why) => {
+        HttpError::InvalidUrl => String::from("the URL could not be parsed"),
+        HttpError::UnsupportedScheme => String::from("only http:// and https:// are supported"),
+        HttpError::Dns(_why) => String::from("host resolution failed"),
+        HttpError::Network(_why) => String::from("the connection failed"),
+        HttpError::Tls(why) => {
+            let mut out = String::from("TLS failed: ");
+            out.push_str(stark_tls::tls_error_text(&why).as_str());
+            out
+        }
+        HttpError::NoAddresses => String::from("host resolved to no addresses"),
+        HttpError::ConnectFailed => String::from("no address accepted a connection"),
+        HttpError::TimeoutSetupFailed => String::from("socket timeouts could not be set"),
+        HttpError::InvalidRequest(why) => {
             let mut out = String::from("request serialization failed: ");
             out.push_str(why.as_str());
             out
         }
-        ClientError::WriteFailed => String::from("writing the request failed"),
-        ClientError::ReadFailed => String::from("reading the response failed"),
-        ClientError::ParseFailed(why) => {
+        HttpError::InvalidResponse(why) => {
             let mut out = String::from("response parsing failed: ");
             out.push_str(why.as_str());
             out
         }
-        ClientError::ResponseTooLarge => String::from("response exceeded max_response_bytes"),
-        ClientError::ClosedEarly => String::from("the peer closed before the response completed"),
-        ClientError::RedirectsUnsupported => {
-            String::from("redirect following is not implemented in v0.1 (HC12)")
+        HttpError::ResponseTooLarge => String::from("response exceeded max_response_bytes"),
+        HttpError::ClosedEarly => String::from("the peer closed before the response completed"),
+        HttpError::Timeout(phase) => {
+            let mut out = String::from("timed out ");
+            out.push_str(timeout_phase_text(&phase).as_str());
+            out
+        }
+        HttpError::TooManyRedirects => String::from("too many redirects"),
+        HttpError::RedirectLoop => String::from("the redirect chain revisited a target"),
+        HttpError::MissingLocation => String::from("a redirect carried no Location header"),
+        HttpError::InvalidRedirectTarget => String::from("the redirect target is not a usable URL"),
+        HttpError::InsecureRedirect => {
+            String::from("refusing to follow https:// to http:// (a downgrade)")
+        }
+        HttpError::AmbiguousLocation => {
+            String::from("the response carried more than one Location")
         }
     }
 }
 
+/// A network failure, classified by PHASE.
+///
+/// `TimedOut` becomes `Timeout(phase)` rather than `Network(TimedOut)`, because the phase is the
+/// part a caller acts on and the transport error is the part they already knew. Everything else
+/// keeps its own error, so nothing is lost.
+fn network_at(error: NetworkError, phase: HttpTimeoutPhase) -> HttpError {
+    match error {
+        NetworkError::TimedOut => HttpError::Timeout(phase),
+        other => HttpError::Network(other),
+    }
+}
+
+/// The same classification for the TLS side. `HandshakeTimeout` and a plain `TimedOut` are both
+/// timeouts; which phase they belong to is the caller's information.
+fn tls_at(error: TlsError, phase: HttpTimeoutPhase) -> HttpError {
+    match error {
+        TlsError::HandshakeTimeout => HttpError::Timeout(phase),
+        TlsError::TimedOut => HttpError::Timeout(phase),
+        other => HttpError::Tls(other),
+    }
+}
+
+/// Everything a client decides once and applies to every request.
+///
+/// `tls_root_store` is held as POLICY rather than as a built `TlsClientConfig`, because
+/// `TlsStream::connect` consumes its configuration and a client makes many requests — see
+/// `stark_tls::clone_root_store`. `tls_handshake_timeout` bounds the WHOLE handshake, separately
+/// from the per-read socket timeouts (HC4). `redirects` applies only when `follow_redirects` is
+/// set, and is present regardless so turning following on cannot also mean "and I chose no policy".
+///
+/// (Documented on the type rather than per field: `stark fmt` evicts a field's doc comment to after
+/// the struct — DEV-156.)
 pub struct ClientConfig {
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
     pub max_response_bytes: UInt64,
     pub follow_redirects: Bool,
+    pub tls_root_store: RootStorePolicy,
+    pub tls_handshake_timeout: Duration,
+    pub redirects: RedirectPolicy,
+}
+
+/// **HC12 — how far, and at what cost, a redirect may be followed.**
+///
+/// Following is off by default (`ClientConfig::follow_redirects`), because a client that follows
+/// silently turns one request the caller reasoned about into several they did not. This is what the
+/// "yes" means when they say yes.
+///
+/// `max_redirects` is the chain bound — `UInt8` because a legitimate chain is single digits, and a
+/// caller needing hundreds has a server problem rather than a configuration one.
+///
+/// `allow_https_to_http` permits a downgrade. **Default false.** A downgrade takes a request the
+/// caller secured and puts it on the wire in clear, which is the one thing following redirects must
+/// never do by accident.
+///
+/// `preserve_authorization_same_origin_only` strips `Authorization` when the ORIGIN changes.
+/// **Default true.** Setting it false forwards credentials to whatever host a redirect names, so an
+/// open redirect on the first server becomes credential exfiltration to the attacker's. It exists
+/// because some internal deployments genuinely redirect inside a trust boundary this client cannot
+/// see, and an explicit opt-out is not the "silently" the exit criterion forbids. It is still a
+/// loaded gun, and the name says which way it points.
+///
+/// `sensitive_headers` names additional headers to strip on an origin change, ASCII
+/// case-insensitively. `Authorization` and `Cookie` are ALWAYS stripped; these are the caller's own
+/// bearer-shaped headers, which this package cannot recognise on its own.
+pub struct RedirectPolicy {
+    pub max_redirects: UInt8,
+    pub allow_https_to_http: Bool,
+    pub preserve_authorization_same_origin_only: Bool,
+    pub sensitive_headers: Vec<String>,
+}
+
+/// The safe policy: a short chain, no downgrade, credentials confined to their origin.
+pub fn default_redirect_policy() -> RedirectPolicy {
+    RedirectPolicy {
+        max_redirects: 5u8,
+        allow_https_to_http: false,
+        preserve_authorization_same_origin_only: true,
+        sensitive_headers: Vec::new(),
+    }
 }
 
 pub struct Client { pub config: ClientConfig, pub limits: HttpLimits }
 
+/// The default: the machine's own trust store.
+///
+/// `SystemRoots` rather than a bundled set, because a client that ships its own CA list also ships
+/// the obligation to update it, and a stale bundle fails closed months after anyone remembers why.
 pub fn default_config() -> ClientConfig {
     ClientConfig {
         connect_timeout: duration_seconds(10u64),
@@ -98,15 +277,29 @@ pub fn default_config() -> ClientConfig {
         write_timeout: duration_seconds(30u64),
         max_response_bytes: 8388608u64,
         follow_redirects: false,
+        tls_root_store: RootStorePolicy::SystemRoots,
+        tls_handshake_timeout: duration_seconds(30u64),
+        redirects: default_redirect_policy(),
     }
+}
+
+/// A configuration pinned to explicit trust anchors, for a controlled peer.
+///
+/// This is what a test fixture uses, and what an application talking to a private CA uses. It is a
+/// constructor rather than a field edit so the anchors and the policy cannot disagree.
+pub fn config_with_explicit_roots(roots_pem: String) -> ClientConfig {
+    // Was a hand-copied struct literal, because assigning over a field whose old value is a drop
+    // unit aborted natively (DEV-158). That is fixed, so this reads from `default_config()` again
+    // and cannot drift from it.
+    let mut config = default_config();
+    config.tls_root_store = RootStorePolicy::ExplicitRoots(roots_pem);
+    config
 }
 
 pub fn new_client(config: ClientConfig) -> Client {
     Client { config: config, limits: default_limits() }
 }
 
-/// A request under construction. Kept as owned data rather than a borrow of the client, because
-/// Core v1 forbids reference-typed fields — so a builder that held `&Client` could not be declared.
 pub struct RequestBuilder {
     pub method: HttpMethod,
     pub url: String,
@@ -134,9 +327,14 @@ pub fn post(url: &str, body: Vec<UInt8>) -> RequestBuilder {
 
 /// The pieces of a URL this client needs. `stark-url`'s own `Url` carries more; this is the subset
 /// the request flow consumes, extracted once so the flow never re-parses.
-pub struct Target { pub host: String, pub port: UInt16, pub path_and_query: String }
+pub struct Target {
+    pub scheme: Scheme,
+    pub host: String,
+    pub port: UInt16,
+    pub path_and_query: String,
+}
 
-/// Bytes legal in the host of an `http://` URL this client will dial.
+/// Bytes legal in the host of a URL this client will dial.
 ///
 /// Registered names and IPv4 literals only: letters, digits, `-`, `.`, `_`. Everything else is
 /// refused, which deliberately includes the `[::1]` bracketed IPv6 form — v0.1 has no IPv6 literal
@@ -154,11 +352,56 @@ fn is_host_byte(byte: UInt8) -> Bool {
     byte == 45u8 || byte == 46u8 || byte == 95u8
 }
 
-/// Split an `http://host[:port]/path?query` URL.
+fn starts_with(bytes: &[UInt8], prefix: &[UInt8]) -> Bool {
+    if bytes.len() < prefix.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < prefix.len() {
+        if bytes[i] != prefix[i] {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn default_port(scheme: &Scheme) -> UInt16 {
+    match *scheme {
+        Scheme::Http => 80u16,
+        Scheme::Https => 443u16,
+    }
+}
+
+/// The scheme and the length of its `://` prefix.
 ///
-/// Deliberately strict: any other scheme is REFUSED rather than defaulted. A client that silently
-/// treats `https://` as `http://` would downgrade a caller's security expectation without saying so.
-pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
+/// A separate function returning the pair, rather than an `if`/`else if`/`else` assigning two
+/// pre-declared locals: definite-assignment analysis does not see through that chain and reports
+/// both as possibly-uninitialised. Early `return`s make each branch complete on its own.
+///
+/// `https` is tested FIRST. `http://` is not a prefix of `https://`, so the order is not load-
+/// bearing today — but testing the longer scheme first is the arrangement that stays correct if a
+/// scheme is ever added that IS a prefix of another.
+fn split_scheme(bytes: &[UInt8]) -> Result<(Scheme, UInt64), HttpError> {
+    let https = "https://".bytes();
+    if starts_with(bytes, https) {
+        return Ok((Scheme::Https, https.len()));
+    }
+    let http = "http://".bytes();
+    if starts_with(bytes, http) {
+        return Ok((Scheme::Http, http.len()));
+    }
+    Err(HttpError::UnsupportedScheme)
+}
+
+/// Split an `http://` or `https://` URL.
+///
+/// **The scheme is the security decision, so it is read exactly and never guessed.** Anything that
+/// is not one of the two is REFUSED rather than defaulted: a client that silently treated an unknown
+/// scheme as `http://` would downgrade a caller's expectation without saying so. HC8 refused
+/// `https://` here for the same reason — it was out of scope then, and pretending otherwise would
+/// have been the same failure in the other direction.
+pub fn parse_url(url: &str) -> Result<Target, HttpError> {
     let bytes = url.bytes();
     let full = bytes.len();
     // The fragment is CLIENT-SIDE ONLY and must never reach the wire — sending it leaks where the
@@ -174,21 +417,16 @@ pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
             f = f + 1u64;
         }
     }
-    let prefix = "http://".bytes();
-    if n <= prefix.len() {
-        return Err(ClientError::InvalidUrl);
-    }
-    let mut i = 0u64;
-    while i < prefix.len() {
-        if bytes[i] != prefix[i] {
-            // Anything that is not exactly `http://` — including `https://` — is out of scope.
-            return Err(ClientError::UnsupportedScheme);
-        }
-        i = i + 1u64;
+
+    let split = split_scheme(&bytes[0u64..n])?;
+    let scheme = split.0;
+    let scheme_len = split.1;
+    if n <= scheme_len {
+        return Err(HttpError::InvalidUrl);
     }
 
     let mut authority_end = n;
-    let mut j = prefix.len();
+    let mut j = scheme_len;
     while j < n {
         if bytes[j] == 47u8 {
             authority_end = j;
@@ -201,14 +439,14 @@ pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
     let mut host = String::new();
     let mut port_text = String::new();
     let mut in_port = false;
-    let mut k = prefix.len();
+    let mut k = scheme_len;
     while k < authority_end {
         let byte = bytes[k];
         if byte == 58u8 && !in_port {
             in_port = true;
         } else {
             if !in_port && !is_host_byte(byte) {
-                return Err(ClientError::InvalidUrl);
+                return Err(HttpError::InvalidUrl);
             }
             match Char::from_u32(byte as UInt32) {
                 Some(ch) => {
@@ -224,15 +462,15 @@ pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
         k = k + 1u64;
     }
     if host.len() == 0u64 {
-        return Err(ClientError::InvalidUrl);
+        return Err(HttpError::InvalidUrl);
     }
 
     // A colon that introduces no digits is malformed, not a request for the default. `http://h:/`
-    // is a typo, and guessing 80 for it hides the typo behind a working connection.
+    // is a typo, and guessing the default for it hides the typo behind a working connection.
     if in_port && port_text.len() == 0u64 {
-        return Err(ClientError::InvalidUrl);
+        return Err(HttpError::InvalidUrl);
     }
-    let mut port = 80u16;
+    let mut port = default_port(&scheme);
     if port_text.len() > 0u64 {
         let digits = port_text.bytes();
         let count = digits.len();
@@ -241,38 +479,38 @@ pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
         while d < count {
             let byte = digits[d];
             if byte < 48u8 || byte > 57u8 {
-                return Err(ClientError::InvalidUrl);
+                return Err(HttpError::InvalidUrl);
             }
             value = value * 10u64 + (byte - 48u8) as UInt64;
             if value > 65535u64 {
-                return Err(ClientError::InvalidUrl);
+                return Err(HttpError::InvalidUrl);
             }
             d = d + 1u64;
         }
         if value == 0u64 {
-            return Err(ClientError::InvalidUrl);
+            return Err(HttpError::InvalidUrl);
         }
         port = value as UInt16;
     }
 
     let mut path_and_query = String::new();
     if authority_end < n {
-        let mut p = authority_end;
-        while p < n {
-            match Char::from_u32(bytes[p] as UInt32) {
+        let mut q = authority_end;
+        while q < n {
+            match Char::from_u32(bytes[q] as UInt32) {
                 Some(ch) => {
                     path_and_query.push(ch);
                 }
                 None => {}
             }
-            p = p + 1u64;
+            q = q + 1u64;
         }
     } else {
         // An empty path is `/` on the wire. Origin-form always has one.
         path_and_query.push('/');
     }
 
-    Ok(Target { host: host, port: port, path_and_query: path_and_query })
+    Ok(Target { scheme: scheme, host: host, port: port, path_and_query: path_and_query })
 }
 
 // -- the request flow ------------------------------------------------------------------------
@@ -288,10 +526,10 @@ pub fn parse_http_url(url: &str) -> Result<Target, ClientError> {
 ///   timeout budget   PER ADDRESS, not total. A total budget would make the last address's odds
 ///                    depend on how many preceded it, which is surprising; per-address means each
 ///                    gets the deadline the caller asked for.
-fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Result<TcpStream, ClientError> {
+fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Result<TcpStream, HttpError> {
     let n = addresses.len();
     if n == 0u64 {
-        return Err(ClientError::NoAddresses);
+        return Err(HttpError::NoAddresses);
     }
     let mut index = 0u64;
     while index < n {
@@ -301,7 +539,8 @@ fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Re
             Ok(stream) => {
                 let mut owned = stream;
                 // Timeouts are set immediately after connect and before any I/O, so no read or
-                // write can ever run unbounded — including the first.
+                // write can ever run unbounded — including the first, and including the handshake
+                // bytes if this connection is about to be wrapped in TLS.
                 let mut ok = true;
                 match owned.set_read_timeout(Some(config.read_timeout)) {
                     Ok(_unit) => {}
@@ -324,7 +563,7 @@ fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Re
                         Ok(_unit) => {}
                         Err(_error) => {}
                     }
-                    return Err(ClientError::TimeoutSetupFailed);
+                    return Err(HttpError::TimeoutSetupFailed);
                 }
                 return Ok(owned);
             }
@@ -332,18 +571,18 @@ fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Re
         }
         index = index + 1u64;
     }
-    Err(ClientError::ConnectFailed)
+    Err(HttpError::ConnectFailed)
 }
 
-/// Read until the parser says the message is complete, the body limit is hit, or the peer closes.
+/// The read loop, over a PLAIN stream.
 ///
 /// The limit is enforced on TOTAL BYTES READ, not on the parsed body: a peer can otherwise send an
 /// unbounded header block, or unbounded chunk metadata, and never trip a body-only check.
-fn read_response(
+fn read_plain(
     stream: &mut TcpStream,
     parser: &mut stark_http_parser::HttpResponseParser,
     max_bytes: UInt64,
-) -> Result<HttpResponse, ClientError> {
+) -> Result<HttpResponse, HttpError> {
     let mut total = 0u64;
     let mut buffer: [UInt8; 4096] = [0u8; 4096];
     let mut guard = 0u64;
@@ -356,26 +595,25 @@ fn read_response(
                 Ok(read_count) => {
                     count = read_count;
                 }
-                Err(_error) => {
-                    return Err(ClientError::ReadFailed);
+                Err(error) => {
+                    return Err(network_at(error, HttpTimeoutPhase::ReadResponse));
                 }
             }
         }
         if count == 0u64 {
             // The peer closed. Only a close-delimited body may end this way; `finish` decides.
-            let ended = finish(parser);
-            match ended {
+            match finish(parser) {
                 Ok(response) => {
                     return Ok(response);
                 }
                 Err(_error) => {
-                    return Err(ClientError::ClosedEarly);
+                    return Err(HttpError::ClosedEarly);
                 }
             }
         }
         total = total + count;
         if total > max_bytes {
-            return Err(ClientError::ResponseTooLarge);
+            return Err(HttpError::ResponseTooLarge);
         }
         let chunk = &buffer[0u64..count];
         match push(parser, chunk) {
@@ -386,56 +624,523 @@ fn read_response(
                 ParseProgress::NeedMore => {}
             }
             Err(error) => {
-                return Err(ClientError::ParseFailed(parse_error_text(&error)));
+                return Err(HttpError::InvalidResponse(parse_error_text(&error)));
             }
         }
     }
-    Err(ClientError::ReadFailed)
+    Err(HttpError::Timeout(HttpTimeoutPhase::ReadResponse))
 }
 
-/// Send a built request and return the response.
-///
-/// The stream is closed on EVERY exit path, including the failing ones. Drop elaboration would
-/// close it anyway (CD-345 verified that), but closing explicitly keeps the lifetime visible at
-/// the point a reader is asking "what happens to the socket if the parse fails?".
-pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, ClientError> {
-    if client.config.follow_redirects {
-        return Err(ClientError::RedirectsUnsupported);
+/// The read loop, over a SECURE stream. Deliberately identical to `read_plain` in order, names and
+/// limits — see the module header for why it is duplicated rather than abstracted.
+fn read_secure(
+    stream: &mut TlsStream,
+    parser: &mut stark_http_parser::HttpResponseParser,
+    max_bytes: UInt64,
+) -> Result<HttpResponse, HttpError> {
+    let mut total = 0u64;
+    let mut buffer: [UInt8; 4096] = [0u8; 4096];
+    let mut guard = 0u64;
+    while guard < 1000000u64 {
+        guard = guard + 1u64;
+        let count: UInt64;
+        {
+            let window = &mut buffer[0u64..4096u64];
+            match stream.read(window) {
+                Ok(read_count) => {
+                    count = read_count;
+                }
+                Err(error) => {
+                    return Err(tls_at(error, HttpTimeoutPhase::ReadResponse));
+                }
+            }
+        }
+        if count == 0u64 {
+            match finish(parser) {
+                Ok(response) => {
+                    return Ok(response);
+                }
+                Err(_error) => {
+                    return Err(HttpError::ClosedEarly);
+                }
+            }
+        }
+        total = total + count;
+        if total > max_bytes {
+            return Err(HttpError::ResponseTooLarge);
+        }
+        let chunk = &buffer[0u64..count];
+        match push(parser, chunk) {
+            Ok(progress) => match progress {
+                ParseProgress::Complete(response, _consumed) => {
+                    return Ok(response);
+                }
+                ParseProgress::NeedMore => {}
+            }
+            Err(error) => {
+                return Err(HttpError::InvalidResponse(parse_error_text(&error)));
+            }
+        }
     }
+    Err(HttpError::Timeout(HttpTimeoutPhase::ReadResponse))
+}
 
-    let target = parse_http_url(builder.url.as_str())?;
+fn new_response_parser(limits: HttpLimits, head: Bool) -> stark_http_parser::HttpResponseParser {
+    // A HEAD response describes a body it never sends, so the parser must be told.
+    if head {
+        new_head_parser(limits)
+    } else {
+        new_parser(limits)
+    }
+}
+
+/// Write, read, close — over a plain stream, which this CONSUMES.
+///
+/// Taking the stream by value puts the close inside, so there is exactly one release path and no
+/// caller can forget it. Drop elaboration would close it anyway; closing explicitly keeps the
+/// lifetime visible at the point a reader asks "what happens to the socket if the parse fails?".
+fn exchange_plain(
+    stream: TcpStream,
+    wire: &[UInt8],
+    limits: HttpLimits,
+    max_bytes: UInt64,
+    head: Bool,
+) -> Result<HttpResponse, HttpError> {
+    let mut owned = stream;
+    // Hoisted: a match SCRUTINEE's temporaries live for the whole match, so `&mut owned` taken
+    // inline would still be borrowed in the error arm and `close(owned)` could not move it.
+    let sent = write_all(&mut owned, wire);
+    match sent {
+        Ok(_unit) => {}
+        Err(error) => {
+            match close(owned) {
+                Ok(_unit) => {}
+                Err(_error) => {}
+            }
+            return Err(network_at(error, HttpTimeoutPhase::WriteRequest));
+        }
+    }
+    let mut parser = new_response_parser(limits, head);
+    let outcome = read_plain(&mut owned, &mut parser, max_bytes);
+    match close(owned) {
+        Ok(_unit) => {}
+        Err(_error) => {}
+    }
+    outcome
+}
+
+/// Write, read, close — over a secure stream, which this CONSUMES. One close releases the TLS
+/// session AND the socket under it; there is no second path.
+fn exchange_secure(
+    stream: TlsStream,
+    wire: &[UInt8],
+    limits: HttpLimits,
+    max_bytes: UInt64,
+    head: Bool,
+) -> Result<HttpResponse, HttpError> {
+    let mut owned = stream;
+    // Hoisted, for the same reason as `exchange_plain` — see there.
+    let sent = owned.write_all(wire);
+    match sent {
+        Ok(_unit) => {}
+        Err(error) => {
+            match stark_tls::close(owned) {
+                Ok(_unit) => {}
+                Err(_error) => {}
+            }
+            return Err(tls_at(error, HttpTimeoutPhase::WriteRequest));
+        }
+    }
+    let mut parser = new_response_parser(limits, head);
+    let outcome = read_secure(&mut owned, &mut parser, max_bytes);
+    match stark_tls::close(owned) {
+        Ok(_unit) => {}
+        Err(_error) => {}
+    }
+    outcome
+}
+
+// --- HC12: following redirects, safely -------------------------------------------------------
+
+/// A `3xx` this client will follow. `300` and `304` are excluded deliberately: `300` has no single
+/// target and `304` is a cache answer, not a relocation.
+pub fn is_followable_redirect(status: UInt16) -> Bool {
+    status == 301u16 || status == 302u16 || status == 303u16 || status == 307u16 || status == 308u16
+}
+
+/// **The method-rewrite table, stated rather than inherited.**
+///
+/// Returns the method for the next hop and whether the body travels with it.
+///
+/// | status | method | body |
+/// | --- | --- | --- |
+/// | 301, 302 | `POST` becomes `GET`, others unchanged | dropped when rewritten |
+/// | 303 | always `GET` | always dropped |
+/// | 307, 308 | unchanged | replayed |
+///
+/// 301/302 rewriting `POST` to `GET` contradicts a literal reading of the RFCs and matches what
+/// every browser and `curl -L` actually do. Following the letter here would send a POST body to a
+/// target the origin server redirected a POST *away* from, which is both surprising and the more
+/// dangerous of the two readings. 307 and 308 exist precisely to say "no, really, replay it", and
+/// this honours that — which is safe only because a body is a buffered `Vec<UInt8>` and replay
+/// costs nothing but bytes.
+pub fn redirect_method(status: UInt16, method: &HttpMethod) -> (HttpMethod, Bool) {
+    if status == 303u16 {
+        return (HttpMethod::Get, false);
+    }
+    if status == 307u16 || status == 308u16 {
+        return (clone_method(method), true);
+    }
+    match *method {
+        HttpMethod::Post => (HttpMethod::Get, false),
+        _ => (clone_method(method), true),
+    }
+}
+
+/// `HttpMethod` is not `Copy`, and a redirect needs the same method again on the next hop.
+pub fn clone_method(method: &HttpMethod) -> HttpMethod {
+    match *method {
+        HttpMethod::Get => HttpMethod::Get,
+        HttpMethod::Post => HttpMethod::Post,
+        HttpMethod::Put => HttpMethod::Put,
+        HttpMethod::Patch => HttpMethod::Patch,
+        HttpMethod::Delete => HttpMethod::Delete,
+        HttpMethod::Head => HttpMethod::Head,
+        HttpMethod::Options => HttpMethod::Options,
+    }
+}
+
+fn clone_bytes(body: &Vec<UInt8>) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i = 0u64;
+    while i < body.len() {
+        out.push(body[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Two URLs share an origin when scheme, host and EFFECTIVE port all match.
+///
+/// Effective, so `https://h/` and `https://h:443/` are one origin — otherwise a redirect that only
+/// spelled the port differently would strip credentials for no reason, and callers would learn to
+/// turn the stripping off.
+pub fn same_origin(a: &Target, b: &Target) -> Bool {
+    if a.port != b.port {
+        return false;
+    }
+    if !stark_http_core::ascii_equal_ignore_case(a.host.as_str(), b.host.as_str()) {
+        return false;
+    }
+    match a.scheme {
+        Scheme::Http => match b.scheme {
+            Scheme::Http => true,
+            Scheme::Https => false,
+        }
+        Scheme::Https => match b.scheme {
+            Scheme::Https => true,
+            Scheme::Http => false,
+        }
+    }
+}
+
+fn scheme_prefix(scheme: &Scheme) -> String {
+    match *scheme {
+        Scheme::Http => String::from("http://"),
+        Scheme::Https => String::from("https://"),
+    }
+}
+
+/// The scheme and its colon, WITHOUT the `//`.
+///
+/// A scheme-relative `Location` supplies its own `//`, so joining it to `scheme_prefix` produces
+/// `https:////host` — which parses as nothing. Caught by the resolution test, which is why each
+/// form has its own case there rather than one representative.
+fn scheme_colon(scheme: &Scheme) -> String {
+    match *scheme {
+        Scheme::Http => String::from("http:"),
+        Scheme::Https => String::from("https:"),
+    }
+}
+
+/// Resolve a `Location` against the URL it came from, into an absolute URL.
+///
+/// Four forms, and nothing else is guessed:
+///
+/// ```text
+/// https://host/path   absolute        taken as-is
+/// //host/path         scheme-relative inherits the current scheme
+/// /path               absolute path   inherits scheme, host and port
+/// path                relative path   replaces the last segment of the current path
+/// ```
+///
+/// A `Location` this cannot resolve is refused rather than approximated. The result still goes
+/// through `parse_url`, so a redirect target faces exactly the URL limits a caller-supplied one
+/// does — a server cannot use a redirect to reach a URL the client would not have accepted.
+pub fn resolve_location(base: &Target, location: &str) -> Result<String, HttpError> {
+    let bytes = location.bytes();
+    if bytes.len() == 0u64 {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
+    // Absolute: it names a scheme this client dials.
+    if starts_with(bytes, "http://".bytes()) || starts_with(bytes, "https://".bytes()) {
+        return Ok(String::from(location));
+    }
+    // An absolute URI in a scheme this client does NOT dial — `ftp://`, `mailto:`, `data:`.
+    //
+    // Refused, because the relative-path branch below would otherwise glue it onto the current
+    // directory and produce `http://a.test/one/ftp://other.test/file`: a request the server never
+    // asked for, sent to the wrong place. Not dialling FTP is not the same as being correct.
+    if has_uri_scheme(bytes) {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
+    // A fragment-only reference addresses a position in the CURRENT document. There is nothing to
+    // fetch, so a server sending one as a redirect target has said nothing followable.
+    if bytes[0u64] == 35u8 {
+        return Err(HttpError::InvalidRedirectTarget);
+    }
+    // Scheme-relative `//host/path`: inherits the current scheme, which is what keeps an
+    // https:// page from being walked onto http:// by omission.
+    if bytes.len() >= 2u64 && bytes[0u64] == 47u8 && bytes[1u64] == 47u8 {
+        let mut out = scheme_colon(&base.scheme);
+        out.push_str(location);
+        return Ok(out);
+    }
+    let mut out = scheme_prefix(&base.scheme);
+    out.push_str(base.host.as_str());
+    if base.port != default_port(&base.scheme) {
+        out.push(':');
+        out.push_str(u16_decimal(base.port).as_str());
+    }
+    if bytes[0u64] == 47u8 {
+        // Absolute path.
+        out.push_str(location);
+        return Ok(out);
+    }
+    // A query-only reference keeps the WHOLE current path and replaces only the query. Treating it
+    // as a relative path segment — which is what the branch below would do — turns
+    // `/one/two` + `?page=2` into `/one/?page=2`, silently requesting a different resource.
+    if bytes[0u64] == 63u8 {
+        out.push_str(path_without_query(base.path_and_query.as_str()).as_str());
+        out.push_str(location);
+        return Ok(out);
+    }
+    // Relative path: replace everything after the last `/` of the current path.
+    let current = base.path_and_query.as_str().bytes();
+    let mut cut = 0u64;
+    let mut i = 0u64;
+    while i < current.len() {
+        if current[i] == 47u8 {
+            cut = i + 1u64;
+        }
+        // A `?` ends the path; the query is never part of the base for resolution.
+        if current[i] == 63u8 {
+            i = current.len();
+        } else {
+            i = i + 1u64;
+        }
+    }
+    let mut j = 0u64;
+    while j < cut {
+        match Char::from_u32(current[j] as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+        j = j + 1u64;
+    }
+    out.push_str(location);
+    Ok(out)
+}
+
+/// Whether a reference begins with `scheme:`, per RFC 3986: an ALPHA followed by
+/// `ALPHA / DIGIT / "+" / "-" / "."`, then a colon.
+///
+/// The colon must come before any `/`, `?` or `#` — otherwise `foo/bar:baz` would read as a scheme,
+/// and a perfectly ordinary relative path would be refused.
+fn has_uri_scheme(bytes: &[UInt8]) -> Bool {
+    let first = bytes[0u64];
+    let alpha = first >= 65u8 && first <= 90u8 || first >= 97u8 && first <= 122u8;
+    if !alpha {
+        return false;
+    }
+    let mut i = 1u64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 58u8 {
+            return true;
+        }
+        let ok = b >= 65u8 && b <= 90u8 || b >= 97u8 && b <= 122u8 || b >= 48u8 && b <= 57u8 || b == 43u8 || b == 45u8 || b == 46u8;
+        if !ok {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// The path part of a path-and-query, without the `?` and anything after it.
+fn path_without_query(path_and_query: &str) -> String {
+    let bytes = path_and_query.bytes();
+    let mut out = String::new();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 63u8 {
+            i = bytes.len();
+        } else {
+            match Char::from_u32(bytes[i] as UInt32) {
+                Some(ch) => {
+                    out.push(ch);
+                }
+                None => {}
+            }
+            i = i + 1u64;
+        }
+    }
+    out
+}
+
+fn u16_decimal(value: UInt16) -> String {
+    let mut out = String::new();
+    let n = value as UInt64;
+    let mut started = false;
+    let mut scale: UInt64 = 10000u64;
+    while scale > 0u64 {
+        let digit = n / scale % 10u64;
+        if digit != 0u64 || started || scale == 1u64 {
+            match Char::from_u32((48u64 + digit) as UInt32) {
+                Some(ch) => {
+                    out.push(ch);
+                }
+                None => {}
+            }
+            started = true;
+        }
+        scale = scale / 10u64;
+    }
+    out
+}
+
+/// Whether a header must not survive an origin change.
+fn is_sensitive_header(name: &str, policy: &RedirectPolicy) -> Bool {
+    // Always, whatever the policy says. `Authorization` is the credential and `Cookie` is the
+    // session; forwarding either to a host the caller never named is the failure this whole
+    // work package exists to prevent.
+    if stark_http_core::ascii_equal_ignore_case(name, "authorization") {
+        return true;
+    }
+    if stark_http_core::ascii_equal_ignore_case(name, "cookie") {
+        return true;
+    }
+    let mut i = 0u64;
+    while i < policy.sensitive_headers.len() {
+        let candidate = &policy.sensitive_headers[i];
+        if stark_http_core::ascii_equal_ignore_case(name, candidate.as_str()) {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// A header that DESCRIBES a body, and so must not outlive one.
+///
+/// When a 301/302/303 rewrite drops the body, `Content-Type` and friends have to go with it.
+/// Leaving them behind sends a bodyless `GET` that announces `Content-Type: text/plain` — a claim
+/// about content that is not there, which some servers reject and all of them find confusing.
+/// Found by the 303 case observing the actual wire: the method and the body were already right,
+/// and the content type was still riding along.
+fn is_entity_header(name: &str) -> Bool {
+    stark_http_core::ascii_equal_ignore_case(name, "content-type") || stark_http_core::ascii_equal_ignore_case(
+        name,
+        "content-length",
+    ) || stark_http_core::ascii_equal_ignore_case(name, "content-encoding") || stark_http_core::ascii_equal_ignore_case(
+        name,
+        "content-language",
+    ) || stark_http_core::ascii_equal_ignore_case(name, "transfer-encoding")
+}
+
+/// The headers for the next hop.
+///
+/// `keep_credentials` false drops every sensitive header; `keep_body` false drops every header that
+/// describes a body. Both triggers are decided by the caller — from the origin comparison and the
+/// rewrite table respectively — so each rule and its reason stay separately readable.
+fn headers_for_next_hop(
+    map: &stark_http_core::HeaderMap,
+    keep_credentials: Bool,
+    keep_body: Bool,
+    policy: &RedirectPolicy,
+) -> Result<stark_http_core::HeaderMap, HttpError> {
+    let mut out = new_header_map();
+    let mut i = 0u64;
+    while i < map.entries.len() {
+        let entry = &map.entries[i];
+        let sensitive = !keep_credentials && is_sensitive_header(entry.name.as_str(), policy);
+        let stale_entity = !keep_body && is_entity_header(entry.name.as_str());
+        let drop_it = sensitive || stale_entity;
+        if !drop_it {
+            // A failure here is REPORTED, not skipped. Silently omitting a header would send a
+            // different request than the caller built and than the previous hop carried, with
+            // nothing anywhere saying so — and "the second request quietly lost a header" is
+            // indistinguishable from a server bug at the far end.
+            match append_validated(&mut out, entry.name.as_str(), entry.value.as_str()) {
+                Ok(_added) => {}
+                Err(_error) => {
+                    return Err(HttpError::InvalidRequest(entry.name.clone()));
+                }
+            }
+        }
+        i = i + 1u64;
+    }
+    Ok(out)
+}
+
+/// One request/response exchange, with no redirect handling. Returns the response and the target it
+/// was sent to, since the caller needs the latter to resolve a relative `Location` and to compare
+/// origins.
+fn send_once(
+    client: &Client,
+    method: HttpMethod,
+    url: &str,
+    headers: stark_http_core::HeaderMap,
+    body: Vec<UInt8>,
+) -> Result<(HttpResponse, Target), HttpError> {
+    let target = parse_url(url)?;
 
     let resolved: Vec<ResolvedAddress>;
     match resolve(&target.host, target.port, default_resolve_limits()) {
         Ok(addresses) => {
             resolved = addresses;
         }
-        Err(_error) => {
-            return Err(ClientError::ResolveFailed);
+        Err(error) => {
+            return Err(HttpError::Dns(error));
         }
     }
 
+    let head = match method {
+        HttpMethod::Head => true,
+        _ => false,
+    };
+
     let built: HttpRequest;
-    match request(
-        builder.method,
-        target.path_and_query.as_str(),
-        HttpVersion::Http11,
-        builder.headers,
-        builder.body,
-    ) {
+    match request(method, target.path_and_query.as_str(), HttpVersion::Http11, headers, body) {
 
         Ok(value) => {
             built = value;
         }
         Err(error) => {
-            return Err(ClientError::SerializeFailed(stark_http_core::error_text(&error)));
+            return Err(HttpError::InvalidRequest(stark_http_core::error_text(&error)));
         }
     }
 
+    // The `Host` header omits the port when it is the scheme's default, so the default must come
+    // from the scheme — otherwise every `https://host/` request would send `Host: host:443`, which
+    // is legal but not what any server logs or vhost config expects.
     let authority = HostAuthority {
         host: target.host.clone(),
         port: target.port,
-        default_port: 80u16,
+        default_port: default_port(&target.scheme),
     };
     let wire: Vec<UInt8>;
     match serialize_request(&built, &authority, &client.limits) {
@@ -443,46 +1148,379 @@ pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, Cl
             wire = bytes;
         }
         Err(error) => {
-            return Err(ClientError::SerializeFailed(stark_http_serialize::error_text(&error)));
+            return Err(HttpError::InvalidRequest(stark_http_serialize::error_text(&error)));
         }
     }
 
-    let mut stream = connect_to_any(&resolved, &client.config)?;
+    let tcp = connect_to_any(&resolved, &client.config)?;
 
-    let sent = write_all(&mut stream, &wire[0u64..wire.len()]);
-    match sent {
-        Ok(_unit) => {}
-        Err(_error) => {
-            match close(stream) {
-                Ok(_unit) => {}
-                Err(_error) => {}
+    match target.scheme {
+        Scheme::Http => match exchange_plain(
+            tcp,
+            &wire[0u64..wire.len()],
+            client.limits,
+            client.config.max_response_bytes,
+            head,
+        ) {
+
+            Ok(response) => Ok((response, target)),
+            Err(error) => Err(error),
+        }
+        Scheme::Https => {
+            // The handshake CONSUMES the TCP stream on every path (CD-360). A failure here leaves
+            // no reusable socket and nothing for this function to close — the TLS provider owns the
+            // release from the moment the call is entered.
+            let tls_config = config_with_roots(
+                clone_root_store(&client.config.tls_root_store),
+                client.config.tls_handshake_timeout,
+            );
+            // Hoisted: `target.host.clone()` inline borrows `target` for the whole match, and the
+            // success arm has to MOVE it out as part of the returned pair.
+            let server_name = target.host.clone();
+            match TlsStream::connect(tcp, server_name, tls_config) {
+                Ok(secure) => match exchange_secure(
+                    secure,
+                    &wire[0u64..wire.len()],
+                    client.limits,
+                    client.config.max_response_bytes,
+                    head,
+                ) {
+
+                    Ok(response) => Ok((response, target)),
+                    Err(error) => Err(error),
+                }
+                Err(error) => Err(tls_at(error, HttpTimeoutPhase::TlsHandshake)),
             }
-            return Err(ClientError::WriteFailed);
         }
     }
+}
 
-    // A HEAD response describes a body it never sends, so the parser must be told.
-    let head = match built.method {
-        HttpMethod::Head => true,
-        _other => false,
-    };
-    let mut parser = if head {
-        new_head_parser(client.limits)
-    } else {
-        new_parser(client.limits)
-    };
-
-    let outcome = read_response(&mut stream, &mut parser, client.config.max_response_bytes);
-    match close(stream) {
-        Ok(_unit) => {}
-        Err(_error) => {}
+/// Send a built request and return the response.
+///
+/// **The scheme is the only thing that decides whether the channel is verified**, and the caller
+/// makes that choice in the URL. There is no per-request TLS switch, no "insecure" flag, and no way
+/// to reach `https://` without certificate and hostname verification — HC10's requirement that no
+/// application-level distinction beyond the URL is needed, read in both directions.
+///
+/// **Redirects are followed only when `follow_redirects` is set**, and then only within
+/// `ClientConfig::redirects`. Off, a `3xx` is returned to the caller as the response it is — not an
+/// error, because a redirect IS a valid answer and a client that hid it would be lying about what
+/// the server said.
+pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
+    // Not following: one exchange, and a `3xx` comes back as the response it is.
+    if !client.config.follow_redirects {
+        // The fields are moved into LOCALS first, rather than passed as `builder.url.as_str()`
+        // alongside `builder.headers`. STARK's borrow checker is place-granular (DEV-154) and
+        // accepts the inline form — those are disjoint fields — but the generated projections take
+        // `&slot` and `&mut slot`, losing that granularity. DEV-160. `follow` below already had
+        // this shape, which is why only this path failed.
+        //
+        // CD-374 fixed the in-block form with a generated call thunk. This one is NOT in-block:
+        // `as_str()` is itself a call, so the `&str` it returns arrives from an earlier block and
+        // the thunk cannot take over its evaluation. The compiler now refuses that shape by name
+        // rather than emitting code rustc rejects, so this stays until cross-block absorption
+        // lands.
+        let url = builder.url;
+        let method = builder.method;
+        let headers = builder.headers;
+        let body = builder.body;
+        let once = send_once(client, method, url.as_str(), headers, body)?;
+        return Ok(once.0);
     }
-    outcome
+    follow(client, builder)
+}
+
+/// The redirect loop. Separate from `send` so the non-following path pays none of its copying, and
+/// so the policy reads in one place.
+fn follow(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
+    let policy = &client.config.redirects;
+    let mut method = builder.method;
+    let mut url = builder.url;
+    let mut headers = builder.headers;
+    let mut body = builder.body;
+
+    // Every URL already visited, so a cycle is caught even when it is longer than one hop and
+    // shorter than the count bound. Those are different faults: a loop is a server defect, a long
+    // chain may be legitimate, and a caller raising the limit should fix only the second.
+    let mut visited: Vec<String> = Vec::new();
+    visited.push(url.clone());
+
+    let mut hops: UInt64 = 0u64;
+    let bound = policy.max_redirects as UInt64;
+    loop {
+        // Copies taken BEFORE the send, because `send_once` consumes the method, headers and body.
+        // The next hop is built from the REQUEST's headers, never the response's — carrying a
+        // server's `Set-Cookie` and `Content-Length` into the next request would be nonsense at
+        // best. Getting that wrong is easy and silent, so it is stated here.
+        let previous_method = clone_method(&method);
+        let previous_headers = headers_for_next_hop(&headers, true, true, policy)?;
+        let previous_body = clone_bytes(&body);
+
+        let outcome = send_once(client, method, url.as_str(), headers, body)?;
+        let response = outcome.0;
+        let from = outcome.1;
+
+        if !is_followable_redirect(response.status) {
+            return Ok(response);
+        }
+        if hops == bound {
+            return Err(HttpError::TooManyRedirects);
+        }
+
+        // `get_singleton`, not `get_first`. Two `Location` headers are two different destinations,
+        // and picking one silently is a choice between things the server said — the class of
+        // disagreement request smuggling is built on.
+        let found: Option<String>;
+        match stark_http_core::get_singleton(&response.headers, "location") {
+            Ok(value) => {
+                found = value;
+            }
+            Err(_error) => {
+                return Err(HttpError::AmbiguousLocation);
+            }
+        }
+        let location: String;
+        match found {
+            Some(value) => {
+                location = value;
+            }
+            None => {
+                // A redirect status with nowhere to go. Reported rather than returned as a
+                // response: the caller asked to follow, and this cannot be followed.
+                return Err(HttpError::MissingLocation);
+            }
+        }
+
+        let next_url = resolve_location(&from, location.as_str())?;
+        // Through `parse_url`, so a redirect target faces exactly the limits a caller-supplied URL
+        // does — a server cannot use a redirect to reach a URL this client would have refused.
+        let to = parse_url(next_url.as_str())?;
+
+        // Refused BEFORE the connection is made, so a downgraded request never reaches the wire.
+        let downgrade = match from.scheme {
+            Scheme::Https => match to.scheme {
+                Scheme::Http => true,
+                Scheme::Https => false,
+            }
+            Scheme::Http => false,
+        };
+        if downgrade && !policy.allow_https_to_http {
+            return Err(HttpError::InsecureRedirect);
+        }
+
+        let mut seen = false;
+        let mut v = 0u64;
+        while v < visited.len() {
+            if visited[v].as_str() == next_url.as_str() {
+                seen = true;
+            }
+            v = v + 1u64;
+        }
+        if seen {
+            return Err(HttpError::RedirectLoop);
+        }
+        visited.push(next_url.clone());
+
+        let rewrite = redirect_method(response.status, &previous_method);
+        let keep_credentials = same_origin(&from, &to) || !policy.preserve_authorization_same_origin_only;
+
+        headers = headers_for_next_hop(&previous_headers, keep_credentials, rewrite.1, policy)?;
+        method = rewrite.0;
+        // Replay only when the status says to. The body is a buffered `Vec<UInt8>`, so replay costs
+        // bytes and nothing else — which is what makes honouring 307/308 safe here.
+        body = if rewrite.1 {
+            previous_body
+        } else {
+            Vec::new()
+        };
+        url = next_url;
+        hops = hops + 1u64;
+    }
 }
 
 /// `GET` in one call.
-pub fn fetch(client: &Client, url: &str) -> Result<HttpResponse, ClientError> {
+pub fn fetch(client: &Client, url: &str) -> Result<HttpResponse, HttpError> {
     send(client, get(url))
+}
+
+// --- HC11: JSON convenience -------------------------------------------------------------------
+//
+// The point is to remove the two lines of ceremony every JSON call otherwise repeats — encode to
+// bytes, set the header — WITHOUT coupling HTTP to JSON internals. `stark-http-core` still knows
+// nothing about JSON; this sits in the composition package, which is the only place that already
+// depends on both.
+
+/// Why a JSON body could not be read.
+///
+/// Three distinct causes, kept apart because they are fixed in different places: the bytes were not
+/// text, the server said it was not sending JSON, or the JSON itself is malformed. Collapsing them
+/// would send a caller to the wrong one.
+pub enum JsonBodyError {
+    NotUtf8(stark_http_core::TextDecodeError),
+    UnexpectedContentType(String),
+    AmbiguousContentType,
+    Invalid(stark_json::JsonError),
+}
+/// Two `Content-Type` headers: two contradictory claims about the same bytes.
+
+pub fn json_body_error_text(error: &JsonBodyError) -> String {
+    match *error {
+        JsonBodyError::NotUtf8(why) => stark_http_core::text_decode_error_text(&why),
+        JsonBodyError::UnexpectedContentType(seen) => {
+            let mut out = String::from("expected a JSON content type, got: ");
+            out.push_str(seen.as_str());
+            out
+        }
+        JsonBodyError::AmbiguousContentType => {
+            String::from("the response carried more than one Content-Type")
+        }
+        JsonBodyError::Invalid(_why) => String::from("the body is not valid JSON"),
+    }
+}
+
+/// Whether a `Content-Type` names JSON.
+///
+/// Compared against the part BEFORE any `;`, because `application/json; charset=utf-8` is the same
+/// media type as `application/json` and a client that rejected the first would be wrong about a
+/// large share of real servers. The comparison is ASCII case-insensitive, as media types are.
+pub fn is_json_content_type(value: &str) -> Bool {
+    let bytes = value.bytes();
+    let n = bytes.len();
+    let mut end = n;
+    let mut i = 0u64;
+    while i < n {
+        if bytes[i] == 59u8 {
+            end = i;
+            i = n;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    let target = "application/json".bytes();
+    let mut start = 0u64;
+    while start < end && bytes[start] == 32u8 {
+        start = start + 1u64;
+    }
+    let mut stop = end;
+    while stop > start && bytes[stop - 1u64] == 32u8 {
+        stop = stop - 1u64;
+    }
+    if stop - start != target.len() {
+        return false;
+    }
+    let mut k = 0u64;
+    while k < target.len() {
+        let mut got = bytes[start + k];
+        if got >= 65u8 && got <= 90u8 {
+            got = got + 32u8;
+        }
+        if got != target[k] {
+            return false;
+        }
+        k = k + 1u64;
+    }
+    true
+}
+
+impl RequestBuilder {
+    pub fn json(self, value: &stark_json::JsonValue) -> Result<RequestBuilder, HttpError> {
+        /// Attach `value` as a JSON body and declare it.
+        ///
+        /// Sets `Content-Type: application/json`. Consumes and returns the builder so a call chain
+        /// reads in one direction, which is the frozen request-construction spelling (roadmap §Freeze).
+        ///
+        /// Serialization is `stark-json`'s, so object member order is whatever the value carries —
+        /// deterministic for a given value, which is what makes a byte-exact request snapshot testable.
+
+        let encoded = encode(value);
+        let bytes = encoded.as_str().bytes();
+        let mut body: Vec<UInt8> = Vec::new();
+        let mut i = 0u64;
+        while i < bytes.len() {
+            body.push(bytes[i]);
+            i = i + 1u64;
+        }
+        // Was a hand-built literal from moved fields, because `out.body = body` assigned over a
+        // `Vec<UInt8>` — a drop unit — and aborted natively (DEV-158). Fixed, so this mutates in
+        // place again.
+        let mut out = self;
+        out.body = body;
+        // A caller who already set `Content-Type` gets a REFUSAL, not a second one. Appending would
+        // put two contradictory claims about the same bytes on the wire and leave which one wins to
+        // the server — the same ambiguity `json_checked` refuses to resolve on the way back in.
+        if stark_http_core::contains(&out.headers, "content-type") {
+            return Err(
+                HttpError::InvalidRequest(
+                    String::from("the request already declares a Content-Type"),
+                ),
+            );
+        }
+        // Hoisted out of the match scrutinee: a scrutinee's temporaries live for the whole match,
+        // so `&mut out.headers` taken inline would still be borrowed in the arm that must move it.
+        let declared = append_validated(&mut out.headers, "Content-Type", "application/json");
+        match declared {
+            Ok(_added) => Ok(out),
+            Err(error) => Err(HttpError::InvalidRequest(stark_http_core::error_text(&error))),
+        }
+    }
+}
+
+impl HttpResponse {
+    pub fn json(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+        /// The body parsed as JSON, whatever the server called it.
+        ///
+        /// The content type is NOT required here. Servers mislabel JSON often enough that refusing on
+        /// that alone would break working integrations, and the parse itself is the real check — see
+        /// `json_checked` for the strict form. Depth and allocation limits are `stark-json`'s defaults
+        /// and stay active; the body was already bounded by `max_response_bytes` when it was read.
+
+        let text: String;
+        match self.body_text() {
+            Ok(value) => {
+                text = value;
+            }
+            Err(error) => {
+                return Err(JsonBodyError::NotUtf8(error));
+            }
+        }
+        match stark_json::parse(text.as_str()) {
+            Ok(value) => Ok(value),
+            Err(error) => Err(JsonBodyError::Invalid(error)),
+        }
+    }
+    pub fn json_checked(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+        /// `json`, but the server must have said `application/json`.
+        ///
+        /// For a caller who would rather fail than parse something an endpoint did not claim was JSON —
+        /// an HTML error page from a proxy, for instance, which occasionally parses as a JSON string
+        /// and would otherwise be returned as if it were the answer.
+
+        // `get_singleton`, not `get_first`. Two `Content-Type` headers are two contradictory
+        // claims about the same bytes, and silently believing the first is the same class of
+        // choice as picking one of two `Location`s. Same policy, applied consistently.
+        let found: Option<String>;
+        match get_singleton(&self.headers, "content-type") {
+            Ok(value) => {
+                found = value;
+            }
+            Err(_error) => {
+                return Err(JsonBodyError::AmbiguousContentType);
+            }
+        }
+        let seen: String;
+        match found {
+            Some(value) => {
+                seen = value;
+            }
+            None => {
+                return Err(JsonBodyError::UnexpectedContentType(String::from("(absent)")));
+            }
+        }
+        if !is_json_content_type(seen.as_str()) {
+            return Err(JsonBodyError::UnexpectedContentType(seen));
+        }
+        self.json()
+    }
 }
 
 mod tests;

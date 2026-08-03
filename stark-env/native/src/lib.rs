@@ -188,6 +188,8 @@ mod tests {
             AbiParam, FunctionDecl, ProviderIdentity, ProviderMetadata, ScalarTy,
         };
         ProviderMetadata {
+            // CD-360: this provider consumes no other provider's resource.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-env".to_string(),
                 semver: (0, 1, 0),

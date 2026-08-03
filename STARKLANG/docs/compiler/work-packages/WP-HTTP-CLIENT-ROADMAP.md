@@ -2,7 +2,10 @@
 
 **Document type:** Frozen implementation roadmap and work-package plan  
 **Audience:** Claude Code, Codex, compiler/package maintainers  
-**Status:** FROZEN FOR EXECUTION
+**Status:** **CLOSED 2026-08-03 — HC0–HC13 delivered** (CD-375; corrected CD-376). Executed
+against this plan without amendment. The client is **feature-track complete, not
+security-release complete**: see §0 of `STARKLANG/docs/http-client/HC13-RELEASE-CHECKLIST.md`
+for what still blocks a public release (DEV-165, and no installer).
 **Target:** A synchronous, blocking, cross-platform HTTPS client written primarily in STARK  
 **Concurrency:** Explicitly out of scope  
 **Primary milestone:** A STARK application can perform bounded `GET` and `POST` requests to ordinary hostname-based HTTPS REST APIs and safely decode JSON responses.
@@ -143,10 +146,10 @@ HC5  Implement HTTP core types
 HC6  Implement request serializer
 HC7  Implement incremental response parser
 HC8  Deliver plain HTTP client
-HC9  Add TLS provider and secure stream
-HC10 Deliver HTTPS client
-HC11 Add JSON convenience API
-HC12 Add redirects policy
+HC9  Add TLS provider and secure stream          CLOSED (CD-365)
+HC10 Deliver HTTPS client                       CLOSED (CD-366)
+HC11 Add JSON convenience API                   CLOSED (CD-367)
+HC12 Add redirects policy                       CLOSED (CD-368)
 HC13 Cross-platform qualification and release
 ```
 
@@ -972,6 +975,11 @@ A STARK application can call a local or explicitly insecure HTTP API by hostname
 
 # HC9 — Implement `stark-tls`
 
+**STATUS: CLOSED 2026-08-03 (CD-365).** Evidence and exact boundary in
+`STARKLANG/docs/http-client/HC9-TLS-EVIDENCE.md`. Delivered: `stark-tls`, `stark-tls-native`,
+`stark-tls-consumer`, and the certificate fixtures in `stark-tls/fixtures`. `SystemRoots` and
+`BundledRoots` are declared and REFUSED — they are HC10's. Profile F is not qualified.
+
 ## Objective
 
 Provide a safe, provider-backed TLS client stream.
@@ -983,16 +991,29 @@ packages/stark-tls
 providers/stark-tls-native
 ```
 
-## Native implementation recommendation
+## Native implementation — DECIDED (CD-361)
 
 Use a mature TLS implementation. Do not implement TLS or cryptographic primitives in STARK.
 
-The TLS backend decision is constrained by **CRYPTO0 step 3**:
+**The backend decision is CLOSED. Backend selection is no longer part of the HC9 estimate.** See
+`WP-CRYPTO0-TLS-BACKEND.md` for the joint HC9/CRYPTO0 record.
 
-- TLS and general cryptography must not accidentally create two independent crypto stacks;
-- the selected backend must preserve future Profile F/FIPS reachability;
-- evaluate `rustls` over `aws-lc-rs` as the default candidate unless CRYPTO0 selects another compatible foundation;
-- the final provider decision must be recorded jointly with the CRYPTO0 backend decision.
+```text
+TLS engine                rustls
+default crypto provider   aws-lc-rs, non-FIPS          (Profile N)
+Profile F provider        aws-lc-rs FIPS               (qualified separately)
+native-tls                REJECTED as first-party; permitted later as an external provider
+root-store policy         SEPARATE from engine selection — HC9's fixture uses ExplicitRoots
+versioning                exact versions and checksums pinned at qualification, never "latest"
+```
+
+Two consequences HC9 must plan for rather than discover:
+
+- `aws-lc-rs` needs a **C/C++ compiler** for Profile N, and providers link statically into the
+  generated workspace — so this becomes a requirement for every user building a TLS program, not
+  only for the provider's authors. Profile F additionally needs CMake and Go.
+- Profile F is **not** a Cargo feature: it requires installing the FIPS provider and verifying
+  `ClientConfig::fips()` at runtime. Both belong in Profile F's qualification criteria.
 
 Preferred properties:
 
@@ -1094,6 +1115,11 @@ If unsupported, freeze an explicit fallback before HC9 implementation. A two-cal
 
 ## TLS configuration
 
+Root acquisition is POLICY, separate from engine selection (CD-361): `SystemRoots`,
+`BundledRoots`, `ExplicitRoots`. **HC9's controlled fixture uses `ExplicitRoots`** containing the
+test CA; `SystemRoots` is HC10's concern and does not require handing the protocol to a platform
+TLS stack.
+
 First release:
 
 - system or explicitly bundled trusted roots;
@@ -1135,9 +1161,16 @@ These requirements must be visible in package/provider metadata.
 
 A STARK program can establish a verified TLS stream to a hostname without accessing raw provider symbols.
 
+**MET.** `stark-tls-consumer` does exactly this natively against three controlled peers, on both
+release paths, and is the 16th case in the first-party package gate.
+
 ---
 
 # HC10 — Deliver HTTPS Client
+
+**STATUS: CLOSED 2026-08-03 (CD-366).** Evidence and exact boundary in
+`STARKLANG/docs/http-client/HC10-HTTPS-EVIDENCE.md`. `SystemRoots` is implemented and is the
+default; `BundledRoots` remains refused. Redirects stay HC12 and JSON convenience stays HC11.
 
 ## Objective
 
@@ -1209,9 +1242,19 @@ enum HttpTimeoutPhase {
 
 A STARK program can call a normal hostname-based HTTPS endpoint with verified certificates.
 
+**MET.** `stark-http-client-consumer` does so natively under the package gate, over eleven cases —
+including three refusals (untrusted chain, hostname mismatch, cleartext peer on the secure path),
+because a gate that observed only the happy path would pass against a client that skipped
+verification entirely.
+
 ---
 
 # HC11 — Add JSON Convenience Integration
+
+**STATUS: CLOSED 2026-08-03 (CD-367).** Evidence in
+`STARKLANG/docs/http-client/HC11-JSON-EVIDENCE.md`. `body_text` and the strict UTF-8 decoder landed
+in `stark-http-core`; the JSON half is in `stark-http-client`, because core must not depend on
+`stark-json`. Typed codecs remain out of scope.
 
 ## Objective
 
@@ -1269,9 +1312,16 @@ impl HttpResponse {
 
 Common JSON REST calls no longer require manual byte conversion or header construction.
 
+**MET.** `post(url, empty).json(&value)?` then `response.json_checked()?`, exercised natively over a
+verified TLS session as the consumer's twelfth case.
+
 ---
 
 # HC12 — Add Safe Redirect Policy
+
+**STATUS: CLOSED 2026-08-03 (CD-368).** Evidence in
+`STARKLANG/docs/http-client/HC12-REDIRECT-EVIDENCE.md`. Following stays OFF by default; the policy
+below is what "on" means.
 
 ## Objective
 
@@ -1319,9 +1369,17 @@ struct RedirectPolicy {
 
 Redirect support is opt-in, bounded, and cannot silently forward credentials to another origin.
 
+**MET.** Ten native consumer cases against live peers, including cross-origin credential stripping
+asserted by reading what the peer actually received, and a downgrade refused before anything is
+dialled.
+
 ---
 
 # HC13 — Qualification, Documentation, and Release
+
+**Status: CLOSED 2026-08-03 (CD-375).** Evidence in `STARKLANG/docs/http-client/HC13-*.md`.
+One acceptance criterion is **partial** and reported as partial: two of five timeout phases have no
+stalling peer. Found and fixed on the way: DEV-163.
 
 ## Objective
 

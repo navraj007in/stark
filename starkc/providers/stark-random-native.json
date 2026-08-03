@@ -1,0 +1,25 @@
+{
+  "name": "stark-random-native",
+  "version": "0.1.0",
+  "provider": {
+    "abi": "0.1",
+    "identity": "stark-std-random",
+    "crate": "stark-random-native",
+    "crate_path": "stark-random/native",
+    "capabilities": ["random"],
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ],
+    "status": { "1": "RandomError::Unavailable", "2": "RandomError::LimitExceeded", "3": "RandomError::Other" },
+    "functions": [
+      {
+        "symbol": "stark_random_secure_fill",
+        "capability": "random",
+        "params": [{ "form": "buffer_in_out" }]
+      }
+    ]
+  }
+}

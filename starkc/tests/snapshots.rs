@@ -19,16 +19,21 @@ use std::path::PathBuf;
 /// (fixture, mode) — a cross-section of the grammar: ownership signatures,
 /// generics and bounds, traits with associated types, impls, match/patterns,
 /// block-formed statements, ranges/slices, use trees, struct literals.
+// CD-358: these name fixtures by NUMBER, and the numbering shifts whenever a ```stark block is
+// inserted earlier in a spec file. When that happens the entries must be RENUMBERED to follow their
+// content — not re-blessed with `UPDATE_SNAPSHOTS`, which would quietly repoint each snapshot at a
+// different construct while still reporting green. CD-357 inserted 03-Type-System__19 and shifted
+// every later block by one.
 const CASES: &[(&str, ParseMode)] = &[
     ("00-Core-Language-Overview__03.stark", ParseMode::Program),
     ("02-Syntax-Grammar__01.stark", ParseMode::Snippet),
     ("03-Type-System__08.stark", ParseMode::Snippet),
     ("03-Type-System__11.stark", ParseMode::Snippet),
     ("03-Type-System__13.stark", ParseMode::Program),
-    ("03-Type-System__20.stark", ParseMode::Snippet),
-    ("03-Type-System__31.stark", ParseMode::Program),
-    ("03-Type-System__37.stark", ParseMode::Program),
-    ("03-Type-System__40.stark", ParseMode::Program),
+    ("03-Type-System__21.stark", ParseMode::Snippet),
+    ("03-Type-System__32.stark", ParseMode::Program),
+    ("03-Type-System__38.stark", ParseMode::Program),
+    ("03-Type-System__41.stark", ParseMode::Program),
     ("04-Semantic-Analysis__12.stark", ParseMode::Program),
     ("04-Semantic-Analysis__15.stark", ParseMode::Snippet),
     ("CORE-V1-ABSTRACT-MACHINE__04.stark", ParseMode::Snippet),

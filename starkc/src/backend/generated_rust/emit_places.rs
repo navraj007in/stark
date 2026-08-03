@@ -43,6 +43,14 @@ pub struct TyEnv<'a> {
     /// A borrow, not an owned value: `TyEnv` is `Copy`. Defaults to the built-in set, which is
     /// correct for every program that declares no package resource.
     pub program_resources: &'a crate::provider_bind::ResourceRegistry,
+    /// DEV-160: the call sites this program emits through a generated thunk, planned once by
+    /// `emit_call_thunk::collect_plans`.
+    ///
+    /// Carried on the environment rather than recomputed at the call: the plan decides which
+    /// projection wrappers exist, and a second derivation at emission is how DEV-162 named a
+    /// helper nothing had generated. Empty for every program with no such call, which is nearly
+    /// all of them.
+    pub thunks: &'a [super::emit_call_thunk::CallThunkPlan],
 }
 
 /// The built-in-only registry, borrowed by every `TyEnv` that was given no program registry.
@@ -64,6 +72,7 @@ impl<'a> TyEnv<'a> {
             layout,
             provider_calls: &[],
             program_resources: builtin_resources(),
+            thunks: &[],
         }
     }
 
@@ -83,6 +92,12 @@ impl<'a> TyEnv<'a> {
         resources: &'a crate::provider_bind::ResourceRegistry,
     ) -> Self {
         self.program_resources = resources;
+        self
+    }
+
+    /// DEV-160: the program's call-thunk plans.
+    pub fn with_thunks(mut self, thunks: &'a [super::emit_call_thunk::CallThunkPlan]) -> Self {
+        self.thunks = thunks;
         self
     }
 
@@ -398,6 +413,30 @@ fn emit_place_from(
             )?;
             return Ok(format!(
                 "stark_proj::{helper}(&{})",
+                local_name(place.local.0)
+            ));
+        }
+    }
+    // DEV-162: the same treatment for a NON-`Copy` field, which is BORROWED rather than copied.
+    // `&slot.get().f1` requires a complete value, so reading an untouched field aborted once a
+    // SIBLING had been moved out. The helper returns `&F`; dereferencing it keeps this a Rust place
+    // expression, which callers in `Borrow` mode rely on — they prepend their own `&`.
+    if matches!(mode, PlaceMode::Read | PlaceMode::Borrow)
+        && !place.projection.is_empty()
+        && is_slot_local(place.local.0, env)?
+    {
+        let base_ty = env.local_ty(place.local.0)?;
+        let field_ty = env.place_ty(place)?;
+        let raw_base =
+            super::emit_projections::chain_is_raw(&base_ty, &place.projection, env.types)?;
+        if raw_base && !emit_types::mir_ty_is_copy(&field_ty, env.types) {
+            let helper = super::emit_projections::collect_for_place(
+                place,
+                env,
+                super::emit_projections::HelperOp::Ref,
+            )?;
+            return Ok(format!(
+                "(*stark_proj::{helper}(&{}))",
                 local_name(place.local.0)
             ));
         }

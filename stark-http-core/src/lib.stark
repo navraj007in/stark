@@ -410,4 +410,191 @@ pub fn error_text(error: &HttpError) -> String {
     }
 }
 
+// --- HC11: response body as text -------------------------------------------------------------
+//
+// A response body is BYTES. Turning it into a `String` is a decode that can fail, and the failure
+// has to be visible: a client that silently substitutes replacement characters hands its caller a
+// body that is not what the server sent, and no downstream check can tell.
+//
+// This lives in `stark-http-core` rather than in the client because `HttpResponse` is declared
+// here — a method on your own type has no coherence question. The JSON half cannot live here, since
+// `stark-http-core` must not depend on `stark-json` (a package that parses JSON should not be
+// pulled in by everything that parses a header).
+
+pub enum TextDecodeError {
+    InvalidUtf8(UInt64),
+}
+/// The byte at this offset begins a sequence that is not valid UTF-8.
+
+pub fn text_decode_error_text(error: &TextDecodeError) -> String {
+    match *error {
+        TextDecodeError::InvalidUtf8(offset) => {
+            let mut out = String::from("body is not valid UTF-8 at byte ");
+            out.push_str(u64_decimal(offset).as_str());
+            out
+        }
+    }
+}
+
+/// A continuation byte, `10xxxxxx`.
+fn is_continuation(byte: UInt8) -> Bool {
+    byte >= 128u8 && byte <= 191u8
+}
+
+/// **A strict UTF-8 decoder.**
+///
+/// Strict is the whole point, so the accepted set is written out as explicit ranges rather than as
+/// "leading byte, then N continuations". That shorter form accepts three things it must not:
+///
+///   overlong forms      `C0 80` for NUL, which security checks that scan the decoded text miss
+///   surrogates          `ED A0 80`..`ED BF BF`, which are not scalar values
+///   out of range        anything above `U+10FFFF`
+///
+/// Each is a documented source of parser-differential bugs — two components disagreeing about what
+/// a byte string means is how a filter gets bypassed — so the ranges below encode the RFC 3629
+/// table directly.
+/// The shape a leading byte announces: `(width, first-continuation low, high, initial code bits)`.
+///
+/// A separate function with early `return`s rather than an `if`/`else if` chain assigning four
+/// pre-declared locals — definite-assignment analysis does not see through that chain and reports
+/// every one of them as possibly-uninitialised.
+fn utf8_lead(b0: UInt8) -> Option<(UInt64, UInt8, UInt8, UInt32)> {
+    if b0 <= 127u8 {
+        return Some((1u64, 0u8, 0u8, b0 as UInt32));
+    }
+    if b0 >= 194u8 && b0 <= 223u8 {
+        return Some((2u64, 128u8, 191u8, (b0 - 192u8) as UInt32));
+    }
+    if b0 == 224u8 {
+        // Bounded BELOW at A0: 80-9F here would be an overlong two-byte form.
+        return Some((3u64, 160u8, 191u8, (b0 - 224u8) as UInt32));
+    }
+    if b0 == 237u8 {
+        // Bounded ABOVE at 9F: A0-BF here encodes a surrogate, which is not a scalar value.
+        return Some((3u64, 128u8, 159u8, (b0 - 224u8) as UInt32));
+    }
+    if b0 >= 225u8 && b0 <= 239u8 {
+        return Some((3u64, 128u8, 191u8, (b0 - 224u8) as UInt32));
+    }
+    if b0 == 240u8 {
+        // Bounded below at 90: 80-8F would be an overlong three-byte form.
+        return Some((4u64, 144u8, 191u8, (b0 - 240u8) as UInt32));
+    }
+    if b0 == 244u8 {
+        // Bounded above at 8F: anything higher exceeds U+10FFFF.
+        return Some((4u64, 128u8, 143u8, (b0 - 240u8) as UInt32));
+    }
+    if b0 >= 241u8 && b0 <= 243u8 {
+        return Some((4u64, 128u8, 191u8, (b0 - 240u8) as UInt32));
+    }
+    // C0, C1 (overlong two-byte leads), F5-FF (beyond U+10FFFF), and every bare continuation byte.
+    None
+}
+
+/// **A strict UTF-8 decoder.**
+///
+/// Strict is the whole point, so the accepted set is written out as explicit ranges in
+/// [`utf8_lead`] rather than as "leading byte, then N continuations". That shorter form accepts
+/// three things it must not:
+///
+///   overlong forms      `C0 80` for NUL, which security checks scanning the decoded text miss
+///   surrogates          `ED A0 80`..`ED BF BF`, which are not scalar values
+///   out of range        anything above `U+10FFFF`
+///
+/// Each is a documented source of parser-differential bugs — two components disagreeing about what
+/// a byte string means is how a filter gets bypassed — so the ranges encode RFC 3629's table
+/// directly.
+pub fn decode_utf8(bytes: &[UInt8]) -> Result<String, TextDecodeError> {
+    let mut out = String::new();
+    let n = bytes.len();
+    let mut i: UInt64 = 0u64;
+    while i < n {
+        let lead: (UInt64, UInt8, UInt8, UInt32);
+        match utf8_lead(bytes[i]) {
+            Some(value) => {
+                lead = value;
+            }
+            None => {
+                return Err(TextDecodeError::InvalidUtf8(i));
+            }
+        }
+        let width = lead.0;
+        let lo = lead.1;
+        let hi = lead.2;
+        let mut code = lead.3;
+
+        if i + width > n {
+            return Err(TextDecodeError::InvalidUtf8(i));
+        }
+        let mut k: UInt64 = 1u64;
+        while k < width {
+            let b = bytes[i + k];
+            // The FIRST continuation carries the range restriction that excludes overlongs and
+            // surrogates; the rest are plain continuations.
+            let ok = if k == 1u64 {
+                b >= lo && b <= hi
+            } else {
+                is_continuation(b)
+            };
+            if !ok {
+                return Err(TextDecodeError::InvalidUtf8(i));
+            }
+            code = code << 6u32 | (b - 128u8) as UInt32;
+            k = k + 1u64;
+        }
+
+        match Char::from_u32(code) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {
+                // Unreachable: the ranges above already exclude every non-scalar value. Reported
+                // rather than asserted, because a decoder that traps on its own bug is worse to
+                // operate than one that says the input was bad.
+                return Err(TextDecodeError::InvalidUtf8(i));
+            }
+        }
+        i = i + width;
+    }
+    Ok(out)
+}
+
+fn u64_decimal(value: UInt64) -> String {
+    if value == 0u64 {
+        return String::from("0");
+    }
+    let mut digits: [UInt8; 20] = [0u8; 20];
+    let mut count: UInt64 = 0u64;
+    let mut n = value;
+    while n > 0u64 {
+        digits[count] = (n % 10u64) as UInt8;
+        n = n / 10u64;
+        count = count + 1u64;
+    }
+    let mut out = String::new();
+    let mut i = count;
+    while i > 0u64 {
+        i = i - 1u64;
+        match Char::from_u32((48u8 + digits[i]) as UInt32) {
+            Some(ch) => {
+                out.push(ch);
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+impl HttpResponse {
+    pub fn body_text(&self) -> Result<String, TextDecodeError> {
+        /// The body decoded as UTF-8 text.
+        ///
+        /// Strict: an invalid sequence is an ERROR, not a replacement character. A client that
+        /// substitutes silently hands its caller a body that differs from what the server sent, and
+        /// nothing downstream can detect it.
+
+        decode_utf8(&self.body[0u64..self.body.len()])
+    }
+}
+
 mod tests;

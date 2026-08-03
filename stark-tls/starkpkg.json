@@ -1,0 +1,63 @@
+{
+  "name": "stark-tls",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "capabilities": [
+    "tls"
+  ],
+  "dependencies": {
+    "stark_net": {
+      "package": "stark-net",
+      "path": "../stark-net",
+      "version": "0.1.0"
+    },
+    "stark_time": {
+      "package": "stark-time",
+      "path": "../stark-time",
+      "version": "0.1.0"
+    }
+  },
+  "provider_api": {
+    "errors": {
+      "tls": "RawTlsError"
+    },
+    "resources": {
+      "TlsStream": {
+        "capability": "tls",
+        "resource": "tls_stream"
+      }
+    },
+    "foreign_resources": {
+      "tcp_stream": {
+        "package": "stark_net",
+        "nominal": "TcpStream"
+      }
+    },
+    "functions": {
+      "tls_stream_connect_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_connect"
+      },
+      "tls_stream_read_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_read"
+      },
+      "tls_stream_write_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_write"
+      },
+      "tls_stream_set_read_timeout_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_set_read_timeout"
+      },
+      "tls_stream_set_write_timeout_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_set_write_timeout"
+      },
+      "tls_stream_peer_version_raw": {
+        "capability": "tls",
+        "symbol": "stark_tls_stream_peer_version"
+      }
+    }
+  }
+}

@@ -1,8 +1,8 @@
-struct Pair<T> {
-    first: T,
-    second: T
+fn might_fail() -> Result<Int32, String> {
+    // ...
 }
 
-fn max<T: Ord>(a: T, b: T) -> T {
-    if a > b { a } else { b }
+fn caller() -> Result<Int32, String> {
+    let value = might_fail()?;  // Early return on error
+    Ok(value * 2)
 }

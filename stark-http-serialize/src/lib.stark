@@ -13,6 +13,9 @@ use stark_http_core::ascii_equal_ignore_case;
 use stark_http_core::check_body_within;
 use stark_http_core::check_headers_within;
 use stark_http_core::contains;
+use stark_http_core::is_valid_header_name;
+use stark_http_core::is_valid_header_value;
+use stark_http_core::Header;
 use stark_http_core::method_forbids_body;
 use stark_http_core::method_text;
 use stark_http_core::version_text;
@@ -32,8 +35,22 @@ pub enum SerializeError {
     ConflictingFramingHeader,
     BodyOnBodylessMethod,
     RequestTooLarge,
+    InvalidHeaderName,
+    InvalidHeaderValue(String),
     Core(String),
 }
+
+// The two header refusals, documented here because `stark fmt` evicts a variant's doc comment to
+// after the enum (DEV-156):
+//
+//   InvalidHeaderName        carries NOTHING. The name is what failed validation, so there is no
+//                            safe version of it to report. The first attempt DID carry it, which
+//                            reintroduced the injection one layer out — into whatever reads the
+//                            log line — after the commit message had argued against exactly that
+//                            for values. Caught in review.
+//   InvalidHeaderValue(name) carries the name, which is safe HERE and only here: the name is
+//                            checked FIRST, so this variant is unreachable until it passed. The
+//                            order of the two checks is the safety argument, not an accident.
 
 /// The framing headers this serializer owns. A caller setting any of them is a conflict, not a
 /// customisation: each one, emitted twice with different values, changes where a peer believes the
@@ -56,6 +73,17 @@ pub fn error_text(error: &SerializeError) -> String {
             String::from("a body was supplied for a method that forbids one")
         }
         SerializeError::RequestTooLarge => String::from("serialized request exceeds its limit"),
+        SerializeError::InvalidHeaderName => {
+            // Nothing interpolated. An invalid name is attacker-influenced by definition and may
+            // itself contain CRLF; rendering it would inject into whatever reads this line.
+            String::from("a header name is not valid on the wire")
+        }
+        SerializeError::InvalidHeaderValue(name) => {
+            // Safe: this variant is unreachable until the name has passed validation.
+            let mut out = String::from("the value of this header is not valid on the wire: ");
+            out.push_str(name.as_str());
+            out
+        }
         SerializeError::Core(message) => message.clone(),
     }
 }
@@ -157,11 +185,35 @@ pub fn serialize_request(request: &HttpRequest, authority: &HostAuthority, limit
         }
     }
 
-    // A caller may not set what this owns.
+    // **Every header is REVALIDATED here, at the boundary that writes bytes.**
+    //
+    // `stark-http-core::header()` validates on construction, and the original reasoning was that
+    // this made a second check redundant. It does not: `Header`'s fields and `HeaderMap.entries`
+    // are public, so a caller can build a header without ever calling the constructor. Verified by
+    // exploit — a value of `safe\r\nInjected: yes` produced a genuine extra header line on the wire:
+    //
+    //     X-Test: safe\r\n
+    //     Injected: yes\r\n
+    //
+    // That is CRLF header injection, reachable from safe STARK with no `unsafe` and no provider.
+    // The invariant has to be enforced where the bytes are emitted, because that is the only place
+    // that cannot be bypassed by constructing the value a different way.
+    //
+    // The stronger repair — making the fields private behind validated accessors — is an API break
+    // and is recorded separately. This is the part that closes the hole.
     let n = request.headers.entries.len();
     let mut i = 0u64;
     while i < n {
         let entry = &request.headers.entries[i];
+        // NAME FIRST, and the order is load-bearing: `InvalidHeaderValue` carries the name, which
+        // is only safe because reaching it means the name already passed.
+        if !is_valid_header_name(entry.name.as_str()) {
+            return Err(SerializeError::InvalidHeaderName);
+        }
+        if !is_valid_header_value(entry.value.as_str()) {
+            return Err(SerializeError::InvalidHeaderValue(entry.name.clone()));
+        }
+        // A caller may not set what this serializer owns.
         if is_reserved_framing_header(entry.name.as_str()) {
             return Err(SerializeError::ConflictingFramingHeader);
         }

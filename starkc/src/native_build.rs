@@ -161,12 +161,14 @@ fn provider_crates_for_set(
     let mut out = std::collections::BTreeMap::new();
     for provider in set.providers() {
         let name = &provider.crate_name;
-        let path = crate::provider_registry::crate_location(name, &repo_root).ok_or_else(|| {
-            BuildCommandError::Capability(format!(
-                "provider `{}` needs crate `{name}`, which this build has no location for",
-                provider.metadata.identity.name
-            ))
-        })?;
+        // CD-363: the provider's MANIFEST says where its crate lives, resolved against a root the
+        // caller supplies. This replaced a hardcoded match over five names — the last piece of the
+        // mechanism that made every native capability a compiler-source change.
+        //
+        // `crate_path` is constrained at parse time to be relative and free of `..`, so joining it
+        // here cannot escape the root. For an external provider that root is the only containment
+        // there is.
+        let path = repo_root.join(&provider.crate_path);
         if !path.join("Cargo.toml").is_file() {
             return Err(BuildCommandError::Capability(format!(
                 "provider crate `{name}` is not present at {}",
@@ -207,11 +209,24 @@ fn provider_layer_for_build(
             continue;
         }
 
-        let resource_nominal: std::collections::BTreeMap<String, String> = api
+        // What this package OWNS: each becomes a synthesized zero-variant nominal (CD-234).
+        let owned_nominal: std::collections::BTreeMap<String, String> = api
             .resources
             .iter()
             .map(|r| (r.resource.clone(), r.nominal.clone()))
             .collect();
+        // HC9 — what this package may NAME but does not own. These render as qualified paths
+        // (`stark_net::TcpStream`) and synthesize nothing: the nominal exists in the owning
+        // package, and a second one would be a second type the program could not pass a handle
+        // between.
+        let foreign_nominal: std::collections::BTreeMap<String, String> = api
+            .foreign_resources
+            .iter()
+            .map(|f| (f.resource.clone(), f.qualified_nominal()))
+            .collect();
+        // Derivation sees both: a signature naming either must resolve.
+        let mut resource_nominal = owned_nominal.clone();
+        resource_nominal.extend(foreign_nominal.iter().map(|(k, v)| (k.clone(), v.clone())));
         let errors: std::collections::BTreeMap<String, String> =
             api.errors.iter().cloned().collect();
         let mut raw_bindings = Vec::new();
@@ -238,10 +253,15 @@ fn provider_layer_for_build(
                 },
             )?;
 
+        // Synthesis gets the two sets SEPARATELY: `owned_nominal` is what it generates, and
+        // `foreign_nominal` is what it merely accepts as already existing. Passing the union would
+        // generate a duplicate nominal for every foreign resource, which is the bug this split
+        // exists to prevent.
         let layer = crate::provider_synth::synthesize_with_resources(
             &signatures,
             &vocabularies,
-            &resource_nominal,
+            &owned_nominal,
+            &foreign_nominal,
         )
         .map_err(|error| {
             BuildCommandError::Capability(format!(
@@ -421,6 +441,9 @@ fn select_provider_closes(
                         .find(|function| function.is_close_for.as_deref() == Some(resource))
                         .cloned()
                         .map(|function| crate::mir::ValidatedProviderCall {
+                            // CD-360: closes never consume a foreign resource — a provider may not
+                            // declare a close for a resource it does not own.
+                            foreign_resources: Vec::new(),
                             provider: provider.metadata.identity.clone(),
                             capability: function.capability.clone(),
                             function,
@@ -1109,7 +1132,7 @@ mod tests {
             "a directory holding stark-time/native/Cargo.toml is one"
         );
         assert_eq!(
-            crate::provider_registry::crate_location("stark-time-native", &root),
+            crate::provider_registry::built_in_crate_location("stark-time-native", &root),
             Some(root.join("stark-time").join("native")),
             "the installed root mirrors the repository shape, so one locator serves both"
         );

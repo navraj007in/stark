@@ -25,7 +25,10 @@ const WINDOWS: &str = "x86_64-pc-windows-msvc";
 /// nothing about the crate that actually has to work.
 fn stark_time() -> DeclaredProvider {
     DeclaredProvider {
+        crate_path: "native".to_string(),
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "stark-std-time".to_string(),
                 semver: (0, 1, 0),
@@ -66,7 +69,10 @@ fn stark_time() -> DeclaredProvider {
 /// isolated from symbol collision.
 fn rival_clock() -> DeclaredProvider {
     DeclaredProvider {
+        crate_path: "native".to_string(),
         metadata: ProviderMetadata {
+            // CD-360: predates cross-provider transfer; consumes nothing foreign.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "rival-clock".to_string(),
                 semver: (1, 0, 0),

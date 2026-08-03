@@ -3962,13 +3962,37 @@ C2.8–C2.11 disposition.
   39/39; clippy on CI's 1.97 toolchain, zero diagnostics.
 - **Owning gate:** CD-352.
 
-## DEV-148 — a cross-package associated function is unresolvable [OPEN, found CD-353, 2026-08-02]
+## DEV-148 — an associated function is unresolvable across any MODULE boundary [CLOSED, fixed CD-356, 2026-08-02]
 
 - **Normative expectation:** `07-Modules-and-Packages.md` — a `pub` item of a dependency is
   reachable from a dependent package. Nothing distinguishes an associated function from a free
   function for visibility purposes.
-- **Current behaviour:** free functions and METHODS resolve across a package boundary; ASSOCIATED
-  functions (no receiver) do not.
+- **Current behaviour:** free functions and METHODS resolve across a module or package boundary;
+  ASSOCIATED functions (no receiver) do not.
+- **SCOPE CORRECTION (CD-355).** Filed as cross-PACKAGE; it is cross-MODULE, which is strictly
+  wider and includes the package case. A submodule of the SAME package cannot call one either:
+
+  ```stark
+  // src/lib.stark
+  pub struct Wrap { pub v: Int32 }
+  impl Wrap { pub fn make(v: Int32) -> Wrap { Wrap { v: v } } }
+  mod tests;
+
+  // src/tests.stark
+  use super::Wrap;
+  let b = Wrap::make(2);          // E0200 associated function 'make' not found
+  let c = super::Wrap::make(2);   // E0200 -- the fully qualified path fails too
+  ```
+
+  Same FILE resolves. This matters because it means a package cannot even TEST its own associated
+  functions: `stark-url`'s `Url::parse`, `stark-mime`'s `MediaType::parse` and `stark-net`'s
+  `TcpStream::connect` are unreachable from every test and consumer in the tree, and are recorded
+  as `surface_blocked` in the CD-355 gate for exactly that reason.
+- **Where the failure is:** NOT the resolver. `super::Wrap::make` reaches `Res::AssociatedFn` and
+  then fails in `typecheck.rs`'s associated-function lookup (the E0200 at the `candidates` empty
+  case), which scans impls for one whose `self_ty` path resolves to `Res::Item(nominal)`. Methods
+  are unaffected because method lookup goes by the receiver's TYPE, not by path resolution — which
+  is precisely why the two behave differently.
 - **Minimal reproducer:** two packages, `xapp` depending on `xlib`.
 
   ```stark
@@ -3995,10 +4019,38 @@ C2.8–C2.11 disposition.
   style.
 - **Security/soundness impact:** none — it refuses a valid program.
 - **Workaround:** export a free constructor alongside any associated one. In force everywhere.
-- **Proposed disposition:** unassigned. Adjacent to DEV-083 (impl-head matching) but distinct: this
-  is cross-package ITEM RESOLUTION of an impl member, not matching a receiver type. Worth checking
-  whether associated CONSTANTS and associated types have the same gap.
-- **Owning gate:** unassigned.
+- **ROOT CAUSE (CD-356): the name was sliced out of the wrong file.** Not visibility, not
+  coherence, not path resolution — the path reached `Res::AssociatedFn` correctly. `typecheck`'s
+  lookup compared member names with `self.text(span)`, which slices THE FILE BEING CHECKED, while a
+  member's name span belongs to the file that declared the `impl`. Instrumented, `impl Wrap`'s two
+  members read back as:
+
+  ```text
+  member name_text="rap:"  has_receiver=false     // `make`'s offsets applied to the other file
+  member name_text="?"     has_receiver=true      // a span past the shorter file's end
+  ```
+
+  No candidate ever matched. METHODS were unaffected because method lookup selects on the
+  receiver's TYPE rather than by slicing a name — which is exactly why this looked like a language
+  rule about associated functions rather than a text bug.
+- **Second site:** fixing the comparison exposed the same defect one layer down. A GENERIC
+  associated function then produced `type 'r' does not satisfy operator trait 'Eq'` — `'r'` being
+  `T` sliced from the wrong file. The substitution map's keys and the `Ty::Param`s they substitute
+  into must be read from the same file, so `foreign_sig_item` now carries the declaring item across
+  the whole signature conversion. `item_text` returning `"?"` for an out-of-range span also means
+  several mis-sliced parameters could COLLIDE on one key; a two-parameter test pins that.
+- **The precedent this missed:** DEV-069 fixed exactly this for trait methods ("the trait's method
+  names belong to the TRAIT's declaring file") and `build_assoc_projections` converts "against the
+  impl's own file". The rule was already written down twice. General statement worth keeping:
+  `self.text` is correct ONLY for spans from the file under check, and every lookup that reads a
+  name off a foreign declaration needs `item_text`.
+- **Fix:** `src/typecheck.rs` — `item_text` in the member comparison and the three generic-name
+  map insertions, plus the `foreign_sig_item` context across the signature conversion. Evidence:
+  `tests/dev148_associated_fn_across_modules.rs` (7 tests over a real two-file package graph,
+  since a single-file fixture cannot reproduce a provenance bug). Vacuity-checked: reverting the
+  repair turns the three cross-boundary positives RED and leaves all four controls green.
+- **Still open, adjacent:** whether associated CONSTANTS and associated types have the same gap.
+- **Owning gate:** package track, CD-356.
 
 ## DEV-149 — a `&self` method on a `&mut` base is neither weakened nor reborrowed [CLOSED, fixed CD-354, 2026-08-02]
 
@@ -4037,7 +4089,7 @@ C2.8–C2.11 disposition.
   loop case, DEV-147's own case, three negative controls).
 - **Owning gate:** package track, CD-354.
 
-## DEV-150 — the argument read-conflict rule does not fire through a reference base [OPEN, found CD-354, 2026-08-02]
+## DEV-150 — the argument read-conflict rule does not fire through a reference base [CLOSED, ruled and fixed CD-357, 2026-08-02]
 
 - **Normative expectation:** `03-Type-System.md` — one `&mut` XOR many `&`, with no exception for a
   base that is itself a reference.
@@ -4074,10 +4126,36 @@ C2.8–C2.11 disposition.
     caller hoists the read into a `let`.
 - **Workaround, valid under either ruling:** hoist the read. Applied at all four
   `stark-http-parser` sites.
-- **Proposed disposition:** ESCALATED — a semantics decision for the language owner, not a repair
-  commit. `tests/dev150_argument_conflict_through_reference.rs` pins the inconsistency itself, so
-  whichever ruling lands, the test contradicting it fails and this entry must be revisited.
-- **Owning gate:** unassigned.
+- **RULING (CD-357): (B), uniform rejection; hoisting required.** Now normative as
+  **OWN-BORROW-002** in `03-Type-System.md`:
+
+  > A call may not create an exclusive borrow of a place while another argument in the same call
+  > reads from or borrows an overlapping place. Such reads must be evaluated into locals before the
+  > exclusive borrow is created.
+
+  Uniform in the base — a local, a place reached through `&mut`, a field projection, an index, a
+  free function or a method receiver — and independent of argument order. Core v1 therefore does
+  NOT define argument evaluation as providing two-phase borrow semantics; that remains reserved,
+  and the ruling is reversible if STARK later adopts them deliberately.
+- **Why (B) over (A):** blessing the accepted case would have required accepting the local case
+  too, which widens the borrow rule into two-phase borrows — evaluation-order machinery and a real
+  semantics commitment. (B) keeps ONE backend-neutral rule that every engine satisfies by
+  construction.
+- **Fix:** `src/borrowck.rs` — `check_argument_overlap` runs as its own pass over the whole
+  argument list (a method receiver included) BEFORE the left-to-right walk, because the walk can
+  only ever see a conflict where the borrow comes first. `exclusive_borrow_of` treats an explicit
+  `&mut place` and a `&mut`-typed place (which reborrows) alike; the second was the invisible one.
+  A report-once set keeps one mistake to one diagnostic.
+- **Livability:** all 15 first-party packages pass the gate under the rule with zero new
+  diagnostics. The only site that ever hit it was `stark-http-parser`'s four `take_line` calls,
+  hoisted when the defect was found.
+- **Evidence:** `tests/dev150_argument_overlap.rs` (15 tests: negatives varying the base and the
+  order, positives for every hoisted and non-overlapping form) and spec fixture
+  `03-Type-System__19.stark`, classified `semantic-error` with `errors = "E0101"` — so the spec's
+  own example is an executable test of the rule. Supersedes
+  `dev150_argument_conflict_through_reference.rs`, which pinned the inconsistency while the ruling
+  was open and whose two "the bases disagree" tests went red the moment they agreed.
+- **Owning gate:** package track, CD-357.
 
 ## DEV-151 — a method on a host-resource receiver did not lower, and written `()` was not `Unit` [CLOSED, fixed CD-354, 2026-08-02]
 
@@ -4128,3 +4206,127 @@ Two defects, recorded together because the first concealed the second.
   that has not yet MET a conflicting value). End-to-end: `stark-http-client-consumer` calls
   `set_read_timeout` on a live socket under the qualification gate's HTTP peer.
 - **Owning gate:** package track, CD-354.
+
+## DEV-152 — an `impl` whose type has no page-level item had its methods silently dropped from documentation [CLOSED, fixed CD-355, 2026-08-02]
+
+- **Normative expectation:** `stark doc` documents a package's public items. A `pub fn` in an
+  `impl` block is a public item.
+- **Behaviour before the fix:** `doc_gen::extract` collected impl members separately and attached
+  them to the type's own doc item; when the type had no page-level item **the methods were
+  discarded with no diagnostic**.
+- **Reproducer:** any `impl T { pub fn .. }` where `T` is not declared in the same package.
+- **User impact:** a provider-bound resource nominal is SYNTHESIZED, not written (CD-234), so
+  `impl TcpStream` had nothing to attach to. All seven of `stark-net`'s public methods —
+  `connect`, `read`, `write`, `write_all`, `set_read_timeout`, `set_write_timeout`,
+  `shutdown_write` — were absent from its documentation.
+- **Why it compounded:** DEV-151 showed the two timeout setters could not be BUILT at a call site,
+  and one reason nobody had called them is that the docs did not say they existed. An undocumented
+  API and an uncalled API are the same failure seen from two sides. It also blocked CD-355's
+  surface gate, which uses `stark doc` as the authority on what is public: built on the old
+  extractor, that gate would have certified `stark-net` as fully covered.
+- **Security/soundness impact:** none — it hid a surface rather than mis-compiling one.
+- **Fix:** `src/doc_gen/extract.rs` synthesizes a page for the type instead of discarding. Evidence:
+  `tests/dev152_orphan_impl_methods_documented.rs` (4 tests, including "a declared type gains no
+  duplicate page" and "a private method is still excluded").
+- **Owning gate:** package track, CD-355.
+
+## DEV-153 — `hir_field_ty` had no arm for an unsized slice [CLOSED, fixed CD-355, 2026-08-02]
+
+- **Normative expectation:** `&[T]` is a legal parameter type anywhere a parameter is legal.
+- **Behaviour before the fix:** a method on a host-resource receiver whose parameter was a slice
+  refused to lower, while the identical free function built:
+
+  ```text
+  owned.write_all("x".bytes())        -> field type form (C4.5)
+  write_all(&mut owned, "x".bytes())  -> builds
+  ```
+
+- **Root cause:** `mir_ty` has had a `Ty::Slice` arm all along; `hir_field_ty` did not, because it
+  only ever converted struct fields and enum payloads — and Core v1 forbids reference-typed fields,
+  so `&[T]` could not reach it.
+- **Why it appeared now — and this is the part worth keeping:** DEV-151(a) opened method dispatch on
+  a resource receiver, which routed a method's DECLARED parameter types through `hir_field_ty` for
+  the first time. **A repair that widens what is reachable will expose whatever the newly reachable
+  path never handled.** That is the cost of the DEV-151 class, not an argument against fixing it:
+  the alternative is the surface staying unreachable and the gap staying invisible, which is exactly
+  how `set_read_timeout` shipped unbuildable.
+- **Security/soundness impact:** none — it refused a valid program.
+- **Also fixed:** the `_` arm's message named neither the form nor the type, which is why bisecting
+  cost as long as it did. It now names the item kind.
+- **Fix:** `src/mir/lower.rs::hir_field_ty` gains a `Slice` arm. Evidence:
+  `tests/dev153_slice_parameter_in_resource_method.rs` (4 tests: shared slice, mutable slice, two
+  slices, plus a non-resource control that was never broken).
+- **Owning gate:** package track, CD-355.
+
+## DEV-154 — the read-conflict check is local-granular, so disjoint field projections over-reject [CLOSED, fixed CD-358, 2026-08-03]
+
+- **Normative expectation:** `03-Type-System.md` OWN-BORROW-001 — "Disjoint field projections do
+  not overlap."
+- **Current behaviour:** `check_read_borrow_conflict` compares only the borrow's LOCAL, ignoring
+  projections, so a borrow of one field blocks a read of a sibling field:
+
+  ```stark
+  struct P { a: UInt64, b: UInt64 }
+  fn f(x: &mut UInt64, y: UInt64) { *x = *x + y; }
+
+  let mut p = P { a: 1u64, b: 2u64 };
+  f(&mut p.a, p.b);   // E0101 — but `p.a` and `p.b` are disjoint
+  ```
+
+- **PRE-EXISTING, and not introduced by CD-357.** Found because CD-357's own overlap check —
+  which IS place-granular and uses `places_overlap` — correctly declined to fire here, leaving the
+  older local-granular check as the only reporter. Two checks in the same area disagreeing about
+  granularity is how it became visible.
+- **User impact:** a valid program is refused, and the workaround (hoist the sibling read) is the
+  same shape OWN-BORROW-002 requires — so it is easy to mistake this for the new rule rather than
+  a defect. The compiler and the spec disagree, and the spec is right.
+- **Security/soundness impact:** none — it refuses a valid program.
+- **Fix (CD-358):** the `Borrow` record now carries the borrowed PLACE rather than only its root
+  local, and every comparison — borrow creation, assignment, move, method receiver, and the read
+  check — goes through `places_overlap`, the helper DEV-135 already made field-precise.
+- **Why the negatives are the important half:** this repair makes the checker accept MORE, so each
+  refusal test is load-bearing. Identity, parent-over-child, whole-local-over-field, two exclusive
+  borrows of one field, assignment to a borrowed place, and move-out-of-borrowed-storage all stay
+  refused. The move check is deliberately stricter than the read check — it rejects under ANY live
+  borrow, shared included, because moving invalidates storage a live view still points into — and
+  making the comparison place-granular did not weaken that.
+- **Evidence:** `tests/dev154_place_granular_borrow_conflicts.rs` (10 tests, 4 accepted / 6
+  refused). All 15 packages qualify and the external sample suite is 39/39.
+- **Owning gate:** package track, CD-358.
+
+## DEV-155 — a method's impl generics and a trait default's signature were read from the wrong file [CLOSED, fixed CD-358, 2026-08-03]
+
+- **Normative expectation:** a generic method resolves the same way regardless of which module
+  calls it.
+- **Behaviour before the fix:** a generic method on a generic impl, called across a module
+  boundary, returned a parameter type named from the CALLER's file:
+
+  ```stark
+  // src/lib.stark
+  pub struct Wrap<T> { pub inner: T }
+  impl<T> Wrap<T> { pub fn get(&self) -> &T { &self.inner } }
+  mod inner;
+
+  // src/inner.stark
+  let w = Wrap { inner: 11 };
+  *w.get() != 11        // E0001 expected 'S', found an integer literal
+  ```
+
+  `'S'` is `T`'s offset in `lib.stark` landing on an `S` in `inner.stark`. Nothing could unify
+  against it.
+- **The same class as DEV-069, DEV-101 and DEV-148**, at a fifth and sixth site: the method
+  candidate loop converted the impl's self type and keyed `match_impl_type`'s generic map with
+  `self.text`, and the selected signature's parameter and return types were converted with no
+  declaring-file context. The trait-default path had the same gap — DEV-069 had fixed that
+  default's NAME but not its signature TYPES.
+- **Security/soundness impact:** none — it refused valid programs. But note the near miss:
+  `item_text` returns `"?"` for an out-of-range span, so two mis-sliced parameter names could
+  COLLIDE on one key and substitute each other's types, which would be a WRONG program rather than
+  a rejected one. A two-parameter test pins that they cannot.
+- **Fix:** `src/typecheck.rs` — a `decl_text` helper that resolves against `foreign_sig_item` when
+  a declaring item is in scope, plus that context set across the method candidate loop, the
+  selected signature's conversion, and the trait-default path.
+- **Evidence:** `tests/cd358_cross_module_provenance.rs` (8 tests over real two-file package
+  graphs, covering generic methods, method-level generics, trait defaults, associated types,
+  bounded generic functions, fields and enum variants, and two non-colliding parameters).
+- **Owning gate:** package track, CD-358.

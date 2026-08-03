@@ -350,6 +350,132 @@ impl<T> ValueSlot<T> {
         unsafe { field.read() }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // DEV-160 — raw-pointer projection primitives
+    // ---------------------------------------------------------------------------------------
+    //
+    // **These exist so a generated call-site thunk can touch several DISJOINT fields of one slot
+    // in one call expression.** The `&self`/`&mut self` forms above cannot: each borrows the WHOLE
+    // slot, so a shared borrow that lives into a call and a later move out of a sibling field are
+    // an `&`/`&mut` conflict to rustc, even though MIR has proved the fields disjoint. That is
+    // DEV-160, and it rejects correct programs.
+    //
+    // **Why raw pointers and not simply `*mut ValueSlot<T>` on the existing helpers.** A safe
+    // function returning `&F` from a raw pointer alone has no lifetime source — the borrow would be
+    // unbounded and the signature would be a lie. So these are `unsafe`, take an explicit lifetime,
+    // and are never called from generated MIR bodies. Only a generated `stark_proj` thunk calls
+    // them, and that thunk takes the slot ONCE through a real `&'a mut ValueSlot<T>`, which is what
+    // anchors every reference it hands on.
+    //
+    // **The aliasing rule these exist to keep.** Inside such a thunk, no `&ValueSlot` or
+    // `&mut ValueSlot` may be reconstructed after a field reference has been derived — doing so
+    // would materialise a reference to the whole, partially-borrowed slot. Every access therefore
+    // goes through the raw pointer for the thunk's whole body.
+    //
+    // Not reachable from STARK: `mod stark_proj` is private to the generated crate, and no STARK
+    // surface names these.
+
+    /// The storage pointer, from a raw slot pointer, without forming a reference to the slot.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>`.
+    unsafe fn storage_of(slot: *mut Self) -> *mut T {
+        // `MaybeUninit<ManuallyDrop<T>>` is layout-compatible with `T`, as `base_ptr` relies on.
+        unsafe { core::ptr::addr_of_mut!((*slot).storage) as *mut T }
+    }
+
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` whose state is not `Dead`.
+    unsafe fn require_accessible_raw(slot: *const Self, what: &str) {
+        if unsafe { (*slot).state } == SlotState::Dead {
+            slot_violation(what);
+        }
+    }
+
+    /// Borrow ONE field through a raw slot pointer. The caller supplies `'a`.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` that outlives `'a`; `project` must address a
+    /// field of THAT slot's storage; the field must be live; and no reference to the whole slot may
+    /// be formed while the result is alive.
+    pub unsafe fn field_ref_raw<'a, F>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> &'a F {
+        unsafe {
+            Self::require_accessible_raw(slot, "field read from a dead slot");
+            &*project(Self::storage_of(slot))
+        }
+    }
+
+    /// Move ONE drop unit out through a raw slot pointer, marking the storage `Partial`.
+    ///
+    /// # Safety
+    /// As [`field_ref_raw`](Self::field_ref_raw), and the unit must not already have been moved or
+    /// dropped.
+    pub unsafe fn move_field_raw<F>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> F {
+        unsafe {
+            Self::require_accessible_raw(slot, "sub-place move out of a dead slot");
+            (*slot).state = SlotState::Partial;
+            project(Self::storage_of(slot)).read()
+        }
+    }
+
+    /// Read ONE `Copy` field through a raw slot pointer, leaving liveness untouched.
+    ///
+    /// # Safety
+    /// As [`field_ref_raw`](Self::field_ref_raw).
+    pub unsafe fn copy_field_raw<F: Copy>(slot: *mut Self, project: fn(*mut T) -> *mut F) -> F {
+        unsafe {
+            Self::require_accessible_raw(slot, "field read from a dead slot");
+            project(Self::storage_of(slot)).read()
+        }
+    }
+
+    /// Whole-value move out through a raw slot pointer. The slot becomes `Dead` BEFORE the value is
+    /// handed over, as [`take`](Self::take) does.
+    ///
+    /// # Safety
+    /// `slot` must point to a live `ValueSlot<T>` whose state is `Whole`, and no reference to the
+    /// slot may be formed while this runs.
+    pub unsafe fn take_raw(slot: *mut Self) -> T {
+        unsafe {
+            match (*slot).state {
+                SlotState::Whole => {}
+                SlotState::Dead => slot_violation("take from a dead slot"),
+                SlotState::Partial => slot_violation(
+                    "take from a PARTIAL slot: a drop unit has been moved out, so the storage no \
+                     longer holds a valid complete value",
+                ),
+            }
+            (*slot).state = SlotState::Dead;
+            ManuallyDrop::take(
+                &mut *(core::ptr::addr_of_mut!((*slot).storage) as *mut ManuallyDrop<T>),
+            )
+        }
+    }
+
+    /// **DEV-162: a shared borrow of ONE field of possibly-partial storage.**
+    ///
+    /// The read counterpart of [`write_field`](Self::write_field). Reading a sibling field was
+    /// emitted as `&slot.get().f1`, and `get` requires the value to be complete — so any read after
+    /// another field had been moved out aborted, even though the field being read was untouched.
+    /// `copy_field` already covered the `Copy` case by VALUE; this covers the rest by reference.
+    ///
+    /// Raw projection, so it never materialises a `&T` to the surrounding value and never asserts
+    /// that value is valid. The state is unchanged: reading borrows nothing away.
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and that field must be LIVE — not
+    /// moved out and not dropped. Neither is checkable here; per-field liveness lives in MIR's drop
+    /// flags, and the generated wrappers discharge it by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn field_ref<F>(&self, project: fn(*mut T) -> *mut F) -> &F {
+        self.require_accessible("field read from a dead slot");
+        let field = project(self.storage.as_ptr() as *mut T);
+        // SAFETY: as `copy_field`, but by reference — the caller guarantees the field is live, so
+        // its bytes are a valid `F`, and the borrow is tied to `&self`.
+        unsafe { &*field }
+    }
+
     /// Destroy ONE drop unit of a possibly-partial value, running `glue` on a pointer to it.
     ///
     /// The slot becomes `Partial`: after destroying a field the value is no longer complete, for
@@ -383,6 +509,73 @@ impl<T> ValueSlot<T> {
             SlotState::Whole => slot_violation(
                 "finish_partial on a WHOLE slot: the value is still complete and needs a real \
                  drop or move, not a liveness reset",
+            ),
+        }
+    }
+
+    /// **DEV-158: initialise ONE field of storage that may be partially moved.**
+    ///
+    /// The write half of the repair, and the half that was missing. An overwriting field assignment
+    /// lowers to *move the old unit into a temp, install the new value, drop the temp*. The move
+    /// makes the slot `Partial` — and the install was emitted as `slot.get_mut().f0 = value`, a
+    /// WHOLE-value accessor, which aborts on a partial slot before anything else can go wrong. That
+    /// is the actual failure DEV-158 names; restoring the state afterwards is necessary and, on its
+    /// own, reached too late to matter.
+    ///
+    /// Writes through a raw projection, which never materialises a `&mut T` and so never asserts
+    /// that the surrounding value is valid. The state is left UNCHANGED: this function initialises
+    /// one field and knows nothing about the others, so declaring the value complete is
+    /// [`mark_whole`](Self::mark_whole)'s job, under MIR's drop-flag guard.
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and that field must currently be
+    /// **uninitialised** — moved out, or never written. `ptr::write` does not drop what was there,
+    /// so calling this over a live drop unit leaks it.
+    ///
+    /// MIR discharges that: CD-012 requires an overwriting assignment to move the old unit out
+    /// before installing the new one, so the field is uninitialised at every call site the backend
+    /// generates. A field with no drop unit has nothing to leak either way.
+    pub unsafe fn write_field<F>(&mut self, project: fn(*mut T) -> *mut F, value: F) {
+        self.require_accessible("field write into a dead slot");
+        unsafe {
+            core::ptr::write(project(self.base_ptr()), value);
+        }
+    }
+
+    /// **DEV-158: mark a `Partial` slot WHOLE again, once MIR has re-initialised every drop unit.**
+    ///
+    /// The mirror of [`finish_partial`](Self::finish_partial), and it exists for the same reason:
+    /// this type tracks whole-storage state only, so it cannot itself know that the units moved out
+    /// have been written back. Only generated code following MIR's drop flags can.
+    ///
+    /// # Why it is needed
+    ///
+    /// An overwriting assignment to a field lowers to *move the old unit into a temp, install the
+    /// new value, drop the temp* (CD-012: the new value installs before the old is destroyed). The
+    /// move-out sets `Partial`; the install writes the field back; and before this existed nothing
+    /// set the state back, so the next whole-value use of the local aborted. The interpreter has no
+    /// slot model and accepted the same program, which is what made it a three-engine divergence
+    /// rather than a visible failure.
+    ///
+    /// # Safety contract
+    ///
+    /// **Every drop unit of this storage must be live at the point of the call.** That is not
+    /// checkable here — per-unit liveness lives in MIR's drop flags, and folding it into this type
+    /// is exactly the conflation the three-state design exists to prevent. The caller discharges it
+    /// by emitting this only under a runtime conjunction of all of the local's drop flags.
+    ///
+    /// Calling it with a unit still moved out would re-admit `get`/`take`/`drop_value` on storage
+    /// that is not a valid `T` — the original unsoundness. The guard is the whole safety argument.
+    ///
+    /// `Whole` is idempotent, so lowering need not prove which path reached it. `Dead` is a
+    /// violation: dead storage holds nothing, and there is no value to declare complete.
+    pub fn mark_whole(&mut self) {
+        match self.state {
+            SlotState::Partial | SlotState::Whole => self.state = SlotState::Whole,
+            SlotState::Dead => slot_violation(
+                "mark_whole on a DEAD slot: there is no value to declare complete, and admitting \
+                 one would hand out a reference to uninitialised storage",
             ),
         }
     }
@@ -682,11 +875,197 @@ mod tests {
         let _ = unsafe { slot.move_field_whole(|v| &mut v.1) };
     }
 
+    /// **DEV-160's primitives, exercised the way a generated thunk uses them.**
+    ///
+    /// One slot, a shared borrow of one field and a move of a DISJOINT sibling, both live at the
+    /// same time — which is precisely what the `&self`/`&mut self` forms cannot express, because
+    /// each borrows the whole slot. The raw pointer is derived ONCE from a real `&mut`, and no
+    /// reference to the slot is reconstructed while the field borrow is alive.
+    #[test]
+    fn raw_primitives_allow_a_borrow_and_a_disjoint_move_together() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("url"), String::from("headers"), 7u32));
+
+        let raw: *mut ValueSlot<(String, String, u32)> = &mut slot;
+        let (url, headers, n) = unsafe {
+            let url: &String = ValueSlot::field_ref_raw(raw, |p| core::ptr::addr_of_mut!((*p).0));
+            // A MOVE of a sibling, while `url` is still borrowed. The whole point.
+            let headers: String =
+                ValueSlot::move_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).1));
+            let n: u32 = ValueSlot::copy_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).2));
+            (url, headers, n)
+        };
+
+        assert_eq!(url, "url");
+        assert_eq!(headers, "headers");
+        assert_eq!(n, 7);
+        // The move made it partial, exactly as the `&mut self` form would have.
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // Clean up the units that remain, as generated drop elaboration would.
+        unsafe {
+            slot.drop_field_with(
+                |p| core::ptr::addr_of_mut!((*p).0),
+                |p: *mut String| {
+                    core::ptr::drop_in_place(p);
+                },
+            );
+        }
+        slot.finish_partial();
+    }
+
+    /// A dead slot is refused through the raw path too — the checks are not skipped just because
+    /// the caller holds a pointer rather than a reference.
+    #[test]
+    #[should_panic(expected = "dead slot")]
+    fn raw_field_ref_on_a_dead_slot_is_refused() {
+        let mut slot: ValueSlot<(String, String)> = ValueSlot::dead();
+        let raw: *mut ValueSlot<(String, String)> = &mut slot;
+        let _ = unsafe { ValueSlot::field_ref_raw(raw, |p| core::ptr::addr_of_mut!((*p).0)) };
+    }
+
+    /// `take_raw` refuses a PARTIAL slot for the same reason `take` does.
+    #[test]
+    #[should_panic(expected = "take from a PARTIAL slot")]
+    fn raw_take_on_a_partial_slot_is_refused() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("a"), String::from("b")));
+        let raw: *mut ValueSlot<(String, String)> = &mut slot;
+        unsafe {
+            let _ = ValueSlot::move_field_raw(raw, |p| core::ptr::addr_of_mut!((*p).0));
+            let _ = ValueSlot::take_raw(raw);
+        }
+    }
+
+    /// `take_raw` on a whole slot yields the value and leaves the slot dead, matching `take`.
+    #[test]
+    fn raw_take_matches_the_reference_form() {
+        let mut slot = ValueSlot::dead();
+        slot.write(String::from("v"));
+        let raw: *mut ValueSlot<String> = &mut slot;
+        let got = unsafe { ValueSlot::take_raw(raw) };
+        assert_eq!(got, "v");
+        assert_eq!(slot.state(), SlotState::Dead);
+    }
+
+    /// **DEV-158's repair, at the level it lives.** A slot made partial by a field move is WHOLE
+    /// again once the field is written back, and every whole-value operation works afterwards.
+    ///
+    /// `base_ptr` is private to the impl and reachable here because this module is its child. That
+    /// is deliberate: writing a field back is something only GENERATED code does, through the
+    /// per-type projection helpers, so exposing it publicly would invite a caller to create exactly
+    /// the partial state this operation exists to end.
+    #[test]
+    fn mark_whole_restores_a_partial_slot() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("a"), String::from("b")));
+        let moved = unsafe { slot.move_field(|p| core::ptr::addr_of_mut!((*p).0)) };
+        assert_eq!(moved, "a");
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // What generated code does next: write the field back, then declare the value complete.
+        unsafe {
+            core::ptr::write(
+                core::ptr::addr_of_mut!((*slot.base_ptr()).0),
+                String::from("a2"),
+            );
+        }
+        slot.mark_whole();
+        assert_eq!(slot.state(), SlotState::Whole);
+
+        // The operations that aborted before now work, and see the NEW field value.
+        assert_eq!(slot.get().0, "a2");
+        assert_eq!(slot.get().1, "b");
+        assert_eq!(slot.take(), (String::from("a2"), String::from("b")));
+        assert_eq!(slot.state(), SlotState::Dead);
+    }
+
+    /// Idempotent on a whole slot, so lowering need not prove which path reached it.
+    #[test]
+    fn mark_whole_is_idempotent_on_a_whole_slot() {
+        let mut slot = ValueSlot::dead();
+        slot.write(String::from("x"));
+        slot.mark_whole();
+        slot.mark_whole();
+        assert_eq!(slot.state(), SlotState::Whole);
+        assert_eq!(slot.take(), "x");
+    }
+
+    /// Dead storage holds nothing. Declaring it complete would hand out a reference to
+    /// uninitialised memory, so it is a violation rather than a no-op.
+    #[test]
+    #[should_panic(expected = "mark_whole on a DEAD slot")]
+    fn mark_whole_on_a_dead_slot_is_refused() {
+        let mut slot: ValueSlot<String> = ValueSlot::dead();
+        slot.mark_whole();
+    }
+
     #[test]
     #[should_panic(expected = "WHOLE")]
     fn finish_partial_on_a_whole_slot_is_refused() {
         let mut slot: ValueSlot<String> = ValueSlot::dead();
         slot.write("still here".to_string());
+        slot.finish_partial();
+    }
+
+    /// **DEV-160's generated thunk, hand-written, so Miri can see it.**
+    ///
+    /// A thunk is *generated* code: it exists only inside a program the backend emits, and Miri
+    /// cannot run what has not been generated. So the shape is written out here — one slot arriving
+    /// as `&'a mut ValueSlot<T>`, ONE raw pointer derived from it, every access through that
+    /// pointer, and no reference to the slot reconstructed while a field borrow is alive.
+    ///
+    /// **A hand-written copy is only evidence while it stays a copy.** `starkc`'s
+    /// `dev160_call_site_thunk::the_miri_fixture_matches_what_the_generator_emits` reads
+    /// [`GENERATED_THUNK_SHAPE`] below and compares it to the primitives a freshly generated thunk
+    /// actually calls, in order. If the generator changes, that test fails here rather than leaving
+    /// this file quietly reassuring.
+    ///
+    /// Under Miri this checks what no ordinary run can: that the raw projections do not violate
+    /// Stacked Borrows — that deriving the pointer once from `&mut` and then reading one field
+    /// while moving out of another really is disjoint, rather than merely appearing to work.
+    // Read as TEXT by starkc's fixture-drift test, never called from Rust.
+    #[allow(dead_code)]
+    pub const GENERATED_THUNK_SHAPE: &[&str] =
+        &["field_ref_raw", "move_field_raw", "copy_field_raw"];
+
+    /// The callee. Takes exactly what a STARK function with `(&String, String, UInt32)` parameters
+    /// would --- `&String` rather than clippy's preferred `&str`, because the generated form is
+    /// whatever the STARK signature says and this fixture exists to mirror it.
+    #[allow(clippy::ptr_arg)]
+    fn callee(a: &String, b: String, c: u32) -> usize {
+        a.len() + b.len() + c as usize
+    }
+
+    /// The thunk. Every line here corresponds to something `emit_call_thunk::emit_thunk` renders.
+    fn thunk<'a>(s0: &'a mut ValueSlot<(String, String, u32)>) -> usize {
+        let p0: *mut ValueSlot<(String, String, u32)> = s0;
+        // SAFETY: one fixed projection per access into THIS slot's storage; the accesses are
+        // disjoint; no `&ValueSlot`/`&mut ValueSlot` is formed after `a0` exists.
+        unsafe {
+            let a0: &'a String = ValueSlot::field_ref_raw(p0, |p| core::ptr::addr_of_mut!((*p).0));
+            let a1: String = ValueSlot::move_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).1));
+            let a2: u32 = ValueSlot::copy_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).2));
+            callee(a0, a1, a2)
+        }
+    }
+
+    #[test]
+    fn the_generated_thunk_shape_is_sound_under_stacked_borrows() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("abc"), String::from("de"), 1u32));
+
+        assert_eq!(thunk(&mut slot), 3 + 2 + 1);
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        // The survivors are destroyed the way generated drop elaboration destroys them: per unit,
+        // through raw projections, over storage a sibling has already left.
+        unsafe {
+            slot.drop_field_with(
+                |p| core::ptr::addr_of_mut!((*p).0),
+                |p: *mut String| core::ptr::drop_in_place(p),
+            );
+        }
         slot.finish_partial();
     }
 }

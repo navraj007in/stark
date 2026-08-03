@@ -135,7 +135,28 @@ pub struct ProviderMetadata {
     pub target_triples: Vec<String>,
     pub capabilities: Vec<String>,
     pub resource_types: Vec<String>,
+    /// CD-360: resource types this provider may CONSUME but does not OWN.
+    ///
+    /// A cross-provider transfer — TLS taking the TCP stream it wraps — needs the destination
+    /// provider to name a resource type the source provider declares. Declaring it in
+    /// `resource_types` would be wrong: that carries the obligation to close it, which would give
+    /// one resource two competing closes. So foreign consumption is its own declaration.
+    ///
+    /// **Explicit rather than inferred.** Treating "any handle type I did not declare" as foreign
+    /// would silently accept `HandleConsumed { resource_type: "tcp_strem" }` and defer the typo to
+    /// a link failure. Naming the owning provider as well as the resource keeps the check at the
+    /// three-part identity the type system already uses — `{nominal, provider, resource}`.
+    pub foreign_resources: Vec<ForeignResource>,
     pub functions: Vec<FunctionDecl>,
+}
+
+/// CD-360: a resource type owned by another provider that this provider may consume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignResource {
+    /// §2 identity of the provider that OWNS and closes the resource.
+    pub provider: String,
+    /// §13 resource-type name as the owning provider declares it.
+    pub resource: String,
 }
 
 /// One violation of a §2-§16 rule this validator can check mechanically. Every variant names
@@ -167,6 +188,30 @@ pub enum AbiViolation {
         function: String,
         resource_type: String,
     },
+    /// CD-360: a FOREIGN resource appears in a position other than `HandleConsumed`. A transfer
+    /// is consuming; borrowing or producing another provider's resource has no owner story.
+    ForeignResourceNotConsumed {
+        function: String,
+        resource_type: String,
+    },
+    /// CD-360: a provider declares a close for a resource it does not own. The owning provider's
+    /// close is the only one, and claiming a second is how a double-release enters.
+    ForeignResourceClaimsClose {
+        function: String,
+        resource_type: String,
+    },
+    /// CD-360: a function consumes a foreign resource but produces none of its own. A transfer
+    /// that yields nothing is a disguised close of somebody else's resource.
+    ForeignConsumeWithoutOwnedOutput { function: String },
+    /// CD-360: more than one foreign resource consumed by one function. Refused until a use case
+    /// exists — a single transfer has one source, and two would need an ordering rule for failure.
+    MultipleForeignConsumed {
+        function: String,
+        resource_types: Vec<String>,
+    },
+    /// CD-360: a declared foreign resource that no function consumes. Dead declarations grant
+    /// silent permission, so they are refused the way `CapabilityUnreachable` already is.
+    ForeignResourceUnused { provider: String, resource: String },
     /// §6/§13 (amendment §3.3): a handle parameter names a resource type the provider never
     /// declared, so §13's wrong-resource-type rule could not be checked against it.
     HandleResourceTypeUndeclared {
@@ -272,16 +317,82 @@ pub fn validate(metadata: &ProviderMetadata) -> Result<(), Vec<AbiViolation>> {
     // this, §13's "closing a handle from a different resource type is a contract violation" rule
     // is unenforceable at compile time -- the runtime struct carries a `resource_type` value, but
     // a value is not something a declaration can be checked against.
+    //
+    // CD-360 amends this: a resource type declared in `foreign_resources` is also nameable, but
+    // ONLY in `HandleConsumed` position, and it carries no close obligation here. The rule stays
+    // exactly as strict for everything else — an undeclared type is still refused, which is what
+    // makes a typo a validation error rather than a link failure.
+    let owns = |rt: &str| metadata.resource_types.iter().any(|d| d == rt);
+    let is_foreign = |rt: &str| metadata.foreign_resources.iter().any(|f| f.resource == rt);
+
     for f in &metadata.functions {
+        let mut consumed_foreign: Vec<String> = Vec::new();
         for p in &f.params {
-            if let Some(rt) = p.handle_resource_type() {
-                if !metadata.resource_types.iter().any(|d| d == rt) {
-                    violations.push(AbiViolation::HandleResourceTypeUndeclared {
-                        function: f.name.clone(),
-                        resource_type: rt.to_string(),
-                    });
-                }
+            let Some(rt) = p.handle_resource_type() else {
+                continue;
+            };
+            if owns(rt) {
+                continue;
             }
+            if !is_foreign(rt) {
+                violations.push(AbiViolation::HandleResourceTypeUndeclared {
+                    function: f.name.clone(),
+                    resource_type: rt.to_string(),
+                });
+                continue;
+            }
+            if matches!(p, AbiParam::HandleConsumed { .. }) {
+                consumed_foreign.push(rt.to_string());
+            } else {
+                violations.push(AbiViolation::ForeignResourceNotConsumed {
+                    function: f.name.clone(),
+                    resource_type: rt.to_string(),
+                });
+            }
+        }
+
+        if !consumed_foreign.is_empty() {
+            // A transfer must PRODUCE something this provider owns. Without that it is a close of
+            // another provider's resource wearing a different name.
+            let produces_owned = f
+                .params
+                .iter()
+                .any(|p| matches!(p, AbiParam::HandleOut { resource_type } if owns(resource_type)));
+            if !produces_owned {
+                violations.push(AbiViolation::ForeignConsumeWithoutOwnedOutput {
+                    function: f.name.clone(),
+                });
+            }
+            if consumed_foreign.len() > 1 {
+                violations.push(AbiViolation::MultipleForeignConsumed {
+                    function: f.name.clone(),
+                    resource_types: consumed_foreign.clone(),
+                });
+            }
+        }
+
+        if let Some(rt) = &f.is_close_for {
+            if is_foreign(rt) && !owns(rt) {
+                violations.push(AbiViolation::ForeignResourceClaimsClose {
+                    function: f.name.clone(),
+                    resource_type: rt.clone(),
+                });
+            }
+        }
+    }
+
+    for foreign in &metadata.foreign_resources {
+        let consumed = metadata.functions.iter().any(|f| {
+            f.params.iter().any(|p| {
+                matches!(p, AbiParam::HandleConsumed { resource_type }
+                         if resource_type == &foreign.resource)
+            })
+        });
+        if !consumed {
+            violations.push(AbiViolation::ForeignResourceUnused {
+                provider: foreign.provider.clone(),
+                resource: foreign.resource.clone(),
+            });
         }
     }
 
@@ -333,6 +444,8 @@ mod fixtures {
 
     pub fn valid_example_kv() -> ProviderMetadata {
         ProviderMetadata {
+            // CD-360: the example provider consumes no other provider's resource.
+            foreign_resources: Vec::new(),
             identity: ProviderIdentity {
                 name: "example-kv".to_string(),
                 semver: (0, 1, 0),

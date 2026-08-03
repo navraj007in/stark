@@ -484,6 +484,48 @@ pub struct ProviderApi {
     /// The *raw* type only. CD-225 keeps the status-code→public-variant mapping in ordinary STARK,
     /// so this is the minimum identity needed to derive a binding and nothing more.
     pub errors: Vec<(String, String)>,
+    /// **HC9 — resources this package's bindings NAME but another package OWNS.** Sorted by
+    /// resource.
+    ///
+    /// CD-360 admitted a provider consuming a foreign resource. A package binding such a function
+    /// hits a problem the ruling did not reach: the derived signature's first parameter is a
+    /// `TcpStream`, and `TcpStream` is `stark-net`'s nominal, not this package's. Before this,
+    /// derivation failed with `UnboundResourceInSignature` — a package could declare a transfer it
+    /// could not express.
+    ///
+    /// The two obvious fixes are both wrong. Binding `tcp_stream` here as an ordinary resource
+    /// would synthesize a SECOND `enum TcpStream {}` in this package, a distinct `ItemId` and
+    /// therefore a distinct type from the one the net package's calls produce — the program would
+    /// hold a handle it could not pass. Inferring the owner from the graph would make a typo
+    /// (`tcp_strem`) resolve to nothing and surface far from its cause. So the reference is
+    /// **declared**, names the owning package, and resolves to that package's existing nominal.
+    pub foreign_resources: Vec<ProviderForeignResourceBinding>,
+}
+
+/// **HC9** — one `provider_api.foreign_resources` entry: a resource another package owns, which
+/// this package's bound signatures may name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderForeignResourceBinding {
+    /// The provider's declared resource-type name, e.g. `tcp_stream`. This is the key the ABI uses,
+    /// so it is what the entry is keyed and sorted by.
+    pub resource: String,
+    /// The DEPENDENCY ALIAS the owning package is imported under, e.g. `stark_net` — not the
+    /// package's own name (`stark-net`), because the alias is what appears in a STARK path and a
+    /// path is what the derived signature has to render.
+    pub package: String,
+    /// The nominal that package binds to `resource`, e.g. `TcpStream`.
+    pub nominal: String,
+}
+
+impl ProviderForeignResourceBinding {
+    /// How the nominal renders in a derived signature: `stark_net::TcpStream`.
+    ///
+    /// Qualified rather than imported. Appending a `use` to the entry file would collide with an
+    /// import the package author already wrote — and synthesis has no way to know whether they did,
+    /// because it runs before name resolution. A qualified path cannot collide with anything.
+    pub fn qualified_nominal(&self) -> String {
+        format!("{}::{}", self.package, self.nominal)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -715,7 +757,7 @@ impl Package {
             capabilities.dedup();
         }
 
-        let provider_api = parse_provider_api(obj, &capabilities, path)?;
+        let provider_api = parse_provider_api(obj, &capabilities, &dependencies, path)?;
 
         Ok(Self {
             name,
@@ -1374,6 +1416,7 @@ struct ResolvedMeta {
 fn parse_provider_api(
     obj: &std::collections::HashMap<String, JsonValue>,
     capabilities: &[String],
+    dependencies: &HashMap<String, Dependency>,
     path: &Path,
 ) -> Result<ProviderApi, String> {
     let Some(api_val) = obj.get("provider_api") else {
@@ -1452,6 +1495,69 @@ fn parse_provider_api(
         }
     }
 
+    // HC9: resources another package owns, which this package's bindings may NAME. Deliberately a
+    // separate section from `resources`: an entry here synthesizes no nominal, because the nominal
+    // already exists in the owning package and a second one would be a second type.
+    let mut foreign_resources = Vec::new();
+    if let Some(foreign_val) = api.get("foreign_resources") {
+        let foreign = foreign_val.as_object().ok_or_else(|| {
+            format!(
+                "'provider_api.foreign_resources' in manifest '{}' must be a JSON object",
+                path.display()
+            )
+        })?;
+        for (resource, spec) in foreign {
+            let spec_obj = spec.as_object().ok_or_else(|| {
+                format!(
+                    "'provider_api.foreign_resources.{resource}' in manifest '{}' must be a JSON \
+                     object",
+                    path.display()
+                )
+            })?;
+            let field = |key: &str| -> Result<String, String> {
+                spec_obj
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "'provider_api.foreign_resources.{resource}' in manifest '{}' must \
+                             have a string '{key}'",
+                            path.display()
+                        )
+                    })
+            };
+            let package = field("package")?;
+            let nominal = field("nominal")?;
+            // The alias must be one the package actually depends on. Otherwise the derived
+            // signature renders a path to a package that is not in the graph, and the failure
+            // surfaces as an unresolved name inside generated source nobody wrote.
+            if !dependencies.contains_key(&package) {
+                return Err(format!(
+                    "manifest '{}' declares foreign resource '{resource}' in package '{package}', \
+                     which is not a dependency; add it to \"dependencies\" under that alias",
+                    path.display()
+                ));
+            }
+            // A Core resource is compiler-owned (CD-224), and no package owns one to lend.
+            if crate::provider_bind::ResourceRegistry::builtin()
+                .lookup(resource)
+                .is_some()
+            {
+                return Err(format!(
+                    "manifest '{}' declares foreign resource '{resource}', which is a Core \
+                     resource owned by the compiler; it is not another package's to lend",
+                    path.display()
+                ));
+            }
+            foreign_resources.push(ProviderForeignResourceBinding {
+                resource: resource.clone(),
+                package,
+                nominal,
+            });
+        }
+    }
+
     let mut errors = Vec::new();
     if let Some(err_val) = api.get("errors") {
         let errs = err_val.as_object().ok_or_else(|| {
@@ -1514,15 +1620,35 @@ fn parse_provider_api(
         }
     }
 
+    // HC9: a resource cannot be both owned and foreign. Owning it synthesizes a nominal; borrowing
+    // it references someone else's. Declaring both would put two nominals behind one resource name
+    // -- the same failure the collision check above rejects, arriving by a different route, and
+    // the one that would silently produce a handle the program cannot pass anywhere.
+    let mut both: Vec<&str> = foreign_resources
+        .iter()
+        .filter(|f| resources.iter().any(|r| r.resource == f.resource))
+        .map(|f| f.resource.as_str())
+        .collect();
+    both.sort_unstable();
+    if let Some(first) = both.first() {
+        return Err(format!(
+            "manifest '{}' declares resource '{first}' as both owned and foreign; a package either \
+             binds a resource's nominal or references the owner's, never both",
+            path.display()
+        ));
+    }
+
     // Sorted so manifest key order reaches neither the build key nor generated code -- the property
     // CD-213 gave capabilities and CD-205 gave the status vocabulary.
     functions.sort_by(|a, b| a.item_path.cmp(&b.item_path));
     resources.sort_by(|a, b| a.nominal.cmp(&b.nominal));
+    foreign_resources.sort_by(|a, b| a.resource.cmp(&b.resource));
     errors.sort();
     Ok(ProviderApi {
         functions,
         resources,
         errors,
+        foreign_resources,
     })
 }
 

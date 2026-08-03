@@ -8,8 +8,10 @@
         "stark_http_core": "0.1.0",
         "stark_http_parser": "0.1.0",
         "stark_http_serialize": "0.1.0",
+        "stark_json": "0.1.0",
         "stark_net": "0.1.0",
         "stark_time": "0.1.0",
+        "stark_tls": "0.1.0",
         "stark_url": "0.1.0"
       }
     },
@@ -37,6 +39,13 @@
       }
     },
     {
+      "name": "stark_json",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    },
+    {
       "name": "stark_net",
       "version": "0.1.0",
       "sha256": "",
@@ -49,6 +58,15 @@
       "version": "0.1.0",
       "sha256": "",
       "dependencies": {
+      }
+    },
+    {
+      "name": "stark_tls",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_net": "0.1.0",
+        "stark_time": "0.1.0"
       }
     },
     {

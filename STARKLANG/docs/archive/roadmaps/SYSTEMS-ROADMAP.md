@@ -1,3 +1,12 @@
+> **ARCHIVED — SUPERSEDED 2026-08-03.** This roadmap was consolidated into the single
+> forward plan at `ROADMAP.md` (repository root). It is retained for provenance and for
+> the citations that point at it; **do not schedule work from it**. Where it disagrees
+> with `ROADMAP.md`, `ROADMAP.md` wins.
+>
+> Former path: `STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md`
+
+---
+
 # STARK Systems and Ecosystem Roadmap
 
 This companion roadmap proves practical native systems capability without moving package

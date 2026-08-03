@@ -20,9 +20,11 @@ use stark_net::ipv4;
 use stark_net::read;
 use stark_net::socket_address;
 use stark_net::default_resolve_limits;
+use stark_time::duration_seconds;
 use stark_net::resolve;
 use stark_net::write_all;
 use stark_net::SocketAddress;
+use stark_net::TcpStream;
 
 fn peer() -> SocketAddress {
     socket_address(ipv4(127u8, 0u8, 0u8, 1u8), 39187u16)
@@ -113,9 +115,142 @@ fn resolve_localhost() {
     }
 }
 
+// CD-355 — the METHOD surface, which nothing had ever called.
+//
+// `impl TcpStream` wraps the free functions above. Every one of its seven methods was declared,
+// qualified and (after DEV-152) documented, and NOT ONE was called by anything in the tree. That is
+// precisely where DEV-151 hid: `set_read_timeout` could not be BUILT at a call site for as long as
+// no call site existed. A wrapper nobody calls is not a thinner API — it is a second
+// implementation nobody has run.
+//
+// Each method here is required to behave like the free function it delegates to.
+fn exercise_the_method_surface() {
+    // `TcpStream::connect` is an ASSOCIATED function, and until DEV-148 was fixed it could not be
+    // called from another package at all — which is why it stayed uncalled while every receiver
+    // method around it was reachable.
+    //
+    // CALLING IT IMMEDIATELY EXPOSED THAT IT DOES NOT WORK. `connect(address, timeout)` refuses
+    // EVERY non-zero timeout with `Unsupported`, so the natural connect API — the one that takes a
+    // deadline — has never connected to anything. It succeeds only for a ZERO duration, which
+    // reads as "no timeout" and is the opposite of what passing a `Duration` means. There is no
+    // connect-timeout in the provider ABI to implement it against; the declaration ran ahead of
+    // the capability.
+    //
+    // Pinned rather than hidden: when a connect timeout lands, this assertion fails and forces
+    // this consumer to be updated, exactly as with `shutdown_write` below.
+    match TcpStream::connect(peer(), duration_seconds(5u64)) {
+        Ok(_stream) => {
+            panic(
+                "resource consumer: connect-with-timeout works now — implement it properly and update this",
+            );
+        }
+        Err(_error) => {}
+    }
+    match connect_no_timeout(peer()) {
+        Ok(stream) => {
+            let mut owned = stream;
+
+            // The two timeout setters — DEV-151's reproducer, now a call site.
+            match owned.set_read_timeout(Some(duration_seconds(5u64))) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: set_read_timeout failed on a live socket");
+                }
+            }
+            match owned.set_write_timeout(Some(duration_seconds(5u64))) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: set_write_timeout failed on a live socket");
+                }
+            }
+
+            // A zero timeout is REFUSED rather than silently meaning "unbounded" — the one value
+            // where guessing wrong turns a bound into its opposite.
+            match owned.set_read_timeout(Some(duration_seconds(0u64))) {
+                Ok(_unit) => {
+                    panic("resource consumer: a zero read timeout must be refused");
+                }
+                Err(_error) => {}
+            }
+
+            // write / write_all / read as methods.
+            match owned.write_all("PING\n".bytes()) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: TcpStream::write_all failed");
+                }
+            }
+            let mut buffer: [UInt8; 32] = [0u8; 32];
+            {
+                let output = &mut buffer[0u64..32u64];
+                match owned.read(output) {
+                    Ok(count) => {
+                        if count == 0u64 {
+                            panic("resource consumer: TcpStream::read returned nothing");
+                        }
+                    }
+                    Err(_error) => {
+                        panic("resource consumer: TcpStream::read failed");
+                    }
+                }
+            }
+
+            // `write` (the partial-write form) on a second connection, since the echo peer reads
+            // one message per connection.
+            match connect_no_timeout(peer()) {
+                Ok(second) => {
+                    let mut other = second;
+                    match other.write(" ".bytes()) {
+                        Ok(count) => {
+                            if count == 0u64 {
+                                panic("resource consumer: TcpStream::write wrote nothing");
+                            }
+                        }
+                        Err(_error) => {
+                            panic("resource consumer: TcpStream::write failed");
+                        }
+                    }
+
+                    // `shutdown_write` is declared and returns `Unsupported` — a STUB. Calling it
+                    // is what makes that visible: an API that always fails is a promise the
+                    // package does not keep, and it should either be implemented or removed.
+                    match other.shutdown_write() {
+                        Ok(_unit) => {
+                            panic(
+                                "resource consumer: shutdown_write claims to work now — it was a stub, so implement it or drop it",
+                            );
+                        }
+                        Err(_error) => {}
+                    }
+                    match close(other) {
+                        Ok(_unit) => {}
+                        Err(_error) => {
+                            panic("resource consumer: close of the second stream failed");
+                        }
+                    }
+                }
+                Err(_error) => {
+                    panic("resource consumer: second connect to the echo peer failed");
+                }
+            }
+
+            match close(owned) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: close after the method surface failed");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: connect for the method surface failed");
+        }
+    }
+}
+
 fn main() {
     acquire_use_and_close_explicitly();
     acquire_use_and_let_drop_release();
+    exercise_the_method_surface();
     resolve_localhost();
     println("STARK_NET_RESOURCE_OK");
 }

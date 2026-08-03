@@ -1,14 +1,11 @@
-trait Iterator {
-    type Item;
-    fn next(&mut self) -> Option<Self::Item>;
+impl Display for Int32 {
+    fn fmt(&self) -> String {
+        // Convert integer to string
+    }
 }
 
-struct Counter { count: Int32 }
-
-impl Iterator for Counter {
-    type Item = Int32;
-    fn next(&mut self) -> Option<Int32> {
-        self.count += 1;
-        Some(self.count)
+impl Eq for Point {
+    fn eq(&self, other: &Point) -> Bool {
+        self.x == other.x && self.y == other.y
     }
 }

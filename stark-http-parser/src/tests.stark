@@ -452,3 +452,75 @@ fn test_every_split_of_a_response_after_informational() {
 fn test_every_split_of_a_bodyless_response() {
     check_every_split("HTTP/1.1 204 No Content\r\nX-A: 1\r\n\r\n", 204u16, "");
 }
+
+// -- SEC-HTTP-001 / SEC-HTTP-002 -------------------------------------------------------------
+//
+// Two ARITHMETIC defects, both reachable by a hostile peer and both worse than a parse error:
+// STARK traps on integer overflow in every build mode, so each one ABORTED the process rather
+// than returning an error. A server choosing its own response could stop any client reading it.
+//
+// Ordinary malformed input ("not-a-number", "zz") never reaches either, because both live at the
+// exact boundary where the magnitude guard stops and the last accumulation still happens. That is
+// why HC13's eleven malformed routes passed while these two were live.
+
+/// Rejected, and rejected for a NAMED reason. `expect_rejected` alone would pass against a parser
+/// that trapped... no it would not — a trap aborts the process. But it WOULD pass against one that
+/// returned the wrong error, which is how a boundary defect hides behind a neighbouring check.
+fn expect_rejected_because(text: &str, expected: &str) {
+    match parse_whole(text, default_limits()) {
+        Ok(_response) => {
+            panic("a malformed response was accepted");
+        }
+        Err(error) => {
+            let actual = super::parse_error_text(&error);
+            if actual.as_str() != expected {
+                print("expected: ");
+                println(expected);
+                print("actual:   ");
+                println(actual.as_str());
+                panic("rejected for the wrong reason");
+            }
+        }
+    }
+    // Byte at a time as well: the boundary is reached on a different code path when the digits
+    // arrive one per `push`.
+    match parse_byte_by_byte(text, default_limits()) {
+        Ok(_response) => {
+            panic("a malformed response was accepted when fragmented");
+        }
+        Err(_error) => {}
+    }
+}
+
+/// **SEC-HTTP-001.** `u64::MAX` is 18446744073709551615. The guard rejected `value` above
+/// 1844674407370955161 but admitted the boundary itself, then added a digit up to 9 on top of
+/// ...610 — an overflow, and therefore an abort.
+///
+/// One past the maximum is the whole test: 18446744073709551615 must still PARSE (it is a legal,
+/// if absurd, length) and 18446744073709551616 must be refused.
+fn test_content_length_one_past_the_maximum_is_refused_not_trapped() {
+    expect_rejected_because(
+        "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551616\r\n\r\n",
+        "invalid Content-Length",
+    );
+    // ...and the boundary value below it is still accepted as a number, then refused by the body
+    // ceiling rather than by the digit parser. Different error, on purpose: it proves the fix
+    // narrowed the guard rather than widening it into a blanket refusal of large lengths.
+    expect_rejected_because(
+        "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\n",
+        "body exceeds its limit",
+    );
+}
+
+/// **SEC-HTTP-002.** `FFFFFFFFFFFFFFFF` accumulates to exactly `u64::MAX` without overflowing, so
+/// `parse_chunk_size` returns it legitimately. The CUMULATIVE check then computed
+/// `body.len() + size`, which overflows the moment any earlier chunk left a byte behind.
+///
+/// Two chunks are the minimum reproduction and are what makes this distinct from `/bad-chunk-size`:
+/// one byte of body first, so the addition has something to overflow with.
+fn test_cumulative_chunk_size_at_the_maximum_is_refused_not_trapped() {
+    expect_rejected_because(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\nFFFFFFFFFFFFFFFF\r\n",
+        "body exceeds its limit",
+    );
+}

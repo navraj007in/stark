@@ -375,7 +375,7 @@ fn stark_file_creates_writes_and_closes_a_real_file() {
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-file-native".to_string(),
-        provider_registry::crate_location("stark-file-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-file-native", &repo_root())
             .expect("stark-file-native must be locatable"),
     );
 

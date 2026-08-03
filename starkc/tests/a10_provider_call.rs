@@ -40,6 +40,8 @@ fn monotonic_now_decl() -> FunctionDecl {
 
 fn validated_call() -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: "stark-time".to_string(),
             semver: (0, 1, 0),

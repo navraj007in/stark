@@ -1,0 +1,40 @@
+{
+  "name": "stark-env-native",
+  "version": "0.1.0",
+  "provider": {
+    "abi": "0.1",
+    "identity": "stark-std-env",
+    "crate": "stark-env-native",
+    "crate_path": "stark-env/native",
+    "capabilities": ["process.args", "process.env"],
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ],
+    "status": { "1": "ProcessError::InvalidName", "2": "ProcessError::InvalidEncoding", "3": "ProcessError::BufferTooSmall", "4": "ProcessError::Unsupported" },
+    "functions": [
+      {
+        "symbol": "stark_env_args_len",
+        "capability": "process.args",
+        "params": [{ "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_env_args_fill",
+        "capability": "process.args",
+        "params": [{ "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_env_var_len",
+        "capability": "process.env",
+        "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "u64" }]
+      },
+      {
+        "symbol": "stark_env_var_fill",
+        "capability": "process.env",
+        "params": [{ "form": "buffer_in" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
+      }
+    ]
+  }
+}

@@ -476,6 +476,37 @@ pub enum Statement {
     /// A backend with no partial-storage model — the reference interpreter — treats it as a nop,
     /// and that is not a gap: it has no state this could correct.
     StorageDead(Place, StorageEnd),
+    /// **DEV-158: this local's storage holds a COMPLETE value again.**
+    ///
+    /// The mirror of [`Statement::StorageDead`], and it exists for the same reason that one does:
+    /// a backend storing non-`Copy` locals in controlled storage tracks whole-storage liveness
+    /// separately from MIR's per-unit drop flags, and only lowering knows when a place's units have
+    /// all been re-initialised.
+    ///
+    /// # What it repairs
+    ///
+    /// An overwriting assignment to a field lowers, per CD-012, as *move the old unit into a temp,
+    /// install the new value, drop the temp* — the new value installs before the old is destroyed.
+    /// The move-out makes the storage `Partial`; the install writes the field back. Before this
+    /// existed, nothing said so, and the next whole-value use of the local aborted with
+    /// "mutable access to a dead slot: the slot is PARTIAL".
+    ///
+    /// The reference interpreter accepted the same program, so this was a THREE-ENGINE DIVERGENCE
+    /// rather than a visible failure: `stark test` was green and only the native build aborted, at
+    /// runtime.
+    ///
+    /// # Contract
+    ///
+    /// - The place is a **whole local** (no projection); `MIR-0036` enforces this.
+    /// - **Every drop unit of the local is live at this point.** Lowering discharges that by
+    ///   emitting this only under a runtime conjunction of all the local's drop flags — the guard
+    ///   IS the safety argument, because the storage type cannot check it and folding per-unit
+    ///   liveness into it is the conflation the three-state design exists to prevent.
+    /// - It is **idempotent** on an already-whole local, so lowering need not prove which path
+    ///   reached it.
+    ///
+    /// A backend with no partial-storage model — the reference interpreter — treats it as a nop.
+    StorageWhole(Place),
 }
 
 // --------------------------------------------------------------- terminators --
@@ -746,6 +777,19 @@ pub struct ValidatedProviderClose {
 /// passed [`crate::provider_abi::validate`]. The backend never performs first-time provider
 /// selection and never interprets unvalidated metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForeignResourceCall {
+    /// §2 identity of the provider that OWNS and closes this resource.
+    pub provider: String,
+    /// §13 resource-type name, as the owning provider declares it.
+    pub resource: String,
+    /// The OWNER's declared resource-type list, because §7's type id is an index into the
+    /// declaring provider's list — and for a transferred handle the declarer is the owner, not the
+    /// consumer. Deriving it from the consumer's list would hand the provider a tag naming a
+    /// different resource.
+    pub owner_resource_types: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedProviderCall {
     /// §2 identity of the selected provider.
     pub provider: crate::provider_abi::ProviderIdentity,
@@ -765,6 +809,13 @@ pub struct ValidatedProviderCall {
     /// empty vocabulary is a *meaningful* value rather than missing data: it says every nonzero
     /// status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// CD-360: foreign resources this call CONSUMES but does not own.
+    ///
+    /// A transferred handle keeps the OWNING provider's identity and type id — it was created with
+    /// them, and the consuming provider must present them unchanged. So the owner's name and its
+    /// resource-type list travel with the call, exactly as `provider_resource_types` does for the
+    /// provider's own resources. Empty for every call that is not a transfer.
+    pub foreign_resources: Vec<ForeignResourceCall>,
     /// The Cargo package name of the crate implementing this provider, e.g.
     /// `"stark-time-native"`.
     ///
@@ -1260,6 +1311,9 @@ fn dump_statement(stmt: &Statement) -> String {
                 StorageEnd::OwnsNothing => "owns-nothing",
             };
             format!("storage_dead {} ({reason})", dump_place(place))
+        }
+        Statement::StorageWhole(place) => {
+            format!("storage_whole {}", dump_place(place))
         }
     }
 }

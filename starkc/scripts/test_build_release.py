@@ -45,13 +45,16 @@ class ReleasePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="stark-release-test-") as temporary:
             root = Path(temporary)
             release = self.fake_release(root, windows=False)
-            archive, checksum = build_release.package_release(
+            archive, checksum, native_installers = build_release.package_release(
                 target="x86_64-unknown-linux-gnu",
                 version="0.1.0-test",
                 release_dir=release,
                 out_dir=root / "packages",
             )
             self.assert_checksum(archive, checksum)
+            self.assertEqual(len(native_installers), 1)
+            self.assertEqual(native_installers[0].suffix, ".deb")
+            self.assertTrue(native_installers[0].is_file())
             extracted = root / "extracted"
             package_root_name = "stark-0.1.0-test-x86_64-unknown-linux-gnu"
             with tarfile.open(archive, "r:gz") as package:
@@ -80,6 +83,7 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertTrue(
                 (package_root / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
             )
+            self.assertTrue((package_root / "manifest.json").is_file())
             if os.name != "nt":
                 prefix = root / "prefix with spaces"
                 subprocess.run(
@@ -87,11 +91,14 @@ class ReleasePackageTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertTrue((prefix / "bin/stark").is_file())
+                installed = prefix / "lib/stark/versions/0.1.0-test"
+                self.assertTrue((prefix / "lib/stark/current").exists())
+                self.assertTrue((installed / "manifest.json").is_file())
                 self.assertTrue(
-                    (prefix / "lib/stark/stark-runtime/src/lib.rs").is_file()
+                    (installed / "lib/stark/stark-runtime/src/lib.rs").is_file()
                 )
                 self.assertTrue(
-                    (prefix / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
+                    (installed / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
                 )
                 subprocess.run(
                     [
@@ -102,14 +109,14 @@ class ReleasePackageTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertFalse((prefix / "bin/stark").exists())
-                self.assertFalse((prefix / "lib/stark/stark-runtime").exists())
-                self.assertFalse((prefix / "lib/stark/stark-provider-abi").exists())
+                self.assertFalse(installed.exists())
+                self.assertFalse((prefix / "lib/stark/current").exists())
 
     def test_windows_package_has_runner_runtime_and_powershell_installers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="stark-release-test-") as temporary:
             root = Path(temporary)
             release = self.fake_release(root, windows=True)
-            archive, checksum = build_release.package_release(
+            archive, checksum, _native_installers = build_release.package_release(
                 target="x86_64-pc-windows-msvc",
                 version="0.1.0-test",
                 release_dir=release,
@@ -130,8 +137,26 @@ class ReleasePackageTests(unittest.TestCase):
                 self.assertIn(
                     f"{package_root}/lib/stark/stark-provider-abi/src/lib.rs", names
                 )
+                self.assertIn(f"{package_root}/manifest.json", names)
                 self.assertIn(f"{package_root}/install.ps1", names)
                 self.assertIn(f"{package_root}/uninstall.ps1", names)
+
+    def test_macos_package_builds_pkg_when_pkgbuild_is_available(self) -> None:
+        if build_release.shutil.which("pkgbuild") is None:
+            self.skipTest("pkgbuild is not available")
+        with tempfile.TemporaryDirectory(prefix="stark-release-test-") as temporary:
+            root = Path(temporary)
+            release = self.fake_release(root, windows=False)
+            archive, checksum, native_installers = build_release.package_release(
+                target="aarch64-apple-darwin",
+                version="0.1.0-test",
+                release_dir=release,
+                out_dir=root / "packages",
+            )
+            self.assert_checksum(archive, checksum)
+            self.assertEqual(len(native_installers), 1)
+            self.assertEqual(native_installers[0].suffix, ".pkg")
+            self.assertTrue(native_installers[0].is_file())
 
 
 class TargetClassificationTests(unittest.TestCase):

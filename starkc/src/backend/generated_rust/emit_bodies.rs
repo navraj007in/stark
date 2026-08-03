@@ -34,6 +34,9 @@ use std::sync::Arc;
 /// A complete `fn name(params) -> ret { ... }` for an ordinary (non-entry) function. The entry
 /// instance is emitted separately, by `emit_program.rs`, as Rust's literal `fn main()` with the
 /// version-check prologue prepended -- `emit_block_body` is the shared piece both use.
+// DEV-160 adds one more program-wide table (the thunk plans). The alternative to another parameter
+// is a context struct, which is its own change.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_function(
     body: &MirBody,
     name: &str,
@@ -42,6 +45,7 @@ pub fn emit_function(
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
     program_resources: &crate::provider_bind::ResourceRegistry,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
     // WP-C6.1f "returning a reference" — OWN-RETURN-001 native encoding. When a function returns a
     // reference, Rust needs to know which input it borrows from. STARK's rule is the *shortest* of
@@ -77,6 +81,7 @@ pub fn emit_function(
         layout,
         provider_calls,
         program_resources,
+        thunks,
     )?;
     Ok(format!("fn {name}{generics}({params}) -> {ret_ty} {block}"))
 }
@@ -161,10 +166,12 @@ pub fn emit_block_body(
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
     program_resources: &crate::provider_bind::ResourceRegistry,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
     let env = &TyEnv::new(body, types, layout)
         .with_provider_calls(provider_calls)
-        .with_program_resources(program_resources);
+        .with_program_resources(program_resources)
+        .with_thunks(thunks);
     validate_ephemeral_references(body)?;
     let mut out = String::from("{\n");
 
@@ -326,8 +333,20 @@ fn emit_one_block(
     block: u32,
     mode: EmitMode<'_>,
 ) -> Result<(), BackendDiagnostic> {
+    let block_index = block;
     let block = &body.blocks[block as usize];
-    for (stmt, _) in &block.statements {
+    // DEV-160: a reference temporary the block's thunk performs itself. Emitting the `RefOf` here as
+    // well would leave that borrow live across the thunk's `&mut` -- which IS the conflict the thunk
+    // exists to resolve, so the suppression is part of the fix rather than an optimisation.
+    let absorbed: &[usize] =
+        match super::emit_call_thunk::plan_at(env.thunks, &body.instance.symbol, block_index) {
+            Some(plan) => &plan.absorbed,
+            None => &[],
+        };
+    for (index, (stmt, _)) in block.statements.iter().enumerate() {
+        if absorbed.contains(&index) {
+            continue;
+        }
         match stmt {
             Statement::Nop => {}
             Statement::Assign(place, rvalue) => {
@@ -343,6 +362,13 @@ fn emit_one_block(
                     out.push_str(&format!("                {line}\n"));
                 }
             }
+            // DEV-158. Only a slot-backed local has whole-storage state to correct; for anything
+            // else this is genuinely nothing, exactly as `StorageDead` is.
+            Statement::StorageWhole(place) => {
+                if let Some(line) = emit_storage_whole(place, env)? {
+                    out.push_str(&format!("                {line}\n"));
+                }
+            }
         }
     }
     emit_terminator(
@@ -353,6 +379,7 @@ fn emit_one_block(
         &block.terminator.1,
         env,
         mode,
+        block_index,
     )
 }
 
@@ -876,6 +903,9 @@ impl EmitMode<'_> {
     }
 }
 
+// DEV-160 adds the block index, which is half a call site's identity and cannot be derived from the
+// terminator itself.
+#[allow(clippy::too_many_arguments)]
 fn emit_terminator(
     body: &MirBody,
     files: &[Arc<SourceFile>],
@@ -887,6 +917,9 @@ fn emit_terminator(
     info: &SourceInfo,
     env: &TyEnv,
     mode: EmitMode<'_>,
+    // DEV-160: half of the call-site identity a thunk plan is keyed by. A `Call` is a terminator,
+    // so a block holds at most one and the index alone distinguishes it within the body.
+    block_index: u32,
 ) -> Result<(), BackendDiagnostic> {
     match terminator {
         Terminator::Goto { target } => {
@@ -982,6 +1015,7 @@ fn emit_terminator(
                 dest_ty,
                 env,
                 &super::emit_runtime::CallSite { file, line, col },
+                block_index,
             )?;
             out.push_str(&format!(
                 "                {}\n",
@@ -1068,7 +1102,21 @@ fn emit_call(
     dest_ty: &MirTy,
     env: &TyEnv,
     site: &super::emit_runtime::CallSite,
+    block_index: u32,
 ) -> Result<String, BackendDiagnostic> {
+    // DEV-160: a call that touches ONE slot-backed local several ways in one argument list cannot
+    // be emitted as ordinary borrows -- see `emit_call_thunk`. The plan was built by
+    // `collect_plans` before any body was emitted; it is looked up here, never rebuilt, so the
+    // wrappers this names are exactly the ones already generated.
+    //
+    // Every other call falls through to emission that is byte-identical to what it was before this
+    // existed, which is what keeps the change off the hot path.
+    if let Some(plan) =
+        super::emit_call_thunk::plan_at(env.thunks, &env.body.instance.symbol, block_index)
+    {
+        return Ok(super::emit_call_thunk::emit_call_site(plan));
+    }
+
     // Argument emission is IDENTICAL for direct and indirect calls (§9.2): the same left-to-right
     // move/copy operand handling MIR already sequenced. Only the callee expression differs.
     let mut arg_exprs = Vec::with_capacity(args.len());
@@ -1516,6 +1564,45 @@ pub(super) fn emit_storage_dead(
     }))
 }
 
+/// DEV-158: `StorageWhole`, gated exactly as `emit_storage_dead` is.
+///
+/// The gating is copied rather than generalised because the REASONS differ and both are load
+/// bearing: a stored-ref or non-slot local has no whole-storage state at all, and a no-drop slot is
+/// written with `reinit` (which has no state to correct) — so for those this must emit nothing
+/// rather than assert something the write path never asks about.
+pub(super) fn emit_storage_whole(
+    place: &crate::mir::Place,
+    env: &TyEnv,
+) -> Result<Option<String>, BackendDiagnostic> {
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "storage_whole names a projected place ({place:?}); storage liveness is a property of a \
+             whole local. MIR-0036 rejects this, so reaching the backend with one is a compiler \
+             defect"
+        )));
+    }
+    if emit_places::is_stored_ref_local(place.local.0, env)?
+        || !emit_places::is_slot_local(place.local.0, env)?
+    {
+        return Ok(None);
+    }
+    // **No no-op-drop-plan gate here, unlike `emit_storage_dead`.**
+    //
+    // That gate exists because a no-drop slot is written with `reinit`, which has no dead-slot
+    // check for a storage END to satisfy. The reasoning does not carry over: a slot is made
+    // `Partial` by a field MOVE, and `take` aborts on a partial slot whether or not the whole-type
+    // drop plan is a no-op.
+    //
+    // And a no-op whole-type plan is the COMMON case here, not a corner: MIR decomposes an
+    // aggregate's drop into per-unit flag-guarded drops, so the whole-type plan has nothing left to
+    // do. Copying the gate across suppressed the emission for exactly the shape DEV-158 is about —
+    // the reproducer's `Config` reported `plan noop = true`, and `mark_whole` was never emitted.
+    Ok(Some(format!(
+        "{}.mark_whole();",
+        emit_places::local_name(place.local.0)
+    )))
+}
+
 /// Emit one assignment statement, choosing the form the destination requires.
 ///
 /// Three cases, and the split is forced rather than stylistic:
@@ -1564,6 +1651,30 @@ pub(super) fn emit_assignment(
         let method = if no_drop { "reinit" } else { "write" };
         return Ok(format!(
             "{}.{method}({value});",
+            emit_places::local_name(place.local.0)
+        ));
+    }
+    // **DEV-158: a PROJECTED destination in slot-backed storage goes through a raw field write.**
+    //
+    // `emit_place_mut` renders `_1.get_mut().f0`, and `get_mut` requires the slot to be WHOLE. But
+    // an overwriting field assignment MOVED the old unit out first (CD-012), which made the slot
+    // `Partial` — so the install aborted before it ran:
+    //
+    //     _7.reinit(stark_proj::stark_move_...f0(&mut _3));   // slot -> PARTIAL
+    //     _3.get_mut().f0 = _6.take();                        // aborts: needs WHOLE
+    //
+    // A raw projection never materialises a `&mut T`, so it is valid over partially-moved storage.
+    // Restoring the state afterwards (`StorageWhole`) is also needed and is NOT sufficient on its
+    // own: it runs after this line, which never got that far.
+    if emit_places::is_slot_local(place.local.0, env)? && !place.projection.is_empty() {
+        let base_ty = env.local_ty(place.local.0)?;
+        let helper = emit_projections::helper_name(
+            &base_ty,
+            &place.projection,
+            emit_projections::HelperOp::Write,
+        );
+        return Ok(format!(
+            "stark_proj::{helper}(&mut {}, {value});",
             emit_places::local_name(place.local.0)
         ));
     }
@@ -1847,7 +1958,7 @@ pub(super) fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, Bac
 /// source type, neither of which `Operand` itself carries. WP-C5.3a: projected places resolve
 /// through `TyEnv`, so a switch on a struct field or an array element is no longer a special
 /// case that has to be refused.
-fn operand_mir_ty(operand: &Operand, env: &TyEnv) -> Result<MirTy, BackendDiagnostic> {
+pub(super) fn operand_mir_ty(operand: &Operand, env: &TyEnv) -> Result<MirTy, BackendDiagnostic> {
     match operand {
         Operand::Const(Constant::Bool(_)) => Ok(MirTy::Bool),
         Operand::Const(Constant::Int(_, ty)) => Ok(ty.clone()),

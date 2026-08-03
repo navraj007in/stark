@@ -168,7 +168,21 @@ pub fn discover_runtime(current_exe: Option<&Path>) -> Result<PathBuf, Toolchain
             //
             // The flat `lib/stark/stark-runtime` location is still accepted, second, so an
             // installation made before the mirror layout keeps working.
+            //
+            // The VERSIONED forms come first because that is what the installer now produces:
+            // `lib/stark/current` -> `versions/<v>`, with the payload beneath it. `<prefix>/bin`
+            // holds a symlink (Unix) or a copy (Windows) of the binary, so this lookup must find
+            // the runtime from `<prefix>/bin` WITHOUT relying on the exe path being resolved
+            // through a symlink first.
+            //
+            // That reliance is exactly what hid the defect: Linux resolves `current_exe()` through
+            // `/proc/self/exe`, so `<prefix>/bin/stark` already reported the real location and the
+            // flat form matched. macOS does not resolve it, and Windows installs a copy rather
+            // than a link — so the identical package worked on one Tier-1 platform and could not
+            // build at all on the other two. The same shape as DEV-163.
             for relative in [
+                "../lib/stark/current/lib/stark/starkc/stark-runtime",
+                "../lib/stark/current/lib/stark/stark-runtime",
                 "../lib/stark/starkc/stark-runtime",
                 "../lib/stark/stark-runtime",
             ] {

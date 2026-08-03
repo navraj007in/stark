@@ -1,5 +1,1812 @@
 # STARK Compiler STATE
 
+## CD-377 — installer Phase I: the layout the compiler could not find (2026-08-03)
+
+**The installed toolchain could not build anything on macOS or Windows.** CI caught the symptom on
+Linux, where it was a stale path assertion; underneath it was a real defect that Linux alone would
+never have shown.
+
+### The installer and the compiler disagreed about the layout
+
+The installer now writes a VERSIONED tree — `lib/stark/current` → `versions/<v>`, payload beneath —
+and puts a **symlink** (Unix) or a **copy** (Windows) at `<prefix>/bin/stark`. `discover_runtime`
+searched only
+
+```text
+<bin>/../lib/stark/starkc/stark-runtime
+<bin>/../lib/stark/stark-runtime
+```
+
+neither of which exists in that tree.
+
+**It worked on Linux by accident.** `current_exe()` there resolves `/proc/self/exe`, so invoking the
+`bin/` symlink already reported the real location and the flat form matched. macOS does not resolve
+it; Windows installs a copy, so there is no link to resolve. Same package, three platforms, one
+working — the DEV-163 shape exactly.
+
+Reproduced without a Windows machine, by invoking both paths:
+
+```text
+/tmp/prefix/bin/stark build                      -> runtime installation is missing
+/tmp/prefix/lib/stark/current/bin/stark build    -> Built app
+```
+
+Fixed by teaching `discover_runtime` the versioned forms FIRST, so the lookup no longer depends on
+the exe path having been resolved through a symlink.
+
+**My earlier "verified end to end" missed this because I never set
+`STARK_REQUIRE_INSTALLED_RUNTIME=1`.** Without it the compiler falls back to a source checkout, so
+every one of those builds was proving the checkout worked. The environment variable is the whole
+experiment.
+
+### `stark doctor`, hardened
+
+Three findings from external review, all confirmed before fixing:
+
+- **Windows executable name.** `("bin", "bin/stark")` was hardcoded, and `install.ps1` runs
+  `stark.exe doctor --root` during staging and throws on failure — so a correct Windows package was
+  rejected with "staged STARK installation failed manifest verification". Install-blocking, and
+  invisible on Unix. Now read from the manifest's `host_target`, which also makes `doctor --root`
+  work when inspecting a package built for another platform.
+- **The manifest reader was formatting-dependent, and its failure mode was silence.** It split the
+  file array on the literal `"\n    {"`. A compact manifest yielded zero entries — and the old
+  binary reports that as `manifest_files: ok (0/0 files verified)`. **A verifier that silently
+  checks nothing and calls it a pass is worse than one that errors.** Replaced with a real
+  recursive-descent parser: escapes including surrogate pairs, bounded nesting, duplicate keys
+  rejected rather than last-wins, and sizes that must be whole and non-negative.
+- **Manifest paths are now validated.** Relative, no `..`, no drive or absolute form, and unique
+  after case folding — Windows and macOS filesystems are case-insensitive, so two entries differing
+  only in case name one file and the second certifies whatever the first wrote. A path escaping the
+  root would let a manifest certify a file the package never installed.
+
+`serde_json` was recommended and is **not** taken: `starkc` has three dependencies, and adding
+`serde` plus a proc-macro chain is a supply-chain decision for the owner, not a code fix. The
+defect is closed either way. Nine adversarial tests cover the parser and the path rules.
+
+### Classification — Phase I, not a distribution
+
+```text
+Installer Phase I / compiler distribution   IMPLEMENTED
+Standalone first-party toolchain            PARTIAL      packages are not in the payload
+Offline package/provider build              NOT PROVEN
+Public signed distribution                  NOT PROVEN   integrity, not authenticity
+```
+
+`manifest.json` detects corruption. It does not establish that the manifest came from a STARK
+release — anyone who can replace the payload replaces the manifest with it. Signing, a trusted key,
+verification before installation and notarisation are all outstanding.
+
+## CD-376 — HC13 correction: two remote aborts, and a timeout claim counted wrong (2026-08-03)
+
+**External review of `bfceaa0`. Every point was correct and every one is verified in the code
+below, not accepted on assertion.** The HTTP client is reclassified **feature-track complete, not
+security-release complete**.
+
+### SEC-HTTP-001 and SEC-HTTP-002 — availability vulnerabilities, not parse errors
+
+STARK traps on integer overflow in **every build mode**, so an arithmetic boundary in the parser is
+not a wrong error message — it is a **remote process abort**. A hostile server choosing its own
+response could stop any client reading it.
+
+```text
+SEC-HTTP-001   Content-Length: 18446744073709551616
+               guard rejected `value > 1844674407370955161` but ADMITTED the boundary, then added
+               a digit up to 9 on top of ...610
+SEC-HTTP-002   chunked: "1\r\nx\r\nFFFFFFFFFFFFFFFF"
+               `FFFFFFFFFFFFFFFF` accumulates to exactly u64::MAX WITHOUT overflowing, so the size
+               parses legitimately; `body.len() + size` then overflowed on any non-empty body
+```
+
+**Why HC13's eleven malformed routes missed them.** Both sit exactly where the magnitude guard
+stops and the final accumulation still happens. `not-a-number` and `zz` are refused long before the
+boundary, so ordinary malformed-input coverage cannot reach either. Adversarial infrastructure is
+necessary and not sufficient; the routes have to be aimed at the arithmetic.
+
+Fixed: the Content-Length guard now checks the final digit at the boundary, and the cumulative chunk
+check is a **subtraction** — with a `>=` guard first, because a subtraction that underflows traps
+exactly as an addition that overflows does, and swapping one for the other would have moved the
+defect rather than fixed it.
+
+**Falsified.** Reverting either fix makes its test fail with `integer overflow`. Two new wire routes
+(`/bad-length-overflow`, `/bad-chunk-cumulative-overflow`) prove the same against a live peer — and
+there, reaching the *next line of output at all* is half the assertion, because before the fix the
+process died.
+
+### The timeout evidence was counted wrong, by me
+
+Three stalling routes prove **two** phases, not three: `/slow-headers` and `/slow-body` both report
+`ReadResponse`. The report said "three different phases" while its own case inventory showed
+otherwise, and the limitations document said "two are not proved" and then listed three.
+
+Worse than the arithmetic: **two of those were filed as "unproven" when they are not implemented.**
+
+```text
+ReadResponse    PROVEN
+TlsHandshake    PROVEN
+WriteRequest    UNPROVEN          deadline installed; no peer fills a receive window
+Connect         NOT IMPLEMENTED   DEV-165
+Resolve         ABSENT            no mechanism could produce it
+```
+
+**DEV-165 — `ClientConfig.connect_timeout` is advertised and never enforced.** The client calls
+`connect_no_timeout`, and `stark-net::connect` refuses every non-zero timeout with `Unsupported`.
+A caller setting it gets no error and no effect. My limitations document claimed it "IS applied to
+the socket" — that was simply false, and it is the worst kind of documentation error because it
+reads as reassurance. Deferred to the networking roadmap (it needs a non-blocking connect and a
+poll, i.e. a provider ABI change), but the false claim is removed now.
+
+**`Resolve` is ABSENT.** `stark-net::resolve` takes a host, a port and size/count limits, and passes
+no duration to the provider. Filing it under "unproven" invited a reader to assume it merely lacked
+a test.
+
+### Status
+
+```text
+HC0-HC12 feature programme        CLOSED
+HC13 adversarial qualification    CLOSED (corrected here)
+HTTP client FEATURE track         COMPLETE
+SEC-HTTP-001, SEC-HTTP-002        CLOSED (this)
+DEV-163, DEV-164                  CLOSED (CD-375)
+DEV-165                           OPEN -- deferred to the networking roadmap
+PUBLIC RELEASE readiness          BLOCKED -- DEV-165, and no installer exists
+```
+
+Evidence: 42 executed cases (13 malformed, 4 oversized, 3 stalls), 36 parser unit tests, 16
+packages through the full gate.
+
+## CD-375 — HC13 CLOSED: adversarial peers, DEV-163 and DEV-164 (2026-08-03)
+
+**The HTTP client track is complete: HC0–HC13.** HC13's job was to prove the client **fails
+correctly**, which is a different property from proving it works and the one that had never been
+tested end to end.
+
+### The finding, which is the point of the packet
+
+**DEV-163 — a read timeout did not report as a timeout on Unix.**
+
+```text
+Unix     SO_RCVTIMEO expires -> EAGAIN       -> ErrorKind::WouldBlock -> NetworkError::Interrupted
+Windows  SO_RCVTIMEO expires -> WSAETIMEDOUT -> ErrorKind::TimedOut   -> NetworkError::TimedOut
+```
+
+So `stark-http-client` reported **"the connection failed"** on Linux and macOS and **"timed out
+reading the response"** on Windows — identical peer, identical STARK source. An operator reading the
+Unix message would have gone to look at the network instead of at the peer deliberately holding the
+socket.
+
+The deadline always worked. Only its **report** was wrong, which is exactly why nothing caught it:
+every test through HC0–HC12 used a peer that *answers*, and a timeout that never fires cannot
+misreport. It was found within an hour of a peer existing that stalls.
+
+Fixed in `stark-net`'s native provider, where the socket mode is known. A provider stream is always
+blocking — the only `set_nonblocking(true)` in that file is the test harness's listener — so
+`WouldBlock` from a read or write can mean one thing: the deadline expired. Both platforms now
+report `STATUS_TIMED_OUT`.
+
+### What was built
+
+```text
+11 malformed routes    status line, version, header name, obs-fold, bare LF, two lengths,
+                       length+TE, length value, transfer coding, chunk size, chunk terminator
+ 4 oversized routes    status line, header line, header count, body ceiling
+ 3 stalls              slow headers, slow body, a TCP peer that never speaks TLS
+```
+
+`stark-http-parser` already had 34 unit tests over an error type with 23 variants — but they assert
+that malformed input is *rejected*, not *which* error it produces, and they hand the parser a
+literal rather than delivering it over a socket. **No test anywhere would have noticed a bare LF
+being reported as a chunk-size error.** These eighteen do, on the wire.
+
+**Each case asserts the NAMED reason, not merely failure.** Eighteen cases all reporting "the
+response was bad" would also pass against a client that rejected the valid responses above them in
+the same run. The reason is what distinguishes a parser from a wall.
+
+Two design points worth keeping:
+
+- `/big-body` declares 12 MiB and **actually sends it**, against a lowered ceiling. The limit is
+  enforced on total bytes read, not on the parsed body, so a peer cannot evade it by under-declaring
+  `Content-Length`. A header check alone would pass the peer that lies.
+- `tls_stall_peer` **holds** each accepted connection rather than closing it. Closing gives a
+  connection error, which is a different outcome from a handshake that never progresses — and the
+  wrong one to be testing.
+
+### A second finding, from my own test: DEV-164
+
+Adding the DEV-163 regression test made `a_detached_socket_is_live_and_this_provider_has_forgotten_it`
+fail about **one run in five**. It was green in twelve consecutive runs without the new test, so
+this was mine — not a flake I merely uncovered.
+
+`stark-net`'s provider table is process-global and `cargo test` runs tests in parallel in one
+process. Two tests hand a raw socket OUT of the provider (`detach` -> `into_raw_fd` -> `adopt`),
+which leaves a live fd outside any Rust owner for a window; a third test opening and closing sockets
+alongside them makes that window observable. The symptom was a detached socket that connected,
+accepted its writes, and then reported `UnexpectedEof` instead of the echo.
+
+**The product is not at fault** — `next_id` is monotonic under the lock so handle ids are never
+reused, and `detach` consumes the stream with `into_raw_fd` so nothing closes the fd. The defect is
+in the test suite's sharing of process-global state. Fixed with the writer-serialising mutex this
+repository already uses for the TLS lifecycle tests: **every test that opens a socket takes it, not
+only the ones that assert on the table.** A test that merely opens a socket perturbs a table
+assertion just as much as one that reads it.
+
+Verified 0/20 with the guard against ~1/5 without.
+
+Two things went wrong on the way to that, and both are worth recording because they cost the most
+time:
+
+- I first blamed the echo harness's 5-second handler timeout and **tested it** — raised it to 60s,
+  and the failure persisted. Refuted in one run; had I "fixed" it instead, I would have shipped a
+  change that did nothing and claimed a cause.
+- My first version of the test parked a thread for three seconds. Removing that made the failure
+  *rarer* rather than gone, which is the worst possible outcome and was only caught by running the
+  suite twenty times instead of once.
+
+### One criterion is partial, and says so
+
+Three of five timeout phases are proved on the wire. `Connect` and `Resolve` are not: a loopback
+cannot black-hole a SYN deterministically, and a flaky negative test is worse than an absent one
+because it teaches people to re-run the suite. They are recorded as **unproven**, not as working —
+which is the distinction DEV-163 exists to justify.
+
+Marking the criterion ✅ on three of five would be exactly the overstatement this packet punished.
+
+### Evidence
+
+```text
+40  executed cases for stark-http-client, all native, all against live loopback peers
+    (18 of them new: 11 malformed, 4 oversized, 3 stalls)
+16  first-party packages through the full gate, exit 0
+ 3  Tier-1 platforms, no platform gating anywhere in the harness
+10  of 10 required fixture servers built
+ 5  evidence documents
+```
+
+Every peer **asserts its bind rather than attempting it**. A skipped peer would silently downgrade
+lifecycle evidence to lowering evidence while the gate still reported success — which matters most
+on Windows, where a loopback TLS listener is likeliest to fail to bind.
+
+### Status
+
+```text
+HC0-HC12  CLOSED
+HC13      CLOSED -- one acceptance criterion partial and reported as partial
+DEV-163   CLOSED (this)
+DEV-164   CLOSED (this) -- provider test suite shared process-global state
+```
+
+Still open from the track, each deliberately in its own packet: dot-segment resolution in
+`stark-url`; making `Header`/`HeaderMap.entries` private (an API break); and **no installable
+toolchain** — no release has been published and `build-release.py` does not stage provider crates,
+so a package release would produce a client nobody can run.
+
+## CD-374 — DEV-160: the call thunk, and the shapes it still refuses (2026-08-03)
+
+**Owner ruling accepted (2026-08-03): DEV-160 is NOT closed as a family.** The call-thunk
+architecture, the Miri evidence mechanism and the named-refusal boundaries are approved; the defect
+splits into four, of which one closes here. Cross-block absorption is DEFERRED to its own work
+package, and the HTTP workaround is KEPT.
+
+```text
+DEV-160a  same-block direct-call disjoint projections      CLOSED (this)
+DEV-160b  borrow returned by an EARLIER call               OPEN / DEFERRED
+DEV-160c  conflicting provider-call argument sequence      OPEN / DEFERRED
+DEV-160d  borrow surviving beyond the sibling move/call    OPEN / DEFERRED
+```
+
+**b, c and d are over-refusals, not unsound execution.** Each is refused by name before rustc, which
+is the correct outcome for a shape the backend cannot emit: without it they reach the user as
+`E0502` inside `mod stark_proj` — a correct compiler error about code they never wrote.
+
+### What a thunk is
+
+One generated function per conflicting call site, in `mod stark_proj` beside the wrappers it calls:
+
+```rust
+pub fn stark_thunk_23main_40_5b_5d_23bb2<'a>(
+    s0: &'a mut stark_runtime::slot::ValueSlot<stark_ty_230_40_5b_5d>,
+) -> u32 {
+    let p0: *mut stark_runtime::slot::ValueSlot<stark_ty_230_40_5b_5d> = s0;
+    unsafe {
+        let a0 = stark_refraw_23struct_230_23f0::<'a>(p0);
+        let a1 = stark_moveraw_23struct_230_23f1(p0);
+        let a2 = stark_copyraw_23struct_230_23f2(p0);
+        stark_consume_40_5b_5d(a0, a1, a2)
+    }
+}
+```
+
+The slot arrives ONCE through a real `&'a mut`, one raw pointer is derived from it, and every
+operand is evaluated through that pointer **in MIR order**. There is one `&mut` in existence, so
+there is nothing left to conflict with; `'a` comes from a real reference, so a borrow the thunk
+hands on has honest provenance. The call site is `stark_proj::NAME(&mut _1)` — one safe call, §7.8
+intact.
+
+### The part that was not in the plan: absorbing the borrow
+
+The conflicting `&` is usually **not in the argument list at all**. `f(&p.name, p.body)` lowers to a
+`RefOf` STATEMENT filling a temporary, and only the temporary is an argument. A thunk that took over
+the argument list alone would leave that borrow live beside its own `&mut` and change nothing.
+
+So the thunk takes over the borrow's statements too, and `emit_bodies` suppresses them. Three
+conditions gate it, and each was needed:
+
+```text
+same block          moving the RefOf inside the thunk must not move it past a branch
+projected base      a whole-slot borrow has no raw twin (and STARK rejects it beside a move anyway)
+every read is here  the definition is suppressed, so nothing may need the value afterwards
+```
+
+Delaying the borrow is sound because the front end has already proved nothing between it and the
+call can mutate what is borrowed. A *disjoint* sibling may be moved in that gap — and re-deriving
+through a raw projection reads the untouched field either way, which is exactly what a whole-value
+accessor could not do.
+
+**`let r = &p.name;` lowers to a PAIR** — `_8 = &_1.0` then `_7 = copy _8` — and only `_7` reaches
+the call. Following that chain, and suppressing every statement along it, is the difference between
+absorbing the reported idiom and absorbing nothing.
+
+### DEV-160d and DEV-160b, and why each is a refusal rather than a gap
+
+**DEV-160d — a borrow that outlives the call.** `let r = &p.name; f(r, p.body); use(r);` cannot be absorbed —
+suppressing the definition breaks the later read — and cannot be left alone. Refused, naming the
+local and the field.
+
+**DEV-160b — a borrow arriving through an earlier call.** This is the shape DEV-160 was reported as:
+
+```text
+send_once(builder.url.as_str(), builder.headers, builder.body)
+```
+
+`as_str` runs in an earlier block and returns a `&str` borrowing `builder`. By the outer call it is
+an ordinary non-slot local carrying no sign of where it came from, so the backend now **traces
+borrow provenance** — `RefOf` seeds it, copies and borrow-carrying aggregates propagate it
+(OWN-CARRY-001 makes provenance structural), and a call's result inherits its arguments', which is
+STARK's own shortest-input rule read as may-alias. A by-value argument whose type could carry a
+borrow and whose provenance meets a participating slot is refused by name, with the workaround
+stated.
+
+Absorbing it means absorbing the intermediate CALL, across a block boundary, turning that block's
+terminator into a `goto`. That is a second mechanism, not an extension of this one, and it changes
+control flow — **flagged for an owner ruling rather than taken unilaterally.** The HTTP client's
+`send()` workaround therefore stays, and the comment above it in `stark-http-client/src/lib.stark`
+now says which half of DEV-160 closed and which did not.
+
+Provenance over-approximates, filtered by type: without the type filter,
+`consume(p.taken, p.kept.len())` would be refused, because `len` takes `&p.kept` and the relation
+propagates — but the result is a `UInt64` and borrows nothing.
+
+### DEV-160c — the provider audit
+
+A provider call never reaches `emit_call`. It is emitted as a statement SEQUENCE — one
+`let __prov_aN = ...;` per argument (A10/CD-200) — which has the SAME conflict: `__prov_a0` holding
+a shared borrow is a live local when `__prov_a1` moves a sibling through `&mut`. The thunk does not
+apply (there is no single expression to replace, and the ABI's out-parameters and handle transfers
+are not arguments a thunk could carry), so it is refused by name. This was the audit the addendum
+asked for, and it found a real path rather than confirming an unreachable one.
+
+### What bounds the change
+
+A call that does not conflict reaches none of this. Both mechanisms that could touch it — the plan
+lookup in `emit_call`, the statement suppression in `emit_one_block` — are gated on a plan existing,
+so `ordinary_calls_plan_nothing` asserts the detector stays silent on four shapes each ONE condition
+away from conflicting: two `Copy` reads, a lone borrow, a lone move, a whole-value move.
+
+One plan, three consumers. `emit_projections::collect` skips the argument lists the plans cover,
+`emit_projections::emit` renders the helpers each plan names, and `emit_call` looks its plan up. The
+addendum required this and it is not decoration: DEV-162 shipped an `E0425` precisely because the
+emitter named a helper the collector had never been asked for.
+
+### Miri, and keeping the fixture honest
+
+A thunk is generated code, and Miri cannot run what has not been generated. So `stark-runtime`
+carries a hand-written one and a pinned CI job (`nightly-2026-07-20`,
+`-Zmiri-strict-provenance`) runs the slot primitives under it — the only check here that can tell a
+sound raw projection from one that merely happens to work.
+
+That arrangement has an obvious failure mode: the generator changes, the fixture does not, and the
+Miri job keeps proving something about code the compiler no longer emits. So the fixture publishes
+`GENERATED_THUNK_SHAPE`, and `the_miri_fixture_matches_what_the_generator_emits` derives the same
+sequence from a freshly generated thunk by resolving each wrapper to the primitive inside it. The
+two must agree. **Neither check is worth much without the other.**
+
+`-Zmiri-ignore-leaks` is required and does not weaken the aliasing check: three `should_panic` tests
+hold heap values when the panic aborts them, which is what those tests are for.
+
+### Evidence
+
+```text
+8   DEV-160 tests -- 4 executed through HIR, MIR, native-debug AND native-release,
+                     2 refusal assertions, 1 bounding invariant, 1 fixture-drift check
+26  stark-runtime slot tests, all green under Miri with strict provenance
+23  suites re-run green locally: MIR lowering/verification/differential, the
+    three-engine differential, ownership, aggregates, generics, function values,
+    providers, host resources, and DEV-135/150/154/162
+```
+
+Local runs are scoped by design; `cargo test --workspace` belongs to CI, which is what the totals
+should be read from.
+
+The four executed cases are compared across engines rather than each asserted to exit 0 — including
+the ordering case, where the `Copy` read is deliberately the THIRD argument, after the move, so a
+reordered thunk would read storage a sibling had already left.
+
+### Status
+
+```text
+DEV-158   install through a whole-value accessor      CLOSED (CD-371)
+DEV-162   read through a whole-value accessor         CLOSED (CD-372)
+DEV-160a  same-block conflicting evaluation           CLOSED (this)
+DEV-160b  borrow through an earlier call              REFUSED by name; DEFERRED by ruling
+DEV-160c  provider-call argument sequences            REFUSED by name; DEFERRED by ruling
+DEV-160d  borrow outliving the call                   REFUSED by name; DEFERRED by ruling
+```
+
+### Why DEV-160b is a work package and not a follow-up commit
+
+It is not an extension of the thunk. It has to absorb an EARLIER call terminator, replace that
+terminator with a `goto`, preserve the failure and control-flow behaviour of the call it absorbed,
+preserve the returned reference's provenance, potentially span several blocks, and coordinate more
+than one call result. Every one of those is a property the current mechanism does not touch.
+
+## CD-373 — DEV-160 foundation: the raw-slot primitives, and an order finding (2026-08-03)
+
+**Owner ruling accepted (raw-pointer call-site thunk; argument reordering PROHIBITED because CD-007
+freezes left-to-right evaluation).** This lands the foundation only. **DEV-160 is still OPEN** — no
+thunk is generated yet and the HTTP workaround stays.
+
+### What landed
+
+Four `unsafe` raw-pointer primitives on `ValueSlot`: `field_ref_raw`, `move_field_raw`,
+`copy_field_raw`, `take_raw`. They take `*mut ValueSlot<T>` and never form a reference to the slot,
+so a borrow of one field and a move of a disjoint sibling can be live together — which the
+`&self`/`&mut self` forms cannot express, because each borrows the whole slot. That inexpressibility
+IS DEV-160.
+
+**The ruling's lifetime point was decisive and I would have got it wrong.** My plan was to change
+the existing helpers to take raw pointers and keep returning `&F`. A safe function returning a
+reference derived from a raw pointer alone has no lifetime source — the borrow would be unbounded
+and the signature a lie. So these are `unsafe`, carry an explicit `'a`, and are callable only from a
+generated thunk that takes the slot ONCE through a real `&'a mut ValueSlot<T>`, which is what
+anchors every reference it hands on.
+
+The aliasing rule is written into the module: inside such a thunk no `&ValueSlot` or
+`&mut ValueSlot` may be reconstructed after a field reference has been derived. Every access goes
+through the raw pointer for the thunk's whole body.
+
+Four tests, including the shape that motivates the whole thing — a field borrow and a sibling move
+alive simultaneously — plus dead-slot and partial-slot refusals through the raw path, so the checks
+are not skipped merely because the caller holds a pointer.
+
+### A finding the thunk design has to absorb
+
+Working through the emission, the thunk cannot take only the CONFLICTING slot and receive the other
+arguments pre-evaluated. Evaluating a non-conflicting argument at the call site would place it
+BEFORE the projections performed inside the thunk, which is the argument-order change the ruling
+prohibits.
+
+So the thunk must take **every distinct local an argument reads**, by `&mut ValueSlot<..>`, and
+perform **every** operand read inside itself, in MIR order. That is consistent with the ruling's
+"performs the fixed disjoint accesses internally ... in MIR order, and invokes the callee" — stated
+here because it is a bigger obligation than "hand the thunk the conflicting slot", and it decides
+the thunk's signature.
+
+Constants and non-slot scalar locals may still be passed by value: their reads are unobservable and
+order-insensitive.
+
+### Remaining for DEV-160
+
+```text
+conflict detector       same slot base in >= 2 argument places, at least one requiring &mut
+thunk plan identity     body/call-site, callee identity + signature, base slot type,
+                        ordered argument modes, ordered projection chains, return type
+thunk generation        into mod stark_proj, safe signature, raw body, MIR order, callee call
+call-site emission      one safe call, no unsafe in the generated MIR body
+negative controls       the owner's fifteen, incl. drop-exactly-once, overlap refusals,
+                        indirect/runtime/provider call audit, debug AND release agreement
+```
+
+### Evidence
+
+30 runtime tests, 161 across MIR verification, the three-engine differential and DEV-162's
+regression, clippy clean. Nothing behaves differently yet: the primitives are unreferenced by any
+emission path.
+
+## CD-372 — DEV-162 CLOSED; DEV-160's obvious fix does not work, and here is why (2026-08-03)
+
+### DEV-162 — reading a sibling field of partially-moved storage
+
+Sibling of DEV-158, same root cause. Once a field is moved out the storage is `Partial`, and a read
+of an UNTOUCHED sibling was emitted as `&slot.get().f1`, where `get` requires a complete value:
+
+```text
+_7.reinit(stark_proj::stark_move_23struct_230_23f0(&mut _1));
+_13 = (&_1.get().f1);   // aborts: the slot is PARTIAL
+```
+
+`copy_field` already covered the `Copy` case by value (WP-C6.1b). This is the rest: a non-`Copy`
+field, borrowed. `ValueSlot::field_ref` reads through a raw projection, so it never materialises a
+reference to the surrounding value. `HelperOp::Ref` joins Move/Copy/Drop/Write, and the emitted form
+is `(*stark_proj::stark_ref_…(&_1))` — dereferenced, because callers in `Borrow` mode prepend their
+own `&` and need a place expression.
+
+**The part missed first.** `Rvalue::RefOf` carries a PLACE, not an operand, so `rvalue_operands`
+returns nothing for it and the collector never generated the helper the emitter had already named.
+That surfaces as `E0425` inside the generated crate — a name error in code nobody wrote — not as any
+diagnostic the compiler produces. Collector and emitter must agree and nothing but a build proves
+it, which is now what the regression test does, across three engines.
+
+### DEV-160 — the obvious fix does NOT work, recorded before anyone tries it
+
+```stark
+consume(p.url.as_str(), p.headers, p.body)   // accepted by STARK, E0502 in generated Rust
+```
+
+The instinct — and my own first plan — is to hoist each argument into a temporary before the call:
+
+```rust
+let __a0 = stark_ref_…url(&_1);
+let __a1 = stark_move_…headers(&mut _1);   // still E0502
+```
+
+**It does not help.** `__a0` holds a shared borrow of `_1` that stays live until the call consumes
+it, so every later `&mut _1` still conflicts. Sequencing the statements changes nothing about the
+borrow's extent.
+
+Two options actually remain, and both have a real cost:
+
+```text
+reorder    emit every `&mut` argument BEFORE any borrow that lives into the call. Sound here —
+           a borrowed field and a moved field are necessarily disjoint or MIR would have refused
+           the program — but it changes ARGUMENT EVALUATION ORDER, which CD-007 fixes. Needs a
+           decision, not just an edit.
+
+raw ptr    give the helpers `*mut ValueSlot<T>` parameters, which do not participate in borrowck.
+           Conflicts with §7.8's rule that generated MIR bodies contain no `unsafe` of their own,
+           unless the unsafety is pushed entirely inside `mod stark_proj`.
+```
+
+Recorded rather than attempted. Getting this wrong quietly changes evaluation order for every
+call in the language.
+
+### Where the family stands
+
+```text
+DEV-158  install through a whole-value accessor      CLOSED (CD-371)
+DEV-162  read through a whole-value accessor         CLOSED (this)
+DEV-160  whole-slot borrows, disjoint projections    OPEN — needs an evaluation-order ruling
+```
+
+Two of three closed. The remaining one is not a bug to fix but a decision to take.
+
+### Evidence
+
+378 across the MIR, native, ownership and aggregate suites; 26 runtime; clippy clean; all 16
+packages green. `dev162_partial_field_read.rs` compares three engines rather than asserting each
+exits 0 separately, and covers the `Copy` sibling alongside the non-`Copy` one so a regression in
+either is visible against the other.
+
+## CD-371 — DEV-158 CLOSED; the diagnosis was wrong twice before it was right (2026-08-03)
+
+**Assigning over a struct field whose old value is a drop unit now works natively.** Both HTTP
+workarounds are removed and the packages still build and pass.
+
+### The defect was in TWO places, and I had only found the second
+
+I documented DEV-158 twice as "no operation returns a slot from `Partial` to `Whole`". True, and not
+the abort. Reading the generated Rust — which is what I should have done first — showed it:
+
+```rust
+_7.reinit(stark_proj::stark_move_23struct_231_23f0(&mut _3));  // slot -> PARTIAL
+_3.get_mut().f0 = _6.take();                                   // <- ABORTS: get_mut needs WHOLE
+```
+
+The INSTALL uses a whole-value accessor on storage the matching move-out just made partial. The
+missing state transition is real and necessary, and it runs after a line that never completed. So
+the fix is two halves:
+
+```text
+ValueSlot::write_field    a raw-projection field write, valid over partially-moved storage
+ValueSlot::mark_whole     the state transition, guarded by MIR's drop flags
+```
+
+`HelperOp::Write` joins Move/Copy/Drop in the projection-wrapper generator, and `emit_assignment`
+routes a projected destination in slot-backed storage through it. `ptr::write`, not assignment: the
+field is uninitialised at every generated call site because CD-012 requires the old unit to be moved
+out first, so there is nothing to drop and assigning would drop garbage.
+
+### A gate copied without re-deriving its reason
+
+`emit_storage_whole` was written by copying `emit_storage_dead`'s gating, including its no-op
+drop-plan check. That check is right for `finish_partial` — a no-drop slot is written with `reinit`,
+which has no dead-slot check for a storage END to satisfy — and **wrong** for `mark_whole`: a slot is
+made partial by a field MOVE, and `take` aborts on it whether or not the whole-type plan is a no-op.
+
+Worse, a no-op whole-type plan is the COMMON case, because MIR decomposes an aggregate's drop into
+per-unit flag-guarded drops. So the copied gate suppressed emission for exactly the shape DEV-158 is
+about. The reproducer's `Config` reported `plan noop = true` and `mark_whole` was never emitted — the
+statement was in the MIR and produced no code. Found by instrumenting rather than by reading it
+again.
+
+### The guard is correct in both directions
+
+Proved, not asserted. A struct with two droppable fields, one moved out and never restored, the
+other assigned: the guard must NOT fire, and a wrong fire is observable rather than silent — the
+scope-end `finish_partial` would hit a WHOLE slot and abort by name. It passes.
+
+### What this did NOT fix
+
+**Reading one field of partially-moved storage still aborts.** `t.b.as_str()` after `t.a` was moved
+out goes through `get()`, which requires WHOLE. Same family — a whole-value accessor over partial
+storage — and the same family as DEV-160's whole-slot borrows. Filed as DEV-162.
+
+That makes three in one class, and they want one fix rather than three:
+
+```text
+DEV-158  install through a whole-value accessor        CLOSED
+DEV-162  READ through a whole-value accessor           OPEN
+DEV-160  whole-slot borrows for disjoint projections   OPEN
+```
+
+### Evidence
+
+3 new runtime tests (write_field's siblings survive, mark_whole in all three states), 315 across the
+MIR and native suites, 26 runtime, clippy clean, all 16 packages green. The original reproducer and
+the HC11 three-field shape both run natively and agree with the interpreter, and both HTTP
+workarounds are deleted rather than merely marked removable.
+
+### The process note
+
+Three diagnoses, two wrong, and the two wrong ones were both reasoning from the source rather than
+from the artefact. The generated Rust was available the whole time and named the failing line in one
+read. When a backend defect is about what the backend EMITS, read the emission first.
+
+## CD-370 — the diagnostic-injection hole I opened while closing the wire one; DEV-161 (2026-08-03)
+
+**From a second Codex review of CD-369. Both findings were right, and the first is a mistake worth
+naming precisely.**
+
+### The repair reintroduced the injection one layer out
+
+CD-369's commit message argued that a rejected VALUE must never be echoed, because it is
+attacker-influenced and echoing it moves the injection into the log. Correct — and then the same
+commit carried the rejected NAME verbatim into the error text. An invalid name may itself contain
+CRLF. My own regression test asserted the reported name was exactly `X-Test\r\nInjected`.
+
+So the reasoning was right and the code did the opposite of it, in the adjacent case.
+
+Fixed **structurally** rather than by escaping:
+
+```stark
+InvalidHeaderName            carries NOTHING — the name is what failed, so there is no safe
+                             version of it to report
+InvalidHeaderValue(name)     carries the name, safe HERE and only here because the name is
+                             checked FIRST and this variant is unreachable until it passed
+```
+
+The order of the two checks is the safety argument, and it is stated in the source. Escaping was
+rejected as the primary fix: a sanitiser is something a future call site can forget, whereas a
+variant carrying no string cannot leak one. The new test renders the error and scans it for control
+bytes, so it asserts the property rather than the shape.
+
+### `Content-Type` gets the same singleton policy as `Location`
+
+`json_checked` used `get_first`; two `Content-Type` headers are two contradictory claims about the
+same bytes, which is the same class of silent choice. Now `AmbiguousContentType`. And
+`RequestBuilder::json` REFUSES when the caller already set one, rather than appending a second —
+appending would put the contradiction on the wire and leave the winner to the server.
+
+### DEV-161 — an ambient `CARGO_TARGET_DIR` breaks every native build
+
+Cargo's default output is `<manifest dir>/target`, which is where the backend looks. An exported
+`CARGO_TARGET_DIR` overrides it, the child inherits it, the build SUCCEEDS elsewhere, and the
+backend reports "Cargo succeeded but the expected binary is missing" — naming neither the cause nor
+the variable. `CARGO_TARGET_DIR` is a common global setting, so any developer with it exported could
+not `stark build` at all.
+
+Fixed by passing `--target-dir` explicitly, with the read path reusing the same value, so nothing
+about the environment can separate where the build writes from where the backend looks.
+
+**How it was found is the uncomfortable part.** It broke `mir_statement_consumers` and
+`c788_resource_lifecycle`, and I reported both as pre-existing environmental failures unrelated to
+my changes — twice. The second time I "confirmed" it by stashing every change and re-running. **That
+control was worthless: the stashed run had the same variable exported.** Controlling for the code
+while holding the environment fixed proves nothing about the environment. The review pushed back on
+the dismissal, which is the only reason it got looked at.
+
+Both suites now pass, including under the hostile variable. `StorageWhole`'s handling by every
+statement consumer is therefore execution-evidenced, not merely compile-evidenced — which was the
+review's specific concern.
+
+### Still open, unchanged
+
+```text
+dot-segment reference resolution   bounded RFC 3986 resolver, belongs in stark-url
+Header/HeaderMap field privacy     an API break, its own change
+DEV-158                            lowering + runtime guard, the hard half
+DEV-160                            field-granular generated projections
+DEV-159                            native build racing its own dependency build
+HC13                               not started
+```
+
+## CD-369 — HC12.1: a proven CRLF-injection hole closed, plus two P1 redirect gaps (2026-08-03)
+
+**From an external Codex review of CD-368. All three findings were real; the first is a security
+defect that predates HC12 and I verified it by exploit before fixing it.**
+
+### P0 — header validation was bypassable, and it was reachable
+
+`stark-http-core::header()` validates on construction, and the serializer trusted that. But
+`Header`'s fields and `HeaderMap.entries` are PUBLIC, so a header can come into being without ever
+touching the constructor. Written as a probe and run:
+
+```text
+value: "safe\r\nInjected: yes"
+
+GET / HTTP/1.1\r\n
+Host: a.test\r\n
+X-Test: safe\r\n
+Injected: yes\r\n        <- a header the caller never wrote
+Connection: close\r\n
+```
+
+CRLF header injection, from safe STARK, no `unsafe` and no provider.
+
+**The invariant is now enforced where the bytes are emitted**, because that is the only place that
+cannot be bypassed by constructing the value differently. `SerializeError::InvalidHeader(name)`
+carries the NAME only — a value rejected for containing CRLF is attacker-influenced by definition,
+and echoing it into a log moves the injection one layer out instead of stopping it.
+
+The regression test IS the exploit, plus bare CR, bare LF, NUL, and four invalid name shapes — and
+one control asserting a well-formed hand-built header still serializes, so the repair rejects what
+cannot be written rather than everything built without the constructor.
+
+**Still open, recorded not fixed:** making `Header`/`HeaderMap.entries` private behind validated
+accessors. That is an API break and belongs in its own change; this closes the hole.
+
+### P1 — two URI-reference forms were silently mis-resolved
+
+| base + Location | was | now |
+| --- | --- | --- |
+| `/one/two?q=1` + `?page=2` | `/one/?page=2` — a DIFFERENT resource | `/one/two?page=2` |
+| `/one/two` + `ftp://other.test/f` | `http://a.test/one/ftp://other.test/f` | refused |
+
+The first silently requested something the server did not name. The second fell through to the
+relative-path branch: not dialling FTP is not the same as being correct. Fragment-only references
+are refused too — they address a position in the current document, so there is nothing to fetch.
+
+The scheme check follows RFC 3986 (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`, colon before
+any `/?#`), so ordinary paths containing a colon still resolve — pinned by test, because a check
+that swallowed `a/b:c` would be its own bug.
+
+### P1 — a duplicate `Location` was first-wins
+
+Now `get_singleton`, and `AmbiguousLocation`. Two `Location` headers are two destinations, and
+picking one silently is a choice between things the server said — the class of disagreement request
+smuggling is built on. `headers_for_next_hop` also propagates a validation failure instead of
+silently omitting the header, since "the second request quietly lost a header" is indistinguishable
+from a bug at the far end.
+
+### Still open from the review
+
+**Dot-segment removal (`.` / `..`) is not implemented.** Codex is right that the real answer is a
+bounded RFC 3986 resolver in `stark-url` rather than a second URL implementation growing inside the
+HTTP client, and a half-written normaliser is worse than none. Recorded for HC13's packet.
+
+### DEV-158 — the fix is in progress, not landed
+
+`ValueSlot::mark_whole` exists and is proven (3 tests: partial→whole with the field written back and
+every whole-value operation working afterwards, idempotent on whole, refused on dead).
+`Statement::StorageWhole` is defined and wired through the verifier (MIR-0036), the interpreter
+(inert), linkage and the emitter. **Lowering does not emit it yet**, so nothing behaves differently
+and the workarounds stay.
+
+One finding while sizing it: the cheap static shortcut — "if the assigned place covers all the
+local's drop units, wholeness follows" — is TOO WEAK. `RequestBuilder` has three droppable fields,
+so `out.body = body` covers one of three: exactly HC11's case, still broken. It would have looked
+like a fix and left the motivating instance failing. The real emission needs the runtime conjunction
+of the local's drop flags, which is what remains.
+
+## CD-368 — HC12 CLOSED: safe redirects; DEV-160 found (2026-08-03)
+
+**Redirect support is opt-in, bounded, and cannot silently forward credentials to another origin.**
+All three words are separate mechanisms. Full record:
+`STARKLANG/docs/http-client/HC12-REDIRECT-EVIDENCE.md`.
+
+```text
+opt-in        follow_redirects defaults false; off, a 3xx is RETURNED, not errored — a redirect
+              is a valid answer and hiding it would misreport what the server said
+bounded       max_redirects (5) AND loop detection over every visited URL — two different faults,
+              two different errors, because raising the limit should fix one and not the other
+not silently  Authorization and Cookie stripped on any origin change; opting out is possible and
+              is named `preserve_authorization_same_origin_only`
+```
+
+### Two rulings worth stating
+
+**301/302 rewrite POST to GET**, contradicting a literal reading of the RFCs and matching every
+browser and `curl -L`. The letter would send a POST body to a target the origin server redirected a
+POST *away* from — both surprising and the more dangerous reading. 307/308 preserve and replay,
+which is safe only because a body is a buffered `Vec<UInt8>`.
+
+**Origin comparison uses the EFFECTIVE port**, so `https://h/` and `https://h:443/` are one origin.
+Otherwise a redirect that merely spelled the port differently would strip credentials for no reason,
+and callers would learn to turn the stripping off — which is how a safety default dies.
+
+### A bug the pure tests could not have found
+
+The 303 case asserts against what the PEER received. Method and body were already correct, and
+`Content-Type: text/plain` was still riding along on a bodyless `GET` — a claim about content that
+is not there. Dropping a body now drops every header that describes one. The rewrite-table test
+alone would have passed; the echo route reflecting the actual wire is what caught it.
+
+### DEV-160 — place-granular borrows, whole-value projections (OPEN)
+
+STARK's borrow checker is place-granular (DEV-154) and correctly accepts disjoint-field borrows in
+one call:
+
+```stark
+send_once(client, builder.method, builder.url.as_str(), builder.headers, builder.body)
+```
+
+The generated projections take `&slot` and `&mut slot`, losing that granularity, so **rustc rejects
+the generated code**:
+
+```text
+error[E0502]: cannot borrow `_2` as mutable because it is also borrowed as immutable
+```
+
+A correct program refused by the backend. Worked around by moving the fields into locals first.
+
+**This is the same shape as DEV-158** — the slot abstraction is whole-value while the ownership
+model is place-granular — and it is the third defect in that family. Whatever fixes the
+`Partial`/`Whole` transition should be scoped to look at projection granularity generally rather
+than at field assignment alone.
+
+### Evidence
+
+38 `stark-http-client` tests (9 new) and 22 consumer cases (10 new), all against live peers. The
+credential case reads the WIRE rather than the policy flag: the cleartext peer redirects to the TLS
+peer, and the echo route reflecting `GET|-|-|` proves the header was absent on the second request.
+The bound and the loop are proved separately — `/r-loop` revisits one target, `/r-hopN` walks an
+ever-lengthening chain of distinct ones.
+
+## CD-367 — HC11 CLOSED: JSON convenience, and a strict UTF-8 decoder (2026-08-03)
+
+**Common JSON REST calls no longer require manual byte conversion or header construction, and HTTP
+core still knows nothing about JSON.** Full record:
+`STARKLANG/docs/http-client/HC11-JSON-EVIDENCE.md`.
+
+```text
+stark-http-core     TextDecodeError, decode_utf8, HttpResponse::body_text
+stark-http-client   RequestBuilder::json, HttpResponse::json / json_checked, JsonBodyError
+```
+
+The split is forced: `stark-http-core` must not depend on `stark-json`, or everything that parses a
+header pulls in a JSON parser. `body_text` lives in core because `HttpResponse` is declared there.
+
+### The substantial part was a UTF-8 decoder
+
+There is no `String::from_utf8` in the core surface, so HC11 wrote one. The accepted set is explicit
+RANGES, not "leading byte then N continuations", because the short form accepts three things it must
+not: overlong forms (`C0 80` is NUL in two bytes, invisible to a checker scanning decoded text),
+surrogates (`ED A0 80`–`ED BF BF`), and anything above `U+10FFFF`. Each is a documented
+parser-differential bug class — two components disagreeing about what a byte string means is how a
+filter gets bypassed.
+
+Strict also means **no replacement characters**. An invalid sequence is an error carrying the byte
+offset; substituting `U+FFFD` would hand a caller a body that differs from what the server sent,
+undetectably.
+
+**The gap was found twice, independently.** Before HC11 there was no `body_text`, and two people —
+the author of the first consumer and an outside reviewer writing their own client — each looked for
+the obvious method, did not find it, and copied the same manual
+`Char::from_u32(body[i] as UInt32)` loop out of an existing consumer. That loop is Latin-1: it
+treats each byte as a code point, so `é` returns as two garbage characters. Fine for ASCII, silently
+wrong otherwise. Two people reaching the same wrong idiom is the argument the helper had to exist.
+
+### Independent corroboration of HC10, recorded but NOT gate evidence
+
+An outside reviewer built their own client at the HC10 HEAD and ran it against real hosts:
+`GET https://api.github.com/rate_limit` returned 200 over TLS validated against the **system** trust
+store, headers reaching the server and response headers parsed back. That covers the one direction
+the offline tests cannot — `SystemRoots` is tested here NEGATIVELY, since the fixture CA is in no
+machine's store. HC13 forbids qualification depending on internet services, so it stays
+corroboration.
+
+### A coherence hazard, noted not exploited further
+
+STARK permits an inherent `impl` on a FOREIGN type — verified, and that is how `HttpResponse::json`
+is declared from the client package. Rust forbids it. Nothing stops two packages adding a `json`
+method to the same foreign type and colliding. Harmless today, and it is what let the roadmap's
+frozen call shape be matched exactly, but it is a real gap in the orphan rule.
+
+### DEV-158 hit a SECOND time, and that is the finding
+
+`RequestBuilder::json` did `out.body = body` — assigning over a `Vec<UInt8>`, a drop unit. Green
+under the interpreter, aborted natively. Same workaround: build the struct as a literal from moved
+fields.
+
+**Two workarounds for one defect in one work package, both caught only by a native run.** The
+three-engine divergence means the cheap engine cannot be trusted to find it, and every future
+package writing `x.field = <owned value>` is exposed. This is the argument for prioritising the fix
+recorded in CD-366.
+
+### DEV-159 — a native build can race its own dependency build
+
+Reported by the same outside reviewer: a first native build of an HTTPS program FAILED and succeeded
+on retry, the generated crate having raced its `aws-lc-rs` dependency build. A user hitting this
+sees a confusing failure. At minimum the diagnostic should say to retry; better, the build should
+not race.
+
+### Evidence
+
+29 `stark-http-core` tests (10 new, the decoder's), 29 `stark-http-client` tests (8 new), and a
+twelfth consumer case that encodes a value containing a four-byte scalar, POSTs it over verified
+TLS, and re-encodes what comes back. Comparing RE-ENCODED values rather than destructuring is
+deliberate: it exercises decode and encode together, so a decoder and an encoder wrong in the same
+direction cannot agree their way past it.
+
+## CD-366 — HC10 CLOSED: HTTPS from the URL alone; DEV-158 found (2026-08-03)
+
+**`Client::send` now selects HTTP or HTTPS from the scheme, and there is no other way to ask.** No
+per-request TLS switch, no insecure flag, no route to `https://` without certificate and hostname
+verification. Full record: `STARKLANG/docs/http-client/HC10-HTTPS-EVIDENCE.md`.
+
+`SystemRoots` is implemented (`rustls-native-certs` 0.8.2) and is `default_config()`'s policy —
+CD-361's point delivered: the platform's trust anchors WITHOUT handing the protocol to a platform
+TLS stack. `BundledRoots` stays refused; vendoring a CA list is a distribution decision nobody has
+taken, and falling back to the system store would give a caller the opposite of what they asked for.
+
+### DEV-158 — assigning over a drop-unit field aborts natively (OPEN)
+
+```stark
+enum Policy { None, Explicit(String) }
+struct Config { policy: Policy, tag: UInt32 }
+
+fn with_roots(pem: String) -> Config {
+    let mut config = base();               // base() yields Policy::None
+    config.policy = Policy::Explicit(pem);
+    config                                 // aborts here
+}
+```
+
+```text
+generated-code invariant violated: mutable access to a dead slot: the slot is PARTIAL
+```
+
+**Cause — and note this is NOT `drop_field_with`, which was the first guess.** `lower_overwriting_assign`
+(`mir/lower.rs`) implements CD-012's rule that the new value installs *before* the old is destroyed:
+
+```text
+1. save each covered drop unit into a temp   Assign(tmp, Move(unit_place))   <- slot -> PARTIAL
+2. install the new value                     Assign(place, rhs)
+3. drop the saved temps, flag-guarded
+4. set the covered units' drop flags true
+```
+
+Step 1's move-out is what marks the slot `Partial`, via `move_field`. Step 2 writes the field back.
+But **no operation returns a slot from `Partial` to `Whole`**: the API has `write`, `reinit`,
+`take`, `drop_value`, `move_field`, `drop_field_with` and `finish_partial`, and the last goes to
+`Dead`. The slot stays `Partial`, and the next whole-struct use hits the guard.
+
+**Why it is not a one-line fix.** A slot may return to `Whole` only when EVERY drop unit is live.
+Writing back the unit this assignment covers does not establish that: a SIBLING unit may have been
+moved out earlier, in which case the slot is legitimately still partial. Per-unit liveness lives in
+MIR's drop flags rather than in the slot, and `slot.rs`'s own docs record the owner review that
+caught those two being conflated — the three-state design is that repair. A naive `restore_whole()`
+reintroduces exactly the unsoundness it exists to prevent.
+
+**The candidate fix, for whoever takes this.** MIR already holds per-unit liveness as ordinary
+locals, so the backend CAN see it: after step 4, emit a `mark_whole()` guarded by the conjunction of
+all of the local's drop flags. That is sound on MIR's own record of liveness rather than on a guess,
+and it needs no cross-block analysis — the whole sequence is emitted by one function. What it does
+need is a new runtime operation, emission for it, tests, and a soundness review. That is a compiler
+work package, not an HC10 edit, which is why it is filed rather than patched.
+
+**Bisected to one shape:**
+
+| | native |
+| --- | --- |
+| assign over a NON-drop field (`config.tag = 9u32`) | fine |
+| build the whole struct as ONE literal | fine |
+| assign over a DROP-UNIT field, then use the struct | **aborts** |
+
+**The worst property: the interpreter accepts the same program.** `stark test` and `stark run` are
+green and only the native build fails, at runtime, as an abort. Any package writing
+`config.field = <owned value>` over a pre-existing struct is exposed.
+
+HC10's workaround is one struct literal instead of a field assignment — same semantics, same API,
+recorded inline. Remove it when this closes.
+
+### A language question, raised not resolved
+
+Core v1 has no mutable binding of an enum payload in a pattern. So
+`enum Transport { Plain(TcpStream), Secure(TlsStream) }` cannot carry a `&mut self` method —
+`E0400 mutable method receiver requires a mutable place` — and with no trait objects and no
+closures either, the plain and secure request flows are written out TWICE. That is a **language**
+decision for the owner, not a defect, and the duplication is deliberate and commented rather than
+hidden behind something that looks abstract and is not.
+
+### Two process notes
+
+**An experiment run only under the interpreter proves only the interpreter.** The enum-payload move
+that DEV-158 eventually broke on was validated with `stark run` early in HC9 and never natively,
+which is why it surfaced three layers later in an HTTPS build rather than in a 25-line probe.
+
+**A stale copy of the harness cost real time.** Several minutes of chasing a hostname mismatch ended
+at a `/tmp` snapshot of `qualify-first-party-packages.py` taken before the fixture change. The code
+under test had been correct the whole time. Regenerate the filtered copy, or run the real script.
+
+## CD-365 — HC9 CLOSED: verified TLS, and CD-360's rule found in a fourth place (2026-08-03)
+
+**A STARK program can now establish a verified TLS 1.2/1.3 stream over a `stark-net` TCP connection
+and release both layers exactly once, without touching a raw ABI symbol.** rustls 0.23.43 over
+aws-lc-rs 1.17.3, Profile N, exactly the versions CD-361 observed.
+
+Full record: `STARKLANG/docs/http-client/HC9-TLS-EVIDENCE.md`.
+
+### CD-360's rule had a FOURTH site, and it was the verifier
+
+CD-360 found the transfer-ownership rule implemented in three places and fixed each separately. The
+MIR verifier was a fourth. It stayed hidden because CD-360's fixture built its
+`ValidatedProviderCall` by hand and emitted from it — never running the verifier over a transfer.
+HC9's first native build:
+
+```text
+MIR-0005 stark_tls::connect bb53: call argument:
+  expected HostResource(… provider: "stark-std-tls", resource: "tcp_stream"),
+  found    HostResource(… provider: "stark-std-net", resource: "tcp_stream")
+```
+
+**The planner was right and the verifier was wrong** — a correct program refused by the compiler,
+which is the worse of the two ways to be inconsistent. The rule now lives in ONE function,
+`mir::provider_sig::owner_of`, which both callers use. A fifth site cannot restate it slightly
+differently, and a test asserts the planner's actual type and the verifier's expected type are the
+same value rather than each being separately plausible.
+
+**The lesson is about the fixture, not the code.** A hand-built `ValidatedProviderCall` skips every
+stage between planning and emission. Three sites were fixed, the ruling was recorded as implemented,
+and the first real caller found the fourth immediately.
+
+### A package can now NAME another package's resource
+
+The gap CD-360 did not reach: the derived signature for `stark_tls_stream_connect` takes a
+`TcpStream`, which is `stark-net`'s nominal, so derivation failed with
+`UnboundResourceInSignature`. A transfer was declarable in a *provider* manifest and not in a
+*package* one.
+
+```json
+"foreign_resources": { "tcp_stream": { "package": "stark_net", "nominal": "TcpStream" } }
+```
+
+Resolves to `stark_net::TcpStream` and **synthesizes nothing**. Binding it as an ordinary resource
+instead would generate a SECOND `enum TcpStream {}` — a distinct `ItemId`, the same spelling, and a
+handle the program could not pass anywhere. Inferring the owner from the graph would make a typo
+resolve to nothing far from its cause. So it is declared, names the owner, and is refused if the
+alias is not a dependency, if the resource is also owned, or if it is a Core type.
+
+### How the socket physically crosses
+
+CD-360 conveyed ownership but not the object: a `RawResourceHandle` indexes the OWNER's private
+table. `stark_provider_abi::RawOsHandle` now documents a detach convention —
+`stark_<resource>_detach(handle, *mut RawOsHandle)` — resolved **by the linker**, since every
+provider is statically linked into one binary. No Cargo edge, no path assumption, and deliberately
+NOT in the provider manifest: a manifest describes the STARK-callable surface, and `detach` is
+callable by no package and emitted by no lowering.
+
+**Open, recorded rather than rediscovered:** a missing detach symbol is a LINK error naming a
+symbol, not a compiler diagnostic.
+
+### The ordering inside `connect` is the cleanup story
+
+```text
+detach the socket FIRST  ->  validate  ->  handshake
+```
+
+The handle is consumed whatever the function returns, so any early return before the socket is
+adopted strands it in the net provider's table. Detaching first makes every later error path a plain
+Rust drop. There is no cleanup code in that function, and its absence is the design.
+
+### Evidence
+
+19 provider tests (the full certificate matrix, both protocol versions distinguishable, handshake
+deadline, peer-close, fragmented records, leak-freedom on every failure path), 16 new compiler tests,
+8 package tests, and `stark-tls` as the **16th package** in the qualification gate — declared surface
+14 callables, all called. All provider-related starkc suites re-run green.
+
+**CD-360's runtime proving case is closed by this**: a real transfer against a live peer, both
+outcomes, release observed exactly once.
+
+### DEV-156 — `stark fmt` evicts member doc comments (OPEN)
+
+A doc comment on a struct FIELD is relocated to after the struct; one on an `impl` METHOD is
+relocated INSIDE the body. Reproducer:
+
+```stark
+pub struct Config {
+    pub first: UInt32,
+    /// PROBE DOC
+    pub last: UInt32,
+}
+```
+
+becomes `pub struct Config { pub first: UInt32, pub last: UInt32 }` followed by a dangling
+`/// PROBE DOC`.
+
+Cause: `printer::field_def` never consumes leading comments, so they survive only via
+`CommentStream::take_rest`'s no-loss net, which flushes at the next position the printer does
+attach. `item_seq` calls `emit_leading_comments` correctly, which is why top-level items are fine.
+Fixing it needs `measure_flat` to snapshot the comment cursor, a member comment to force the
+multi-line branch, and per-member emission in that branch.
+
+**Both forms are idempotent after one pass, so `fmt --check` passes and the gate never noticed.**
+`stark-net` has its method commentary inside method bodies — almost certainly this defect, absorbed
+rather than reported.
+
+Not fixed under HC9: it changes canonical form repo-wide, so every affected package must be
+reformatted in the same commit, and this checkout is shared. `stark-tls` uses the surviving
+placement with an inline note pointing at this entry.
+
+**On reducing it:** three attempts reported "PRESERVED" falsely, because the baseline copy was kept
+INSIDE the package directory and `stark fmt` formats every `.stark` file in a package — mangling the
+baseline identically and emptying the diff. A formatter reducer must keep its baseline outside.
+
+### Two other findings
+
+* **DEV-157** — the native backend has no representation for `MirTy::Never`, so
+  `Err(_) => panic(..)` in match-arm VALUE position checks and then fails to build. Known C5.3 gap;
+  `stark-tls-consumer` nests instead, as `stark-net-resource-consumer` already does.
+* `c788_resource_lifecycle::build_driver_selects_closes_for_bound_resource_nominals` fails in this
+  checkout with "Cargo succeeded but the expected binary is missing". **Verified pre-existing on
+  HEAD** by stashing every HC9 change. Environmental, tied to the shared `target/`.
+
+### Not claimed
+
+`SystemRoots`/`BundledRoots` are declared and REFUSED — HC10's, and refused by name rather than
+silently substituted. Profile F is not qualified: it needs CMake and Go, neither present. HTTPS is
+HC10.
+
+## CD-364 — `crate_location` deleted; P0.2 complete (2026-08-03)
+
+**The last piece of the mechanism that made every native capability a compiler-source change is
+gone.** A provider's crate location now comes from its manifest, resolved against a root the caller
+supplies — the compiler's own root for a built-in, the manifest's directory for an external one.
+
+```rust
+// before: a hardcoded match over five names
+crate_location("stark-net-native", repo_root) -> repo_root/stark-net/native
+
+// after: the manifest says
+repo_root.join(&provider.crate_path)
+```
+
+`crate_path` is constrained at parse time to be relative and free of `..`, so the join cannot escape
+the root. For an external provider that root is the only containment there is.
+
+**`built_in_crate_location` is not `crate_location` returning under a new name.** It is a lookup
+OVER the manifests, so the path data still lives in exactly one place and the function cannot
+disagree with it. Adding a provider means adding a manifest and nothing else. Built-in only, by
+design: an external provider's root comes from the application's declaration, which is what makes it
+containable.
+
+### P0.2 exit criteria
+
+| | |
+| --- | --- |
+| a provider supplied outside the compiler repo is discovered, validated, linked | DONE |
+| `first_party()` expressed the same way an external provider is | DONE (CD-362) |
+| ABI mismatch, unsupported target, duplicate capability, missing checksum each refused by name | DONE |
+| a provider not enabled in the application manifest cannot be activated by a dependency | DONE |
+| release builds record provider hashes | `AdmittedProvider` carries identity, version and hash; **wiring into build metadata remains** |
+
+### Verification
+
+`cargo clippy --all-targets` clean (0 warnings), `cargo fmt --check` clean, the four P0.2/CD-360
+suites green (51 tests), and the 15-package gate green — including native builds and live-peer
+resource lifecycles, which is the evidence that matters, since it exercises the new location path
+end to end.
+
+### Two process notes worth keeping
+
+**Clippy earned its place three times in this stretch alone** — `derivable_impls`, then two rounds of
+`crate_location` callers that `cargo build` and targeted `cargo test` never compiled. `--all-targets`
+is the only local command that compiles what CI compiles.
+
+**Twice I let a partial signal stand in for a complete one.** A fix loop that grepped for ONE error
+kind reported "no more sites" when the build had failed for a different reason; and I chased
+`crate_location` callers one clippy run at a time — three four-minute runs to find five callers that
+`grep -rn` listed in one second. The compiler's output is deliberately truncated; the tree is not.
+Ask the source directly.
+
+## CD-363 — P0.2 external provider discovery, trust tiers, and `crate_path` containment (2026-08-03)
+
+### The crate-location ruling
+
+> **A provider's manifest declares its crate path, resolved against a root the caller supplies —
+> the compiler's own root for a built-in, the manifest's directory for an external one.**
+> `crate_location()` is deleted.
+
+One RULE, two roots. The alternative considered and rejected was keeping a layout convention for
+built-ins: that is the `first_party()` shape again — a hardcoded path surviving beside a declared
+one — merely moved rather than removed. The root differs by how the provider was ADMITTED, which is
+already a first-class distinction (`ProviderTrust`), so it is a visible parameter rather than a
+hidden special case.
+
+Neutral on an existing fragility, not worse: built-in `crate_path` values are repo-layout relative,
+which is exactly what `crate_location`'s match arms already assumed. Moving it from Rust to JSON
+makes it visible and fixable without a compiler change — worth something given a stale install
+layout has dropped a provider before.
+
+### `crate_path` containment — a gap found while implementing, not while designing
+
+Nothing in the ruling as chosen constrained `crate_path` to be relative. An external manifest is
+written by a third party BY DEFINITION, and `"crate_path": "/etc"` or `"../../elsewhere"` would
+escape the root it was admitted under — **the only containment this mechanism has.**
+
+Now refused, and stricter than the obvious form:
+
+* enforced at BOTH the parse and the resolution entry point, so neither is a route around the other;
+* checked on the STRING, not the joined path — `provider/../../elsewhere` normalises into something
+  that looks contained, so canonicalising first is how the check gets defeated, and a symlink beats
+  post-hoc canonicalisation anyway. Refusing the components does not depend on the filesystem's
+  cooperation;
+* Windows drive prefixes refused on every host, since a manifest may have been written elsewhere.
+
+### Trust is explicit, not enforced
+
+```text
+pure STARK package             no native code, no provider
+first-party native provider    ships with the compiler, versioned with it
+approved third-party provider  declared by the APPLICATION, pinned by version AND checksum
+untrusted / local provider     path-based, development only, never in a release build
+```
+
+**No sandboxing is attempted** — a partial isolation story invites misplaced confidence, whereas a
+visible tier is honest and achievable now. What the mechanism guarantees is that native third-party
+code cannot enter a build BY ACCIDENT: every route in is deliberate, recorded, pinned and refusable.
+
+Four properties, all refusal-tested:
+
+1. **off by default** — declaring a provider is not enough;
+2. **no transitive activation** — only the application may activate one. A library must not pull
+   native code into a program that never asked for it, which is the difference between a dependency
+   graph and an attack surface;
+3. **pinned exactly** — version and checksum both, or the provider on disk is not the provider that
+   was approved. Both hashes are reported so the reader can tell which artefact moved;
+4. **development trust does not survive release** — an unpinned path provider works while developing
+   and is refused in a release build.
+
+Every failing provider is reported, not just the first: an application pinning three wrongly should
+learn all three in one build.
+
+### Evidence
+
+32 tests across `p02_provider_manifest.rs` (11) and `p02_external_provider_trust.rs` (21). The
+15-package gate is green through the manifest path, including native builds and live-peer resource
+lifecycles.
+
+### Still open in P0.2
+
+Wiring discovery into `native_build.rs` and deleting `crate_location`, which has four real callers.
+Deliberately not sprinted: that path produced two red CI runs this session, and it is the wrong
+place for blind edits. The discovery surface exists and is tested; the old path still works; nothing
+is half-rewired.
+
+## CD-361 — joint HC9/CRYPTO0 decision: rustls + aws-lc-rs (2026-08-03)
+
+> **Select `rustls` with `aws-lc-rs` as STARK's TLS and general native-cryptography foundation.
+> Reject `native-tls` for the first-party TLS provider.**
+
+Recorded in `WP-CRYPTO0-TLS-BACKEND.md` — which also CREATES the CRYPTO0 record, since none
+existed. HC9's roadmap section is updated at source: **backend selection is no longer part of the
+HC9 estimate.**
+
+### Why not native-tls
+
+It is not one TLS implementation — SChannel, Secure Transport and OpenSSL by platform. That would
+give STARK three error surfaces, three certificate behaviours, three security policies and three
+FIPS stories, and it is directly contrary to what this track has spent its effort on: one rule every
+engine satisfies by construction. It also multiplies CD-347/348's obligation, since lifecycle
+evidence would be needed per platform stack rather than once. Permitted later as an external
+provider under WP-EXTERNAL-PROVIDERS; not as the first-party implementation.
+
+### The sharpest point in the ruling
+
+```text
+trust-anchor source  ≠  TLS implementation
+```
+
+System roots can be used without handing the protocol to a platform stack. That defuses the only
+strong argument for native-tls, and it mirrors a separation this codebase already makes —
+`crate_location`'s doc: a crate's path is a property of the checkout, its name a property of the
+program. HC9's fixture uses `ExplicitRoots` with a test CA; `SystemRoots` is HC10's concern.
+
+### Verified before freezing, not carried over
+
+The external claims were fetched and checked rather than transcribed. **The ruling held up**, with
+two refinements:
+
+| claim | result |
+| --- | --- |
+| FIPS 140-3 certificate **#4816**, AWS-LC-backed | confirmed exactly |
+| rustls 0.23.42 | documentation had already moved to **0.23.43** |
+| aws-lc-rs 1.17.x | confirmed, 1.17.3, released 2026-07-17 |
+| normal build needs a C/C++ compiler; FIPS adds CMake and Go | confirmed — CMake/Go/bindgen are *never* needed for Profile N |
+| a Cargo feature alone is not a FIPS claim | confirmed, and **more specific** than stated |
+
+The version drifting between the ruling and the check, within one day, is itself the argument for
+the pin-exactly policy. Recorded as versions OBSERVED; the pin comes from HC9's qualification
+output, because you pin what you qualified.
+
+**Profile F is a two-step activation, not a flag:** install `default_fips_provider().install_default()`
+and verify `ClientConfig::fips()` at runtime. Both are checkable, so they belong in Profile F's
+qualification criteria rather than in prose.
+
+**A correction to my own objection:** I had called the build cost understated. Verification showed
+the ruling's split was accurate — Profile N needs only a C/C++ compiler. The residual point stands
+but is smaller: providers link statically into the generated workspace, so that compiler is required
+of every user building a TLS program, not only of the provider's authors. Recorded as a named cost.
+
+### Two things recorded so they are not rediscovered
+
+* A provider manifest's `targets` field declares triples but **cannot express toolchain
+  prerequisites**, so a provider may declare a target it cannot build on without extra tooling.
+  Belongs to WP-EXTERNAL-PROVIDERS.
+* `stark-http-client::parse_http_url` refuses `https://` outright today, deliberately. **HC10 turns
+  that refusal into scheme dispatch** — the visible edge of this decision in already-shipped code.
+
+## CD-360 — cross-provider transfer ruled and implemented; P0.1 closed (2026-08-03)
+
+**Ruling, from the language owner:**
+
+> A cross-provider `HandleConsumed` transfer consumes the source handle regardless of whether the
+> provider operation succeeds or fails. Failure does not restore the source resource. The consuming
+> provider is responsible for releasing any underlying native resource when it fails before
+> producing the destination handle.
+
+`HandleConsumed<T>` therefore keeps the meaning it has always had — ownership leaves the caller
+unconditionally — which is precisely why this needed **no change to drop elaboration**, no
+branch-dependent move state, and no place live on one result arm and dead on another. Option B
+would have required conditional move restoration across provider boundaries; that is ownership
+machinery, and it is not justified by making failed handshakes recoverable. It remains available as
+a future extension.
+
+Recorded in `native-provider-abi-v0.1-CD360-amendment-2.md`.
+
+### Three enforcement sites, not one
+
+The packet predicted a validator amendment. Implementation found the rule enforced in **three**
+places, and only reading the first two would have shipped a P0 that could not lower:
+
+| site | what it checked | change |
+| --- | --- | --- |
+| `provider_abi::validate` | a provider may only name resource types it declares | foreign types nameable in `HandleConsumed` position only, carrying no close obligation |
+| `ProviderSet::select` | (nothing — could not see across providers) | a foreign consumption resolves to EXACTLY ONE owner, and to the owner the consumer named |
+| `provider_bind` planner | handle type id and MirTy derived from the CALLING provider | for a transferred handle both come from the OWNER |
+
+The third is the one that mattered. `mir/lower.rs`'s `HandleConsumed` arm already carried a comment
+stating CD-360's rule verbatim — written for A11 §8, long before the question was asked — so the
+move semantics and drop behaviour genuinely were already correct. **But the call could not be
+planned at all**: `UndeclaredResourceType`. Nothing had ever lowered a transfer.
+
+A handle carries its OWNER's type id, because it was created with it, and the consuming provider
+must present it unchanged. Deriving it from the consumer would hand the provider a tag naming a
+different resource. `ValidatedProviderCall` now carries `ForeignResourceCall` for that reason.
+
+### Why the declaration is explicit
+
+`foreign_resources` is declared, not inferred. Treating "any handle type I did not declare" as
+foreign would silently accept `HandleConsumed { resource_type: "tcp_strem" }` and defer the typo to
+a link failure. Naming the owning provider keeps the check at the three-part identity
+`{nominal, provider, resource}` the type system already uses — which is also why
+`ForeignResourceOwnerMismatch` exists: a matching resource NAME under a different owner is a
+DIFFERENT resource.
+
+### Evidence
+
+19 tests. `cd360_cross_provider_transfer.rs` — 11 declaration rules (2 allowed, 9 refused) and 4
+resolution rules; `cd360_transfer_lowering.rs` — 4 lowering assertions on a synthetic net→wrap
+transfer, deliberately not TLS, so the proving case does not wait on a certificate chain.
+
+**The fixture earned its keep twice.** It caught the planner refusal, and it caught a bad assertion
+of my own: the first double-release check grepped the whole generated file and failed on the
+`extern "C"` declaration rather than a call. That form would have passed for the wrong reason had
+the code been broken differently — a declaration is not an invocation, and the test now cuts the
+extern block before checking the body.
+
+All ten provider suites re-run green (132 tests).
+
+### What P0.1 does NOT include
+
+The **runtime** proving case — a transfer executed against a live peer, both outcomes, release
+observed exactly once — remains open and belongs with HC9, since it needs a TLS peer with a
+controlled certificate chain. §3 of the amendment (a failing provider must leave no live native
+resource) is a provider-author obligation **no compiler check can enforce**; it is recorded so
+review can carry it.
+
+**P0.2 (external provider discovery) is now the critical path.**
+
+## CD-359 — HC9 paused; two P0 platform-architecture packets opened (2026-08-03)
+
+**Two items previously carried as backlog are release-architecture blockers, and HC9 must not be
+implemented before the first is frozen.** Recorded by the language owner; packets written to scope,
+deliberately NOT combined.
+
+### Revised priority
+
+```text
+P0  Cross-provider resource-transfer ABI      WP-PROVIDER-HANDLE-TRANSFER.md
+P0  External provider discovery/registration  WP-EXTERNAL-PROVIDERS.md
+P1  HC9 TLS implementation                    DESIGN-BLOCKED by P0.1
+P1  Database provider foundation              blocked by P0.2
+P1  HC10 HTTPS                                blocked by HC9
+P2  HC11-HC13
+```
+
+The two design tracks may run in parallel. **DB0 (STARK-facing value, error, connection, transaction
+and cursor contracts) may proceed now** — it is pure STARK and does not prejudge either decision.
+
+### Why HC9 stops
+
+TLS wraps TCP, so the TLS provider must take a `TcpStream` the net provider created. The ABI has no
+way to express that, and without a frozen rule an implementation would duplicate ownership, smuggle
+raw handles, bypass the validator, fuse TCP and TLS into one provider, or leave Drop authority
+unclear. Each weakens the resource model A11/CD-234/CD-237/CD-240 exist to guarantee.
+
+### The scope finding that shrinks P0.1
+
+Probing `provider_abi::validate` established that **most of the transfer contract already exists**:
+
+| already true | consequence |
+| --- | --- |
+| resource identity is structural over `{nominal, provider, resource}` | provider identity is part of the TYPE; a transfer is a genuine type change |
+| `HandleOut` writes its slot only on success | the destination's failure disposition is settled |
+| close is selected per resource, and a closeless resource is refused | "which provider releases" is answered structurally |
+| every function returns `ProviderStatus`, no direct returns | `Result<HandleOut<TlsStream>, TlsError>` is the shape it already has |
+
+So the packet does not design a mechanism. It authorizes **one referencing rule** — a provider may
+name a foreign resource type in `HandleConsumed` position without inheriting its close — and freezes
+**one failure rule**.
+
+The two existing refusals are CORRECT and must survive; the new rule sits alongside them:
+
+```text
+ResourceTypeMissingClose      declaring a foreign type would give it a second, competing close
+HandleResourceTypeUndeclared  a provider may only reference types it declares
+```
+
+### The hard question, and the recommendation
+
+What happens to the SOURCE handle when a transfer fails. Three candidates are set out in the packet;
+the recommendation is **(A) failure also consumes the source**, because it is the only option
+requiring **no change to drop elaboration** — `HandleConsumed` keeps meaning exactly what it means
+today, unconditionally consumed. Returning ownership on failure would make ownership depend on a
+runtime value, which is precisely the class of conditional invariant this compiler has repeatedly
+failed to get right first time. It also states the real-world truth: a failed handshake does not
+leave a usable socket.
+
+### Why P0.2 is broader than databases
+
+`first_party()` is a hardcoded `Vec` and `crate_location` a hardcoded `match`. Providers are
+compiler-integrated extensions, not an ecosystem mechanism: every native capability needs a compiler
+change, nobody outside the repo can publish one, provider versioning is welded to compiler releases,
+and trust policy is implicit because we wrote everything that exists. **The public package system is
+incomplete for host capabilities.**
+
+The packet keeps static linking and changes only DISCOVERY — manifests instead of hardcoded tables,
+with `provider_abi::validate` unchanged and merely fed from a different source. Trust is made
+explicit rather than enforced: four tiers, external providers off by default, no transitive
+activation, exact version and checksum, no sandboxing attempted.
+
+Its exit criterion is an executable claim:
+
+> Adding PostgreSQL, MongoDB, MySQL or SQL Server requires no compiler-source change.
+
+## CD-358 — the file-provenance audit, and borrow conflicts made place-granular (2026-08-03)
+
+Two items from the post-CD-357 list, plus a CI failure that CD-357 caused and this fixes.
+
+### 1. The provenance audit closed the class by EXERCISE, not by inspection
+
+`self.text(span)` slices the file currently being CHECKED. A name belonging to a DECLARATION —
+an impl's generic parameter, a signature's, a trait default's return type — belongs to the file
+that declared it. Across a module boundary those differ, and the failure is **silent**: the
+comparison succeeds against garbage.
+
+The same bug has now been repaired at six sites across four decisions:
+
+| | site | found by |
+| --- | --- | --- |
+| DEV-069 | a trait method's name | a trait default across files |
+| DEV-101 | cross-package generic typecheck | a package consumer |
+| DEV-148 | an associated function's name, then its generic parameters | `stark-url` calling its own `Url::parse` |
+| **DEV-155** | a METHOD's impl generics, and a trait default's signature TYPES | **this audit** |
+
+**Inspection was the wrong tool and had already failed four times.** There are ~90 `self.text`
+calls in `typecheck.rs`, most legitimately reading the file under check. Classifying them by eye is
+exactly the process that missed this repeatedly. A probe that actually compiles two-file packages
+found the remaining live site in ONE run:
+
+```text
+*w.get() != 11   ->  E0001 expected 'S', found an integer literal
+```
+
+`'S'` is `T`'s offset in `lib.stark` landing on an `S` in `inner.stark`.
+
+The repair is a `decl_text` helper that resolves against `foreign_sig_item` when a declaring item is
+in scope — a helper rather than a habit, precisely because remembering `item_text` at 29 sites is
+what has not worked. `tests/cd358_cross_module_provenance.rs` drives every construct across a module
+boundary, so a future site added without it fails there rather than in a package months later.
+
+**The near miss worth recording:** `item_text` returns `"?"` for an out-of-range span, so two
+mis-sliced parameter names could COLLIDE on one key and substitute each other's types — a WRONG
+program rather than a rejected one. Every failure seen so far was a refusal; that one would not
+have been. A two-parameter test pins it.
+
+**Also answered:** associated TYPES resolve correctly across a module boundary — the open question
+DEV-148 left behind.
+
+### 2. DEV-154: borrow conflicts compare PLACES
+
+OWN-BORROW-001 has always said "Disjoint field projections do not overlap". Every comparison in
+`borrowck` tested `b.local == local`, so a borrow of `p.a` blocked a read of `p.b`. The `Borrow`
+record now carries the borrowed place, and every comparison — creation, assignment, move, method
+receiver, read — goes through `places_overlap`, field-precise since DEV-135.
+
+**This repair makes the checker accept more, so the refusals are the load-bearing half.** Identity,
+parent-over-child, whole-local-over-field, two exclusive borrows of one field, assignment to a
+borrowed place, and move-out-of-borrowed-storage all stay refused. The move check is deliberately
+stricter than the read check — it rejects under ANY live borrow, shared included, because moving
+invalidates storage a live view still points into — and going place-granular did not weaken it.
+
+### 3. CD-357 broke the AST snapshots, and blessing them would have hidden it
+
+CI went red on `tests/snapshots`. Inserting OWN-BORROW-002's example as `03-Type-System__19`
+shifted every later fixture by one, and the snapshot cases name fixtures **by number** — so
+`__20`, `__31`, `__37`, `__40` silently came to mean different constructs.
+
+`UPDATE_SNAPSHOTS=1` would have gone green while repointing each snapshot at a different construct.
+The cases were RENUMBERED to follow their content instead, and the `.ast` files renamed with them —
+**the snapshot contents did not change**, which is the proof the mapping is right. A comment on
+`CASES` now records that renumbering, not re-blessing, is the correct response.
+
+The extractor's "manifest is in sync" check covers the manifest only; the snapshots are a second
+artefact keyed to the same numbering, with no such check. That gap is real and remains open.
+
+**Verification:** 15/15 packages qualify, external sample suite 39/39, and the three new suites
+(8 provenance + 10 place-granular + the CD-357 15) are green. Full workspace coverage is CI's.
+
+## CD-357 — DEV-150 ruled: uniform rejection, hoisting required (2026-08-02)
+
+**Ruling (B), from the language owner. Now normative as OWN-BORROW-002 in `03-Type-System.md`:**
+
+> A call may not create an exclusive borrow of a place while another argument in the same call
+> reads from or borrows an overlapping place. Such reads must be evaluated into locals before the
+> exclusive borrow is created.
+
+```stark
+fill(&mut buffer, buffer.len());   // rejected
+let count = buffer.len();          // hoist
+fill(&mut buffer, count);          // accepted
+```
+
+Uniform in the base — a local, a place reached through `&mut`, a field projection, an index, a free
+function or a method receiver — and independent of argument order. **Core v1 therefore does not
+define argument evaluation as providing two-phase borrow semantics**, and says so; adopting them
+stays reserved and this ruling stays reversible.
+
+Chosen over blessing the accepted case because that would have required accepting the LOCAL case
+too — widening the borrow rule into two-phase borrows, with evaluation-order machinery and a real
+semantics commitment. (B) keeps one backend-neutral rule every engine satisfies by construction.
+
+### What had to change
+
+The rule already existed and already fired for a local base. It stopped one indirection away:
+passing a `&mut`-typed place REBORROWS, which registers no active borrow, so the read that followed
+saw nothing to conflict with.
+
+`check_argument_overlap` now runs as its own pass over the whole argument list — **a method
+receiver included**, since `v.push(v.len())` is the same conflict as `push(&mut v, len(&v))` —
+BEFORE the left-to-right walk. It has to be a separate pass: a check that falls out of the walk can
+only ever catch the borrow-first order, and the ruling is order-independent. `exclusive_borrow_of`
+treats an explicit `&mut place` and a `&mut`-typed place alike, which is the whole repair. A
+report-once set keeps one mistake to one diagnostic, rather than the new check and the old one both
+reporting the same read in different words.
+
+### Livability, checked rather than assumed
+
+**All 15 first-party packages pass the gate under the rule with zero new diagnostics.** The only
+site that ever hit it was `stark-http-parser`'s four `take_line` calls, hoisted when the defect was
+first found. A rule that had broken working code across the tree would have been the wrong rule to
+implement without saying so.
+
+### Engine agreement is by construction
+
+The front end rejects, so nothing reaches the HIR oracle or MIR. `check`, `run` and `build` all
+refuse the previously-accepted program with the same diagnostic — which is the point: the old
+behaviour was accepted by the checker, executed correctly by the oracle, and refused by rustc.
+
+### Evidence
+
+`tests/dev150_argument_overlap.rs` — 15 tests, negatives varying the base and the order, positives
+for every hoisted and non-overlapping form (different locals, literals, successive borrows,
+successive reborrows of a parameter, two shared reads). Plus spec fixture
+`03-Type-System__19.stark`, classified `semantic-error` with `errors = "E0101"`, so **the spec's own
+example is an executable test of the rule.**
+
+Supersedes `dev150_argument_conflict_through_reference.rs`, which pinned the INCONSISTENCY while the
+ruling was open. Its own doc required it to be rewritten around whichever ruling landed, and both of
+its "the two bases disagree" tests went red the moment they agreed — the mechanism working as
+designed, twice in two commits now.
+
+### One defect uncovered on the way: DEV-154
+
+CD-357's overlap check is place-granular and correctly declined to fire on `f(&mut p.a, p.b)`. The
+OLDER `check_read_borrow_conflict` then reported it anyway, because it compares only the LOCAL and
+ignores projections — so **disjoint field projections over-reject, contradicting OWN-BORROW-001's
+"Disjoint field projections do not overlap".** Pre-existing; visible only because two checks in the
+same area now disagree about granularity. Filed OPEN and deliberately NOT bundled here: loosening a
+borrow check is its own change with its own negative controls, and must not ride along with a ruling
+that tightens one.
+
+## CD-356 — DEV-148 CLOSED: the name was sliced out of the wrong file (2026-08-02)
+
+**Filed as a language limitation about associated functions. It was a text bug, and the gate built
+one commit earlier is what forced it into the open.**
+
+`Wrap::make(2)` from a submodule of its own package failed with "associated function 'make' not
+found". Path resolution was correct — it reached `Res::AssociatedFn`. `typecheck`'s lookup then
+compared member names with `self.text(span)`, which slices **the file currently being checked**,
+while a member's name span belongs to the file that declared the `impl`. Instrumented, `impl Wrap`'s
+two members read back as:
+
+```text
+member name_text="rap:"  has_receiver=false     // `make`'s offsets applied to the other file
+member name_text="?"     has_receiver=true      // a span running past the shorter file's end
+```
+
+No candidate could ever match. **Methods were unaffected because method lookup selects on the
+receiver's TYPE rather than by slicing a name** — and that asymmetry is the whole reason this looked
+like a rule about associated functions instead of a bug about files.
+
+### A second site, one layer down
+
+Fixing the comparison made plain associated functions work and immediately exposed the same defect
+in generics:
+
+```text
+error: [E0500] type 'r' does not satisfy operator trait 'Eq'
+```
+
+`'r'` is `T` sliced from the wrong file. The substitution map's keys and the `Ty::Param`s they
+substitute into must be read from the SAME file or substitution silently fails to fire, so
+`foreign_sig_item` now carries the declaring item across the whole signature conversion. Note also
+that `item_text` yields `"?"` for an out-of-range span, so several mis-sliced parameter names could
+COLLIDE on one key and substitute each other's types; a two-parameter test pins that they cannot.
+
+### The rule was already written down twice
+
+DEV-069 fixed exactly this for trait methods — "the trait's method names belong to the TRAIT's
+declaring file" — and `build_assoc_projections` converts "against the impl's own file". This site
+simply missed it. The general statement, worth keeping where someone will read it: **`self.text` is
+correct only for spans from the file under check; every lookup that reads a name off a foreign
+declaration needs `item_text`.** Worth auditing the remaining `self.text` call sites against that.
+
+### What closing it unblocked, and what it then found
+
+The three items CD-355 recorded as `surface_blocked` became callable, and **the gate refused its own
+stale records** — the self-cleaning rule firing for real rather than in principle:
+
+```text
+stark-url: these are recorded as blocked, but are now called:
+      Url::parse
+```
+
+With the records removed and the three exercised, **all 15 packages qualify with zero blocked
+items: every public callable in the tree is now called by its package's own tests or consumers.**
+
+**And calling `TcpStream::connect` for the first time found a third dead API.** It refuses EVERY
+non-zero timeout with `Unsupported`:
+
+```stark
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    if !timeout.is_zero() { return Err(NetworkError::Unsupported); }
+    connect_socket_address(&address)
+}
+```
+
+So the natural connect API — the one that takes a deadline — has never connected to anything. It
+succeeds only for a ZERO duration, which reads as "no timeout" and is the opposite of what passing a
+`Duration` means. There is no connect-timeout in the provider ABI to implement it against: the
+declaration ran ahead of the capability. Pinned in the consumer as a required failure, so landing a
+real connect timeout forces the assertion to change.
+
+That makes **three dead APIs in `stark-net` found by calling things nothing had called** —
+`shutdown_write` (permanent stub), `connect`-with-timeout (unsupported for every meaningful
+argument), and the timeout setters (unbuildable at a call site, DEV-151). All three concern
+timeouts or lifecycle, and all three were invisible for the same reason.
+
+**Evidence:** `tests/dev148_associated_fn_across_modules.rs` — 7 tests over a real two-file package
+graph, because a single-file fixture cannot reproduce a provenance bug. Vacuity-checked by reverting
+the repair: the three cross-boundary positives go RED, all four controls stay green.
+
+## CD-355 — the gate now requires that a package's declared surface is CALLED (2026-08-02)
+
+**The gap this closes has cost three separate stretches, each time closing the instance and leaving
+the class open:**
+
+| | what happened | what was fixed |
+| --- | --- | --- |
+| CD-345 | `stark-net` passed all seven steps while `connect`/`read`/`write`/`close` had never been called, hiding a build-breaking defect (DEV-146) | that package's consumer |
+| CD-347/348 | resource LIFECYCLES made executable, against a live peer | the resource category |
+| CD-354 (DEV-151) | the same failure one level in: `set_read_timeout` was declared under CD-346, qualified, documented and **unbuildable at every call site**, because nothing had ever called it | that one method |
+
+Each round fixed an instance. **The class is: the gate proves a package builds and its consumer
+runs; it never proved that what a package DECLARES is reached by anything.**
+
+### The check
+
+`qualify-first-party-packages.py` gains a step: every public callable must be CALLED by the
+package's own tests or its own consumers. The declared surface comes from `stark doc` — the
+compiler's own AST walk — not a regex over `pub fn`, so it cannot drift from the source.
+
+**The bar is the package's OWN evidence**, not "called by something, anywhere in the tree". A
+downstream caller can be deleted, and proves nothing about the package in isolation.
+
+**Matching is textual and deliberately biased toward FALSE PASSES.** Comments are stripped first, so
+prose never counts as a call; but an alias or a generic dispatch can credit a call that does not
+happen. That bias is chosen: a false FAILURE would push someone to add a fake call to satisfy the
+gate, which is worse than a missed one, because it teaches that gate output is noise.
+
+### What it found immediately
+
+**12 uncalled public callables across 3 of 15 packages** — and the concentration is the finding:
+
+- `stark-net`: **all seven** `impl TcpStream` methods. The entire method surface was dead
+  end-to-end; every consumer used the free functions instead. DEV-151 was one instance of a block
+  that had never been called at all. Now exercised by the native resource consumer against the echo
+  peer, including the DEV-151 reproducer as a real call site.
+- `stark-mime`: four `MediaType` methods, wrapping free functions the tests already covered. A
+  wrapper no test calls is not a thinner API — it is a second implementation nobody has run.
+- `stark-url`: `Url::parse`.
+
+Also surfaced: **`shutdown_write` is a stub** that always returns `Unsupported`. Calling it is what
+made that visible. The consumer now asserts it fails, so implementing it forces the assertion to be
+updated rather than letting a permanently-broken promise sit in the surface.
+
+### Blocked items are counted, not waived
+
+Three of the twelve are ASSOCIATED functions and cannot be called at all — DEV-148. They are
+recorded per package with the defect that blocks them, and **the gate refuses a record whose item
+has become callable**. A fix to DEV-148 therefore forces the records out rather than letting them
+rot; the same self-cleaning rule as the sample suite's "an unexpected PASS is a failure". The
+purpose is to make the cost of an open defect countable instead of invisible.
+
+### Two compiler defects had to be fixed first
+
+- **DEV-152** — `doc_gen::extract` silently DISCARDED the methods of any `impl` whose type had no
+  page-level item. A synthesized resource nominal (CD-234) has none, so all seven `stark-net`
+  methods were absent from its documentation. A surface gate built on that extractor would have
+  certified the package as fully covered. It also explains part of why nobody called them: the docs
+  did not say they existed.
+- **DEV-153** — `hir_field_ty` had no arm for an unsized slice, so `owned.write_all(input)` refused
+  to lower while `write_all(&mut owned, input)` built. This is **DEV-151's second-order cost**:
+  opening method dispatch on a resource receiver routed declared parameter types through that
+  conversion for the first time, and met a form it had never had to handle. A repair that widens
+  what is reachable will expose whatever the newly reachable path never handled — that is the price
+  of the DEV-151 class, not an argument against paying it.
+
+### DEV-148's scope was wrong
+
+Filed as cross-PACKAGE; it is cross-MODULE, which is strictly wider. A submodule of the same
+package cannot call `Wrap::make` either, and neither can the fully qualified `super::Wrap::make`.
+So a package cannot even TEST its own associated functions. The failure is not in the resolver —
+the path reaches `Res::AssociatedFn` — but in `typecheck.rs`'s associated-function lookup. Methods
+are unaffected because method lookup goes by the receiver's TYPE rather than by path resolution,
+which is exactly why the two diverge.
+
+**Status: 15 packages qualify with the surface check enforcing**, 3 items recorded blocked.
+
 ## CD-354 — three compiler defects found by qualifying HC7/HC8; one escalated, not repaired (2026-08-02)
 
 **Writing two packages and running them through the gate found three compiler defects and one

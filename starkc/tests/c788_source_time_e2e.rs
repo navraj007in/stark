@@ -239,7 +239,7 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-time-native".to_string(),
-        provider_registry::crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
             .expect("the provider crate must be locatable"),
     );
 

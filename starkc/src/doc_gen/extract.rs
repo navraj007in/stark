@@ -124,7 +124,35 @@ pub fn extract(ast: &Ast, file: &SourceFile, comments: &[Comment]) -> Vec<DocIte
             .find(|i| i.name == type_name && i.kind.is_page_level())
         {
             owner.members.extend(methods);
+            continue;
         }
+        // DEV-152: an `impl` whose type has no page-level item in this package used to have its
+        // methods SILENTLY DROPPED here. That is not a rare corner: a provider-bound resource
+        // nominal is synthesized rather than written (CD-234), so `impl TcpStream { .. }` has no
+        // `pub struct TcpStream` to attach to, and every one of `stark-net`'s six public methods
+        // vanished from its documentation with no diagnostic.
+        //
+        // The type IS part of the public surface — `connect` returns one — so it gets a page built
+        // from the impl rather than being discarded. A synthesized nominal has no source signature
+        // to slice, hence the derived one; the span is the first method's, so the page still points
+        // somewhere real.
+        let span = methods
+            .first()
+            .map(|method| method.span)
+            .unwrap_or(Span::new(0, 0));
+        let module_path = methods
+            .first()
+            .map(|method| method.module_path.clone())
+            .unwrap_or_default();
+        items.push(DocItem {
+            name: type_name.clone(),
+            module_path,
+            kind: ItemDocKind::Struct,
+            doc: String::new(),
+            signature: format!("impl {type_name}"),
+            span,
+            members: methods,
+        });
     }
     items
 }

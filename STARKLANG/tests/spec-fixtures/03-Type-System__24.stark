@@ -1,5 +1,7 @@
-fn identity<T>(x: T) -> T {
-    x
+fn add(a: Int32, b: Int32) -> Int32 {
+    a + b
 }
 
-let result = identity(42);  // T inferred as Int32
+fn greet(name: &str) {      // Returns Unit
+    println(name);
+}

@@ -190,6 +190,54 @@ jobs:
           name: c65-mutation-evidence
           path: ${{ runner.temp }}/c65-mutations/
 
+  # DEV-160: the raw slot primitives, under Miri.
+  #
+  # `ValueSlot::field_ref_raw` and its siblings take a `*mut ValueSlot<T>` and hand back a borrow of
+  # one field while a SIBLING is moved out. Ordinary tests cannot tell a sound raw projection from
+  # one that merely happens to work: nothing in a normal run checks provenance or Stacked Borrows.
+  # Miri does, and it is the only thing here that does.
+  #
+  # It also covers a hand-written copy of a GENERATED thunk (`slot::tests::thunk`). Miri cannot run
+  # what the backend has not generated, so the shape is written out for it — and
+  # `dev160_call_site_thunk::the_miri_fixture_matches_what_the_generator_emits`, in the ordinary test
+  # job, fails if that copy stops matching what the compiler emits. Neither check is worth much
+  # without the other.
+  #
+  # **Pinned, not `nightly`.** Miri's aliasing model is under active development; a floating nightly
+  # would turn "our raw projections are sound" into "they are sound under whatever model shipped
+  # this morning", and a failure would be unattributable between our change and theirs. Moving the
+  # pin is a deliberate act with its own commit.
+  #
+  # `-Zmiri-ignore-leaks` is needed and is not a weakening of the aliasing check. Three `should_panic`
+  # tests hold heap values when the panic aborts them, which Miri reports as leaked memory; that is
+  # what those tests are for. Provenance checking stays strict.
+  dev160-miri:
+    name: DEV-160 raw slot primitives under Miri
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-20
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      # `+nightly-...` is LOAD-BEARING and cannot be dropped. `starkc/rust-toolchain.toml` pins
+      # `channel = "stable"`, and this job's `working-directory: starkc` means every bare `cargo`
+      # here honours that file rather than whatever the toolchain action made default -- which is
+      # how the first attempt reached "the 'miri' component ... is not available for the
+      # 'stable-x86_64-unknown-linux-gnu' toolchain". An explicit `+toolchain` overrides the file.
+      #
+      # The toolchain name must stay in step with the `toolchain:` above.
+      - name: Miri over the slot primitives
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-ignore-leaks
+        run: "cargo +nightly-2026-07-20 miri test -p stark-runtime --lib slot:: -- --nocapture"
+
   # §16.4: two green corpus jobs are not agreement, for the same reason two green platform jobs are
   # not. `if: always()` for the same reason as the C6.4 comparison: a skipped comparison is an
   # absence a reader has to interpret, not a report.
@@ -339,7 +387,12 @@ jobs:
           package_root="$(find "$RUNNER_TEMP/stark-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           "$package_root/install.sh" --prefix "$RUNNER_TEMP/stark-install"
           "$RUNNER_TEMP/stark-install/bin/stark" --help
-          test -f "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime/src/lib.rs"
+          # The installed layout is VERSIONED: `lib/stark/current` -> `versions/<v>`, with the
+          # payload beneath it. Asserting the old flat path here is what broke this job when the
+          # installer changed, and `stark doctor` is the check that does not have to be kept in
+          # step by hand -- it reads the manifest and re-hashes every file the package shipped.
+          "$RUNNER_TEMP/stark-install/bin/stark" doctor
+          test -f "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime/src/lib.rs"
           (
             cd tests/fixtures/c5-native-workspace/app
             "$RUNNER_TEMP/stark-install/bin/stark" run
@@ -355,8 +408,8 @@ jobs:
         env:
           STARK_REQUIRE_INSTALLED_RUNTIME: "1"
         run: |
-          test -d "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
-          mv "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
+          test -d "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
           test -f stark-runtime/Cargo.toml   # the checkout IS still here, at the compiled-in path
           set +e
           (
@@ -365,7 +418,7 @@ jobs:
           ) >"$RUNNER_TEMP/negative.out" 2>&1
           status=$?
           set -e
-          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
           cat "$RUNNER_TEMP/negative.out"
           if [ $status -eq 0 ]; then
             echo "FAIL: installed stark built with no installed runtime — it fell back to the checkout" >&2
@@ -394,7 +447,11 @@ jobs:
           $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
           & (Join-Path $packageRoot.FullName "install.ps1") -Prefix $prefix -NoPathUpdate
           & (Join-Path $prefix "bin/stark.exe") --help
-          if (-not (Test-Path (Join-Path $prefix "lib/stark/stark-runtime/src/lib.rs"))) {
+          # `doctor` on Windows is the regression guard for the hardcoded `bin/stark` lookup that
+          # made install.ps1 reject a correct package.
+          & (Join-Path $prefix "bin/stark.exe") doctor
+          if ($LASTEXITCODE -ne 0) { throw "installed toolchain failed doctor" }
+          if (-not (Test-Path (Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime/src/lib.rs"))) {
             throw "installed native runtime is missing"
           }
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
@@ -415,7 +472,7 @@ jobs:
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
-          $runtime = Join-Path $prefix "lib/stark/stark-runtime"
+          $runtime = Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime"
           $hidden = Join-Path $env:RUNNER_TEMP "runtime-hidden"
           if (-not (Test-Path $runtime)) { throw "installed runtime was expected to exist" }
           Move-Item $runtime $hidden
@@ -581,13 +638,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: starkc
+          workspaces: |
+            starkc
+            stark-tls/native
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Build the compiler
         working-directory: starkc
         run: cargo build --release --bin stark
+      # **The generated crate is built `--offline`** (WP-C5 §11.3's no-network rule), so every
+      # registry crate a linked PROVIDER needs must already be in this job's cargo home. Only
+      # `stark-tls/native` has registry dependencies — rustls, aws-lc-rs, rustls-native-certs — and
+      # without this the gate fails in about a second with "the STARK native backend generated a
+      # crate that Cargo could not build" and no further detail.
+      #
+      # It passed locally throughout HC9 and HC10 because a developer's registry already holds
+      # these from building the provider crate itself. This job's does not: `rust-cache` is keyed
+      # per workspace and the C7.8 workflow that builds the TLS provider is a DIFFERENT job.
+      - name: Pre-fetch native provider dependencies
+        run: cargo fetch --manifest-path stark-tls/native/Cargo.toml
       - name: Qualify JSON, URL, Base64, Hex, and UUID packages
         run: |
           python3 starkc/scripts/qualify-first-party-packages.py \
@@ -687,6 +757,7 @@ jobs:
       - c64-qualification
       - c65-corpus
       - c65-mutation-controls
+      - dev160-miri
       - c65-tier1-comparison
       - c64-tier1-comparison
       - c64-windows-gap

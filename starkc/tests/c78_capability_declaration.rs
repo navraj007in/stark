@@ -180,7 +180,7 @@ fn every_registered_provider_crate_is_present() {
         .to_path_buf();
 
     for provider in provider_registry::first_party() {
-        let path = provider_registry::crate_location(&provider.crate_name, &repo_root)
+        let path = provider_registry::built_in_crate_location(&provider.crate_name, &repo_root)
             .unwrap_or_else(|| panic!("no location for crate {}", provider.crate_name));
         assert!(
             path.join("Cargo.toml").is_file(),

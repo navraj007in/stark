@@ -116,11 +116,224 @@ def create_zip(staging: Path, output: Path, archive_root: str) -> None:
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
 
 
+def copy_payload_file(source: Path, destination: Path) -> Path:
+    shutil.copyfile(source, destination)
+    shutil.copymode(source, destination)
+    return destination
+
+
+def create_install_tree(staging: Path, root: Path, *, version: str, windows: bool) -> None:
+    version_root = root / "usr/local/stark/versions" / version
+    shutil.copytree(staging, version_root, copy_function=copy_payload_file)
+    current = root / "usr/local/stark/current"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(f"versions/{version}")
+    bin_dir = root / "usr/local/bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if windows else ""
+    for binary in BINARIES:
+        (bin_dir / f"{binary}{suffix}").symlink_to(
+            f"../stark/current/bin/{binary}{suffix}"
+        )
+
+
 def write_checksum(archive: Path) -> Path:
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     checksum = archive.with_name(f"{archive.name}.sha256")
     checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n")
     return checksum
+
+
+def write_ar_archive(output: Path, members: list[Path]) -> None:
+    with output.open("wb") as archive:
+        archive.write(b"!<arch>\n")
+        for member in members:
+            data = member.read_bytes()
+            name = member.name.encode("ascii")
+            if len(name) > 15:
+                raise SystemExit(f"ar member name is too long: {member.name}")
+            header = (
+                name.ljust(16, b" ")
+                + b"0".ljust(12, b" ")
+                + b"0".ljust(6, b" ")
+                + b"0".ljust(6, b" ")
+                + b"100644".ljust(8, b" ")
+                + str(len(data)).encode("ascii").ljust(10, b" ")
+                + b"`\n"
+            )
+            archive.write(header)
+            archive.write(data)
+            if len(data) % 2:
+                archive.write(b"\n")
+
+
+def create_deb(
+    *, staging: Path, output: Path, package_name: str, version: str, target: str
+) -> Path:
+    with tempfile.TemporaryDirectory(prefix="stark-deb-") as temporary:
+        work = Path(temporary)
+        data_root = work / "data"
+        create_install_tree(staging, data_root, version=version, windows=False)
+        data_tar = work / "data.tar.gz"
+        create_tar_gz(data_root, data_tar, ".")
+
+        control = work / "control"
+        control.mkdir()
+        control_text = "\n".join(
+            [
+                "Package: stark",
+                f"Version: {debian_version(version)}",
+                "Section: devel",
+                "Priority: optional",
+                "Architecture: amd64",
+                "Maintainer: STARK Project <noreply@starklang.local>",
+                f"Description: STARK compiler toolchain ({target})",
+                " This unsigned development package wraps the canonical STARK release payload.",
+                "",
+            ]
+        )
+        (control / "control").write_text(control_text, encoding="utf-8", newline="\n")
+        control_tar = work / "control.tar.gz"
+        create_tar_gz(control, control_tar, ".")
+        debian_binary = work / "debian-binary"
+        debian_binary.write_text("2.0\n", encoding="ascii", newline="\n")
+        output = output.with_name(f"{package_name}.deb")
+        write_ar_archive(output, [debian_binary, control_tar, data_tar])
+        return output
+
+
+def debian_version(version: str) -> str:
+    allowed = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.+-~:")
+    return "".join(ch if ch in allowed else "+" for ch in version)
+
+
+def create_macos_pkg(
+    *, staging: Path, output: Path, package_name: str, version: str
+) -> Path | None:
+    if shutil.which("pkgbuild") is None:
+        return None
+    with tempfile.TemporaryDirectory(prefix="stark-pkg-") as temporary:
+        work = Path(temporary)
+        payload = work / "payload"
+        create_install_tree(staging, payload, version=version, windows=False)
+        if shutil.which("xattr") is not None:
+            subprocess.run(["xattr", "-cr", str(payload)], check=True)
+        package = output.with_name(f"{package_name}.pkg")
+        env = os.environ.copy()
+        env["COPYFILE_DISABLE"] = "1"
+        subprocess.run(
+            [
+                "pkgbuild",
+                "--root",
+                str(payload),
+                "--identifier",
+                "org.starklang.stark",
+                "--version",
+                version,
+                "--install-location",
+                "/",
+                str(package),
+            ],
+            check=True,
+            env=env,
+        )
+        return package
+
+
+def git_commit() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_DIR,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_manifest(staging: Path, *, target: str, version: str) -> None:
+    files = []
+    for path in sorted(staging.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(staging).as_posix()
+        files.append(
+            {
+                "path": relative,
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+                "component": component_for_path(relative),
+                "executable": is_executable_payload(relative, path),
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "stark_version": version,
+        "release_channel": "dev",
+        "build_commit": git_commit(),
+        "build_timestamp": "unspecified",
+        "host_target": target,
+        "compiler": {
+            "version": version,
+            "sha256": next(
+                file["sha256"]
+                for file in files
+                if file["path"] in {"bin/stark", "bin/stark.exe"}
+            ),
+        },
+        "mir_version": "unknown",
+        "runtime_version": version,
+        "backend_version": version,
+        "packages": [],
+        "providers": [],
+        "files": files,
+        "signing": {
+            "scheme": "unsigned-development",
+            "key_id": "none",
+        },
+    }
+    (staging / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def component_for_path(relative: str) -> str:
+    if relative.startswith("bin/"):
+        return "binary"
+    if relative.startswith("lib/stark/stark-runtime/"):
+        return "runtime"
+    if relative.startswith("lib/stark/stark-provider-abi/"):
+        return "provider-abi"
+    if relative.startswith("lib/stark/providers/"):
+        return "provider"
+    if relative.startswith("lib/stark/packages/"):
+        return "package"
+    if relative in {"install.sh", "install.ps1", "uninstall.sh", "uninstall.ps1"}:
+        return "installer"
+    if relative in {"README.md", "LICENSE", "BUILD-INFO.txt"}:
+        return "metadata"
+    return "other"
+
+
+def is_executable_payload(relative: str, path: Path) -> bool:
+    return (
+        relative.startswith("bin/")
+        or relative in {"install.sh", "uninstall.sh"}
+        or path.suffix == ".exe"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,7 +360,7 @@ def parse_args() -> argparse.Namespace:
 
 def package_release(
     *, target: str, version: str, release_dir: Path, out_dir: Path
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, list[Path]]:
     # WP-C6.4: exact named-target lookup, never a substring test.
     #
     # This used to be `windows = "windows" in target`, which is wrong in two directions: it would
@@ -214,17 +427,42 @@ def package_release(
             encoding="utf-8",
             newline="\n",
         )
+        write_manifest(staging, target=target, version=version)
 
         archive = out_dir / f"{package_name}.{entry.archive}"
         if entry.archive == "zip":
             create_zip(staging, archive, package_name)
         else:
             create_tar_gz(staging, archive, package_name)
+        native_installers = []
+        if target.endswith("-apple-darwin"):
+            package = create_macos_pkg(
+                staging=staging,
+                output=archive,
+                package_name=package_name,
+                version=version,
+            )
+            if package is not None:
+                native_installers.append(package)
+        if target == "x86_64-unknown-linux-gnu":
+            native_installers.append(
+                create_deb(
+                    staging=staging,
+                    output=archive,
+                    package_name=package_name,
+                    version=version,
+                    target=target,
+                )
+            )
 
     checksum = write_checksum(archive)
     print(f"Release package: {archive}")
     print(f"SHA-256 file:   {checksum}")
-    return archive, checksum
+    for installer in native_installers:
+        installer_checksum = write_checksum(installer)
+        print(f"Native installer: {installer}")
+        print(f"SHA-256 file:    {installer_checksum}")
+    return archive, checksum, native_installers
 
 
 def main() -> int:

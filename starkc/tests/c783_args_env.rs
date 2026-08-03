@@ -266,13 +266,14 @@ fn no_environment_mutating_function_is_declared() {
 /// when a call carrying it is planned. What is ruled out is the middle case: a declared resource
 /// type that is silently accepted without a MIR type behind it.
 ///
-/// `file` is bound (C7.8.4). `tcp_listener` and `tcp_stream` are not, and deliberately so — Packet 4
-/// makes them package types, so binding them needs a package declaration rather than a Core change.
-/// This asserts the refusal is precise rather than asserting the binding is complete.
+/// `file` is bound (C7.8.4). `tcp_listener`, `tcp_stream` and `tls_stream` are not, and deliberately
+/// so — Packet 4 makes them package types, so binding them needs a package declaration rather than a
+/// Core change. This asserts the refusal is precise rather than asserting the binding is complete.
 #[test]
 fn every_declared_resource_type_is_bound_or_precisely_refused() {
     use starkc::provider_bind::{plan, PlanError, ResourceRegistry};
     let registry = ResourceRegistry::builtin();
+    let all = provider_registry::first_party();
 
     for provider in provider_registry::first_party() {
         for resource in &provider.metadata.resource_types {
@@ -299,12 +300,30 @@ fn every_declared_resource_type_is_bound_or_precisely_refused() {
                     )
                 });
 
-            let set = ProviderSet::select(
-                provider_registry::first_party(),
-                LINUX,
-                &provider.metadata.capabilities,
-            )
-            .expect("selects");
+            // HC9: a provider that CONSUMES another's resource cannot be selected alone —
+            // CD-360's rule in `ProviderSet::select` requires the owner in the same set, so
+            // asking for `tls` without `net` is refused before any planning happens. Requiring
+            // the owners' capabilities alongside is what a real build of such a package does,
+            // and it leaves the assertion below untouched: the carrier's resource type is still
+            // unbound, so the refusal must still name it.
+            let mut required = provider.metadata.capabilities.clone();
+            for foreign in &provider.metadata.foreign_resources {
+                let owner = all
+                    .iter()
+                    .find(|p| p.metadata.identity.name == foreign.provider)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} consumes `{}` from `{}`, which is not a registered provider",
+                            provider.metadata.identity.name, foreign.resource, foreign.provider
+                        )
+                    });
+                required.extend(owner.metadata.capabilities.iter().cloned());
+            }
+            required.sort();
+            required.dedup();
+
+            let set = ProviderSet::select(provider_registry::first_party(), LINUX, &required)
+                .expect("selects");
             let call = set
                 .resolve(&carrier.capability, &carrier.name)
                 .expect("resolves");

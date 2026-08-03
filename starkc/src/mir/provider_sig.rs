@@ -73,18 +73,19 @@ pub fn param_ty(
     param: &AbiParam,
     registry: &ResourceRegistry,
     provider: &str,
+    foreign: &[crate::mir::ForeignResourceCall],
 ) -> Result<MirTy, UnmappedParam> {
     // One resolver, shared with `provider_bind::plan`, so the two cannot disagree about whether a
     // resource is legacy-Core (CD-235) or a `HostResource`. The provider is needed because a
     // `HostResource` carries it: A11 §Q5 makes the same nominal through different providers a
     // different type, deliberately.
     let resolve = |resource_type: &String| -> Result<MirTy, UnmappedParam> {
-        registry.resolve_ty(resource_type, provider).ok_or_else(|| {
-            UnmappedParam::UnboundResourceType {
+        registry
+            .resolve_ty(resource_type, owner_of(resource_type, provider, foreign))
+            .ok_or_else(|| UnmappedParam::UnboundResourceType {
                 index,
                 resource_type: resource_type.clone(),
-            }
-        })
+            })
     };
     Ok(match param {
         AbiParam::ScalarIn(t) => scalar_ty(*t),
@@ -118,15 +119,48 @@ pub fn param_ty(
     })
 }
 
+/// **CD-360's ownership rule, in ONE place.**
+///
+/// A transferred handle keeps its OWNER's identity: it was created with it, and the consuming
+/// provider must present it unchanged. So the provider a resource type resolves against is the
+/// declared owner when the type is foreign, and the calling provider otherwise.
+///
+/// This function exists because the rule has now been implemented four times. CD-360 found three
+/// sites — `provider_abi::validate`, `ProviderSet::select`, and the `provider_bind` planner — and
+/// fixed each separately. The **MIR verifier** was the fourth, missed because CD-360's fixture
+/// built its `ValidatedProviderCall` by hand and so never ran the verifier over a real transfer.
+/// HC9's first native build failed on exactly that:
+///
+/// ```text
+/// MIR-0005 stark_tls::connect bb53: call argument:
+///   expected HostResource(… provider: "stark-std-tls",  resource: "tcp_stream"),
+///   found    HostResource(… provider: "stark-std-net",  resource: "tcp_stream")
+/// ```
+///
+/// The planner was right and the verifier was wrong, which is the worst arrangement: the program
+/// was correct and the compiler refused it. Both now call this, so a fifth site cannot disagree
+/// with them by restating the rule slightly differently.
+pub fn owner_of<'a>(
+    resource_type: &str,
+    calling_provider: &'a str,
+    foreign: &'a [crate::mir::ForeignResourceCall],
+) -> &'a str {
+    foreign
+        .iter()
+        .find(|f| f.resource == resource_type)
+        .map_or(calling_provider, |f| f.provider.as_str())
+}
+
 /// The full `(params, ret)` signature for a validated provider call.
 pub fn signature(
     params: &[AbiParam],
     registry: &ResourceRegistry,
     provider: &str,
+    foreign: &[crate::mir::ForeignResourceCall],
 ) -> Result<(Vec<MirTy>, MirTy), UnmappedParam> {
     let mut tys = Vec::with_capacity(params.len());
     for (index, p) in params.iter().enumerate() {
-        tys.push(param_ty(index, p, registry, provider)?);
+        tys.push(param_ty(index, p, registry, provider, foreign)?);
     }
     Ok((tys, PROVIDER_STATUS_TY))
 }

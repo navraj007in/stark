@@ -70,6 +70,8 @@ fn tcp_stream_ty() -> MirTy {
 
 fn tcp_call(name: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: "stark-std-net".to_string(),
             semver: (0, 1, 0),
@@ -224,6 +226,7 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
         &[connect_sig],
         &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+        &BTreeMap::new(),
     )
     .expect("resource nominal and free connect binding synthesize");
     let source = format!("{}\nfn main() {{ }}\n", layer.source);
@@ -274,6 +277,8 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
                 .find(|f| f.is_close_for.as_deref() == Some(resource))
                 .cloned()
                 .map(|function| ValidatedProviderCall {
+                    // CD-360: predates cross-provider transfer; consumes nothing foreign.
+                    foreign_resources: Vec::new(),
                     provider: set.providers()[0].metadata.identity.clone(),
                     capability: function.capability.clone(),
                     function,

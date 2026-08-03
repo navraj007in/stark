@@ -25,6 +25,8 @@ const LINUX: &str = "x86_64-unknown-linux-gnu";
 
 fn call_named(symbol: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
     ValidatedProviderCall {
+        // CD-360: predates cross-provider transfer; consumes nothing foreign.
+        foreign_resources: Vec::new(),
         provider: ProviderIdentity {
             name: "stark-std-time".to_string(),
             semver: (0, 1, 0),

@@ -9,7 +9,8 @@
 //! function value remain WP-C5.4c.
 
 use super::{
-    emit_bodies, emit_projections, emit_provider, emit_types, linkage, mangle, BackendDiagnostic,
+    emit_bodies, emit_call_thunk, emit_projections, emit_provider, emit_types, linkage, mangle,
+    BackendDiagnostic,
 };
 use crate::mir::{MirBody, MirProgram, MirTy};
 use stark_runtime::version::BuildVersions;
@@ -67,8 +68,17 @@ pub fn emit(
     // WP-C5.3d-0: the generated projection helpers, collected from the bodies below. Emitted
     // before them so the module is in scope, and so the ONE place unsafe appears in a generated
     // program is visible at the top of the file rather than buried.
-    let projections = emit_projections::collect(program, layout)?;
-    main_rs.push_str(&emit_projections::emit(&projections, &program.types)?);
+    //
+    // DEV-160: the call-thunk plans are built FIRST, because they decide two things the projection
+    // collector cannot see on its own -- which argument lists it must not walk (their wrappers come
+    // from the plan, in raw form), and which extra wrappers exist. One derivation, three consumers.
+    let thunks = emit_call_thunk::collect_plans(program, layout)?;
+    let projections = emit_projections::collect(program, layout, &thunks)?;
+    main_rs.push_str(&emit_projections::emit(
+        &projections,
+        &program.types,
+        &thunks,
+    )?);
 
     // WP-C5.4c (§7.5): one aborting sentinel per distinct function-pointer signature, emitted
     // before ordinary bodies so a default-initialised `FnPtr` local (Copy, never slot-backed) has
@@ -91,6 +101,7 @@ pub fn emit(
                 layout,
                 &program.provider_calls,
                 &program.resource_registry(),
+                &thunks,
             )?);
         } else {
             let name = mangle::function_name_for_symbol(&body.instance.symbol);
@@ -102,6 +113,7 @@ pub fn emit(
                 layout,
                 &program.provider_calls,
                 &program.resource_registry(),
+                &thunks,
             )?);
         }
         main_rs.push('\n');
@@ -119,6 +131,7 @@ fn emit_entry_fn(
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
     program_resources: &crate::provider_bind::ResourceRegistry,
+    thunks: &[emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
     let mut prologue = String::new();
@@ -141,6 +154,7 @@ fn emit_entry_fn(
             layout,
             provider_calls,
             program_resources,
+            thunks,
         )?;
         out.push_str("fn main() {\n");
         out.push_str(&prologue);
@@ -162,6 +176,7 @@ fn emit_entry_fn(
         layout,
         provider_calls,
         program_resources,
+        thunks,
     )?);
     let entry_file = files
         .first()

@@ -3,7 +3,25 @@
   "version": "0.1.0",
   "entry": "src/main.stark",
   "dependencies": {
-    "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" },
-    "stark_http_client": { "package": "stark-http-client", "path": "../stark-http-client", "version": "0.1.0" }
+    "stark_http_core": {
+      "package": "stark-http-core",
+      "path": "../stark-http-core",
+      "version": "0.1.0"
+    },
+    "stark_http_client": {
+      "package": "stark-http-client",
+      "path": "../stark-http-client",
+      "version": "0.1.0"
+    },
+    "stark_json": {
+      "package": "stark-json",
+      "path": "../stark-json",
+      "version": "0.1.0"
+    },
+    "stark_time": {
+      "package": "stark-time",
+      "path": "../stark-time",
+      "version": "0.1.0"
+    }
   }
 }

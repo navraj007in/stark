@@ -131,9 +131,17 @@ conflict table.
     the **active governance track for compiler work** as of 2026-07-17; consult
     `COMPILER-STATE.md` before starting any compiler-track session, not this file's status
     summary, which is a snapshot only.
+- Forward planning: **`ROADMAP.md` (repo root) is the single live roadmap** — the STARK
+  Consolidated Roadmap, August 2026 – February 2027, adopted 2026-08-03. It governs package,
+  application and platform work (operability → security/artifacts → REST server → structured
+  concurrency → persistence → ecosystem), and its §0 states the authority boundary. It does
+  **not** supersede the two live gate tracks below. All prior package/ecosystem roadmaps were
+  consolidated into it and moved to `STARKLANG/docs/archive/roadmaps/`; do not schedule work
+  from them. `STARKLANG/docs/ROADMAP.md` and `PLAN.md` are now historical records of the
+  closed Gate 1–7 sequence, not forward plans.
 - Scope discipline: work outside the current gate needs a roadmap-governed proposal — see
-  `STARKLANG/docs/compiler/COMPILER-CHARTER.md` §1.6/§6 (compiler track) or
-  `STARKLANG/docs/ROADMAP.md` §4 (pre-existing non-goals).
+  `STARKLANG/docs/compiler/COMPILER-CHARTER.md` §1.6/§6 (compiler track), `ROADMAP.md` §12
+  (current non-goals) or `STARKLANG/docs/ROADMAP.md` §4 (pre-existing non-goals).
 
 ## Working Conventions for This Repo
 

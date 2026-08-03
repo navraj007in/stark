@@ -89,6 +89,27 @@ pub enum HelperOp {
     /// destruction plan is baked into the wrapper, because a wrapper is already per-(base type,
     /// projection) and that fixes the field type.
     Drop,
+    /// **DEV-162.** Borrows ONE field of storage that may be partially moved:
+    /// `ValueSlot::field_ref`.
+    ///
+    /// Reading a sibling field was emitted as `&slot.get().f1`, and `get` requires a COMPLETE
+    /// value — so a read after another field was moved out aborted, though the field being read
+    /// was untouched. `copy_field` already covered the `Copy` case by value; this is the rest.
+    Ref,
+    /// **DEV-160.** The `*mut ValueSlot<T>` twins of `Move`/`Copy`/`Ref`, used only by a generated
+    /// call-site thunk. See the primitives on `ValueSlot` for why a raw-pointer form is needed and
+    /// why it cannot simply replace the reference form.
+    MoveRaw,
+    CopyRaw,
+    RefRaw,
+    /// **DEV-158.** Initialises ONE field of storage that may be partially moved:
+    /// `ValueSlot::write_field`.
+    ///
+    /// The install half of an overwriting field assignment. It was emitted as
+    /// `slot.get_mut().f0 = value` — a WHOLE-value accessor on a slot the matching move-out had
+    /// just made `Partial`, which aborts before anything else can happen. A raw projection never
+    /// materialises a `&mut T`, so it is valid over partially-moved storage.
+    Write,
 }
 
 /// One helper to generate. WP-C6.1b: `projection` is the FULL chain (depth ≥1). A pure-`Raw` chain
@@ -123,6 +144,11 @@ pub fn helper_name(base_ty: &MirTy, projection: &[Projection], op: HelperOp) -> 
         HelperOp::Move => "move",
         HelperOp::Copy => "copy",
         HelperOp::Drop => "drop",
+        HelperOp::Write => "write",
+        HelperOp::Ref => "ref",
+        HelperOp::MoveRaw => "moveraw",
+        HelperOp::CopyRaw => "copyraw",
+        HelperOp::RefRaw => "refraw",
     };
     let selector: Vec<String> = projection.iter().map(projection_token).collect();
     mangle::sanitize_symbol(&format!(
@@ -182,13 +208,31 @@ fn raw_selector_chain(
 pub fn collect(
     program: &MirProgram,
     layout: &crate::layout::TargetLayout,
+    // DEV-160: the calls a thunk owns. Their argument lists are NOT walked here -- the plan already
+    // named the raw wrappers they need, and collecting the ordinary safe forms as well would be the
+    // second, independent derivation the addendum forbids. It would also refuse programs the plan
+    // accepts, since some of these shapes have no safe form at all.
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<Vec<ProjectionHelper>, BackendDiagnostic> {
     let mut found: BTreeMap<String, ProjectionHelper> = BTreeMap::new();
+    for plan in thunks {
+        for helper in &plan.helpers {
+            found.insert(helper.name.clone(), helper.clone());
+        }
+    }
     for body in &program.bodies {
         let env = emit_places::TyEnv::new(body, &program.types, layout);
-        for block in &body.blocks {
+        for (block_index, block) in body.blocks.iter().enumerate() {
             for (statement, _) in &block.statements {
-                if let Statement::Assign(_, rvalue) = statement {
+                if let Statement::Assign(dest, rvalue) = statement {
+                    // DEV-158: a PROJECTED destination into slot-backed storage is installed
+                    // through a raw field write, because the matching move-out has already made
+                    // the slot partial and a whole-value accessor aborts on one.
+                    if !dest.projection.is_empty()
+                        && emit_places::is_slot_local(dest.local.0, &env)?
+                    {
+                        collect_place(dest, &env, HelperOp::Write, &mut found)?;
+                    }
                     // WP-C6.1c: a variant-payload decomposition aggregate emits as one
                     // `take()`+destructure match, needing no per-field projection helper — its
                     // `VariantField` operands must NOT be collected (they cannot be raw-projected,
@@ -201,9 +245,24 @@ pub fn collect(
                     for operand in rvalue_operands(rvalue) {
                         collect_operand(operand, &env, &program.types, &mut found)?;
                     }
+                    // DEV-162: `RefOf` carries a PLACE, not an operand, so `rvalue_operands`
+                    // returns nothing for it — and a borrow of a field is exactly the case that
+                    // needs a raw projection. Missing this named a helper the collector never
+                    // generated, which surfaces as E0425 in the generated crate rather than as
+                    // anything the compiler says.
+                    if let Rvalue::RefOf {
+                        place: borrowed, ..
+                    } = rvalue
+                    {
+                        collect_ref_place(borrowed, &env, &program.types, &mut found)?;
+                    }
                 }
             }
+            let thunked =
+                super::emit_call_thunk::plan_at(thunks, &body.instance.symbol, block_index as u32)
+                    .is_some();
             match &block.terminator.0 {
+                Terminator::Call { .. } if thunked => {}
                 Terminator::Call { args, .. } | Terminator::Checked { args, .. } => {
                     for arg in args {
                         collect_operand(arg, &env, &program.types, &mut found)?;
@@ -272,7 +331,46 @@ fn collect_operand(
     if field_is_copy && chain_is_raw(&base_ty, &place.projection, env.types)? {
         return collect_place(place, env, HelperOp::Copy, found); // case 2
     }
+    // DEV-162, case 3: a NON-`Copy` field reached by a non-move operand is BORROWED, and the
+    // borrow must survive a sibling move for the same reason case 2 must. `&slot.get().f1` does
+    // not: `get` requires a complete value.
+    if !field_is_copy && chain_is_raw(&base_ty, &place.projection, env.types)? {
+        return collect_place(place, env, HelperOp::Ref, found); // case 3
+    }
     Ok(())
+}
+
+/// DEV-162: a BORROW of a non-`Copy` field over a raw-projectable base needs a `Ref` helper, for
+/// the same reason a `Copy` read needs a `Copy` one — it must survive a sibling move.
+fn collect_ref_place(
+    place: &Place,
+    env: &emit_places::TyEnv,
+    types: &TypeContext,
+    found: &mut BTreeMap<String, ProjectionHelper>,
+) -> Result<(), BackendDiagnostic> {
+    if place.projection.is_empty() || !emit_places::is_slot_local(place.local.0, env)? {
+        return Ok(());
+    }
+    let field_ty = env.place_ty(place)?;
+    if emit_types::mir_ty_is_copy(&field_ty, types) {
+        return Ok(());
+    }
+    let base_ty = env.local_ty(place.local.0)?;
+    if !chain_is_raw(&base_ty, &place.projection, env.types)? {
+        return Ok(());
+    }
+    collect_place(place, env, HelperOp::Ref, found)
+}
+
+/// DEV-160: the plan registers helpers through this. Public so the plan is the ONE place a call's
+/// helper requirements are derived — nothing downstream rediscovers them.
+pub fn collect_place_pub(
+    place: &Place,
+    env: &emit_places::TyEnv,
+    op: HelperOp,
+    found: &mut BTreeMap<String, ProjectionHelper>,
+) -> Result<(), BackendDiagnostic> {
+    collect_place(place, env, op, found)
 }
 
 fn collect_place(
@@ -389,8 +487,9 @@ pub fn collect_for_place(
 pub fn emit(
     helpers: &[ProjectionHelper],
     types: &TypeContext,
+    thunks: &[super::emit_call_thunk::CallThunkPlan],
 ) -> Result<String, BackendDiagnostic> {
-    if helpers.is_empty() {
+    if helpers.is_empty() && thunks.is_empty() {
         return Ok(String::new());
     }
     // The explanatory banner lives INSIDE the module: a comment above it would put the word
@@ -482,6 +581,75 @@ pub fn emit(
             // site: a wrapper is already per-(base type, projection), which fixes the field type,
             // which fixes the plan. It also keeps the call site free of glue, so an emitted MIR
             // body still contains no `unsafe` and no destruction logic of its own.
+            // DEV-160. The `*mut ValueSlot<T>` twin of the three read/move forms.
+            //
+            // Emitted alongside its reference-taking sibling rather than instead of it: an ordinary
+            // call keeps the reference form, and only a generated call-site THUNK — which holds the
+            // slot through one real `&mut` and derives a pointer from it — uses these. Keeping the
+            // pairing "one wrapper = one primitive + one fixed projection + one slot type" is what
+            // lets the primitives' safety contract be discharged by construction.
+            //
+            // `#![allow(unused)]` on the module covers the twins no thunk happens to need.
+            (HelperOp::MoveRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::move_field_raw`.\n    pub unsafe fn {name}(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::move_field_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            (HelperOp::CopyRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::copy_field_raw`.\n    pub unsafe fn {name}(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::copy_field_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            (HelperOp::RefRaw, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// `{name}` through a raw slot pointer, for a call-site thunk (DEV-160).\n    /// # Safety\n    /// As `ValueSlot::field_ref_raw`; the caller supplies `'a` from the slot it holds.\n    pub unsafe fn {name}<'a>(slot: *mut stark_runtime::slot::ValueSlot<{base}>) -> &'a {field} {{\n         \
+                 \x20       unsafe {{ stark_runtime::slot::ValueSlot::field_ref_raw(slot, {projection}) }}\n    }}\n",
+                name = helper.name
+            )),
+            // The raw twins exist only for raw chains; an enum payload has no raw projection.
+            (HelperOp::MoveRaw | HelperOp::CopyRaw | HelperOp::RefRaw, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a raw-pointer twin of an enum-payload projection is not supported ({:?})",
+                    helper.base_ty
+                )))
+            }
+            // DEV-162. A shared borrow through the raw projection, tied to the slot borrow.
+            (HelperOp::Ref, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Borrows ONE field. Raw projection, so it is valid over storage a sibling \
+                 has\n    /// already been moved out of (DEV-162).\n    pub fn {}(slot: &stark_runtime::slot::ValueSlot<{base}>) -> &{field} {{\n         \
+                 \x20       // SAFETY: one fixed projection into THIS slot's storage; MIR's drop flags\n         \
+                 \x20       // guarantee the field is live.\n         \
+                 \x20       unsafe {{ slot.field_ref({projection}) }}\n    }}\n",
+                helper.name
+            )),
+            // An enum payload has no raw projection; a payload is read by matching the whole enum.
+            (HelperOp::Ref, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a projected Ref into the enum payload {:?} is not supported: a payload is \
+                     read by matching the whole enum",
+                    helper.base_ty
+                )))
+            }
+            // DEV-158. `ptr::write`, not assignment: the field is uninitialised at every call
+            // site the backend generates, because CD-012 requires the old unit to be moved out
+            // before the new value is installed. Assigning would drop whatever bytes were there.
+            (HelperOp::Write, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Initialises ONE field, leaving its siblings alone. Raw projection, so it \
+                 is\n    /// valid over storage a sibling has already been moved out of \
+                 (DEV-158).\n    pub fn {}(slot: &mut stark_runtime::slot::ValueSlot<{base}>, value: {field}) {{\n         \
+                 \x20       // SAFETY: one fixed projection into THIS slot's storage; the field is\n         \
+                 \x20       // uninitialised here, because MIR moved the old unit out first.\n         \
+                 \x20       unsafe {{ slot.write_field({projection}, value) }}\n    }}\n",
+                helper.name
+            )),
+            // An enum payload has no raw projection. MIR never asks: a payload is installed by
+            // writing the WHOLE enum value, not by projecting into one.
+            (HelperOp::Write, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a projected Write into the enum payload {:?} is not supported: an enum's \
+                     payload is installed by writing the whole enum",
+                    helper.base_ty
+                )))
+            }
             (HelperOp::Drop, ProjectionForm::Raw) => {
                 let plan = crate::mir::drop_plan::plan_for(&helper.field_ty, types)
                     .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
@@ -513,6 +681,12 @@ pub fn emit(
                 )))
             }
         }
+    }
+    // DEV-160: the call thunks live INSIDE this module, alongside the wrappers they call and inside
+    // the one boundary a generated program's `unsafe` is allowed to cross (§7.8). Emitted from the
+    // same plans that produced the wrappers above, so a thunk cannot name one that is absent.
+    for plan in thunks {
+        out.push_str(&super::emit_call_thunk::emit_thunk(plan)?);
     }
     out.push_str("}\n\n");
     Ok(out)

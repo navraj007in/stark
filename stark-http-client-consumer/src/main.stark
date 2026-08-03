@@ -6,7 +6,12 @@
 // one the package exists for: resolve, connect, set timeouts, write a request, read a response
 // across whatever fragmentation the peer chose, and release the stream.
 //
-// The peer's four routes each pin a different response shape:
+// HC10 adds the HTTPS half. The TLS peer on 127.0.0.1:39192 presents the fixture chain for
+// `localhost`, and 39193 presents a chain to a root this client does not trust. Both are reached
+// through the SAME `fetch`, differing only in the URL — which is HC10's requirement that no
+// application-level distinction beyond the scheme is needed.
+//
+// The peer's four plain routes each pin a different response shape:
 //
 //   /fixed       Content-Length framing, body read to the declared length
 //   /chunked     chunked framing, decoded across chunk boundaries
@@ -15,13 +20,33 @@
 //   /close-early headers promising more body than the peer sends, then a close — the client must
 //                REPORT this, never return a short body as if it were complete
 
-use stark_http_client::client_error_text;
+use stark_http_client::config_with_explicit_roots;
+use stark_http_client::error_text;
 use stark_http_client::default_config;
+use stark_http_client::default_redirect_policy;
+use stark_http_client::get;
 use stark_http_client::fetch;
 use stark_http_client::new_client;
+use stark_http_client::ClientConfig;
+use stark_http_client::json_body_error_text;
+use stark_http_client::post;
+use stark_http_client::send;
 use stark_http_client::Client;
+use stark_http_client::HttpError;
+use stark_http_core::append_validated;
 use stark_http_core::get_first;
+use stark_json::encode;
+use stark_json::JsonMember;
+use stark_json::JsonValue;
 use stark_http_core::HttpResponse;
+use stark_time::Duration;
+use stark_time::duration_millis;
+use stark_time::duration_seconds;
+
+// The fixture root, the ONLY trust anchor these HTTPS sessions are given. Nothing here consults
+// the machine's trust store; `default_config()` would, and that is the right default for a real
+// API and the wrong one for a controlled peer.
+const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBpzCCAU2gAwIBAgIUdElGOkS5SWewgzN6bNrXQ2Z2nbgwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWU1RBUksgSEM5IFRlc3QgUm9vdCBDQTAeFw0yNjAxMDEwMDAw\nMDBaFw00NjAxMDEwMDAwMDBaMCExHzAdBgNVBAMMFlNUQVJLIEhDOSBUZXN0IFJv\nb3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQi3tlBmm3chTBfzFV4lu3d\nw8bcYO43I9OTDhH80/ZeTMTNtburb36FMrRtVlyIjtZxFnHkWfQmfMl0EII9NV+e\no2MwYTAdBgNVHQ4EFgQUYEyz4y6Ah5uxN7GCbYZRXrw9+bIwHwYDVR0jBBgwFoAU\nYEyz4y6Ah5uxN7GCbYZRXrw9+bIwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E\nBAMCAQYwCgYIKoZIzj0EAwIDSAAwRQIhAMMbxXEB0Lj4adxaHSi9LsJ25HZdrukz\n6vMGiLLkxkdgAiAUbBxEDkRAZDfL0mHw0d3WNFtpSQXToFgf/QeFpVedJw==\n-----END CERTIFICATE-----\n";
 
 fn body_text(response: &HttpResponse) -> String {
     let n = response.body.len();
@@ -50,7 +75,7 @@ fn require(client: &Client, url: &str, expected_status: UInt16, expected_body: &
         Err(error) => {
             print("FETCH FAILED for ");
             println(url);
-            println(client_error_text(&error).as_str());
+            println(error_text(&error).as_str());
             panic("no HTTP peer on 127.0.0.1:39188 — this consumer needs a live one (CD-348)");
         }
     }
@@ -102,7 +127,7 @@ fn main() {
         }
         Err(error) => {
             print("  close-early: reported as expected: ");
-            println(client_error_text(&error).as_str());
+            println(error_text(&error).as_str());
         }
     }
 
@@ -116,5 +141,570 @@ fn main() {
         }
     }
 
+    // 6. HTTPS, through the same call. The only thing that changed is the scheme in the URL.
+    //
+    //    `stark.test` resolves nowhere, so `/etc/hosts` is not involved: the consumer dials
+    //    127.0.0.1 and the peer answers for that name. What is being proved is that `send` picks
+    //    the secure path from the scheme, verifies the chain and the hostname, and completes an
+    //    ordinary HTTP exchange inside the session.
+    let secure_client = new_client(config_with_explicit_roots(String::from(CA_PEM)));
+    let secure = require(&secure_client, "https://localhost:39192/fixed", 200u16, "fixed-body-ok");
+    match get_first(&secure.headers, "content-type") {
+        Some(value) => {
+            if value.as_str() != "text/plain" {
+                panic("Content-Type did not survive the TLS round trip");
+            }
+        }
+        None => {
+            panic("Content-Type missing from an HTTPS response");
+        }
+    }
+    println("  https: 200 over a verified TLS 1.3 session, headers and body intact");
+
+    // 7. Chunked framing INSIDE TLS. Record boundaries and chunk boundaries are unrelated, and a
+    //    client that conflated them would pass the fixed-body case and fail here.
+    let _secure_chunked = require(
+        &secure_client,
+        "https://localhost:39192/chunked",
+        200u16,
+        "chunked-body-ok",
+    );
+    println("  https: chunked body decoded inside the TLS session");
+
+    // 8. A chain to a root this client does not trust. The claim is not merely "it failed" — the
+    //    error must name the certificate, because a caller cannot act on "the request failed".
+    match fetch(&secure_client, "https://localhost:39193/fixed") {
+        Ok(_response) => {
+            panic("an untrusted certificate chain was accepted over https");
+        }
+        Err(error) => match error {
+            HttpError::Tls(_why) => {
+                println("  https: untrusted chain refused, reported as a TLS failure");
+            }
+            other => {
+                // Reported through `other`, not `error`: the payload-carrying arm above means this
+                // match MOVES the error, so the outer binding is gone by the time this arm runs.
+                println(error_text(&other).as_str());
+                panic("an untrusted chain must be reported as a TLS failure, not as a network one");
+            }
+        }
+    }
+
+    // 9. HOSTNAME verification, which is the check most easily lost. The peer on 39192 holds a
+    //    valid, trusted certificate for `stark.test` and nothing else — so asking for
+    //    `localhost` at the same address must fail even though the chain itself is impeccable.
+    match fetch(&secure_client, "https://127.0.0.1:39192/fixed") {
+        Ok(_response) => {
+            panic("a certificate valid for another name was accepted");
+        }
+        Err(error) => match error {
+            HttpError::Tls(_why) => {
+                println("  https: hostname mismatch refused, though the chain itself is trusted");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a hostname mismatch must be reported as a TLS failure");
+            }
+        }
+    }
+
+    // 10. A cleartext peer on the HTTPS path. The handshake cannot complete against a server that
+    //     answers with an HTTP response, and the failure must be reported rather than the bytes
+    //     being read as if the channel were secure.
+    match fetch(&secure_client, "https://localhost:39188/fixed") {
+        Ok(_response) => {
+            panic("a cleartext peer was accepted on the https path");
+        }
+        Err(_error) => {
+            println("  https: a cleartext peer on the secure path is refused");
+        }
+    }
+
+    // 11. HTTPS POST with a body and a custom Authorization header.
+    //
+    //     The peer REFLECTS what it received — method, Authorization, Content-Type, body — so this
+    //     asserts the request survived the transport rather than merely that a response came back.
+    //     A route returning a constant would pass for a client that sent nothing.
+    let mut body: Vec<UInt8> = Vec::new();
+    let payload = "{\"name\":\"stark\"}".bytes();
+    let mut b = 0u64;
+    while b < payload.len() {
+        body.push(payload[b]);
+        b = b + 1u64;
+    }
+    let mut builder = post("https://localhost:39192/echo", body);
+    match append_validated(&mut builder.headers, "Authorization", "Bearer secret-token") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Authorization header must be accepted");
+        }
+    }
+    match append_validated(&mut builder.headers, "Content-Type", "application/json") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Content-Type header must be accepted");
+        }
+    }
+    match send(&secure_client, builder) {
+        Ok(response) => {
+            if response.status != 200u16 {
+                panic("the echo route did not answer 200");
+            }
+            let seen = body_text(&response);
+            if seen.as_str() != "POST|Bearer secret-token|application/json|{\"name\":\"stark\"}" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("the method, header or body did not survive the request");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the HTTPS POST must succeed");
+        }
+    }
+    println("  https: POST with a JSON body and a bearer token arrived intact");
+
+    // 12. HC11 — the JSON convenience API, end to end over TLS.
+    //
+    //     `RequestBuilder::json` encodes and declares; `HttpResponse::json_checked` requires the
+    //     server to have said so and then parses. The peer echoes what it received, so this
+    //     asserts the encoded request reached it AND that the reply parsed back — a round trip
+    //     through encode, TLS, decode and parse, with a four-byte scalar in it so a Latin-1
+    //     shortcut anywhere on that path would corrupt it.
+    let json_payload = JsonValue::Object(
+        vec_of_member(String::from("greeting"), JsonValue::String(String::from("héllo 😀"))),
+    );
+    let empty_body: Vec<UInt8> = Vec::new();
+    // Nested rather than routed through a helper: a helper's `Err(_) => panic(..)` arm is a
+    // value-position `!`, and the native backend has no representation for `MirTy::Never`
+    // (DEV-157). Every other case in this file nests for the same reason.
+    match post("https://localhost:39192/echo-json", empty_body).json(&json_payload) {
+        Ok(json_builder) => match send(&secure_client, json_builder) {
+            Ok(response) => {
+                if response.status != 200u16 {
+                    panic("the echo-json route did not answer 200");
+                }
+                match response.json_checked() {
+                    Ok(value) => {
+                        // The peer reflects the body verbatim under a JSON content type, so what
+                        // comes back must re-encode to exactly what went out.
+                        if encode(&value).as_str() != encode(&json_payload).as_str() {
+                            print("came back: ");
+                            println(encode(&value).as_str());
+                            panic("the JSON did not survive the round trip");
+                        }
+                    }
+                    Err(error) => {
+                        println(json_body_error_text(&error).as_str());
+                        panic("the echoed JSON must parse under the strict content-type policy");
+                    }
+                }
+            }
+            Err(error) => {
+                println(error_text(&error).as_str());
+                panic("the JSON POST must succeed");
+            }
+        }
+        Err(_error) => {
+            panic("attaching a JSON body must succeed");
+        }
+    }
+    println("  https: JSON encoded, sent, echoed and parsed back identically");
+
+    // ------------------------------------------------------------------------------------------
+    // HC12 — redirects. Off by default; every case below opts in explicitly.
+    // ------------------------------------------------------------------------------------------
+
+    // 13. OFF by default: a 302 comes back as the response it IS, not as an error and not followed.
+    //     A client that followed without being asked turns one request the caller reasoned about
+    //     into several they did not.
+    match fetch(&client, "http://127.0.0.1:39188/r-relative") {
+        Ok(response) => {
+            if response.status != 302u16 {
+                panic("with following off, a redirect must be returned as a 302");
+            }
+        }
+        Err(_error) => {
+            panic("a redirect is a valid response, not an error");
+        }
+    }
+    println("  redirect: off by default, the 302 is returned as-is");
+
+    // 14. A RELATIVE Location, followed. The target is resolved against the current directory.
+    let follower = new_client(following(config_for_peer()));
+    let relative = require(&follower, "http://127.0.0.1:39188/r-relative", 200u16, "fixed-body-ok");
+    if relative.status != 200u16 {
+        panic("a relative redirect must reach the target");
+    }
+    println("  redirect: relative Location resolved and followed");
+
+    // 15. An ABSOLUTE Location, and a 301 rather than a 302.
+    let _absolute = require(&follower, "http://127.0.0.1:39188/r-absolute", 200u16, "fixed-body-ok");
+    println("  redirect: absolute Location followed");
+
+    // 16. A LOOP. Distinct from exhausting the bound: the chain revisits a target.
+    match fetch(&follower, "http://127.0.0.1:39188/r-loop") {
+        Ok(_response) => {
+            panic("a redirect loop must not be followed forever");
+        }
+        Err(error) => match error {
+            HttpError::RedirectLoop => {
+                println("  redirect: a loop is detected and named");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a loop must be reported as a loop");
+            }
+        }
+    }
+
+    // 17. The COUNT bound, exhausted by a chain of distinct targets — so this proves the bound
+    //     rather than the loop detector.
+    match fetch(&follower, "http://127.0.0.1:39188/r-hop1") {
+        Ok(_response) => {
+            panic("an unbounded chain must not be followed");
+        }
+        Err(error) => match error {
+            HttpError::TooManyRedirects => {
+                println("  redirect: the chain bound is enforced on distinct targets");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("an over-long chain must be reported as too many redirects");
+            }
+        }
+    }
+
+    // 18. A 3xx with no Location.
+    match fetch(&follower, "http://127.0.0.1:39188/r-nowhere") {
+        Ok(_response) => {
+            panic("a redirect with no Location cannot be followed");
+        }
+        Err(error) => match error {
+            HttpError::MissingLocation => {
+                println("  redirect: a 3xx with no Location is reported");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a missing Location must be named");
+            }
+        }
+    }
+
+    // 19. 303 converts POST to GET and DROPS the body. The echo route reflects what it received,
+    //     so this reads the method off the wire rather than trusting the rewrite table.
+    let mut post_303 = post("http://127.0.0.1:39188/r-303", body_bytes("discard-me"));
+    match append_validated(&mut post_303.headers, "Content-Type", "text/plain") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match send(&follower, post_303) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "GET|-|-|" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("303 must arrive as a GET with no body and no content type");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the 303 redirect must be followed");
+        }
+    }
+    println("  redirect: 303 converted POST to GET and dropped the body");
+
+    // 20. 307 PRESERVES both. Same peer, same echo route, opposite outcome — the pair is what makes
+    //     either assertion meaningful.
+    let mut post_307 = post("http://127.0.0.1:39188/r-307", body_bytes("keep-me"));
+    match append_validated(&mut post_307.headers, "Content-Type", "text/plain") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid header must be accepted");
+        }
+    }
+    match send(&follower, post_307) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "POST|-|text/plain|keep-me" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("307 must replay the method, headers and body");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the 307 redirect must be followed");
+        }
+    }
+    println("  redirect: 307 preserved the method and replayed the body");
+
+    // 21. **CROSS-ORIGIN CREDENTIAL STRIPPING — the exit criterion.** The cleartext peer redirects
+    //     to the TLS peer, a different origin. The Authorization header must NOT arrive. The echo
+    //     route reflects it, so this observes the actual wire rather than trusting the policy flag.
+    let mut credentialed = get("http://127.0.0.1:39188/r-cross-origin");
+    match append_validated(&mut credentialed.headers, "Authorization", "Bearer do-not-forward") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Authorization header must be accepted");
+        }
+    }
+    match send(&follower, credentialed) {
+        Ok(response) => {
+            let seen = body_text(&response);
+            if seen.as_str() != "GET|-|-|" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("the Authorization header crossed an origin boundary");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the cross-origin redirect must be followed, minus the credential");
+        }
+    }
+    println("  redirect: Authorization stripped when the origin changed");
+
+    // 22. An https -> http DOWNGRADE, refused before anything is dialled.
+    match fetch(&follower, "https://localhost:39192/r-downgrade") {
+        Ok(_response) => {
+            panic("a downgrade must not be followed");
+        }
+        Err(error) => match error {
+            HttpError::InsecureRedirect => {
+                println("  redirect: https to http refused as a downgrade");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a downgrade must be reported as an insecure redirect");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // HC13. Malformed framing, over the wire, from a peer that already looks plausible.
+    //
+    // Each route breaks exactly ONE rule and the assertion names it, so a failure points at one
+    // cause. Several of these are not style violations but desync primitives: two hops disagreeing
+    // about where a message ends is what request smuggling is built from.
+    println("  --- HC13: malformed responses ---");
+    refuse(&client, "http://127.0.0.1:39188/bad-status", "malformed status line");
+    refuse(&client, "http://127.0.0.1:39188/bad-version", "unsupported HTTP version");
+    refuse(&client, "http://127.0.0.1:39188/bad-header-name", "invalid header name");
+    refuse(&client, "http://127.0.0.1:39188/bad-obs-fold", "obsolete line folding is rejected");
+    refuse(&client, "http://127.0.0.1:39188/bad-bare-lf", "bare LF line ending is rejected");
+    refuse(&client, "http://127.0.0.1:39188/bad-two-lengths", "conflicting Content-Length headers");
+    refuse(
+        &client,
+        "http://127.0.0.1:39188/bad-length-and-te",
+        "Content-Length with Transfer-Encoding is ambiguous framing",
+    );
+    refuse(&client, "http://127.0.0.1:39188/bad-length-value", "invalid Content-Length");
+    refuse(&client, "http://127.0.0.1:39188/bad-transfer-encoding", "unsupported transfer coding");
+    refuse(&client, "http://127.0.0.1:39188/bad-chunk-size", "invalid chunk size");
+    refuse(&client, "http://127.0.0.1:39188/bad-chunk-terminator", "chunk not terminated by CRLF");
+
+    // SEC-HTTP-001 and SEC-HTTP-002: two ARITHMETIC boundaries, both of which ABORTED this process
+    // before they were fixed. STARK traps on integer overflow in every build mode, so a hostile
+    // server could stop any client reading its response — worse than a parse error, and invisible
+    // to the eleven routes above because both sit exactly where the magnitude guard stops and the
+    // final accumulation still happens.
+    refuse(&client, "http://127.0.0.1:39188/bad-length-overflow", "invalid Content-Length");
+    refuse(
+        &client,
+        "http://127.0.0.1:39188/bad-chunk-cumulative-overflow",
+        "body exceeds its limit",
+    );
+
+    // ------------------------------------------------------------------------------------------
+    // HC13. Limits, enforced against a peer that is actively trying to exceed them.
+    //
+    // A limit that is only ever tested with compliant input is a constant, not a limit.
+    println("  --- HC13: oversized responses ---");
+    refuse(&client, "http://127.0.0.1:39188/big-status-line", "status line exceeds its limit");
+    refuse(&client, "http://127.0.0.1:39188/big-header-line", "header line exceeds its limit");
+    refuse(&client, "http://127.0.0.1:39188/big-header-count", "too many headers");
+
+    // The body ceiling is enforced on TOTAL BYTES READ, not on the parsed body — so a peer cannot
+    // evade it by lying in `Content-Length`. This peer declares 12 MiB and really sends it; the
+    // ceiling is lowered to 64 KiB here so the proof costs milliseconds rather than megabytes.
+    let capped = new_client(with_ceiling(default_config(), 65536u64));
+    refuse(&capped, "http://127.0.0.1:39188/big-body", "response exceeded max_response_bytes");
+
+    // ------------------------------------------------------------------------------------------
+    // HC13. Timeouts, and the PHASE each expired in.
+    //
+    // "The request timed out" sends an operator to look at the wrong thing. A handshake that never
+    // starts, a header that never arrives and a body that stops half way are three different
+    // faults with three different owners, and the error has to say which.
+    println("  --- HC13: phase-specific timeouts ---");
+    let impatient = new_client(
+        with_deadlines(config_for_peer(), duration_millis(1500u64), duration_millis(1500u64)),
+    );
+
+    // Accepted, then silence. Nothing of the response ever arrives.
+    refuse(&impatient, "http://127.0.0.1:39188/slow-headers", "timed out reading the response");
+
+    // A complete, plausible head — then the body stops. A client that applies its read deadline
+    // only while waiting for HEADERS hangs here for as long as the peer cares to hold the socket.
+    refuse(&impatient, "http://127.0.0.1:39188/slow-body", "timed out reading the response");
+
+    // A peer that completes the TCP connect and never speaks TLS. An unwired handshake deadline is
+    // indistinguishable from a working one until a peer declines to talk — this is the only phase
+    // besides the read deadline that a loopback can prove deterministically, and
+    // HC13-KNOWN-LIMITATIONS.md records the ones it cannot.
+    refuse(&impatient, "https://localhost:39194/fixed", "timed out the TLS handshake");
+
     println("STARK_HTTP_CLIENT_RESOURCE_OK");
+}
+
+fn body_bytes(text: &str) -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let bytes = text.bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        out.push(bytes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
+// HC13 — the adversarial half.
+//
+// `stark-http-parser` has 34 unit tests over an error type with 23 variants — but they assert that
+// malformed input is REJECTED, not WHICH error it produces, and they hand the parser a literal
+// rather than delivering it over a socket. Nothing before this would have noticed a bare LF being
+// reported as a chunk-size error. Everything below is a real peer sending real bytes, and every
+// case asserts the reason.
+
+/// Does `haystack` contain `needle`? Written out because Core v1's `str` has no `contains`.
+fn contains(haystack: &str, needle: &str) -> Bool {
+    let h = haystack.bytes();
+    let n = needle.bytes();
+    if n.len() == 0u64 {
+        return true;
+    }
+    if n.len() > h.len() {
+        return false;
+    }
+    let last = h.len() - n.len();
+    let mut i = 0u64;
+    while i <= last {
+        let mut j = 0u64;
+        let mut same = true;
+        while j < n.len() {
+            if h[i + j] != n[j] {
+                same = false;
+                j = n.len();
+            } else {
+                j = j + 1u64;
+            }
+        }
+        if same {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// A response that must be REFUSED, and refused for a NAMED reason.
+///
+/// Asserting the reason rather than merely the failure is the whole point. Fifteen adversarial
+/// routes that each reported "the response was bad" would also pass against a client that rejected
+/// everything — including the valid responses proved above. The reason is what distinguishes a
+/// parser from a wall.
+fn refuse(client: &Client, url: &str, expected: &str) {
+    let mut text = String::new();
+    let mut refused = false;
+    match fetch(client, url) {
+        Ok(_response) => {}
+        Err(error) => {
+            text = error_text(&error);
+            refused = true;
+        }
+    }
+    if !refused {
+        print("ACCEPTED what it must refuse: ");
+        println(url);
+        panic("an adversarial response was accepted (HC13)");
+    }
+    if !contains(text.as_str(), expected) {
+        print("wrong reason for ");
+        print(url);
+        print(" — expected \"");
+        print(expected);
+        print("\", got \"");
+        print(text.as_str());
+        println("\"");
+        panic("an adversarial response was refused for the wrong reason (HC13)");
+    }
+    print("  ");
+    print(url);
+    print(" -> ");
+    println(text.as_str());
+}
+
+/// A configuration whose deadlines are short enough to expire inside a test run.
+///
+/// Built as one literal rather than by field assignment because `tls_root_store` is a drop unit
+/// (see `following` above).
+fn with_deadlines(config: ClientConfig, read: Duration, handshake: Duration) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: read,
+        write_timeout: config.write_timeout,
+        max_response_bytes: config.max_response_bytes,
+        follow_redirects: false,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: handshake,
+        redirects: default_redirect_policy(),
+    }
+}
+
+/// The same, with a small response ceiling — so the oversized case proves enforcement in
+/// milliseconds instead of megabytes.
+fn with_ceiling(config: ClientConfig, ceiling: UInt64) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: config.read_timeout,
+        write_timeout: config.write_timeout,
+        max_response_bytes: ceiling,
+        follow_redirects: false,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: config.tls_handshake_timeout,
+        redirects: default_redirect_policy(),
+    }
+}
+
+/// The explicit-roots configuration, so a follower can reach the TLS peer mid-chain.
+fn config_for_peer() -> ClientConfig {
+    config_with_explicit_roots(String::from(CA_PEM))
+}
+
+/// The same configuration with following turned ON, under the default (safe) policy.
+///
+/// Built as one literal rather than by assigning `follow_redirects` on a copy: assigning over a
+/// field whose old value is a drop unit aborts natively (DEV-158), and `tls_root_store` is one.
+fn following(config: ClientConfig) -> ClientConfig {
+    ClientConfig {
+        connect_timeout: config.connect_timeout,
+        read_timeout: config.read_timeout,
+        write_timeout: config.write_timeout,
+        max_response_bytes: config.max_response_bytes,
+        follow_redirects: true,
+        tls_root_store: config.tls_root_store,
+        tls_handshake_timeout: config.tls_handshake_timeout,
+        redirects: default_redirect_policy(),
+    }
+}
+
+/// A one-member object. `vec![..]` is not Core v1, so the Vec is built explicitly.
+fn vec_of_member(key: String, value: JsonValue) -> Vec<JsonMember> {
+    let mut out: Vec<JsonMember> = Vec::new();
+    out.push(JsonMember { key: key, value: value });
+    out
 }

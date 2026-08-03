@@ -18,6 +18,19 @@ loopback_provider = "implemented"
 native_e2e = "implemented"
 source_build_e2e = "implemented"
 
+# HC9 (CD-365). `native_e2e` is `stark-tls-consumer` under the package gate: a verified TLS 1.3 and
+# TLS 1.2 session, an untrusted-root rejection, and both release paths, against three controlled
+# peers. `cross_provider_transfer` is its own row because it is a DIFFERENT claim from "TLS works" --
+# it is CD-360's runtime proving case, which that decision left open for HC9.
+[stark_tls]
+provider_metadata = "implemented"
+native_e2e = "implemented"
+cross_provider_transfer = "implemented"
+system_root_store = "unsupported"
+system_root_store_reason = "HC10 owns SystemRoots/BundledRoots; HC9's fixture uses ExplicitRoots per CD-361 §4. Declared and refused by name rather than silently substituted."
+fips_profile_f = "pending"
+fips_profile_f_reason = "Profile F needs CMake and Go and is qualified separately (CD-361 §2/§7); neither was present at HC9 closure."
+
 [closure_gate]
 # This file is a STATE table with a fixed vocabulary (pending|implemented|qualified|unsupported),
 # validated by c78/qualification/make-record.py. Prose and paths belong in `_reason` keys, which the

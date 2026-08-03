@@ -1,6 +1,12 @@
-# STARK Implementation Plan
+# STARK Implementation Plan (Gates 1–5 — historical)
 
-**Status:** active engineering plan · **Subordinate to:** [ROADMAP.md](./ROADMAP.md)
+> **NOT the live plan.** The single forward plan for STARK is `ROADMAP.md` at the
+> **repository root**. This file records how Gates 1–5 of the closed, pre-existing gate
+> sequence were executed; it was never updated past Gate 5. Retained for its historical
+> detail and inbound citations. Do not schedule new work from it.
+
+**Status:** historical record — superseded as a forward plan on 2026-08-03 ·
+**Subordinate to:** [ROADMAP.md](./ROADMAP.md) *(also historical — see the banner there)*
 
 The roadmap defines *what evidence* advances the project (Gates 1–7 in ROADMAP.md's current
 numbering; this document's work-package detail below stops at Gate 5 — see the "Post-Gate-5

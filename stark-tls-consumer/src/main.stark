@@ -1,0 +1,254 @@
+// HC9 — the EXECUTED LIFECYCLE for `stark-tls`'s `TlsStream` resource, and for the cross-provider
+// transfer it is built on.
+//
+// The qualification script starts three TLS peers on 127.0.0.1 before running this binary, so every
+// step below is DETERMINISTIC RUNTIME EVIDENCE rather than a compiled-but-untaken branch. That
+// distinction is the whole point of the file (CD-345, CD-347, CD-348): a resource package that
+// passes a gate without ever acquiring, using and releasing its resource has proved that it links,
+// not that it works.
+//
+// Four properties, and the peers that make each reachable:
+//
+//   39189  TLS 1.3 only   acquire -> use -> EXPLICIT close, and the version claim
+//   39190  TLS 1.2 only   the other version, so "1.3 negotiated" above means something
+//   39191  untrusted root a verified rejection, with its own error rather than a generic one
+//   39189  again          acquire -> use -> IMPLICIT release by drop
+//
+// If a peer is not there, this FAILS. It does not fall back to a negative path: a gate that
+// silently degrades to "the error branch ran" is precisely what CD-345 caught.
+
+use stark_net::connect_no_timeout;
+use stark_net::ipv4;
+use stark_net::socket_address;
+use stark_net::SocketAddress;
+use stark_tls::close;
+use stark_tls::connect;
+use stark_tls::default_handshake_timeout;
+use stark_tls::explicit_roots_config;
+use stark_tls::tls_error_text;
+use stark_tls::version_code;
+use stark_tls::TlsClientConfig;
+use stark_tls::TlsError;
+use stark_tls::TlsStream;
+use stark_tls::TlsVersion;
+
+const PORT_TLS13: UInt16 = 39189u16;
+const PORT_TLS12: UInt16 = 39190u16;
+const PORT_UNTRUSTED: UInt16 = 39191u16;
+
+// The fixture root, the ONLY trust anchor these sessions are given. Nothing here consults the
+// machine's trust store, and nothing outside this repository trusts this CA.
+const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBpzCCAU2gAwIBAgIUdElGOkS5SWewgzN6bNrXQ2Z2nbgwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWU1RBUksgSEM5IFRlc3QgUm9vdCBDQTAeFw0yNjAxMDEwMDAw\nMDBaFw00NjAxMDEwMDAwMDBaMCExHzAdBgNVBAMMFlNUQVJLIEhDOSBUZXN0IFJv\nb3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQi3tlBmm3chTBfzFV4lu3d\nw8bcYO43I9OTDhH80/ZeTMTNtburb36FMrRtVlyIjtZxFnHkWfQmfMl0EII9NV+e\no2MwYTAdBgNVHQ4EFgQUYEyz4y6Ah5uxN7GCbYZRXrw9+bIwHwYDVR0jBBgwFoAU\nYEyz4y6Ah5uxN7GCbYZRXrw9+bIwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E\nBAMCAQYwCgYIKoZIzj0EAwIDSAAwRQIhAMMbxXEB0Lj4adxaHSi9LsJ25HZdrukz\n6vMGiLLkxkdgAiAUbBxEDkRAZDfL0mHw0d3WNFtpSQXToFgf/QeFpVedJw==\n-----END CERTIFICATE-----\n";
+
+// `stark.test` resolves nowhere. That is deliberate: the socket goes to 127.0.0.1 and the NAME is
+// presented for SNI and verified against the certificate, so hostname checking is exercised without
+// a resolver being involved. The address says where the bytes went; the name says who the caller
+// meant to reach, and only the second is a security statement.
+const SERVER_NAME: &str = "stark.test";
+
+fn peer(port: UInt16) -> SocketAddress {
+    socket_address(ipv4(127u8, 0u8, 0u8, 1u8), port)
+}
+
+fn config() -> TlsClientConfig {
+    explicit_roots_config(String::from(CA_PEM), default_handshake_timeout())
+}
+
+// One length-prefixed frame out, the same frame back. The read LOOPS: a TLS record boundary is not
+// a message boundary, and a consumer that read once would pass against a peer that answers in one
+// record and fail against one that does not.
+fn echo(stream: &mut TlsStream, payload: &str) {
+    let body = payload.bytes();
+    let mut header: [UInt8; 8] = [0u8; 8];
+    let length = body.len();
+    let mut i: UInt64 = 0u64;
+    while i < 8u64 {
+        let shift = (56u64 - i * 8u64) as UInt64;
+        header[i] = (length >> shift & 255u64) as UInt8;
+        i = i + 1u64;
+    }
+
+    {
+        let head = &header[0u64..8u64];
+        match stream.write_all(head) {
+            Ok(_unit) => {}
+            Err(_error) => {
+                panic("tls consumer: write_all of the frame header failed");
+            }
+        }
+    }
+    match stream.write_all(body) {
+        Ok(_unit) => {}
+        Err(_error) => {
+            panic("tls consumer: write_all of the frame body failed");
+        }
+    }
+
+    let expected = 8u64 + length;
+    let mut buffer: [UInt8; 256] = [0u8; 256];
+    let mut filled: UInt64 = 0u64;
+    while filled < expected {
+        let count: UInt64;
+        {
+            let window = &mut buffer[filled..expected];
+            match stream.read(window) {
+                Ok(read) => {
+                    count = read;
+                }
+                Err(_error) => {
+                    panic("tls consumer: read from the TLS peer failed");
+                }
+            }
+        }
+        if count == 0u64 {
+            panic("tls consumer: the peer closed before the frame completed");
+        }
+        filled = filled + count;
+    }
+
+    // Compared as BYTES rather than decoded into a String.
+    //
+    // Decoding needed a printable-ASCII table walked with `chars()`, and the native backend does
+    // not support method calls on the `CharsIter` core type -- so the first version checked and
+    // failed to build. Comparing bytes is not a workaround for that: it is the stronger assertion.
+    // A decoder that mangled a byte and a comparison that mangled it the same way would agree,
+    // whereas the bytes either came back or they did not.
+    let mut k: UInt64 = 0u64;
+    while k < length {
+        if buffer[8u64 + k] != body[k] {
+            panic("tls consumer: the echoed frame did not match byte for byte");
+        }
+        k = k + 1u64;
+    }
+}
+
+// ACQUIRE -> USE -> EXPLICIT CLOSE, plus the version claim and both timeout setters.
+fn verified_session_with_explicit_close(port: UInt16, expected: &TlsVersion, label: &str) {
+    // Nested rather than factored into a `fn tcp_to(..) -> TcpStream` helper.
+    //
+    // That helper wanted `Err(_) => panic(..)` as a match ARM VALUE, which types as `!` — and the
+    // native backend has no generated-Rust representation for `MirTy::Never` (WP-C5.1's matrix).
+    // It checks and then fails to build, which is why the sibling TCP consumer nests too. Recorded
+    // here because the shape is not a preference.
+    match connect_no_timeout(peer(port)) {
+        Ok(tcp) => match TlsStream::connect(tcp, String::from(SERVER_NAME), config()) {
+            Ok(stream) => {
+                let mut owned = stream;
+
+                match owned.peer_version() {
+                    Ok(negotiated) => {
+                        if version_code(&negotiated) != version_code(expected) {
+                            panic(
+                                "tls consumer: the peer negotiated an unexpected protocol version",
+                            );
+                        }
+                    }
+                    Err(_error) => {
+                        panic("tls consumer: peer_version must be observable after a handshake");
+                    }
+                }
+
+                // Terminal bounds on the established session (HC4). Set, not exercised to expiry: a
+                // deliberate stall would add seconds to every qualification run to re-prove what
+                // `stark-tls-native`'s own suite proves against a silent peer.
+                match owned.set_read_timeout(Some(default_handshake_timeout())) {
+                    Ok(_unit) => {}
+                    Err(_error) => {
+                        panic("tls consumer: set_read_timeout must be accepted");
+                    }
+                }
+                match owned.set_write_timeout(Some(default_handshake_timeout())) {
+                    Ok(_unit) => {}
+                    Err(_error) => {
+                        panic("tls consumer: set_write_timeout must be accepted");
+                    }
+                }
+
+                echo(&mut owned, "hello over tls");
+                // A second frame on the SAME session: a client that works once and not twice has a
+                // record-layer bug that a single round trip cannot see.
+                echo(&mut owned, "second frame");
+
+                match close(owned) {
+                    Ok(_unit) => {}
+                    Err(_error) => {
+                        panic("tls consumer: explicit close failed");
+                    }
+                }
+                println(label);
+            }
+            Err(error) => {
+                println(tls_error_text(&error).as_str());
+                panic("tls consumer: the verified handshake must succeed");
+            }
+        }
+        Err(_error) => {
+            panic("tls consumer: the TLS peer must be listening; see HC9");
+        }
+    }
+}
+
+// ACQUIRE -> USE -> IMPLICIT RELEASE BY DROP.
+//
+// No `close` call. The stream leaves scope holding a live handle, and MIR drop elaboration must
+// emit `stark_tls_stream_close` exactly once -- which also closes the socket underneath it, because
+// there is one release path for both layers. A second close, or none, is observable: the provider
+// aborts on a handle it did not expect, so a non-zero exit here IS the failure signal.
+fn verified_session_released_by_drop() {
+    match connect_no_timeout(peer(PORT_TLS13)) {
+        Ok(tcp) => match connect(tcp, String::from(SERVER_NAME), config()) {
+            Ok(stream) => {
+                let mut owned = stream;
+                echo(&mut owned, "dropped");
+            }
+            Err(_error) => {
+                panic("tls consumer: the drop-path handshake must succeed");
+            }
+        }
+        Err(_error) => {
+            panic("tls consumer: the TLS peer must be listening; see HC9");
+        }
+    }
+    println("  tls: drop released the session and the socket under it");
+}
+
+// A chain to a root this program does not trust. The claim is not merely "it failed" -- it is that
+// the failure arrives as the SPECIFIC error, because a client that reports every certificate
+// problem identically cannot be operated.
+fn an_untrusted_root_is_rejected() {
+    match connect_no_timeout(peer(PORT_UNTRUSTED)) {
+        Ok(tcp) => match connect(tcp, String::from(SERVER_NAME), config()) {
+            Ok(_stream) => {
+                panic("tls consumer: a chain to an untrusted root must NOT verify");
+            }
+            Err(error) => match error {
+                TlsError::CertificateUnknownIssuer => {
+                    println("  tls: untrusted root rejected as certificate issuer is not trusted");
+                }
+                _other => {
+                    println(tls_error_text(&error).as_str());
+                    panic("tls consumer: an untrusted root must be reported as an untrusted issuer");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("tls consumer: the TLS peer must be listening; see HC9");
+        }
+    }
+}
+
+fn main() {
+    verified_session_with_explicit_close(
+        PORT_TLS13,
+        &TlsVersion::Tls13,
+        "  tls: TLS 1.3 session verified, used and closed explicitly",
+    );
+    verified_session_with_explicit_close(
+        PORT_TLS12,
+        &TlsVersion::Tls12,
+        "  tls: TLS 1.2 session verified, used and closed explicitly",
+    );
+    an_untrusted_root_is_rejected();
+    verified_session_released_by_drop();
+    println("STARK_TLS_RESOURCE_OK");
+}

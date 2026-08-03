@@ -144,8 +144,10 @@ mode = "snippet"
 note = "move-error case is commented out"
 
 ["03-Type-System__19.stark"]
-verdict = "parse-pass"
+verdict = "semantic-error"
 mode = "snippet"
+errors = "E0101"
+note = "OWN-BORROW-002: argument evaluation is not two-phase; the un-hoisted call must be rejected"
 
 ["03-Type-System__20.stark"]
 verdict = "parse-pass"
@@ -153,27 +155,27 @@ mode = "snippet"
 
 ["03-Type-System__21.stark"]
 verdict = "parse-pass"
-mode = "program"
+mode = "snippet"
 
 ["03-Type-System__22.stark"]
 verdict = "parse-pass"
-mode = "snippet"
+mode = "program"
 
 ["03-Type-System__23.stark"]
 verdict = "parse-pass"
-mode = "program"
+mode = "snippet"
 
 ["03-Type-System__24.stark"]
 verdict = "parse-pass"
-mode = "snippet"
+mode = "program"
 
 ["03-Type-System__25.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 
 ["03-Type-System__26.stark"]
-verdict = "notation"
-note = "coercion table"
+verdict = "parse-pass"
+mode = "snippet"
 
 ["03-Type-System__27.stark"]
 verdict = "notation"
@@ -184,93 +186,97 @@ verdict = "notation"
 note = "coercion table"
 
 ["03-Type-System__29.stark"]
-verdict = "parse-pass"
-mode = "program"
+verdict = "notation"
+note = "coercion table"
 
 ["03-Type-System__30.stark"]
 verdict = "parse-pass"
 mode = "program"
-note = "fmt body elided as a comment; Point undefined standalone (gate2-revisit)"
 
 ["03-Type-System__31.stark"]
 verdict = "parse-pass"
 mode = "program"
+note = "fmt body elided as a comment; Point undefined standalone (gate2-revisit)"
 
 ["03-Type-System__32.stark"]
-verdict = "notation"
-note = "typing-rule metavariables (T, expr)"
+verdict = "parse-pass"
+mode = "program"
 
 ["03-Type-System__33.stark"]
 verdict = "notation"
-note = "typing-rule metavariables (T, arg); elided body"
+note = "typing-rule metavariables (T, expr)"
 
 ["03-Type-System__34.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "x, y undefined (extraction artifact)"
+verdict = "notation"
+note = "typing-rule metavariables (T, arg); elided body"
 
 ["03-Type-System__35.stark"]
 verdict = "parse-pass"
 mode = "snippet"
-note = "a, b, x undefined (extraction artifact)"
+note = "x, y undefined (extraction artifact)"
 
 ["03-Type-System__36.stark"]
 verdict = "parse-pass"
 mode = "snippet"
+note = "a, b, x undefined (extraction artifact)"
 
 ["03-Type-System__37.stark"]
 verdict = "parse-pass"
-mode = "program"
+mode = "snippet"
 
 ["03-Type-System__38.stark"]
 verdict = "parse-pass"
 mode = "program"
-note = "redeclares prelude Option (gate2-revisit)"
 
 ["03-Type-System__39.stark"]
 verdict = "parse-pass"
 mode = "program"
-note = "redeclares prelude Result (gate2-revisit)"
+note = "redeclares prelude Option (gate2-revisit)"
 
 ["03-Type-System__40.stark"]
 verdict = "parse-pass"
 mode = "program"
-note = "might_fail body elided as a comment; not type-correct standalone (gate2-revisit)"
+note = "redeclares prelude Result (gate2-revisit)"
 
 ["03-Type-System__41.stark"]
 verdict = "parse-pass"
 mode = "program"
+note = "might_fail body elided as a comment; not type-correct standalone (gate2-revisit)"
 
 ["03-Type-System__42.stark"]
 verdict = "parse-pass"
 mode = "program"
 
 ["03-Type-System__43.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__44.stark"]
 verdict = "parse-fail"
 mode = "program"
 note = "lifetime annotations are a future feature; Core v1 rejects (`'a` fails in the lexer)"
 
-["03-Type-System__44.stark"]
+["03-Type-System__45.stark"]
 verdict = "parse-pass"
 mode = "program"
 note = "C2.8 type-alias and recursive-sizedness review case; invalid direct recursion is commented"
 
-["03-Type-System__45.stark"]
+["03-Type-System__46.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 note = "C2.8 generic and expected-type inference review case"
 
-["03-Type-System__46.stark"]
+["03-Type-System__47.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 note = "C2.8 borrowed-rvalue region review case; escaping borrow is commented"
 
-["03-Type-System__47.stark"]
+["03-Type-System__48.stark"]
 verdict = "parse-pass"
 mode = "program"
 note = "C2.8 exhaustive enum-pattern review case"
 
-["03-Type-System__48.stark"]
+["03-Type-System__49.stark"]
 verdict = "parse-pass"
 mode = "program"
 note = "C2.8 constant-evaluation review case"

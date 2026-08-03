@@ -1,0 +1,34 @@
+[package]
+name = "stark-tls-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native TLS 1.2/1.3 client provider for STARK Native Provider ABI v0.1 (rustls + aws-lc-rs, Profile N)"
+license = "MIT"
+publish = false
+
+# CD-361: "Do not write `latest rustls` into any build. Pin exact versions in the provider
+# lockfile and in qualification evidence." These are `=` pins, not caret ranges, because a caret
+# range means the qualified artefact and the built artefact can differ with no change to any file
+# under review. The transitive pins -- aws-lc-rs, aws-lc-sys -- are held by Cargo.lock, which is
+# committed for the same reason.
+#
+# `default-features = false` then naming three: the default set also pulls `ring`, and CD-361
+# selected aws-lc-rs as the ONE cryptographic foundation. Two crypto backends compiled into one
+# binary is exactly the "unrelated crypto stacks" outcome the ruling exists to prevent.
+[dependencies]
+stark-provider-abi = { path = "../../starkc/stark-provider-abi" }
+rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "tls12", "std"] }
+rustls-pemfile = "=2.2.0"
+rustls-pki-types = "=1.15.1"
+# HC10. The platform trust store, read into rustls rather than delegating validation to the
+# platform: CD-361 §4 keeps trust-anchor SOURCE and TLS implementation separate decisions.
+rustls-native-certs = "=0.8.2"
+
+# `stark-net-native` is a DEV-dependency only. The provider calls `stark_tcp_stream_detach` through
+# an `extern "C"` declaration resolved by the linker inside the one binary every provider is
+# statically linked into (see `stark_provider_abi::RawOsHandle`) -- no dependency edge, no path
+# assumption. A test binary is its own link unit, though, so it needs the owner crate present to
+# resolve that symbol.
+[dev-dependencies]
+starkc = { path = "../../starkc" }
+stark-net-native = { path = "../../stark-net/native" }

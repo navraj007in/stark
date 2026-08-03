@@ -1207,6 +1207,32 @@ cannot grant stronger mutability or outlive the source reference.
 2. References must always be valid (no dangling pointers)
 3. References cannot outlive the data they refer to
 
+**OWN-BORROW-002 (argument evaluation is not two-phase).** A call may not create
+an exclusive borrow of a place while another argument in the same call reads from
+or borrows an overlapping place. Such reads must be evaluated into locals before
+the exclusive borrow is created.
+
+The rule is uniform in the base it applies to — a local, a place reached through
+`&mut`, a field projection, an index, and a free-function call or a method
+receiver alike — and it does not depend on argument order.
+
+```stark
+fn fill(buffer: &mut Vec<UInt8>, count: UInt64) { /* ... */ }
+
+let mut buffer: Vec<UInt8> = Vec::new();
+fill(&mut buffer, buffer.len());   // rejected: overlapping read in the same call
+let count = buffer.len();          // hoist the read
+fill(&mut buffer, count);          // accepted
+```
+
+Core v1 deliberately does **not** define argument evaluation as providing
+two-phase borrow semantics: an exclusive borrow taken for an argument is live for
+the whole call, including the evaluation of every other argument. A method
+receiver is an argument for this purpose, so `buffer.fill(buffer.len())` is
+rejected on the same grounds. This keeps one rule that every engine can satisfy
+without evaluation-order machinery; whether to admit two-phase borrows is
+reserved (see `CORE-V1-FUTURE-BOUNDARIES.md`).
+
 ```stark
 fn borrow_immutable(s: &String) {
     // Can read but not modify

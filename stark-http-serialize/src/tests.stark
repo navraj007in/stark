@@ -6,7 +6,11 @@ use super::default_host_authority;
 use super::host_header_value;
 use super::render_ascii;
 use super::requires_host;
+use super::error_text;
 use super::serialize_request;
+use super::Header;
+use super::HeaderMap;
+use super::HttpRequest;
 use super::HostAuthority;
 use super::append_validated;
 use super::default_limits;
@@ -281,4 +285,137 @@ fn test_body_on_a_bodyless_method_is_rejected() {
 fn test_http11_requires_host() {
     expect(requires_host(&HttpVersion::Http11), "HTTP/1.1 must require Host");
     expect(!requires_host(&HttpVersion::Http10), "HTTP/1.0 must not require Host");
+}
+
+// --- CRLF header injection, closed at the boundary that writes bytes ---------------------------
+
+use super::SerializeError;
+
+fn forged(name: &str, value: &str) -> HttpRequest {
+    // Built WITHOUT `header()` — the whole point. `Header`'s fields and `HeaderMap.entries` are
+    // public, so the constructor's validation is not the only way a header can come into being.
+    let mut entries: Vec<Header> = Vec::new();
+    entries.push(Header { name: String::from(name), value: String::from(value) });
+    HttpRequest {
+        method: HttpMethod::Get,
+        target: String::from("/"),
+        version: HttpVersion::Http11,
+        headers: HeaderMap { entries: entries },
+        body: Vec::new(),
+    }
+}
+
+/// A header whose VALUE cannot be written. The name is reported, which is safe because the name is
+/// validated first.
+fn expect_value_refused(name: &str, value: &str, what: &str) {
+    let authority = HostAuthority { host: String::from("a.test"), port: 80u16, default_port: 80u16 };
+    match serialize_request(&forged(name, value), &authority, &default_limits()) {
+        Ok(_bytes) => {
+            print("serialized ");
+            println(what);
+            panic("a header that cannot appear on the wire was serialized");
+        }
+        Err(error) => match error {
+            SerializeError::InvalidHeaderValue(reported) => {
+                if reported.as_str() != name {
+                    panic("the refusal must name the offending header");
+                }
+            }
+            _other => {
+                print("wrong error for ");
+                println(what);
+                panic("an unwritable value must be reported as an invalid header VALUE");
+            }
+        }
+    }
+}
+
+/// A header whose NAME cannot be written. Nothing is reported, and that is the point.
+fn expect_name_refused(name: &str, value: &str, what: &str) {
+    let authority = HostAuthority { host: String::from("a.test"), port: 80u16, default_port: 80u16 };
+    match serialize_request(&forged(name, value), &authority, &default_limits()) {
+        Ok(_bytes) => {
+            print("serialized ");
+            println(what);
+            panic("a header that cannot appear on the wire was serialized");
+        }
+        Err(error) => match error {
+            SerializeError::InvalidHeaderName => {}
+            _other => {
+                print("wrong error for ");
+                println(what);
+                panic("an unwritable name must be reported as an invalid header NAME");
+            }
+        }
+    }
+}
+
+fn test_crlf_in_a_header_value_cannot_reach_the_wire() {
+    // THE EXPLOIT. Before this check, `safe\r\nInjected: yes` produced a genuine second header
+    // line on the wire:
+    //
+    //     X-Test: safe\r\n
+    //     Injected: yes\r\n
+    //
+    // Reachable from safe STARK, with no `unsafe` and no provider. The constructor validated and
+    // the serializer trusted it; the fields being public made that trust unfounded.
+    expect_value_refused("X-Test", "safe\r\nInjected: yes", "a CRLF-bearing value");
+    expect_value_refused("X-Test", "safe\rInjected: yes", "a bare CR");
+    expect_value_refused("X-Test", "safe\nInjected: yes", "a bare LF");
+    expect_value_refused("X-Test", "safe\u{0}null", "a NUL in a value");
+}
+
+fn test_an_invalid_header_name_cannot_reach_the_wire() {
+    // A name with a space or a colon splits the line just as effectively as a CRLF in a value.
+    expect_name_refused("X Test", "ok", "a space in a name");
+    expect_name_refused("X:Test", "ok", "a colon in a name");
+    expect_name_refused("X-Test\r\nInjected", "ok", "a CRLF in a name");
+    expect_name_refused("", "ok", "an empty name");
+}
+
+fn test_an_invalid_name_is_never_echoed_into_the_diagnostic() {
+    // **The second-order injection, caught in review.** The first repair carried the offending NAME
+    // in the error — and an invalid name may itself contain CRLF, so rendering it injected into
+    // whatever read the log line. That reintroduced, one layer out, exactly what the value rule was
+    // written to prevent.
+    //
+    // The fix is structural rather than an escaping pass: `InvalidHeaderName` carries nothing, so
+    // there is no hostile string to forget to escape at some future call site.
+    let authority = HostAuthority { host: String::from("a.test"), port: 80u16, default_port: 80u16 };
+    let hostile = "X-Test\r\nInjected: yes";
+    match serialize_request(&forged(hostile, "ok"), &authority, &default_limits()) {
+        Ok(_bytes) => {
+            panic("a CRLF-bearing name must be refused");
+        }
+        Err(error) => {
+            let rendered = error_text(&error);
+            let bytes = rendered.as_str().bytes();
+            let mut i = 0u64;
+            while i < bytes.len() {
+                if bytes[i] == 13u8 || bytes[i] == 10u8 {
+                    panic("the diagnostic carried a control byte from the rejected header name");
+                }
+                i = i + 1u64;
+            }
+            if rendered.len() == 0u64 {
+                panic("the refusal must still say something");
+            }
+        }
+    }
+}
+
+fn test_a_well_formed_forged_header_still_serializes() {
+    // The check must reject what cannot be written, not everything built without the constructor.
+    // Otherwise the repair would break every legitimate caller that fills the struct directly.
+    let authority = HostAuthority { host: String::from("a.test"), port: 80u16, default_port: 80u16 };
+    match serialize_request(&forged("X-Test", "perfectly ordinary"), &authority, &default_limits()) {
+        Ok(bytes) => {
+            if bytes.len() == 0u64 {
+                panic("a valid request must serialize to bytes");
+            }
+        }
+        Err(_error) => {
+            panic("a well-formed header must still serialize");
+        }
+    }
 }

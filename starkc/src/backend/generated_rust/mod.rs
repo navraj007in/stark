@@ -4,6 +4,7 @@
 
 pub mod build;
 pub mod emit_bodies;
+pub mod emit_call_thunk;
 pub mod emit_places;
 pub mod emit_program;
 pub mod emit_projections;

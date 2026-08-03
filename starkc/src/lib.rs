@@ -37,6 +37,7 @@ pub mod parser;
 pub mod provider_abi;
 pub mod provider_bind;
 pub mod provider_derive;
+pub mod provider_manifest;
 pub mod provider_registry;
 pub mod provider_resolve;
 pub mod provider_synth;

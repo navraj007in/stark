@@ -1,3 +1,7 @@
-const WIDTH: UInt64 = 4;
-const ENABLED: Bool = WIDTH == 4;
-const SETTINGS: (UInt64, Bool) = (WIDTH, if ENABLED { true } else { false });
+enum Message { Quit, Count(Int32) }
+fn code(message: Message) -> Int32 {
+    match message {
+        Message::Quit => 0,
+        Message::Count(value) => value,
+    }
+}

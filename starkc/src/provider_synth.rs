@@ -161,17 +161,25 @@ pub fn synthesize(
     signatures: &[DerivedSignature],
     vocabularies: &BTreeMap<String, StatusBinding>,
 ) -> Result<SynthesizedLayer, String> {
-    synthesize_with_resources(signatures, vocabularies, &BTreeMap::new())
+    synthesize_with_resources(signatures, vocabularies, &BTreeMap::new(), &BTreeMap::new())
 }
 
-/// `synthesize`, plus the resource nominals the package binds.
+/// `synthesize`, plus the resource nominals in play.
 ///
 /// `resources` maps a **provider resource name** to the package **nominal** bound to it, as
 /// `provider_api.resources` declares it. Each becomes a zero-variant enum (CD-234).
+///
+/// **HC9 — `foreign` is the other half, and the two must not be merged.** It maps a provider
+/// resource name to a QUALIFIED path at the package that owns it (`stark_net::TcpStream`), as
+/// `provider_api.foreign_resources` declares it. A signature may name one, and nothing is generated
+/// for it: the nominal already exists in the owning package, so generating a second would produce a
+/// distinct `ItemId` — a type with the same spelling that no provider call could ever produce a
+/// value of. Merging the two maps is therefore not a simplification, it is that bug.
 pub fn synthesize_with_resources(
     signatures: &[DerivedSignature],
     vocabularies: &BTreeMap<String, StatusBinding>,
     resources: &BTreeMap<String, String>,
+    foreign: &BTreeMap<String, String>,
 ) -> Result<SynthesizedLayer, String> {
     if signatures.is_empty() && resources.is_empty() {
         return Ok(SynthesizedLayer::default());
@@ -208,16 +216,19 @@ pub fn synthesize_with_resources(
                 sig.item_path
             ));
         }
-        // Every resource a signature names must be a nominal this package bound. Otherwise the
-        // generated source would reference a type that does not exist -- caught here rather than as
-        // an unresolved-name diagnostic in generated code nobody wrote.
+        // Every resource a signature names must be a nominal this package bound, or one it
+        // declared as foreign. Otherwise the generated source would reference a type that does not
+        // exist -- caught here rather than as an unresolved-name diagnostic in generated code
+        // nobody wrote.
         for t in sig.params.iter().chain(sig.results.iter()) {
             if let DerivedTy::SharedResource { nominal } | DerivedTy::OwnedResource { nominal } = t
             {
-                if !resource_nominals.values().any(|n| n == nominal) {
+                let bound = resource_nominals.values().any(|n| n == nominal);
+                let borrowed = foreign.values().any(|n| n == nominal);
+                if !bound && !borrowed {
                     return Err(format!(
-                        "{}: references host-resource nominal `{nominal}`, which this package does \
-                         not bind",
+                        "{}: references host-resource nominal `{nominal}`, which this package \
+                         neither binds nor declares in `provider_api.foreign_resources`",
                         sig.item_path
                     ));
                 }

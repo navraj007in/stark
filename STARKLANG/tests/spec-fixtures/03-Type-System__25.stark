@@ -1,2 +1,5 @@
-let x: Int32 = 42;
-let y: Int64 = x as Int64;  // Explicit cast required
+fn identity<T>(x: T) -> T {
+    x
+}
+
+let result = identity(42);  // T inferred as Int32

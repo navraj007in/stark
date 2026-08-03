@@ -44,6 +44,15 @@ pub struct DeclaredProvider {
     /// not carry code meanings, because they are a *package* concern. Empty is meaningful — it
     /// says every nonzero status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// CD-363: where this provider's Cargo crate lives, RELATIVE to a root the caller supplies —
+    /// the compiler's own root for a built-in, the manifest's directory for an external one.
+    ///
+    /// **A location, never part of MIR.** `crate_location`'s original doc had this right and it
+    /// survives its deletion: a crate's path is a property of the machine doing the build, its name
+    /// a property of the program, and keeping them apart is what lets a verified MIR artefact stay
+    /// relocation-stable. Constrained to be relative and free of `..` at parse time, because for an
+    /// external provider the root is the only containment there is.
+    pub crate_path: String,
     /// Human-readable provenance for diagnostics, e.g. a manifest path. Never load-bearing for
     /// selection — two providers with identical origins still conflict, and one with no
     /// meaningful origin still resolves.
@@ -71,6 +80,32 @@ pub enum ResolveError {
     /// never be released. A leak the ABI cannot detect — the provider never learns the handle was
     /// abandoned — so it is refused at selection rather than discovered at runtime as a leak.
     NoCloseForResource { resource_type: String },
+    /// **CD-360:** a provider declares it consumes a foreign resource, but no provider in the
+    /// SELECTED set owns that resource type. Refused at selection rather than at link, so the
+    /// diagnostic names the consumer, the resource and the provider it expected — a linker cannot.
+    ForeignResourceUnsupplied {
+        consumer: String,
+        expected_provider: String,
+        resource_type: String,
+    },
+    /// **CD-360:** more than one selected provider declares the resource type a transfer consumes.
+    /// Ownership must be unambiguous: the destination's release authority is the source's identity,
+    /// and two owners means two closes for one resource.
+    ForeignResourceAmbiguous {
+        consumer: String,
+        resource_type: String,
+        owners: Vec<String>,
+    },
+    /// **CD-360:** the resource type is supplied, but by a provider other than the one the consumer
+    /// named. Resource identity is structural over `{nominal, provider, resource}`, so a matching
+    /// NAME with a different owner is a different resource — accepting it would transfer ownership
+    /// of something the consumer never declared it could consume.
+    ForeignResourceOwnerMismatch {
+        consumer: String,
+        resource_type: String,
+        expected_provider: String,
+        actual_provider: String,
+    },
     /// Two closes for one resource: two destruction paths, and choosing by order would make the
     /// binary depend on something other than what the program declared.
     AmbiguousClose {
@@ -326,6 +361,50 @@ impl ProviderSet {
             }
         }
 
+        // 6. CD-360: every declared foreign consumption resolves to EXACTLY ONE owning provider in
+        //    the selected set, and to the provider the consumer named. This is the build-time half
+        //    of the transfer rule -- `provider_abi::validate` can only check a provider against
+        //    itself, so "does the thing I consume actually exist, once, and belong to whom I said"
+        //    is answerable only here, where the set is.
+        for consumer in &selected {
+            for foreign in &consumer.metadata.foreign_resources {
+                let owners: Vec<&DeclaredProvider> = selected
+                    .iter()
+                    .filter(|p| {
+                        p.metadata
+                            .resource_types
+                            .iter()
+                            .any(|rt| rt == &foreign.resource)
+                    })
+                    .collect();
+                match owners.as_slice() {
+                    [] => errors.push(ResolveError::ForeignResourceUnsupplied {
+                        consumer: consumer.metadata.identity.name.clone(),
+                        expected_provider: foreign.provider.clone(),
+                        resource_type: foreign.resource.clone(),
+                    }),
+                    [owner] => {
+                        if owner.metadata.identity.name != foreign.provider {
+                            errors.push(ResolveError::ForeignResourceOwnerMismatch {
+                                consumer: consumer.metadata.identity.name.clone(),
+                                resource_type: foreign.resource.clone(),
+                                expected_provider: foreign.provider.clone(),
+                                actual_provider: owner.metadata.identity.name.clone(),
+                            });
+                        }
+                    }
+                    many => errors.push(ResolveError::ForeignResourceAmbiguous {
+                        consumer: consumer.metadata.identity.name.clone(),
+                        resource_type: foreign.resource.clone(),
+                        owners: many
+                            .iter()
+                            .map(|p| p.metadata.identity.name.clone())
+                            .collect(),
+                    }),
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(ProviderSet {
                 target: target.to_string(),
@@ -450,11 +529,34 @@ impl ProviderSet {
             });
         }
 
+        // CD-360: a transfer's foreign resources travel with the call, carrying the OWNING
+        // provider's identity and resource list — resolved HERE, where the selected set is, since
+        // §6's resolution rule has already proved each one has exactly one owner in it.
+        let foreign_resources = provider
+            .metadata
+            .foreign_resources
+            .iter()
+            .filter_map(|foreign| {
+                let owner = self.selected.iter().find(|p| {
+                    p.metadata
+                        .resource_types
+                        .iter()
+                        .any(|rt| rt == &foreign.resource)
+                })?;
+                Some(crate::mir::ForeignResourceCall {
+                    provider: owner.metadata.identity.name.clone(),
+                    resource: foreign.resource.clone(),
+                    owner_resource_types: owner.metadata.resource_types.clone(),
+                })
+            })
+            .collect();
+
         Ok(ValidatedProviderCall {
             provider: provider.metadata.identity.clone(),
             capability: capability.to_string(),
             function: decl.clone(),
             target_triple: self.target.clone(),
+            foreign_resources,
             provider_crate: provider.crate_name.clone(),
             provider_resource_types: provider.metadata.resource_types.clone(),
             provider_target_triples: provider.metadata.target_triples.clone(),

@@ -59,7 +59,7 @@ fn random_provider_crate_is_locatable() {
         .parent()
         .expect("repo root")
         .to_path_buf();
-    let location = provider_registry::crate_location("stark-random-native", &repo)
+    let location = provider_registry::built_in_crate_location("stark-random-native", &repo)
         .expect("random provider has a registry location");
     assert!(location.join("Cargo.toml").exists());
 }
