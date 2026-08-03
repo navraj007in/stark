@@ -1725,9 +1725,11 @@ If C3 is BLOCKED, later native gates remain closed and the compiler roadmap rema
 
 ## 4.2 Practical systems checkpoint
 
-The companion systems roadmap lives at `STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md`.
-It may begin implementation once the C5 provider ABI is available, but its mandatory checkpoint
-is evaluated after C6.
+The companion systems roadmap was archived on 2026-08-03 — its scheduling role passed to the
+consolidated roadmap, `ROADMAP.md` at the repository root. The original text is retained at
+`STARKLANG/docs/archive/roadmaps/SYSTEMS-ROADMAP.md` for the S0–S7 and P1 definitions this
+section refers to. The P1 checkpoint below still applies and is still evaluated after C6;
+downstream systems/package *scheduling* now comes from `ROADMAP.md`.
 
 ```text
 P1 — Native Systems Baseline

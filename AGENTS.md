@@ -226,6 +226,11 @@ Type Checker → Optimization → Bytecode Generation → STARK VM
 
 ## Current Implementation Status
 
+> **STALE — pre-pivot.** The two lists below describe the pre-2026 design and its "0%
+> implemented" state. Both are wrong today: the front end, semantic analysis, interpreter,
+> native path, package manager, formatter and LSP all exist; GC and actors do not and will
+> not. For the real position see `COMPILER-STATE.md` (repository root) and `CLAUDE.md`.
+
 ### ✅ Completed Specifications (100%)
 - [x] Formal Grammar (EBNF) specification
 - [x] Memory Model with ownership and GC
@@ -247,96 +252,20 @@ Type Checker → Optimization → Bytecode Generation → STARK VM
 
 ## Implementation Roadmap
 
-### Phase 1: Core Compiler (3-4 months)
-**Priority: Critical**
+> **Removed 2026-08-03.** The four-phase plan that stood here (bytecode generator, STARK VM,
+> hybrid ownership + GC, actor system, cloud-native packages) was pre-pivot and had been
+> obsolete since early 2026. It also competed with several other roadmaps.
+>
+> **There is now exactly one live roadmap: `ROADMAP.md` at the repository root**
+> (STARK Consolidated Roadmap, August 2026 – February 2027).
 
-1. **Parser Implementation** (2-3 weeks)
-   - Convert EBNF grammar to working parser
-   - AST generation and validation
-   - Error recovery and reporting
-
-2. **Type Checker** (3-4 weeks)
-   - Tensor shape inference system
-   - Ownership and borrowing analysis
-   - AI/ML type validation
-
-3. **Code Generation** (2-3 weeks)
-   - STARK bytecode generation
-   - Optimization passes
-   - Debug information
-
-4. **STARK VM** (3-4 weeks)
-   - Instruction execution engine
-   - Basic memory management
-   - Device abstraction layer
-
-**Milestone**: Execute "Hello World" and basic tensor operations
-
-### Phase 2: Standard Library Core (4-6 months)
-**Priority: High**
-
-1. **TensorLib Implementation** (4-6 weeks)
-   - Core tensor operations
-   - GPU acceleration (CUDA/OpenCL)
-   - Memory optimization
-
-2. **Package Manager** (3-4 weeks)
-   - CLI tool implementation
-   - Dependency resolution
-   - Registry integration
-
-3. **Memory Management** (4-5 weeks)
-   - Hybrid ownership + GC system
-   - Performance optimization
-   - ML workload patterns
-
-4. **Actor System** (3-4 weeks)
-   - Message passing runtime
-   - Supervision and fault tolerance
-   - Async/await implementation
-
-**Milestone**: Build and run complete ML training pipelines
-
-### Phase 3: Developer Experience (2-3 months)
-**Priority: Medium**
-
-1. **Language Server** (2-3 weeks)
-   - LSP implementation
-   - IDE integration support
-   - Real-time error checking
-
-2. **VS Code Extension** (1-2 weeks)
-   - Syntax highlighting
-   - IntelliSense support
-   - Debugging integration
-
-3. **Additional Core Libraries** (4-6 weeks)
-   - DatasetLib, ModelLib implementation
-   - NetworkingLib completion
-   - Framework interoperability (PyTorch, TensorFlow)
-
-**Milestone**: Complete developer ecosystem
-
-### Phase 4: Production Features & Ecosystem (3-4 months)
-**Priority: Low**
-
-1. **Advanced Tooling** (3-4 weeks)
-   - Debugger and profiler
-   - Performance analysis
-   - Cross-compilation support
-
-2. **Ecosystem Foundation** (2-3 weeks)
-   - Package registry infrastructure
-   - Community contribution guidelines
-   - Extension development framework
-
-3. **Cloud-Native Ecosystem** (Community-Driven)
-   - stark_aws, stark_gcp, stark_azure packages
-   - stark_k8s for Kubernetes deployment
-   - stark_serve for model serving
-   - stark_monitor for observability
-
-**Milestone**: Production-ready language with thriving ecosystem
+| Need | Read |
+| --- | --- |
+| Forward plan — packages, applications, platform | `ROADMAP.md` (repository root) |
+| Compiler-track governance (Gates C0–C10) | `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` + `COMPILER-CHARTER.md` |
+| Current compiler position and evidence | `COMPILER-STATE.md` (repository root) |
+| Historical closed gate sequence (1–7) | `STARKLANG/docs/ROADMAP.md`, `STARKLANG/docs/PLAN.md` |
+| Superseded roadmaps, for provenance only | `STARKLANG/docs/archive/roadmaps/` |
 
 ## Technical Decisions & Constraints
 
