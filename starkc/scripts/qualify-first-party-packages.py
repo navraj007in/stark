@@ -193,7 +193,6 @@ CASES = [
         # therefore expected to be unreachable for it -- see `interpreter_exempt`.
         expected_stdout=None,
         interpreter_exempt=True,
-        resources=("TcpStream",),
         resource_consumer="stark-http-client-consumer",
         resource_expected_stdout=(
             "  fixed: 200, Content-Length framing, body and headers intact\n"
@@ -201,8 +200,17 @@ CASES = [
             "  fragmented: 200, reassembled across several socket reads\n"
             "  close-early: reported as expected: the peer closed before the response completed\n"
             "  refused port: connect failure reported, no stream acquired\n"
+            # HC10. Both the success and the two REFUSALS are named: a gate that only observed the
+            # happy path would pass against a client that skipped verification entirely.
+            "  https: 200 over a verified TLS 1.3 session, headers and body intact\n"
+            "  https: chunked body decoded inside the TLS session\n"
+            "  https: untrusted chain refused, reported as a TLS failure\n"
+            "  https: hostname mismatch refused, though the chain itself is trusted\n"
+            "  https: a cleartext peer on the secure path is refused\n"
+            "  https: POST with a JSON body and a bearer token arrived intact\n"
             "STARK_HTTP_CLIENT_RESOURCE_OK\n"
         ),
+        resources=("TcpStream", "TlsStream"),
         needs_http_peer=True,
     ),
     # HC9 — the first package built on a CROSS-PROVIDER TRANSFER (CD-360). Its consumer is also its
@@ -286,6 +294,99 @@ def echo_peer():
         thread.join(timeout=5)
 
 
+
+# HC10. Lifted out of `http_peer` so the HTTPS peer serves the SAME four routes. Sharing the
+# responder is what makes the cleartext and TLS cases comparable: any difference in what the client
+# observes is the transport, not the fixture.
+#
+# `conn` is any object with `sendall` -- a plain socket or an `ssl.SSLSocket`.
+def read_full_request(conn) -> bytes:
+    """Head plus, if `Content-Length` says so, the body.
+
+    Reading only to the blank line was enough while every route ignored the request. `/echo`
+    reflects the body, so a peer that stopped at the head would reflect nothing and the POST case
+    would assert against an empty string — passing for a client that never sent one.
+    """
+    request = b""
+    while b"\r\n\r\n" not in request:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return request
+        request += chunk
+    head, _, body = request.partition(b"\r\n\r\n")
+    length = 0
+    for line in head.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.lower() == b"content-length":
+            try:
+                length = int(value.strip())
+            except ValueError:
+                return request
+    while len(body) < length:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        body += chunk
+    return head + b"\r\n\r\n" + body
+
+
+def respond_http_route(conn, target, request=b""):
+    if target == "/fixed":
+        body = b"fixed-body-ok"
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+            + body
+        )
+    elif target == "/chunked":
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+            b"7\r\nchunked\r\n8\r\n-body-ok\r\n0\r\n\r\n"
+        )
+    elif target == "/fragmented":
+        body = b"fragmented-body-reassembled"
+        head = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+        )
+        # Split mid-header as well as mid-body: the head must survive fragmentation too.
+        for piece in (head[:12], head[12:], body[:5], body[5:14], body[14:]):
+            conn.sendall(piece)
+            time.sleep(0.02)
+    elif target == "/close-early":
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly-a-few-bytes"
+        )
+    elif target == "/echo":
+        # HC10. Reflects what the peer actually RECEIVED, so the consumer can assert that its
+        # method, its custom header and its body survived the transport rather than merely that a
+        # response came back. A route returning a constant would pass for a client that sent
+        # nothing at all.
+        head, _, body = request.partition(b"\r\n\r\n")
+        lines = head.split(b"\r\n")
+        method = lines[0].split(b" ")[0] if lines else b"?"
+        authorization = b"-"
+        content_type = b"-"
+        for line in lines[1:]:
+            name, _, value = line.partition(b":")
+            if name.lower() == b"authorization":
+                authorization = value.strip()
+            elif name.lower() == b"content-type":
+                content_type = value.strip()
+        reply = b"|".join([method, authorization, content_type, body])
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+            + str(len(reply)).encode()
+            + b"\r\n\r\n"
+            + reply
+        )
+    else:
+        conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+
+
 HTTP_PORT = 39188
 
 
@@ -316,39 +417,6 @@ def http_peer():
     server.settimeout(30)
     stop = threading.Event()
 
-    def respond(conn, target):
-        if target == "/fixed":
-            body = b"fixed-body-ok"
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
-                + str(len(body)).encode()
-                + b"\r\n\r\n"
-                + body
-            )
-        elif target == "/chunked":
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
-                b"Transfer-Encoding: chunked\r\n\r\n"
-                b"7\r\nchunked\r\n8\r\n-body-ok\r\n0\r\n\r\n"
-            )
-        elif target == "/fragmented":
-            body = b"fragmented-body-reassembled"
-            head = (
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
-                + str(len(body)).encode()
-                + b"\r\n\r\n"
-            )
-            # Split mid-header as well as mid-body: the head must survive fragmentation too.
-            for piece in (head[:12], head[12:], body[:5], body[5:14], body[14:]):
-                conn.sendall(piece)
-                time.sleep(0.02)
-        elif target == "/close-early":
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly-a-few-bytes"
-            )
-        else:
-            conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-
     def serve():
         while not stop.is_set():
             try:
@@ -358,16 +426,11 @@ def http_peer():
             with conn:
                 try:
                     conn.settimeout(10)
-                    request = b""
-                    while b"\r\n\r\n" not in request:
-                        chunk = conn.recv(4096)
-                        if not chunk:
-                            break
-                        request += chunk
+                    request = read_full_request(conn)
                     if not request:
                         continue
                     target = request.split(b" ")[1].decode("ascii", "replace")
-                    respond(conn, target)
+                    respond_http_route(conn, target, request)
                 except OSError:
                     pass
 
@@ -379,6 +442,104 @@ def http_peer():
         stop.set()
         server.close()
         thread.join(timeout=5)
+
+
+# HC10. The same four routes, behind TLS. `https_peers` serves the fixture chain for `stark.test`
+# on one port and a chain to a root the client is NOT given on another.
+HTTPS_PORT = 39192
+HTTPS_UNTRUSTED_PORT = 39193
+
+
+@contextlib.contextmanager
+def https_peers(fixtures: Path):
+    """Two loopback HTTPS peers, trusted and untrusted (HC10).
+
+    Certificate verification is the property HTTPS exists for, so the gate must observe a rejection
+    as well as a success. A run that only proved the happy path would pass just as well against a
+    client that skipped verification entirely — the failure mode that matters, and the one that is
+    invisible from outside.
+
+    Binding is asserted, as with every other peer: a skipped peer would silently downgrade lifecycle
+    evidence to lowering evidence while the gate still reported success (CD-348).
+    """
+    servers = []
+    threads = []
+    stop = threading.Event()
+
+    def context(cert: str, key: str) -> ssl.SSLContext:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(fixtures / cert), str(fixtures / key))
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        return ctx
+
+    def handle(raw, ctx: ssl.SSLContext) -> None:
+        try:
+            raw.settimeout(15)
+            with ctx.wrap_socket(raw, server_side=True) as tls:
+                request = read_full_request(tls)
+                if not request:
+                    return
+                target = request.split(b" ")[1].decode("ascii", "replace")
+                respond_http_route(tls, target, request)
+        except (OSError, ssl.SSLError, IndexError):
+            # The untrusted peer and the hostname-mismatch case both end with the CLIENT aborting
+            # the handshake. That is the expected outcome being measured, not a harness failure.
+            pass
+
+    def serve(server, ctx: ssl.SSLContext) -> None:
+        while not stop.is_set():
+            try:
+                raw, _addr = server.accept()
+            except (TimeoutError, OSError):
+                return
+            threading.Thread(target=handle, args=(raw, ctx), daemon=True).start()
+
+    # `localhost` rather than `stark.test`: the HTTP client RESOLVES the URL's host, so a name
+    # that resolves nowhere fails at DNS and never reaches the certificate check the case exists
+    # for. `stark-tls`'s own consumer has no such constraint — it dials 127.0.0.1 and presents the
+    # name separately — which is why the two use different fixtures.
+    plan = [
+        (HTTPS_PORT, "localhost.cert.pem", "localhost.key.pem"),
+        (HTTPS_UNTRUSTED_PORT, "localhost-untrusted.cert.pem", "localhost-untrusted.key.pem"),
+    ]
+    try:
+        for port, cert, key in plan:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server.bind(("127.0.0.1", port))
+            except OSError as exc:
+                server.close()
+                raise SystemExit(
+                    f"qualification cannot bind the HTTPS peer on 127.0.0.1:{port}: {exc}. "
+                    f"A resource package's lifecycle evidence needs a live peer; refusing to fall "
+                    f"back to a failure-only path (CD-348)."
+                ) from exc
+            server.listen(8)
+            server.settimeout(30)
+            servers.append(server)
+            thread = threading.Thread(target=serve, args=(server, context(cert, key)), daemon=True)
+            thread.start()
+            threads.append(thread)
+        yield
+    finally:
+        stop.set()
+        for server in servers:
+            server.close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+@contextlib.contextmanager
+def http_and_https_peers(fixtures: Path):
+    """Both halves at once: `stark-http-client` exercises cleartext and TLS in ONE run.
+
+    Nested rather than merged, so each peer keeps its own binding assertion and its own failure
+    message. A combined implementation would report "the peer failed to bind" without saying which.
+    """
+    with http_peer():
+        with https_peers(fixtures):
+            yield
 
 
 TLS_PORT_TLS13 = 39189
@@ -691,10 +852,12 @@ def main() -> int:
                 # The fixtures directory comes from `--repo-root`, not from this file's own
                 # location: every other path in this script does, and deriving one of them
                 # differently is how a copy of the script run from elsewhere half-works.
+                fixtures = repo_root / "stark-tls" / "fixtures"
                 if case.needs_tls_peer:
-                    peer = lambda: tls_peer(repo_root / "stark-tls" / "fixtures")
+                    peer = lambda: tls_peer(fixtures)
                 elif case.needs_http_peer:
-                    peer = http_peer
+                    # HC10: the HTTP client now exercises cleartext AND TLS in one run.
+                    peer = lambda: http_and_https_peers(fixtures)
                 else:
                     peer = echo_peer
                 with peer():

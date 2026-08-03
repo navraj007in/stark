@@ -144,7 +144,7 @@ HC6  Implement request serializer
 HC7  Implement incremental response parser
 HC8  Deliver plain HTTP client
 HC9  Add TLS provider and secure stream          CLOSED (CD-365)
-HC10 Deliver HTTPS client
+HC10 Deliver HTTPS client                       CLOSED (CD-366)
 HC11 Add JSON convenience API
 HC12 Add redirects policy
 HC13 Cross-platform qualification and release
@@ -1165,6 +1165,10 @@ release paths, and is the 16th case in the first-party package gate.
 
 # HC10 — Deliver HTTPS Client
 
+**STATUS: CLOSED 2026-08-03 (CD-366).** Evidence and exact boundary in
+`STARKLANG/docs/http-client/HC10-HTTPS-EVIDENCE.md`. `SystemRoots` is implemented and is the
+default; `BundledRoots` remains refused. Redirects stay HC12 and JSON convenience stays HC11.
+
 ## Objective
 
 Extend the HTTP client to support ordinary HTTPS APIs.
@@ -1234,6 +1238,11 @@ enum HttpTimeoutPhase {
 ## Exit criteria
 
 A STARK program can call a normal hostname-based HTTPS endpoint with verified certificates.
+
+**MET.** `stark-http-client-consumer` does so natively under the package gate, over eleven cases —
+including three refusals (untrusted chain, hostname mismatch, cleartext peer on the secure path),
+because a gate that observed only the happy path would pass against a client that skipped
+verification entirely.
 
 ---
 

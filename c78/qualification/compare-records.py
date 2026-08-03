@@ -5,6 +5,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from capability_map import capability_summary
+
 ALLOWED = {"pending", "implemented", "qualified", "unsupported"}
 
 
@@ -21,19 +23,6 @@ def load_manifest(path):
     if manifest.get("version") != 1:
         raise SystemExit("capability manifest version must be 1")
     return manifest
-
-
-def manifest_capabilities(manifest):
-    return {
-        "time": manifest["stark_time"]["provider_metadata"],
-        "args_env": manifest["stark_env"]["provider_metadata"],
-        "file": manifest["stark_file"]["provider_metadata"],
-        "tcp": manifest["stark_net"]["loopback_provider"],
-        "stark_time_e2e": manifest["stark_time"]["native_e2e"],
-        "args_env_e2e": manifest["stark_env"]["native_e2e"],
-        "file_e2e": manifest["stark_file"]["native_e2e"],
-        "tcp_e2e": manifest["stark_net"]["native_e2e"],
-    }
 
 
 def validate_record(record, schema, expected_commit, expected_capabilities):
@@ -85,7 +74,7 @@ def main():
     schema = load_schema(Path(args.schema))
     manifest = load_manifest(Path(args.manifest))
     required = set(schema["required_platforms"])
-    expected_capabilities = manifest_capabilities(manifest)
+    expected_capabilities = capability_summary(manifest)
     records = [json.loads(Path(path).read_text()) for path in args.records]
     by_platform = {record["platform"]: record for record in records}
     missing = required - by_platform.keys()

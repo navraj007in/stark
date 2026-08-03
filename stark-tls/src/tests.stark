@@ -187,3 +187,87 @@ fn test_the_three_certificate_failures_read_differently() {
         panic("expiry and hostname must be distinguishable");
     }
 }
+
+// --- HC10: the helpers the HTTP client needs -------------------------------------------------
+
+use super::clone_root_store;
+use super::config_with_roots;
+
+fn test_a_cloned_policy_carries_its_anchors() {
+    // `TlsStream::connect` CONSUMES its configuration, so a client making many requests needs a
+    // fresh policy each time. A clone that dropped the PEM would leave the second request
+    // validating against nothing — and it would fail as an untrusted issuer, which reads like a
+    // server problem rather than a client one.
+    let original = RootStorePolicy::ExplicitRoots(
+        String::from("-----BEGIN CERTIFICATE-----\nabc\n"),
+    );
+    let copy = clone_root_store(&original);
+    match copy {
+        RootStorePolicy::ExplicitRoots(pem) => {
+            if pem.as_str() != "-----BEGIN CERTIFICATE-----\nabc\n" {
+                panic("a cloned explicit policy must carry the same anchors");
+            }
+        }
+        RootStorePolicy::SystemRoots => {
+            panic("a cloned explicit policy must stay explicit");
+        }
+        RootStorePolicy::BundledRoots => {
+            panic("a cloned explicit policy must stay explicit");
+        }
+    }
+    // The original must still be usable: cloning is not moving.
+    match original {
+        RootStorePolicy::ExplicitRoots(pem) => {
+            if pem.len() == 0u64 {
+                panic("cloning must not empty the original");
+            }
+        }
+        RootStorePolicy::SystemRoots => {
+            panic("the original must be unchanged");
+        }
+        RootStorePolicy::BundledRoots => {
+            panic("the original must be unchanged");
+        }
+    }
+}
+
+fn test_the_payload_free_policies_clone_as_themselves() {
+    match clone_root_store(&RootStorePolicy::SystemRoots) {
+        RootStorePolicy::SystemRoots => {}
+        RootStorePolicy::BundledRoots => {
+            panic("SystemRoots must clone as SystemRoots");
+        }
+        RootStorePolicy::ExplicitRoots(_pem) => {
+            panic("SystemRoots must clone as SystemRoots");
+        }
+    }
+    match clone_root_store(&RootStorePolicy::BundledRoots) {
+        RootStorePolicy::BundledRoots => {}
+        RootStorePolicy::SystemRoots => {
+            panic("BundledRoots must clone as BundledRoots");
+        }
+        RootStorePolicy::ExplicitRoots(_pem) => {
+            panic("BundledRoots must clone as BundledRoots");
+        }
+    }
+}
+
+fn test_config_with_roots_admits_both_versions() {
+    // A runtime-chosen policy must not narrow the protocol range as a side effect.
+    let config = config_with_roots(RootStorePolicy::SystemRoots, default_handshake_timeout());
+    if version_code(&config.min_version) != 0u32 {
+        panic("config_with_roots must admit TLS 1.2");
+    }
+    if version_code(&config.max_version) != 1u32 {
+        panic("config_with_roots must admit TLS 1.3");
+    }
+    match config.root_store {
+        RootStorePolicy::SystemRoots => {}
+        RootStorePolicy::BundledRoots => {
+            panic("config_with_roots must carry the policy it was given");
+        }
+        RootStorePolicy::ExplicitRoots(_pem) => {
+            panic("config_with_roots must carry the policy it was given");
+        }
+    }
+}

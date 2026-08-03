@@ -79,6 +79,15 @@ leaf not-yet-valid    "stark.test" "stark.test" ca       "20400101000000Z" "2045
 leaf wrong-host       "other.test" "other.test" ca       "$VALID_FROM" "$VALID_TO"
 leaf untrusted        "stark.test" "stark.test" rogue-ca "$VALID_FROM" "$VALID_TO"
 
+# HC10. `localhost` leaves, for the HTTP client.
+#
+# `stark-tls`'s own consumer dials 127.0.0.1 and presents `stark.test` separately, so it needs no
+# resolvable name. The HTTP CLIENT resolves the URL's host, so its fixture must use a name that
+# actually resolves — otherwise DNS fails before TLS is ever reached and the test proves nothing
+# about certificates.
+leaf localhost           "localhost" "localhost" ca       "$VALID_FROM" "$VALID_TO"
+leaf localhost-untrusted "localhost" "localhost" rogue-ca "$VALID_FROM" "$VALID_TO"
+
 # A chain the server can serve INCOMPLETE: root -> intermediate -> leaf. Presenting only the leaf
 # must fail, because the verifier cannot build a path to the root without the intermediate.
 intermediate intermediate-ca "STARK HC9 Test Intermediate CA" ca "$VALID_FROM" "$VALID_TO"

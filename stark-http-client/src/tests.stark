@@ -10,9 +10,10 @@
 use super::default_config;
 use super::get;
 use super::new_client;
-use super::parse_http_url;
+use super::parse_url;
 use super::post;
-use super::ClientError;
+use super::HttpError;
+use super::Scheme;
 use super::Target;
 use super::HttpMethod;
 
@@ -24,7 +25,7 @@ fn expect(condition: Bool, message: &str) {
 
 fn target_of(url: &str) -> Target {
     let out: Target;
-    match parse_http_url(url) {
+    match parse_url(url) {
         Ok(target) => {
             out = target;
         }
@@ -36,7 +37,7 @@ fn target_of(url: &str) -> Target {
 }
 
 fn expect_url_rejected(url: &str) {
-    match parse_http_url(url) {
+    match parse_url(url) {
         Ok(_target) => {
             panic("a malformed URL was accepted");
         }
@@ -85,20 +86,74 @@ fn test_ipv4_literal_host() {
     expect(target.port == 9000u16, "IPv4 literal port wrong");
 }
 
-fn test_https_is_refused_explicitly() {
-    // Not "unsupported for now" as a silent downgrade: refusing loudly is the only safe answer,
-    // because a client that quietly speaks cleartext where TLS was asked for is a security defect.
-    match parse_http_url("https://example.com/") {
-        Ok(_target) => {
-            panic("https:// was accepted by a cleartext-only client");
-        }
-        Err(error) => match error {
-            ClientError::UnsupportedScheme => {}
-            _other => {
-                panic("https:// must fail as UnsupportedScheme, not as a parse error");
+fn test_https_is_accepted_and_defaults_to_443() {
+    // HC10. HC8 refused this, and refusing loudly was right THEN — a client that quietly speaks
+    // cleartext where TLS was asked for is a security defect. What changed is that the secure path
+    // now exists; the refusal has not been relaxed, it has been satisfied.
+    match parse_url("https://example.com/v1/items") {
+        Ok(target) => {
+            match target.scheme {
+                Scheme::Https => {}
+                Scheme::Http => {
+                    panic("https:// must parse as the secure scheme");
+                }
+            }
+            if target.port != 443u16 {
+                panic("https:// must default to port 443");
+            }
+            if target.host.as_str() != "example.com" {
+                panic("https:// host wrong");
+            }
+            if target.path_and_query.as_str() != "/v1/items" {
+                panic("https:// path wrong");
             }
         }
+        Err(_error) => {
+            panic("https:// must now be accepted");
+        }
     }
+}
+
+fn test_http_still_defaults_to_80() {
+    // The two defaults must not be confused: `Host` omits the port only when it matches the
+    // scheme's default, so a wrong default silently changes every request's Host header.
+    match parse_url("http://example.com/") {
+        Ok(target) => {
+            match target.scheme {
+                Scheme::Http => {}
+                Scheme::Https => {
+                    panic("http:// must parse as the plain scheme");
+                }
+            }
+            if target.port != 80u16 {
+                panic("http:// must default to port 80");
+            }
+        }
+        Err(_error) => {
+            panic("http:// must be accepted");
+        }
+    }
+}
+
+fn test_an_explicit_port_overrides_the_scheme_default() {
+    match parse_url("https://example.com:8443/x") {
+        Ok(target) => {
+            if target.port != 8443u16 {
+                panic("an explicit port must win over the scheme default");
+            }
+        }
+        Err(_error) => {
+            panic("an explicit https port must parse");
+        }
+    }
+}
+
+fn test_the_scheme_is_matched_exactly() {
+    // `httpx://`, `htt://` and a bare `https:/` must not be mistaken for either scheme. A prefix
+    // test that stopped at "http" would accept the first of these as cleartext.
+    expect_url_rejected("httpx://example.com/");
+    expect_url_rejected("htt://example.com/");
+    expect_url_rejected("HTTPS://example.com/");
 }
 
 fn test_other_schemes_are_refused() {
@@ -167,4 +222,70 @@ fn test_post_builder_keeps_the_body() {
         }
     }
     expect(builder.body.len() == 2u64, "the POST body was not carried");
+}
+
+// --- HC10: the error taxonomy and the scheme -------------------------------------------------
+
+use super::default_port;
+use super::error_text;
+use super::timeout_phase_text;
+use super::HttpTimeoutPhase;
+
+fn test_the_scheme_defaults_differ() {
+    // If these were ever equal, `Host` would carry a port for one scheme and not the other and
+    // nothing would notice until a vhost stopped matching.
+    if default_port(&Scheme::Http) != 80u16 {
+        panic("http default port must be 80");
+    }
+    if default_port(&Scheme::Https) != 443u16 {
+        panic("https default port must be 443");
+    }
+}
+
+fn test_every_timeout_phase_reads_differently() {
+    // A bare "timed out" is nearly useless to act on: resolution, connection, handshake, request
+    // and response are fixed in different places. Five phases, five distinct descriptions.
+    let all = [
+        timeout_phase_text(&HttpTimeoutPhase::Resolve),
+        timeout_phase_text(&HttpTimeoutPhase::Connect),
+        timeout_phase_text(&HttpTimeoutPhase::TlsHandshake),
+        timeout_phase_text(&HttpTimeoutPhase::WriteRequest),
+        timeout_phase_text(&HttpTimeoutPhase::ReadResponse),
+    ];
+    let mut i: UInt64 = 0u64;
+    while i < 5u64 {
+        if all[i].len() == 0u64 {
+            panic("every timeout phase must have a description");
+        }
+        let mut j: UInt64 = i + 1u64;
+        while j < 5u64 {
+            if all[i].as_str() == all[j].as_str() {
+                panic("two timeout phases share a description");
+            }
+            j = j + 1u64;
+        }
+        i = i + 1u64;
+    }
+}
+
+fn test_a_timeout_error_names_its_phase() {
+    // The phase must reach the rendered message. An error that says only "timed out" sends an
+    // operator looking in the wrong place.
+    let rendered = error_text(&HttpError::Timeout(HttpTimeoutPhase::TlsHandshake));
+    if rendered.as_str() != "timed out the TLS handshake" {
+        panic("a timeout error must name the phase it happened in");
+    }
+    let reading = error_text(&HttpError::Timeout(HttpTimeoutPhase::ReadResponse));
+    if reading.as_str() == rendered.as_str() {
+        panic("two phases must not render the same error text");
+    }
+}
+
+fn test_the_scheme_refusal_names_both_supported_schemes() {
+    // The message a caller sees when they pass `ftp://` has to say what IS accepted, or the next
+    // thing they try is a guess.
+    let rendered = error_text(&HttpError::UnsupportedScheme);
+    if rendered.as_str() != "only http:// and https:// are supported" {
+        panic("the unsupported-scheme message must name both supported schemes");
+    }
 }

@@ -298,13 +298,51 @@ fn versions_for(
     Ok(out)
 }
 
+/// **HC10 — the platform trust store.**
+///
+/// CD-361's point, and the one that defused the strongest argument for `native-tls`: system roots
+/// can be used WITHOUT handing the protocol to SChannel, Secure Transport or OpenSSL. This loads
+/// trust anchors from the platform and hands them to rustls; certificate validation stays
+/// rustls-owned, so there is still exactly one verifier to reason about and qualify.
+///
+/// **A partial load is a failure, not a smaller trust set.** `rustls-native-certs` reports both the
+/// anchors it read and the errors it hit, and it is tempting to take what parsed and continue. That
+/// silently shrinks trust: the connection that then fails is some unrelated endpoint whose issuer
+/// happened to be in the part that did not load, and it fails as `UnknownIssuer` far from the cause.
+/// An empty store is refused for the same reason — validating against nothing rejects everything,
+/// which reads to a caller as "the whole internet is untrusted".
+fn system_root_store() -> Result<rustls::RootCertStore, ProviderStatus> {
+    let loaded = rustls_native_certs::load_native_certs();
+    if !loaded.errors.is_empty() {
+        return Err(STATUS_INVALID_CONFIGURATION);
+    }
+    if loaded.certs.is_empty() {
+        return Err(STATUS_INVALID_CONFIGURATION);
+    }
+    let mut store = rustls::RootCertStore::empty();
+    let (added, ignored) = store.add_parsable_certificates(loaded.certs);
+    // `add_parsable_certificates` is the right call HERE and the wrong one for explicit roots: a
+    // platform store legitimately contains anchors this verifier cannot use (unsupported algorithms,
+    // expired legacy roots), and refusing the whole store for one of them would make TLS unusable on
+    // an ordinary machine. An explicit set is small and hand-written, so there a skip is a typo.
+    // What is NOT tolerated is ending up with nothing usable.
+    if added == 0 {
+        let _ = ignored;
+        return Err(STATUS_INVALID_CONFIGURATION);
+    }
+    Ok(store)
+}
+
 fn root_store(policy: u32, pem: &[u8]) -> Result<rustls::RootCertStore, ProviderStatus> {
     match policy {
-        // CD-361: root acquisition is POLICY, separate from engine selection, and HC10 owns the
-        // system store. Refused by name -- a client that thinks it is validating against the
-        // machine's trust store while validating against something else is worse than one that
-        // will not start.
-        ROOTS_SYSTEM | ROOTS_BUNDLED => Err(STATUS_UNSUPPORTED),
+        // CD-361: root acquisition is POLICY, separate from engine selection.
+        ROOTS_SYSTEM => system_root_store(),
+        // Still refused. A bundled set means vendoring a CA list into the binary and owning its
+        // update cadence — a distribution decision, not an implementation gap, and one nobody has
+        // taken. Refused by name rather than quietly falling back to the system store, because a
+        // caller who asked for a pinned bundle and got the machine's store got the opposite of the
+        // property they wanted.
+        ROOTS_BUNDLED => Err(STATUS_UNSUPPORTED),
         ROOTS_EXPLICIT => {
             if pem.is_empty() || pem.len() > MAX_ROOTS_PEM_BYTES {
                 return Err(STATUS_INVALID_CONFIGURATION);
@@ -1555,12 +1593,7 @@ mod tests {
                 want: STATUS_INVALID_CONFIGURATION,
             },
             Case {
-                what: "the system trust store, which is HC10's",
-                mutate: |a| a.policy = ROOTS_SYSTEM,
-                want: STATUS_UNSUPPORTED,
-            },
-            Case {
-                what: "a bundled trust store, which is HC10's",
+                what: "a bundled trust store, which nobody has taken the distribution decision for",
                 mutate: |a| a.policy = ROOTS_BUNDLED,
                 want: STATUS_UNSUPPORTED,
             },
@@ -1719,5 +1752,66 @@ mod tests {
         assert_eq!(versions_for(VERSION_TLS13, VERSION_TLS13).unwrap().len(), 1);
         assert_eq!(versions_for(VERSION_TLS12, VERSION_TLS12).unwrap().len(), 1);
         assert!(versions_for(VERSION_TLS13, VERSION_TLS12).is_err());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // HC10 — the platform trust store
+    // -----------------------------------------------------------------------------------------
+
+    /// The machine's own trust store loads and yields usable anchors.
+    ///
+    /// This asserts the LOAD, not a connection: a test that dialled a public endpoint would make
+    /// qualification depend on the internet, which HC13 forbids outright.
+    #[test]
+    fn the_system_trust_store_loads_and_is_not_empty() {
+        let store = system_root_store().expect("the platform trust store must load");
+        assert!(
+            !store.is_empty(),
+            "a system store that validates against nothing rejects everything, which reads to a \
+             caller as `the whole internet is untrusted`"
+        );
+    }
+
+    /// **The property that makes `SystemRoots` meaningful, and it is a NEGATIVE one.**
+    ///
+    /// The fixture CA is not in any machine's trust store. So the same peer that verifies under
+    /// `ExplicitRoots` must be REJECTED under `SystemRoots` — offline, deterministic, and the only
+    /// way to show the two policies are actually different rather than one silently falling back to
+    /// the other. A `SystemRoots` that quietly used the explicit set would pass every positive test.
+    #[test]
+    fn the_fixture_ca_is_not_trusted_by_the_system_store() {
+        let _serial = lifecycle_lock();
+        let peer = TlsPeer::spawn(PeerConfig::valid()).unwrap();
+        let before = live_stream_count();
+
+        let mut attempt = Attempt::new();
+        attempt.policy = ROOTS_SYSTEM;
+        attempt.roots = "";
+        let (status, _) = attempt.run(peer.address);
+
+        assert_eq!(
+            status, STATUS_CERTIFICATE_UNKNOWN_ISSUER,
+            "the fixture root must NOT be reachable through the platform store"
+        );
+        assert_eq!(live_stream_count(), before);
+    }
+
+    /// Under `SystemRoots` the explicit PEM is ignored rather than merged. Merging would mean a
+    /// caller could widen the platform's trust set by passing bytes alongside a policy that says it
+    /// is using the platform's — the trust set would then not be what the policy names.
+    #[test]
+    fn explicit_roots_are_ignored_under_the_system_policy() {
+        let _serial = lifecycle_lock();
+        let peer = TlsPeer::spawn(PeerConfig::valid()).unwrap();
+
+        let mut attempt = Attempt::new();
+        attempt.policy = ROOTS_SYSTEM;
+        attempt.roots = CA_PEM; // the anchor that WOULD verify, under a policy that must not use it
+        let (status, _) = attempt.run(peer.address);
+
+        assert_eq!(
+            status, STATUS_CERTIFICATE_UNKNOWN_ISSUER,
+            "`SystemRoots` must not merge a caller-supplied anchor: the policy names the trust set"
+        );
     }
 }

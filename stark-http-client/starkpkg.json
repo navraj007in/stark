@@ -2,13 +2,46 @@
   "name": "stark-http-client",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": ["tcp", "dns"],
+  "capabilities": [
+    "tcp",
+    "dns",
+    "tls"
+  ],
   "dependencies": {
-    "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" },
-    "stark_http_parser": { "package": "stark-http-parser", "path": "../stark-http-parser", "version": "0.1.0" },
-    "stark_http_serialize": { "package": "stark-http-serialize", "path": "../stark-http-serialize", "version": "0.1.0" },
-    "stark_net": { "package": "stark-net", "path": "../stark-net", "version": "0.1.0" },
-    "stark_time": { "package": "stark-time", "path": "../stark-time", "version": "0.1.0" },
-    "stark_url": { "package": "stark-url", "path": "../stark-url", "version": "0.1.0" }
+    "stark_http_core": {
+      "package": "stark-http-core",
+      "path": "../stark-http-core",
+      "version": "0.1.0"
+    },
+    "stark_http_parser": {
+      "package": "stark-http-parser",
+      "path": "../stark-http-parser",
+      "version": "0.1.0"
+    },
+    "stark_http_serialize": {
+      "package": "stark-http-serialize",
+      "path": "../stark-http-serialize",
+      "version": "0.1.0"
+    },
+    "stark_net": {
+      "package": "stark-net",
+      "path": "../stark-net",
+      "version": "0.1.0"
+    },
+    "stark_time": {
+      "package": "stark-time",
+      "path": "../stark-time",
+      "version": "0.1.0"
+    },
+    "stark_url": {
+      "package": "stark-url",
+      "path": "../stark-url",
+      "version": "0.1.0"
+    },
+    "stark_tls": {
+      "package": "stark-tls",
+      "path": "../stark-tls",
+      "version": "0.1.0"
+    }
   }
 }

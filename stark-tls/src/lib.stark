@@ -104,6 +104,34 @@ pub fn default_handshake_timeout() -> Duration {
     Duration::from_seconds(DEFAULT_HANDSHAKE_SECONDS)
 }
 
+/// A configuration over any root policy, for a caller that chooses the policy at runtime.
+///
+/// HC10's HTTP client needs this: it holds a policy in its own config and rebuilds a
+/// `TlsClientConfig` per request, so it cannot use `explicit_roots_config`, which hard-codes one
+/// policy.
+pub fn config_with_roots(root_store: RootStorePolicy, handshake_timeout: Duration) -> TlsClientConfig {
+    TlsClientConfig {
+        min_version: TlsVersion::Tls12,
+        max_version: TlsVersion::Tls13,
+        root_store: root_store,
+        handshake_timeout: handshake_timeout,
+    }
+}
+
+/// A copy of a root policy.
+///
+/// `TlsStream::connect` consumes its configuration, so a client that holds one policy and makes
+/// many requests needs a fresh value each time. Copying the PEM per request is real cost and is
+/// accepted: the alternative is a borrow living inside a config the provider takes ownership of,
+/// which Core v1 has no way to express — a struct may not have a reference-typed field.
+pub fn clone_root_store(policy: &RootStorePolicy) -> RootStorePolicy {
+    match *policy {
+        RootStorePolicy::SystemRoots => RootStorePolicy::SystemRoots,
+        RootStorePolicy::BundledRoots => RootStorePolicy::BundledRoots,
+        RootStorePolicy::ExplicitRoots(pem) => RootStorePolicy::ExplicitRoots(pem.clone()),
+    }
+}
+
 /// The ordinary configuration: both protocol versions, explicit trust anchors, a finite handshake
 /// bound.
 ///

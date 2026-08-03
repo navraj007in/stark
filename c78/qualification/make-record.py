@@ -7,6 +7,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from capability_map import capability_summary
+
 ALLOWED = {"pending", "implemented", "qualified", "unsupported"}
 EVIDENCE = {
     "provider_metadata": "pass",
@@ -37,25 +39,6 @@ def load_manifest(path):
             if value == "unsupported" and not fields.get(f"{key}_reason"):
                 raise SystemExit(f"{capability}.{key}=unsupported requires {key}_reason")
     return manifest
-
-
-def capability_summary(manifest):
-    return {
-        "time": manifest["stark_time"]["provider_metadata"],
-        "args_env": manifest["stark_env"]["provider_metadata"],
-        "file": manifest["stark_file"]["provider_metadata"],
-        "tcp": manifest["stark_net"]["loopback_provider"],
-        "stark_time_e2e": manifest["stark_time"]["native_e2e"],
-        "args_env_e2e": manifest["stark_env"]["native_e2e"],
-        "file_e2e": manifest["stark_file"]["native_e2e"],
-        "tcp_e2e": manifest["stark_net"]["native_e2e"],
-        # HC9 (CD-365). `tls_transfer` is a SEPARATE row from `tls_e2e` deliberately: "TLS works"
-        # and "a resource crossed from one provider to another and was released exactly once" are
-        # different claims, and CD-360 left the second one open for HC9 to close.
-        "tls": manifest["stark_tls"]["provider_metadata"],
-        "tls_e2e": manifest["stark_tls"]["native_e2e"],
-        "tls_transfer": manifest["stark_tls"]["cross_provider_transfer"],
-    }
 
 
 def load_schema(path):

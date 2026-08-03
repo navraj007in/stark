@@ -20,9 +20,9 @@ Proved natively on macOS/arm64 at closure; the Linux and Windows lanes run the s
 
 | | |
 | --- | --- |
-| system trust store | **not implemented.** `SystemRoots` and `BundledRoots` are declared and REFUSED (`Unsupported`). HC10's. |
+| system trust store | **not implemented at HC9.** `SystemRoots` and `BundledRoots` were declared and REFUSED. **Superseded: HC10 (CD-366) implemented `SystemRoots`**; `BundledRoots` is still refused. |
 | Profile F (FIPS) | **not qualified.** Needs CMake and Go, neither present at closure; qualified separately per CD-361 §2. |
-| HTTPS | HC10. `stark-http-client` does not yet select TLS from a URL scheme. |
+| HTTPS | HC10. **Superseded: closed by CD-366** — `stark-http-client` now selects TLS from the URL scheme. |
 | client certificates, custom verifiers, revocation | out of scope by design — see §3. |
 | non-x86_64/aarch64 targets | the manifest declares four triples; nothing beyond them is claimed. |
 
@@ -155,10 +155,10 @@ than read as "unbounded" — an unbounded handshake has no spelling in this pack
 
 | what | where | count |
 | --- | --- | --- |
-| provider unit + certificate matrix + lifecycle | `stark-tls/native/src/lib.rs` `mod tests` | 19 |
+| provider unit + certificate matrix + lifecycle | `stark-tls/native/src/lib.rs` `mod tests` | 19 at closure (22 after HC10 added `SystemRoots`) |
 | foreign-resource nominals (compiler) | `starkc/tests/hc9_foreign_resource_nominals.rs` | 11 |
 | transfer verification (compiler) | `starkc/tests/hc9_transfer_verification.rs` | 5 |
-| package pure surface | `stark-tls/src/tests.stark` | 8 |
+| package pure surface | `stark-tls/src/tests.stark` | 8 at closure (11 after HC10 added the config helpers) |
 | executed native lifecycle | `stark-tls-consumer`, under the package gate | 1 program |
 
 ### The certificate matrix

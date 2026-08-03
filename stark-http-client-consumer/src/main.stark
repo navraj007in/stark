@@ -6,7 +6,12 @@
 // one the package exists for: resolve, connect, set timeouts, write a request, read a response
 // across whatever fragmentation the peer chose, and release the stream.
 //
-// The peer's four routes each pin a different response shape:
+// HC10 adds the HTTPS half. The TLS peer on 127.0.0.1:39192 presents the fixture chain for
+// `localhost`, and 39193 presents a chain to a root this client does not trust. Both are reached
+// through the SAME `fetch`, differing only in the URL — which is HC10's requirement that no
+// application-level distinction beyond the scheme is needed.
+//
+// The peer's four plain routes each pin a different response shape:
 //
 //   /fixed       Content-Length framing, body read to the declared length
 //   /chunked     chunked framing, decoded across chunk boundaries
@@ -15,13 +20,23 @@
 //   /close-early headers promising more body than the peer sends, then a close — the client must
 //                REPORT this, never return a short body as if it were complete
 
-use stark_http_client::client_error_text;
+use stark_http_client::config_with_explicit_roots;
+use stark_http_client::error_text;
 use stark_http_client::default_config;
 use stark_http_client::fetch;
 use stark_http_client::new_client;
+use stark_http_client::post;
+use stark_http_client::send;
 use stark_http_client::Client;
+use stark_http_client::HttpError;
+use stark_http_core::append_validated;
 use stark_http_core::get_first;
 use stark_http_core::HttpResponse;
+
+// The fixture root, the ONLY trust anchor these HTTPS sessions are given. Nothing here consults
+// the machine's trust store; `default_config()` would, and that is the right default for a real
+// API and the wrong one for a controlled peer.
+const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBpzCCAU2gAwIBAgIUdElGOkS5SWewgzN6bNrXQ2Z2nbgwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWU1RBUksgSEM5IFRlc3QgUm9vdCBDQTAeFw0yNjAxMDEwMDAw\nMDBaFw00NjAxMDEwMDAwMDBaMCExHzAdBgNVBAMMFlNUQVJLIEhDOSBUZXN0IFJv\nb3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQi3tlBmm3chTBfzFV4lu3d\nw8bcYO43I9OTDhH80/ZeTMTNtburb36FMrRtVlyIjtZxFnHkWfQmfMl0EII9NV+e\no2MwYTAdBgNVHQ4EFgQUYEyz4y6Ah5uxN7GCbYZRXrw9+bIwHwYDVR0jBBgwFoAU\nYEyz4y6Ah5uxN7GCbYZRXrw9+bIwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E\nBAMCAQYwCgYIKoZIzj0EAwIDSAAwRQIhAMMbxXEB0Lj4adxaHSi9LsJ25HZdrukz\n6vMGiLLkxkdgAiAUbBxEDkRAZDfL0mHw0d3WNFtpSQXToFgf/QeFpVedJw==\n-----END CERTIFICATE-----\n";
 
 fn body_text(response: &HttpResponse) -> String {
     let n = response.body.len();
@@ -50,7 +65,7 @@ fn require(client: &Client, url: &str, expected_status: UInt16, expected_body: &
         Err(error) => {
             print("FETCH FAILED for ");
             println(url);
-            println(client_error_text(&error).as_str());
+            println(error_text(&error).as_str());
             panic("no HTTP peer on 127.0.0.1:39188 — this consumer needs a live one (CD-348)");
         }
     }
@@ -102,7 +117,7 @@ fn main() {
         }
         Err(error) => {
             print("  close-early: reported as expected: ");
-            println(client_error_text(&error).as_str());
+            println(error_text(&error).as_str());
         }
     }
 
@@ -115,6 +130,129 @@ fn main() {
             println("  refused port: connect failure reported, no stream acquired");
         }
     }
+
+    // 6. HTTPS, through the same call. The only thing that changed is the scheme in the URL.
+    //
+    //    `stark.test` resolves nowhere, so `/etc/hosts` is not involved: the consumer dials
+    //    127.0.0.1 and the peer answers for that name. What is being proved is that `send` picks
+    //    the secure path from the scheme, verifies the chain and the hostname, and completes an
+    //    ordinary HTTP exchange inside the session.
+    let secure_client = new_client(config_with_explicit_roots(String::from(CA_PEM)));
+    let secure = require(&secure_client, "https://localhost:39192/fixed", 200u16, "fixed-body-ok");
+    match get_first(&secure.headers, "content-type") {
+        Some(value) => {
+            if value.as_str() != "text/plain" {
+                panic("Content-Type did not survive the TLS round trip");
+            }
+        }
+        None => {
+            panic("Content-Type missing from an HTTPS response");
+        }
+    }
+    println("  https: 200 over a verified TLS 1.3 session, headers and body intact");
+
+    // 7. Chunked framing INSIDE TLS. Record boundaries and chunk boundaries are unrelated, and a
+    //    client that conflated them would pass the fixed-body case and fail here.
+    let _secure_chunked = require(
+        &secure_client,
+        "https://localhost:39192/chunked",
+        200u16,
+        "chunked-body-ok",
+    );
+    println("  https: chunked body decoded inside the TLS session");
+
+    // 8. A chain to a root this client does not trust. The claim is not merely "it failed" — the
+    //    error must name the certificate, because a caller cannot act on "the request failed".
+    match fetch(&secure_client, "https://localhost:39193/fixed") {
+        Ok(_response) => {
+            panic("an untrusted certificate chain was accepted over https");
+        }
+        Err(error) => match error {
+            HttpError::Tls(_why) => {
+                println("  https: untrusted chain refused, reported as a TLS failure");
+            }
+            other => {
+                // Reported through `other`, not `error`: the payload-carrying arm above means this
+                // match MOVES the error, so the outer binding is gone by the time this arm runs.
+                println(error_text(&other).as_str());
+                panic("an untrusted chain must be reported as a TLS failure, not as a network one");
+            }
+        }
+    }
+
+    // 9. HOSTNAME verification, which is the check most easily lost. The peer on 39192 holds a
+    //    valid, trusted certificate for `stark.test` and nothing else — so asking for
+    //    `localhost` at the same address must fail even though the chain itself is impeccable.
+    match fetch(&secure_client, "https://127.0.0.1:39192/fixed") {
+        Ok(_response) => {
+            panic("a certificate valid for another name was accepted");
+        }
+        Err(error) => match error {
+            HttpError::Tls(_why) => {
+                println("  https: hostname mismatch refused, though the chain itself is trusted");
+            }
+            other => {
+                println(error_text(&other).as_str());
+                panic("a hostname mismatch must be reported as a TLS failure");
+            }
+        }
+    }
+
+    // 10. A cleartext peer on the HTTPS path. The handshake cannot complete against a server that
+    //     answers with an HTTP response, and the failure must be reported rather than the bytes
+    //     being read as if the channel were secure.
+    match fetch(&secure_client, "https://localhost:39188/fixed") {
+        Ok(_response) => {
+            panic("a cleartext peer was accepted on the https path");
+        }
+        Err(_error) => {
+            println("  https: a cleartext peer on the secure path is refused");
+        }
+    }
+
+    // 11. HTTPS POST with a body and a custom Authorization header.
+    //
+    //     The peer REFLECTS what it received — method, Authorization, Content-Type, body — so this
+    //     asserts the request survived the transport rather than merely that a response came back.
+    //     A route returning a constant would pass for a client that sent nothing.
+    let mut body: Vec<UInt8> = Vec::new();
+    let payload = "{\"name\":\"stark\"}".bytes();
+    let mut b = 0u64;
+    while b < payload.len() {
+        body.push(payload[b]);
+        b = b + 1u64;
+    }
+    let mut builder = post("https://localhost:39192/echo", body);
+    match append_validated(&mut builder.headers, "Authorization", "Bearer secret-token") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Authorization header must be accepted");
+        }
+    }
+    match append_validated(&mut builder.headers, "Content-Type", "application/json") {
+        Ok(_added) => {}
+        Err(_error) => {
+            panic("a valid Content-Type header must be accepted");
+        }
+    }
+    match send(&secure_client, builder) {
+        Ok(response) => {
+            if response.status != 200u16 {
+                panic("the echo route did not answer 200");
+            }
+            let seen = body_text(&response);
+            if seen.as_str() != "POST|Bearer secret-token|application/json|{\"name\":\"stark\"}" {
+                print("peer saw: ");
+                println(seen.as_str());
+                panic("the method, header or body did not survive the request");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+            panic("the HTTPS POST must succeed");
+        }
+    }
+    println("  https: POST with a JSON body and a bearer token arrived intact");
 
     println("STARK_HTTP_CLIENT_RESOURCE_OK");
 }

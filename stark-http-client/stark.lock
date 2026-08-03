@@ -39,6 +39,15 @@
       }
     },
     {
+      "name": "stark_tls",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_net": "0.1.0",
+        "stark_time": "0.1.0"
+      }
+    },
+    {
       "name": "stark_url",
       "version": "0.1.0",
       "sha256": "",

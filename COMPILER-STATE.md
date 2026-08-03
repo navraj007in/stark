@@ -1,5 +1,96 @@
 # STARK Compiler STATE
 
+## CD-366 — HC10 CLOSED: HTTPS from the URL alone; DEV-158 found (2026-08-03)
+
+**`Client::send` now selects HTTP or HTTPS from the scheme, and there is no other way to ask.** No
+per-request TLS switch, no insecure flag, no route to `https://` without certificate and hostname
+verification. Full record: `STARKLANG/docs/http-client/HC10-HTTPS-EVIDENCE.md`.
+
+`SystemRoots` is implemented (`rustls-native-certs` 0.8.2) and is `default_config()`'s policy —
+CD-361's point delivered: the platform's trust anchors WITHOUT handing the protocol to a platform
+TLS stack. `BundledRoots` stays refused; vendoring a CA list is a distribution decision nobody has
+taken, and falling back to the system store would give a caller the opposite of what they asked for.
+
+### DEV-158 — assigning over a drop-unit field aborts natively (OPEN)
+
+```stark
+enum Policy { None, Explicit(String) }
+struct Config { policy: Policy, tag: UInt32 }
+
+fn with_roots(pem: String) -> Config {
+    let mut config = base();               // base() yields Policy::None
+    config.policy = Policy::Explicit(pem);
+    config                                 // aborts here
+}
+```
+
+```text
+generated-code invariant violated: mutable access to a dead slot: the slot is PARTIAL
+```
+
+**Cause — and note this is NOT `drop_field_with`, which was the first guess.** `lower_overwriting_assign`
+(`mir/lower.rs`) implements CD-012's rule that the new value installs *before* the old is destroyed:
+
+```text
+1. save each covered drop unit into a temp   Assign(tmp, Move(unit_place))   <- slot -> PARTIAL
+2. install the new value                     Assign(place, rhs)
+3. drop the saved temps, flag-guarded
+4. set the covered units' drop flags true
+```
+
+Step 1's move-out is what marks the slot `Partial`, via `move_field`. Step 2 writes the field back.
+But **no operation returns a slot from `Partial` to `Whole`**: the API has `write`, `reinit`,
+`take`, `drop_value`, `move_field`, `drop_field_with` and `finish_partial`, and the last goes to
+`Dead`. The slot stays `Partial`, and the next whole-struct use hits the guard.
+
+**Why it is not a one-line fix.** A slot may return to `Whole` only when EVERY drop unit is live.
+Writing back the unit this assignment covers does not establish that: a SIBLING unit may have been
+moved out earlier, in which case the slot is legitimately still partial. Per-unit liveness lives in
+MIR's drop flags rather than in the slot, and `slot.rs`'s own docs record the owner review that
+caught those two being conflated — the three-state design is that repair. A naive `restore_whole()`
+reintroduces exactly the unsoundness it exists to prevent.
+
+**The candidate fix, for whoever takes this.** MIR already holds per-unit liveness as ordinary
+locals, so the backend CAN see it: after step 4, emit a `mark_whole()` guarded by the conjunction of
+all of the local's drop flags. That is sound on MIR's own record of liveness rather than on a guess,
+and it needs no cross-block analysis — the whole sequence is emitted by one function. What it does
+need is a new runtime operation, emission for it, tests, and a soundness review. That is a compiler
+work package, not an HC10 edit, which is why it is filed rather than patched.
+
+**Bisected to one shape:**
+
+| | native |
+| --- | --- |
+| assign over a NON-drop field (`config.tag = 9u32`) | fine |
+| build the whole struct as ONE literal | fine |
+| assign over a DROP-UNIT field, then use the struct | **aborts** |
+
+**The worst property: the interpreter accepts the same program.** `stark test` and `stark run` are
+green and only the native build fails, at runtime, as an abort. Any package writing
+`config.field = <owned value>` over a pre-existing struct is exposed.
+
+HC10's workaround is one struct literal instead of a field assignment — same semantics, same API,
+recorded inline. Remove it when this closes.
+
+### A language question, raised not resolved
+
+Core v1 has no mutable binding of an enum payload in a pattern. So
+`enum Transport { Plain(TcpStream), Secure(TlsStream) }` cannot carry a `&mut self` method —
+`E0400 mutable method receiver requires a mutable place` — and with no trait objects and no
+closures either, the plain and secure request flows are written out TWICE. That is a **language**
+decision for the owner, not a defect, and the duplication is deliberate and commented rather than
+hidden behind something that looks abstract and is not.
+
+### Two process notes
+
+**An experiment run only under the interpreter proves only the interpreter.** The enum-payload move
+that DEV-158 eventually broke on was validated with `stark run` early in HC9 and never natively,
+which is why it surfaced three layers later in an HTTPS build rather than in a 25-line probe.
+
+**A stale copy of the harness cost real time.** Several minutes of chasing a hostname mismatch ended
+at a `/tmp` snapshot of `qualify-first-party-packages.py` taken before the fixture change. The code
+under test had been correct the whole time. Regenerate the filtered copy, or run the real script.
+
 ## CD-365 — HC9 CLOSED: verified TLS, and CD-360's rule found in a fourth place (2026-08-03)
 
 **A STARK program can now establish a verified TLS 1.2/1.3 stream over a `stark-net` TCP connection

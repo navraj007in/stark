@@ -128,11 +128,10 @@ deliberate rather than incidental.
 
 ## 8. Downstream consequence, recorded now
 
-`stark-http-client::parse_http_url` currently refuses `https://` outright with
-`UnsupportedScheme` — a deliberate choice, since silently downgrading to cleartext would be a
-security defect. **HC10 turns that refusal into scheme dispatch.** Not a backend question, but it is
-the visible edge of this decision in existing shipped code, and it is recorded here so it is not
-rediscovered as a surprise.
+`stark-http-client::parse_http_url` refused `https://` outright with `UnsupportedScheme` — a
+deliberate choice, since silently downgrading to cleartext would be a security defect. **HC10 turned
+that refusal into scheme dispatch (CD-366):** the function is now `parse_url`, returns a `Scheme`,
+and `send` picks the transport from it. The refusal was not relaxed, it was satisfied.
 
 ## 9. Frozen
 

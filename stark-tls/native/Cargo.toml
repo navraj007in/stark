@@ -20,6 +20,9 @@ stark-provider-abi = { path = "../../starkc/stark-provider-abi" }
 rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "tls12", "std"] }
 rustls-pemfile = "=2.2.0"
 rustls-pki-types = "=1.15.1"
+# HC10. The platform trust store, read into rustls rather than delegating validation to the
+# platform: CD-361 §4 keeps trust-anchor SOURCE and TLS implementation separate decisions.
+rustls-native-certs = "=0.8.2"
 
 # `stark-net-native` is a DEV-dependency only. The provider calls `stark_tcp_stream_detach` through
 # an `extern "C"` declaration resolved by the linker inside the one binary every provider is
