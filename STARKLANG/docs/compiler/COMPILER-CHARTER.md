@@ -160,6 +160,11 @@ Therefore:
 > like), not as license to defer or skip general native compilation. Do not cite those old
 > verdicts as a reason to propose DEFER/STOP for Gate C3 — that outcome no longer exists in the
 > current gate-decision vocabulary (§5.3 of this charter).
+>
+> **Update 2026-08-04.** This note anticipated the outcome correctly. Gate 7's project-wide
+> "RETAIN AS RESEARCH LANGUAGE" policy is now formally superseded — `starkc/docs/gate7-superseded.md`
+> — with the evidence produced by this track (Gates C7, C8) among the reasons. Its *tensor-track*
+> verdicts are untouched and still govern that track: technical POSITIVE, productisation DEFER.
 
 ### 1.6 Governing rules — violating any is a wrong implementation
 

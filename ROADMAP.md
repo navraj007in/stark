@@ -27,8 +27,15 @@ Current compiler position always comes from `COMPILER-STATE.md` (repo root), nev
 this file.
 
 `STARKLANG/docs/ROADMAP.md` and `STARKLANG/docs/PLAN.md` are the **historical record** of
-the pre-existing Gate 1–7 sequence (all closed; Gate 7 recorded RETAIN AS RESEARCH
-LANGUAGE). They are retained for their citations and non-goals, not as forward plans.
+the pre-existing Gate 1–7 sequence (all closed). They are retained for their citations and
+non-goals, not as forward plans.
+
+Gate 7's project-wide **RETAIN AS RESEARCH LANGUAGE** policy — which those documents cite —
+was **superseded on 2026-08-04** by `starkc/docs/gate7-superseded.md`; the adoption of this
+roadmap is one of the things that retired it. Gate 7's *tensor-track* verdicts are untouched
+and still govern that track: technical POSITIVE, **productisation DEFER** pending
+external-developer evidence that has not been gathered. Nothing in this roadmap authorises
+tensor productisation, and §12's non-goals continue to apply.
 
 ## 0.2 Superseded documents
 

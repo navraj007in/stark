@@ -168,7 +168,7 @@ export default function App() {
               </div>
             </div>
             <p className="section__after">
-              STARK is a research compiler with a working implementation, not a production language.
+              STARK is a pre-alpha language with a working implementation, not a production one.
               The status file in the repository is the authority; this page summarises it and can lag.
             </p>
           </div>

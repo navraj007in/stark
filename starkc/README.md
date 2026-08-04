@@ -4,8 +4,10 @@ Compiler for the STARK Core v1 language. Rust, stable toolchain.
 **Gates 1–7 (old numbering) are closed** — front end, semantic checker, interpreter, tensor/ONNX
 front end, and a native ONNX-Runtime deployment demonstrator; see
 [`docs/gate1-exit.md`](docs/gate1-exit.md) through [`docs/gate7-decision.md`](docs/gate7-decision.md).
-Gate 7's decision was **RETAIN AS RESEARCH LANGUAGE**, authorizing only a `stark verify`
-external-validation track as further tensor-track work. STARK Core programs can be checked and
+Gate 7's project-policy verdict (**RETAIN AS RESEARCH LANGUAGE**) was **superseded on 2026-08-04**
+— see [`docs/gate7-superseded.md`](docs/gate7-superseded.md). Its *tensor-track* verdicts stand:
+technical POSITIVE, productisation DEFER pending external-developer evidence. STARK Core programs
+can be checked and
 executed by the tree-walking interpreter; the optional `tensor` extension provides static
 tensor/model checks, bounded ONNX import/verify, and a bounded native deployment path (generated
 Rust host + ONNX Runtime). The crate also has a source formatter (`stark fmt`), a
@@ -189,7 +191,8 @@ should be Authenticode-signed.
 | `test_runner` | naming-convention test discovery/execution (`stark test`) | done (WP8.3) |
 | `lsp` | stdio JSON-RPC LSP server, document sync (`starkc lsp`) | done (WP8.1) |
 | `doc_gen` | HTML documentation generator with search (`stark doc`) | done (WP8.5) |
-| `docs/gate6-memo.md`, `docs/gate7-decision.md` | tensor-track decision checkpoints (REVISE; RETAIN AS RESEARCH) | done |
+| `docs/gate6-memo.md`, `docs/gate7-decision.md` | tensor-track decision checkpoints (REVISE; tensor verdicts POSITIVE/DEFER) | done |
+| `docs/gate7-superseded.md` | retires Gate 7's project-wide "research language" policy; tensor verdicts untouched | 2026-08-04 |
 | `docs/terminal-ide.md` | terminal IDE editing, project, build and run workflow | stable |
 
 Architecture target: `Source → Tokens → AST → HIR → typed HIR → backend`;

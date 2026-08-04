@@ -12,7 +12,7 @@ STARK currently includes a working Rust compiler, semantic checker, borrow check
 
 ### Where the compiler actually is
 
-Two gate sequences run in this repository and they answer different questions. The **Gate 1–7** table further down covers the original tensor/deployment track, whose Gate 6 and Gate 7 decisions (*REVISE*, *RETAIN AS RESEARCH*) still stand. The **Gate C0–C10** track is a separate, evidence-first re-closure of Core v1 conformance and execution, and it is where current work happens:
+Two gate sequences run in this repository and they answer different questions. The **Gate 1–7** table further down covers the original tensor/deployment track; its tensor verdicts still stand (*REVISE*, then technical POSITIVE with productisation DEFER), while the project-wide "research language" policy Gate 7 also carried was [superseded on 2026-08-04](starkc/docs/gate7-superseded.md). The **Gate C0–C10** track is a separate, evidence-first re-closure of Core v1 conformance and execution, and it is where current work happens:
 
 | Track gate | Position |
 | --- | --- |
@@ -189,7 +189,7 @@ The generated project is designed to include:
 * deterministic generated source;
 * no generated `unsafe` code.
 
-Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)); the follow-on Gate 6/7 decision checkpoints subsequently recorded REVISE and RETAIN AS RESEARCH LANGUAGE respectively for further tensor-track productisation — see the Delivery gates table below and [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md).
+Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)); the follow-on Gate 6/7 decision checkpoints recorded REVISE and then a positive technical verdict with productisation **deferred** pending evidence from external developers — see the Delivery gates table below and [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md). **The tensor track has not moved since**, and nothing in the platform work below authorises restarting it.
 
 ### First-party packages
 
@@ -684,7 +684,7 @@ different questions, and neither supersedes the other.
 | Gate 4 | Tensor frontend and ONNX signature integration     | Complete    |
 | Gate 5 | Native inference deployment prototype              | Complete    |
 | Gate 6 | Go, revise or stop decision based on evidence      | Decision recorded — REVISE |
-| Gate 7 | Symbolic-shape + semantic tensor deployment experiment | Decision recorded — RETAIN AS RESEARCH |
+| Gate 7 | Symbolic-shape + semantic tensor deployment experiment | Tensor verdict recorded — technical POSITIVE, productisation DEFER. Its project-wide "research language" policy is [superseded](starkc/docs/gate7-superseded.md) |
 
 Gate 5 is intended to produce one reproducible computer-vision deployment and measure:
 
@@ -696,7 +696,11 @@ Gate 5 is intended to produce one reproducible computer-vision deployment and me
 * integration complexity;
 * the quality of compile-time diagnostics.
 
-The project will expand only if that evidence demonstrates a meaningful advantage over a library, schema generator or existing compiler.
+That test governs the **tensor track**, and it has not been passed: the project will expand there
+only if the evidence demonstrates a meaningful advantage over a library, schema generator or
+existing compiler. The general-purpose language took a different route, answered by the Gate C0–C10
+evidence and the platform work above, and that is what
+[`starkc/docs/gate7-superseded.md`](starkc/docs/gate7-superseded.md) records.
 
 ## Design principles
 
@@ -822,7 +826,8 @@ Historical records, retained for their citations and non-goals rather than as pl
 * [`starkc/docs/gate4-exit.md`](starkc/docs/gate4-exit.md)
 * [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)
 * [`starkc/docs/gate6-memo.md`](starkc/docs/gate6-memo.md) — decision: REVISE
-* [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md) — decision: RETAIN AS RESEARCH LANGUAGE
+* [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md) — tensor verdict: technical POSITIVE, productisation DEFER
+* [`starkc/docs/gate7-superseded.md`](starkc/docs/gate7-superseded.md) — retires that memo's project-wide "research language" policy (2026-08-04), leaving its tensor verdicts intact
 
 For compiler work specifically:
 
