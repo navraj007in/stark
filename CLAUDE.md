@@ -2,19 +2,30 @@
 
 ## What STARK Is (Current)
 
-STARK is a **research programming language with a working reference implementation**: a safe,
-Rust-inspired ownership core (no GC) with an optional tensor/model extension for AI/ML
-deployment. The `starkc/` implementation has a complete Core v1 front end (lexer, parser, name
-resolution, type/borrow checking), a reference interpreter, a tensor extension with bounded ONNX
-import/verify/deploy, a formatter, test runner, documentation generator, and an LSP server —
-see "Implementation Status" below for exactly what is closed vs. still open. It is not
-"specification-stage"; do not describe it that way.
+STARK is a **pre-alpha general-purpose programming language with a working implementation**: a
+safe, Rust-inspired ownership core (no GC), compiled natively through generated Rust, with an
+optional tensor/model extension for AI/ML deployment. The `starkc/` implementation has a complete
+Core v1 front end (lexer, parser, name resolution, type/borrow checking), a reference interpreter,
+a MIR interpreter, native compilation on Linux/macOS/Windows, a tensor extension with bounded ONNX
+import/verify/deploy, a formatter, test runner, documentation generator, and an LSP server. Beyond
+the compiler there are 24 first-party packages under `packages/`, capability-declared host access
+backed by native provider crates, and an installable toolchain — see "Implementation Status" below
+for exactly what is closed vs. still open. It is not "specification-stage"; do not describe it
+that way.
+
+**Nor is it a research-only language any more.** Gate 7's project-wide "RETAIN AS RESEARCH
+LANGUAGE" policy was superseded on 2026-08-04 (`starkc/docs/gate7-superseded.md`) by the evidence
+that followed it — native compilation, the HTTP client written in STARK, the package ecosystem, the
+installer, and the adopted application-platform `ROADMAP.md`. **The tensor track is the exception**
+and remains deferred research on Gate 7's own terms: its productisation verdict is still DEFER,
+gated on external-developer evidence nobody has gathered. Do not read platform progress as
+permission to restart tensor work.
 
 In early 2026 the project pivoted from an ambitious "AI-native, cloud-first"
 design to a minimal, implementable **Core v1**. The rationale is in
-`STARK_Analysis_and_Discussion.md`. Long-term, the differentiator remains
-AI/ML deployment (compile-time tensor shape checking, model loading), but
-those are non-core extensions, not part of Core v1.
+`STARK_Analysis_and_Discussion.md`. The tensor/model extension remains the long-term
+differentiator, but it is a non-core extension and a deferred track, not part of Core v1 and not
+current work.
 
 ## Source of Truth
 
@@ -108,22 +119,42 @@ conflict table.
 
 - Specification: Core v1 complete draft (numbered source documents 00–07 and approved
   `CORE-V1-*.md` semantic chapters normative; concise and generated views non-normative).
-- Compiler: front end, semantic analysis, and execution are done (`starkc/` — lexer, parser,
-  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 112-fixture
-  conformance suite is green). Also implemented: a `tensor` v0.1 extension front end with
-  bounded ONNX signature import/verification, a Gate-5 native deployment path (generated Rust
-  host + ONNX Runtime), a source formatter, a naming-convention test runner, a documentation
-  generator, and an LSP server. The Python code in `STARKLANG/compiler/` and `Practice/
-  Interpreter/` are pre-pivot prototypes and must not be extended for Core v1 work.
+- Compiler: front end, semantic analysis and execution are done (`starkc/` — lexer, parser, name
+  resolver, type/flow/borrow checker, a typed-HIR reference interpreter and a MIR interpreter; the
+  113-fixture conformance suite is green). **Native compilation through generated Rust works in
+  debug and release on Linux, macOS and Windows** (Gate C7), over a *qualified* standard-library
+  subset — Gate C6 audited 87 methods and verified an invocation for 59. Programs are compared
+  across four engine configurations (HIR interpreter, MIR interpreter, native debug, native
+  release), each case pinned against the specification rather than against another engine.
+  Also implemented: a `tensor` v0.1 extension front end with bounded ONNX signature
+  import/verification, a Gate-5 native deployment path (generated Rust host + ONNX Runtime), a
+  source formatter, a naming-convention test runner, a documentation generator, and an LSP server
+  with a VS Code extension. The Python code in `STARKLANG/compiler/` and `Practice/Interpreter/`
+  are pre-pivot prototypes and must not be extended for Core v1 work.
+- Packages and host access: **24 first-party packages live under `packages/`** (moved there
+  2026-08-04), each with a `*-consumer` package that must actually *call* its declared surface.
+  A package reaching outside the process declares a capability in `starkpkg.json` — `clock`,
+  `filesystem`, `process.env`/`process.args`, `random`, `tcp`/`dns`, `tls` — satisfied at build
+  time by a native provider crate at `packages/<name>/native`. **Capability-backed packages build
+  with `stark build` and cannot run under `stark run`**: the interpreters have no host access at
+  all. An HTTP/1.1 and HTTPS client written in STARK closed 2026-08-03 (HC0–HC13).
+- Distribution: Installer Phase I is implemented — release archives, platform installers, a
+  versioned install tree (`lib/stark/versions/<v>` with `current`), uninstall, and `stark doctor`
+  manifest verification. It proves **integrity, not authenticity**: archives are unsigned, the
+  payload does not carry the first-party packages or providers, and an offline build of an
+  HTTP/TLS program on a clean machine is not yet possible.
 - Delivery has been governed by **two, non-overlapping gate sequences** — do not conflate them:
   - **Old sequence (`starkc/docs/gate1-exit.md` … `gate7-decision.md`)**, cited by
     `STARKLANG/docs/ROADMAP.md`: all seven gates are closed. Gates 1–5 built the front end,
     interpreter, tensor/ONNX front end, and a native ONNX-Runtime deployment demonstrator. Gates
-    6–7 are decision checkpoints, not implementation gates: Gate 6 recorded **REVISE** and Gate 7
-    recorded **RETAIN AS RESEARCH LANGUAGE** (2026-07-16), authorizing only a `stark verify`
-    external-validation track as next tensor-track work — see `starkc/docs/gate7-decision.md`.
-    `STARKLANG/docs/PLAN.md` has not been updated past Gate 5 and should not be trusted for
-    Gate 6/7 status.
+    6–7 are decision checkpoints, not implementation gates: Gate 6 recorded **REVISE**, and Gate 7
+    recorded a **tensor-track** verdict of technical POSITIVE with **productisation DEFER**
+    (2026-07-16), gated on external-developer evidence that has still not been gathered — see
+    `starkc/docs/gate7-decision.md`. That tensor verdict stands; **do not treat the tensor track as
+    open.** Gate 7's separate project-wide **RETAIN AS RESEARCH LANGUAGE** policy, and its
+    "only a `stark verify` track" scope limit, were **superseded 2026-08-04** —
+    `starkc/docs/gate7-superseded.md`. `STARKLANG/docs/PLAN.md` has not been updated past Gate 5
+    and should not be trusted for Gate 6/7 status.
   - **New sequence (Gate C0–C10)**, defined in
     `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`/`COMPILER-CHARTER.md`, current status in
     `COMPILER-STATE.md` (repo root): a from-scratch, evidence-first re-closure of Core v1
@@ -158,12 +189,36 @@ conflict table.
   added/renumbered block must be re-triaged in the same change.
 - New language features land in the spec first, extensions second, README
   last. The archive is never updated for new features.
+- **Packages live under `packages/`, and dependency paths must stay siblings.** The workspace root
+  is the *parent directory* of a package (`package.rs` `get_workspace_root`), so a dependency
+  outside `packages/` is refused by name. Every first-party manifest therefore uses plain
+  `../stark-<name>` paths.
+- **Provider crates are depth-sensitive.** `packages/<name>/native/Cargo.toml` reaches the ABI
+  through `../../../starkc/stark-provider-abi`, and `include_str!` in provider sources needs a
+  further level (`../../../../starkc/providers/*.json`) because it resolves relative to the source
+  file. The installed tree mirrors this at `lib/stark/packages/<name>/native`. One
+  `stark-provider-abi` must satisfy both the runtime's `../` and a provider's `../../../` — Cargo
+  refuses a lockfile naming one package at two paths, symlink or not.
+- A new or changed package must pass `starkc/scripts/qualify-first-party-packages.py`, which
+  requires that every declared public callable is actually *called* by the package's tests or its
+  consumer, and that resource-shaped packages exercise acquire/use/release natively against a live
+  peer.
+- Test code must reach package paths through `starkc/tests/support/paths.rs`
+  (`repo_package`, `repo_provider`, `repo_provider_root`), never by joining `"packages"` by hand.
+- Do not run `cargo test --workspace` locally on a whim — this checkout is often shared by parallel
+  sessions. Use scoped tests while iterating and read CI for the full picture; the provider crates
+  have their *own* test targets that the `starkc` suite never compiles.
 
 ---
 
-**Last Updated**: 2026-07-17
-**Status**: Core v1 specification complete; compiler front end, semantic analysis, execution,
-tensor/ONNX extension, and native deployment demonstrator done (old-numbering Gates 1–7 closed;
-Gate 7 decision: RETAIN AS RESEARCH LANGUAGE). New evidence-first compiler governance (Gate
-C0–C10) bootstrapped 2026-07-17; see `COMPILER-STATE.md` for current position.
+**Last Updated**: 2026-08-04
+**Status**: STARK is a **pre-alpha general-purpose language with a working implementation**,
+developed against the application-platform roadmap in `ROADMAP.md`. Core v1 specification
+complete; front end, semantic analysis, execution, native compilation (Gate C7, three Tier-1
+platforms) and compiler-backed language services done, over a qualified subset. 24 first-party
+packages under `packages/`, capability-declared host access with native providers, an HTTP/1.1 and
+HTTPS client written in STARK (HC0–HC13, closed 2026-08-03), and an installable toolchain
+(Installer Phase I). The **tensor/ONNX extension is a deferred research track** on Gate 7's terms.
+Gate 7's project-wide "research language" policy was superseded 2026-08-04
+(`starkc/docs/gate7-superseded.md`). See `COMPILER-STATE.md` for the current compiler position.
 **License**: MIT
