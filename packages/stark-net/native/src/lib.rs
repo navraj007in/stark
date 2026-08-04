@@ -929,7 +929,7 @@ mod tests {
     /// this crate actually links, which is the comparison that can fail.
     #[test]
     fn the_shipped_manifest_matches_the_symbols_this_crate_links() {
-        let text = include_str!("../../../starkc/providers/stark-net-native.json");
+        let text = include_str!("../../../../starkc/providers/stark-net-native.json");
         let provider = starkc::provider_manifest::parse_provider_manifest(text, "stark-net-native")
             .expect("the shipped manifest must parse");
         assert_eq!(
