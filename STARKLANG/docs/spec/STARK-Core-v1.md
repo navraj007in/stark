@@ -1661,6 +1661,26 @@ may still undergo the closed set of built-in expected-type coercions defined in
 function parameter is an expected-type boundary like any other. No
 user-defined coercion exists.
 
+**TYPE-METHOD-003.** When the receiver's type, after auto-dereference, is a
+generic parameter `T`, the candidate set is collected from the traits named by
+`T`'s declared bounds and from nowhere else: `T` has no inherent methods and no
+implementation to select against. Each bound resolves to exactly one trait
+identity, and a bound written twice names one trait rather than two. Collection
+is additive over the bounds, and the order in which bounds are written is not a
+selection rule; if two distinct bounds supply an applicable `m`, the call is
+ambiguous under TYPE-METHOD-001 step 2 and must be disambiguated with a
+fully-qualified call.
+
+A **compiler-known** trait (06-Standard-Library.md, STD-TRAIT-001) contributes
+candidates through this same collection, carrying the same signatures its
+implementations are required to provide. Compiler-known status identifies a
+trait to the implementation — it is what connects `Display` to
+`print`/`println`, `Iterator` to `for`, and `Eq`/`Ord` to the operators — and
+never changes which methods a bound makes callable, nor their priority against
+a user-declared trait's. `fn show<T: Display>(x: &T) -> String { x.fmt() }` is
+therefore well-formed, and a user trait that also declares `fmt` produces an
+ordinary ambiguity rather than a preference for either side.
+
 ### Operators and Traits
 Operator expressions on **primitive types** have built-in meaning (Numeric
 Semantics below). Equality and ordering on every non-primitive concrete type,
@@ -3440,7 +3460,18 @@ fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never T
 document. An implementation claiming the Core profile must provide these
 canonical items and the primitive/standard-type implementations explicitly
 required here. Additional traits or implementations are extensions and may
-not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+not change Core resolution or coherence.
+
+**STD-TRAIT-002.** A Core trait identity is an *ordinary* trait for every
+purpose a program can observe: its declared methods are callable through a
+generic bound on exactly the terms a user-declared trait's are
+(03-Type-System.md, TYPE-METHOD-003), with the same signatures shown here, the
+same receiver forms, the same ambiguity rules, and no priority derived from
+being compiler-known. An implementation MAY represent these traits specially —
+it must, to connect them to the language hooks below — but that representation
+must not be observable as a difference in method visibility, selection, or
+diagnostics. A conforming implementation accepts
+`fn show<T: Display>(x: &T) -> String { x.fmt() }`. The semantic laws of `Eq`, `Ord`,
 and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
 by C2.9.
 
@@ -3919,7 +3950,11 @@ number of bytes accepted; callers must handle a short write. Dropping an open
 file attempts close but cannot surface a new language trap.
 
 **STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
-dispatch. `print`/`eprint` append exactly the bytes produced by the argument's
+dispatch. Its receiver is `&self`: formatting **borrows** the value and never
+consumes it, so a value remains usable after being formatted — including an
+affine or resource-bearing one, for which any other receiver form would make
+`Display` unusable. A `T: Display` bound therefore makes `x.fmt()` callable on
+an owned parameter without moving it (03-Type-System.md, TYPE-METHOD-003). `print`/`eprint` append exactly the bytes produced by the argument's
 `Display` (see PRINT-DISPLAY-001); `println`/`eprintln` append those bytes
 followed by byte `0x0A`, independent of host newline convention. Successful
 calls preserve program order. The process contract flushes submitted

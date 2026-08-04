@@ -104,7 +104,18 @@ fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never T
 document. An implementation claiming the Core profile must provide these
 canonical items and the primitive/standard-type implementations explicitly
 required here. Additional traits or implementations are extensions and may
-not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+not change Core resolution or coherence.
+
+**STD-TRAIT-002.** A Core trait identity is an *ordinary* trait for every
+purpose a program can observe: its declared methods are callable through a
+generic bound on exactly the terms a user-declared trait's are
+(03-Type-System.md, TYPE-METHOD-003), with the same signatures shown here, the
+same receiver forms, the same ambiguity rules, and no priority derived from
+being compiler-known. An implementation MAY represent these traits specially —
+it must, to connect them to the language hooks below — but that representation
+must not be observable as a difference in method visibility, selection, or
+diagnostics. A conforming implementation accepts
+`fn show<T: Display>(x: &T) -> String { x.fmt() }`. The semantic laws of `Eq`, `Ord`,
 and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
 by C2.9.
 
@@ -583,7 +594,11 @@ number of bytes accepted; callers must handle a short write. Dropping an open
 file attempts close but cannot surface a new language trap.
 
 **STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
-dispatch. `print`/`eprint` append exactly the bytes produced by the argument's
+dispatch. Its receiver is `&self`: formatting **borrows** the value and never
+consumes it, so a value remains usable after being formatted — including an
+affine or resource-bearing one, for which any other receiver form would make
+`Display` unusable. A `T: Display` bound therefore makes `x.fmt()` callable on
+an owned parameter without moving it (03-Type-System.md, TYPE-METHOD-003). `print`/`eprint` append exactly the bytes produced by the argument's
 `Display` (see PRINT-DISPLAY-001); `println`/`eprintln` append those bytes
 followed by byte `0x0A`, independent of host newline convention. Successful
 calls preserve program order. The process contract flushes submitted

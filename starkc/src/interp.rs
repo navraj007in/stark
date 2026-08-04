@@ -3351,9 +3351,36 @@ impl<'a> Interpreter<'a> {
         let receiver_place = self.core_receiver_place(base, span)?;
         let receiver_value = self.clone_place_value(&receiver_place, span)?;
         let nominal = nominal_item(&receiver_value);
-        let method = self.find_method(nominal, &name, None).ok_or_else(|| {
-            RuntimeError::new(format!("method '{name}' not found at runtime"), span)
-        })?;
+        let method = match self.find_method(nominal, &name, None) {
+            Some(method) => method,
+            // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
+            // `is_core_value` above could not classify it — `Ty::Param` names no shape. The
+            // RUNTIME value settles it: a value with no nominal item (an `Int32`, a `String`, a
+            // `Vec`) is a Core value, and a `T: Display` bound made `x.fmt()` legal for exactly
+            // that instantiation. Dispatch it through the Core surface with the place already in
+            // hand. A generic parameter instantiated at a user nominal never reaches here —
+            // `find_method` resolves its `impl` — so this is additive, not a redirection.
+            None if nominal.is_none() && self.receiver_is_type_param(base) => {
+                let result = self.call_core_method_at(
+                    Some(expr_id),
+                    receiver_place,
+                    base,
+                    &name,
+                    args,
+                    span,
+                )?;
+                return Ok(match self.pending_propagation.take() {
+                    Some(propagated) => Flow::Propagate(propagated),
+                    None => Flow::Value(result),
+                });
+            }
+            None => {
+                return Err(RuntimeError::new(
+                    format!("method '{name}' not found at runtime"),
+                    span,
+                ))
+            }
+        };
         match self.eval_call_arguments(args)? {
             Ok(values) => self
                 .call_user_method(method, receiver_place, receiver_value, values, span)
@@ -3683,6 +3710,17 @@ impl<'a> Interpreter<'a> {
         Ok(value)
     }
 
+    /// DEV-DISPLAY-DISPATCH: whether the receiver expression's static type is (a reference to) a
+    /// generic parameter. Such a receiver has no shape until the call is instantiated, so
+    /// [`Self::is_core_value`] cannot classify it and dispatch has to consult the runtime value.
+    fn receiver_is_type_param(&self, expr: ExprId) -> bool {
+        let mut ty = self.tables.expr_types.get(&expr);
+        while let Some(Ty::Ref { inner, .. }) = ty {
+            ty = Some(inner.as_ref());
+        }
+        matches!(ty, Some(Ty::Param(_)))
+    }
+
     fn is_core_value(&self, expr: ExprId) -> bool {
         let mut ty = self.tables.expr_types.get(&expr);
         while let Some(Ty::Ref { inner, .. }) = ty {
@@ -3901,6 +3939,24 @@ impl<'a> Interpreter<'a> {
         // arguments first and resolved the receiver lazily inside each method-name branch
         // (also re-resolving it — and re-running index subexpressions — once per use).
         let receiver_place = self.core_receiver_place(base, span)?;
+        self.call_core_method_at(expr_id, receiver_place, base, name, args, span)
+    }
+
+    /// The Core method surface, entered with the receiver place ALREADY resolved.
+    ///
+    /// DEV-DISPLAY-DISPATCH split this out so the generic-receiver path in [`Self::call_method`]
+    /// can reach the Core surface without resolving the receiver a second time. Resolving twice
+    /// would re-run a non-place receiver expression (`make_thing().fmt()`), which is exactly the
+    /// double evaluation WP-C2.2/DEV-033 removed.
+    fn call_core_method_at(
+        &mut self,
+        expr_id: Option<ExprId>,
+        receiver_place: Place,
+        base: ExprId,
+        name: &str,
+        args: &[ExprId],
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let receiver_ty = self
             .tables
             .expr_types

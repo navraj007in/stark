@@ -97,6 +97,20 @@ pub fn emit_runtime_call(
         StringNew => "stark_runtime::string::new()".to_string(),
         StringFromStr => format!("stark_runtime::string::from_str({})", arg(0)),
         StrToString => format!("stark_runtime::string::to_string({})", arg(0)),
+
+        // --- DEV-DISPLAY-DISPATCH: `Display::fmt` on a primitive ---
+        //
+        // These emit calls into `stark_runtime::format`, the SAME module the `Print*` family
+        // above emits into. Nothing here reaches Rust's `Display`, `Debug`, `ToString` or
+        // `format!` to decide how a STARK value looks: the selection was made by STARK's trait
+        // machinery at lowering, and the rendering is STARK's canonical form.
+        FmtInt64 => format!("stark_runtime::format::fmt_i64({} as i64)", arg(0)),
+        FmtUInt64 => format!("stark_runtime::format::fmt_u64({} as u64)", arg(0)),
+        FmtBool => format!("stark_runtime::format::fmt_bool({})", arg(0)),
+        FmtFloat64 => format!("stark_runtime::format::fmt_f64({} as f64)", arg(0)),
+        FmtFloat32 => format!("stark_runtime::format::fmt_f32({} as f32)", arg(0)),
+        FmtChar => format!("stark_runtime::format::fmt_char({})", arg(0)),
+        FmtUnit => "stark_runtime::format::fmt_unit()".to_string(),
         StringClone => format!("stark_runtime::string::clone_string({})", arg(0)),
         StringAsStr => format!("stark_runtime::string::as_str({})", arg(0)),
 

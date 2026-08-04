@@ -94,6 +94,49 @@ pub fn eprint_f32(v: f32) {
     crate::output::stderr_bytes(canonical_float32(v).as_bytes());
 }
 
+// ---- `Display::fmt` on the standard-library primitives (DEV-DISPLAY-DISPATCH) ----
+//
+// `Display::fmt(&self) -> String` RETURNS the rendering rather than submitting it to an output
+// sink, so a program can format a value without printing it — which is what a generic
+// `fn show<T: Display>(x: &T) -> String { x.fmt() }` needs once monomorphisation has ground `T`
+// down to a primitive.
+//
+// These deliberately share the renderers above, so `x.fmt()` and `println(x)` cannot disagree
+// about how a value looks. Rust's `Display`/`Debug`/`format!` are NOT what selects the rendering
+// here: the byte sequence is STARK's canonical form, produced by the same functions the HIR
+// oracle calls.
+
+pub fn fmt_i64(v: i64) -> String {
+    itoa_i64(v)
+}
+pub fn fmt_u64(v: u64) -> String {
+    itoa_u64(v)
+}
+pub fn fmt_bool(b: bool) -> String {
+    let mut out = String::new();
+    out.push_str(if b { "true" } else { "false" });
+    out
+}
+pub fn fmt_f64(v: f64) -> String {
+    canonical_float(v)
+}
+pub fn fmt_f32(v: f32) -> String {
+    canonical_float32(v)
+}
+/// A `Char` renders as its own UTF-8 bytes, matching `print_char`. Built by pushing the scalar
+/// rather than through `ToString`, so the char surface owes nothing to a Rust trait impl.
+pub fn fmt_char(c: char) -> String {
+    let mut out = String::new();
+    out.push(c);
+    out
+}
+/// `Unit` renders as `()` — the same text `Display for Value` produces in the HIR oracle.
+pub fn fmt_unit() -> String {
+    let mut out = String::new();
+    out.push_str("()");
+    out
+}
+
 fn itoa_i64(v: i64) -> String {
     v.to_string()
 }

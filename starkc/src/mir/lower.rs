@@ -6442,6 +6442,21 @@ impl<'a> FnLowerer<'a> {
         {
             return self.lower_primitive_cmp(base, args[0], dest, span);
         }
+        // DEV-DISPLAY-DISPATCH: `Display::fmt` on a standard-library receiver. Checked BEFORE the
+        // String/str dispatch below, which has no `fmt` entry of its own and would refuse the
+        // call.
+        //
+        // This is the concrete tail of generic `Display` dispatch, not a separate feature: by the
+        // time MIR sees `x.fmt()` inside `fn show<T: Display>(x: &T)`, monomorphisation has ground
+        // `T` down to a concrete type. When that type is a user nominal the ordinary nominal path
+        // further below already resolves its `impl Display` — but when it is a PRIMITIVE there is
+        // no impl item to find, because 06-Standard-Library declares those impls and no source
+        // file writes them. The runtime call below is the lowering of exactly those declarations.
+        if self.text(name_span) == "fmt" && args.is_empty() {
+            if let Some(kind) = FmtReceiver::of(&peeled_ty) {
+                return self.lower_display_fmt(base, &peeled_ty, base_ref_layers, kind, dest, span);
+            }
+        }
         // 0.1-A7: the method spelling `b.into_inner()` (the qualified `Box::into_inner(b)` form
         // goes through the builtin arm in `lower_call`). Core v1 has NO `Deref` trait, so this is
         // the ONLY way to get the value out of a box — `*b` is not a Core construct.
@@ -9536,6 +9551,117 @@ impl<'a> FnLowerer<'a> {
     /// existing `StringAsStr` + `Print(ln)Str` runtime surface, then a visible `Drop` of the
     /// formatting `String` and (for an owned by-value argument) the argument itself. No new MIR
     /// shape, no new `RuntimeFn`, no runtime-surface bump.
+    /// DEV-DISPLAY-DISPATCH: lower `x.fmt()` where `x`'s type is one of the standard library's
+    /// own `Display` implementors (06-Standard-Library declares `impl Display for Int32` and
+    /// "similar for other types"; no source file writes those blocks, so `find_impl_fn` can never
+    /// find them).
+    ///
+    /// **Ownership.** `Display::fmt` takes `&self`, so this must not consume the receiver. Every
+    /// scalar here is `Copy`, so `read_place` yields a `Copy` operand and the receiver is
+    /// untouched; `String` is NOT `Copy`, so it is read through a shared reference and cloned.
+    /// That is what makes `let a = x.fmt(); let b = x.fmt();` legal at this level rather than a
+    /// V-MOVE-1 failure on the second call.
+    fn lower_display_fmt(
+        &mut self,
+        base: ExprId,
+        peeled_ty: &MirTy,
+        base_ref_layers: u32,
+        kind: FmtReceiver,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        // The receiver expression as a place AT ITS OWN TYPE — which may itself be a reference.
+        // A non-place receiver (`make_int().fmt()`) is materialised into a temp first, exactly as
+        // the ordinary method-receiver path does.
+        let base_place = match self.lower_place(base) {
+            Ok(place) => place,
+            Err(_) => {
+                let value = self.lower_expr_to_operand(base)?;
+                let base_ty = self.expr_mir_ty(base)?;
+                let temp = self.new_temp(base_ty);
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                Place::local(temp)
+            }
+        };
+        // `str` is unsized: the referent is never a place a `RefOf` may take, so the `&str` that
+        // already exists one level up is what gets read. Everything else projects all the way down
+        // to the value (TYPE-METHOD-002 auto-dereference).
+        if let FmtReceiver::StrSlice = kind {
+            let str_ref_ty = MirTy::Ref {
+                mutable: false,
+                inner: Box::new(MirTy::Str),
+            };
+            let ref_place = Self::deref_place(base_place, base_ref_layers.saturating_sub(1));
+            let str_op = self.read_place(ref_place, &str_ref_ty, span)?;
+            self.emit_runtime_call(RuntimeFn::StrToString, vec![str_op], dest, span);
+            return Ok(());
+        }
+        let place = Self::deref_place(base_place, base_ref_layers);
+        match kind {
+            FmtReceiver::Unit => {
+                self.emit_runtime_call(RuntimeFn::FmtUnit, Vec::new(), dest, span);
+            }
+            FmtReceiver::Scalar => {
+                let value = self.read_place(place, peeled_ty, span)?;
+                let (print_kind, widened) = self.widen_for_print(value, peeled_ty, span)?;
+                let rt = match print_kind {
+                    PrintKind::Int => RuntimeFn::FmtInt64,
+                    PrintKind::UInt => RuntimeFn::FmtUInt64,
+                    PrintKind::Bool => RuntimeFn::FmtBool,
+                    PrintKind::Char => RuntimeFn::FmtChar,
+                    PrintKind::Float => RuntimeFn::FmtFloat64,
+                };
+                self.emit_runtime_call(rt, vec![widened], dest, span);
+            }
+            FmtReceiver::Float32 => {
+                let value = self.read_place(place, peeled_ty, span)?;
+                self.emit_runtime_call(RuntimeFn::FmtFloat32, vec![value], dest, span);
+            }
+            // `&String -> StringAsStr -> &str -> StrToString`, the same borrow-then-copy shape
+            // `emit_display_value` uses for a `String` element. The receiver is never moved.
+            FmtReceiver::StringOwned => {
+                let owned_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::String),
+                };
+                let string_ref = self.new_temp(owned_ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(string_ref),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place,
+                        },
+                    ),
+                    self.info(span),
+                );
+                let str_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                };
+                let str_tmp = self.new_temp(str_ref_ty);
+                self.emit_runtime_call(
+                    RuntimeFn::StringAsStr,
+                    vec![Operand::Copy(Place::local(string_ref))],
+                    Place::local(str_tmp),
+                    span,
+                );
+                self.emit_runtime_call(
+                    RuntimeFn::StrToString,
+                    vec![Operand::Copy(Place::local(str_tmp))],
+                    dest,
+                    span,
+                );
+            }
+            // Handled above, before the receiver place was dereferenced.
+            FmtReceiver::StrSlice => unreachable!("str receiver is lowered before this match"),
+        }
+        Ok(())
+    }
+
     fn lower_print_display(
         &mut self,
         arg: ExprId,
@@ -11326,6 +11452,63 @@ enum PrintKind {
     Bool,
     Char,
     Float,
+}
+
+/// DEV-DISPLAY-DISPATCH: which lowering a `Display::fmt` receiver takes when the implementation
+/// is the standard library's rather than a user `impl` block.
+///
+/// The match in [`FmtReceiver::of`] is deliberately **total over `MirTy`**: a new MIR type is a
+/// question about whether it is `Display`, and the answer belongs here rather than in a `_` arm
+/// that silently says "no".
+#[derive(Clone, Copy)]
+enum FmtReceiver {
+    /// The integer widths, `Bool`, `Char` and `Float64` — everything `widen_for_print` accepts.
+    Scalar,
+    /// `Float32` renders at its DECLARED width (DEV-105), so it must not be widened first.
+    Float32,
+    /// `String`. Cloned rather than moved: `fmt(&self)` must leave the receiver usable.
+    StringOwned,
+    /// `str`, which is only ever reached behind a reference.
+    StrSlice,
+    /// `Unit` renders as `()`.
+    Unit,
+}
+
+impl FmtReceiver {
+    fn of(ty: &MirTy) -> Option<FmtReceiver> {
+        match ty {
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Float64 => Some(FmtReceiver::Scalar),
+            MirTy::Float32 => Some(FmtReceiver::Float32),
+            MirTy::String => Some(FmtReceiver::StringOwned),
+            MirTy::Str => Some(FmtReceiver::StrSlice),
+            MirTy::Unit => Some(FmtReceiver::Unit),
+            // Not standard-library `Display` receivers. A nominal is handled by the ordinary
+            // impl-resolution path in `lower_method_call`, which is where a user
+            // `impl Display for Point` is found; the rest have no `Display` at all in Core v1
+            // (`Ordering`/`IOError` render only through `print`/`println`, whose composite
+            // renderer walks them structurally — they have no `fmt` returning a `String`).
+            MirTy::Never
+            | MirTy::Struct(_, _)
+            | MirTy::Enum(_, _)
+            | MirTy::Tuple(_)
+            | MirTy::Array(_, _)
+            | MirTy::Slice(_)
+            | MirTy::Ref { .. }
+            | MirTy::FnPtr { .. }
+            | MirTy::Core(_, _)
+            | MirTy::HostResource(_) => None,
+        }
+    }
 }
 
 /// 0.1-A13 (WP-C7.9 Packet D): which stream an output operation writes to.

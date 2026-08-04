@@ -1711,6 +1711,30 @@ expressions may still undergo the closed set of built-in expected-type
 coercions defined in “Subtyping and Coercion” (the reference coercions
 and TYPE-COERCE-003); a function parameter is an expected-type boundary
 like any other. No user-defined coercion exists.</p>
+<p><strong>TYPE-METHOD-003.</strong> When the receiver’s type, after
+auto-dereference, is a generic parameter <code>T</code>, the candidate
+set is collected from the traits named by <code>T</code>’s declared
+bounds and from nowhere else: <code>T</code> has no inherent methods and
+no implementation to select against. Each bound resolves to exactly one
+trait identity, and a bound written twice names one trait rather than
+two. Collection is additive over the bounds, and the order in which
+bounds are written is not a selection rule; if two distinct bounds
+supply an applicable <code>m</code>, the call is ambiguous under
+TYPE-METHOD-001 step 2 and must be disambiguated with a fully-qualified
+call.</p>
+<p>A <strong>compiler-known</strong> trait (06-Standard-Library.md,
+STD-TRAIT-001) contributes candidates through this same collection,
+carrying the same signatures its implementations are required to
+provide. Compiler-known status identifies a trait to the implementation
+— it is what connects <code>Display</code> to
+<code>print</code>/<code>println</code>, <code>Iterator</code> to
+<code>for</code>, and <code>Eq</code>/<code>Ord</code> to the operators
+— and never changes which methods a bound makes callable, nor their
+priority against a user-declared trait’s.
+<code>fn show&lt;T: Display&gt;(x: &amp;T) -&gt; String { x.fmt() }</code>
+is therefore well-formed, and a user trait that also declares
+<code>fmt</code> produces an ordinary ambiguity rather than a preference
+for either side.</p>
 <h3 id="operators-and-traits">Operators and Traits</h3>
 <p>Operator expressions on <strong>primitive types</strong> have
 built-in meaning (Numeric Semantics below). Equality and ordering on
@@ -3645,10 +3669,21 @@ are <code>Copy</code>, <code>Clone</code>, <code>Drop</code>,
 implementation claiming the Core profile must provide these canonical
 items and the primitive/standard-type implementations explicitly
 required here. Additional traits or implementations are extensions and
-may not change Core resolution or coherence. The semantic laws of
-<code>Eq</code>, <code>Ord</code>, and <code>Hash</code> are defined by
-<code>TRAIT-LAW-001</code>; float participation remains owned by
-C2.9.</p>
+may not change Core resolution or coherence.</p>
+<p><strong>STD-TRAIT-002.</strong> A Core trait identity is an
+<em>ordinary</em> trait for every purpose a program can observe: its
+declared methods are callable through a generic bound on exactly the
+terms a user-declared trait’s are (03-Type-System.md, TYPE-METHOD-003),
+with the same signatures shown here, the same receiver forms, the same
+ambiguity rules, and no priority derived from being compiler-known. An
+implementation MAY represent these traits specially — it must, to
+connect them to the language hooks below — but that representation must
+not be observable as a difference in method visibility, selection, or
+diagnostics. A conforming implementation accepts
+<code>fn show&lt;T: Display&gt;(x: &amp;T) -&gt; String { x.fmt() }</code>.
+The semantic laws of <code>Eq</code>, <code>Ord</code>, and
+<code>Hash</code> are defined by <code>TRAIT-LAW-001</code>; float
+participation remains owned by C2.9.</p>
 <h3 id="canonical-language-hooks">Canonical Language Hooks</h3>
 <p><strong>STD-HOOK-001.</strong> A language hook is recognized by
 canonical standard-item identity, never by an unqualified spelling or
@@ -4141,14 +4176,21 @@ context. Reads validate UTF-8. A successful write reports the number of
 bytes accepted; callers must handle a short write. Dropping an open file
 attempts close but cannot surface a new language trap.</p>
 <p><strong>STD-FORMAT-001.</strong> <code>Display::fmt</code> returns
-valid UTF-8 and is ordinary trait dispatch.
-<code>print</code>/<code>eprint</code> append exactly the bytes produced
-by the argument’s <code>Display</code> (see PRINT-DISPLAY-001);
-<code>println</code>/<code>eprintln</code> append those bytes followed
-by byte <code>0x0A</code>, independent of host newline convention.
-Successful calls preserve program order. The process contract flushes
-submitted stdout/stderr before reporting normal return or a language
-trap; a stream write/flush failure is a host/process failure.</p>
+valid UTF-8 and is ordinary trait dispatch. Its receiver is
+<code>&amp;self</code>: formatting <strong>borrows</strong> the value
+and never consumes it, so a value remains usable after being formatted —
+including an affine or resource-bearing one, for which any other
+receiver form would make <code>Display</code> unusable. A
+<code>T: Display</code> bound therefore makes <code>x.fmt()</code>
+callable on an owned parameter without moving it (03-Type-System.md,
+TYPE-METHOD-003). <code>print</code>/<code>eprint</code> append exactly
+the bytes produced by the argument’s <code>Display</code> (see
+PRINT-DISPLAY-001); <code>println</code>/<code>eprintln</code> append
+those bytes followed by byte <code>0x0A</code>, independent of host
+newline convention. Successful calls preserve program order. The process
+contract flushes submitted stdout/stderr before reporting normal return
+or a language trap; a stream write/flush failure is a host/process
+failure.</p>
 <p><strong>PRINT-DISPLAY-001.</strong> <code>print</code>,
 <code>println</code>, <code>eprint</code>, and <code>eprintln</code> are
 implementation-provided generic functions with the signatures

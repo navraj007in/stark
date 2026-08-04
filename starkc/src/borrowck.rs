@@ -63,6 +63,14 @@ pub struct BorrowChecker<'a> {
     /// DEV-150: spans already reported as a call-argument overlap, so the left-to-right walk that
     /// follows does not report the same read a second time in different words.
     overlap_reported: HashSet<(u32, u32)>,
+    /// DEV-DISPLAY-DISPATCH: the generic parameters in scope for the body being checked — the
+    /// function's own, plus the enclosing impl's (WP-C6.2b-F5). `method_receiver` needs them to
+    /// answer "what receiver does `x.fmt()` take" when `x`'s type is a bounded parameter: the
+    /// answer is on the BOUND, and without it the receiver defaulted to by-value and every
+    /// `&self` trait method silently MOVED its receiver.
+    current_generics: Vec<hir::GenericParam>,
+    /// The enclosing impl's generic parameters, set while its methods are checked.
+    enclosing_generics: Vec<hir::GenericParam>,
 }
 
 pub fn check(
@@ -81,6 +89,8 @@ pub fn check(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
 
     checker.check_crate();
@@ -104,6 +114,8 @@ pub fn check_fn(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
     checker.check_fn_def(def);
     checker.diags
@@ -127,6 +139,8 @@ pub fn check_snippet(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
     for &stmt_id in stmts {
         checker.check_stmt(stmt_id);
@@ -392,10 +406,18 @@ impl<'a> BorrowChecker<'a> {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(def);
                 }
-                hir::ItemKind::Impl { items, .. } => {
+                hir::ItemKind::Impl {
+                    items,
+                    generics: impl_generics,
+                    ..
+                } => {
                     for impl_item in items {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            // WP-C6.2b-F5: a bound written on the impl head (`impl<T: Sh> W<T>`)
+                            // is in scope for every method body inside it.
+                            self.enclosing_generics = impl_generics.clone();
                             self.check_fn_def(def);
+                            self.enclosing_generics = Vec::new();
                         }
                     }
                 }
@@ -420,6 +442,8 @@ impl<'a> BorrowChecker<'a> {
     fn check_fn_def(&mut self, def: &hir::FnDef) {
         self.moved_places.clear();
         self.active_borrows.clear();
+        // DEV-DISPLAY-DISPATCH: the parameters a method call's receiver type may name.
+        self.current_generics = def.sig.generics.clone();
 
         // Parameters are initially owned/borrowed (not moved)
         self.check_block(def.body);
@@ -891,6 +915,66 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// DEV-DISPLAY-DISPATCH: the receiver form `method` is declared with, by whichever trait a
+    /// bound on generic parameter `param_name` supplies it.
+    ///
+    /// A user trait's declaration and a Core trait's contract are both consulted, and neither is
+    /// preferred — if two bounds supply the same name the type checker has already reported
+    /// E0203, and reading either signature here only affects which already-rejected program gets
+    /// a second diagnostic.
+    fn bound_method_receiver(&self, param_name: &str, method: &str) -> Option<hir::Receiver> {
+        let mut generics = self.current_generics.clone();
+        generics.extend(self.enclosing_generics.iter().cloned());
+        for param in &generics {
+            if self.text(param.name) != param_name {
+                continue;
+            }
+            for bound in &param.bounds {
+                let bound_name = self.text(bound.path.span).to_string();
+                // A user trait of the same spelling wins, exactly as it does in name resolution
+                // and in `typecheck::resolve_bound_trait`. A bound that names a user trait is
+                // NOT also read against the Core table, even when that trait declares no method
+                // by this name — otherwise the two passes would disagree about which trait a
+                // bound resolved to.
+                let user_trait = self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+                    let trait_id = hir::ItemId(idx as u32);
+                    let hir::ItemKind::Trait { name, .. } = &item.kind else {
+                        return None;
+                    };
+                    if self.item_text(trait_id, *name) != bound_name {
+                        return None;
+                    }
+                    Some(trait_id)
+                });
+                if let Some(trait_id) = user_trait {
+                    let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+                        continue;
+                    };
+                    let found = items.iter().find_map(|trait_item| match trait_item {
+                        hir::TraitItem::Method { sig, .. }
+                            if self.item_text(trait_id, sig.name) == method =>
+                        {
+                            sig.receiver
+                        }
+                        hir::TraitItem::Method { .. } | hir::TraitItem::AssocType { .. } => None,
+                    });
+                    if let Some(receiver) = found {
+                        return Some(receiver);
+                    }
+                    continue;
+                }
+                if let Some(core_trait) = crate::resolve::resolve_core_trait(&bound_name) {
+                    if let Some(receiver) =
+                        crate::typecheck::core_trait_method_receiver(core_trait, method)
+                    {
+                        return Some(receiver);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn method_receiver(&self, base: ExprId, name: Span) -> Option<hir::Receiver> {
         let mut base_ty = self.expr_types.get(&base)?.clone();
         while let Ty::Ref { inner, .. } = base_ty {
@@ -974,6 +1058,19 @@ impl<'a> BorrowChecker<'a> {
                 )
             {
                 return Some(hir::Receiver::Ref);
+            }
+        }
+
+        // DEV-DISPLAY-DISPATCH: a BOUNDED GENERIC receiver. The receiver kind is declared by the
+        // bound, and there was no branch for it here at all — `Ty::Param` fell into the `None`
+        // below, whose caller CONSUMES the receiver. So every `&self` method reached through a
+        // bound moved its receiver, and `let a = x.fmt(); let b = x.fmt();` failed E0100 "use of
+        // moved value" for a `T: Display` parameter exactly as it did for a `T: Named` one. The
+        // signature comes from the same two sources the type checker selects from: a user trait's
+        // own declaration, or the Core trait's implementation contract.
+        if let Ty::Param(param_name) = &base_ty {
+            if let Some(receiver) = self.bound_method_receiver(param_name, method_name) {
+                return Some(receiver);
             }
         }
 

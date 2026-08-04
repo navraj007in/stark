@@ -7232,6 +7232,215 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// DEV-DISPLAY-DISPATCH: the ordinary trait identity a written bound resolves to.
+    ///
+    /// A user trait wins over a compiler-known one of the same spelling, exactly as it does
+    /// everywhere else a name is resolved: `resolve_path` consults the module's items before it
+    /// falls back to the Core trait table, so a program that declares its own `trait Display`
+    /// gets its own.
+    fn resolve_bound_trait(&self, bound: &hir::TraitRef) -> Option<BoundTrait> {
+        let bound_trait_name = self.text(bound.path.span).to_string();
+        // DEV-069: trait names are read against the declaring item's file.
+        let user = self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+            let trait_id = ItemId(idx as u32);
+            if let hir::ItemKind::Trait { name, .. } = &item.kind {
+                if self.item_text(trait_id, *name) == bound_trait_name {
+                    return Some(trait_id);
+                }
+            }
+            None
+        });
+        if let Some(trait_id) = user {
+            return Some(BoundTrait::User(trait_id));
+        }
+        // The resolver already classified the bound; the name lookup below is the fallback for a
+        // `TraitRef` whose `res` was never populated (a path form the resolver left as `Res::Err`
+        // still spells a Core trait unambiguously).
+        match bound.res {
+            Res::CoreTrait(core_trait) => Some(BoundTrait::Core(core_trait)),
+            Res::Err
+            | Res::Item(_)
+            | Res::Local(_)
+            | Res::SelfValue(_)
+            | Res::SelfType
+            | Res::SelfAssoc(_)
+            | Res::TypeParam
+            | Res::ParamAssoc(_, _)
+            | Res::Primitive(_)
+            | Res::Builtin(_)
+            | Res::CoreType(_)
+            | Res::CoreTraitMember(_, _)
+            | Res::Variant(_, _)
+            | Res::AssociatedFn(_, _)
+            | Res::TraitMember(_, _)
+            | Res::ModelLoad(_) => {
+                crate::resolve::resolve_core_trait(&bound_trait_name).map(BoundTrait::Core)
+            }
+        }
+    }
+
+    /// DEV-DISPLAY-DISPATCH: every candidate the bounds on generic parameter `p_name` contribute
+    /// for method `name`, from both kinds of trait, one per distinct trait identity.
+    ///
+    /// This is candidate COLLECTION only. Selection, ambiguity and argument checking happen once,
+    /// at the call site, over whatever this returns — which is the whole point: a compiler-known
+    /// bound and a user bound reach the same selection through the same list.
+    fn bound_method_candidates(&self, p_name: &str, name: &str) -> Vec<BoundMethod> {
+        // WP-C6.2b-F5: consult the method's own generics AND the enclosing impl's generics, so
+        // a bound written on the impl head (`impl<T: Sh> W<T>`) is visible in the method body.
+        let mut generics = self.current_fn_generics.clone().unwrap_or_default();
+        if let Some(impl_generics) = &self.current_impl_generics {
+            generics.extend(impl_generics.iter().cloned());
+        }
+        let mut seen: Vec<BoundTrait> = Vec::new();
+        let mut candidates: Vec<BoundMethod> = Vec::new();
+        for param in &generics {
+            if self.text(param.name) != p_name {
+                continue;
+            }
+            for bound in &param.bounds {
+                let Some(bound_trait) = self.resolve_bound_trait(bound) else {
+                    continue;
+                };
+                // `T: Display + Display` names one trait, not two: a repeated bound must not
+                // manufacture an ambiguity.
+                if seen.contains(&bound_trait) {
+                    continue;
+                }
+                seen.push(bound_trait);
+                match bound_trait {
+                    BoundTrait::User(trait_id) => {
+                        if let Some(sig) = self.find_trait_method_sig(trait_id, name) {
+                            candidates.push(BoundMethod::User { trait_id, sig });
+                        }
+                    }
+                    BoundTrait::Core(core_trait) => {
+                        if let Some(method) = core_trait_bound_method(core_trait, name) {
+                            candidates.push(BoundMethod::Core {
+                                core_trait,
+                                method,
+                                trait_args: trait_ref_type_args(bound),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        candidates
+    }
+
+    /// The traits behind a set of candidates, as they read in a diagnostic.
+    fn bound_trait_list(&self, candidates: &[BoundMethod]) -> String {
+        let names: Vec<String> = candidates
+            .iter()
+            .map(|candidate| match candidate {
+                BoundMethod::User { trait_id, .. } => {
+                    let hir::ItemKind::Trait { name, .. } = &self.hir.item(*trait_id).kind else {
+                        return "<trait>".to_string();
+                    };
+                    self.item_text(*trait_id, *name).to_string()
+                }
+                BoundMethod::Core { core_trait, .. } => {
+                    core_trait_source_name(*core_trait).to_string()
+                }
+            })
+            .collect();
+        names.join(" and ")
+    }
+
+    /// DEV-DISPLAY-DISPATCH: check a call against the single selected bound candidate.
+    ///
+    /// Both arms end in the same argument-checking loop; they differ only in where the declared
+    /// parameter and return types come from — an HIR signature for a user trait, the Core trait's
+    /// implementation contract for a compiler-known one.
+    fn check_bound_method_call(
+        &mut self,
+        candidate: &BoundMethod,
+        p_name: &str,
+        args: &[ExprId],
+        call_span: Span,
+    ) -> Ty {
+        match candidate {
+            BoundMethod::User { trait_id, sig } => {
+                self.check_trait_member_call(*trait_id, sig, args, call_span)
+            }
+            BoundMethod::Core {
+                method, trait_args, ..
+            } => {
+                let self_ty = Ty::Param(p_name.to_string());
+                let trait_arg_tys: Vec<Ty> = trait_args
+                    .iter()
+                    .map(|ty| self.convert_hir_type(*ty))
+                    .collect();
+                let params_ty: Vec<Ty> = method
+                    .params
+                    .iter()
+                    .map(|term| self.contract_ty_to_ty(*term, &self_ty, &trait_arg_tys))
+                    .collect();
+                let ret_ty = match method.ret {
+                    None => Ty::Primitive(Primitive::Unit),
+                    Some(term) => self.contract_ty_to_ty(term, &self_ty, &trait_arg_tys),
+                };
+                self.check_call_arguments(params_ty, args, call_span);
+                ret_ty
+            }
+        }
+    }
+
+    /// DEV-DISPLAY-DISPATCH: a Core trait contract term as a checker type, with `Self` bound to
+    /// the receiver. `Self::Item` becomes the projection `T::Item`, which the caller normalises
+    /// against the bindings in scope — the same treatment a user trait's `Self::Item` gets.
+    fn contract_ty_to_ty(&mut self, term: ContractTy, self_ty: &Ty, trait_args: &[Ty]) -> Ty {
+        match term {
+            ContractTy::SelfTy => self_ty.clone(),
+            ContractTy::RefSelf => Ty::Ref {
+                mutable: false,
+                inner: Box::new(self_ty.clone()),
+            },
+            ContractTy::Bool => Ty::Primitive(Primitive::Bool),
+            ContractTy::UInt64 => Ty::Primitive(Primitive::UInt64),
+            ContractTy::StringTy => Ty::Primitive(Primitive::String),
+            ContractTy::Ordering => Ty::Core(CoreType::Ordering, Vec::new()),
+            ContractTy::OptionAssoc(assoc) => {
+                let base = match self_ty {
+                    Ty::Param(name) => name.clone(),
+                    other => self.ty_to_string(other),
+                };
+                Ty::Core(
+                    CoreType::Option,
+                    vec![Ty::Param(format!("{base}::{assoc}"))],
+                )
+            }
+            // An unwritten argument (`T: Into` with no `<..>`) has no type to name. `Ty::Error`
+            // is the checker's "already reported / do not cascade" type, and the missing argument
+            // is reported where the bound is written, not here.
+            ContractTy::TraitArg(index) => trait_args.get(index).cloned().unwrap_or(Ty::Error),
+        }
+    }
+
+    /// The argument half of a call against an already-resolved parameter list. Extracted so the
+    /// Core-trait bound path and `check_trait_member_call` cannot drift in how they report an
+    /// arity mismatch or unify an argument.
+    fn check_call_arguments(&mut self, params_ty: Vec<Ty>, args: &[ExprId], call_span: Span) {
+        if args.len() != params_ty.len() {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "wrong number of arguments: expected {}, found {}",
+                        params_ty.len(),
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .with_code("E0005"),
+            );
+        }
+        for (arg, param_t) in args.iter().zip(params_ty) {
+            let arg_t = self.check_expr(*arg);
+            let _ = self.unify(param_t, arg_t, self.hir.expr(*arg).span);
+        }
+    }
+
     /// Looks up trait `trait_id`'s own declared signature for method `name_str` (a required
     /// method or another default), without needing any concrete `impl` -- used both for a
     /// bounded generic type parameter's method call and for `self.other_method()` called from
@@ -7454,23 +7663,7 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Never(_) => Ty::Never,
         };
         self.file = caller_file;
-        if args.len() != params_ty.len() {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of arguments: expected {}, found {}",
-                        params_ty.len(),
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .with_code("E0005"),
-            );
-        }
-        for (arg, param_t) in args.iter().zip(params_ty) {
-            let arg_t = self.check_expr(*arg);
-            let _ = self.unify(param_t, arg_t, self.hir.expr(*arg).span);
-        }
+        self.check_call_arguments(params_ty, args, call_span);
         ret_ty
     }
 
@@ -7510,50 +7703,42 @@ impl<'a> TypeChecker<'a> {
         // auto-dereference to peel leading `&`/`&mut` before receiver matching, exactly as the
         // concrete-type path below already did with `receiver_ty`; using the same peeled type
         // here makes the bounded-parameter path obey the same rule.
+        // DEV-DISPLAY-DISPATCH: candidate collection over the bounds is ADDITIVE across both
+        // kinds of trait, and there is ONE selection step afterwards. Before this, the loop
+        // returned on the first bound that supplied the name, and only a bound naming a
+        // `hir::ItemKind::Trait` was ever consulted at all — so a compiler-known trait
+        // (`Display`, `Ord`, `Clone`, ...) contributed nothing, and two bounds supplying the same
+        // name were resolved by declaration order rather than reported as ambiguous.
         if let Ty::Param(p_name) = &receiver_ty {
-            // WP-C6.2b-F5: consult the method's own generics AND the enclosing impl's generics, so
-            // a bound written on the impl head (`impl<T: Sh> W<T>`) is visible in the method body.
-            let mut generics = self.current_fn_generics.clone().unwrap_or_default();
-            if let Some(impl_generics) = &self.current_impl_generics {
-                generics.extend(impl_generics.iter().cloned());
-            }
-            if !generics.is_empty() {
-                for param in &generics {
-                    if self.text(param.name) == p_name {
-                        for bound in &param.bounds {
-                            let bound_trait_name = self.text(bound.path.span).to_string();
-                            // DEV-069: trait names are read against the declaring item's file.
-                            let bound_trait_id =
-                                self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-                                    let trait_id = ItemId(idx as u32);
-                                    if let hir::ItemKind::Trait { name, .. } = &item.kind {
-                                        if self.item_text(trait_id, *name) == bound_trait_name {
-                                            return Some(trait_id);
-                                        }
-                                    }
-                                    None
-                                });
-                            if let Some(bound_trait_id) = bound_trait_id {
-                                if let Some(sig) =
-                                    self.find_trait_method_sig(bound_trait_id, &name_str)
-                                {
-                                    // WP-C6.2c: a trait method returning `Self::Item` yields the
-                                    // receiver's projection (`T::Item`), which is then pinned by any
-                                    // explicit `T: Trait<Item = ..>` binding in scope.
-                                    let ret = self.check_trait_member_call(
-                                        bound_trait_id,
-                                        &sig,
-                                        args,
-                                        call_span,
-                                    );
-                                    let ret = Self::subst_self(&ret, p_name);
-                                    let binding_map = self.assoc_binding_map();
-                                    return self.normalize_projections(&ret, &binding_map);
-                                }
-                            }
-                        }
-                    }
+            let p_name = p_name.clone();
+            let candidates = self.bound_method_candidates(&p_name, &name_str);
+            if candidates.len() > 1 {
+                // Same rule the concrete-receiver path applies when two impls supply the name.
+                // Order of the bounds is deliberately not a tie-breaker, and being
+                // compiler-known is deliberately not a preference.
+                self.diags.push(
+                    Diagnostic::error("ambiguous trait method call", call_span)
+                        .with_code("E0203")
+                        .with_label(format!(
+                            "'{}' is declared by more than one trait bound on '{}': {}",
+                            name_str,
+                            p_name,
+                            self.bound_trait_list(&candidates)
+                        )),
+                );
+                for &arg in args {
+                    let _ = self.check_expr(arg);
                 }
+                return Ty::Error;
+            }
+            if let Some(candidate) = candidates.into_iter().next() {
+                // WP-C6.2c: a trait method returning `Self::Item` yields the receiver's
+                // projection (`T::Item`), which is then pinned by any explicit
+                // `T: Trait<Item = ..>` binding in scope.
+                let ret = self.check_bound_method_call(&candidate, &p_name, args, call_span);
+                let ret = Self::subst_self(&ret, &p_name);
+                let binding_map = self.assoc_binding_map();
+                return self.normalize_projections(&ret, &binding_map);
             }
         }
 
@@ -7944,6 +8129,43 @@ impl<'a> TypeChecker<'a> {
                     )
                     .with_code("E0304"),
                 );
+            } else if let Ty::Param(p_name) = &receiver_ty {
+                // DEV-DISPLAY-DISPATCH: on a generic parameter, "not found" is the wrong story.
+                // The method exists; the parameter is simply not bounded by the trait that
+                // declares it, and the fix is to write that bound. Naming the trait is derived
+                // from the traits actually in scope — nothing here keys on a method name.
+                let providers = self.traits_declaring_method(&name_str);
+                let mut diagnostic = if providers.is_empty() {
+                    Diagnostic::error(
+                        format!("method '{name_str}' not found for type '{p_name}'"),
+                        call_span,
+                    )
+                    .with_code("E0302")
+                    .with_label(format!(
+                        "no trait in scope declares a method named '{name_str}'"
+                    ))
+                } else {
+                    Diagnostic::error(
+                        format!(
+                            "method '{}' requires the bound '{}: {}'",
+                            name_str, p_name, providers[0]
+                        ),
+                        call_span,
+                    )
+                    .with_code("E0302")
+                    .with_label(format!(
+                        "'{p_name}' has no bound that declares '{name_str}'"
+                    ))
+                };
+                if providers.len() > 1 {
+                    diagnostic = diagnostic.with_note(format!(
+                        "'{}' is declared by: {}. Bound '{}' by the one this call means.",
+                        name_str,
+                        providers.join(", "),
+                        p_name
+                    ));
+                }
+                self.diags.push(diagnostic);
             } else {
                 self.diags.push(
                     Diagnostic::error(
@@ -7959,6 +8181,41 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Error
         }
+    }
+
+    /// DEV-DISPLAY-DISPATCH: every trait in scope — user-declared or compiler-known — that
+    /// declares a method-callable `name`, named as it would be written in a bound.
+    ///
+    /// Both kinds are consulted, and neither is preferred: the point of the missing-bound
+    /// diagnostic is to name the trait the programmer must write, and a compiler-known trait is
+    /// written in a bound exactly like any other.
+    fn traits_declaring_method(&self, name: &str) -> Vec<String> {
+        let mut providers = Vec::new();
+        for (index, item) in self.hir.items.iter().enumerate() {
+            let trait_id = ItemId(index as u32);
+            let hir::ItemKind::Trait {
+                name: trait_name, ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let declares = self.find_trait_method_sig(trait_id, name).is_some();
+            if declares {
+                let spelled = self.item_text(trait_id, *trait_name).to_string();
+                if !providers.contains(&spelled) {
+                    providers.push(spelled);
+                }
+            }
+        }
+        for core_trait in all_core_traits() {
+            if core_trait_bound_method(core_trait, name).is_some() {
+                let spelled = core_trait_source_name(core_trait).to_string();
+                if !providers.contains(&spelled) {
+                    providers.push(spelled);
+                }
+            }
+        }
+        providers
     }
 
     /// WP-C6.2b-F1: enforce member/field visibility. `defining_item` is the item that owns the
@@ -9560,6 +9817,129 @@ fn core_trait_contract(core_trait: hir::CoreTrait) -> Option<CoreTraitContract> 
         }
     };
     Some(contract)
+}
+
+// ------------------------------------------------- DEV-DISPLAY-DISPATCH: bounds as one surface --
+
+/// The `CoreTrait` following `current` in declaration order, or `None` at the end of the enum.
+///
+/// This exists so [`all_core_traits`] can enumerate the compiler-known traits **without a list
+/// that can fall behind the enum**. The match is total: adding a `CoreTrait` variant is a
+/// compile error here, which is the no-wildcard discipline applied to an enumeration rather than
+/// to a dispatch.
+fn next_core_trait(current: hir::CoreTrait) -> Option<hir::CoreTrait> {
+    use hir::CoreTrait as CT;
+    let next = match current {
+        CT::Copy => CT::Drop,
+        CT::Drop => CT::Eq,
+        CT::Eq => CT::Ord,
+        CT::Ord => CT::Num,
+        CT::Num => CT::Clone,
+        CT::Clone => CT::Hash,
+        CT::Hash => CT::Default,
+        CT::Default => CT::Display,
+        CT::Display => CT::Error,
+        CT::Error => CT::From,
+        CT::From => CT::Into,
+        CT::Into => CT::TryFrom,
+        CT::TryFrom => CT::Index,
+        CT::Index => CT::IndexMut,
+        CT::IndexMut => CT::Iterator,
+        CT::Iterator => CT::FromIterator,
+        CT::FromIterator => return None,
+    };
+    Some(next)
+}
+
+/// Every compiler-known trait, in declaration order.
+fn all_core_traits() -> Vec<hir::CoreTrait> {
+    let mut traits = vec![hir::CoreTrait::Copy];
+    while let Some(next) = next_core_trait(*traits.last().expect("non-empty")) {
+        traits.push(next);
+    }
+    traits
+}
+
+/// The ordinary trait identity a generic bound resolves to.
+///
+/// Core v1 has two kinds of trait, and until DEV-DISPLAY-DISPATCH only one of them was reachable
+/// from a bound. A user trait has a `hir::ItemKind::Trait` declaration, and method resolution
+/// found it by matching that item's name. A compiler-known trait has no declaration item at all,
+/// so the same lookup silently produced nothing: `fn show<T: Display>(x: &T) { x.fmt() }` failed
+/// with "method 'fmt' not found for type 'T'" even though `T: Display` had been *checked* as a
+/// bound. Method visibility, in other words, depended on whether the trait happened to be
+/// compiler-known — a second trait model rather than one.
+///
+/// This type is the repair: both kinds are an identity a bound resolves to, and everything after
+/// candidate construction is shared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundTrait {
+    User(ItemId),
+    Core(hir::CoreTrait),
+}
+
+/// One method a bound contributes, with enough of its declaration to check a call.
+enum BoundMethod {
+    User {
+        trait_id: ItemId,
+        sig: hir::FnSig,
+    },
+    Core {
+        core_trait: hir::CoreTrait,
+        /// Borrowed from [`core_trait_contract`], the same table user `impl` blocks are checked
+        /// against. There is deliberately no second registry of Core-trait signatures: what a
+        /// bound makes callable is by construction what an implementation must provide.
+        method: &'static CoreTraitMethod,
+        /// The bound's own written type arguments (`T: Into<Int32>`), for `ContractTy::TraitArg`.
+        trait_args: Vec<hir::TypeId>,
+    },
+}
+
+/// The method a compiler-known trait contributes to a bound, if it declares one by this name and
+/// that method is callable with method syntax.
+///
+/// **`receiver.is_some()` is the whole filter.** `Default::default()` and `From::from(v)` have no
+/// receiver, so no `x.default()` spelling exists to resolve; they are reached through their
+/// qualified paths, which DEV-052 already handles. Nothing here keys on a method NAME — the
+/// contract's own shape decides.
+fn core_trait_bound_method(
+    core_trait: hir::CoreTrait,
+    name: &str,
+) -> Option<&'static CoreTraitMethod> {
+    let contract = core_trait_contract(core_trait)?;
+    let methods: &'static [CoreTraitMethod] = contract.methods;
+    methods
+        .iter()
+        .find(|method| method.name == name && method.receiver.is_some())
+}
+
+/// DEV-DISPLAY-DISPATCH: the receiver form a compiler-known trait declares for `name`, for the
+/// passes outside the type checker that need it — the move checker most of all, which must know
+/// that `Display::fmt` BORROWS before it decides whether `x.fmt()` consumed `x`.
+///
+/// Reads [`core_trait_contract`], the same table everything else does; there is one source for a
+/// Core trait's signatures, not one per consumer.
+pub fn core_trait_method_receiver(core_trait: hir::CoreTrait, name: &str) -> Option<hir::Receiver> {
+    core_trait_bound_method(core_trait, name).and_then(|method| method.receiver)
+}
+
+/// The written type arguments of a trait reference (`T: Into<Int32>` → `[Int32]`), skipping the
+/// argument forms that do not name a type.
+fn trait_ref_type_args(bound: &hir::TraitRef) -> Vec<hir::TypeId> {
+    let Some(args) = &bound.args else {
+        return Vec::new();
+    };
+    args.args
+        .iter()
+        .filter_map(|arg| match arg {
+            hir::GenericArg::Type(ty) => Some(*ty),
+            // An associated-type binding constrains a projection, it does not fill an argument
+            // position; a const or a tensor shape argument is not a type at all.
+            hir::GenericArg::Const(_)
+            | hir::GenericArg::Binding { .. }
+            | hir::GenericArg::Shape(_) => None,
+        })
+        .collect()
 }
 
 /// How a contract term reads in a diagnostic — the *expected* half of "expected X, found Y".

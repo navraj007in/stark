@@ -4330,3 +4330,109 @@ Two defects, recorded together because the first concealed the second.
   graphs, covering generic methods, method-level generics, trait defaults, associated types,
   bounded generic functions, fields and enum variants, and two non-colliding parameters).
 - **Owning gate:** package track, CD-358.
+
+## DEV-166 — a compiler-known trait bound contributed no callable methods (RESOLVED, DEV-DISPLAY-DISPATCH)
+
+- **Normative expectation:** `03-Type-System.md` TYPE-METHOD-003 and `06-Standard-Library.md`
+  STD-TRAIT-002 (both added by this work package, as the canonical statement of a property the
+  spec had only implied): a Core trait identity is an ordinary trait for every purpose a program
+  can observe, and its declared methods are callable through a generic bound on exactly the terms
+  a user-declared trait's are. `STD-HOOK-001` already said `Display` is *not* a syntax hook and
+  "uses ordinary name resolution, method selection, trait dispatch".
+- **Behaviour before the fix:**
+
+  ```stark
+  fn show<T: Display>(x: T) -> String {
+      x.fmt()
+  }
+  ```
+
+  `[E0302] method 'fmt' not found for type 'T'`. The identical shape over a user-declared trait
+  compiled and ran. The bound was *checked* — `satisfies_bound` accepted `T: Display` — and then
+  contributed nothing to method resolution.
+- **Root cause:** `typecheck.rs::resolve_method`'s bounded-generic branch resolved each bound by
+  searching `hir::ItemKind::Trait` items for a matching name. A compiler-known trait has no
+  declaration item, so the search returned `None`, the branch fell through, and the impl scan
+  below it could not match a `Ty::Param` receiver either. Method visibility therefore depended on
+  whether a trait happened to be compiler-known — two trait models rather than one.
+- **DEV-023's relationship to this.** DEV-023 (closed in WP-C2.11) recorded that `Display`/`Hash`
+  as *bounds* were "already correctly recognized". That was true of bound CHECKING and false of
+  everything downstream of it; the concrete-receiver half it fixed (`"hi".fmt()`) left the generic
+  half open, and nothing distinguished the two claims. This entry is the other half.
+- **Two further defects the same branch was hiding**, both pre-existing and both fixed here
+  because the shape the work package requires cannot work without them:
+  - *Ownership.* `borrowck.rs::method_receiver` had no branch for a `Ty::Param` receiver at all,
+    so it returned `None` and its caller CONSUMED the receiver. Every `&self` method reached
+    through a bound moved its receiver — for user-declared traits too:
+    `fn f<T: Named>(x: T) { x.name(); x.name(); }` failed E0100 "use of moved value".
+  - *Ambiguity.* The branch returned on the FIRST bound supplying the name, so two bounds
+    declaring the same method resolved by written order instead of being reported ambiguous.
+- **User impact (while open):** no generic code could format a value. Every `Display`-generic
+  library function — the whole reason a `Display` bound exists — was unwritable, which is why
+  `packages/` contained no formatting package before this work.
+- **Security/soundness impact:** none. It refused valid programs; it never accepted a wrong one.
+  The ownership half is the one worth noting: it was also a REFUSAL (a spurious move error), not a
+  missed move.
+- **Fix:** `typecheck.rs` collects candidates from both kinds of trait into one list and runs one
+  selection over it; a Core trait's signatures come from `core_trait_contract`, the same table
+  user `impl` blocks are already checked against, so there is no second signature registry.
+  `borrowck.rs` reads the receiver form from the same source. `interp.rs` dispatches a
+  generic-parameter receiver through the Core surface when the runtime value has no nominal.
+  `mir/lower.rs` lowers `Display::fmt` on a standard-library receiver to new
+  `stark_runtime::format` calls that share their renderers with `print`/`println`.
+- **Evidence:** `tests/dev_display_dispatch.rs` — 21 tests: three-engine agreement over the
+  primitives, user impls, non-`Copy` and affine values, nested forwarding, both bound orders and
+  an impl-head bound; missing-bound, wrong-bound, unknown-method, non-`Display`-concrete-type,
+  arity and ambiguity rejections; a generated-source check that the native engine uses STARK's
+  renderers and not Rust's `Display`/`Debug`/`format!`/`ToString`; and debug-vs-release native
+  agreement. Plus `packages/stark-fmt`, whose whole surface is generic over `Display`.
+- **Owning gate:** package/application track, CD-378.
+
+## DEV-167 — `Display::fmt` has no method-form `to_string()` counterpart (OPEN, deferred by decision)
+
+- **Normative expectation:** `06-Standard-Library.md` describes `str::to_string`/`String::from`
+  but does not promise a `to_string()` method on every `Display` type. This entry exists so the
+  absence is recorded rather than rediscovered.
+- **Current behaviour:** `x.to_string()` resolves only for `str`/`String` receivers, through the
+  ordinary runtime-text surface. A `T: Display` parameter has no `to_string()`.
+- **Why it is deferred rather than fixed:** the principled mechanism is
+  `impl<T: Display> ToString for T`, and Core v1 has neither blanket implementations nor extension
+  traits. The alternative — a resolver branch keyed on the method name `to_string` — would
+  reintroduce exactly the two-tier model DEV-166 removed, for an ergonomic gain.
+- **Workaround, and it is a real one:** a free function over the ordinary bound.
+  `packages/stark-fmt` ships it as `to_string<T: Display>(value: &T) -> String`.
+- **Owning gate:** unassigned; blocked on a blanket-implementation decision, which is CE-shaped.
+
+## DEV-168 — a qualified call to a compiler-known trait's method has no MIR lowering (OPEN)
+
+- **Normative expectation:** TYPE-METHOD-001 — "Trait methods can always be called in
+  fully-qualified function form — `Display::fmt(&x)`". The spec names this exact call.
+- **Current behaviour:** `Display::fmt(&x)` type-checks (DEV-052) and runs under the HIR oracle,
+  and MIR lowering refuses it with "callee form (C4.5)". So the shape the spec offers as the
+  disambiguation mechanism for an ambiguous trait method cannot be built natively.
+- **User impact:** a program whose generic parameter is bounded by two traits declaring the same
+  method is correctly reported ambiguous, and the documented way to resolve it runs in only one
+  of the three engines. A user trait's qualified call (`OtherFormat::fmt(&x)`) has the same gap.
+- **Security/soundness impact:** none — a refusal at lowering, caught before any code is emitted.
+- **Discovered by:** DEV-DISPLAY-DISPATCH, while proving that the ambiguity it introduces is
+  resolvable. Deliberately not fixed there: adding a qualified-call lowering is a feature, and the
+  work package's scope statement excludes expanding into one.
+- **Evidence:** `tests/dev_display_dispatch.rs::qualified_calls_disambiguate_the_two_traits`,
+  which checks the shape through the front end and the oracle and states this limitation.
+- **Owning gate:** unassigned.
+
+## DEV-169 — an explicit `.drop()` call is accepted (OPEN, pre-existing)
+
+- **Normative expectation:** `03-Type-System.md` "Copy and Drop" — destructors run exactly once
+  and there are no explicit `Drop::drop` calls.
+- **Current behaviour:** `r.drop()` on a type with `impl Drop for R` type-checks, because
+  `impl Drop`'s method is an ordinary `ImplItem::Fn` that the method candidate scan finds like any
+  other. Confirmed empirically 2026-08-04.
+- **Security/soundness impact:** potentially real — an explicit call followed by the automatic one
+  is a double destruction at the source level. Not investigated here; whether the drop flag
+  suppresses the second run is unverified.
+- **Discovered by:** DEV-DISPLAY-DISPATCH, while deciding which Core-trait methods a bound should
+  make callable. `Drop::drop` was included so the generic path matches the concrete one exactly —
+  the deviation is in the concrete path, and hiding it from the generic path would have made the
+  two disagree for no stated reason.
+- **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).

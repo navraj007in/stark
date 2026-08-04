@@ -1681,6 +1681,41 @@ impl<'a> Interp<'a> {
             StringNew => Ok(MirValue::String(String::new())),
             StringFromStr => Ok(MirValue::String(self.as_str(&first)?.to_string())),
             StrToString => Ok(MirValue::String(self.as_str(&first)?.to_string())),
+            // DEV-DISPLAY-DISPATCH: `Display::fmt` on a primitive. Every arm calls the SAME
+            // `stark_runtime::format` renderer the native backend emits and the HIR oracle
+            // delegates to, so the three engines cannot render one value three ways.
+            FmtInt64 => {
+                let v = int_arg(first)?;
+                let v = i64::try_from(v)
+                    .map_err(|_| MirRunError::Internal(format!("Int64 out of range: {v}")))?;
+                Ok(MirValue::String(stark_runtime::format::fmt_i64(v)))
+            }
+            FmtUInt64 => {
+                let v = int_arg(first)?;
+                let v = u64::try_from(v)
+                    .map_err(|_| MirRunError::Internal(format!("UInt64 out of range: {v}")))?;
+                Ok(MirValue::String(stark_runtime::format::fmt_u64(v)))
+            }
+            FmtBool => match first {
+                Some(MirValue::Bool(b)) => Ok(MirValue::String(stark_runtime::format::fmt_bool(b))),
+                other => self.internal(format!("expected a Bool argument, got {other:?}")),
+            },
+            FmtFloat64 => match first {
+                Some(MirValue::Float(f)) => Ok(MirValue::String(stark_runtime::format::fmt_f64(f))),
+                other => self.internal(format!("expected a Float64 argument, got {other:?}")),
+            },
+            // The declared width lives on the OPERATION (DEV-105), so the interpreter narrows its
+            // internal `f64` storage back to `f32` here, exactly as `PrintFloat32` does.
+            FmtFloat32 => match first {
+                Some(MirValue::Float(f)) => {
+                    Ok(MirValue::String(stark_runtime::format::fmt_f32(f as f32)))
+                }
+                other => self.internal(format!("expected a Float32 argument, got {other:?}")),
+            },
+            FmtChar => Ok(MirValue::String(stark_runtime::format::fmt_char(char_of(
+                &first,
+            )?))),
+            FmtUnit => Ok(MirValue::String(stark_runtime::format::fmt_unit())),
             StrBytes => {
                 let s = self.as_str(&first)?;
                 Ok(MirValue::ByteSlice(std::rc::Rc::from(s.as_bytes())))

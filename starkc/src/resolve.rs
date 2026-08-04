@@ -2180,7 +2180,7 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
     }
 }
 
-fn resolve_core_trait(name: &str) -> Option<CoreTrait> {
+pub(crate) fn resolve_core_trait(name: &str) -> Option<CoreTrait> {
     match name {
         "Copy" => Some(CoreTrait::Copy),
         "Drop" => Some(CoreTrait::Drop),

@@ -119,6 +119,16 @@ CASES = [
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",
     ),
+    # DEV-DISPLAY-DISPATCH's proof workload. `stark-fmt` exists to show that a generic
+    # `T: Display` bound is usable by a package author, not only inside the compiler's own tests:
+    # `Line::value` is an ordinary generic method whose only tool is `Display::fmt`. The expected
+    # stdout is a real rendering rather than a marker line, because rendering IS the behaviour —
+    # a marker would pass against a package that formatted every value as the empty string.
+    PackageCase(
+        package="stark-fmt",
+        consumer="stark-fmt-consumer",
+        expected_stdout="pkg=stark n=42 r=0.75 ok=true\nv=0.1\n0.1\n",
+    ),
     # The HTTP substrate (CD-304), added CD-326. Nothing in CI had ever run these five — not
     # their tests, not `fmt --check`, not a native build — which is how three of them stayed
     # unformatted from the day they landed until CD-325, and how `stark-mime`, `stark-query`

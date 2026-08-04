@@ -605,6 +605,19 @@ pub enum RuntimeFn {
     StrSubstring,
     StrEq,
     StrCmp,
+    // --- DEV-DISPLAY-DISPATCH: `Display::fmt(&self) -> String` on the standard-library
+    // primitives. These RETURN the canonical rendering instead of submitting it to an output
+    // sink, which is what `x.fmt()` needs — including after a generic `T: Display` has been
+    // monomorphised down to a primitive. They share `stark_runtime::format`'s renderers with the
+    // `Print*` family above, so a value cannot format one way and print another. Integer widths
+    // widen to `Int64`/`UInt64` at lowering, exactly as the print family does. ---
+    FmtInt64,
+    FmtUInt64,
+    FmtBool,
+    FmtFloat64,
+    FmtFloat32,
+    FmtChar,
+    FmtUnit,
     // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT
     // here: STARK's `.iter()` is by-reference (`&T`), which A1 reserved to an interior-
     // reference sub-slice; activating it needs an owner-reviewed surface bump. ---

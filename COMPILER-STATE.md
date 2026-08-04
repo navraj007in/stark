@@ -1,5 +1,134 @@
 # STARK Compiler STATE
 
+## CD-378 — DEV-DISPLAY-DISPATCH: a compiler-known trait bound was not a trait bound (2026-08-04)
+
+**`fn show<T: Display>(x: T) -> String { x.fmt() }` was rejected.** `[E0302] method 'fmt' not found
+for type 'T'` — while the identical shape over a user-declared trait compiled and ran. The bound was
+*checked*; it contributed nothing to method resolution.
+
+### The defect is the trait model, not formatting
+
+`typecheck.rs::resolve_method`'s bounded-generic branch resolved each bound by searching
+`hir::ItemKind::Trait` items for a matching name. A compiler-known trait has no declaration item —
+`resolve.rs` turns `Display` into `Res::CoreTrait(CoreTrait::Display)` and there the trait ends — so
+the search returned `None`, the loop fell through, and the impl scan below could not match a
+`Ty::Param` receiver either. Method visibility depended on whether a trait happened to be
+compiler-known. That is two trait models, and the same hole covered `Ord::cmp`, `Clone::clone`,
+`Hash::hash`, `Iterator::next` and `Into::into` on a bounded parameter. `Display` is where it was
+noticed only because a `Display` bound has no purpose except calling `fmt`.
+
+**DEV-023 (WP-C2.11) recorded that `Display`/`Hash` as bounds were "already correctly recognized".**
+That was true of bound CHECKING and false of everything downstream. It fixed the concrete half
+(`"hi".fmt()`) and left the generic half open, and nothing in the entry distinguished the two claims.
+
+### Two more defects were in the same branch, and both are pre-existing
+
+* **The move checker had no bounded-generic receiver at all.** `borrowck.rs::method_receiver`
+  returned `None` for `Ty::Param`, and its caller's `None` arm CONSUMES the receiver. Every `&self`
+  method reached through any bound moved it — for USER traits too:
+  `fn f<T: Named>(x: T) { x.name(); x.name(); }` failed E0100 "use of moved value". Confirmed
+  empirically before the fix. This had to be fixed here, because "format a value and keep using it"
+  is the property the work package exists to establish.
+* **Bound order was a resolution rule.** The branch returned on the first bound supplying the name,
+  so `T: A + B` with both declaring `m` picked `A` silently instead of reporting ambiguity.
+
+### What landed: one candidate path
+
+`BoundTrait` makes both kinds of trait *an identity a bound resolves to* — `User(ItemId)` or
+`Core(CoreTrait)`. Candidates are collected additively from every bound, de-duplicated by trait
+identity, and then ONE selection runs: zero is a missing-bound diagnostic, one is checked, more than
+one is E0203 naming both traits. Argument checking, `Self` substitution, associated-type
+normalisation and diagnostics are shared from that point. A user trait of the same spelling wins,
+the same precedence `resolve_path` already applies.
+
+**No second signature registry was added.** `core_trait_contract` — WP-C7.9 Packet B's table for
+checking user `impl` blocks against a Core trait's required shape — already carried
+`fmt / Some(Ref) / [] / String`. A bound now reads that table. What a bound makes callable is by
+construction what an implementation must provide. The filter on which Core methods a bound exposes
+is `receiver.is_some()`, a property of the contract: `Default::default` and `From::from` have no
+receiver and therefore no method spelling to resolve. **No method-name branch exists anywhere in the
+change** — nothing keys on the string `"fmt"`.
+
+### The missing-bound diagnostic
+
+```text
+[E0302] method 'fmt' requires the bound 'T: Display'
+   |
+   |     x.fmt()
+   |     ^^^^^^^ 'T' has no bound that declares 'fmt'
+```
+
+Derived from the traits actually in scope, user and compiler-known alike, so it also names a user
+trait and says nothing when no trait declares the name (that case keeps the plain "not found"
+wording). Fires for `fn bad<T>(..)` and for `fn bad<T: Named>(..)` identically.
+
+### The concrete tail: primitives had no `Display` impl to find
+
+Monomorphisation grinds `T` down before MIR sees it. For a user nominal the ordinary impl path
+resolved `fmt` already; for a PRIMITIVE there is no impl item, because 06 declares
+`impl Display for Int32` "and similar for other types" and no source file writes those blocks. Seven
+`RuntimeFn` variants (`FmtInt64`, `FmtUInt64`, `FmtBool`, `FmtFloat64`, `FmtFloat32`, `FmtChar`,
+`FmtUnit`) are the lowering of exactly those declarations, sharing `stark_runtime::format`'s
+renderers with the `Print*` family — so `x.fmt()` and `println(x)` cannot disagree in any engine.
+`String`/`str` reuse `StringAsStr`/`StrToString`. The `RuntimeFn` matches in `emit_runtime.rs`,
+`mir/verify.rs` and `mir/interp.rs` are exhaustive, so all three were forced open by the addition.
+
+### Spec first
+
+**TYPE-METHOD-003** (03-Type-System.md) states that a generic parameter's candidates come from its
+bounds and nowhere else, that collection is additive, that written order is not a selection rule,
+and that a compiler-known trait contributes through the same collection with no priority.
+**STD-TRAIT-002** (06-Standard-Library.md) states the same property from the library side and names
+the program a conforming implementation must accept. STD-FORMAT-001 gained the sentence the
+ownership work depends on: `Display::fmt`'s receiver is `&self`; formatting borrows and never
+consumes, which is what makes `Display` usable at all for an affine type. Compiled spec regenerated.
+
+### Evidence
+
+- `starkc/tests/dev_display_dispatch.rs` — 21 tests. Every positive case goes through the shared
+  three-engine comparator with stdout pinned in the test rather than taken from an engine: all
+  `Display` primitives through one generic function, user impls, non-`Copy` and affine values used
+  after formatting, nested `outer<T>`→`inner<U>` forwarding, both bound orders, an impl-head bound,
+  and debug-vs-release native agreement. Negative: missing bound, wrong bound, unknown method,
+  non-`Display` concrete type, arity, and ambiguity in BOTH orders.
+- `native_selects_stark_formatting_not_rusts` reads the generated crate and requires
+  `stark_runtime::format::fmt_i64` present and `format!`, `std::fmt::Display`, `std::fmt::Debug`,
+  `#[derive(Debug`, `ToString` absent.
+- `packages/stark-fmt` + `packages/stark-fmt-consumer` — the proof workload, registered in the
+  qualification gate. `Line::value<T: Display>` and `to_string<T: Display>` are the whole surface.
+  7 package tests; consumer runs identically under the interpreter and as a native binary.
+- Full report: `starkc/docs/compiler/WP-DEV-DISPLAY-DISPATCH.md`.
+
+### One transitional compromise, stated plainly
+
+`core_trait_contract` is not an ordinary trait DECLARATION, and the preferred architecture asks for
+one. Core trait method metadata must eventually be derived from real prelude trait items carrying a
+lang-item-like classification, at which point that table and `BoundTrait::Core` both disappear and
+`BoundTrait` collapses to a single `ItemId`. That is a resolver-bootstrap change — the prelude has
+no source file today — and is a tracked follow-up, not part of this work package.
+
+### Opened
+
+- **DEV-167** — no method-form `to_string()`; needs blanket implementations. `stark-fmt` ships the
+  free function. Deferred by decision, NOT by resolver special-casing.
+- **DEV-168** — `Display::fmt(&x)` has no MIR lowering ("callee form (C4.5)"). TYPE-METHOD-001 names
+  this call as the way to disambiguate an ambiguous trait method, and it runs in one engine of three.
+  Found while proving the ambiguity this work package introduces is resolvable.
+- **DEV-169** — an explicit `.drop()` call type-checks. Pre-existing, in the CONCRETE path;
+  `Drop::drop` was included in the bound surface so the generic path matches it rather than
+  disagreeing for no stated reason. Needs a spec-vs-implementation ruling.
+- Untracked follow-up: `Clone::clone`, `Hash::hash`, `Iterator::next` and `Into::into` are now
+  callable through a bound at the front end, and their concrete lowering is uneven — a program using
+  them generically now fails at LOWERING rather than at type checking. Worse diagnostic position for
+  shapes that were rejected outright before; not a regression in what compiles.
+
+### Status
+
+DEV-166 CLOSED. The REST server's formatting prerequisite is **met** for rendering values into text;
+see the work-package report §8 for the two limits to scope around (no format strings; `Display` is
+not a serialisation format — use `stark-json` for payloads).
+
+
 ## CD-377 — installer Phase I: the layout the compiler could not find (2026-08-03)
 
 **The installed toolchain could not build anything on macOS or Windows.** CI caught the symptom on

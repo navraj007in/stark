@@ -2951,6 +2951,17 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrSubstring => (vec![str_ref(), MirTy::UInt64, MirTy::UInt64], str_ref()),
         StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
+        // DEV-DISPLAY-DISPATCH: `Display::fmt` on a primitive. The operand is the WIDENED scalar,
+        // not a reference: `&self` is discharged at lowering, where the receiver place is read by
+        // copy (every type in this family is `Copy`), so no borrow reaches the runtime call. The
+        // `String` half of `Display` reuses `StringClone`/`StrToString` and is not listed here.
+        FmtInt64 => (vec![MirTy::Int64], MirTy::String),
+        FmtUInt64 => (vec![MirTy::UInt64], MirTy::String),
+        FmtBool => (vec![MirTy::Bool], MirTy::String),
+        FmtFloat64 => (vec![MirTy::Float64], MirTy::String),
+        FmtFloat32 => (vec![MirTy::Float32], MirTy::String),
+        FmtChar => (vec![MirTy::Char], MirTy::String),
+        FmtUnit => (vec![], MirTy::String),
         // 0.1-A3 (f-3b): Char ops.
         PrintlnChar | PrintChar => (vec![MirTy::Char], MirTy::Unit),
         // 0.1-A13 (WP-C7.9 Packet D): the stderr half takes exactly the operand shapes its stdout
