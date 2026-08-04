@@ -124,7 +124,11 @@ fn the_mir_version_records_every_shape_amendment() {
     // **A13 (WP-C7.9 Packet D) does move it**, to `0.1-A13`: the stderr half of the output surface
     // is fourteen new `RuntimeFn` members. `MIR_VERSION` stays at `0.3` because A13 adds no shape —
     // no statement, terminator, or type — which is the distinction these two constants draw.
-    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A13");
+    //
+    // **A14 (CD-381) moves it again**, to `0.1-A14`: twelve `RuntimeFn` members added across
+    // CD-378 (`Fmt*`) and CD-380 (`Fmt*Spec`). `MIR_VERSION` still stays at `0.3` for the same
+    // reason — formatting adds runtime operations, not a statement, terminator or type.
+    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A14");
 }
 
 // ------------------------------------------------- nothing may manufacture one --

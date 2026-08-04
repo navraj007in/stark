@@ -181,13 +181,22 @@ fn expect_code(program: &MirProgram, code: &str) {
 
 /// A10 §7: the surface constant advances when the runtime surface changes.
 ///
-/// A10 took it to `0.1-A10`; **A13 (WP-C7.9 Packet D) takes it to `0.1-A13`** by adding the stderr
-/// half of the output operations — fourteen `RuntimeFn` members, which is exactly the kind of
-/// change this constant exists to announce. The pin moves with each revision on purpose: an
+/// A10 took it to `0.1-A10`; A13 (WP-C7.9 Packet D) took it to `0.1-A13` by adding the stderr half
+/// of the output operations; **A14 (CD-381) takes it to `0.1-A14`**, covering twelve `RuntimeFn`
+/// members added across CD-378 (`Fmt*` — `Display::fmt` on standard-library receivers) and CD-380
+/// (`Fmt*Spec` — format-specification application). The pin moves with each revision on purpose: an
 /// unannounced surface change fails here rather than reaching a consumer built against the old one.
+///
+/// **A known weakness of this guard, recorded rather than left implicit.** It pins the CONSTANT,
+/// not the surface, so it fails when the constant moves — not when the surface grows without it.
+/// CD-378 and CD-380 each added `RuntimeFn` members and left the constant alone; this test stayed
+/// green through both, and an external review found the omission instead. A guard that could fail
+/// for the right reason would have to derive something from the `RuntimeFn` set itself; a
+/// hand-maintained variant count would not, because whoever adds a member updates the count in the
+/// same edit.
 #[test]
 fn runtime_surface_is_current() {
-    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A13");
+    assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A14");
 }
 
 /// A10 adds **no** `RuntimeFn` member, and `Callee::Provider` is a form `RuntimeFn` cannot

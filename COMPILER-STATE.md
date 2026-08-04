@@ -62,6 +62,28 @@ is also still unobserved — the first push failed CI on clippy before reaching 
 form, comments inside fields (including a nested block comment and `}`/`:` inside one), and the six
 inert-flag refusals.
 
+### CI found three more, and one of them is a guard working as designed
+
+The first push of this packet failed CI on three targets:
+
+* `a10_provider_call::runtime_surface_is_current` and
+  `a11_host_resource::the_mir_version_records_every_shape_amendment` both PIN the surface constant.
+  Bumping to A14 fired them, which is their purpose. **But note what that means:** these guards
+  pin the constant, not the surface, so they fail when the constant moves and stay silent when the
+  surface grows without it. They were green through CD-378 and CD-380 while twelve `RuntimeFn`
+  members were added unannounced. Recorded in `a10_provider_call.rs` rather than left implicit; a
+  guard that could fail for the right reason would have to derive something from the `RuntimeFn`
+  set itself.
+* `adversarial_stderr::the_eprint_family_accepts_only_str_today` — the WP-C7.9 test that pinned
+  DEV-174's restriction. Its own doc comment said the lowering already supported every `Display`
+  shape, that widening would need "only a signature change and cases", and that this test "fails
+  the day that happens, which is the right moment to add them." It did, and they are added: the
+  three shapes it rejected now render byte for byte on stderr, plus a negative pinning that a type
+  without `Display` is still refused there.
+
+A recorded limitation carrying a test that fails when it is lifted is worth more than a to-do
+comment. It turned this repair into one commit instead of a rediscovery.
+
 ### Status
 
 DEV-174 CLOSED. DEV-173 remains open and is what stands between "v0.1 partial" and complete

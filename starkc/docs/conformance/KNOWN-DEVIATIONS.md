@@ -4598,5 +4598,16 @@ Two defects, recorded together because the first concealed the second.
 - **Fix:** the stderr pair is typed like the stdout pair, and both pairs now go through the same
   deferred `Display` check, so `eprintln` of a type with no `Display` impl is rejected for the same
   reason `println` is.
-- **Evidence:** `tests/wp_fmt_001_interpolation.rs::the_output_family_accepts_an_interpolated_temporary_directly`.
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::the_output_family_accepts_an_interpolated_temporary_directly`,
+  and `tests/adversarial_stderr.rs::the_eprint_family_accepts_every_display_value` — the three
+  shapes WP-C7.9's `the_eprint_family_accepts_only_str_today` had pinned as rejections, now proven
+  to render byte for byte on stderr. `::the_eprint_family_still_requires_display` pins that
+  widening the signature widened nothing else.
+- **A note on how this was found and how it was meant to be found.** WP-C7.9 recorded the
+  restriction deliberately, said the lowering already supported every `Display` shape so widening
+  would need "only a signature change and cases", and predicted that its pinning test would "fail
+  the day that happens, which is the right moment to add them". That is exactly what occurred: the
+  test failed in CI on the signature change, and the cases it asked for are the ones now present.
+  A recorded limitation with a test that fails when it is lifted is a better artifact than a
+  to-do — it is why this repair took one commit rather than a rediscovery.
 - **Owning gate:** package/application track, CD-381.
