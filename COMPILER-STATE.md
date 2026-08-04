@@ -1,5 +1,92 @@
 # STARK Compiler STATE
 
+## CD-379 — DEV-BOUND-TRAIT-IDENTITY: a bound denoted whatever trait was spelled the same (2026-08-04)
+
+**A follow-up to CD-378, and a correction to it.** CD-378 unified method candidate *collection*
+across user and compiler-known traits. The step before that — deciding WHICH trait a bound denotes —
+was still done by spelling, in two passes, and below the front end execution did not use the answer
+at all.
+
+### Four failures, all reproduced before any code changed
+
+`typecheck::resolve_bound_trait` and `borrowck::bound_method_receiver` each took
+`text(bound.path.span)` and scanned every HIR item for a trait declared with that name.
+
+1. **A qualified bound matched nothing.** `T: traits::Render` compared `"traits::Render"` against
+   the declaration's name `"Render"`. The bound contributed no methods, and `value.render()` was
+   rejected with *"method 'render' requires the bound 'T: Render'"* — on a function whose signature
+   already wrote exactly that bound. Every bound on a trait a package exports through a module was
+   unusable.
+2. **An unrelated trait captured the name.** `mod unrelated { pub trait Display { fn other(&self); } }`
+   anywhere in the program took over every `T: Display` bound. CD-378's own §2 stated this as a
+   design — "a user trait of the same spelling wins, exactly as `resolve_path` does" — which was the
+   defect written down as a rule: `resolve_path` resolves against the bound's module and imports; a
+   global name scan does not.
+3. **Declaration order decided ownership.** Two same-named traits, one `&self` and one `self`: the
+   borrow checker returned whichever appeared FIRST in HIR item order. The same program compiled or
+   failed E0100 depending only on the order its two trait declarations were written in. The
+   regression test is that pair, both halves of which must compile.
+4. **Execution ignored the identity entirely.** Even with the front end fixed, both engines selected
+   an implementation by method NAME on the receiver's nominal, so a type implementing two same-named
+   `Render` traits ran the same body for both bounds. The type checker was right and every engine
+   below it was wrong the same way — which is exactly what three-engine agreement cannot detect.
+
+**Failures 1 and 2 are refusals. Failures 3 and 4 are acceptances of the wrong program** — an
+order-dependent move check, and a call executing a different trait's body than the one type checking
+approved. That is the more serious half of this entry.
+
+### The repair: one identity, read from the resolver
+
+`hir::resolved_bound_trait(hir, bound)` reads `TraitRef::res` and nothing else, with exhaustive
+matches over `Res` and `ItemKind` — a new resolution or item category forces a decision here rather
+than falling into a `_ => None`. `hir::BoundTrait` moved out of `typecheck` so both front-end passes
+consume the same type and the same answer. **No spelling-based bound lookup remains in either pass.**
+
+Below the front end: the checker records the selected trait per call site
+(`TypeTables::bound_trait_calls`, `Res::Item` or `Res::CoreTrait`); the HIR interpreter passes it to
+`find_method`'s already-existing trait filter, and MIR lowering passes it to a new one on
+`find_impl_fn`. A filtered lookup considers only that trait's impl — never an inherent method and
+never another trait's — exactly as a qualified call does.
+
+**Canonical symbols now carry the trait's module path.** `impl left::Render for Item` and
+`impl right::Render for Item` both produced `Item::Render::tag@[]`; the C5.4a linkage preflight
+refused the program as "one symbol, two identities", and it was right to. A top-level trait's prefix
+is empty, so every pre-existing symbol is byte-identical.
+
+### What CD-378 got right, kept
+
+Candidate collection, selection, ambiguity, the single Core-trait signature table, the `&self`
+ruling for `Display::fmt`, and the missing-bound diagnostic all stand unchanged. All 21 cases in
+`tests/dev_display_dispatch.rs` pass unmodified; `stark-fmt`'s public API, its 7 tests and both
+consumer paths are unchanged.
+
+### Evidence
+
+- `starkc/tests/dev_bound_trait_identity.rs` — 15 tests: qualified bounds through nested generics
+  and an impl head; two same-named traits in two modules dispatching to `L` and `R` (which pins
+  which BODY ran, not merely that it compiled); an unrelated `Display` failing to capture a Core
+  bound and an imported one correctly winning; receiver identity across `&self`, `&mut self` and
+  `self`; the declaration-order pair; and a direct assertion that `resolved_bound_trait` returns the
+  resolver's own `Res::Item`.
+- Correction appended to `starkc/docs/compiler/WP-DEV-DISPLAY-DISPATCH.md` — append-only, stating
+  what that report examined and what it did not, rather than editing it to look prescient.
+
+### Opened
+
+- **DEV-171 — an unrelated trait satisfies an OPERATOR bound by spelling.** `use fake::Eq;` then
+  `fn compare<T: Eq>(a: T, b: T) -> Bool { a == b }` is ACCEPTED; written qualified (`T: fake::Eq`)
+  it is correctly rejected. `ty_satisfies_operator_bound` compares the bound's text against `"Eq"`.
+  Not fixed here: it is bound *satisfaction* rather than method identity, the same function also
+  serves built-in obligations that have no `TraitRef` (DEV-118), and the repair decides what a
+  user trait shadowing a Core trait's name means for operators — a semantics ruling, CE2-shaped.
+
+### Status
+
+DEV-170 CLOSED. **DEV-DISPLAY-DISPATCH (CD-378) is now fully closed**: it was closed for the
+property it stated and open on one it did not state — that a bound denotes the trait the resolver
+selected. Both hold.
+
+
 ## CD-378 — DEV-DISPLAY-DISPATCH: a compiler-known trait bound was not a trait bound (2026-08-04)
 
 **`fn show<T: Display>(x: T) -> String { x.fmt() }` was rejected.** `[E0302] method 'fmt' not found

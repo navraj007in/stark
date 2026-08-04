@@ -918,6 +918,15 @@ impl<'a> BorrowChecker<'a> {
     /// DEV-DISPLAY-DISPATCH: the receiver form `method` is declared with, by whichever trait a
     /// bound on generic parameter `param_name` supplies it.
     ///
+    /// **DEV-BOUND-TRAIT-IDENTITY: the bound's identity comes from the resolver.** This pass used
+    /// to take the bound's SPELLING and scan every HIR item for a trait declared with that name,
+    /// which meant a qualified bound matched nothing, an unrelated same-named trait could win,
+    /// and — worst — with two same-named traits the receiver came from whichever appeared first
+    /// in HIR order. Two identical programs differing only in the order their traits were
+    /// declared then disagreed about whether `x.act()` moved `x`. Both passes now read
+    /// `hir::resolved_bound_trait`, so the trait the type checker selected a method FROM is the
+    /// trait this reads the receiver form OF.
+    ///
     /// A user trait's declaration and a Core trait's contract are both consulted, and neither is
     /// preferred — if two bounds supply the same name the type checker has already reported
     /// E0203, and reading either signature here only affects which already-rejected program gets
@@ -930,45 +939,22 @@ impl<'a> BorrowChecker<'a> {
                 continue;
             }
             for bound in &param.bounds {
-                let bound_name = self.text(bound.path.span).to_string();
-                // A user trait of the same spelling wins, exactly as it does in name resolution
-                // and in `typecheck::resolve_bound_trait`. A bound that names a user trait is
-                // NOT also read against the Core table, even when that trait declares no method
-                // by this name — otherwise the two passes would disagree about which trait a
-                // bound resolved to.
-                let user_trait = self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-                    let trait_id = hir::ItemId(idx as u32);
-                    let hir::ItemKind::Trait { name, .. } = &item.kind else {
-                        return None;
-                    };
-                    if self.item_text(trait_id, *name) != bound_name {
-                        return None;
-                    }
-                    Some(trait_id)
-                });
-                if let Some(trait_id) = user_trait {
-                    let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
-                        continue;
-                    };
-                    let found = items.iter().find_map(|trait_item| match trait_item {
-                        hir::TraitItem::Method { sig, .. }
-                            if self.item_text(trait_id, sig.name) == method =>
-                        {
-                            sig.receiver
-                        }
-                        hir::TraitItem::Method { .. } | hir::TraitItem::AssocType { .. } => None,
-                    });
-                    if let Some(receiver) = found {
-                        return Some(receiver);
-                    }
+                let Some(bound_trait) = hir::resolved_bound_trait(self.hir, bound) else {
                     continue;
-                }
-                if let Some(core_trait) = crate::resolve::resolve_core_trait(&bound_name) {
-                    if let Some(receiver) =
-                        crate::typecheck::core_trait_method_receiver(core_trait, method)
-                    {
-                        return Some(receiver);
+                };
+                let receiver = match bound_trait {
+                    // DEV-069: the trait's method names belong to the TRAIT's declaring file.
+                    hir::BoundTrait::User(trait_id) => {
+                        hir::trait_method_receiver(self.hir, trait_id, method, |item, span| {
+                            self.item_text(item, span).to_string()
+                        })
                     }
+                    hir::BoundTrait::Core(core_trait) => {
+                        crate::typecheck::core_trait_method_receiver(core_trait, method)
+                    }
+                };
+                if let Some(receiver) = receiver {
+                    return Some(receiver);
                 }
             }
         }

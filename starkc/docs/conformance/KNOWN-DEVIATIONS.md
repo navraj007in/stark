@@ -4436,3 +4436,90 @@ Two defects, recorded together because the first concealed the second.
   the deviation is in the concrete path, and hiding it from the generic path would have made the
   two disagree for no stated reason.
 - **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).
+
+## DEV-170 — a generic bound's trait identity was reconstructed from its spelling (RESOLVED, DEV-BOUND-TRAIT-IDENTITY)
+
+- **Normative expectation:** `03-Type-System.md` TYPE-METHOD-003 — a generic parameter's candidates
+  come from "the traits named by `T`'s declared bounds", and `TYPE-NOMINAL-001` makes item identity
+  a package/module/name triple, not a bare name. Which trait a bound denotes is settled by name
+  resolution (04-Semantic-Analysis.md); no later pass re-decides it.
+- **Behaviour before the fix.** `typecheck::resolve_bound_trait` and
+  `borrowck::bound_method_receiver` each took `text(bound.path.span)` — the bound's SOURCE TEXT —
+  and scanned every HIR item for a trait declared with that name. Three failures, all reproduced
+  before any code changed:
+  1. **A qualified bound matched nothing.** `T: traits::Render` compared `"traits::Render"` against
+     the declaration's name `"Render"`. The bound contributed no methods, and `value.render()` was
+     rejected with *"method 'render' requires the bound 'T: Render'"* — on a function whose
+     signature already wrote exactly that bound.
+  2. **An unrelated trait captured the name.** `mod unrelated { pub trait Display { fn other(&self); } }`
+     anywhere in the program took over every `T: Display` bound, because a user trait of that
+     spelling was found and preferred over the Core trait the resolver had selected. `x.fmt()`
+     then failed.
+  3. **Declaration order decided ownership.** With two same-named traits, one `&self` and one
+     `self`, the borrow checker returned whichever appeared FIRST in HIR item order. The same
+     program compiled or failed E0100 depending only on the order its two trait declarations were
+     written in.
+- **And one level further down.** Even with identity fixed in both front-end passes, execution
+  still selected an implementation by method name on the receiver's nominal: a type implementing
+  two same-named `Render` traits ran the *same* body for both bounds, in the HIR interpreter and in
+  MIR. The type checker was right and every engine below it was wrong in the same way. The native
+  linkage preflight caught the underlying cause — `impl left::Render for Item` and
+  `impl right::Render for Item` produced the identical canonical symbol `Item::Render::tag@[]`,
+  "one symbol, two identities".
+- **User impact (while open):** a qualified trait bound was unusable, which is every bound on a
+  trait a package exports through a module. A same-named trait anywhere in the program could
+  silently redirect an unrelated bound. And ownership was order-dependent.
+- **Security/soundness impact:** the first two failures were refusals. The third and fourth were
+  **acceptances of the wrong program**: order-dependent move checking, and a call executing a
+  different trait's body than the one type checking approved. No memory-safety violation — the
+  wrongly selected body is still a well-typed method of the same receiver — but "which code runs"
+  differed from "which code was checked", which is the more serious half of this entry.
+- **Fix:** `hir::resolved_bound_trait` reads `TraitRef::res` and nothing else, with exhaustive
+  matches over `Res` and `ItemKind`; both front-end passes consume it, and `hir::BoundTrait` is now
+  shared rather than private to the type checker. The checker records the selected trait per call
+  (`TypeTables::bound_trait_calls`); the HIR interpreter passes it as `find_method`'s existing
+  trait filter, and MIR lowering passes it to `find_impl_fn`'s new one. Canonical symbols include
+  the trait's own module path, so two same-named traits are two symbols. A top-level trait's prefix
+  is empty, so every pre-existing symbol is unchanged.
+- **Evidence:** `tests/dev_bound_trait_identity.rs` — 15 tests, including the declaration-order
+  pair (the same program with its two trait declarations swapped, both of which must compile), the
+  cross-module `L`/`R` dispatch case that pins which body ran, receiver identity across `&self`,
+  `&mut self` and `self`, and a direct assertion that `resolved_bound_trait` returns the resolver's
+  own `Res::Item`.
+- **Owning gate:** package/application track, CD-379.
+
+## DEV-171 — an unrelated trait can satisfy an OPERATOR bound by spelling (OPEN)
+
+- **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `==` on a generic
+  parameter requires `T: Eq`, meaning the Core `Eq` (06-Standard-Library.md STD-TRAIT-001), not a
+  user trait that happens to be spelled that way.
+- **Current behaviour:** accepted. Reproduced 2026-08-04:
+
+  ```stark
+  mod fake {
+      pub trait Eq {
+          fn unrelated(&self) -> Int32;
+      }
+  }
+
+  use fake::Eq;
+
+  fn compare<T: Eq>(a: T, b: T) -> Bool {
+      a == b
+  }
+  ```
+
+  `ty_satisfies_operator_bound`'s generic-parameter branch compares
+  `text(bound.path.span) == required` — a string comparison against `"Eq"`. The imported `fake::Eq`
+  spells the same, so the operator bound is treated as satisfied. Written *qualified*
+  (`T: fake::Eq`) it is correctly rejected, which is the same spelling artefact seen from the other
+  side.
+- **Security/soundness impact:** this is an **acceptance**, not a refusal — the more serious
+  direction. What `a == b` then lowers to for such a `T` was not investigated.
+- **Discovered by:** DEV-BOUND-TRAIT-IDENTITY, while confirming no spelling-based bound lookup
+  remained. Deliberately not fixed there: this is operator-bound *satisfaction*, not method
+  identity, and the repair decides what happens when a user trait shadows a Core trait's name for
+  operator purposes — a semantics ruling rather than a mechanical fix.
+- **Related:** the same function also serves built-in obligations that have no `TraitRef` at all
+  (DEV-118's name-addressable mechanism), so the fix cannot simply delete the name comparison.
+- **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).

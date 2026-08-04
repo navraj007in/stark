@@ -921,12 +921,25 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                     "{prefix}{type_name}::{method}@[{args_text}]{method_text}"
                 )),
                 Some(trait_ref) => {
+                    // DEV-BOUND-TRAIT-IDENTITY: the trait's own MODULE PATH is part of its name
+                    // here. Without it, `impl left::Render for Item` and
+                    // `impl right::Render for Item` produced the identical symbol
+                    // `Item::Render::tag@[]` — one symbol, two bodies — and the C5.4a linkage
+                    // preflight refused the program as a canonical-identity defect. It was right
+                    // to: the two impls are distinct callables. A trait declared at the top level
+                    // has an empty prefix, so every pre-existing symbol is unchanged.
                     let trait_name = match trait_ref.res {
-                        Res::Item(t) => item_name_text(hir, meta, t).unwrap_or("?"),
+                        Res::Item(t) => format!(
+                            "{}{}",
+                            meta.symbol_prefix(t),
+                            item_name_text(hir, meta, t).unwrap_or("?")
+                        ),
                         // C4.5d: compiler-known trait impls (`impl Drop for T`) render their
                         // source-level trait name — symbols stay injective and readable.
-                        Res::CoreTrait(_) => meta.item_text(*impl_item, trait_ref.path.span),
-                        _ => "?",
+                        Res::CoreTrait(_) => {
+                            meta.item_text(*impl_item, trait_ref.path.span).to_string()
+                        }
+                        _ => "?".to_string(),
                     };
                     Ok(format!(
                         "{prefix}{type_name}::{trait_name}::{method}@[{args_text}]{method_text}"
@@ -941,7 +954,13 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             self_args,
             method_args,
         } => {
-            let trait_name = item_name_text(hir, meta, *trait_item).unwrap_or("?");
+            // DEV-BOUND-TRAIT-IDENTITY: as above — two same-named traits in different modules
+            // must not share a default-method symbol either.
+            let trait_name = format!(
+                "{}{}",
+                meta.symbol_prefix(*trait_item),
+                item_name_text(hir, meta, *trait_item).unwrap_or("?")
+            );
             let type_name = item_name_text(hir, meta, *self_item).unwrap_or("?");
             let method_text = if method_args.is_empty() {
                 String::new()
@@ -5775,9 +5794,13 @@ impl<'a> FnLowerer<'a> {
                     let nominal = *nominal;
                     let name_text = self.text(*name_span).to_string();
                     // Locate first (empty args), then infer and rebuild the key.
-                    let Some((located, _receiver)) =
-                        self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true, &[])
-                    else {
+                    let Some((located, _receiver)) = self.find_impl_fn(
+                        nominal,
+                        &name_text,
+                        /*receiverless=*/ true,
+                        &[],
+                        None,
+                    ) else {
                         return unsupported(
                             format!("associated function {name_text} not found"),
                             span,
@@ -6136,7 +6159,8 @@ impl<'a> FnLowerer<'a> {
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args, None)
+        else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
@@ -6185,7 +6209,8 @@ impl<'a> FnLowerer<'a> {
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args, None)
+        else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
                 span,
@@ -6240,12 +6265,21 @@ impl<'a> FnLowerer<'a> {
         Ok(Operand::Copy(Place::local(result)))
     }
 
+    /// `trait_filter` narrows the search to one trait's implementation.
+    ///
+    /// DEV-BOUND-TRAIT-IDENTITY: a call resolved through a generic parameter's BOUND already knows
+    /// which trait supplied its signature, and lowering must select that trait's impl. Without the
+    /// filter this answered "the first impl on this nominal declaring a method with that name",
+    /// so a type implementing two same-named traits ran the same body for both bounds — while the
+    /// type checker had correctly distinguished them. `None` keeps the ordinary
+    /// "what does `recv.m()` mean here" behaviour, inherent methods first.
     fn find_impl_fn(
         &self,
         nominal: ItemId,
         name: &str,
         receiverless: bool,
         type_args: &[MirTy],
+        trait_filter: Option<Res>,
     ) -> Option<(FnKey, Option<hir::Receiver>)> {
         let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
         let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
@@ -6257,6 +6291,14 @@ impl<'a> FnLowerer<'a> {
             let impl_item = ItemId(idx as u32);
             if impl_self_item(self.hir, impl_item) != Some(nominal) {
                 continue;
+            }
+            // A filtered lookup considers ONLY that trait's impl — never an inherent method, and
+            // never another trait's, exactly as a qualified call does.
+            if let Some(wanted) = trait_filter {
+                match trait_ {
+                    Some(trait_ref) if trait_ref.res == wanted => {}
+                    Some(_) | None => continue,
+                }
             }
             for (member, impl_member) in items.iter().enumerate() {
                 let hir::ImplItem::Fn { def, .. } = impl_member else {
@@ -6546,7 +6588,11 @@ impl<'a> FnLowerer<'a> {
             }
         };
         let name_text = self.text(name_span).to_string();
-        let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false, &nominal_args)
+        // DEV-BOUND-TRAIT-IDENTITY: if the checker resolved this call through a generic
+        // parameter's bound, it recorded the trait; select that trait's impl and no other.
+        let bound_trait = self.tables.bound_trait_calls.get(&call_expr).copied();
+        let Some((key, receiver)) =
+            self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait)
         else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
@@ -7971,7 +8017,7 @@ impl<'a> FnLowerer<'a> {
         targs: Vec<MirTy>,
         span: Span,
     ) -> Result<(), LowerError> {
-        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs) else {
+        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs, None) else {
             return unsupported(
                 "for over a non-range, non-Vec iterator without an Iterator impl",
                 span,
@@ -9381,7 +9427,8 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let nominal = *item;
                 let nominal_args = args.clone();
-                let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args)
+                let Some((key, receiver)) =
+                    self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
                 else {
                     return unsupported(
                         "Display::fmt not found for a composite element (only standard-library and \
@@ -9677,7 +9724,8 @@ impl<'a> FnLowerer<'a> {
             }
             other => return unsupported(format!("Display print on non-nominal {other:?}"), span),
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args) else {
+        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        else {
             return unsupported("Display::fmt not found for printed type", span);
         };
         if !matches!(receiver, Some(hir::Receiver::Ref)) {

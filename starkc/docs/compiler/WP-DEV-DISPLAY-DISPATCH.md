@@ -78,6 +78,12 @@ diagnostics are shared from that point on. `resolve_bound_trait` resolves a user
 spelling FIRST, so a program declaring its own `trait Display` gets its own — the same precedence
 `resolve_path` already applies.
 
+> **SUPERSEDED 2026-08-04 — see the appendix.** The sentence above is wrong, and the appendix
+> records why: `resolve_path` resolves against the bound's own module and imports, while the
+> spelling scan this describes was global. `resolve_bound_trait` no longer exists;
+> `hir::resolved_bound_trait` reads `TraitRef::res`. Kept as written, per the record-preservation
+> rule.
+
 **No second signature registry was introduced.** `core_trait_contract` already existed: it is the
 table `impl Display for Point` is checked against, and it already carried
 `fmt / Some(Ref) / [] / String`. A bound now reads the same entry. What a bound makes callable is,
@@ -262,3 +268,46 @@ Recommendation: treat the prerequisite as **met**, and scope the REST server's o
 to `Display`-rendered text plus `stark-json` for payloads. Do not schedule format strings as a
 REST-server dependency — nothing in an observable surface needs them, and pulling them in would
 reopen the ergonomics questions this work package deliberately closed.
+
+---
+
+## Appendix — correction, 2026-08-04 (DEV-BOUND-TRAIT-IDENTITY, CD-379)
+
+**Append-only.** Everything above is preserved as written. It was accurate about what it examined
+and incomplete about what it did not, and this appendix says which is which rather than editing the
+record to look as though the gap had been known.
+
+**What §2 got right.** Method candidate *unification* was correct: one collection, one selection,
+one ambiguity rule, one signature table. That part needed no repair and received none.
+
+**What it missed.** The step *before* candidate collection — deciding which trait a bound denotes —
+was still done by spelling, in two passes:
+
+* `typecheck::resolve_bound_trait` and `borrowck::bound_method_receiver` each took
+  `text(bound.path.span)` and scanned every HIR item for a trait declared with that name. §2's
+  claim that "a user trait of the same spelling wins, exactly as `resolve_path` does" was the
+  defect stated as a design: `resolve_path` resolves against the bound's own module and imports,
+  while a global name scan does not. A qualified bound (`T: traits::Render`) matched nothing at
+  all; an unrelated `mod x { pub trait Display }` captured every `T: Display`; and with two
+  same-named traits the borrow checker took whichever came first in HIR order, so the same program
+  compiled or failed E0100 depending on declaration order.
+* Below the front end, **execution selected an implementation by method name on the nominal**, so a
+  type implementing two same-named traits ran the same body for both bounds. §5's engine-parity
+  evidence was real but could not have caught this: all three engines were wrong the same way, and
+  agreement is not correctness. `TypeTables::bound_trait_calls` now carries the checker's selected
+  trait to both engines, and canonical symbols carry the trait's module path.
+
+**No formatting semantics changed.** `stark-fmt`'s public API is unchanged, its 7 tests and both
+consumer paths are unchanged, and all 21 cases in `tests/dev_display_dispatch.rs` pass unmodified.
+
+**§5's backend claim, narrowed.** The assertion is that *generated STARK program code* cannot reach
+Rust's formatting: the generated crate is checked to contain no `format!`, `std::fmt::Display`,
+`std::fmt::Debug`, `#[derive(Debug`, or `ToString`, and primitive formatting routes through
+`stark_runtime::format`, shared by `fmt` and `print`/`println`. Inside those runtime functions the
+digit conversion still uses Rust's numeric-to-string conversion, as §5 already noted. Replacing the
+runtime algorithms is a separate design and performance decision and is not claimed here.
+
+**Is DEV-DISPLAY-DISPATCH fully closed?** Yes, with DEV-BOUND-TRAIT-IDENTITY landed. On its own it
+was closed for the property it stated — a compiler-known trait bound contributes callable methods
+through the ordinary path — and open on a property it did not state, which is that the bound
+denotes the trait the resolver selected. Both hold now.

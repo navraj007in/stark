@@ -3351,7 +3351,12 @@ impl<'a> Interpreter<'a> {
         let receiver_place = self.core_receiver_place(base, span)?;
         let receiver_value = self.clone_place_value(&receiver_place, span)?;
         let nominal = nominal_item(&receiver_value);
-        let method = match self.find_method(nominal, &name, None) {
+        // DEV-BOUND-TRAIT-IDENTITY: when this call resolved through a generic parameter's bound,
+        // the checker recorded WHICH trait supplied the method. Selecting by name alone ran the
+        // first impl on this nominal declaring it, so two bounds naming two different same-named
+        // traits both reached the same implementation.
+        let trait_filter = self.tables.bound_trait_calls.get(&expr_id).copied();
+        let method = match self.find_method(nominal, &name, trait_filter) {
             Some(method) => method,
             // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
             // `is_core_value` above could not classify it — `Ty::Param` names no shape. The

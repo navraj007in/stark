@@ -205,6 +205,15 @@ pub struct TypeChecker<'a> {
     /// builtin's own path expression. Kept OUT of `generic_insts` deliberately: that table drives
     /// MIR monomorphisation of generic fn instances, and a layout query is not one.
     layout_queries: HashMap<ExprId, Ty>,
+    /// DEV-BOUND-TRAIT-IDENTITY: for each method call resolved through a generic parameter's
+    /// BOUND, the trait that bound denotes. Keyed by the call expression.
+    ///
+    /// The identity the checker selected a signature from must be the identity execution selects
+    /// an implementation from. Without it, both engines fell back to "first impl on this nominal
+    /// declaring a method with that name", so `use_left(&item)` and `use_right(&item)` — bounded
+    /// on two different `Render` traits, each implemented for `Item` — both ran `left::Render`'s.
+    /// Type checking was right and every engine below it was wrong in the same way.
+    bound_trait_calls: HashMap<ExprId, Res>,
 
     // Scopes context
     current_self_ty: Option<Ty>,
@@ -632,6 +641,12 @@ pub struct TypeTables {
     /// per-instantiation answer for it to precompute. The oracle substitutes from its call-time
     /// substitution stack and then resolves through [`LayoutTables`].
     pub layout_queries: HashMap<ExprId, Ty>,
+    /// DEV-BOUND-TRAIT-IDENTITY: the trait a bounded-generic method call resolved through,
+    /// keyed by the call expression. `Res::Item` for a user trait, `Res::CoreTrait` for a
+    /// compiler-known one. Consumed by the HIR interpreter's `find_method` trait filter and by
+    /// MIR lowering's implementation lookup, so all three engines select the impl the checker
+    /// selected the signature from.
+    pub bound_trait_calls: HashMap<ExprId, Res>,
     /// WP-C5.3e: the tables and contract a layout query is resolved against.
     pub layout: LayoutTables,
 }
@@ -684,6 +699,7 @@ pub fn analyze_with_options(
         alias_stack: Vec::new(),
         generic_insts: HashMap::new(),
         layout_queries: HashMap::new(),
+        bound_trait_calls: HashMap::new(),
         current_self_ty: None,
         foreign_sig_item: None,
         current_assoc_types: HashMap::new(),
@@ -783,6 +799,7 @@ pub fn analyze_with_options(
         generic_insts,
         layout_queries,
         layout,
+        bound_trait_calls: checker.bound_trait_calls,
     };
     diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
     TypeCheckResult {
@@ -7232,53 +7249,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// DEV-DISPLAY-DISPATCH: the ordinary trait identity a written bound resolves to.
-    ///
-    /// A user trait wins over a compiler-known one of the same spelling, exactly as it does
-    /// everywhere else a name is resolved: `resolve_path` consults the module's items before it
-    /// falls back to the Core trait table, so a program that declares its own `trait Display`
-    /// gets its own.
-    fn resolve_bound_trait(&self, bound: &hir::TraitRef) -> Option<BoundTrait> {
-        let bound_trait_name = self.text(bound.path.span).to_string();
-        // DEV-069: trait names are read against the declaring item's file.
-        let user = self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-            let trait_id = ItemId(idx as u32);
-            if let hir::ItemKind::Trait { name, .. } = &item.kind {
-                if self.item_text(trait_id, *name) == bound_trait_name {
-                    return Some(trait_id);
-                }
-            }
-            None
-        });
-        if let Some(trait_id) = user {
-            return Some(BoundTrait::User(trait_id));
-        }
-        // The resolver already classified the bound; the name lookup below is the fallback for a
-        // `TraitRef` whose `res` was never populated (a path form the resolver left as `Res::Err`
-        // still spells a Core trait unambiguously).
-        match bound.res {
-            Res::CoreTrait(core_trait) => Some(BoundTrait::Core(core_trait)),
-            Res::Err
-            | Res::Item(_)
-            | Res::Local(_)
-            | Res::SelfValue(_)
-            | Res::SelfType
-            | Res::SelfAssoc(_)
-            | Res::TypeParam
-            | Res::ParamAssoc(_, _)
-            | Res::Primitive(_)
-            | Res::Builtin(_)
-            | Res::CoreType(_)
-            | Res::CoreTraitMember(_, _)
-            | Res::Variant(_, _)
-            | Res::AssociatedFn(_, _)
-            | Res::TraitMember(_, _)
-            | Res::ModelLoad(_) => {
-                crate::resolve::resolve_core_trait(&bound_trait_name).map(BoundTrait::Core)
-            }
-        }
-    }
-
     /// DEV-DISPLAY-DISPATCH: every candidate the bounds on generic parameter `p_name` contribute
     /// for method `name`, from both kinds of trait, one per distinct trait identity.
     ///
@@ -7299,7 +7269,10 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             for bound in &param.bounds {
-                let Some(bound_trait) = self.resolve_bound_trait(bound) else {
+                // DEV-BOUND-TRAIT-IDENTITY: the identity comes from the RESOLVER, never from
+                // how the bound was spelled. See `hir::resolved_bound_trait` for the three
+                // failures the previous spelling-based lookup produced.
+                let Some(bound_trait) = hir::resolved_bound_trait(self.hir, bound) else {
                     continue;
                 };
                 // `T: Display + Display` names one trait, not two: a repeated bound must not
@@ -7732,6 +7705,16 @@ impl<'a> TypeChecker<'a> {
                 return Ty::Error;
             }
             if let Some(candidate) = candidates.into_iter().next() {
+                // DEV-BOUND-TRAIT-IDENTITY: record WHICH trait supplied the method, so the
+                // engines below select the same implementation rather than the first impl on the
+                // receiver's nominal that happens to declare the name.
+                self.bound_trait_calls.insert(
+                    call_expr,
+                    match &candidate {
+                        BoundMethod::User { trait_id, .. } => Res::Item(*trait_id),
+                        BoundMethod::Core { core_trait, .. } => Res::CoreTrait(*core_trait),
+                    },
+                );
                 // WP-C6.2c: a trait method returning `Self::Item` yields the receiver's
                 // projection (`T::Item`), which is then pinned by any explicit
                 // `T: Trait<Item = ..>` binding in scope.
@@ -9870,13 +9853,10 @@ fn all_core_traits() -> Vec<hir::CoreTrait> {
 /// bound. Method visibility, in other words, depended on whether the trait happened to be
 /// compiler-known — a second trait model rather than one.
 ///
-/// This type is the repair: both kinds are an identity a bound resolves to, and everything after
-/// candidate construction is shared.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BoundTrait {
-    User(ItemId),
-    Core(hir::CoreTrait),
-}
+/// DEV-BOUND-TRAIT-IDENTITY then moved the type itself into `hir`, alongside
+/// `hir::resolved_bound_trait`, so the borrow checker consumes the SAME identity this pass does
+/// rather than deriving its own from the bound's spelling.
+use hir::BoundTrait;
 
 /// One method a bound contributes, with enough of its declaration to check a call.
 enum BoundMethod {

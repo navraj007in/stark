@@ -579,6 +579,97 @@ pub struct TraitRef {
     pub args: Option<GenericArgs>,
 }
 
+/// DEV-BOUND-TRAIT-IDENTITY: the trait a written bound denotes.
+///
+/// Core v1 has two kinds of trait — one with a declaration item, one compiler-known with none —
+/// and both are reachable from a generic bound. This is their common identity.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoundTrait {
+    User(ItemId),
+    Core(CoreTrait),
+}
+
+/// **The single answer to "which trait does this bound denote".**
+///
+/// Every pass downstream of name resolution reads the identity from [`TraitRef::res`], which the
+/// resolver already computed against the bound's own module, imports and path. Nothing here looks
+/// at how the bound was SPELLED.
+///
+/// DEV-BOUND-TRAIT-IDENTITY exists because two passes did look at the spelling. `typecheck`'s
+/// `resolve_bound_trait` and `borrowck`'s `bound_method_receiver` each took
+/// `text(bound.path.span)` and scanned every HIR item for a trait whose declared name matched.
+/// Three failures followed, all reproduced before the repair:
+///
+/// * **A qualified bound never matched.** `T: traits::Render` compared the string
+///   `"traits::Render"` against the declaration's name `"Render"`, so the bound contributed no
+///   methods and `value.render()` was rejected.
+/// * **An unrelated trait could win.** `mod unrelated { pub trait Display { fn other(&self); } }`
+///   anywhere in the program captured every `T: Display` bound, because the search found a user
+///   trait of that spelling and preferred it — so `x.fmt()` failed against the Core trait the
+///   resolver had actually selected.
+/// * **Declaration order decided ownership.** With two same-named traits, one taking `&self` and
+///   one taking `self`, the borrow checker returned whichever appeared first in HIR item order.
+///   The same program compiled or failed E0100 depending on the order its traits were written in.
+///
+/// A `TraitRef` whose `res` is not a trait yields `None` rather than a guess. That is a real
+/// possibility — the resolver leaves `Res::Err` for a bound it could not resolve, and reports it
+/// there — and a caller must treat it as "this bound contributes nothing", never as an invitation
+/// to fall back to the spelling.
+pub fn resolved_bound_trait(hir: &Hir, bound: &TraitRef) -> Option<BoundTrait> {
+    match bound.res {
+        Res::Item(item_id) => match &hir.item(item_id).kind {
+            ItemKind::Trait { .. } => Some(BoundTrait::User(item_id)),
+            // A bound position naming a non-trait item is already reported by the checker's own
+            // bound validation; it contributes no methods here.
+            ItemKind::Fn(_)
+            | ItemKind::Struct { .. }
+            | ItemKind::Enum { .. }
+            | ItemKind::Impl { .. }
+            | ItemKind::Const { .. }
+            | ItemKind::TypeAlias { .. }
+            | ItemKind::Use(_)
+            | ItemKind::Mod { .. }
+            | ItemKind::Model(_) => None,
+        },
+        Res::CoreTrait(core_trait) => Some(BoundTrait::Core(core_trait)),
+        // Not a trait. `Res::Err` is an already-reported resolution failure; the rest cannot
+        // appear in a bound position at all. None of them may be reconstructed from spelling.
+        Res::Err
+        | Res::Local(_)
+        | Res::SelfValue(_)
+        | Res::SelfType
+        | Res::SelfAssoc(_)
+        | Res::TypeParam
+        | Res::ParamAssoc(_, _)
+        | Res::Primitive(_)
+        | Res::Builtin(_)
+        | Res::CoreType(_)
+        | Res::CoreTraitMember(_, _)
+        | Res::TraitMember(_, _)
+        | Res::Variant(_, _)
+        | Res::AssociatedFn(_, _)
+        | Res::ModelLoad(_) => None,
+    }
+}
+
+/// The receiver form trait `trait_id` declares for `method`, or `None` if it declares no such
+/// method. `name_of` reads a span against the TRAIT's declaring file (DEV-069 provenance), which
+/// only the caller can do.
+pub fn trait_method_receiver(
+    hir: &Hir,
+    trait_id: ItemId,
+    method: &str,
+    name_of: impl Fn(ItemId, Span) -> String,
+) -> Option<Receiver> {
+    let ItemKind::Trait { items, .. } = &hir.item(trait_id).kind else {
+        return None;
+    };
+    items.iter().find_map(|trait_item| match trait_item {
+        TraitItem::Method { sig, .. } if name_of(trait_id, sig.name) == method => sig.receiver,
+        TraitItem::Method { .. } | TraitItem::AssocType { .. } => None,
+    })
+}
+
 #[derive(Clone, Copy)]
 pub struct FieldDef {
     pub is_pub: bool,
