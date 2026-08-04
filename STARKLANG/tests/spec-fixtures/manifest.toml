@@ -64,6 +64,10 @@ note = "string literal examples"
 verdict = "lex-pass"
 note = "char literal examples"
 
+["01-Lexical-Grammar__05.stark"]
+verdict = "lex-pass"
+note = "WP-FMT-001 interpolated string literal examples"
+
 ["02-Syntax-Grammar__01.stark"]
 verdict = "parse-pass"
 mode = "snippet"

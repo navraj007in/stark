@@ -786,7 +786,7 @@ cargo doc --no-deps
 
 The repository includes:
 
-* 113 extracted specification fixtures, each triaged in
+* 114 extracted specification fixtures, each triaged in
   [`STARKLANG/tests/spec-fixtures/manifest.toml`](STARKLANG/tests/spec-fixtures/manifest.toml);
 * parser and semantic conformance tests;
 * valid-program suites;

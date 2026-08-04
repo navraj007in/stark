@@ -618,6 +618,21 @@ pub enum RuntimeFn {
     FmtFloat32,
     FmtChar,
     FmtUnit,
+    // --- WP-FMT-001: format-SPECIFICATION application. Five operations, not one per syntax
+    // combination: everything about HOW a value renders lives in the packed specification word,
+    // and the operation only says which value family it is. Both extra operands are compile-time
+    // constants — the spec bitfield and the fill scalar — so no format string is ever parsed at
+    // run time. Every one calls `stark_runtime::fmt_spec`, shared with the interpreters. ---
+    /// `(&str, UInt64 spec, Char fill) -> String` — alignment, fill and width on rendered text.
+    FmtPad,
+    /// `(Int64, UInt64 spec, Char fill) -> String`
+    FmtIntSpec,
+    /// `(UInt64, UInt64 spec, Char fill) -> String`
+    FmtUIntSpec,
+    /// `(Float64, UInt64 spec, Char fill) -> String`
+    FmtFloat64Spec,
+    /// `(Float32, UInt64 spec, Char fill) -> String`
+    FmtFloat32Spec,
     // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT
     // here: STARK's `.iter()` is by-reference (`&T`), which A1 reserved to an interior-
     // reference sub-slice; activating it needs an owner-reviewed surface bump. ---

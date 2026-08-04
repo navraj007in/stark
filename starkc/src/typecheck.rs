@@ -4756,9 +4756,174 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// WP-FMT-001: check one interpolation field.
+    ///
+    /// The specification decides what the type must be. A padding-only field (or none at all) asks
+    /// for `Display` and nothing more; a numeric mode asks for a concrete integer or float. Every
+    /// rejection happens HERE, at type checking — §6.7's requirement that no bad type/spec pairing
+    /// reaches run time.
+    fn check_format_field(&mut self, expr: ExprId, spec: &crate::ast::FormatSpec, expr_span: Span) {
+        use crate::ast::FormatKind;
+        let ty = self.check_expr(expr);
+        let ty = self.default_int_literals_deep(&ty);
+        if matches!(ty, Ty::Error) {
+            return;
+        }
+        let spec_span = spec.span.unwrap_or(expr_span);
+        let stripped = strip_ref(&ty).clone();
+
+        // A numeric mode requires a numeric type. `Display` does NOT imply integer formatting
+        // (§11.5), so a generic `T: Display` is refused here rather than given a meaning it has
+        // not proved — inventing a numeric bound to make it compile is out of scope.
+        match spec.kind {
+            Some(
+                FormatKind::Bin | FormatKind::Oct | FormatKind::LowerHex | FormatKind::UpperHex,
+            ) => {
+                if !matches!(&stripped, Ty::Primitive(p) if is_integer(*p)) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "type '{}' cannot be formatted in another base",
+                                self.ty_to_string(&ty)
+                            ),
+                            spec_span,
+                        )
+                        .with_code("E0306")
+                        .with_label("'b', 'o', 'x' and 'X' require an integer type"),
+                    );
+                    return;
+                }
+            }
+            Some(FormatKind::Fixed) => {
+                if !matches!(&stripped, Ty::Primitive(p) if is_float_primitive(*p)) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "type '{}' cannot be formatted with fixed precision",
+                                self.ty_to_string(&ty)
+                            ),
+                            spec_span,
+                        )
+                        .with_code("E0306")
+                        .with_label("'f' requires 'Float32' or 'Float64'"),
+                    );
+                    return;
+                }
+            }
+            None => {}
+        }
+
+        if spec.precision.is_some() && spec.kind.is_none() {
+            // A bare `.N` is fixed-point on a float. On a string it would have to mean truncation,
+            // which WP-FMT-001 deliberately does not define (§7): cutting Unicode text needs a
+            // scalar/grapheme/byte ruling nobody has made.
+            if !matches!(&stripped, Ty::Primitive(p) if is_float_primitive(*p)) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "type '{}' cannot be formatted with a precision",
+                            self.ty_to_string(&ty)
+                        ),
+                        spec_span,
+                    )
+                    .with_code("E0306")
+                    .with_label("precision applies to 'Float32' and 'Float64'")
+                    .with_note(
+                        "string truncation is not a format specification in Core v1; slice the \
+                         value explicitly if you need a shorter one"
+                            .to_string(),
+                    ),
+                );
+                return;
+            }
+        }
+
+        if (spec.sign.is_some() || spec.alternate || spec.zero_pad)
+            && spec.kind.is_none()
+            && spec.precision.is_none()
+            && !matches!(&stripped, Ty::Primitive(p) if is_numeric(*p))
+        {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type '{}' does not accept a numeric format specification",
+                        self.ty_to_string(&ty)
+                    ),
+                    spec_span,
+                )
+                .with_code("E0306")
+                .with_label("sign, '#' and zero-padding require a numeric type"),
+            );
+            return;
+        }
+
+        // Everything reaching here renders through `Display`. This is the SAME predicate
+        // `print`/`println` use, so it routes through bound identity (CD-379) and a user trait
+        // merely NAMED `Display` cannot satisfy it.
+        //
+        // The check is on the STRIPPED type. `println` takes its argument by value and so never
+        // sees a reference, but a field routinely does — `fn render<T: Display>(v: &T)` formats a
+        // `&T`, and `Display::fmt` borrows anyway (STD-FORMAT-001), so a reference to a
+        // displayable type is displayable.
+        // A generic parameter is displayable only if one of ITS OWN bounds supplies `fmt`.
+        // `type_is_displayable` answers `true` for any `Ty::Param` — correct for `println`, whose
+        // caller discharges the bound at the call site, and wrong here: an interpolation inside
+        // `fn render<T>(v: &T)` has no such caller obligation, and must be refused where it is
+        // written. The check goes through `bound_method_candidates`, so it is CD-379's identity
+        // path — a user trait merely NAMED `Display` does not satisfy it.
+        if let Ty::Param(param_name) = &stripped {
+            let param_name = param_name.clone();
+            if self.bound_method_candidates(&param_name, "fmt").is_empty() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("'{param_name}' has no bound that provides 'Display'"),
+                        expr_span,
+                    )
+                    .with_code("E0306")
+                    .with_label(format!("add the bound '{param_name}: Display'")),
+                );
+            }
+            return;
+        }
+        if !self.type_is_displayable(&stripped) {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type '{}' does not implement 'Display' and cannot be interpolated",
+                        self.ty_to_string(&ty)
+                    ),
+                    expr_span,
+                )
+                .with_code("E0306")
+                .with_label("write an 'impl Display for ...' for this type"),
+            );
+        }
+    }
+
     fn check_expr(&mut self, expr_id: ExprId) -> Ty {
         let expr = self.hir.expr(expr_id);
         let ty = match &expr.kind {
+            // WP-FMT-001: every field is checked, in source order, and the whole literal is a
+            // `String`. Checking in order matters for diagnostics: the first bad field is reported
+            // first, which is where a reader looks.
+            hir::ExprKind::FormatString { segments } => {
+                let fields: Vec<(ExprId, crate::ast::FormatSpec, Span)> = segments
+                    .iter()
+                    .filter_map(|segment| match segment {
+                        hir::FormatSegment::Field {
+                            expr,
+                            spec,
+                            expr_span,
+                            ..
+                        } => Some((*expr, *spec, *expr_span)),
+                        hir::FormatSegment::Literal { .. } => None,
+                    })
+                    .collect();
+                for (expr, spec, expr_span) in fields {
+                    self.check_format_field(expr, &spec, expr_span);
+                }
+                Ty::Primitive(Primitive::String)
+            }
             hir::ExprKind::Lit(lit) => match lit {
                 // WP-C1.5 (DEV-015): no stage previously checked a literal's magnitude against
                 // its suffix's (or, for unsuffixed literals, its default-inferred) representable

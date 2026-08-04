@@ -200,6 +200,32 @@ impl<'a> Dumper<'a> {
                 let line = format!("{} {at}", self.lit(lit, node.span));
                 self.line(line);
             }
+            // WP-FMT-001: literal segments show their DECODED text, so a dump reads as what the
+            // program will print rather than as the escapes that produced it.
+            ExprKind::FormatString { segments } => {
+                let segments = segments.clone();
+                self.nested(format!("format_string {at}"), |d| {
+                    for segment in &segments {
+                        match segment {
+                            FormatSegment::Literal { text, span } => {
+                                let at = d.at(*span);
+                                d.line(format!("literal {text:?} {at}"));
+                            }
+                            FormatSegment::Field {
+                                expr, spec, span, ..
+                            } => {
+                                let at = d.at(*span);
+                                let header = match spec.span {
+                                    Some(_) => format!("field spec {at}"),
+                                    None => format!("field {at}"),
+                                };
+                                let expr = *expr;
+                                d.nested(header, |d| d.expr(expr));
+                            }
+                        }
+                    }
+                });
+            }
             ExprKind::Path { path, turbofish } => {
                 let mut header = format!("path {} {at}", self.path(path));
                 if turbofish.is_some() {

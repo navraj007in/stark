@@ -40,6 +40,12 @@ pub enum TokenKind {
     Str {
         raw: bool,
     },
+    /// WP-FMT-001: `f"..."` — an interpolated string literal, lexed as ONE token spanning the
+    /// whole literal. Its interior is split into literal and field segments by the parser, which
+    /// re-lexes each field's expression over its own byte range so spans stay real (see
+    /// `WP-FMT-001-DESIGN.md` §2). Emitting pieces here would make every consumer that treats a
+    /// string as a literal — the formatter, the LSP — understand a token soup instead.
+    FormatStr,
     CharLit,
     // Names
     Ident,
@@ -273,6 +279,27 @@ pub fn tokenize_with_comments(file: &SourceFile) -> (Vec<Token>, Vec<Comment>, V
     (lexer.tokens, lexer.comments, lexer.diags)
 }
 
+/// WP-FMT-001: tokenize only the byte range `lo..hi` of `file`, with **absolute** spans.
+///
+/// The parser uses this to lex an interpolation field's expression. Lexing a copied substring
+/// would produce spans relative to the copy, and every diagnostic inside an interpolated string
+/// would point at the wrong place — so the lexer is pointed at the original buffer instead, with a
+/// start and an end.
+pub fn tokenize_range(file: &SourceFile, lo: u32, hi: u32) -> (Vec<Token>, Vec<Diagnostic>) {
+    let src = file.src.as_bytes();
+    let hi = (hi as usize).min(src.len());
+    let lo = (lo as usize).min(hi);
+    let mut lexer = Lexer {
+        src: &src[..hi],
+        pos: lo,
+        tokens: Vec::new(),
+        comments: Vec::new(),
+        diags: Vec::new(),
+    };
+    lexer.run();
+    (lexer.tokens, lexer.diags)
+}
+
 /// A comment, preserved as trivia for the formatter. Not part of the token
 /// stream; the parser never sees these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -315,6 +342,9 @@ impl Lexer<'_> {
                 b'0'..=b'9' => self.number(start),
                 b'"' => self.string(start),
                 b'r' if self.peek(1) == Some(b'"') => self.raw_string(start),
+                // WP-FMT-001. Checked before `ident_or_keyword`, which would otherwise consume
+                // the `f` as the start of an identifier.
+                b'f' if self.peek(1) == Some(b'"') => self.format_string(start),
                 b'\'' => self.char_literal(start),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.ident_or_keyword(start),
                 _ => self.operator(start),
@@ -638,6 +668,48 @@ impl Lexer<'_> {
             } else {
                 self.error("String literal escape bytes do not form valid UTF-8", span);
             }
+        }
+    }
+
+    /// WP-FMT-001: `f"..."`. Scanned exactly like a cooked string — same escapes, same
+    /// unterminated diagnostic, same UTF-8 validation — and emitted whole. Brace structure is the
+    /// PARSER's concern: it owns the diagnostics that need to point inside the literal, and
+    /// duplicating the scan here would give two implementations of the same rule.
+    fn format_string(&mut self, start: usize) {
+        self.pos += 1; // consume 'f'
+        let quote = self.pos;
+        self.pos += 1; // consume '"'
+        let mut bad = false;
+        loop {
+            match self.peek(0) {
+                None => {
+                    let span = self.span_from(start);
+                    self.error("Unterminated interpolated string literal", span);
+                    return;
+                }
+                Some(b'"') => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(b'\\') => {
+                    if !self.escape(start) {
+                        bad = true;
+                    }
+                }
+                Some(_) => self.pos += 1,
+            }
+        }
+        if bad {
+            return;
+        }
+        let span = self.span_from(start);
+        // Validate the STRING half exactly as a cooked literal is validated; the `f` prefix is not
+        // part of the literal text.
+        let text = std::str::from_utf8(&self.src[quote..self.pos]).unwrap_or("");
+        if crate::literal::cooked_string_is_valid(text) {
+            self.push(TokenKind::FormatStr, span);
+        } else {
+            self.error("String literal escape bytes do not form valid UTF-8", span);
         }
     }
 

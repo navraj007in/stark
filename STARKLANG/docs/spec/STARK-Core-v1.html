@@ -500,6 +500,47 @@ no replacement character is inserted.</p>
 &quot;\x41\x42\x43&quot;
 &quot;\u{1F600}&quot;
 r&quot;Raw string with \n literal backslashes&quot;</code></pre>
+<h4 id="interpolated-string-literals">Interpolated String Literals</h4>
+<pre><code>FORMAT_STRING := &#39;f&quot;&#39; (CHAR | ESCAPE_SEQUENCE | &#39;{{&#39; | &#39;}}&#39; | FIELD)* &#39;&quot;&#39;
+FIELD         := &#39;{&#39; EXPRESSION [ &#39;:&#39; FORMAT_SPEC ] &#39;}&#39;
+FORMAT_SPEC   := [ [FILL] ALIGN ] [ SIGN ] [ &#39;#&#39; ] [ &#39;0&#39; ] [ WIDTH ]
+                 [ &#39;.&#39; PRECISION ] [ TYPE ]
+ALIGN         := &#39;&lt;&#39; | &#39;&gt;&#39; | &#39;^&#39;
+SIGN          := &#39;+&#39; | &#39;-&#39; | &#39; &#39;
+TYPE          := &#39;b&#39; | &#39;o&#39; | &#39;x&#39; | &#39;X&#39; | &#39;f&#39;
+FILL          := one Unicode scalar, only when immediately followed by ALIGN
+WIDTH         := decimal digits
+PRECISION     := decimal digits</code></pre>
+<p><strong>LEX-FORMAT-001.</strong> An interpolated string literal is a
+<code>f</code>-prefixed cooked string. Its escape rules are
+<code>STRING</code>’s exactly. Additionally <code>{{</code> denotes one
+<code>{</code> and <code>}}</code> denotes one <code>}</code>; a
+<code>{</code> that is not part of <code>{{</code> opens a field, and a
+<code>}</code> that neither closes a field nor is part of
+<code>}}</code> rejects the literal.</p>
+<p><strong>LEX-FORMAT-002.</strong> A field’s expression extends to the
+top-level <code>:</code> that begins its specification, or to the
+top-level <code>}</code> that closes it. Depth is counted over
+<code>(</code>, <code>[</code> and <code>{</code>, so a struct literal’s
+<code>:</code> and <code>}</code> are part of the expression;
+<code>::</code> is a path separator and never begins a specification. An
+escape sequence is consumed whole before any brace is considered, so
+<code>\u{1F600}</code> is one scalar and not a field.</p>
+<p><strong>LEX-FORMAT-003.</strong> <code>WIDTH</code> and
+<code>PRECISION</code> are compile-time decimal constants; there is no
+dynamic width and no dynamic precision. An implementation MUST reject a
+<code>FORMAT_SPEC</code> it does not recognise rather than ignoring the
+unrecognised part, and MUST reject an <code>ALIGN</code> written without
+a <code>WIDTH</code>.</p>
+<p>Examples:</p>
+<pre class="stark"><code>f&quot;pkg={name} n={count:04} r={ratio:.2} ok={ok}&quot;
+f&quot;object={{ name: {name} }}&quot;
+f&quot;|{name:^12}|&quot;
+f&quot;{flags:#010x}&quot;</code></pre>
+<p><em>Deferred, not omitted:</em> a raw interpolated form
+(<code>rf"..."</code>), and a field whose source carries the enclosing
+literal’s escape sequences — which any nested string literal must, since
+the enclosing literal is delimited by <code>"</code>.</p>
 <h4 id="character-literals">Character Literals</h4>
 <pre><code>CHAR := &#39;\&#39;&#39; (CHAR_CONTENT | ESCAPE_SEQUENCE) &#39;\&#39;&#39;
 CHAR_CONTENT := [^&#39;\\]</code></pre>
@@ -808,6 +849,7 @@ ArgumentList ::= Expression (&#39;,&#39; Expression)* &#39;,&#39;?
 
 PrimaryExpression ::= PathExpression
                     | Literal
+                    | InterpolatedString
                     | &#39;(&#39; Expression &#39;)&#39;    // Grouping
                     | TupleLiteral
                     | ArrayLiteral
@@ -870,6 +912,13 @@ matches by value; otherwise it introduces a new binding. Multi-segment
           | STRING
           | CHAR
           | BOOLEAN
+
+// EXPR-FORMAT-001. An interpolated string literal (01-Lexical-Grammar.md,
+// FORMAT_STRING). Its type is always `String`, and its fields&#39; expressions are
+// ordinary expressions of this grammar — an interpolation introduces no scope
+// and no new expression forms. It is neither a macro nor a call: the segments
+// are split at compile time, so no format string exists at run time.
+InterpolatedString ::= FORMAT_STRING
 
 TupleLiteral ::= &#39;(&#39; &#39;)&#39;                                  // Unit value
                | &#39;(&#39; Expression &#39;,&#39; &#39;)&#39;                   // Single-element tuple
@@ -4196,6 +4245,73 @@ newline convention. Successful calls preserve program order. The process
 contract flushes submitted stdout/stderr before reporting normal return
 or a language trap; a stream write/flush failure is a host/process
 failure.</p>
+<p><strong>STD-FORMAT-002.</strong> An interpolated string literal
+(<code>f"..."</code>, 01-Lexical-Grammar.md LEX-FORMAT-001) evaluates to
+a newly owned <code>String</code>. For each segment in source order:</p>
+<ol type="1">
+<li>a literal segment contributes its decoded text;</li>
+<li>a field evaluates its expression <strong>exactly once</strong>,
+renders it, and appends the rendered text.</li>
+</ol>
+<p>Fields are evaluated strictly left to right, and no expression is
+evaluated a second time to determine a width, a type or anything else. A
+field <strong>borrows</strong> what it renders:
+<code>Display::fmt</code> takes <code>&amp;self</code> (STD-FORMAT-001),
+so a place expression is not consumed, and a value remains usable after
+being interpolated — including a non-<code>Copy</code> or affine one. A
+field whose expression is a temporary destroys that temporary exactly
+once, after its bytes have been appended.</p>
+<p><code>f"{value}"</code> with no specification is
+<code>value.fmt()</code>’s text appended to the output. Selection of
+<code>Display</code> is ordinary trait resolution (03-Type-System.md
+TYPE-METHOD-003): a compiler-known trait receives no priority, and a
+generic parameter must carry a bound that actually supplies
+<code>fmt</code>.</p>
+<p><strong>STD-FORMAT-003.</strong> A format specification is checked
+against the field’s type at compile time; an unsupported pairing is
+rejected, never deferred to run time. <code>b</code>, <code>o</code>,
+<code>x</code> and <code>X</code> require an integer type;
+<code>.precision</code> and <code>f</code> require <code>Float32</code>
+or <code>Float64</code>; a sign, <code>#</code> or zero-padding requires
+a numeric type. Padding alone applies to any <code>Display</code> type.
+Precision on a string is rejected: Core v1 defines no string truncation,
+because it would require a scalar-versus-grapheme-versus-byte ruling
+that does not exist.</p>
+<p><strong>STD-FORMAT-004.</strong> Rendering is byte-exact:</p>
+<ul>
+<li><strong>Width</strong> is counted in Unicode scalar values — not
+bytes, and not terminal cells. It never truncates: a value at least as
+wide as the field is unchanged. Text defaults to left alignment in a
+wider field and a numeric value to right. When centring needs an odd
+number of fill characters, the extra one goes on the
+<strong>right</strong>.</li>
+<li><strong>Sign</strong> precedes any base prefix, which precedes
+zero-padding, which precedes the digits: <code>-00042</code>,
+<code>0x000000ff</code>. <code>+</code> gives non-negatives a
+<code>+</code>; <code></code> gives them a space; <code>-</code> and an
+unwritten sign give them nothing.</li>
+<li><strong>Bases</strong> render the magnitude with a leading
+<code>-</code> when negative: <code>-255</code> in hexadecimal is
+<code>-ff</code>. A two’s-complement bit pattern is never exposed.
+Alternate prefixes are <code>0b</code>, <code>0o</code> and
+<code>0x</code>; <code>0x</code> is used for both hexadecimal cases,
+since the prefix names the base and the type character chooses the digit
+case.</li>
+<li><strong>Precision</strong> is exactly that many digits after the
+point, rounding to nearest with exact halfway cases going to even.
+<code>Float32</code> is rendered at its declared width, never widened
+first. A non-finite value ignores precision entirely: <code>NaN</code>,
+<code>inf</code> and <code>-inf</code> render as those three
+spellings.</li>
+</ul>
+<p>No formatting is locale-sensitive, and none contains grouping,
+currency or a trailing newline.</p>
+<p><strong>STD-FORMAT-005.</strong> Interpolation is human-readable
+formatting. It performs no escaping of any kind and is not a
+serialisation format. Building JSON, HTML, SQL, shell or URL text by
+interpolation is incorrect for any value that can contain the target
+syntax’s metacharacters; use a serialiser that owns the escaping
+rules.</p>
 <p><strong>PRINT-DISPLAY-001.</strong> <code>print</code>,
 <code>println</code>, <code>eprint</code>, and <code>eprintln</code> are
 implementation-provided generic functions with the signatures
@@ -4753,16 +4869,16 @@ declared workspace after canonicalization. Unknown fields are retained
 for tooling but have no Core semantics. Core v1 has no conditional
 dependency features.</p>
 <p>Example:</p>
-<div class="sourceCode" id="cb149"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb149-1"><a href="#cb149-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb149-2"><a href="#cb149-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
-<span id="cb149-3"><a href="#cb149-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb149-4"><a href="#cb149-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
-<span id="cb149-5"><a href="#cb149-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
-<span id="cb149-6"><a href="#cb149-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;TensorLib&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;tensor-lib&quot;</span><span class="fu">,</span> <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span> <span class="fu">},</span></span>
-<span id="cb149-7"><a href="#cb149-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;Utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;utils&quot;</span><span class="fu">,</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
-<span id="cb149-8"><a href="#cb149-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
-<span id="cb149-9"><a href="#cb149-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb151"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb151-1"><a href="#cb151-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb151-2"><a href="#cb151-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
+<span id="cb151-3"><a href="#cb151-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb151-4"><a href="#cb151-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
+<span id="cb151-5"><a href="#cb151-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb151-6"><a href="#cb151-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;TensorLib&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;tensor-lib&quot;</span><span class="fu">,</span> <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span> <span class="fu">},</span></span>
+<span id="cb151-7"><a href="#cb151-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;Utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;utils&quot;</span><span class="fu">,</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb151-8"><a href="#cb151-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb151-9"><a href="#cb151-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
 <p>Dependencies are declared in <code>starkpkg.json</code> under
 <code>dependencies</code>.</p>

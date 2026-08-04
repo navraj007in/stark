@@ -279,6 +279,51 @@ Examples:
 r"Raw string with \n literal backslashes"
 ```
 
+#### Interpolated String Literals
+
+```
+FORMAT_STRING := 'f"' (CHAR | ESCAPE_SEQUENCE | '{{' | '}}' | FIELD)* '"'
+FIELD         := '{' EXPRESSION [ ':' FORMAT_SPEC ] '}'
+FORMAT_SPEC   := [ [FILL] ALIGN ] [ SIGN ] [ '#' ] [ '0' ] [ WIDTH ]
+                 [ '.' PRECISION ] [ TYPE ]
+ALIGN         := '<' | '>' | '^'
+SIGN          := '+' | '-' | ' '
+TYPE          := 'b' | 'o' | 'x' | 'X' | 'f'
+FILL          := one Unicode scalar, only when immediately followed by ALIGN
+WIDTH         := decimal digits
+PRECISION     := decimal digits
+```
+
+**LEX-FORMAT-001.** An interpolated string literal is a `f`-prefixed cooked
+string. Its escape rules are `STRING`'s exactly. Additionally `{{` denotes one
+`{` and `}}` denotes one `}`; a `{` that is not part of `{{` opens a field, and
+a `}` that neither closes a field nor is part of `}}` rejects the literal.
+
+**LEX-FORMAT-002.** A field's expression extends to the top-level `:` that
+begins its specification, or to the top-level `}` that closes it. Depth is
+counted over `(`, `[` and `{`, so a struct literal's `:` and `}` are part of
+the expression; `::` is a path separator and never begins a specification. An
+escape sequence is consumed whole before any brace is considered, so
+`\u{1F600}` is one scalar and not a field.
+
+**LEX-FORMAT-003.** `WIDTH` and `PRECISION` are compile-time decimal
+constants; there is no dynamic width and no dynamic precision. An
+implementation MUST reject a `FORMAT_SPEC` it does not recognise rather than
+ignoring the unrecognised part, and MUST reject an `ALIGN` written without a
+`WIDTH`.
+
+Examples:
+```stark
+f"pkg={name} n={count:04} r={ratio:.2} ok={ok}"
+f"object={{ name: {name} }}"
+f"|{name:^12}|"
+f"{flags:#010x}"
+```
+
+*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and a field whose
+source carries the enclosing literal's escape sequences — which any nested
+string literal must, since the enclosing literal is delimited by `"`.
+
 #### Character Literals
 ```
 CHAR := '\'' (CHAR_CONTENT | ESCAPE_SEQUENCE) '\''
@@ -662,6 +707,7 @@ ArgumentList ::= Expression (',' Expression)* ','?
 
 PrimaryExpression ::= PathExpression
                     | Literal
+                    | InterpolatedString
                     | '(' Expression ')'    // Grouping
                     | TupleLiteral
                     | ArrayLiteral
@@ -730,6 +776,13 @@ Literal ::= INTEGER
           | STRING
           | CHAR
           | BOOLEAN
+
+// EXPR-FORMAT-001. An interpolated string literal (01-Lexical-Grammar.md,
+// FORMAT_STRING). Its type is always `String`, and its fields' expressions are
+// ordinary expressions of this grammar — an interpolation introduces no scope
+// and no new expression forms. It is neither a macro nor a call: the segments
+// are split at compile time, so no format string exists at run time.
+InterpolatedString ::= FORMAT_STRING
 
 TupleLiteral ::= '(' ')'                                  // Unit value
                | '(' Expression ',' ')'                   // Single-element tuple
@@ -3965,6 +4018,65 @@ followed by byte `0x0A`, independent of host newline convention. Successful
 calls preserve program order. The process contract flushes submitted
 stdout/stderr before reporting normal return or a language trap; a stream
 write/flush failure is a host/process failure.
+
+**STD-FORMAT-002.** An interpolated string literal (`f"..."`,
+01-Lexical-Grammar.md LEX-FORMAT-001) evaluates to a newly owned `String`. For
+each segment in source order:
+
+1. a literal segment contributes its decoded text;
+2. a field evaluates its expression **exactly once**, renders it, and appends
+   the rendered text.
+
+Fields are evaluated strictly left to right, and no expression is evaluated a
+second time to determine a width, a type or anything else. A field **borrows**
+what it renders: `Display::fmt` takes `&self` (STD-FORMAT-001), so a place
+expression is not consumed, and a value remains usable after being
+interpolated — including a non-`Copy` or affine one. A field whose expression
+is a temporary destroys that temporary exactly once, after its bytes have been
+appended.
+
+`f"{value}"` with no specification is `value.fmt()`'s text appended to the
+output. Selection of `Display` is ordinary trait resolution
+(03-Type-System.md TYPE-METHOD-003): a compiler-known trait receives no
+priority, and a generic parameter must carry a bound that actually supplies
+`fmt`.
+
+**STD-FORMAT-003.** A format specification is checked against the field's type
+at compile time; an unsupported pairing is rejected, never deferred to run
+time. `b`, `o`, `x` and `X` require an integer type; `.precision` and `f`
+require `Float32` or `Float64`; a sign, `#` or zero-padding requires a numeric
+type. Padding alone applies to any `Display` type. Precision on a string is
+rejected: Core v1 defines no string truncation, because it would require a
+scalar-versus-grapheme-versus-byte ruling that does not exist.
+
+**STD-FORMAT-004.** Rendering is byte-exact:
+
+- **Width** is counted in Unicode scalar values — not bytes, and not terminal
+  cells. It never truncates: a value at least as wide as the field is
+  unchanged. Text defaults to left alignment in a wider field and a numeric
+  value to right. When centring needs an odd number of fill characters, the
+  extra one goes on the **right**.
+- **Sign** precedes any base prefix, which precedes zero-padding, which
+  precedes the digits: `-00042`, `0x000000ff`. `+` gives non-negatives a `+`;
+  ` ` gives them a space; `-` and an unwritten sign give them nothing.
+- **Bases** render the magnitude with a leading `-` when negative: `-255` in
+  hexadecimal is `-ff`. A two's-complement bit pattern is never exposed.
+  Alternate prefixes are `0b`, `0o` and `0x`; `0x` is used for both hexadecimal
+  cases, since the prefix names the base and the type character chooses the
+  digit case.
+- **Precision** is exactly that many digits after the point, rounding to
+  nearest with exact halfway cases going to even. `Float32` is rendered at its
+  declared width, never widened first. A non-finite value ignores precision
+  entirely: `NaN`, `inf` and `-inf` render as those three spellings.
+
+No formatting is locale-sensitive, and none contains grouping, currency or a
+trailing newline.
+
+**STD-FORMAT-005.** Interpolation is human-readable formatting. It performs no
+escaping of any kind and is not a serialisation format. Building JSON, HTML,
+SQL, shell or URL text by interpolation is incorrect for any value that can
+contain the target syntax's metacharacters; use a serialiser that owns the
+escaping rules.
 
 **PRINT-DISPLAY-001.** `print`, `println`, `eprint`, and `eprintln` are
 implementation-provided generic functions with the signatures

@@ -1025,6 +1025,32 @@ impl<'a> Resolver<'a> {
         let node = self.ast.expr(ast_id);
         let kind = match &node.kind {
             ast::ExprKind::Lit(lit) => hir::ExprKind::Lit(*lit),
+            // WP-FMT-001: segments lower one for one. A field's expression is an ordinary
+            // expression and resolves in the enclosing scope — an interpolation introduces no
+            // scope of its own, so `f"{x}"` sees exactly the `x` the surrounding code sees.
+            ast::ExprKind::FormatString { segments } => {
+                let segments = segments
+                    .iter()
+                    .map(|segment| match segment {
+                        ast::FormatSegment::Literal { text, span } => hir::FormatSegment::Literal {
+                            text: text.clone(),
+                            span: *span,
+                        },
+                        ast::FormatSegment::Field {
+                            expr,
+                            spec,
+                            span,
+                            expr_span,
+                        } => hir::FormatSegment::Field {
+                            expr: self.lower_expr(*expr),
+                            spec: *spec,
+                            span: *span,
+                            expr_span: *expr_span,
+                        },
+                    })
+                    .collect();
+                hir::ExprKind::FormatString { segments }
+            }
             ast::ExprKind::Path { path, turbofish } => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {

@@ -4523,3 +4523,57 @@ Two defects, recorded together because the first concealed the second.
 - **Related:** the same function also serves built-in obligations that have no `TraitRef` at all
   (DEV-118's name-addressable mechanism), so the fix cannot simply delete the name comparison.
 - **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).
+
+## DEV-172 — no signed type can express its own minimum value (OPEN, pre-existing)
+
+- **Normative expectation:** `03-Type-System.md` — `Int8` is "8-bit signed integer (-128 to 127)".
+  `-128` is an `Int8`.
+- **Current behaviour:** rejected. Confirmed empirically 2026-08-04, with no interpolation involved:
+
+  ```stark
+  let a: Int8 = -128;                    // [E0008] integer literal out of range for 'Int8'
+  let d: Int64 = -9223372036854775808;   // [E0008] integer literal out of range for 'Int64'
+  let u: UInt64 = 18446744073709551615;  // [E0008] out of range for 'Int64'
+  ```
+
+  A negative literal is a unary minus applied to a positive literal, and the magnitude is
+  range-checked against the target type *before* the negation. `128` does not fit `Int8`, so
+  `-128` is refused — and the same argument refuses every signed minimum. `UInt64::MAX` fails for a
+  related reason: the literal is classified against the signed default before its `UInt64` context
+  is applied.
+- **User impact:** the minimum of every signed width, and the maximum of `UInt64`, are
+  unwritable. A program needing `Int32::MIN` has no literal for it.
+- **Security/soundness impact:** none — a refusal, not an acceptance. But it is a conformance gap
+  against a range the specification states explicitly.
+- **Discovered by:** WP-FMT-001, while testing that formatting a minimum signed value does not
+  overflow while taking its magnitude. The RENDERER handles it correctly — pinned by
+  `stark_runtime::fmt_spec::tests::minimum_signed_values_do_not_overflow_their_own_width`, which
+  formats `i64::MIN` — but no STARK program can produce the value to hand it.
+- **Owning gate:** unassigned. Literal typing, not formatting; a fix belongs with the literal
+  range check (DEV-015's area), which must learn that a literal in unary-minus position is checked
+  against the negated range.
+
+## DEV-173 — an interpolation field may not contain an escape sequence (OPEN, deferred by decision)
+
+- **Normative expectation:** `01-Lexical-Grammar.md` LEX-FORMAT-002 admits an arbitrary expression
+  in a field. A nested string literal is an expression.
+- **Current behaviour:** refused with E0218, "an interpolation field may not contain an escape
+  sequence". Because the enclosing literal is delimited by `"`, a nested string literal must be
+  written `f"{call(\"a\")}"` — so its source carries the OUTER literal's escapes.
+- **Why it is refused rather than supported:** every expression node reads its text from its
+  `Span`. A field's expression is parsed by lexing the original file over the field's own byte
+  range, which keeps spans real; a field containing escapes cannot be lexed that way, because `\"`
+  is not valid expression syntax. Parsing a DECODED copy works, but the resulting nodes' spans
+  index a scratch buffer no consumer can read, and retagging them to the field's span makes a
+  string literal read the field's raw source back — `f"{\"slice\"}"` then renders `"slice"`, with
+  quotes, where the program said `slice`. That was observed during implementation, which is why
+  this is a refusal: producing the wrong string silently is worse than declining.
+- **User impact:** small and with a clean workaround — bind the value first
+  (`let s = "slice".to_string(); f"{s}"`). Every other expression form works, including calls,
+  indexing, field access, struct literals and qualified paths.
+- **Security/soundness impact:** none — a refusal.
+- **Proposed disposition:** give AST nodes a source origin independent of the root file (the
+  mechanism `item_files` already provides per item, needed per node), then parse decoded field text
+  against a retained buffer. That is an arena change, not a formatting change.
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_not_carry_an_escape_sequence`.
+- **Owning gate:** unassigned.

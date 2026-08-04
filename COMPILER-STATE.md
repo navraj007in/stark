@@ -1,5 +1,117 @@
 # STARK Compiler STATE
 
+## CD-380 — WP-FMT-001: interpolated string literals (2026-08-04)
+
+```stark
+let message = f"pkg={name} n={count:04} r={ratio:.2} ok={ok}";
+```
+```text
+pkg=stark n=0042 r=0.76 ok=true
+```
+
+**STARK has a complete, compile-time-checked string formatting feature.** `f"..."` produces an
+ordinary owned `String` through the `Display` architecture CD-378 and CD-379 established. It is not
+a macro, not a variadic call, and not a runtime-parsed format string: segments are split at parse
+time, every specification is validated against its field's type at type checking, and no format
+string exists in a running program.
+
+### One implementation of the rules, three engines
+
+Alignment, fill, width, sign, radix, alternate prefix and fixed precision live in
+`stark_runtime::fmt_spec` and nowhere else. `starkc` already depends on that crate and every native
+binary links it, so the HIR oracle, the MIR interpreter and generated code call the SAME functions —
+the arrangement that already keeps `x.fmt()` and `println(x)` from drifting. A specification reaches
+the runtime as a packed `UInt64` word plus a `Char` fill, both compile-time constants.
+
+MIR gained **five** operations — `FmtPad`, `FmtIntSpec`, `FmtUIntSpec`, `FmtFloat64Spec`,
+`FmtFloat32Spec` — not one per syntax combination. Everything about *how* a value renders is in the
+word; the operation only says which value family it is.
+
+### Tokenizing without a token soup
+
+`f"..."` is ONE token, scanned exactly like a cooked string. The parser splits it and, for each
+field, lexes **the original file over that field's own byte range** (`lexer::tokenize_range`) and
+parses it with the ordinary expression parser. So spans inside an interpolation are real file spans
+— `tests/span_integrity.rs` now asserts a field's expression is spanned inside its literal — and
+nesting, calls, indexing, struct literals and paths are handled by the parser that already handles
+them. No source text is ever reconstructed or rewritten.
+
+The scanner tracks depth over `(`/`[`/`{` and consumes escapes whole, so `Point { x: 1, y: 2 }`'s
+`:` and `}` stay inside the expression, `module::CONST`'s `::` is not a specification separator, and
+`\u{1F600}`'s braces are an escape rather than a field.
+
+### Rulings taken, and why
+
+* **Width counts Unicode scalars**, not bytes and not terminal cells — the only choice that renders
+  identically on every platform. It never truncates.
+* **Odd centring puts the extra fill on the right**, so `{"x":^4}` is `| x  |`.
+* **Sign, then prefix, then zero-padding, then digits**: `-00042`, `0x000000ff`.
+* **A negative value in another base keeps its sign and renders its magnitude**: `-255` in hex is
+  `-ff`. The host's two's-complement pattern is never exposed.
+* **`0x` prefixes both hex cases** — the prefix names the base, the type character chooses digit case.
+* **Rounding is half-to-even**; `Float32` renders at its declared width, never widened first;
+  non-finite values ignore precision (`NaN`, not `NaN.00`).
+* **Precision on a string is REFUSED.** It could only mean truncation, and Core v1 has no ruling on
+  scalar-versus-grapheme-versus-byte cutting. Refusing beats guessing.
+* **Alignment without a width is refused** — it is a no-op, and almost always a typo.
+* **A numeric mode on a generic `T: Display` is refused.** `Display` does not prove integer
+  formatting, and inventing a numeric bound to make it compile was explicitly out of scope.
+
+### Ownership
+
+A field **borrows**. `Display::fmt` is `&self`, so a place expression is read, not moved: `f"{x}"`
+twice then `use_value(x)` is legal, for a non-`Copy` value and for an affine `Drop`-bearing one. A
+temporary field is destroyed exactly once after its bytes are appended. Fields evaluate strictly
+left to right, exactly once each — never a second time to discover a width.
+
+### Spec first
+
+**LEX-FORMAT-001/002/003** (01-Lexical-Grammar), **EXPR-FORMAT-001** (02-Syntax-Grammar) and
+**STD-FORMAT-002…005** (06-Standard-Library) state the grammar, evaluation order, ownership,
+type/spec compatibility, byte-exact rendering, and that interpolation is human-readable formatting
+rather than an escaping mechanism for JSON, HTML, SQL, shell or URLs. Compiled spec regenerated; the
+fixture corpus is now **114** blocks, the new one triaged in the same change.
+
+### Evidence
+
+- `starkc/tests/wp_fmt_001_interpolation.rs` — 36 tests. Every positive case runs the three-engine
+  comparator with stdout pinned in the test; plus debug-vs-release native agreement, and a
+  generated-source check that interpolation reaches `stark_runtime::fmt_spec` and that the crate
+  contains no `format!`, `write!`, `writeln!`, `std::fmt::Display`, `std::fmt::Debug` or
+  `#[derive(Debug`.
+- `stark_runtime::fmt_spec` — 16 unit tests on the rules themselves, including `i64::MIN`, `-ff`,
+  half-to-even, `Float32` width preservation and scalar-counted width.
+- `src/format_syntax.rs` — 12 unit tests on the scanner and specification grammar, including the
+  malformed inputs that must diagnose rather than panic.
+- `stark fmt` round-trips interpolated literals byte-identically; `packages/stark-fmt` is unchanged
+  and green, and interpolation needs no dependency on it.
+
+### Deliberate exclusions, recorded rather than implied
+
+* **No multiline interpolated form.** STARK has no multiline string literal to prefix; §2.5 said not
+  to invent one.
+* **No raw interpolated form** (`rf"..."`) — deferred, as §2.5 permits.
+* **The source formatter reprints an interpolated literal verbatim** rather than re-formatting its
+  embedded expressions. Reconstructing the literal risks changing what the program prints, which is
+  a semantic difference, not a formatting one. §19 permits this trade and asks that it be recorded.
+
+### Opened
+
+- **DEV-172 — no signed type can express its own minimum value.** `let a: Int8 = -128;` is
+  rejected: the magnitude is range-checked before the unary minus. Pre-existing, unrelated to
+  formatting, found while testing that formatting a minimum does not overflow. The RENDERER handles
+  `i64::MIN` correctly; no STARK program can produce the value to hand it.
+- **DEV-173 — an interpolation field may not contain an escape sequence.** A nested string literal
+  inside a field necessarily carries the outer literal's escapes, and parsing a decoded copy makes a
+  string literal read its own source back (`\"slice\"` for `slice`) because literals read their value
+  from their span. Refused rather than mis-parsed; workaround is to bind the value first.
+
+### Status
+
+WP-FMT-001 CLOSED for FMT-0 through FMT-5 as scoped. Formatting is sufficient for CLI output and
+structured log lines; see the closure report for the REST-server assessment.
+
+
 ## CD-379 — DEV-BOUND-TRAIT-IDENTITY: a bound denoted whatever trait was spelled the same (2026-08-04)
 
 **A follow-up to CD-378, and a correction to it.** CD-378 unified method candidate *collection*

@@ -2962,6 +2962,26 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         FmtFloat32 => (vec![MirTy::Float32], MirTy::String),
         FmtChar => (vec![MirTy::Char], MirTy::String),
         FmtUnit => (vec![], MirTy::String),
+        // WP-FMT-001: the specification word and the fill scalar are always CONSTANTS the
+        // compiler packed; typing them as ordinary operands lets the verifier check them like any
+        // other, and there is nothing to parse at run time.
+        FmtPad => (vec![str_ref(), MirTy::UInt64, MirTy::Char], MirTy::String),
+        FmtIntSpec => (
+            vec![MirTy::Int64, MirTy::UInt64, MirTy::Char],
+            MirTy::String,
+        ),
+        FmtUIntSpec => (
+            vec![MirTy::UInt64, MirTy::UInt64, MirTy::Char],
+            MirTy::String,
+        ),
+        FmtFloat64Spec => (
+            vec![MirTy::Float64, MirTy::UInt64, MirTy::Char],
+            MirTy::String,
+        ),
+        FmtFloat32Spec => (
+            vec![MirTy::Float32, MirTy::UInt64, MirTy::Char],
+            MirTy::String,
+        ),
         // 0.1-A3 (f-3b): Char ops.
         PrintlnChar | PrintChar => (vec![MirTy::Char], MirTy::Unit),
         // 0.1-A13 (WP-C7.9 Packet D): the stderr half takes exactly the operand shapes its stdout

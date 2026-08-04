@@ -581,6 +581,114 @@ struct Parser<'a> {
 const MAX_DEPTH: u32 = 200;
 
 impl Parser<'_> {
+    /// WP-FMT-001: build a `FormatString` expression from the whole-literal token at `span`.
+    ///
+    /// The literal's CONTENT is `span` minus the `f` and the two quotes. `format_syntax` splits it
+    /// into segments; each field's expression is then lexed **over its own byte range in the
+    /// original file** and parsed by the ordinary expression parser, so its spans are real file
+    /// spans and its grammar is the language's, not a second implementation of it.
+    fn format_string(&mut self, span: Span) -> ExprId {
+        // `f"` opens and `"` closes.
+        let body = Span::new(span.lo + 2, span.hi.saturating_sub(1));
+        let raw_segments = match crate::format_syntax::scan_format_literal(self.file, body) {
+            Ok(segments) => segments,
+            Err(diags) => {
+                self.diags.extend(diags);
+                return self.ast.alloc_expr(ExprKind::Error, span);
+            }
+        };
+
+        let mut segments = Vec::with_capacity(raw_segments.len());
+        for raw in raw_segments {
+            match raw {
+                crate::format_syntax::RawSegment::Literal { text, span } => {
+                    segments.push(FormatSegment::Literal { text, span });
+                }
+                crate::format_syntax::RawSegment::Field {
+                    expr_span,
+                    spec,
+                    span,
+                } => {
+                    let expr = self.subparse_expr(expr_span);
+                    segments.push(FormatSegment::Field {
+                        expr,
+                        spec,
+                        span,
+                        expr_span,
+                    });
+                }
+            }
+        }
+        self.ast
+            .alloc_expr(ExprKind::FormatString { segments }, span)
+    }
+
+    /// Parse the expression occupying `range` of the current file, into the shared AST arena.
+    ///
+    /// A nested `Parser` over a token stream lexed from that exact range. It shares `self.ast`, so
+    /// the resulting `ExprId` belongs to the same arena, and it inherits `options`,
+    /// `in_impl_or_trait` and the current recursion depth — an interpolation inside a method body
+    /// must see `Self` exactly as the surrounding code does, and must not get a fresh depth budget
+    /// (LIMIT: the parser's existing `MAX_DEPTH`, not a second one).
+    fn subparse_expr(&mut self, range: Span) -> ExprId {
+        let source = &self.file.src[range.lo as usize..range.hi as usize];
+        // WP-FMT-001 deferred: a field containing the OUTER literal's escapes is refused.
+        //
+        // A nested string literal inside a field necessarily carries them — the f-string's own `"`
+        // delimiter forces `f"{call(\"a\")}"` — and it cannot be parsed soundly here. Every
+        // expression node reads its text from its SPAN, and a decoded copy of the field has no
+        // span in the real file: a string literal parsed from a scratch buffer and retagged to the
+        // field's span reads the field's raw source back, quotes and all, rendering `\"slice\"`
+        // where the program said `slice`. Producing the wrong string silently is worse than
+        // refusing, so this refuses and the limitation is recorded rather than hidden.
+        if source.contains('\\') {
+            self.diags.push(
+                Diagnostic::error(
+                    "an interpolation field may not contain an escape sequence",
+                    range,
+                )
+                .with_code("E0218")
+                .with_label("bind the value to a variable first, then interpolate it"),
+            );
+            return self.ast.alloc_expr(ExprKind::Error, range);
+        }
+        let (tokens, lex_diags) = crate::lexer::tokenize_range(self.file, range.lo, range.hi);
+        self.diags.extend(lex_diags);
+        let mut inner = Parser {
+            file: self.file,
+            tokens,
+            pos: 0,
+            diags: Vec::new(),
+            ast: self.ast,
+            options: self.options,
+            in_impl_or_trait: self.in_impl_or_trait,
+            depth: self.depth,
+            depth_reported: self.depth_reported,
+        };
+        // `DEFAULT`, not `NO_STRUCT`: a field's braces are the SCANNER's, already
+        // matched, so a struct literal inside one is unambiguous — which is what makes
+        // `f"{Point { x: 1, y: 2 }}"` parse.
+        let expr = inner.expr(DEFAULT);
+        // Anything left over means the field held more than one expression (`{a b}`); report it
+        // rather than silently formatting the first half.
+        let trailing = !matches!(inner.peek().kind, TokenKind::Eof);
+        let leftover_span = inner.peek().span;
+        let inner_diags = inner.diags;
+        let depth_reported = inner.depth_reported;
+        self.diags.extend(inner_diags);
+        self.depth_reported = depth_reported;
+        if trailing {
+            self.diags.push(
+                Diagnostic::error(
+                    "unexpected trailing tokens in an interpolation field",
+                    leftover_span,
+                )
+                .with_code("E0218"),
+            );
+        }
+        expr
+    }
+
     // ------------------------------------------------------- token cursor --
 
     fn peek(&self) -> Token {
@@ -1883,6 +1991,12 @@ impl Parser<'_> {
                 self.bump();
                 self.ast
                     .alloc_expr(ExprKind::Lit(Lit::Str { raw }), token.span)
+            }
+            // WP-FMT-001: `f"..."`. The literal arrived as ONE token; this splits it and parses
+            // each field's expression with the ordinary expression parser.
+            TokenKind::FormatStr => {
+                self.bump();
+                self.format_string(token.span)
             }
             TokenKind::CharLit => {
                 self.bump();

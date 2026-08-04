@@ -121,7 +121,7 @@ conflict table.
   `CORE-V1-*.md` semantic chapters normative; concise and generated views non-normative).
 - Compiler: front end, semantic analysis and execution are done (`starkc/` — lexer, parser, name
   resolver, type/flow/borrow checker, a typed-HIR reference interpreter and a MIR interpreter; the
-  113-fixture conformance suite is green). **Native compilation through generated Rust works in
+  114-fixture conformance suite is green). **Native compilation through generated Rust works in
   debug and release on Linux, macOS and Windows** (Gate C7), over a *qualified* standard-library
   subset — Gate C6 audited 87 methods and verified an invocation for 59. Programs are compared
   across four engine configurations (HIR interpreter, MIR interpreter, native debug, native

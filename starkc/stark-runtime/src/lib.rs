@@ -14,6 +14,7 @@
 //! move/Drop lowering and the Native Provider ABI validator land).
 
 pub mod boxed;
+pub mod fmt_spec;
 pub mod format;
 pub mod map;
 pub mod output;

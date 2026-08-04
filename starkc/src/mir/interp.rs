@@ -1716,6 +1716,56 @@ impl<'a> Interp<'a> {
                 &first,
             )?))),
             FmtUnit => Ok(MirValue::String(stark_runtime::format::fmt_unit())),
+            // WP-FMT-001. Same `fmt_spec` functions the HIR oracle and the native backend call,
+            // so a padding or rounding rule cannot differ between engines.
+            FmtPad => {
+                let text = self.as_str(&first)?;
+                let word = int_arg(rest.next())? as u64;
+                let fill = char_of(&rest.next())?;
+                Ok(MirValue::String(stark_runtime::fmt_spec::fmt_pad_spec(
+                    &text, word, fill,
+                )))
+            }
+            FmtIntSpec => {
+                let value = int_arg(first)? as i64;
+                let word = int_arg(rest.next())? as u64;
+                let fill = char_of(&rest.next())?;
+                Ok(MirValue::String(stark_runtime::fmt_spec::fmt_int_spec(
+                    value, word, fill,
+                )))
+            }
+            FmtUIntSpec => {
+                let value = int_arg(first)? as u64;
+                let word = int_arg(rest.next())? as u64;
+                let fill = char_of(&rest.next())?;
+                Ok(MirValue::String(stark_runtime::fmt_spec::fmt_uint_spec(
+                    value, word, fill,
+                )))
+            }
+            FmtFloat64Spec => {
+                let value = match first {
+                    Some(MirValue::Float(f)) => f,
+                    other => return self.internal(format!("expected a Float64, got {other:?}")),
+                };
+                let word = int_arg(rest.next())? as u64;
+                let fill = char_of(&rest.next())?;
+                Ok(MirValue::String(stark_runtime::fmt_spec::fmt_float64_spec(
+                    value, word, fill,
+                )))
+            }
+            // DEV-105: the OPERATION carries the declared width, so the interpreter narrows its
+            // internal `f64` storage back to `f32` here before rendering.
+            FmtFloat32Spec => {
+                let value = match first {
+                    Some(MirValue::Float(f)) => f as f32,
+                    other => return self.internal(format!("expected a Float32, got {other:?}")),
+                };
+                let word = int_arg(rest.next())? as u64;
+                let fill = char_of(&rest.next())?;
+                Ok(MirValue::String(stark_runtime::fmt_spec::fmt_float32_spec(
+                    value, word, fill,
+                )))
+            }
             StrBytes => {
                 let s = self.as_str(&first)?;
                 Ok(MirValue::ByteSlice(std::rc::Rc::from(s.as_bytes())))

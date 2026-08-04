@@ -20,6 +20,7 @@ pub mod diag;
 pub mod doc_gen;
 pub mod extensions;
 pub mod flow;
+pub mod format_syntax;
 pub mod formatter;
 pub mod hir;
 pub mod interp;

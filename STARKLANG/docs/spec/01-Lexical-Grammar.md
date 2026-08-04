@@ -128,6 +128,51 @@ Examples:
 r"Raw string with \n literal backslashes"
 ```
 
+#### Interpolated String Literals
+
+```
+FORMAT_STRING := 'f"' (CHAR | ESCAPE_SEQUENCE | '{{' | '}}' | FIELD)* '"'
+FIELD         := '{' EXPRESSION [ ':' FORMAT_SPEC ] '}'
+FORMAT_SPEC   := [ [FILL] ALIGN ] [ SIGN ] [ '#' ] [ '0' ] [ WIDTH ]
+                 [ '.' PRECISION ] [ TYPE ]
+ALIGN         := '<' | '>' | '^'
+SIGN          := '+' | '-' | ' '
+TYPE          := 'b' | 'o' | 'x' | 'X' | 'f'
+FILL          := one Unicode scalar, only when immediately followed by ALIGN
+WIDTH         := decimal digits
+PRECISION     := decimal digits
+```
+
+**LEX-FORMAT-001.** An interpolated string literal is a `f`-prefixed cooked
+string. Its escape rules are `STRING`'s exactly. Additionally `{{` denotes one
+`{` and `}}` denotes one `}`; a `{` that is not part of `{{` opens a field, and
+a `}` that neither closes a field nor is part of `}}` rejects the literal.
+
+**LEX-FORMAT-002.** A field's expression extends to the top-level `:` that
+begins its specification, or to the top-level `}` that closes it. Depth is
+counted over `(`, `[` and `{`, so a struct literal's `:` and `}` are part of
+the expression; `::` is a path separator and never begins a specification. An
+escape sequence is consumed whole before any brace is considered, so
+`\u{1F600}` is one scalar and not a field.
+
+**LEX-FORMAT-003.** `WIDTH` and `PRECISION` are compile-time decimal
+constants; there is no dynamic width and no dynamic precision. An
+implementation MUST reject a `FORMAT_SPEC` it does not recognise rather than
+ignoring the unrecognised part, and MUST reject an `ALIGN` written without a
+`WIDTH`.
+
+Examples:
+```stark
+f"pkg={name} n={count:04} r={ratio:.2} ok={ok}"
+f"object={{ name: {name} }}"
+f"|{name:^12}|"
+f"{flags:#010x}"
+```
+
+*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and a field whose
+source carries the enclosing literal's escape sequences — which any nested
+string literal must, since the enclosing literal is delimited by `"`.
+
 #### Character Literals
 ```
 CHAR := '\'' (CHAR_CONTENT | ESCAPE_SEQUENCE) '\''

@@ -64,12 +64,32 @@ implementations nor extension traits. Adding a resolver branch keyed on the name
 instead would rebuild exactly the two-tier trait model DEV-DISPLAY-DISPATCH removed. Recorded as
 DEV-167; the free function is the supported form until a blanket-implementation decision is made.
 
+## Relationship to `f"..."` interpolation
+
+Since **WP-FMT-001** the language has interpolated string literals, and they are the ergonomic form
+for anything expressible as one literal:
+
+```stark
+let msg = f"pkg={name} n={count:04} r={ratio:.2}";
+```
+
+`Line` is still the right tool where a literal cannot reach:
+
+* pieces chosen conditionally;
+* text built in a loop;
+* a fragment assembled across several functions.
+
+Both go through the same `Display` dispatch and the same `stark_runtime` renderers, so a value
+formats identically either way. Interpolation needs **no dependency on this package** — an ordinary
+source file may use `f"..."` with an empty manifest.
+
 ## Exclusions
 
-Not here, and not planned here: format strings, interpolation, variadic arguments, padding, width,
-precision, alignment, grouping, locale awareness, or colour. This package answers one question —
-can a package author write `fn value<T: Display>(..)` and have it work — and adding formatting
-ergonomics on top would obscure the answer.
+Not in this package's API, and not planned here: variadic arguments, grouping, locale awareness or
+colour. Padding, width, precision and alignment ARE available — through the language's `f"..."`
+specifications (WP-FMT-001), not through `Line`, which stays a plain concatenation builder. This
+package answers one question — can a package author write `fn value<T: Display>(..)` and have it
+work — and reimplementing the language's format specifications on top would obscure the answer.
 
 `Display` is also **not a serialisation format**: it performs no escaping. Do not build JSON or any
 other quoted format by concatenating `Display` renderings; use `stark-json`.

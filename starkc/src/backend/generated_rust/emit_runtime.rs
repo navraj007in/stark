@@ -111,6 +111,42 @@ pub fn emit_runtime_call(
         FmtFloat32 => format!("stark_runtime::format::fmt_f32({} as f32)", arg(0)),
         FmtChar => format!("stark_runtime::format::fmt_char({})", arg(0)),
         FmtUnit => "stark_runtime::format::fmt_unit()".to_string(),
+
+        // --- WP-FMT-001: format-specification application ---
+        //
+        // Into `stark_runtime::fmt_spec`, the same module both interpreters call. Generated
+        // application code contains no `format!`, no `write!` and no Rust `Display`: the padding,
+        // radix and rounding rules are STARK's, and there is one implementation of them.
+        FmtPad => format!(
+            "stark_runtime::fmt_spec::fmt_pad_spec({}, {} as u64, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
+        FmtIntSpec => format!(
+            "stark_runtime::fmt_spec::fmt_int_spec({} as i64, {} as u64, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
+        FmtUIntSpec => format!(
+            "stark_runtime::fmt_spec::fmt_uint_spec({} as u64, {} as u64, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
+        FmtFloat64Spec => format!(
+            "stark_runtime::fmt_spec::fmt_float64_spec({} as f64, {} as u64, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
+        FmtFloat32Spec => format!(
+            "stark_runtime::fmt_spec::fmt_float32_spec({} as f32, {} as u64, {})",
+            arg(0),
+            arg(1),
+            arg(2)
+        ),
         StringClone => format!("stark_runtime::string::clone_string({})", arg(0)),
         StringAsStr => format!("stark_runtime::string::as_str({})", arg(0)),
 

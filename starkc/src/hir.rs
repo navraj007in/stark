@@ -335,6 +335,11 @@ pub struct ExprNode {
 
 pub enum ExprKind {
     Lit(Lit),
+    /// WP-FMT-001: an interpolated string literal, already split into segments at parse time.
+    /// Evaluates to an owned `String`.
+    FormatString {
+        segments: Vec<FormatSegment>,
+    },
     Path {
         path: Path,
         res: Res,
@@ -570,6 +575,22 @@ pub struct Param {
 pub struct GenericParam {
     pub name: Span,
     pub bounds: Vec<TraitRef>,
+}
+
+/// WP-FMT-001: one piece of an interpolated string literal.
+#[derive(Clone)]
+pub enum FormatSegment {
+    /// Static text, escapes and `{{`/`}}` already resolved.
+    Literal { text: String, span: Span },
+    /// `{ expression [: spec] }`. The specification is a compile-time constant; `expr_span` blames
+    /// the value and `spec.span` blames the specification, so a diagnostic can point at whichever
+    /// half is wrong.
+    Field {
+        expr: ExprId,
+        spec: crate::ast::FormatSpec,
+        span: Span,
+        expr_span: Span,
+    },
 }
 
 #[derive(Clone)]

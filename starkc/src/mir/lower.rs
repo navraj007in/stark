@@ -3990,6 +3990,12 @@ impl<'a> FnLowerer<'a> {
         let span = self.hir.expr(expr).span;
         match &self.hir.expr(expr).kind {
             hir::ExprKind::Lit(lit) => self.lower_lit(expr, lit),
+            // WP-FMT-001: build the output `String` into a temp, then hand back that temp.
+            hir::ExprKind::FormatString { .. } => {
+                let out = self.new_temp(MirTy::String);
+                self.lower_format_string(expr, Place::local(out), span)?;
+                self.read_place(Place::local(out), &MirTy::String, span)
+            }
             hir::ExprKind::Path { res, .. } => match res {
                 Res::Local(local) | Res::SelfValue(local) => {
                     let mir_local = *self.local_map.get(&local.0).ok_or_else(|| LowerError {
@@ -9709,6 +9715,420 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    // ------------------------------------------------ WP-FMT-001: interpolated string literals --
+
+    /// Pack a source-level specification into the runtime's word plus its fill scalar.
+    ///
+    /// The layout lives in `stark_runtime::fmt_spec::Spec`, next to the `unpack` that reads it, so
+    /// the two cannot disagree about a bit position.
+    fn format_spec_operands(spec: &crate::ast::FormatSpec) -> (Operand, Operand) {
+        use crate::ast::FormatKind;
+        use stark_runtime::fmt_spec::{Align, Kind, Sign, Spec};
+        let align = match spec.align {
+            None => Align::Default,
+            Some(crate::ast::FormatAlign::Left) => Align::Left,
+            Some(crate::ast::FormatAlign::Right) => Align::Right,
+            Some(crate::ast::FormatAlign::Center) => Align::Center,
+        };
+        let sign = match spec.sign {
+            None | Some(crate::ast::FormatSign::Minus) => Sign::Minus,
+            Some(crate::ast::FormatSign::Plus) => Sign::Plus,
+            Some(crate::ast::FormatSign::Space) => Sign::Space,
+        };
+        let kind = match spec.kind {
+            None => Kind::Display,
+            Some(FormatKind::Bin) => Kind::Bin,
+            Some(FormatKind::Oct) => Kind::Oct,
+            Some(FormatKind::LowerHex) => Kind::LowerHex,
+            Some(FormatKind::UpperHex) => Kind::UpperHex,
+            Some(FormatKind::Fixed) => Kind::Fixed,
+        };
+        let word = Spec::pack(
+            spec.width.unwrap_or(0),
+            spec.precision.map(|p| p as u16),
+            align,
+            sign,
+            spec.alternate,
+            spec.zero_pad,
+            kind,
+        );
+        let fill = spec.fill.unwrap_or(' ');
+        (
+            Operand::Const(Constant::Int(word as i128, MirTy::UInt64)),
+            Operand::Const(Constant::Int(u32::from(fill) as i128, MirTy::Char)),
+        )
+    }
+
+    /// Whether a specification asks for a NUMERIC rendering, which owns sign placement and radix
+    /// and therefore takes the value rather than its `Display` text.
+    fn format_spec_is_numeric(spec: &crate::ast::FormatSpec) -> bool {
+        spec.kind.is_some()
+            || spec.precision.is_some()
+            || spec.sign.is_some()
+            || spec.alternate
+            || spec.zero_pad
+    }
+
+    /// WP-FMT-001: lower `f"..."` into the construction of one output `String` at `dest`.
+    ///
+    /// One `StringNew`, then per segment either a `StringPushStr` of static text or a rendered
+    /// field appended and its temporary destroyed. **Adjacent literal segments were already merged
+    /// by the scanner**, which emits one `Literal` per run between fields, so no merging is needed
+    /// here (§12.3).
+    ///
+    /// Nothing about the format string survives to run time: the literal text is a `Constant::Str`
+    /// and every specification is a constant word (§12.1).
+    fn lower_format_string(
+        &mut self,
+        expr: ExprId,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let hir::ExprKind::FormatString { segments } = &self.hir.expr(expr).kind else {
+            return unsupported("lower_format_string on a non-format expression", span);
+        };
+        let segments = segments.clone();
+
+        self.emit_runtime_call(RuntimeFn::StringNew, Vec::new(), dest.clone(), span);
+
+        for segment in &segments {
+            match segment {
+                hir::FormatSegment::Literal { text, .. } => {
+                    self.push_str_onto(&dest, Operand::Const(Constant::Str(text.clone())), span)?;
+                }
+                hir::FormatSegment::Field {
+                    expr: field,
+                    spec,
+                    expr_span,
+                    ..
+                } => {
+                    let rendered = self.render_format_field(*field, spec, *expr_span)?;
+                    // `String::as_str` then push; the rendered temporary is destroyed straight
+                    // after its bytes are appended, exactly once.
+                    let str_ref_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::String),
+                    };
+                    let str_ref = self.new_temp(str_ref_ty);
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(str_ref),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: Place::local(rendered),
+                            },
+                        ),
+                        self.info(*expr_span),
+                    );
+                    let as_str_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::Str),
+                    };
+                    let as_str = self.new_temp(as_str_ty.clone());
+                    self.emit_runtime_call(
+                        RuntimeFn::StringAsStr,
+                        vec![Operand::Copy(Place::local(str_ref))],
+                        Place::local(as_str),
+                        *expr_span,
+                    );
+                    let str_op = self.read_place(Place::local(as_str), &as_str_ty, *expr_span)?;
+                    self.push_str_onto(&dest, str_op, *expr_span)?;
+                    let after_drop = self.new_block();
+                    self.terminate(
+                        Terminator::Drop {
+                            place: Place::local(rendered),
+                            target: after_drop,
+                        },
+                        self.info(*expr_span),
+                        after_drop,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `output.push_str(text)`.
+    fn push_str_onto(&mut self, dest: &Place, text: Operand, span: Span) -> Result<(), LowerError> {
+        let out_ref_ty = MirTy::Ref {
+            mutable: true,
+            inner: Box::new(MirTy::String),
+        };
+        let out_ref = self.new_temp(out_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(out_ref),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place: dest.clone(),
+                },
+            ),
+            self.info(span),
+        );
+        let unit = Place::local(self.new_temp(MirTy::Unit));
+        self.emit_runtime_call(
+            RuntimeFn::StringPushStr,
+            vec![Operand::Copy(Place::local(out_ref)), text],
+            unit,
+            span,
+        );
+        Ok(())
+    }
+
+    /// WP-FMT-001: render one field into a fresh `String` local, returning that local.
+    ///
+    /// A numeric specification renders the VALUE through the `Fmt*Spec` runtime ops; everything
+    /// else renders the value's `Display` text — through the very same machinery `x.fmt()` uses,
+    /// so `f"{x}"` and `x.fmt()` cannot disagree — and pads it if a width was asked for.
+    ///
+    /// **The field expression is lowered exactly once** (§10.2). It is never evaluated to discover
+    /// a width and again to render.
+    fn render_format_field(
+        &mut self,
+        field: ExprId,
+        spec: &crate::ast::FormatSpec,
+        span: Span,
+    ) -> Result<LocalId, LowerError> {
+        let (word, fill) = Self::format_spec_operands(spec);
+        let field_ty = self.expr_mir_ty(field)?;
+        let (peeled, _layers) = Self::peel_refs(field_ty.clone());
+        let out = self.new_temp(MirTy::String);
+
+        if Self::format_spec_is_numeric(spec) {
+            match &peeled {
+                MirTy::Float32 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtFloat32Spec,
+                        vec![value, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::Float64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtFloat64Spec,
+                        vec![value, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::Int8 | MirTy::Int16 | MirTy::Int32 | MirTy::Int64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    let widened = if matches!(peeled, MirTy::Int64) {
+                        value
+                    } else {
+                        self.cast_to_temp(value, MirTy::Int64, span)?
+                    };
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtIntSpec,
+                        vec![widened, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::UInt8 | MirTy::UInt16 | MirTy::UInt32 | MirTy::UInt64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    let widened = if matches!(peeled, MirTy::UInt64) {
+                        value
+                    } else {
+                        self.cast_to_temp(value, MirTy::UInt64, span)?
+                    };
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtUIntSpec,
+                        vec![widened, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                // The type checker refuses a numeric specification on anything else, so reaching
+                // here means the checker and this lowering disagree — a compiler defect, reported
+                // as one rather than rendered as something else.
+                other => {
+                    return unsupported(
+                        format!(
+                        "numeric format specification on {other:?} (checker/lowering disagreement)"
+                    ),
+                        span,
+                    )
+                }
+            }
+        }
+
+        // `Display` text. `lower_display_fmt` is CD-378's own path, so a primitive renders through
+        // `stark_runtime::format` and a user nominal runs its `impl Display`.
+        let rendered = self.new_temp(MirTy::String);
+        self.lower_field_display(field, &peeled, Place::local(rendered), span)?;
+        if spec.width.unwrap_or(0) == 0 {
+            return Ok(rendered);
+        }
+        // Pad the rendered text. The rendered `String` is consumed here and destroyed by the
+        // caller's drop of `out`, so exactly one `String` survives per field.
+        let str_ref_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::String),
+        };
+        let str_ref = self.new_temp(str_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(str_ref),
+                Rvalue::RefOf {
+                    mutable: false,
+                    place: Place::local(rendered),
+                },
+            ),
+            self.info(span),
+        );
+        let as_str_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Str),
+        };
+        let as_str = self.new_temp(as_str_ty.clone());
+        self.emit_runtime_call(
+            RuntimeFn::StringAsStr,
+            vec![Operand::Copy(Place::local(str_ref))],
+            Place::local(as_str),
+            span,
+        );
+        let str_op = self.read_place(Place::local(as_str), &as_str_ty, span)?;
+        self.emit_runtime_call(
+            RuntimeFn::FmtPad,
+            vec![str_op, word, fill],
+            Place::local(out),
+            span,
+        );
+        let after_drop = self.new_block();
+        self.terminate(
+            Terminator::Drop {
+                place: Place::local(rendered),
+                target: after_drop,
+            },
+            self.info(span),
+            after_drop,
+        );
+        Ok(out)
+    }
+
+    /// A field's value as a scalar operand, read by COPY from its place when it has one.
+    ///
+    /// Every type reaching here is a `Copy` primitive, so reading the place leaves the field's
+    /// value untouched — `f"{x:04}"` does not move `x`.
+    fn lower_field_scalar(
+        &mut self,
+        field: ExprId,
+        peeled: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        match self.lower_place_autoderef(field) {
+            Ok((place, _)) => self.read_place(place, peeled, span),
+            Err(_) => self.lower_expr_to_operand(field),
+        }
+    }
+
+    /// A field's `Display` text into `dest`.
+    ///
+    /// Delegates to CD-378's `lower_display_fmt` for a standard-library receiver, and to the
+    /// nominal's own `impl Display` otherwise — the same two paths `x.fmt()` takes, so an
+    /// interpolated value and an explicitly formatted one render identically by construction.
+    fn lower_field_display(
+        &mut self,
+        field: ExprId,
+        peeled: &MirTy,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let field_ty = self.expr_mir_ty(field)?;
+        let (_, layers) = Self::peel_refs(field_ty);
+        if let Some(kind) = FmtReceiver::of(peeled) {
+            return self.lower_display_fmt(field, peeled, layers, kind, dest, span);
+        }
+        let (nominal, nominal_args) = match peeled {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                (*item, args.clone())
+            }
+            other => {
+                return unsupported(
+                    format!("interpolation of {other:?} (no Display lowering)"),
+                    span,
+                )
+            }
+        };
+        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        else {
+            return unsupported("Display::fmt not found for an interpolated value", span);
+        };
+        if !matches!(receiver, Some(hir::Receiver::Ref)) {
+            return unsupported("Display::fmt with a non-&self receiver", span);
+        }
+        // `&value`: a reference field passes through, an owned place is borrowed. Either way the
+        // field is BORROWED, never moved.
+        let recv_op = match self.lower_place_autoderef(field) {
+            Ok((place, _)) => {
+                let ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(peeled.clone()),
+                };
+                let ref_tmp = self.new_temp(ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(ref_tmp),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place,
+                        },
+                    ),
+                    self.info(span),
+                );
+                self.read_place(Place::local(ref_tmp), &ref_ty, span)?
+            }
+            Err(_) => {
+                // A temporary (`f"{make_point()}"`): materialise it, borrow it for `fmt`. Its
+                // destructor runs at end of body with the temp, as any other temporary's does.
+                let value = self.lower_expr_to_operand(field)?;
+                let tmp = self.new_temp(peeled.clone());
+                self.emit(
+                    Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                let ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(peeled.clone()),
+                };
+                let ref_tmp = self.new_temp(ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(ref_tmp),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place: Place::local(tmp),
+                        },
+                    ),
+                    self.info(span),
+                );
+                self.read_place(Place::local(ref_tmp), &ref_ty, span)?
+            }
+        };
+        let instance = self.instance_from_key(&key)?;
+        self.discovered_callees.push(key);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(instance),
+                args: vec![recv_op],
+                dest,
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        Ok(())
+    }
+
     fn lower_print_display(
         &mut self,
         arg: ExprId,
@@ -11573,6 +11993,7 @@ enum OutChannel {
 fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
     match kind {
         hir::ExprKind::Lit(_) => "Lit",
+        hir::ExprKind::FormatString { .. } => "FormatString",
         hir::ExprKind::Path { .. } => "Path",
         hir::ExprKind::Unary { .. } => "Unary",
         hir::ExprKind::Binary { .. } => "Binary",

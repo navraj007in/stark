@@ -1670,6 +1670,125 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
+    /// WP-FMT-001: pack a source-level format specification into the runtime's spec word.
+    fn format_spec_word(spec: &crate::ast::FormatSpec) -> (u64, char) {
+        use crate::ast::FormatKind;
+        use stark_runtime::fmt_spec::{Align, Kind, Sign, Spec};
+        let align = match spec.align {
+            None => Align::Default,
+            Some(crate::ast::FormatAlign::Left) => Align::Left,
+            Some(crate::ast::FormatAlign::Right) => Align::Right,
+            Some(crate::ast::FormatAlign::Center) => Align::Center,
+        };
+        let sign = match spec.sign {
+            None | Some(crate::ast::FormatSign::Minus) => Sign::Minus,
+            Some(crate::ast::FormatSign::Plus) => Sign::Plus,
+            Some(crate::ast::FormatSign::Space) => Sign::Space,
+        };
+        let kind = match spec.kind {
+            None => Kind::Display,
+            Some(FormatKind::Bin) => Kind::Bin,
+            Some(FormatKind::Oct) => Kind::Oct,
+            Some(FormatKind::LowerHex) => Kind::LowerHex,
+            Some(FormatKind::UpperHex) => Kind::UpperHex,
+            Some(FormatKind::Fixed) => Kind::Fixed,
+        };
+        let word = Spec::pack(
+            spec.width.unwrap_or(0),
+            spec.precision.map(|p| p as u16),
+            align,
+            sign,
+            spec.alternate,
+            spec.zero_pad,
+            kind,
+        );
+        (word, spec.fill.unwrap_or(' '))
+    }
+
+    /// WP-FMT-001: whether a specification asks for a NUMERIC rendering, which owns sign placement
+    /// and radix and therefore takes the value rather than its `Display` text.
+    fn format_spec_is_numeric(spec: &crate::ast::FormatSpec) -> bool {
+        spec.kind.is_some()
+            || spec.precision.is_some()
+            || spec.sign.is_some()
+            || spec.alternate
+            || spec.zero_pad
+    }
+
+    /// WP-FMT-001: whether this expression denotes a PLACE.
+    ///
+    /// A place is borrowed for formatting and left alone; anything else is a temporary this
+    /// evaluation created and must destroy. That distinction is what makes `f"{x}"` twice, then
+    /// `use_value(x)`, legal while still dropping `f"{make_value()}"`'s temporary exactly once.
+    fn format_field_is_place(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Path { res, .. } => {
+                matches!(res, Res::Local(_) | Res::SelfValue(_))
+            }
+            hir::ExprKind::Field { .. } | hir::ExprKind::TupleField { .. } => true,
+            hir::ExprKind::Unary {
+                op: UnOp::Deref, ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    /// WP-FMT-001: render one field.
+    ///
+    /// A numeric specification renders the VALUE through `stark_runtime::fmt_spec` — the same
+    /// functions the MIR interpreter and generated native code call, so there is no
+    /// interpreter-local padding or rounding rule. Everything else renders through `display_text`,
+    /// the very path `println` uses, and is then padded; that is what makes `f"{x}"` and `x.fmt()`
+    /// agree by construction rather than by coincidence.
+    fn render_format_field(
+        &mut self,
+        value: Value,
+        spec: &crate::ast::FormatSpec,
+        span: Span,
+        owned: bool,
+    ) -> Result<String, RuntimeError> {
+        let (word, fill) = Self::format_spec_word(spec);
+        if Self::format_spec_is_numeric(spec) {
+            match &value {
+                Value::Int(v) => {
+                    let text = if *v < 0 {
+                        let narrowed = i64::try_from(*v).map_err(|_| {
+                            RuntimeError::new("integer out of range for formatting", span)
+                        })?;
+                        stark_runtime::fmt_spec::fmt_int_spec(narrowed, word, fill)
+                    } else {
+                        let narrowed = u64::try_from(*v).map_err(|_| {
+                            RuntimeError::new("integer out of range for formatting", span)
+                        })?;
+                        stark_runtime::fmt_spec::fmt_uint_spec(narrowed, word, fill)
+                    };
+                    return Ok(text);
+                }
+                Value::Float(f, width) => {
+                    let text = match width {
+                        FloatWidth::F32 => {
+                            stark_runtime::fmt_spec::fmt_float32_spec(*f as f32, word, fill)
+                        }
+                        FloatWidth::F64 => {
+                            stark_runtime::fmt_spec::fmt_float64_spec(*f, word, fill)
+                        }
+                    };
+                    return Ok(text);
+                }
+                _ => {}
+            }
+        }
+        let (text, arg_place) = self.display_text(value, span)?;
+        // A BORROWED field must not run the value's destructor: `display_text` promoted a copy of
+        // a place's contents, and the place still owns the original.
+        if owned {
+            self.finish_display(arg_place, span)?;
+        } else if let Some(place) = arg_place {
+            let _ = self.take_place(&place, span);
+        }
+        Ok(stark_runtime::fmt_spec::fmt_pad_spec(&text, word, fill))
+    }
+
     fn eval_expr(&mut self, expr_id: ExprId) -> Result<Flow, RuntimeError> {
         let expr = self.hir.expr(expr_id);
         match &expr.kind {
@@ -1678,6 +1797,40 @@ impl<'a> Interpreter<'a> {
                 Ok(Flow::Value(
                     self.normalize_numeric(value, expr_id, expr.span)?,
                 ))
+            }
+            // WP-FMT-001: fields are evaluated in source order and exactly ONCE each. A place is
+            // borrowed (its value cloned for rendering, the place untouched); anything else is a
+            // temporary this evaluation owns and destroys after its bytes are appended.
+            hir::ExprKind::FormatString { segments } => {
+                let segments = segments.clone();
+                let mut out = String::new();
+                for segment in &segments {
+                    match segment {
+                        hir::FormatSegment::Literal { text, .. } => out.push_str(text),
+                        hir::FormatSegment::Field {
+                            expr,
+                            spec,
+                            expr_span,
+                            ..
+                        } => {
+                            let is_place = self.format_field_is_place(*expr);
+                            let (value, owned) = if is_place {
+                                let place = self.expr_place(*expr)?;
+                                let place = self.deref_place(place, *expr_span)?;
+                                (self.clone_place_value(&place, *expr_span)?, false)
+                            } else {
+                                match self.eval_expr(*expr)? {
+                                    Flow::Value(value) => (value, true),
+                                    other => return Ok(other),
+                                }
+                            };
+                            let rendered =
+                                self.render_format_field(value, spec, *expr_span, owned)?;
+                            out.push_str(&rendered);
+                        }
+                    }
+                }
+                Ok(Flow::Value(Value::String(out)))
             }
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
             hir::ExprKind::Unary { op, operand } => {
