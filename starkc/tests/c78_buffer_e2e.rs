@@ -27,15 +27,11 @@ use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
 use starkc::source::{SourceFile, Span};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
+#[path = "support/paths.rs"]
+mod paths;
+use paths::repo_provider_root;
 
 fn host_triple() -> String {
     starkc::native_toolchain::discover(None)
@@ -297,7 +293,7 @@ fn run_with_env(name: &str, env: &[(&str, &str)], tag: &str) -> String {
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-env-native".to_string(),
-        provider_registry::built_in_crate_location("stark-env-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-env-native", &repo_provider_root())
             .expect("stark-env-native must be locatable"),
     );
 

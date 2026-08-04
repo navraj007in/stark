@@ -8,6 +8,7 @@ import {
   hero,
   install,
   links,
+  packages,
   pillars,
   problem,
   state,
@@ -28,6 +29,7 @@ export default function App() {
             <a href="#why">Why</a>
             <a href="#language">Language</a>
             <a href="#conformance">Conformance</a>
+            <a href="#libraries">Libraries</a>
             <a href="#install">Install</a>
             <a href="#status">Status</a>
             <a className="nav__cta" href={REPO} rel="noreferrer noopener">GitHub</a>
@@ -105,8 +107,29 @@ export default function App() {
           </div>
         </section>
 
+        {/* ------------------------------------------------------------ packages -- */}
+        <section className="section section--alt" id="libraries">
+          <div className="wrap">
+            <h2 className="section__title">{packages.title}</h2>
+            <p className="section__lede">{packages.lede}</p>
+
+            <dl className="libs">
+              {packages.groups.map((g) => (
+                <div className="libs__row" key={g.area}>
+                  <dt className="libs__area">{g.area}</dt>
+                  <dd className="libs__items">{g.items}</dd>
+                </div>
+              ))}
+            </dl>
+
+            <CodeBlock code={packages.code} caption={packages.caption} />
+            <blockquote className="pull">{packages.capabilities}</blockquote>
+            <p className="section__after">{packages.limits}</p>
+          </div>
+        </section>
+
         {/* ------------------------------------------------------------- install -- */}
-        <section className="section section--alt" id="install">
+        <section className="section" id="install">
           <div className="wrap">
             <h2 className="section__title">{install.title}</h2>
             <ol className="steps">
@@ -121,11 +144,12 @@ export default function App() {
               ))}
             </ol>
             <p className="section__after">{install.footnote}</p>
+            <p className="section__after">{install.caveat}</p>
           </div>
         </section>
 
         {/* -------------------------------------------------------------- status -- */}
-        <section className="section" id="status">
+        <section className="section section--alt" id="status">
           <div className="wrap">
             <h2 className="section__title">{state.title}</h2>
             <p className="section__lede">{state.lede}</p>
@@ -144,7 +168,7 @@ export default function App() {
               </div>
             </div>
             <p className="section__after">
-              STARK is a research compiler with a working implementation, not a production language.
+              STARK is a pre-alpha language with a working implementation, not a production one.
               The status file in the repository is the authority; this page summarises it and can lag.
             </p>
           </div>

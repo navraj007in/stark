@@ -7,8 +7,8 @@ license = "MIT"
 publish = false
 
 [dependencies]
-stark-provider-abi = { path = "../../starkc/stark-provider-abi" }
+stark-provider-abi = { path = "../../../starkc/stark-provider-abi" }
 
 [dev-dependencies]
-starkc = { path = "../../starkc" }
-stark-runtime = { path = "../../starkc/stark-runtime" }
+starkc = { path = "../../../starkc" }
+stark-runtime = { path = "../../../starkc/stark-runtime" }

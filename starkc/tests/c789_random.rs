@@ -55,12 +55,9 @@ fn random_status_vocabulary_is_bounded() {
 
 #[test]
 fn random_provider_crate_is_locatable() {
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf();
-    let location = provider_registry::built_in_crate_location("stark-random-native", &repo)
-        .expect("random provider has a registry location");
+    let location =
+        provider_registry::built_in_crate_location("stark-random-native", &repo_provider_root())
+            .expect("random provider has a registry location");
     assert!(location.join("Cargo.toml").exists());
 }
 
@@ -79,14 +76,10 @@ fn random_provider_crate_is_locatable() {
 // the package into a consumer, build it natively, run the binary, and assert on OBSERVED VALUES.
 
 use starkc::native_build::{build_current_package, BuildCommandOptions};
-use std::path::PathBuf;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
+#[path = "support/paths.rs"]
+mod paths;
+use paths::{repo_package, repo_provider_root, repo_root};
 
 /// **Secure and deterministic randomness, executed.**
 ///
@@ -112,25 +105,19 @@ fn random_secure_and_deterministic_execute_from_source() {
     let vendored = root.join("vendor").join("stark-random");
     std::fs::create_dir_all(vendored.join("src")).expect("create vendored stark-random");
     std::fs::copy(
-        repo_root().join("stark-random").join("starkpkg.json"),
+        repo_package("stark-random").join("starkpkg.json"),
         vendored.join("starkpkg.json"),
     )
     .expect("copy stark-random manifest");
     std::fs::copy(
-        repo_root()
-            .join("stark-random")
-            .join("src")
-            .join("lib.stark"),
+        repo_package("stark-random").join("src").join("lib.stark"),
         vendored.join("src").join("lib.stark"),
     )
     .expect("copy stark-random source");
     // `lib.stark` declares `mod tests;`, so the module file is part of the package and must be
     // vendored with it. Omitting it is E0208, not a missing test — the package does not compile.
     std::fs::copy(
-        repo_root()
-            .join("stark-random")
-            .join("src")
-            .join("tests.stark"),
+        repo_package("stark-random").join("src").join("tests.stark"),
         vendored.join("src").join("tests.stark"),
     )
     .expect("copy stark-random tests module");

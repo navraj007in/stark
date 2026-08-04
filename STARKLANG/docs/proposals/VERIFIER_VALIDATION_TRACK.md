@@ -1,7 +1,14 @@
 # `stark verify` validation track (Proposal)
 
-**Status:** Proposed (authorised by the Gate 7 `RETAIN AS RESEARCH` decision,
-2026-07-16). Not yet started.
+**Status:** Proposed. Not yet started.
+
+Originally authorised by the Gate 7 `RETAIN AS RESEARCH` decision (2026-07-16). That project-wide
+policy was **superseded on 2026-08-04** (`starkc/docs/gate7-superseded.md`), so this proposal no
+longer draws authority from it and stands on the roadmap's terms like any other. Its subject is
+unaffected, and its importance is if anything higher: Gate 7's tensor **productisation DEFER**
+verdict still stands, and the external-developer evidence described here — §8's human-validation
+protocol, judged against §11's exit criteria — remains the named gate for lifting it. (Gate 7's
+memo cites "§13" for this; that pointer is wrong. §13 is this proposal's work-package list.)
 **Type:** Roadmap-governed bounded **product-validation** experiment (ROADMAP §5).
 **Owner:** STARK maintainer (Navraj Singh).
 

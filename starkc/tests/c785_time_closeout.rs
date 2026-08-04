@@ -24,15 +24,11 @@ use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
 use starkc::source::{SourceFile, Span};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
+#[path = "support/paths.rs"]
+mod paths;
+use paths::repo_provider_root;
 
 fn host_triple() -> String {
     starkc::native_toolchain::discover(None)
@@ -249,7 +245,7 @@ fn run_clock(function: &str, scalar: MirTy, printer: RuntimeFn, extra: Option<Mi
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-time-native".to_string(),
-        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_provider_root())
             .expect("stark-time-native must be locatable"),
     );
 
@@ -355,7 +351,7 @@ fn the_recorded_blocker_is_discharged_at_its_own_terms() {
     // "the native crate is a standalone, unlinked Rust library" -- no longer: it has a location the
     // build resolves, and the two e2e tests above link and run it.
     assert!(
-        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_provider_root())
             .expect("locatable")
             .join("Cargo.toml")
             .is_file()

@@ -4,6 +4,10 @@
 > **repository root**. This file records how Gates 1–5 of the closed, pre-existing gate
 > sequence were executed; it was never updated past Gate 5. Retained for its historical
 > detail and inbound citations. Do not schedule new work from it.
+>
+> Where this file mentions Gate 7's **RETAIN AS RESEARCH LANGUAGE** policy, that policy was
+> **superseded on 2026-08-04** — `starkc/docs/gate7-superseded.md`. Gate 7's tensor-track
+> verdicts (technical POSITIVE, productisation DEFER) were not.
 
 **Status:** historical record — superseded as a forward plan on 2026-08-03 ·
 **Subordinate to:** [ROADMAP.md](./ROADMAP.md) *(also historical — see the banner there)*

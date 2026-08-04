@@ -15,8 +15,11 @@ only.
 > different, unrelated gate sequence — `starkc/docs/gate1-exit.md` through `gate7-decision.md`
 > — covering lexer/parser (old Gate 1), semantic checker (old Gate 2), interpreter (old Gate 3),
 > tensor/ONNX front end (old Gate 4), native ONNX-Runtime deployment demonstrator (old Gate 5),
-> and two decision checkpoints (old Gate 6: REVISE; old Gate 7: RETAIN AS RESEARCH LANGUAGE,
-> authorizing only a `stark verify` validation track). See `COMPILER-STATE.md` CD-002. The gates
+> and two decision checkpoints (old Gate 6: REVISE; old Gate 7: tensor technical POSITIVE,
+> productisation DEFER). **Old Gate 7 also carried a project-wide "RETAIN AS RESEARCH LANGUAGE"
+> policy, which authorized only a `stark verify` validation track; that policy was SUPERSEDED on
+> 2026-08-04 — see `starkc/docs/gate7-superseded.md`. Its tensor verdicts still stand.** See
+> `COMPILER-STATE.md` CD-002. The gates
 > below (`C0`-`C10`) are a **new, independent numbering** introduced by this roadmap; they are
 > not a renumbering of the old track and do not re-open old Gate 1-5 work from zero. Gate C0's
 > job is precisely to establish how the old track's evidence maps onto the new gates.

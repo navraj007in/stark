@@ -4,8 +4,10 @@ Compiler for the STARK Core v1 language. Rust, stable toolchain.
 **Gates 1–7 (old numbering) are closed** — front end, semantic checker, interpreter, tensor/ONNX
 front end, and a native ONNX-Runtime deployment demonstrator; see
 [`docs/gate1-exit.md`](docs/gate1-exit.md) through [`docs/gate7-decision.md`](docs/gate7-decision.md).
-Gate 7's decision was **RETAIN AS RESEARCH LANGUAGE**, authorizing only a `stark verify`
-external-validation track as further tensor-track work. STARK Core programs can be checked and
+Gate 7's project-policy verdict (**RETAIN AS RESEARCH LANGUAGE**) was **superseded on 2026-08-04**
+— see [`docs/gate7-superseded.md`](docs/gate7-superseded.md). Its *tensor-track* verdicts stand:
+technical POSITIVE, productisation DEFER pending external-developer evidence. STARK Core programs
+can be checked and
 executed by the tree-walking interpreter; the optional `tensor` extension provides static
 tensor/model checks, bounded ONNX import/verify, and a bounded native deployment path (generated
 Rust host + ONNX Runtime). The crate also has a source formatter (`stark fmt`), a
@@ -113,11 +115,33 @@ After extracting a package:
 & "$env:LOCALAPPDATA\Programs\STARK\lib\stark\uninstall.ps1"
 ```
 
-The installed layout is `bin/{stark,starkc,starkide}` plus
-`lib/stark/stark-runtime`. The latter is required because native debug builds
-invoke the selected Cargo/rustc toolchain offline against that local runtime.
+The installer writes a **versioned** tree: the payload lands in
+`lib/stark/versions/<version>`, `lib/stark/current` points at it, and
+`bin/stark` is a symlink to `current/bin/stark` on Unix or a copy of it on
+Windows. Inside the payload the layout is `bin/{stark,starkc,starkide}` plus
+`lib/stark/stark-runtime` and `lib/stark/stark-provider-abi`. The runtime is
+required because native debug builds invoke the selected Cargo/rustc toolchain
+offline against it. Flat installations made before the versioned tree are still
+found.
+
+This payload carries the compiler, its runtime and the provider ABI. It does
+**not** carry the first-party STARK packages or their native provider crates,
+so a program declaring a host capability — clock, filesystem, environment,
+random, TCP/DNS or TLS — still needs those sources installed separately, under
+`lib/stark/packages/<name>/native`, mirroring the repository's `packages/`
+directory. That depth is required, not cosmetic: a provider crate reaches the
+ABI through `../../../starkc/stark-provider-abi` and resolves nowhere else. The
+compiler also still accepts the two older provider roots
+(`lib/stark/<name>/native` and `lib/stark/providers/<name>/native`), so an
+installation made before the move keeps working. See the repository README.
+
 Rust 1.85 or newer must be available for `stark build`; `stark run` uses the
 interpreter embedded in the `stark` executable.
+
+`stark doctor` re-hashes every file listed in the installed `manifest.json`,
+reporting the resolved install root and any file that is missing, resized or
+altered. It verifies integrity, not authenticity: it cannot establish that the
+manifest came from a STARK release.
 
 An explicit target is useful in CI or with a configured cross-linker:
 
@@ -167,7 +191,8 @@ should be Authenticode-signed.
 | `test_runner` | naming-convention test discovery/execution (`stark test`) | done (WP8.3) |
 | `lsp` | stdio JSON-RPC LSP server, document sync (`starkc lsp`) | done (WP8.1) |
 | `doc_gen` | HTML documentation generator with search (`stark doc`) | done (WP8.5) |
-| `docs/gate6-memo.md`, `docs/gate7-decision.md` | tensor-track decision checkpoints (REVISE; RETAIN AS RESEARCH) | done |
+| `docs/gate6-memo.md`, `docs/gate7-decision.md` | tensor-track decision checkpoints (REVISE; tensor verdicts POSITIVE/DEFER) | done |
+| `docs/gate7-superseded.md` | retires Gate 7's project-wide "research language" policy; tensor verdicts untouched | 2026-08-04 |
 | `docs/terminal-ide.md` | terminal IDE editing, project, build and run workflow | stable |
 
 Architecture target: `Source → Tokens → AST → HIR → typed HIR → backend`;

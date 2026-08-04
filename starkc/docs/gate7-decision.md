@@ -1,5 +1,15 @@
 # Gate 7 decision memo — language direction
 
+> **⚠ The project-policy portion of this memo was SUPERSEDED on 2026-08-04.**
+> "RETAIN AS RESEARCH LANGUAGE", and the scope limit that came with it, no longer describe the
+> project's position — see [`gate7-superseded.md`](gate7-superseded.md).
+>
+> **The tensor-track verdicts below are NOT superseded.** Technical POSITIVE stands as evidence,
+> and productisation DEFER still stands: the external-developer evidence this memo named as the
+> gate has not been gathered.
+>
+> Everything below is preserved as written on 2026-07-16, on the evidence available then.
+
 **Status:** Complete. Evidence gathered (G7-00 … G7-06b); decision recorded.
 
 **Decision:** **RETAIN AS RESEARCH LANGUAGE** (owner-confirmed 2026-07-16),

@@ -125,22 +125,21 @@ export const install = {
   title: 'Install',
   steps: [
     {
-      label: 'Build the compiler',
+      label: 'Build a release package for this machine',
       code: `git clone ${REPO}
 cd stark/starkc
-cargo build --release --bins`,
+python3 scripts/build-release.py     # py -3 on Windows`,
     },
     {
-      label: 'Install the three binaries',
-      code: `PREFIX="$HOME/.local"          # must be on PATH
-install -m 755 target/release/stark    "$PREFIX/bin/"
-install -m 755 target/release/starkc   "$PREFIX/bin/"
-install -m 755 target/release/starkide "$PREFIX/bin/"`,
+      label: 'Install it',
+      code: `# from the extracted package in target/packages/
+./install.sh                         # defaults to ~/.local
+.\\install.ps1                        # Windows; updates the user PATH`,
     },
     {
-      label: 'Install the runtime the native backend links',
-      code: `rsync -a --exclude target stark-runtime/      "$PREFIX/lib/stark/stark-runtime/"
-rsync -a --exclude target stark-provider-abi/ "$PREFIX/lib/stark/stark-provider-abi/"`,
+      label: 'Verify the installation',
+      code: `stark doctor                         # re-hashes every manifest-listed file
+stark doctor --json                  # machine-readable, for CI`,
     },
     {
       label: 'Build and run a package',
@@ -150,7 +149,48 @@ stark build --release`,
     },
   ],
   footnote:
-    'Requires Rust 1.85 or newer. Provider-backed capabilities — clock, filesystem, environment, TCP — need their provider crates installed too; the README has the full layout.',
+    'Requires Rust 1.85 or newer for native builds. The package carries the compiler, its runtime and the provider ABI — not the first-party STARK packages or their native providers, so an HTTP or TLS program still needs those sources installed separately. The README has the layout, and a checkout-only install too.',
+  caveat:
+    'stark doctor establishes integrity, not authenticity. It detects corruption and a partial extraction; it cannot tell you the manifest came from a STARK release. Archives are unsigned, and a public distribution still needs a signed manifest, a trusted key, verification before installation and platform notarisation.',
+};
+
+/** Libraries written in STARK itself — the newest and least expected part of the project. */
+export const packages = {
+  title: 'Libraries, written in STARK',
+  lede:
+    'Twenty-four first-party packages live in the repository, each with its own manifest, lock file and tests, and each exercised by a consumer package that has to actually call the surface it declares. The deepest is an HTTP/1.1 and HTTPS client — written in the language, not bound to a C library.',
+  groups: [
+    { area: 'Encoding and text', items: 'ascii · base64 · hex · percent · checksum · uuid' },
+    { area: 'Data formats', items: 'json · csv · form · mime · query' },
+    { area: 'Paths and URLs', items: 'path · glob · url' },
+    { area: 'Host access', items: 'time · env · io · random' },
+    { area: 'Networking', items: 'net (TCP + DNS) · tls · http-core · http-parser · http-serialize · http-client' },
+  ],
+  capabilities:
+    'Reaching outside the process is declared, never assumed. A package names the capability it needs — clock, filesystem, process environment, random, TCP/DNS, TLS — and a native provider crate satisfies it when the program is built. The interpreters have no host access at all, so anything that touches the network or the disk runs through stark build, never stark run.',
+  code: `use stark_http_client::default_config;
+use stark_http_client::error_text;
+use stark_http_client::fetch;
+use stark_http_client::new_client;
+
+fn main() {
+    let client = new_client(default_config());
+
+    // HTTPS differs from HTTP only in the URL. There is no second API.
+    match fetch(&client, "https://example.com/health") {
+        Ok(response) => {
+            if response.status == 200u16 {
+                println("healthy");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+        }
+    }
+}`,
+  caption: 'stark-http-client — a verified HTTPS request',
+  limits:
+    'It was qualified against peers that are adversarial on the wire — 42 executed cases on Linux, macOS and Windows — and the closing packets found four defects, two of them remote-abort vulnerabilities rather than parse errors. What it does not do is written down just as plainly: no HTTP/2, no connection reuse, no decompression, no proxies, no cookie jar, no streaming bodies, and a connect timeout that is accepted and ignored.',
 };
 
 export const state = {
@@ -164,22 +204,34 @@ export const state = {
     'reference interpreter and mid-level IR interpreter',
     'native compilation, debug and release, on Linux, macOS and Windows',
     'multi-file modules, packages, lock files, semantic versioning',
+    '24 first-party packages, including an HTTP/1.1 and HTTPS client',
+    'manifest-declared host capabilities behind native providers',
     'tensor shape/dtype/device analysis and ONNX signature verification',
     'compiler-backed language services (LSP + VS Code extension)',
+    'release archives, platform installers and stark doctor verification',
   ],
   notYet: [
     'closures, async, trait objects and unsafe — not in Core v1',
     'iterator combinators (map, filter, collect, …) are refused by the front end, not silently broken',
     'a complete standard library',
-    'a public package registry',
+    'a signed distribution — the install manifest proves integrity, never authenticity',
+    'an offline install that can build an HTTP or TLS program without fetching packages separately',
+    'an HTTP server, HTTP/2, structured concurrency, persistent storage',
+    'a public package registry — dependencies are local paths',
     'training, autodiff and GPU kernel generation',
     'API and language stability guarantees',
   ],
 };
 
 export const links = [
-  { label: 'Source', href: REPO, note: 'compiler, specification and conformance suite' },
+  { label: 'Source', href: REPO, note: 'compiler, packages, specification and conformance suite' },
   { label: 'Specification', href: `${REPO}/tree/main/STARKLANG/docs/spec`, note: 'normative Core v1' },
   { label: 'Compiler status', href: `${REPO}/blob/main/COMPILER-STATE.md`, note: 'the authoritative position' },
+  { label: 'Roadmap', href: `${REPO}/blob/main/ROADMAP.md`, note: 'the single live forward plan' },
+  {
+    label: 'HTTP client limits',
+    href: `${REPO}/blob/main/STARKLANG/docs/http-client/HC13-KNOWN-LIMITATIONS.md`,
+    note: 'what it refuses, what is absent, what is unproven',
+  },
   { label: 'VS Code extension', href: `${REPO}/tree/main/editors/vscode`, note: 'language server and editor support' },
 ];

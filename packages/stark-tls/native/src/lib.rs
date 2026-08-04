@@ -1146,7 +1146,7 @@ mod tests {
     /// CD-219 recorded.
     #[test]
     fn the_shipped_manifest_validates_and_matches_the_symbols_this_crate_links() {
-        let text = include_str!("../../../starkc/providers/stark-tls-native.json");
+        let text = include_str!("../../../../starkc/providers/stark-tls-native.json");
         let provider = starkc::provider_manifest::parse_provider_manifest(text, "stark-tls-native")
             .expect("the shipped manifest must parse");
         assert_eq!(
@@ -1178,7 +1178,7 @@ mod tests {
     /// `tcp_stream`, name the owner exactly, and claim no close for it.
     #[test]
     fn the_manifest_declares_exactly_one_foreign_consumption_and_claims_no_close_for_it() {
-        let text = include_str!("../../../starkc/providers/stark-tls-native.json");
+        let text = include_str!("../../../../starkc/providers/stark-tls-native.json");
         let provider = starkc::provider_manifest::parse_provider_manifest(text, "stark-tls-native")
             .expect("the shipped manifest must parse");
 
@@ -1214,7 +1214,7 @@ mod tests {
     /// emitted and not declared is a contract violation at runtime.
     #[test]
     fn every_declared_status_is_one_this_provider_can_emit() {
-        let text = include_str!("../../../starkc/providers/stark-tls-native.json");
+        let text = include_str!("../../../../starkc/providers/stark-tls-native.json");
         let provider = starkc::provider_manifest::parse_provider_manifest(text, "stark-tls-native")
             .expect("the shipped manifest must parse");
 
