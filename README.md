@@ -193,9 +193,9 @@ Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](s
 
 ### First-party packages
 
-The repository carries 24 packages written in STARK, each with its own `starkpkg.json`, lock file
-and test suite, and each exercised by a consumer package that must actually *call* the surface it
-declares.
+The repository carries 24 packages written in STARK under [`packages/`](packages/), each with its
+own `starkpkg.json`, lock file and test suite, and each exercised by a consumer package that must
+actually *call* the surface it declares.
 
 | Area | Packages |
 | --- | --- |
@@ -374,11 +374,15 @@ their provider crates too, in a root that mirrors the repository's shape. All si
 ones fail at build time rather than at install time:
 
 ```bash
-# Beside `starkc/`, exactly as in a checkout — they share the ABI crate installed above.
+# Under `packages/`, exactly as in a checkout — they share the ABI crate installed above.
 for p in stark-time stark-env stark-file stark-net stark-random stark-tls; do
-  rsync -a --exclude target "../$p/native/" "$PREFIX/lib/stark/$p/native/"
+  rsync -a --exclude target "../packages/$p/native/" "$PREFIX/lib/stark/packages/$p/native/"
 done
 ```
+
+The `packages/` level is load-bearing, not decoration. Each provider crate reaches the ABI through
+`../../../starkc/stark-provider-abi`, which resolves only at that depth — install one level up and
+Cargo looks for the ABI where it is not.
 
 Without that root, a package declaring a capability builds only from inside a checkout. Discovery
 is deliberately environment-free: no variable is consulted, and the search is the enclosing
@@ -395,6 +399,10 @@ projects/
   stark-time/       <- a sibling, therefore reachable
   stark-json/
 ```
+
+In this repository that arrangement is `packages/`, which is why every first-party manifest names
+its dependencies as plain siblings (`../stark-percent`) and why moving them all together changed
+none of those paths.
 
 ```json
 { "dependencies": { "stark_time": { "package": "stark-time", "path": "../stark-time" } } }
@@ -743,10 +751,11 @@ starkc/
   tests/                   Unit, integration and conformance tests
   docs/                    Gate exit reports and technical documentation
 
-stark-<name>/              First-party packages written in STARK
-  src/lib.stark            Package source
-  native/                  Native provider crate, where the package needs one
-stark-<name>-consumer/     The package's consumer, which must call its declared surface
+packages/                  First-party packages written in STARK
+  stark-<name>/
+    src/lib.stark          Package source
+    native/                Native provider crate, where the package needs one
+  stark-<name>-consumer/   The package's consumer, which must call its declared surface
 
 editors/vscode/            Language-server client and syntax support
 website/                   starklang.com — React + Vite static site

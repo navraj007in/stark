@@ -32,38 +32,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            stark-time/native
+            packages/stark-time/native
             starkc/stark-provider-abi
-            stark-env/native
-            stark-file/native
-            stark-net/native
-            stark-tls/native
+            packages/stark-env/native
+            packages/stark-file/native
+            packages/stark-net/native
+            packages/stark-tls/native
       - name: provider-metadata stark-time
-        run: cargo test --manifest-path stark-time/native/Cargo.toml provider_metadata
+        run: cargo test --manifest-path packages/stark-time/native/Cargo.toml provider_metadata
       - name: provider-metadata stark-env
-        run: cargo test --manifest-path stark-env/native/Cargo.toml metadata
+        run: cargo test --manifest-path packages/stark-env/native/Cargo.toml metadata
       - name: provider-metadata stark-file
-        run: cargo test --manifest-path stark-file/native/Cargo.toml metadata
+        run: cargo test --manifest-path packages/stark-file/native/Cargo.toml metadata
       - name: provider-metadata stark-net
-        run: cargo test --manifest-path stark-net/native/Cargo.toml metadata
+        run: cargo test --manifest-path packages/stark-net/native/Cargo.toml metadata
       # HC9. `manifest` rather than `metadata`: this provider's agreement test is named for the
       # SHIPPED manifest it reads, because that is the authority (P0.2) rather than a second
       # literal in the crate.
       - name: provider-metadata stark-tls
-        run: cargo test --manifest-path stark-tls/native/Cargo.toml manifest
+        run: cargo test --manifest-path packages/stark-tls/native/Cargo.toml manifest
       - name: provider-unit
         run: |
-          cargo test --manifest-path stark-env/native/Cargo.toml
-          cargo test --manifest-path stark-file/native/Cargo.toml
+          cargo test --manifest-path packages/stark-env/native/Cargo.toml
+          cargo test --manifest-path packages/stark-file/native/Cargo.toml
       - name: provider-resource-lifecycle
-        run: cargo test --manifest-path stark-file/native/Cargo.toml create_write_complete_and_read_back
+        run: cargo test --manifest-path packages/stark-file/native/Cargo.toml create_write_complete_and_read_back
       - name: provider-loopback
-        run: cargo test --manifest-path stark-net/native/Cargo.toml
+        run: cargo test --manifest-path packages/stark-net/native/Cargo.toml
       # HC9 — the TLS certificate matrix, the handshake bounds and the transfer lifecycle. Runs on
       # all three platforms: certificate verification is the one place where "it worked on my
       # machine" is least acceptable, and aws-lc-rs needs a C toolchain on each (CD-361 §6).
       - name: provider-tls
-        run: cargo test --manifest-path stark-tls/native/Cargo.toml
+        run: cargo test --manifest-path packages/stark-tls/native/Cargo.toml
       - name: stark-time-e2e
         run: |
           python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"

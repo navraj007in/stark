@@ -37,17 +37,17 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[path = "support/paths.rs"]
+mod paths;
+use paths::repo_provider;
+
 /// Seeded into the clock's output slot so "was it written?" is testable without depending on clock
 /// resolution. `u64::MAX` nanoseconds is ~584 years of uptime, so no reading can collide with it.
 const SENTINEL: u64 = u64::MAX;
 
 /// The `stark-time` provider crate, exactly where it sits in the repository.
 fn stark_time_crate() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .join("stark-time")
-        .join("native")
+    repo_provider("stark-time")
 }
 
 /// `stark-time`'s metadata as its own crate declares it (point 1/10).

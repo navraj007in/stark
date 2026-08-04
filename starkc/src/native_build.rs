@@ -478,9 +478,12 @@ fn select_provider_closes(
 /// `native_toolchain::discover_runtime`'s `<exe>/../lib/stark/stark-runtime`. A user cannot point
 /// it somewhere else without replacing the installation.
 ///
-/// The installed root mirrors the repository's shape (`<root>/stark-time/native`, and a
-/// `<root>/starkc/stark-provider-abi` for the `../../` dependency each provider manifest writes),
-/// so [`crate::provider_registry::crate_location`] needs no knowledge of which of the two it got.
+/// The installed root mirrors the repository's shape — `<root>/stark-time/native`, reachable from
+/// a `<root>/../starkc/stark-provider-abi` for the `../../../` dependency each provider crate
+/// writes — so [`crate::provider_registry::crate_location`] needs no knowledge of which of the two
+/// it got. In a checkout that root is `<repo>/packages`; installed it is
+/// `<prefix>/lib/stark/packages`. The *relative* depth from a provider crate to `starkc/` is the
+/// invariant, not either absolute path.
 fn provider_repo_root(package_root: &Path, runtime_crate: &Path) -> PathBuf {
     // **The runtime decides.** Providers and the runtime both depend on `stark-provider-abi`, and
     // Cargo will not write a lockfile naming one package at two different paths. Taking the
@@ -510,20 +513,27 @@ fn provider_repo_root(package_root: &Path, runtime_crate: &Path) -> PathBuf {
 /// The provider root belonging to the same installation as `runtime_crate`.
 ///
 /// **The canonical installed layout mirrors the repository**: the runtime sits at
-/// `<prefix>/lib/stark/starkc/stark-runtime`, so the providers are two levels up, beside
-/// `starkc/`, exactly where a checkout puts them. That is what lets one `stark-provider-abi`
-/// satisfy both the runtime's `../` dependency and each provider's `../../starkc/` one.
+/// `<prefix>/lib/stark/starkc/stark-runtime`, and the providers sit wherever the repository puts
+/// them relative to `starkc/`. That correspondence is what lets one `stark-provider-abi` satisfy
+/// both the runtime's `../` dependency and each provider's `../../../starkc/` one.
 ///
-/// `<prefix>/lib/stark/providers` is accepted second, so an installation made before the mirror
-/// layout keeps working. A runtime resolved out of a checkout matches neither and returns `None`,
-/// leaving the checkout walk to decide — which keeps in-repo development on repo providers.
+/// Three candidates, newest first:
+///
+/// 1. `<prefix>/lib/stark/packages` — the current shape. The packages moved under `packages/` in
+///    the repository, so each provider's ABI dependency gained a level and the installed tree
+///    gained the same one. These must move together: a provider crate written for one depth and
+///    installed at the other resolves `stark-provider-abi` to a directory that does not exist.
+/// 2. `<prefix>/lib/stark` — providers beside `starkc/`, the flat mirror layout. Kept because an
+///    installation made before the move carries provider crates that still say `../../starkc/`,
+///    and at that depth they are still right.
+/// 3. `<prefix>/lib/stark/providers` — older still, from before the mirror layout.
+///
+/// A runtime resolved out of a checkout matches none of them and returns `None`, leaving the
+/// checkout walk to decide — which keeps in-repo development on repo providers.
 fn provider_root_beside_runtime(runtime_crate: &Path) -> Option<PathBuf> {
-    // An installed runtime lives at `<prefix>/lib/stark/starkc/stark-runtime`, in a root that
-    // mirrors the repository — so the providers are two levels up, beside `starkc/`, exactly where
-    // they sit in a checkout. `<prefix>/lib/stark/providers` is also accepted for an installation
-    // made before the mirror layout.
     let parent = runtime_crate.parent()?;
     [
+        parent.parent().map(|root| root.join("packages")),
         parent.parent().map(Path::to_path_buf),
         Some(parent.join("providers")),
     ]
@@ -541,11 +551,19 @@ fn has_provider_layout(dir: &Path) -> bool {
         .is_file()
 }
 
-/// `<exe>/../lib/stark/providers`, when the running compiler has one.
+/// `<exe>/../lib/stark/{packages,providers}`, when the running compiler has one.
+///
+/// The last resort, reached only when neither the runtime nor the checkout walk settled it. Same
+/// ordering rule as [`provider_root_beside_runtime`]: the current shape first, the older one kept
+/// so an installation made before the move still resolves.
 fn installed_provider_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let root = exe.parent()?.join("../lib/stark/providers");
-    has_provider_layout(&root).then(|| root.canonicalize().unwrap_or(root))
+    let bin = exe.parent()?;
+    ["../lib/stark/packages", "../lib/stark/providers"]
+        .into_iter()
+        .map(|relative| bin.join(relative))
+        .find(|root| has_provider_layout(root))
+        .map(|root| root.canonicalize().unwrap_or(root))
 }
 
 /// Renders selection failures with the remediation Packet 5's diagnostic requirement names.
@@ -1021,13 +1039,14 @@ mod tests {
         std::fs::write(root.join("stark-time/native/Cargo.toml"), "").unwrap();
     }
 
-    /// **The canonical installed layout**: the runtime under `starkc/`, providers beside it,
-    /// mirroring the repository.
+    /// **The flat mirror layout**: the runtime under `starkc/`, providers beside it.
     ///
-    /// This is the arrangement `stark build` actually produces for an installed toolchain, and it
-    /// is the one that makes a single `stark-provider-abi` satisfy both relative paths. It was
-    /// previously covered only end-to-end; a targeted test means a layout regression fails here,
-    /// in milliseconds, rather than in a Cargo lockfile error at the end of a native build.
+    /// This was canonical before the packages moved under `packages/`, and it stays supported
+    /// because an installation made then carries provider crates that still say `../../starkc/` —
+    /// which is correct at *that* depth. Upgrading the compiler must not strand them. The newer
+    /// arrangement is covered by `providers_resolve_under_a_packages_directory` above; between the
+    /// two, a layout regression fails here in milliseconds rather than in a Cargo lockfile error at
+    /// the end of a native build.
     #[test]
     fn providers_follow_a_mirrored_installed_runtime() {
         let prefix = std::env::temp_dir().join(format!("stark_prov_mirror_{}", std::process::id()));
@@ -1058,6 +1077,45 @@ mod tests {
             "both relative paths must land on the same ABI crate; two copies is the lockfile \
              collision this layout exists to prevent, and a symlink does not help because Cargo \
              does not canonicalise symlinked path dependencies"
+        );
+        let _ = std::fs::remove_dir_all(&prefix);
+    }
+
+    /// **The current installed layout**: providers under `lib/stark/packages`, matching the
+    /// repository's `packages/` directory.
+    ///
+    /// The depth is the whole point. A provider crate writes `../../../starkc/stark-provider-abi`,
+    /// which is correct at `<root>/packages/stark-time/native` and wrong one level up — so the
+    /// repository move and the installed layout have to change together. This test fails if either
+    /// one moves alone, which is the failure that would otherwise surface as a Cargo lockfile
+    /// collision at the end of a native build.
+    #[test]
+    fn providers_resolve_under_a_packages_directory() {
+        let prefix = std::env::temp_dir().join(format!("stark_prov_pkgs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&prefix);
+        let lib = prefix.join("lib/stark");
+        std::fs::create_dir_all(lib.join("starkc/stark-runtime")).unwrap();
+        std::fs::create_dir_all(lib.join("starkc/stark-provider-abi")).unwrap();
+        provider_layout_at(&lib.join("packages"));
+
+        let package = prefix.join("elsewhere/app");
+        std::fs::create_dir_all(&package).unwrap();
+
+        let chosen = provider_repo_root(&package, &lib.join("starkc/stark-runtime"));
+        assert_eq!(
+            chosen.canonicalize().unwrap(),
+            lib.join("packages").canonicalize().unwrap(),
+            "an installation carrying `packages/` must resolve providers there, in preference to \
+             the flat layout kept for older installs"
+        );
+
+        let abi_from_runtime = lib.join("starkc/stark-runtime/../stark-provider-abi");
+        let abi_from_provider = chosen.join("stark-time/native/../../../starkc/stark-provider-abi");
+        assert_eq!(
+            abi_from_runtime.canonicalize().unwrap(),
+            abi_from_provider.canonicalize().unwrap(),
+            "at this depth a provider's `../../../starkc/stark-provider-abi` and the runtime's \
+             `../stark-provider-abi` must name ONE crate"
         );
         let _ = std::fs::remove_dir_all(&prefix);
     }

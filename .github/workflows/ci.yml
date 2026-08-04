@@ -640,7 +640,7 @@ jobs:
         with:
           workspaces: |
             starkc
-            stark-tls/native
+            packages/stark-tls/native
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -649,7 +649,7 @@ jobs:
         run: cargo build --release --bin stark
       # **The generated crate is built `--offline`** (WP-C5 §11.3's no-network rule), so every
       # registry crate a linked PROVIDER needs must already be in this job's cargo home. Only
-      # `stark-tls/native` has registry dependencies — rustls, aws-lc-rs, rustls-native-certs — and
+      # `packages/stark-tls/native` has registry dependencies — rustls, aws-lc-rs, rustls-native-certs — and
       # without this the gate fails in about a second with "the STARK native backend generated a
       # crate that Cargo could not build" and no further detail.
       #
@@ -657,7 +657,7 @@ jobs:
       # these from building the provider crate itself. This job's does not: `rust-cache` is keyed
       # per workspace and the C7.8 workflow that builds the TLS provider is a DIFFERENT job.
       - name: Pre-fetch native provider dependencies
-        run: cargo fetch --manifest-path stark-tls/native/Cargo.toml
+        run: cargo fetch --manifest-path packages/stark-tls/native/Cargo.toml
       - name: Qualify JSON, URL, Base64, Hex, and UUID packages
         run: |
           python3 starkc/scripts/qualify-first-party-packages.py \

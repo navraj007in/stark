@@ -16,7 +16,7 @@ publish = false
 # selected aws-lc-rs as the ONE cryptographic foundation. Two crypto backends compiled into one
 # binary is exactly the "unrelated crypto stacks" outcome the ruling exists to prevent.
 [dependencies]
-stark-provider-abi = { path = "../../starkc/stark-provider-abi" }
+stark-provider-abi = { path = "../../../starkc/stark-provider-abi" }
 rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "tls12", "std"] }
 rustls-pemfile = "=2.2.0"
 rustls-pki-types = "=1.15.1"
@@ -30,5 +30,5 @@ rustls-native-certs = "=0.8.2"
 # assumption. A test binary is its own link unit, though, so it needs the owner crate present to
 # resolve that symbol.
 [dev-dependencies]
-starkc = { path = "../../starkc" }
+starkc = { path = "../../../starkc" }
 stark-net-native = { path = "../../stark-net/native" }

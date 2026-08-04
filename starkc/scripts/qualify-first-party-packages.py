@@ -990,7 +990,9 @@ def declared_surface(stark: Path, package_dir: Path) -> list[dict]:
             return json.load(handle)
 
 
-def check_declared_surface_is_called(stark: Path, repo_root: Path, case: "PackageCase") -> None:
+def check_declared_surface_is_called(
+    stark: Path, packages_root: Path, case: "PackageCase"
+) -> None:
     """CD-355: every public callable must be CALLED by the package's own tests or its consumers.
 
     The gate's other steps prove a package builds and its consumer runs. None of them proves that
@@ -1016,12 +1018,12 @@ def check_declared_surface_is_called(stark: Path, repo_root: Path, case: "Packag
     bias is chosen: a false FAILURE would force a package to add a fake call to satisfy the gate,
     which is worse than a missed one, because it teaches that gate output is noise.
     """
-    entries = declared_surface(stark, repo_root / case.package)
+    entries = declared_surface(stark, packages_root / case.package)
 
-    sources = [repo_root / case.package / "src"]
+    sources = [packages_root / case.package / "src"]
     for consumer in (case.consumer, case.resource_consumer):
         if consumer:
-            sources.append(repo_root / consumer / "src")
+            sources.append(packages_root / consumer / "src")
     haystack = "\n".join(
         strip_stark_comments(path.read_text(encoding="utf-8"))
         for source in sources
@@ -1083,13 +1085,21 @@ def main() -> int:
 
     stark = args.stark.resolve()
     repo_root = args.repo_root.resolve()
+    # The first-party packages live under `packages/`. `--repo-root` still names the checkout,
+    # because that is what the caller knows and what every other path here is derived from.
+    packages_root = repo_root / "packages"
+    if not packages_root.is_dir():
+        raise SystemExit(
+            f"no packages directory at {packages_root}. `--repo-root` must name the checkout "
+            f"root, not the packages directory inside it."
+        )
 
     for case in CASES:
-        package_dir = repo_root / case.package
-        consumer_dir = repo_root / case.consumer
+        package_dir = packages_root / case.package
+        consumer_dir = packages_root / case.consumer
         run([str(stark), "check"], package_dir)
         run([str(stark), "test"], package_dir)
-        check_declared_surface_is_called(stark, repo_root, case)
+        check_declared_surface_is_called(stark, packages_root, case)
         run([str(stark), "fmt", "--check"], package_dir)
         run([str(stark), "check"], consumer_dir)
         if case.interpreter_exempt:
@@ -1124,7 +1134,7 @@ def main() -> int:
                     f"resource_consumer. A resource package must exercise acquire/use/close "
                     f"natively; see CD-345 for what a happy-path-only gate concealed."
                 )
-            resource_dir = repo_root / case.resource_consumer
+            resource_dir = packages_root / case.resource_consumer
             if not resource_dir.is_dir():
                 raise SystemExit(
                     f"{case.package}: resource consumer {case.resource_consumer} does not exist"
@@ -1145,7 +1155,7 @@ def main() -> int:
                 # The fixtures directory comes from `--repo-root`, not from this file's own
                 # location: every other path in this script does, and deriving one of them
                 # differently is how a copy of the script run from elsewhere half-works.
-                fixtures = repo_root / "stark-tls" / "fixtures"
+                fixtures = packages_root / "stark-tls" / "fixtures"
                 if case.needs_tls_peer:
                     peer = lambda: tls_peer(fixtures)
                 elif case.needs_http_peer:

@@ -125,8 +125,13 @@ found.
 This payload carries the compiler, its runtime and the provider ABI. It does
 **not** carry the first-party STARK packages or their native provider crates,
 so a program declaring a host capability — clock, filesystem, environment,
-random, TCP/DNS or TLS — still needs those sources installed separately, in a
-root that mirrors the repository's shape. See the repository README.
+random, TCP/DNS or TLS — still needs those sources installed separately, under
+`lib/stark/packages/<name>/native`, mirroring the repository's `packages/`
+directory. That depth is required, not cosmetic: a provider crate reaches the
+ABI through `../../../starkc/stark-provider-abi` and resolves nowhere else. The
+compiler also still accepts the two older provider roots
+(`lib/stark/<name>/native` and `lib/stark/providers/<name>/native`), so an
+installation made before the move keeps working. See the repository README.
 
 Rust 1.85 or newer must be available for `stark build`; `stark run` uses the
 interpreter embedded in the `stark` executable.

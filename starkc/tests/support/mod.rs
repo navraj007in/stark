@@ -1,4 +1,5 @@
-//! Shared support code for the C6 differential test binaries.
+//! Shared support code for test binaries — the C6 differential machinery, and the repository-path
+//! helpers every test that reaches for a first-party package should use.
 //!
 //! Included by each consuming test binary with a plain `mod support;` at its root — the repo's
 //! existing convention for shared test scaffolding (`tests/common/mod.rs`). Files under
@@ -12,3 +13,4 @@
 
 pub mod corpus;
 pub mod differential;
+pub mod paths;

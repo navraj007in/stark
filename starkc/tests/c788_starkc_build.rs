@@ -11,12 +11,9 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
+#[path = "support/paths.rs"]
+mod paths;
+use paths::{repo_package, repo_root};
 
 fn fixture_root(name: &str) -> PathBuf {
     repo_root()
@@ -470,19 +467,19 @@ fn io_minimal_executes_from_source_through_stark_io_package() {
     let vendored_io = root.join("vendor").join("stark-io");
     std::fs::create_dir_all(vendored_io.join("src")).expect("create vendored stark-io");
     std::fs::copy(
-        repo_root().join("stark-io").join("starkpkg.json"),
+        repo_package("stark-io").join("starkpkg.json"),
         vendored_io.join("starkpkg.json"),
     )
     .expect("copy stark-io manifest");
     std::fs::copy(
-        repo_root().join("stark-io").join("src").join("lib.stark"),
+        repo_package("stark-io").join("src").join("lib.stark"),
         vendored_io.join("src").join("lib.stark"),
     )
     .expect("copy stark-io source");
     // `lib.stark` declares `mod tests;`, so the module file is part of the package: omitting it is
     // E0208 and the package does not compile, test or no test.
     std::fs::copy(
-        repo_root().join("stark-io").join("src").join("tests.stark"),
+        repo_package("stark-io").join("src").join("tests.stark"),
         vendored_io.join("src").join("tests.stark"),
     )
     .expect("copy stark-io tests module");
@@ -616,19 +613,19 @@ fn io_expanded_surface_executes_from_source_through_stark_io_package() {
     let vendored_io = root.join("vendor").join("stark-io");
     std::fs::create_dir_all(vendored_io.join("src")).expect("create vendored stark-io");
     std::fs::copy(
-        repo_root().join("stark-io").join("starkpkg.json"),
+        repo_package("stark-io").join("starkpkg.json"),
         vendored_io.join("starkpkg.json"),
     )
     .expect("copy stark-io manifest");
     std::fs::copy(
-        repo_root().join("stark-io").join("src").join("lib.stark"),
+        repo_package("stark-io").join("src").join("lib.stark"),
         vendored_io.join("src").join("lib.stark"),
     )
     .expect("copy stark-io source");
     // `lib.stark` declares `mod tests;`, so the module file is part of the package: omitting it is
     // E0208 and the package does not compile, test or no test.
     std::fs::copy(
-        repo_root().join("stark-io").join("src").join("tests.stark"),
+        repo_package("stark-io").join("src").join("tests.stark"),
         vendored_io.join("src").join("tests.stark"),
     )
     .expect("copy stark-io tests module");

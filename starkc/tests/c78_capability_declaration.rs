@@ -14,6 +14,10 @@ use starkc::provider_resolve::{ProviderSet, ResolveError};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[path = "support/paths.rs"]
+mod paths;
+use paths::repo_provider_root;
+
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
 /// Unique per call so parallel test threads cannot collide, following the convention in
@@ -174,14 +178,10 @@ fn every_registered_provider_validates() {
 /// than a diagnostic naming the provider.
 #[test]
 fn every_registered_provider_crate_is_present() {
-    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf();
-
     for provider in provider_registry::first_party() {
-        let path = provider_registry::built_in_crate_location(&provider.crate_name, &repo_root)
-            .unwrap_or_else(|| panic!("no location for crate {}", provider.crate_name));
+        let path =
+            provider_registry::built_in_crate_location(&provider.crate_name, &repo_provider_root())
+                .unwrap_or_else(|| panic!("no location for crate {}", provider.crate_name));
         assert!(
             path.join("Cargo.toml").is_file(),
             "{} is registered but its crate is missing at {}",

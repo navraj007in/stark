@@ -24,15 +24,11 @@ use starkc::provider_resolve::ProviderSet;
 use starkc::provider_synth::synthesize;
 use starkc::source::SourceFile;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
+#[path = "support/paths.rs"]
+mod paths;
+use paths::repo_provider_root;
 
 fn host_triple() -> String {
     starkc::native_toolchain::discover(None)
@@ -239,7 +235,7 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
     let mut provider_crates = BTreeMap::new();
     provider_crates.insert(
         "stark-time-native".to_string(),
-        provider_registry::built_in_crate_location("stark-time-native", &repo_root())
+        provider_registry::built_in_crate_location("stark-time-native", &repo_provider_root())
             .expect("the provider crate must be locatable"),
     );
 
