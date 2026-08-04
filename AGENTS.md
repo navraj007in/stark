@@ -77,6 +77,17 @@ registry, an HTTP server, structured concurrency, persistent storage, training o
 kernel generation, and a signed distribution. Several of these are on `ROADMAP.md`; none of them
 is in the code.
 
+## Encoded procedures
+
+`.claude/skills/` holds three project skills covering the work that has actually gone wrong here.
+Read the relevant one before starting; they are written as checklists, not background reading.
+
+| skill | when |
+| --- | --- |
+| `stark-layout-verification` | any change to paths, layout, the installer, provider crates, or runtime/provider discovery |
+| `stark-doc-sweep` | before declaring any multi-document edit done |
+| `stark-package-authoring` | creating, extending or reviewing a package under `packages/` |
+
 ## Working rules that have cost time when broken
 
 - **`stark run` cannot execute anything that touches the host.** The interpreters have no provider

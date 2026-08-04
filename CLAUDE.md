@@ -176,6 +176,14 @@ conflict table.
 
 ## Working Conventions for This Repo
 
+Three project skills encode the procedures that have actually failed here. Invoke them rather than
+re-deriving the rules:
+
+- **`stark-layout-verification`** — any change to paths, layout, the installer, provider crates or
+  runtime/provider discovery. Three platform-divergent defects got past ad-hoc checking.
+- **`stark-doc-sweep`** — before declaring any multi-document edit done.
+- **`stark-package-authoring`** — creating, extending or reviewing a package under `packages/`.
+
 - When editing any spec file in `docs/spec/`, regenerate `STARK-Core-v1.md`
   (+ HTML/PDF) in the same change, and keep the individual files as the
   editing surface.
