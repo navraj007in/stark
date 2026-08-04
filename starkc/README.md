@@ -113,11 +113,28 @@ After extracting a package:
 & "$env:LOCALAPPDATA\Programs\STARK\lib\stark\uninstall.ps1"
 ```
 
-The installed layout is `bin/{stark,starkc,starkide}` plus
-`lib/stark/stark-runtime`. The latter is required because native debug builds
-invoke the selected Cargo/rustc toolchain offline against that local runtime.
+The installer writes a **versioned** tree: the payload lands in
+`lib/stark/versions/<version>`, `lib/stark/current` points at it, and
+`bin/stark` is a symlink to `current/bin/stark` on Unix or a copy of it on
+Windows. Inside the payload the layout is `bin/{stark,starkc,starkide}` plus
+`lib/stark/stark-runtime` and `lib/stark/stark-provider-abi`. The runtime is
+required because native debug builds invoke the selected Cargo/rustc toolchain
+offline against it. Flat installations made before the versioned tree are still
+found.
+
+This payload carries the compiler, its runtime and the provider ABI. It does
+**not** carry the first-party STARK packages or their native provider crates,
+so a program declaring a host capability — clock, filesystem, environment,
+random, TCP/DNS or TLS — still needs those sources installed separately, in a
+root that mirrors the repository's shape. See the repository README.
+
 Rust 1.85 or newer must be available for `stark build`; `stark run` uses the
 interpreter embedded in the `stark` executable.
+
+`stark doctor` re-hashes every file listed in the installed `manifest.json`,
+reporting the resolved install root and any file that is missing, resized or
+altered. It verifies integrity, not authenticity: it cannot establish that the
+manifest came from a STARK release.
 
 An explicit target is useful in CI or with a configured cross-linker:
 

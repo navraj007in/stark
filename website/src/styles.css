@@ -202,6 +202,22 @@ a { color: inherit; }
   background: var(--ground-2); color: var(--ink); font-size: 1.02rem;
 }
 
+/* ---------------------------------------------------------------- packages -- */
+
+.libs { margin: 0; padding: 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.libs__row { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 0; background: var(--ground); }
+.libs__area { margin: 0; padding: 14px 18px; font-size: 14px; font-weight: 620; color: var(--ink); }
+.libs__items {
+  margin: 0; padding: 14px 18px; font-size: 14px; color: var(--ink-dim);
+  font-family: var(--mono);
+}
+
+@media (max-width: 620px) {
+  .libs__row { grid-template-columns: 1fr; }
+  .libs__area { padding-bottom: 0; }
+  .libs__items { padding-top: 6px; }
+}
+
 /* ------------------------------------------------------------------- steps -- */
 
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 22px; }

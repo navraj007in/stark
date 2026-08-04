@@ -18,14 +18,20 @@ Cloudflare Pages, S3.
 
 ## Where the content lives
 
-**All copy is in `src/content.ts`**, deliberately, and it is the only file that needs editing when
-the compiler's position changes.
+**All copy is in `src/content.ts`**, deliberately. Updating a claim means editing that file and
+nothing else; `App.tsx` changes only when a section is added or removed.
 
 A language homepage is mostly a claims document, and claims drift out of date faster than layout
-does. Keeping them in one short file means they can be re-read against `COMPILER-STATE.md` in a few
-minutes, rather than hunted through JSX. The rule applied throughout: **state what is true today,
-with its limits attached.** The status section names what does not work as plainly as what does,
-because a language that checks your assumptions should not misrepresent its own.
+does. Keeping them in one short file means they can be re-read against `COMPILER-STATE.md` and the
+repository `ROADMAP.md` in a few minutes, rather than hunted through JSX. The rule applied
+throughout: **state what is true today, with its limits attached.** The status section names what
+does not work as plainly as what does, because a language that checks your assumptions should not
+misrepresent its own.
+
+The STARK code blocks are not illustrative. Both are type-checked against the real compiler and
+packages before they are published here — the core example runs, and the HTTP example checks
+against `stark-http-client`. A snippet on a language homepage that does not compile is the most
+expensive kind of wrong.
 
 ## Syntax highlighting
 

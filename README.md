@@ -8,7 +8,7 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, and compiler-backed language services.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 24 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
 
 ### Where the compiler actually is
 
@@ -22,6 +22,15 @@ Two gate sequences run in this repository and they answer different questions. T
 | **C9** | Open. Extension isolation, and a conditionally authorised artifact-provider generalisation whose second half is blocked pending evidence from a second artifact format |
 
 Programs are compared across four execution configurations — the HIR reference interpreter, the MIR interpreter, native debug and native release — with each case's expected result pinned against the specification rather than against another engine's output. `COMPILER-STATE.md` is the authoritative position; this table is a summary and can lag it.
+
+Two tracks ran alongside the compiler gates and are now closed. The **HTTP client track (HC0–HC13)**
+closed on 2026-08-03 with a qualified HTTP/1.1 and HTTPS client written in STARK — see
+[First-party packages](#first-party-packages). **Installer Phase I** closed the same day: release
+archives, platform installers, a versioned install tree and `stark doctor`. Neither makes STARK
+releasable, and [Project maturity](#project-maturity) says exactly what still stands in the way.
+
+Forward work is governed by [`ROADMAP.md`](ROADMAP.md) (repository root), the single live plan for
+package, application and platform work. It does not supersede the compiler gate track.
 
 ## Why STARK?
 
@@ -182,6 +191,79 @@ The generated project is designed to include:
 
 Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)); the follow-on Gate 6/7 decision checkpoints subsequently recorded REVISE and RETAIN AS RESEARCH LANGUAGE respectively for further tensor-track productisation — see the Delivery gates table below and [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md).
 
+### First-party packages
+
+The repository carries 24 packages written in STARK, each with its own `starkpkg.json`, lock file
+and test suite, and each exercised by a consumer package that must actually *call* the surface it
+declares.
+
+| Area | Packages |
+| --- | --- |
+| Encoding and text | `stark-ascii`, `stark-base64`, `stark-hex`, `stark-percent`, `stark-checksum`, `stark-uuid` |
+| Data formats | `stark-json`, `stark-csv`, `stark-form`, `stark-mime`, `stark-query` |
+| Paths and URLs | `stark-path`, `stark-glob`, `stark-url` |
+| Host access | `stark-time`, `stark-env`, `stark-io`, `stark-random` |
+| Networking | `stark-net` (TCP + DNS), `stark-tls` |
+| HTTP | `stark-http-core`, `stark-http-parser`, `stark-http-serialize`, `stark-http-client` |
+
+**Host access is capability-declared and provider-backed.** A package that needs the outside world
+names the capability in its manifest, and a native provider crate satisfies it at build time:
+
+| Capability | Provider crate | Declared by |
+| --- | --- | --- |
+| `clock` | `stark-time/native` | `stark-time` |
+| `filesystem` | `stark-file/native` | `stark-io` |
+| `process.env`, `process.args` | `stark-env/native` | `stark-env` |
+| `random` | `stark-random/native` | `stark-random` |
+| `tcp`, `dns` | `stark-net/native` | `stark-net`, `stark-http-client` |
+| `tls` | `stark-tls/native` | `stark-tls`, `stark-http-client` |
+
+**Capability-backed packages run only through `stark build`.** The reference and MIR interpreters
+have no host access at all — they cannot open a socket or read a clock — so `stark run` will not
+execute a program that reaches the network or the filesystem. That is a deliberate boundary, not a
+gap in the interpreters.
+
+The HTTP client is the deepest thing built in the language so far: HTTP/1.1 over TCP, HTTPS with
+verified TLS from the URL alone, chunked and content-length framing, bounded redirects with
+credential stripping across origins, and JSON convenience helpers. It was qualified against peers
+that are adversarial on the wire — 42 executed cases on Linux, macOS and Windows — and the closing
+packets found four defects, two of which were remote-abort vulnerabilities rather than parse errors.
+
+A request is a `fetch` against a client, and HTTPS differs from HTTP only in the URL — there is no
+second API and no application-level switch:
+
+```stark
+use stark_http_client::default_config;
+use stark_http_client::error_text;
+use stark_http_client::fetch;
+use stark_http_client::new_client;
+
+fn main() {
+    let client = new_client(default_config());
+
+    match fetch(&client, "https://example.com/health") {
+        Ok(response) => {
+            if response.status == 200u16 {
+                println("healthy");
+            }
+        }
+        Err(error) => {
+            println(error_text(&error).as_str());
+        }
+    }
+}
+```
+
+The package declaring this needs `"capabilities": ["tcp", "dns", "tls"]` in its `starkpkg.json`, a
+path dependency on `stark-http-client` installed beside it (see
+[Installing the toolchain](#installing-the-toolchain)), and `stark build` — not `stark run`.
+
+What it does **not** do is stated as plainly: no HTTP/2 or HTTP/3, no connection reuse, no
+decompression, no proxies, no cookie jar, no client certificates, no streaming bodies, and a
+`connect_timeout` that is accepted and ignored (DEV-165). The full list is
+[`STARKLANG/docs/http-client/HC13-KNOWN-LIMITATIONS.md`](STARKLANG/docs/http-client/HC13-KNOWN-LIMITATIONS.md),
+which is the shorter and more useful companion to the qualification report.
+
 ## Quick start
 
 ### Requirements
@@ -205,11 +287,66 @@ Run the test suite:
 cargo test
 ```
 
-### Installing the compiler
+### Installing the toolchain
 
-To use STARK outside this checkout, install the binaries **and the crates the native backend
-links against**. The compiler finds those by a fixed layout relative to its own executable, so
-the directory structure below is not a suggestion — it is what `stark build` looks for.
+There are two paths: a release package, or a hand-built install from this checkout. The first is
+the supported one.
+
+#### From a release package
+
+Build a package for the current host — the builder has no dependencies beyond Python and Cargo:
+
+```bash
+# From starkc/
+python3 scripts/build-release.py        # py -3 on Windows
+```
+
+Packages are written to `target/packages/` — `.tar.gz` on macOS and Linux, `.zip` on Windows — and
+each carries `stark`, `starkc`, `starkide`, the native runtime, the provider ABI, a `manifest.json`
+of SHA-256 hashes, the license and installers. Every operating system and CPU architecture needs its
+own package; cross-compilation is validated and then refused, with its reason.
+
+Extract the package and install from inside it:
+
+```bash
+./install.sh                            # defaults to ~/.local
+./install.sh --prefix /custom/prefix
+~/.local/lib/stark/uninstall.sh         # uninstall
+```
+
+```powershell
+.\install.ps1                           # defaults to %LOCALAPPDATA%\Programs\STARK; updates user PATH
+.\install.ps1 -Prefix C:\Tools\STARK -NoPathUpdate
+& "$env:LOCALAPPDATA\Programs\STARK\lib\stark\uninstall.ps1"
+```
+
+The installer stages the payload, verifies it against `manifest.json` before anything is published,
+then writes a **versioned tree** — `lib/stark/versions/<version>` with `lib/stark/current` pointing
+at it — and places `stark` in `bin/` as a symlink on Unix or a copy on Windows.
+
+Check an installation at any time:
+
+```bash
+stark doctor                            # re-hashes every manifest-listed file
+stark doctor --json                     # machine-readable, for CI
+stark doctor --root /path/to/package    # inspect an extracted package, including one for another platform
+```
+
+`stark doctor` establishes **integrity, not authenticity.** It detects corruption and partial
+extraction. It cannot tell you the manifest came from a STARK release — anyone who can replace the
+payload replaces the manifest with it. Release archives are unsigned; a public distribution still
+needs a signed manifest, a trusted release key, signature verification before installation, and
+platform notarisation. None of that exists yet.
+
+The package also does **not** carry the first-party STARK packages or their provider crates. A clean
+machine can build ordinary Core programs; building an HTTP or TLS program still means obtaining
+those sources separately, as below.
+
+#### By hand, from this checkout
+
+Install the binaries **and the crates the native backend links against**. The compiler finds those
+by a fixed layout relative to its own executable, so the directory structure below is not a
+suggestion — it is what `stark build` looks for.
 
 ```bash
 # From starkc/
@@ -232,12 +369,13 @@ rsync -a --exclude target stark-provider-abi/ "$L/starkc/stark-provider-abi/"
 Three binaries, not one: `stark` is the package driver, `starkc` the single-file CLI and language
 server, `starkide` the terminal IDE. The VS Code extension defaults to `starkc`.
 
-**Provider-backed capabilities** — clock, filesystem, environment and TCP — need their provider
-crates too, in a root that mirrors the repository's shape:
+**Provider-backed capabilities** — clock, filesystem, environment, random, TCP/DNS and TLS — need
+their provider crates too, in a root that mirrors the repository's shape. All six, or the missing
+ones fail at build time rather than at install time:
 
 ```bash
 # Beside `starkc/`, exactly as in a checkout — they share the ABI crate installed above.
-for p in stark-time stark-env stark-file stark-net; do
+for p in stark-time stark-env stark-file stark-net stark-random stark-tls; do
   rsync -a --exclude target "../$p/native/" "$PREFIX/lib/stark/$p/native/"
 done
 ```
@@ -246,12 +384,26 @@ Without that root, a package declaring a capability builds only from inside a ch
 is deliberately environment-free: no variable is consulted, and the search is the enclosing
 checkout first, then the installed toolchain's own directory.
 
-To depend on a first-party STARK package from anywhere, install its sources and point at them
-with an absolute path:
+To depend on a first-party STARK package, install its sources **beside your own package** and name
+it by path. The path may be absolute or relative, but it must resolve inside the workspace, and the
+workspace is the *parent directory of your package* — nothing above it is reachable:
+
+```text
+projects/
+  myapp/            <- your package; the workspace is `projects/`
+    starkpkg.json
+  stark-time/       <- a sibling, therefore reachable
+  stark-json/
+```
 
 ```json
-{ "dependencies": { "stark_time": { "package": "stark-time", "path": "/absolute/path/stark-time" } } }
+{ "dependencies": { "stark_time": { "package": "stark-time", "path": "../stark-time" } } }
 ```
+
+A path pointing outside that root is refused by name — `resolves to '…' which is outside the
+permitted workspace` — rather than being silently resolved. It is the reason a single shared
+package directory somewhere else on the machine does not work today, and a registry is the
+scheduled answer.
 
 ### Single-file workflow
 
@@ -345,19 +497,33 @@ Run from any directory in a STARK project (looks up to `starkpkg.json`):
 # Project-oriented commands
 stark check                     # Check package and dependencies
 stark build                     # Build target/stark/debug/<package>
+stark build --release           # Optimised profile, same STARK-observable semantics
 stark run                       # Run entry point with the reference interpreter
-stark test                      # Run tests
+stark test                      # Run fn test_* functions, tests/ programs and examples/
+stark test http --show-output   # Filter by substring; print output from passing tests too
+stark fmt                       # Format the package
+stark fmt --check               # Report non-canonical files without rewriting them (exit 1)
+stark doc --open                # Generate API documentation for public items
+stark cache status              # Report the bounded build cache
+stark cache clean               # Clear it
+stark doctor                    # Verify the installed toolchain against its manifest
 
 # Build modes
 stark check --locked            # Use existing stark.lock (reproducible, CI/CD)
 stark check --offline           # Use cache only (no network)
 stark check --locked --offline  # Both (maximum strictness)
+stark build --no-build-cache    # Discard the generated crate afterwards (the qualification path)
+stark build --no-mir-opt        # Compile MIR exactly as lowered, to bisect a suspected optimiser defect
 ```
 
+The build cache reuses whole content-addressed generated crates and their Cargo artefacts. It is
+not fine-grained incremental compilation, and it is not trying to be.
+
 `stark build` requires Rust 1.85 or newer and uses the locally installed
-`stark-runtime` crate without network access. Cross-platform release archives
-for macOS, Linux, and Windows include the `stark`, `starkc`, and `starkide`
-binaries, that runtime, and platform installers; see
+`stark-runtime` crate without network access. Release archives for macOS, Linux
+and Windows carry the `stark`, `starkc` and `starkide` binaries, that runtime,
+the provider ABI, a hash manifest and platform installers — but not the
+first-party packages or their providers; see
 [`starkc/README.md`](starkc/README.md#release-binaries).
 
 ## Editor support
@@ -449,7 +615,16 @@ The following areas are working:
   an invocation for 59, and makes no claim of full Core or standard-library native conformance;
 * compiler-backed language services over LSP (Gate C8, candidate-complete);
 * lock files (`stark.lock`) with SHA-256 content hashing;
-* offline and locked build modes.
+* offline and locked build modes;
+* 24 first-party packages written in STARK, each with a consumer package that calls its declared
+  surface;
+* manifest-declared host capabilities backed by native provider crates — clock, filesystem,
+  environment, random, TCP/DNS and TLS — with cross-provider ownership transfer and affine host
+  resources;
+* an HTTP/1.1 and HTTPS client written in STARK, qualified against adversarial peers on Linux,
+  macOS and Windows (HC0–HC13);
+* release packaging and installation — archives, platform installers, a versioned install tree,
+  uninstall, and `stark doctor` manifest verification (Installer Phase I).
 
 The following areas remain incomplete or intentionally deferred:
 
@@ -460,8 +635,14 @@ The following areas remain incomplete or intentionally deferred:
   accepts but no engine can build is worse than one it refuses. Iterate a borrow (`v.iter()`) in a
   `for` loop; implementing the combinators needs MIR adapter types and is scheduled work, not a
   rejection of the feature;
-* networking libraries;
-* public package registry (Phase 3+ defined; not yet implemented);
+* **a releasable distribution.** Installer Phase I is implemented, but the payload does not carry
+  the first-party packages or their providers, a clean machine cannot yet build an HTTP or TLS
+  program offline, and the archives are unsigned — `manifest.json` establishes integrity, never
+  authenticity;
+* networking beyond an HTTP/1.1 client — no server, no HTTP/2 or HTTP/3, no connection reuse, no
+  proxies, no streaming bodies, and `connect_timeout` is accepted and ignored (DEV-165);
+* structured concurrency and persistent storage (scheduled in [`ROADMAP.md`](ROADMAP.md));
+* public package registry (Phase 3+ defined; not yet implemented) — dependencies are local paths;
 * interactive editor validation beyond hover, definition and references (Gate C8's open item);
 * editor integrations beyond VS Code;
 * qualification of every *usage shape* of a supported library method — an audited method has at
@@ -534,24 +715,42 @@ When implementation work exposes a specification defect, the project updates the
 ## Repository layout
 
 ```text
+ROADMAP.md                 The single live forward plan (packages, applications, platform)
+COMPILER-STATE.md          Authoritative compiler-track position (Gate C0–C10)
+
 STARKLANG/
-  docs/spec/              Normative STARK Core v1 specification
-  docs/extensions/        Optional extension specifications
-  docs/ROADMAP.md         Evidence-based delivery gates
-  docs/PLAN.md            Engineering plan and technical decisions
-  tests/spec-fixtures/    Extracted specification conformance corpus
+  docs/spec/               Normative STARK Core v1 specification
+  docs/extensions/         Optional extension specifications
+  docs/compiler/           Compiler governance: charter, roadmap, work packages
+  docs/http-client/        HC0–HC13 evidence, limitations and release checklist
+  docs/ROADMAP.md          Historical record of the closed Gate 1–7 sequence
+  docs/PLAN.md             Historical engineering plan (tracks only through Gate 5)
+  docs/archive/            Pre-pivot design and superseded roadmaps — not current
+  tests/spec-fixtures/     Extracted specification conformance corpus
 
 starkc/
-  src/                    Rust compiler and interpreter
-  src/extensions/tensor/  Tensor extension implementation
-  src/onnx/               ONNX metadata import and verification
-  src/deploy/             Deployment IR and host generation
-  examples/gate3/         Executable Core examples
-  examples/gate4/         Tensor and ONNX examples
-  tests/                  Unit, integration and conformance tests
-  docs/                   Gate exit reports and technical documentation
+  src/                     Rust compiler and interpreter
+  src/extensions/tensor/   Tensor extension implementation
+  src/onnx/                ONNX metadata import and verification
+  src/deploy/              Deployment IR and host generation
+  src/bin/                 stark, starkc and starkide entry points
+  stark-runtime/           Runtime crate the native backend links against
+  stark-provider-abi/      Native provider ABI
+  dist/                    Platform installers and uninstallers
+  scripts/build-release.py Dependency-free release packager
+  examples/gate3/          Executable Core examples
+  examples/gate4/          Tensor and ONNX examples
+  tests/                   Unit, integration and conformance tests
+  docs/                    Gate exit reports and technical documentation
 
-Practice/                  Early language experiments
+stark-<name>/              First-party packages written in STARK
+  src/lib.stark            Package source
+  native/                  Native provider crate, where the package needs one
+stark-<name>-consumer/     The package's consumer, which must call its declared surface
+
+editors/vscode/            Language-server client and syntax support
+website/                   starklang.com — React + Vite static site
+Practice/                  Early language experiments — pre-pivot, not current
 ```
 
 ## Testing and conformance
@@ -573,15 +772,22 @@ cargo doc --no-deps
 
 The repository includes:
 
-* 121 extracted specification fixtures;
+* 113 extracted specification fixtures, each triaged in
+  [`STARKLANG/tests/spec-fixtures/manifest.toml`](STARKLANG/tests/spec-fixtures/manifest.toml);
 * parser and semantic conformance tests;
 * valid-program suites;
 * exact-output interpreter tests;
+* four-engine differential conformance — reference interpreter, MIR interpreter, native debug and
+  native release — with each expected result pinned against the specification;
 * borrow and ownership negative tests;
 * deterministic pseudo-fuzz robustness tests;
 * tensor semantic tests;
 * ONNX malformed-input and boundary tests;
-* deployment lowering and emission tests.
+* deployment lowering and emission tests;
+* per-package STARK test suites run by `stark test`, plus consumer packages that must call each
+  declared public surface;
+* HTTP client qualification against controlled adversarial peers — malformed, oversized and
+  stalling — asserted on the named error rather than on failure alone.
 
 Passing tests demonstrate the bounded behaviour covered by the current corpus. They do not yet constitute a language stability or production-readiness guarantee.
 
@@ -591,8 +797,16 @@ Start with:
 
 * [`STARKLANG/docs/index.md`](STARKLANG/docs/index.md)
 * [`STARKLANG/docs/spec/STARK-Core-v1.md`](STARKLANG/docs/spec/STARK-Core-v1.md)
-* [`STARKLANG/docs/ROADMAP.md`](STARKLANG/docs/ROADMAP.md)
-* [`STARKLANG/docs/PLAN.md`](STARKLANG/docs/PLAN.md) (currently tracks only through Gate 5; see `COMPILER-STATE.md` for current status)
+* [`ROADMAP.md`](ROADMAP.md) — **the single live forward plan**, August 2026 – February 2027
+* [`COMPILER-STATE.md`](COMPILER-STATE.md) — the authoritative compiler-track position
+* [`STARKLANG/docs/http-client/HC13-QUALIFICATION-REPORT.md`](STARKLANG/docs/http-client/HC13-QUALIFICATION-REPORT.md)
+  and [`HC13-KNOWN-LIMITATIONS.md`](STARKLANG/docs/http-client/HC13-KNOWN-LIMITATIONS.md) — what the
+  HTTP client does, and what it does not
+
+Historical records, retained for their citations and non-goals rather than as plans:
+
+* [`STARKLANG/docs/ROADMAP.md`](STARKLANG/docs/ROADMAP.md) — the closed Gate 1–7 sequence
+* [`STARKLANG/docs/PLAN.md`](STARKLANG/docs/PLAN.md) (tracks only through Gate 5)
 * [`starkc/docs/gate1-exit.md`](starkc/docs/gate1-exit.md)
 * [`starkc/docs/gate2-exit.md`](starkc/docs/gate2-exit.md)
 * [`starkc/docs/gate3-exit.md`](starkc/docs/gate3-exit.md)
@@ -600,7 +814,11 @@ Start with:
 * [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)
 * [`starkc/docs/gate6-memo.md`](starkc/docs/gate6-memo.md) — decision: REVISE
 * [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md) — decision: RETAIN AS RESEARCH LANGUAGE
-* [`COMPILER-STATE.md`](COMPILER-STATE.md) — current compiler-track governance position (Gate C0–C10, a newer, independent evidence-first re-closure track; see [`STARKLANG/docs/compiler/COMPILER-CHARTER.md`](STARKLANG/docs/compiler/COMPILER-CHARTER.md))
+
+For compiler work specifically:
+
+* [`STARKLANG/docs/compiler/COMPILER-CHARTER.md`](STARKLANG/docs/compiler/COMPILER-CHARTER.md) — the
+  governance rules the Gate C0–C10 track runs under
 * [`starkc/docs/dev/compiler-map.md`](starkc/docs/dev/compiler-map.md) — module-by-module compiler pipeline map
 
 ## Contributing
@@ -614,7 +832,8 @@ STARK is currently best suited to contributors interested in:
 * conformance testing;
 * tensor type systems;
 * ONNX tooling;
-* reproducible native AI deployment.
+* reproducible native AI deployment;
+* libraries written in STARK itself, and the native providers behind them.
 
 Useful contributions include:
 
@@ -624,6 +843,7 @@ Useful contributions include:
 * diagnostic quality improvements;
 * ONNX metadata edge cases;
 * documentation corrections;
+* adversarial cases against the first-party packages, asserted on the named error;
 * carefully bounded Gate 5 deployment work.
 
 Before proposing a large language feature, review the roadmap and current non-goals. New Core features should be supported by a concrete requirement that cannot be addressed cleanly through the existing language or a library.
