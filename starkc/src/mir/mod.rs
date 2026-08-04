@@ -62,7 +62,20 @@ pub const MIR_VERSION: &str = "0.3";
 /// own amendment document rather than a rev. 14 of the A1 string/collection surface. The constant
 /// still advances because a consumer that cannot represent provider calls must reject an A10
 /// program before consuming any body (V-SURFACE-1).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A13";
+///
+/// `0.1-A14` (CD-381): the formatting surface. Adds **twelve** `RuntimeFn` members in two
+/// families:
+///
+/// * `FmtInt64`, `FmtUInt64`, `FmtBool`, `FmtFloat64`, `FmtFloat32`, `FmtChar`, `FmtUnit` —
+///   `Display::fmt` on a standard-library receiver (CD-378);
+/// * `FmtPad`, `FmtIntSpec`, `FmtUIntSpec`, `FmtFloat64Spec`, `FmtFloat32Spec` — format
+///   specification application (CD-380).
+///
+/// **Both families were added without advancing this constant**, in CD-378 and CD-380
+/// respectively; A14 corrects both omissions at once. A consumer built against A13 cannot
+/// represent any of the twelve and must reject an A14 program before consuming a body — which is
+/// the whole purpose of the revision, and what was missing while the constant lagged.
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A14";
 
 // ------------------------------------------------------------------ identity --
 

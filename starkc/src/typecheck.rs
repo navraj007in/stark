@@ -1389,11 +1389,17 @@ impl<'a> TypeChecker<'a> {
                 ret: Box::new(Ty::Primitive(Primitive::Float64)),
             },
             // -- Phase 4E: stderr --
+            //
+            // DEV-174: typed as a fresh variable, exactly like `print`/`println`.
+            //
+            // 06-Standard-Library declares `fn eprint<T: Display>(value: T)` and the
+            // `eprintln`/`eprint` analogues, and PRINT-DISPLAY-001 covers all four by name. This
+            // took `&str` instead, so `eprintln(s)` with an owned `String` — let alone any other
+            // `Display` type — was rejected while `println(s)` was accepted. The stderr half of the
+            // runtime surface has carried the full display family since 0.1-A13
+            // (`EprintlnInt64`, `EprintBool`, …); only the signature lagged.
             Builtin::Eprint | Builtin::Eprintln => Ty::Fn {
-                params: vec![Ty::Ref {
-                    mutable: false,
-                    inner: Box::new(Ty::Primitive(Primitive::Str)),
-                }],
+                params: vec![self.new_type_var()],
                 ret: Box::new(unit),
             },
             // -- Phase 4E: Random (simple LCG per `06-Standard-Library.md`) --
@@ -4775,42 +4781,50 @@ impl<'a> TypeChecker<'a> {
         // A numeric mode requires a numeric type. `Display` does NOT imply integer formatting
         // (§11.5), so a generic `T: Display` is refused here rather than given a meaning it has
         // not proved — inventing a numeric bound to make it compile is out of scope.
+        //
+        // The guards carry the type requirement, and the final arm enumerates every `FormatKind`
+        // explicitly rather than using `_`: a new format type must force a decision here about
+        // which types accept it.
         match spec.kind {
             Some(
                 FormatKind::Bin | FormatKind::Oct | FormatKind::LowerHex | FormatKind::UpperHex,
-            ) => {
-                if !matches!(&stripped, Ty::Primitive(p) if is_integer(*p)) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "type '{}' cannot be formatted in another base",
-                                self.ty_to_string(&ty)
-                            ),
-                            spec_span,
-                        )
-                        .with_code("E0306")
-                        .with_label("'b', 'o', 'x' and 'X' require an integer type"),
-                    );
-                    return;
-                }
+            ) if !matches!(&stripped, Ty::Primitive(p) if is_integer(*p)) => {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "type '{}' cannot be formatted in another base",
+                            self.ty_to_string(&ty)
+                        ),
+                        spec_span,
+                    )
+                    .with_code("E0306")
+                    .with_label("'b', 'o', 'x' and 'X' require an integer type"),
+                );
+                return;
             }
-            Some(FormatKind::Fixed) => {
-                if !matches!(&stripped, Ty::Primitive(p) if is_float_primitive(*p)) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "type '{}' cannot be formatted with fixed precision",
-                                self.ty_to_string(&ty)
-                            ),
-                            spec_span,
-                        )
-                        .with_code("E0306")
-                        .with_label("'f' requires 'Float32' or 'Float64'"),
-                    );
-                    return;
-                }
+            Some(FormatKind::Fixed) if !matches!(&stripped, Ty::Primitive(p) if is_float_primitive(*p)) =>
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "type '{}' cannot be formatted with fixed precision",
+                            self.ty_to_string(&ty)
+                        ),
+                        spec_span,
+                    )
+                    .with_code("E0306")
+                    .with_label("'f' requires 'Float32' or 'Float64'"),
+                );
+                return;
             }
-            None => {}
+            Some(
+                FormatKind::Bin
+                | FormatKind::Oct
+                | FormatKind::LowerHex
+                | FormatKind::UpperHex
+                | FormatKind::Fixed,
+            )
+            | None => {}
         }
 
         if spec.precision.is_some() && spec.kind.is_none() {
@@ -5355,7 +5369,10 @@ impl<'a> TypeChecker<'a> {
                         // over-acceptance: the checker admitted a program the oracle then
                         // rendered in an unspecified debug-ish form and MIR refused outright.
                         // Deferred to Pass 3 so inference has settled first.
-                        if matches!(builtin, Builtin::Print | Builtin::Println) {
+                        if matches!(
+                            builtin,
+                            Builtin::Print | Builtin::Println | Builtin::Eprint | Builtin::Eprintln
+                        ) {
                             if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
                                 self.display_checks
                                     .push((ty.clone(), self.hir.expr(*arg).span));

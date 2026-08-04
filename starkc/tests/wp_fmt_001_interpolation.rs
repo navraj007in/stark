@@ -577,6 +577,97 @@ fn main() {
 
 // -------------------------------------------------------------- print family and stark-fmt --
 
+/// **The advertised form, proved directly.** `println(f"...")` with no `.as_str()` — the shape
+/// §15 asks for. It works because the interpolation's `String` is itself `Display`, but that is a
+/// claim worth pinning rather than assuming, and it must not move, double-destroy or lose output.
+#[test]
+fn the_output_family_accepts_an_interpolated_temporary_directly() {
+    let done = support::differential::agree_completing_available_engines(
+        "fmt_direct_println",
+        "\
+fn main() {
+    let name: String = \"stark\".to_string();
+    let count: Int32 = 7;
+    println(f\"direct={name}/{count:03}\");
+    print(f\"a\");
+    println(f\"b\");
+    eprintln(f\"err={count}\");
+}
+",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&done.stdout_bytes),
+        "direct=stark/007\nab\n",
+        "stdout"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&done.stderr_bytes),
+        "err=7\n",
+        "stderr"
+    );
+}
+
+/// Comments are ordinary expression syntax, so a field admits them — and a `}` or `:` inside one
+/// is text, not field structure. Block comments nest (01-Lexical-Grammar §6).
+#[test]
+fn a_field_admits_comments_including_braces_and_colons() {
+    agree_completing_with_stdout(
+        "fmt_field_comments",
+        "\
+fn twice(v: Int32) -> Int32 {
+    v * 2
+}
+
+fn main() {
+    let value: Int32 = 5;
+    println(f\"a={value /* } */}\".as_str());
+    println(f\"b={value /* : */}\".as_str());
+    println(f\"c={twice(/* { : } */ value)}\".as_str());
+    println(f\"d={value /* outer /* } */ still outer */}\".as_str());
+}
+",
+        "a=5\nb=5\nc=10\nd=5\n",
+    );
+}
+
+/// A flag that cannot affect the output is refused, not ignored — LEX-FORMAT-003.
+#[test]
+fn inert_specification_flags_are_rejected() {
+    for (tag, source) in [
+        (
+            "fmt_alt_no_base",
+            "fn main() { let v: Int32 = 42; let _t = f\"{v:#}\"; }",
+        ),
+        (
+            "fmt_alt_on_float",
+            "fn main() { let v: Float64 = 1.25; let _t = f\"{v:#.2f}\"; }",
+        ),
+        (
+            "fmt_zero_no_width",
+            "fn main() { let v: Int32 = 42; let _t = f\"{v:0}\"; }",
+        ),
+        (
+            "fmt_fixed_no_precision",
+            "fn main() { let v: Float64 = 1.25; let _t = f\"{v:f}\"; }",
+        ),
+        (
+            "fmt_zero_with_align",
+            "fn main() { let v: Int32 = 42; let _t = f\"{v:<06}\"; }",
+        ),
+        (
+            "fmt_zero_with_fill",
+            "fn main() { let v: Int32 = 42; let _t = f\"{v:.>06}\"; }",
+        ),
+    ] {
+        let file = std::sync::Arc::new(starkc::source::SourceFile::new(tag, source.to_string()));
+        let (_ast, diags) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0218")),
+            "{tag}: expected an E0218 rejection, got {diags:?}"
+        );
+    }
+}
+
 #[test]
 fn the_output_family_accepts_interpolated_strings() {
     let done = support::differential::agree_completing_available_engines(

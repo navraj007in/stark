@@ -1,6 +1,16 @@
 # WP-FMT-001 — closure report
 
-**Closed 2026-08-04. Ledger: CD-380. Base: `70aca83`. Design note: `WP-FMT-001-DESIGN.md`.**
+**Status: IMPLEMENTED — v0.1 partial interpolation. Ledger: CD-380, corrected by CD-381.**
+**Base: `70aca83`. Design note: `WP-FMT-001-DESIGN.md`.**
+
+> **Correction, 2026-08-04 (CD-381).** This report originally declared FMT-0 through FMT-5 closed
+> and stated that the MIR runtime-surface version had moved. **It had not** —
+> `MIR_RUNTIME_SURFACE` was still `0.1-A13`, and §6 below asserted a change that did not exist. An
+> external review found that, four further defects, and that declaring closure while DEV-173 blocks
+> ordinary string-literal expressions inside fields was an overclaim. All of the code defects are
+> repaired in CD-381; the scope statement is corrected here rather than by editing the original
+> claims away. **Formatting is not "complete ordinary-expression interpolation" until DEV-173 is
+> solved.**
 
 ```stark
 let message = f"pkg={name} n={count:04} r={ratio:.2} ok={ok}";
@@ -73,8 +83,12 @@ matches are exhaustive — and the new AST/HIR variants forced nine passes open 
 
 ## 6. Versions
 
-Five new `RuntimeFn` variants change the MIR runtime surface, which feeds build-cache identity, so a
-crate cached before this change is not reused.
+**Corrected in CD-381.** The five new `RuntimeFn` variants extend the closed, versioned runtime
+contract, and `MIR_RUNTIME_SURFACE` must advance with them. It did not: this report claimed a
+version change that had not been made. `MIR_RUNTIME_SURFACE` is now `0.1-A14`, covering **twelve**
+unversioned additions — the seven `Fmt*` members CD-378 added as well as these five — so a consumer
+built against A13 rejects an A14 program before consuming a body, which is what V-SURFACE-1 exists
+for. `MIR_VERSION` stays `0.3`: this is additive runtime surface, not a structural MIR change.
 
 ## 7. Changed files
 
@@ -91,13 +105,13 @@ crate cached before this change is not reused.
 | `src/mir/{mod,lower,verify,interp}.rs` | five ops; `lower_format_string`, `render_format_field` |
 | `src/backend/generated_rust/emit_runtime.rs` | native emission |
 | `src/analysis/query.rs`, `src/ast_dump.rs`, `src/formatter/printer.rs` | index, dump, verbatim round-trip |
-| `tests/wp_fmt_001_interpolation.rs` | new — 36 tests |
+| `tests/wp_fmt_001_interpolation.rs` | new — 39 tests |
 | `tests/span_integrity.rs` | field spans |
 | spec: `01`, `02`, `06` + regenerated `STARK-Core-v1.{md,html,pdf}` | grammar and semantics |
 | `STARKLANG/tests/spec-fixtures/manifest.toml` | new fixture triaged; corpus 113 → 114 |
 | `COMPILER-STATE.md`, `KNOWN-DEVIATIONS.md`, `packages/stark-fmt/README.md` | records |
 
-## 8. Positive matrix (36 tests; every case three-engine, stdout pinned in the test)
+## 8. Positive matrix (39 tests; every case three-engine, stdout pinned in the test)
 
 headline example · plain/simple fields · escaped braces · `\u{...}` not a field · arithmetic, call,
 method, field, index, parenthesised and struct-literal expressions · user `Display` · interpolation
@@ -106,8 +120,10 @@ non-`Copy` value and an affine value · evaluate-once and left-to-right by side 
 alignments, custom fill, odd centring, scalar-counted width · zero-padding, `+`/` `/`-`,
 `b`/`o`/`x`/`X`, `#` prefixes, `#010x`, negative in base · every integer width · `.N`, `.Nf`, `.0`,
 half-to-even, `-0.0`, `NaN`/`inf`/`-inf`, `Float32` declared width, width+sign+precision · bool,
-unit, char, `String`, `&str` · `print`/`println`/`eprint`/`eprintln` on both streams · no package
-dependency required · debug-vs-release native agreement.
+unit, char, `String`, `&str` · `print`/`println`/`eprint`/`eprintln` on both streams, **both via
+`.as_str()` and in the direct `println(f"...")` form** · comments inside fields, including a nested
+block comment and `}`/`:` inside one · no package dependency required · debug-vs-release native
+agreement.
 
 ## 9. Negative matrix
 
@@ -115,8 +131,9 @@ unterminated field · unmatched `}` · empty and blank field · `{{}` · unknown
 fill · alignment without width · width overflow (LIMIT-FMT-WIDTH) · precision overflow
 (LIMIT-FMT-PRECISION) · escape inside a field (DEV-173) · type without `Display` · generic without a
 `Display` bound · numeric mode on a generic `Display` · hex on `String` · precision on `Bool`,
-`Int32` and `String` · binary on `Float64` · sign on `String`. **No malformed input panics the
-compiler** — asserted directly.
+`Int32` and `String` · binary on `Float64` · sign on `String` · **inert flags: `#` without a base,
+`#` on a float, `0` without a width, `f` without a precision, `0` combined with an alignment or a
+fill**. **No malformed input panics the compiler** — asserted directly.
 
 ## 10. Ownership and evaluation evidence
 
@@ -153,9 +170,10 @@ number-to-decimal conversion. Replacing that is a separate design and performanc
 
 ## 14. Tier-1 qualification
 
-Not run in this sprint. The suite is platform-independent by construction (no host formatting, no
-locale, scalar-counted width), and CI runs the three Tier-1 lanes on push — that is the qualifying
-evidence, and it had not returned when this report was written.
+**Still outstanding.** CI runs the three Tier-1 lanes on push and is the qualifying evidence; the
+first push of this work failed CI on two clippy lints before reaching them, so no Tier-1 result has
+been observed yet. The suite is platform-independent by construction (no host formatting, no locale,
+scalar-counted width), but that is an argument, not a result, and it is not counted as one.
 
 ## 15. Remaining exclusions
 
@@ -166,6 +184,27 @@ no localization, no scientific/hex-float/percentage modes, no `Debug`, no method
 The source formatter reprints an interpolated literal verbatim rather than re-formatting its
 embedded expressions — §19 permits this and asks that it be recorded; it is.
 
+## 16a. CD-381 correction packet
+
+An external review of `987369b` found six defects. All are repaired:
+
+| # | defect | repair |
+| --- | --- | --- |
+| 1 | `MIR_RUNTIME_SURFACE` never advanced, and §6 claimed it had | `0.1-A14`, covering CD-378's seven `Fmt*` members as well as these five |
+| 2 | the field scanner did not know comments, so `f"{v /* } */}"` mis-scanned | comment-aware scanning, with NESTED block comments, mirroring the lexer's own rule |
+| 3 | the verifier typed the specification operands but did not require them to be constants | **MIR-0037** — both operands must be constants, the word must decode to a valid specification, unused bits must be zero, and width/precision must be within LIMIT-FMT-WIDTH/PRECISION |
+| 4 | inert flag combinations were silently accepted | `#` without a base, `0` without a width, `f` without a precision, and `0` with an alignment or fill are now refused |
+| 5 | LIMIT-FMT-SEGMENTS was checked inside the loop, missing the trailing literal | checked once over the finished list |
+| 6 | `println(f"...")` was tested only through `.as_str()` | direct form proved — and it **failed**, exposing DEV-174 |
+
+Item 6 is the one worth dwelling on: testing the convenient form instead of the advertised one is
+exactly how a gap survives a suite. `eprint`/`eprintln` had been typed `&str` since Phase 4E while
+the specification declared them generic over `Display`, and no test had ever passed them anything
+else.
+
+`Spec::unpack`'s defaults for unknown align/sign/kind encodings are now unreachable in verified MIR:
+MIR-0037 rejects those bit patterns before an engine can normalise them.
+
 ## 16. New defect records
 
 * **DEV-172** — no signed type can express its own minimum (`let a: Int8 = -128;` is rejected).
@@ -174,6 +213,13 @@ embedded expressions — §19 permits this and asks that it be recorded; it is.
   produce it.
 * **DEV-173** — an interpolation field may not contain an escape sequence. Refused rather than
   mis-parsed, because a literal reads its value from its span and a decoded copy has none.
+  **This is why the status above is "v0.1 partial interpolation" rather than closed.** The original
+  acceptance matrix included `f"{choose(\"yes\", \"no\")}"`, and forms like `f"{lookup(\"name\")}"`
+  and `f"{parse(\"42\").unwrap()}"` are blocked. The durable fix is for literals to carry decoded
+  values in the AST/HIR rather than recovering them from source spans — an arena change that would
+  improve the compiler beyond interpolation.
+* **DEV-174** — `eprint`/`eprintln` took `&str` rather than a `Display` value, contradicting
+  06-Standard-Library. Fixed in CD-381.
 
 ## 17. Is STARK formatting complete enough for CLI tools, structured logging and the REST server?
 

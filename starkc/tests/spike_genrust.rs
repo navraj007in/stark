@@ -357,6 +357,10 @@ impl<'a> Lowerer<'a> {
     /// Lower an expression to a Rust expression string.
     fn lower_expr(&mut self, id: ExprId) -> Result<String, Unsupported> {
         match &self.hir.expr(id).kind {
+            // WP-FMT-001: the C3.2 spike predates interpolation and does not model it.
+            starkc::hir::ExprKind::FormatString { .. } => {
+                unimplemented!("the generated-Rust spike does not lower interpolated strings")
+            }
             ExprKind::Lit(lit) => self.lower_lit(id, lit),
             ExprKind::Path { path, res, .. } => match res {
                 Res::Local(_) | Res::SelfValue(_) => Ok(self.text(path.span).to_string()),

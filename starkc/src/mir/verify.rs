@@ -497,6 +497,97 @@ impl<'a> BodyCx<'a> {
         }
     }
 
+    /// WP-FMT-001 (MIR-0037): the specification operands of a `Fmt*Spec` call.
+    ///
+    /// Both must be constants — a specification is fixed at compile time — and the word must
+    /// decode to a valid specification within the compiler's own limits. A verified program
+    /// therefore cannot carry a specification the front end never produced.
+    fn check_format_spec_operands(&mut self, rt: RuntimeFn, args: &[Operand], bi: u32) {
+        let (word_index, fill_index) = match rt {
+            RuntimeFn::FmtPad
+            | RuntimeFn::FmtIntSpec
+            | RuntimeFn::FmtUIntSpec
+            | RuntimeFn::FmtFloat64Spec
+            | RuntimeFn::FmtFloat32Spec => (1usize, 2usize),
+            _ => return,
+        };
+        let Some(Operand::Const(Constant::Int(word, MirTy::UInt64))) = args.get(word_index) else {
+            self.err(
+                "MIR-0037",
+                bi,
+                "format specification operand must be a UInt64 constant",
+            );
+            return;
+        };
+        let Some(Operand::Const(Constant::Int(fill, MirTy::Char))) = args.get(fill_index) else {
+            self.err(
+                "MIR-0037",
+                bi,
+                "format fill operand must be a Char constant",
+            );
+            return;
+        };
+        if u32::try_from(*fill).ok().and_then(char::from_u32).is_none() {
+            self.err(
+                "MIR-0037",
+                bi,
+                format!("format fill {fill} is not a Unicode scalar value"),
+            );
+        }
+        let Ok(word) = u64::try_from(*word) else {
+            self.err("MIR-0037", bi, "format specification word is out of range");
+            return;
+        };
+        // Bits above the highest defined field must be zero: an unknown bit is an unknown
+        // specification, not one to be ignored.
+        const HIGHEST_DEFINED_BIT: u32 = 58;
+        if word >> HIGHEST_DEFINED_BIT != 0 {
+            self.err(
+                "MIR-0037",
+                bi,
+                "format specification word has bits set outside the defined fields",
+            );
+        }
+        // Every encoded field must be one the runtime defines.
+        //
+        // ALIGN is deliberately absent: it is two bits and all four values are defined
+        // (Default/Left/Right/Center), so there is no invalid encoding to reject. SIGN is two bits
+        // with three values, so `3` is invalid; KIND is three bits with six values, so `6` and `7`
+        // are. Checking align as well would be a comparison that can never fire — which is what
+        // `clippy::bad_bit_mask` caught when it was written that way.
+        if (word >> 51) & 0b11 > 2 {
+            self.err(
+                "MIR-0037",
+                bi,
+                "format specification word encodes an unknown sign",
+            );
+        }
+        if (word >> 55) & 0b111 > 5 {
+            self.err(
+                "MIR-0037",
+                bi,
+                "format specification word encodes an unknown format type",
+            );
+        }
+        let spec = stark_runtime::fmt_spec::Spec::unpack(word, ' ');
+        if spec.width > crate::format_syntax::MAX_WIDTH {
+            self.err(
+                "MIR-0037",
+                bi,
+                format!("format width {} exceeds LIMIT-FMT-WIDTH", spec.width),
+            );
+        }
+        if let Some(precision) = spec.precision {
+            if u32::from(precision) > crate::format_syntax::MAX_PRECISION {
+                self.err(
+                    "MIR-0037",
+                    bi,
+                    format!("format precision {precision} exceeds LIMIT-FMT-PRECISION"),
+                );
+            }
+        }
+    }
+
     fn check_target(&mut self, target: BlockId, bi: u32) {
         if (target.0 as usize) >= self.body.blocks.len() {
             self.err(
@@ -1251,6 +1342,18 @@ impl<'a> BodyCx<'a> {
                     }
                     Callee::Runtime(rt) => Some(runtime_sig(*rt)),
                 };
+                // WP-FMT-001 (MIR-0037): a format specification is a COMPILE-TIME constant, and
+                // the verifier enforces it rather than trusting lowering.
+                //
+                // Without this, verified MIR could contain `FmtIntSpec(v, computed_word,
+                // computed_fill)` — dynamic formatting underneath a language feature defined as
+                // statically specified, and a specification word no front end had validated. The
+                // check also pins the ENCODINGS, so `Spec::unpack`'s defaults for unknown
+                // align/sign/kind bit patterns are unreachable in verified MIR rather than a
+                // silent normalisation of malformed compiler output.
+                if let Callee::Runtime(rt) = callee {
+                    self.check_format_spec_operands(*rt, args, bi);
+                }
                 if let Some((params, ret)) = sig {
                     if params.len() != args.len() {
                         self.err("MIR-0005", bi, "call arity mismatch");

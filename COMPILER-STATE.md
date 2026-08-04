@@ -1,5 +1,73 @@
 # STARK Compiler STATE
 
+## CD-381 — WP-FMT-001 correction packet: six defects, one of them mine to admit (2026-08-04)
+
+An external review of `987369b` reopened WP-FMT-001. It was right on every point, and one of them is
+a **false statement in my own closure report**: §6 said the MIR runtime-surface version had changed.
+It had not. `MIR_RUNTIME_SURFACE` was still `0.1-A13` while twelve `RuntimeFn` members had been
+added across CD-378 and CD-380.
+
+### The six
+
+1. **Runtime surface unversioned.** `0.1-A14` now covers all twelve additions — CD-378's seven
+   `Fmt*` members as well as CD-380's five `Fmt*Spec` ones. Both work packages added runtime surface
+   without advancing the constant, so a consumer built against A13 would have accepted a program it
+   cannot represent instead of rejecting it (V-SURFACE-1). `MIR_VERSION` stays `0.3`: additive
+   surface, not a structural change.
+2. **The field scanner did not know comments.** `f"{value /* } */}"` mis-scanned, because the
+   scanner skipped escapes, strings and char literals but not `//` or `/* */`. A field delegates to
+   the ordinary expression parser, so it must admit ordinary comments — including NESTED block
+   comments, which 01-Lexical-Grammar §6 requires and which a one-character patch would not handle.
+3. **The verifier typed the specification operands but did not require them to be constants.**
+   Verified MIR could therefore have carried `FmtIntSpec(v, computed_word, computed_fill)` — dynamic
+   formatting beneath a feature defined as statically specified, with a specification word no front
+   end had validated. **MIR-0037** now requires both operands to be constants, requires the word to
+   decode to a valid specification with zero unused bits, and bounds width and precision by
+   LIMIT-FMT-WIDTH/PRECISION. A side effect worth stating: `Spec::unpack`'s defaults for unknown
+   align/sign/kind encodings are now unreachable in verified MIR rather than silently normalising
+   malformed compiler output.
+4. **Inert flags were accepted.** `f"{42:#}"` set `alternate` and rendered nothing different;
+   `f"{42:0}"` set `zero_pad` with width zero; `f"{1.25:f}"` asked for fixed-point with no
+   precision; `f"{n:<06}"` wrote an alignment that zero-padding then overrode. LEX-FORMAT-003 says
+   an implementation must reject a specification it does not act on — these were exactly the case it
+   names, and they are refused now.
+5. **LIMIT-FMT-SEGMENTS had an off-by-one hole.** The check ran after each field, so the trailing
+   literal segment could push the count one past the limit. Checked once over the finished list.
+6. **`println(f"...")` was only ever tested through `.as_str()`.** Proving the advertised form
+   failed immediately — which is the point. See DEV-174.
+
+### DEV-174, found by fixing the test rather than the code
+
+`eprint`/`eprintln` were typed `&str` while 06-Standard-Library declares
+`fn eprintln<T: Display>(value: T)` and PRINT-DISPLAY-001 names all four output functions together.
+`eprintln(s)` with an owned `String` was rejected; `println(s)` was accepted. The stderr half of the
+runtime surface has carried the full display family since 0.1-A13 and lowering already redirects by
+channel — **only the signature lagged**, and no test had ever passed `eprintln` anything but a
+`&str`. Both pairs are now typed alike and both go through the same deferred `Display` check.
+
+Testing the convenient form instead of the advertised one is how a gap survives a suite that looks
+thorough. Worth remembering beyond this work package.
+
+### Scope, corrected
+
+WP-FMT-001 is **IMPLEMENTED — v0.1 partial interpolation**, not closed. DEV-173 blocks a field
+containing an escape sequence, and the original acceptance matrix included
+`f"{choose(\"yes\", \"no\")}"`. Declaring closure while that is refused was an overclaim; the
+closure report now says so at the top rather than having the claim edited away. Tier-1 qualification
+is also still unobserved — the first push failed CI on clippy before reaching those lanes.
+
+### Evidence
+
+`tests/wp_fmt_001_interpolation.rs` — 39 tests, adding the direct `println(f"...")`/`eprintln`
+form, comments inside fields (including a nested block comment and `}`/`:` inside one), and the six
+inert-flag refusals.
+
+### Status
+
+DEV-174 CLOSED. DEV-173 remains open and is what stands between "v0.1 partial" and complete
+ordinary-expression interpolation. The architecture was not the problem and is unchanged.
+
+
 ## CD-380 — WP-FMT-001: interpolated string literals (2026-08-04)
 
 ```stark

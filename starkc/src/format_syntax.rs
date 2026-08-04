@@ -166,7 +166,7 @@ pub fn scan_format_literal(
                         match parse_format_spec(&file.src[colon + 1..field_end], spec_span) {
                             Ok(spec) => spec,
                             Err(diagnostic) => {
-                                diags.push(diagnostic);
+                                diags.push(*diagnostic);
                                 return Err(diags);
                             }
                         }
@@ -178,19 +178,6 @@ pub fn scan_format_literal(
                     spec,
                     span: Span::new(field_start as u32, field_end as u32 + 1),
                 });
-                if segments.len() > MAX_SEGMENTS {
-                    diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "interpolated string has more than {MAX_SEGMENTS} segments \
-                                 (LIMIT-FMT-SEGMENTS)"
-                            ),
-                            body,
-                        )
-                        .with_code("E0218"),
-                    );
-                    return Err(diags);
-                }
                 i = field_end + 1;
                 literal_start = i;
             }
@@ -209,6 +196,22 @@ pub fn scan_format_literal(
             text: literal,
             span: Span::new(literal_start as u32, hi as u32),
         });
+    }
+    // LIMIT-FMT-SEGMENTS, checked ONCE over the finished list rather than after each field.
+    // Checking inside the loop missed the trailing literal — a literal that reached the limit
+    // exactly at its last field could still append one more segment and finish over it.
+    if segments.len() > MAX_SEGMENTS {
+        diags.push(
+            Diagnostic::error(
+                format!(
+                    "interpolated string has more than {MAX_SEGMENTS} segments \
+                     (LIMIT-FMT-SEGMENTS)"
+                ),
+                body,
+            )
+            .with_code("E0218"),
+        );
+        return Err(diags);
     }
     Ok(segments)
 }
@@ -250,6 +253,11 @@ fn find_field_end(src: &[u8], start: usize, hi: usize) -> Option<usize> {
             // `\"..\"` — the f-string's own delimiter forces it — so an unescaped `"` byte here
             // would be the literal's end, and `\"` must not be read as one.
             b'\\' => i += 2,
+            // A field delegates to the ordinary expression parser, so it admits ordinary
+            // COMMENTS — and a `}` or `:` inside one is text. `f"{value /* } */}"` closes at the
+            // last brace, not the commented one.
+            b'/' if i + 1 < hi && src[i + 1] == b'/' => i = skip_line_comment(src, i, hi),
+            b'/' if i + 1 < hi && src[i + 1] == b'*' => i = skip_block_comment(src, i, hi),
             b'"' => i = skip_string(src, i, hi),
             b'\'' => i = skip_char_literal(src, i, hi),
             b'(' | b'[' | b'{' => {
@@ -283,6 +291,8 @@ fn find_spec_colon(src: &[u8], start: usize, end: usize) -> Option<usize> {
     while i < end {
         match src[i] {
             b'\\' => i += 2,
+            b'/' if i + 1 < end && src[i + 1] == b'/' => i = skip_line_comment(src, i, end),
+            b'/' if i + 1 < end && src[i + 1] == b'*' => i = skip_block_comment(src, i, end),
             b'"' => i = skip_string(src, i, end),
             b'\'' => i = skip_char_literal(src, i, end),
             b'(' | b'[' | b'{' => {
@@ -304,6 +314,39 @@ fn find_spec_colon(src: &[u8], start: usize, end: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Past a `//` line comment, to the newline that ends it (or `hi`).
+fn skip_line_comment(src: &[u8], start: usize, hi: usize) -> usize {
+    let mut i = start + 2;
+    while i < hi && src[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+/// Past a `/* ... */` block comment. **Block comments nest** (01-Lexical-Grammar §6), so this
+/// counts depth rather than stopping at the first `*/`.
+fn skip_block_comment(src: &[u8], start: usize, hi: usize) -> usize {
+    let mut depth = 1usize;
+    let mut i = start + 2;
+    while i < hi {
+        if i + 1 < hi && src[i] == b'/' && src[i + 1] == b'*' {
+            depth += 1;
+            i += 2;
+            continue;
+        }
+        if i + 1 < hi && src[i] == b'*' && src[i + 1] == b'/' {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return i;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    hi
 }
 
 fn skip_string(src: &[u8], start: usize, hi: usize) -> usize {
@@ -341,7 +384,7 @@ fn skip_char_literal(src: &[u8], start: usize, hi: usize) -> usize {
 /// Every rejection is a compile-time diagnostic. Nothing is silently ignored — an unrecognised
 /// character is an error, because a specification the programmer wrote and the compiler dropped is
 /// worse than one it refused.
-pub fn parse_format_spec(text: &str, span: Span) -> Result<FormatSpec, Diagnostic> {
+pub fn parse_format_spec(text: &str, span: Span) -> Result<FormatSpec, Box<Diagnostic>> {
     let mut spec = FormatSpec {
         span: Some(span),
         ..FormatSpec::default()
@@ -404,11 +447,13 @@ pub fn parse_format_spec(text: &str, span: Span) -> Result<FormatSpec, Diagnosti
         let digits: String = chars[width_start..i].iter().collect();
         let width = digits.parse::<u64>().unwrap_or(u64::MAX);
         if width > MAX_WIDTH as u64 {
-            return Err(Diagnostic::error(
-                format!("format width exceeds the maximum of {MAX_WIDTH} (LIMIT-FMT-WIDTH)"),
-                span,
-            )
-            .with_code("E0218"));
+            return Err(Box::new(
+                Diagnostic::error(
+                    format!("format width exceeds the maximum of {MAX_WIDTH} (LIMIT-FMT-WIDTH)"),
+                    span,
+                )
+                .with_code("E0218"),
+            ));
         }
         spec.width = Some(width as u32);
     }
@@ -421,22 +466,24 @@ pub fn parse_format_spec(text: &str, span: Span) -> Result<FormatSpec, Diagnosti
             i += 1;
         }
         if i == precision_start {
-            return Err(
+            return Err(Box::new(
                 Diagnostic::error("format precision requires a number after '.'", span)
                     .with_code("E0218"),
-            );
+            ));
         }
         let digits: String = chars[precision_start..i].iter().collect();
         let precision = digits.parse::<u64>().unwrap_or(u64::MAX);
         if precision > MAX_PRECISION as u64 {
-            return Err(Diagnostic::error(
-                format!(
-                    "format precision exceeds the maximum of {MAX_PRECISION} \
-                     (LIMIT-FMT-PRECISION)"
-                ),
-                span,
-            )
-            .with_code("E0218"));
+            return Err(Box::new(
+                Diagnostic::error(
+                    format!(
+                        "format precision exceeds the maximum of {MAX_PRECISION} \
+                         (LIMIT-FMT-PRECISION)"
+                    ),
+                    span,
+                )
+                .with_code("E0218"),
+            ));
         }
         spec.precision = Some(precision as u32);
     }
@@ -457,30 +504,77 @@ pub fn parse_format_spec(text: &str, span: Span) -> Result<FormatSpec, Diagnosti
                 i += 1;
             }
             None => {
-                return Err(
+                return Err(Box::new(
                     Diagnostic::error(format!("unknown format type '{}'", chars[i]), span)
                         .with_code("E0218")
                         .with_label("expected one of 'b', 'o', 'x', 'X' or 'f'"),
-                );
+                ));
             }
         }
     }
 
     if i != chars.len() {
         let rest: String = chars[i..].iter().collect();
-        return Err(Diagnostic::error(
-            format!("unexpected '{rest}' in a format specification"),
-            span,
+        return Err(Box::new(
+            Diagnostic::error(
+                format!("unexpected '{rest}' in a format specification"),
+                span,
+            )
+            .with_code("E0218"),
+        ));
+    }
+
+    // A flag that cannot affect the output is refused, not ignored. LEX-FORMAT-003 requires an
+    // implementation to reject a specification it does not act on; silently dropping `#` or `0`
+    // would leave a programmer reading a specification the compiler discarded.
+    if spec.alternate
+        && !matches!(
+            spec.kind,
+            Some(FormatKind::Bin | FormatKind::Oct | FormatKind::LowerHex | FormatKind::UpperHex)
         )
-        .with_code("E0218"));
+    {
+        return Err(Box::new(
+            Diagnostic::error("'#' requires a base", span)
+                .with_code("E0218")
+                .with_label("'#' writes the '0b', '0o' or '0x' prefix; add 'b', 'o', 'x' or 'X'"),
+        ));
+    }
+    // Zero-padding inserts fill AFTER the sign and prefix, which is a different placement rule
+    // from alignment's; writing both leaves one of them inert. `{n:<06}` is refused rather than
+    // silently resolved in zero-padding's favour, which is what the renderer would do.
+    if spec.zero_pad && (spec.align.is_some() || spec.fill.is_some()) {
+        return Err(Box::new(
+            Diagnostic::error(
+                "zero-padding cannot be combined with an alignment or fill",
+                span,
+            )
+            .with_code("E0218")
+            .with_label("write either '06' or '>6', not both"),
+        ));
+    }
+    if spec.zero_pad && spec.width.unwrap_or(0) == 0 {
+        return Err(Box::new(
+            Diagnostic::error("zero-padding requires a non-zero width", span)
+                .with_code("E0218")
+                .with_label("write the field width after the '0', e.g. '06'"),
+        ));
+    }
+    if matches!(spec.kind, Some(FormatKind::Fixed)) && spec.precision.is_none() {
+        return Err(Box::new(
+            Diagnostic::error("'f' requires a precision", span)
+                .with_code("E0218")
+                .with_label("write the number of fractional digits, e.g. '.2f'"),
+        ));
     }
 
     // An alignment with no width aligns inside a field of width zero — it does nothing. That is
     // almost always a typo, so it is refused rather than silently accepted (§16's ruling).
     if spec.align.is_some() && spec.width.is_none() {
-        return Err(Diagnostic::error("alignment requires a width", span)
-            .with_code("E0218")
-            .with_label("write the field width after the alignment, e.g. '>10'"));
+        return Err(Box::new(
+            Diagnostic::error("alignment requires a width", span)
+                .with_code("E0218")
+                .with_label("write the field width after the alignment, e.g. '>10'"),
+        ));
     }
 
     Ok(spec)
@@ -500,7 +594,7 @@ mod tests {
     use super::*;
 
     fn spec(text: &str) -> Result<FormatSpec, String> {
-        parse_format_spec(text, Span::new(0, text.len() as u32)).map_err(|d| d.message)
+        parse_format_spec(text, Span::new(0, text.len() as u32)).map_err(|d| d.message.clone())
     }
 
     fn scan(source: &str) -> Result<Vec<RawSegment>, Vec<String>> {

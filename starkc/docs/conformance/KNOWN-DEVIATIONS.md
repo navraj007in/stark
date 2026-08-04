@@ -4577,3 +4577,26 @@ Two defects, recorded together because the first concealed the second.
   against a retained buffer. That is an arena change, not a formatting change.
 - **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_not_carry_an_escape_sequence`.
 - **Owning gate:** unassigned.
+
+## DEV-174 — `eprint`/`eprintln` took `&str` instead of a `Display` value (RESOLVED, CD-381)
+
+- **Normative expectation:** `06-Standard-Library.md` declares `fn eprint<T: Display>(value: T)` and
+  `fn eprintln<T: Display>(value: T)`, and PRINT-DISPLAY-001 names all four output functions
+  together as "implementation-provided generic functions".
+- **Behaviour before the fix:** `eprintln(s)` with `s: String` was rejected —
+  `[E0001] type mismatch: expected '&str', found 'String'` — while `println(s)` was accepted.
+  `builtin_type` typed the stderr pair with a `&str` parameter and the stdout pair with a fresh
+  inference variable. Nothing else differed: the runtime surface has carried the full stderr display
+  family (`EprintlnInt64`, `EprintBool`, `EprintlnFloat32`, …) since 0.1-A13, and lowering already
+  redirects the display path by channel. **Only the signature lagged.**
+- **User impact:** every `Display` type except `&str` was unprintable to stderr. A diagnostic path —
+  the one place a program most wants to render a value — was the one place it could not.
+- **Security/soundness impact:** none — a refusal.
+- **Discovered by:** WP-FMT-001's correction packet, proving `eprintln(f"...")` in its direct form
+  rather than through `.as_str()`. The original suite tested `.as_str()` only, which is exactly why
+  the gap survived the first pass.
+- **Fix:** the stderr pair is typed like the stdout pair, and both pairs now go through the same
+  deferred `Display` check, so `eprintln` of a type with no `Display` impl is rejected for the same
+  reason `println` is.
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::the_output_family_accepts_an_interpolated_temporary_directly`.
+- **Owning gate:** package/application track, CD-381.
