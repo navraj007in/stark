@@ -4446,6 +4446,64 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// **NAME-SHADOW-001 (DEV-177): a generic parameter may not duplicate another one in scope.**
+    ///
+    /// 04-Semantic-Analysis.md: "Generic parameters may not duplicate another generic parameter or
+    /// an item-level `Self`; a nested item introduces fresh item scopes."
+    ///
+    /// The rule existed and was unenforced, which let `impl<T> W<T> { fn choose<T>(..) }` both
+    /// check and RUN — binding two distinct types to one name in one signature. That is not merely
+    /// untidy: `Ty::Param` identifies a parameter by its `String`, so while duplicates are legal a
+    /// name-keyed substitution environment could bind one concrete type to two different binders,
+    /// and every available tie-break is a guess at semantics the type system does not carry.
+    /// Enforcing the rule is what makes `Ty::Param(String)` unambiguous by construction.
+    ///
+    /// `owners` are the generic lists **normatively in scope** for this declaration — the enclosing
+    /// impl's or trait's, never a lexically enclosing function's. Scope here means INHERITED, not
+    /// nested: Core v1 rejects items inside blocks outright ("items are not allowed inside blocks"),
+    /// so the specification's fresh-item-scope case cannot currently be written, and comparing only
+    /// against inherited owners is what would keep it correct if it ever could be.
+    ///
+    /// A generic named `Self` needs no check here: the parser already refuses it with "expected a
+    /// generic parameter name, found `Self`". Duplicating that as a type check would be a second
+    /// answer to a question already settled.
+    fn check_generic_shadowing(
+        &mut self,
+        generics: &[hir::GenericParam],
+        owners: &[&[hir::GenericParam]],
+        what: &str,
+    ) {
+        let mut seen: Vec<(String, Span)> = Vec::new();
+        for owner in owners {
+            for param in *owner {
+                seen.push((self.text(param.name).to_string(), param.name));
+            }
+        }
+        for param in generics {
+            let name = self.text(param.name).to_string();
+            if let Some((_, first)) = seen.iter().find(|(seen_name, _)| *seen_name == name) {
+                let first = *first;
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "generic parameter '{name}' duplicates another generic parameter in \
+                             scope"
+                        ),
+                        param.name,
+                    )
+                    .with_code("E0204")
+                    .with_label(format!("'{name}' is already declared by {what}"))
+                    .with_related(
+                        self.file.clone(),
+                        first,
+                        format!("'{name}' first declared here"),
+                    ),
+                );
+            }
+            seen.push((name, param.name));
+        }
+    }
+
     fn check_fn_def(&mut self, _item_id: ItemId, def: &hir::FnDef) {
         let sig = &def.sig;
 
@@ -4458,6 +4516,27 @@ impl<'a> TypeChecker<'a> {
         // was invisible until a check needed to ask whether a type parameter satisfied a bound
         // while converting a signature: `fn build<T: Hash + Eq>() -> HashMap<T, Int32>` would then
         // see `T` with no declared bounds at all and reject its own return type.
+        // NAME-SHADOW-001: check BEFORE installing this signature's generics, so the comparison is
+        // against what was already in scope rather than against itself.
+        let impl_owned = self.current_impl_generics.clone().unwrap_or_default();
+        let trait_owned = match self.current_trait_id {
+            Some(trait_id) => match &self.hir.item(trait_id).kind {
+                hir::ItemKind::Trait { generics, .. } => generics.clone(),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        let owner_label = if !impl_owned.is_empty() {
+            "the enclosing impl"
+        } else {
+            "the enclosing trait"
+        };
+        self.check_generic_shadowing(
+            &sig.generics,
+            &[impl_owned.as_slice(), trait_owned.as_slice()],
+            owner_label,
+        );
+
         self.current_fn_generics = Some(sig.generics.clone());
 
         let expected_ret = match sig.ret {
