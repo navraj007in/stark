@@ -8,7 +8,7 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 27 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 28 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
 
 ### Where the compiler actually is
 
@@ -193,7 +193,7 @@ Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](s
 
 ### First-party packages
 
-The repository carries 27 packages written in STARK under [`packages/`](packages/), each with its
+The repository carries 28 packages written in STARK under [`packages/`](packages/), each with its
 own `starkpkg.json`, lock file and test suite, and each exercised by a consumer package that must
 actually *call* the surface it declares.
 
@@ -627,7 +627,7 @@ The following areas are working:
 * compiler-backed language services over LSP (Gate C8, candidate-complete);
 * lock files (`stark.lock`) with SHA-256 content hashing;
 * offline and locked build modes;
-* 27 first-party packages written in STARK, each with a consumer package that calls its declared
+* 28 first-party packages written in STARK, each with a consumer package that calls its declared
   surface;
 * manifest-declared host capabilities backed by native provider crates — clock, filesystem,
   environment, random, TCP/DNS and TLS — with cross-provider ownership transfer and affine host

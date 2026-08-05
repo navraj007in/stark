@@ -78,6 +78,18 @@ pub struct Resolver<'a> {
     options: LanguageOptions,
     current_use_item_vis: Option<ast::Vis>,
     reexport_vis: HashMap<(ModuleId, String), Option<ast::Vis>>,
+    /// **DEV-175.** Each package's DIRECT dependencies, keyed by the package's root module.
+    ///
+    /// The parser attaches a package's dependencies as synthetic module wrappers under that
+    /// package's root, so a dependency alias was only findable from the root's own file --
+    /// `use stark_http_core::Header;` resolved in `main.stark` and not in any sibling module. The
+    /// spec says an unqualified dependency alias starts at that dependency's public root whichever
+    /// module names it, so the alias is recorded once per package here and consulted package-wide.
+    ///
+    /// Keyed by the OWNING package's root rather than looked up in a global package graph, which is
+    /// what keeps a transitive dependency out of reach: `app -> a -> b` registers `b` under `a`'s
+    /// root, so `app` never sees it.
+    dependency_aliases: HashMap<ModuleId, HashMap<String, Res>>,
 }
 
 /// Resolve `ast` in Core-only mode (the Core v1 entry point).
@@ -106,6 +118,7 @@ pub fn resolve_with_options(
         options,
         current_use_item_vis: None,
         reexport_vis: HashMap::new(),
+        dependency_aliases: HashMap::new(),
     };
 
     // Root module
@@ -351,10 +364,19 @@ impl<'a> Resolver<'a> {
                 };
 
                 let is_dep_package = name.lo >= 0x8000_0000;
+                let owner_package_root = self.modules[current_mod_id.0 as usize].package_root;
+                if is_dep_package {
+                    // DEV-175: record the alias against the package that DECLARED the dependency,
+                    // so every module of that package can name it and no other package can.
+                    self.dependency_aliases
+                        .entry(owner_package_root)
+                        .or_default()
+                        .insert(name_str.clone(), Res::Item(hir::ItemId(ast_id.0)));
+                }
                 let package_root = if is_dep_package {
                     sub_mod_id
                 } else {
-                    self.modules[current_mod_id.0 as usize].package_root
+                    owner_package_root
                 };
 
                 let sub_mod_data = ModuleData {
@@ -378,6 +400,21 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// The direct-dependency alias `name` of the package containing `module`, if any.
+    ///
+    /// **Only the containing package's own dependencies.** This reads the alias table at that one
+    /// package root rather than searching the root's items, because searching the items would make
+    /// every ordinary root-level function and type implicitly visible from every child module --
+    /// and the spec is explicit that an unqualified name does not search parent or crate scopes.
+    /// Dependency aliases are the sole exception, so they get their own table.
+    fn dependency_alias(&self, module: ModuleId, name: &str) -> Option<Res> {
+        let package_root = self.modules[module.0 as usize].package_root;
+        self.dependency_aliases
+            .get(&package_root)
+            .and_then(|aliases| aliases.get(name))
+            .copied()
     }
 
     fn check_imports_resolved(&mut self, items: &[ast::ItemId]) {
@@ -808,6 +845,10 @@ impl<'a> Resolver<'a> {
                             if let Some(&res) =
                                 self.modules[start_mod.0 as usize].items.get(name_str)
                             {
+                                resolved = Some(res);
+                            } else if let Some(res) = self.dependency_alias(start_mod, name_str) {
+                                // DEV-175. Deliberately AFTER the current module's own items, so a
+                                // local name shadows a dependency alias rather than the reverse.
                                 resolved = Some(res);
                             } else if let Some(primitive) = resolve_primitive(name_str) {
                                 resolved = Some(Res::Primitive(primitive));

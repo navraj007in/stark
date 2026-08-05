@@ -292,10 +292,10 @@ pub fn synthesize_with_resources(
 /// `IOError`/`ProcessError` in ordinary STARK.
 ///
 /// **An empty vocabulary generates an uninhabited enum**, and that is the point rather than a
-/// degenerate case. `clock` declares no recoverable status, so `enum RawTimeError { }` has no values,
-/// and `Result<UInt64, RawTimeError>`'s `Err` arm is *provably* unreachable — the type system says
-/// what Packet 1 §1.2 says, which is that every nonzero status from that provider is a contract
-/// violation and no package code runs on it.
+/// degenerate case. A capability that declares no recoverable status gets
+/// `enum RawProviderError { }`, and `Result<T, RawProviderError>`'s `Err` arm is *provably*
+/// unreachable — the type system says what Packet 1 §1.2 says, which is that every nonzero status
+/// from that provider is a contract violation and no package code runs on it.
 fn synthesize_error_types(
     signatures: &[DerivedSignature],
     vocabularies: &BTreeMap<String, StatusBinding>,

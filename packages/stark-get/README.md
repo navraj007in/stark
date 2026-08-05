@@ -68,10 +68,12 @@ body is decoded before it is printed, strictly: over-long encodings, surrogates 
 U+10FFFF are rejected rather than widened. A binary response exits `5` and says to use `--output`,
 which writes the exact bytes.
 
-**This package is one file, and that is not a style choice.** A dependency cannot be reached from a
-non-entry file of a package — neither `use stark_http_core::Header;` (E0205) nor the fully-qualified
-`stark_http_core::Header` (E0202) resolves outside `src/main.stark` (DEV-175). Every other package
-in this repo is a single `lib.stark`, so nothing had hit this before.
+**This package is seven modules, and it is the reason DEV-175 was found.** A dependency could not be
+reached from a non-entry file — neither `use stark_http_core::Header;` (E0205) nor the fully
+qualified `stark_http_core::Header` (E0202) resolved outside `src/main.stark` — because the
+resolver never searched the containing package's own dependencies. Every other package in the repo
+is a single `lib.stark`, so nothing had hit it before. Fixed in the resolver by a package-scoped
+dependency-alias table; this package's structure is the closure evidence.
 
 Being capability-backed (`process.args`, `tcp`, `dns`, `tls`, `filesystem`), it builds with
 `stark build` and cannot run under `stark run`: the interpreters have no host access.

@@ -1,0 +1,132 @@
+//! Decoding a response body into text for stdout.
+//!
+//! **Why this exists.** There is no byte-level stdout in the language: `println` takes a `Display`
+//! value, and nothing converts `Vec<UInt8>` to `String`. A response body is bytes from a remote
+//! peer, so printing one means decoding it, and decoding it means being right about UTF-8.
+//!
+//! **The decoder is strict, and that is the point.** The obvious shortcut -- `Char::from_u32(byte)`
+//! per byte -- is Latin-1: it turns every byte above 0x7F into the wrong character and reports
+//! success. So this rejects what UTF-8 rejects: over-long encodings, surrogates, and anything above
+//! U+10FFFF.
+
+/// Why a body could not be decoded. The offset is the byte that made it undecodable, which is what
+/// a caller needs to know to go looking.
+pub enum Utf8Error {
+    UnexpectedContinuation(UInt64),
+    TruncatedSequence(UInt64),
+    InvalidLeadingByte(UInt64),
+    OverlongEncoding(UInt64),
+    SurrogateCodepoint(UInt64),
+    CodepointOutOfRange(UInt64),
+}
+
+pub fn utf8_error_text(error: &Utf8Error) -> String {
+    match *error {
+        Utf8Error::UnexpectedContinuation(_) => {
+            String::from("continuation byte outside a sequence")
+        }
+        Utf8Error::TruncatedSequence(_) => String::from("truncated multi-byte sequence"),
+        Utf8Error::InvalidLeadingByte(_) => String::from("byte cannot begin a sequence"),
+        Utf8Error::OverlongEncoding(_) => String::from("over-long encoding"),
+        Utf8Error::SurrogateCodepoint(_) => String::from("surrogate code point"),
+        Utf8Error::CodepointOutOfRange(_) => String::from("code point above U+10FFFF"),
+    }
+}
+
+/// The byte offset the error was found at. Every variant carries one, so this is total.
+pub fn utf8_error_offset(error: &Utf8Error) -> UInt64 {
+    match *error {
+        Utf8Error::UnexpectedContinuation(at) => at,
+        Utf8Error::TruncatedSequence(at) => at,
+        Utf8Error::InvalidLeadingByte(at) => at,
+        Utf8Error::OverlongEncoding(at) => at,
+        Utf8Error::SurrogateCodepoint(at) => at,
+        Utf8Error::CodepointOutOfRange(at) => at,
+    }
+}
+
+/// Decode a whole body, or say precisely why it is not text.
+///
+/// The leading-byte ranges are written out rather than derived arithmetically because the
+/// exclusions are the substance: `0xC0` and `0xC1` can only ever begin an over-long two-byte
+/// encoding of an ASCII character, and `0xF5` upward can only ever encode above U+10FFFF. Both are
+/// rejected at the leading byte, before any continuation is read.
+pub fn decode(bytes: &[UInt8]) -> Result<String, Utf8Error> {
+    let mut out = String::new();
+    let n = bytes.len();
+    let mut i = 0u64;
+    while i < n {
+        let b0 = bytes[i];
+        if b0 < 0x80u8 {
+            out.push(scalar(b0 as UInt32, i)?);
+            i = i + 1u64;
+        } else if b0 < 0xC2u8 {
+            // 0x80..=0xBF is a continuation with nothing to continue; 0xC0 and 0xC1 are over-long.
+            if b0 < 0xC0u8 {
+                return Err(Utf8Error::UnexpectedContinuation(i));
+            }
+            return Err(Utf8Error::OverlongEncoding(i));
+        } else if b0 < 0xE0u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let value = (b0 - 0xC0u8) as UInt32 * 64u32 + c1;
+            out.push(scalar(value, i)?);
+            i = i + 2u64;
+        } else if b0 < 0xF0u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let c2 = continuation(bytes, i + 2u64, n)?;
+            let value = (b0 - 0xE0u8) as UInt32 * 4096u32 + c1 * 64u32 + c2;
+            if value < 0x800u32 {
+                return Err(Utf8Error::OverlongEncoding(i));
+            }
+            if value >= 0xD800u32 && value <= 0xDFFFu32 {
+                return Err(Utf8Error::SurrogateCodepoint(i));
+            }
+            out.push(scalar(value, i)?);
+            i = i + 3u64;
+        } else if b0 < 0xF5u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let c2 = continuation(bytes, i + 2u64, n)?;
+            let c3 = continuation(bytes, i + 3u64, n)?;
+            let value = (b0 - 0xF0u8) as UInt32 * 262144u32 + c1 * 4096u32 + c2 * 64u32 + c3;
+            if value < 0x10000u32 {
+                return Err(Utf8Error::OverlongEncoding(i));
+            }
+            if value > 0x10FFFFu32 {
+                return Err(Utf8Error::CodepointOutOfRange(i));
+            }
+            out.push(scalar(value, i)?);
+            i = i + 4u64;
+        } else {
+            return Err(Utf8Error::InvalidLeadingByte(i));
+        }
+    }
+    Ok(out)
+}
+
+/// Read one continuation byte, refusing a sequence that runs off the end of the body.
+///
+/// A truncated sequence at the very end of a body is the ordinary case for a response that was cut
+/// short, so it gets its own error rather than being folded into "invalid".
+fn continuation(bytes: &[UInt8], at: UInt64, n: UInt64) -> Result<UInt32, Utf8Error> {
+    if at >= n {
+        return Err(Utf8Error::TruncatedSequence(at));
+    }
+    let byte = bytes[at];
+    if byte < 0x80u8 || byte > 0xBFu8 {
+        return Err(Utf8Error::TruncatedSequence(at));
+    }
+    Ok((byte - 0x80u8) as UInt32)
+}
+
+fn scalar(value: UInt32, at: UInt64) -> Result<Char, Utf8Error> {
+    if value > 0x10FFFFu32 {
+        return Err(Utf8Error::CodepointOutOfRange(at));
+    }
+    if value >= 0xD800u32 && value <= 0xDFFFu32 {
+        return Err(Utf8Error::SurrogateCodepoint(at));
+    }
+    match Char::from_u32(value) {
+        Some(ch) => Ok(ch),
+        None => Err(Utf8Error::InvalidLeadingByte(at)),
+    }
+}

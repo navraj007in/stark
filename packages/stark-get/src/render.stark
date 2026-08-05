@@ -1,0 +1,77 @@
+//! Rendering a response for `--include`, and a request for a diagnostic.
+//!
+//! **`--include` prints what the PEER sent.** What it must never print is what the caller sent: a
+//! request `Authorization` header holds a credential, and no diagnostic in this program echoes a
+//! request header's value.
+
+use super::ascii::equals_ascii_ci;
+
+use stark_http_core::HeaderMap;
+use stark_http_core::HttpResponse;
+
+/// The status line and headers, in the order the peer sent them.
+///
+/// Order is preserved rather than sorted because repeated headers are meaningful -- several
+/// `Set-Cookie` lines are several cookies -- and because a caller diffing this against another
+/// client's output should see the wire order.
+pub fn response_head(response: &stark_http_core::HttpResponse) -> String {
+    let mut out = String::new();
+    out.push_str(f"HTTP/1.1 {response.status} {response.reason.as_str()}\n".as_str());
+    let entries = response.headers.entries.as_slice();
+    let mut i = 0u64;
+    while i < entries.len() {
+        let entry = &entries[i];
+        out.push_str(f"{entry.name.as_str()}: {entry.value.as_str()}\n".as_str());
+        i = i + 1u64;
+    }
+    out
+}
+
+/// A one-line summary of the request, with credential-bearing headers reduced to their names.
+///
+/// **This is why the summary exists rather than a plain dump.** A diagnostic that helpfully echoed
+/// the request would put an `Authorization` bearer token into stderr, and from there into whatever
+/// log or CI transcript captured it. The name is enough to answer "was my header sent"; the value
+/// is never the answer to anything a diagnostic needs to say.
+pub fn redacted_request_summary(url: &str, headers: &[stark_http_core::Header]) -> String {
+    let mut out = String::new();
+    out.push_str(f"GET {url}".as_str());
+    let mut i = 0u64;
+    while i < headers.len() {
+        if i == 0u64 {
+            out.push_str(" with headers ");
+        } else {
+            out.push_str(", ");
+        }
+        out.push_str(headers[i].name.as_str());
+        if header_is_sensitive(headers[i].name.as_str()) {
+            out.push_str(" (value redacted)");
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Whether a header name carries a credential.
+///
+/// The list is short and deliberately errs toward redacting: a header wrongly redacted costs a
+/// caller one guess, and a credential wrongly printed cannot be taken back out of a log.
+pub fn header_is_sensitive(name: &str) -> Bool {
+    equals_ascii_ci(name, "authorization") || equals_ascii_ci(name, "proxy-authorization") || equals_ascii_ci(
+        name,
+        "cookie",
+    ) || equals_ascii_ci(name, "x-api-key")
+}
+
+/// Whether a status is one `--fail-status` should fail on: 4xx and 5xx, and nothing else.
+///
+/// A 3xx is not a failure here. The client follows redirects itself, so a 3xx that reaches this
+/// point is one it declined to follow, and the response is still a real answer.
+pub fn status_is_error(status: UInt16) -> Bool {
+    status >= 400u16 && status < 600u16
+}
+
+/// The number of headers, for a diagnostic that wants to say how much arrived without printing it.
+pub fn header_count_of(map: &stark_http_core::HeaderMap) -> UInt64 {
+    map.entries.len()
+}

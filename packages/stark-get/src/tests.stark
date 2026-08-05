@@ -10,17 +10,17 @@
 //! surrogates, truncation at the very end of the buffer -- because a decoder that accepts those
 //! also passes every "is it rejected" test written against obviously-broken input.
 
-use super::parse_max_body;
-use super::refused_argument;
-use super::scheme_is_supported;
-use super::parse_header_arg;
-use super::HeaderArgError;
-use super::header_is_sensitive;
-use super::redacted_request_summary;
-use super::status_is_error;
-use super::decode;
-use super::utf8_error_offset;
-use super::Utf8Error;
+use super::cli::parse_max_body;
+use super::cli::refused_argument;
+use super::cli::scheme_is_supported;
+use super::headers::parse_header_arg;
+use super::headers::HeaderArgError;
+use super::render::header_is_sensitive;
+use super::render::redacted_request_summary;
+use super::render::status_is_error;
+use super::utf8::decode;
+use super::utf8::utf8_error_offset;
+use super::utf8::Utf8Error;
 
 // --------------------------------------------------------------------------------- the schemes --
 
@@ -211,8 +211,9 @@ fn test_header_argument_rejects_control_characters() {
 
 /// The diagnostic summary must name a credential header without printing it.
 fn test_credentials_are_never_rendered() {
-    // The headers are built through the package's own parser rather than as literals, because
-    // DEV-175 puts `stark_http_core::Header` out of reach from a non-entry file.
+    // Built through the package's own parser rather than as literals: it is the same path a real
+    // `--header` argument takes, so the redaction is proved against headers that actually arrived
+    // that way.
     let mut headers = Vec::new();
     headers.push(parse_header_arg("Authorization: Bearer super-secret-token").unwrap());
     headers.push(parse_header_arg("Accept: application/json").unwrap());

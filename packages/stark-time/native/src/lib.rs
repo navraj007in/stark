@@ -4,11 +4,9 @@
 //! [`provider_metadata`] (dev-only, behind `#[cfg(test)]`: see that module for why), using only
 //! `std::time` -- no third-party crate (§16 "no third-party dependency").
 //!
-//! **Not wired into `stark build`.** The repository has no owner-approved provider
-//! execution/linkage mechanism yet (`../BLOCKERS.md`), so nothing calls these functions from
-//! generated STARK code. This crate exists so the provider implementation, its panic/overflow
-//! handling, and its ABI metadata can be built, unit-tested, and validated against ABI v0.1
-//! independently of that missing seam, per WP-TIME-A's authorized scope.
+//! `stark build` links this crate into provider-backed programs that declare the `clock`
+//! capability. The crate still keeps its provider implementation, panic/overflow handling, and ABI
+//! metadata unit-tested independently of package-level consumers.
 
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};

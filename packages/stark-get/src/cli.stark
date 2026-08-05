@@ -1,0 +1,185 @@
+//! The command line: what is accepted, and what it means.
+//!
+//! **Every option here changes behaviour.** An option that parses and then does nothing is worse
+//! than an absent one, because a script written against it looks correct and silently is not. Two
+//! options are deliberately ABSENT for that reason, and asking for either produces an explanation
+//! rather than "unknown option".
+
+use super::ascii::starts_with_ascii_ci;
+
+use stark_args::flag;
+use stark_args::option;
+use stark_args::repeated_option;
+use stark_args::ArgSpec;
+
+/// 8 MiB. Large enough for the API responses and pages this is meant to fetch, small enough that a
+/// hostile peer cannot exhaust memory before the limit fires.
+pub fn default_max_body() -> UInt64 {
+    8388608u64
+}
+
+pub fn program_name() -> String {
+    String::from("stark-get")
+}
+
+pub fn version_text() -> String {
+    String::from("stark-get 0.1.0")
+}
+
+pub fn specs() -> Vec<stark_args::ArgSpec> {
+    let mut out = Vec::new();
+    out.push(stark_args::flag("help", Some('h'), "help", "print this help and exit"));
+    out.push(stark_args::flag("version", None, "version", "print the version and exit"));
+    out.push(
+        stark_args::repeated_option(
+            "header",
+            Some('H'),
+            "header",
+            "add a request header, 'Name: Value'",
+        ),
+    );
+    out.push(stark_args::option("max-body", None, "max-body", "maximum response body in bytes"));
+    out.push(
+        stark_args::option(
+            "output",
+            Some('o'),
+            "output",
+            "write the body to a file instead of stdout",
+        ),
+    );
+    out.push(stark_args::flag("json", None, "json", "require the body to be valid JSON"));
+    out.push(
+        stark_args::flag("include", Some('i'), "include", "print the status line and headers first"),
+    );
+    out.push(
+        stark_args::flag(
+            "quiet",
+            Some('q'),
+            "quiet",
+            "suppress diagnostics; the exit code still reports",
+        ),
+    );
+    out.push(
+        stark_args::flag("fail-status", None, "fail-status", "exit non-zero on a 4xx or 5xx status"),
+    );
+    out
+}
+
+pub fn help_text() -> String {
+    let mut out = String::new();
+    out.push_str("stark-get 0.1.0 -- fetch a URL over HTTP/1.1 or HTTPS.\n");
+    out.push_str("\n");
+    out.push_str("Usage: stark-get [options] <url>\n");
+    out.push_str("\n");
+    out.push_str("Options:\n");
+    out.push_str("  -h, --help              print this help and exit\n");
+    out.push_str("      --version           print the version and exit\n");
+    out.push_str("  -H, --header <h>        add a request header, 'Name: Value'; repeatable\n");
+    out.push_str("      --max-body <n>      maximum response body in bytes (default 8388608)\n");
+    out.push_str("  -o, --output <path>     write the body to a file instead of stdout\n");
+    out.push_str("      --json              require the body to be valid JSON\n");
+    out.push_str("  -i, --include           print the status line and headers before the body\n");
+    out.push_str("  -q, --quiet             suppress diagnostics; the exit code still reports\n");
+    out.push_str("      --fail-status       exit 9 on a 4xx or 5xx status\n");
+    out.push_str("\n");
+    out.push_str("Only http:// and https:// URLs are accepted.\n");
+    out.push_str("The body goes to stdout; every diagnostic goes to stderr.\n");
+    out.push_str("\n");
+    out.push_str("Exit codes:\n");
+    out.push_str("  0  the exchange completed\n");
+    out.push_str("  2  command-line usage error\n");
+    out.push_str("  3  invalid URL, header, or option value\n");
+    out.push_str("  4  DNS, TCP or TLS failure -- no exchange took place\n");
+    out.push_str("  5  the response was not valid HTTP\n");
+    out.push_str("  6  the body exceeded --max-body\n");
+    out.push_str("  7  --json was given and the body is not valid JSON\n");
+    out.push_str("  8  --output was given and the file could not be written\n");
+    out.push_str("  9  --fail-status was given and the status was 4xx or 5xx\n");
+    out.push_str(" 10  an internal failure\n");
+    out
+}
+
+/// The options this program refuses to have.
+///
+/// `--insecure`/`-k` would disable certificate verification, which is the one thing a TLS client
+/// must not make easy; there is no flag for it because a flag is exactly how it gets used in
+/// anger. `--connect-timeout` is absent for a different reason: `ClientConfig` accepts a connect
+/// timeout and does not currently enforce it (DEV-165), so the option would parse, appear to work,
+/// and do nothing.
+///
+/// Both are named here so the answer is a reason rather than "unknown option '--insecure'", which
+/// reads like a spelling mistake and invites the caller to go looking for the right spelling.
+pub fn rejected_option_text(argument: &str) -> Option<String> {
+    if argument == "--insecure" || argument == "-k" {
+        return Some(
+            String::from("certificate verification cannot be disabled; there is no --insecure"),
+        );
+    }
+    if argument == "--connect-timeout" {
+        return Some(
+            String::from(
+                "--connect-timeout is not offered: the timeout is accepted but not yet enforced (DEV-165), and an option that does nothing is worse than an absent one",
+            ),
+        );
+    }
+    None
+}
+
+/// Scan the raw arguments for a refused option before parsing.
+///
+/// This runs first because the argument parser would report `--insecure` as an unknown option, and
+/// the whole point is to say why it is missing rather than that it is missing.
+pub fn refused_argument(args: &[String]) -> Option<String> {
+    let mut i = 0u64;
+    while i < args.len() {
+        match rejected_option_text(args[i].as_str()) {
+            Some(text) => {
+                return Some(text);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+/// `--max-body` in bytes.
+///
+/// Zero is refused rather than treated as "no limit": a limit of nothing cannot be what anyone
+/// means, and reading it as unlimited would turn a typo into an unbounded read. Overflow is
+/// refused during accumulation, because integer overflow *traps* -- a long digit string would
+/// abort the process rather than produce this error.
+pub fn parse_max_body(text: &str) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return None;
+    }
+    let mut value = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let byte = bytes[i];
+        if byte < 48u8 || byte > 57u8 {
+            return None;
+        }
+        let digit = (byte - 48u8) as UInt64;
+        if value > (18_446_744_073_709_551_615u64 - digit) / 10u64 {
+            return None;
+        }
+        value = value * 10u64 + digit;
+        i = i + 1u64;
+    }
+    if value == 0u64 {
+        return None;
+    }
+    Some(value)
+}
+
+/// Whether the URL is one this program will fetch.
+///
+/// Only `http://` and `https://`. The check is here, before the client sees it, so that a `file://`
+/// or `ftp://` argument is a usage error with a clear message rather than whatever the client's own
+/// URL parser decides to call it.
+pub fn scheme_is_supported(url: &str) -> Bool {
+    starts_with_ascii_ci(url, "http://") || starts_with_ascii_ci(url, "https://")
+}

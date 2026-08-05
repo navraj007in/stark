@@ -13,6 +13,7 @@
       "x86_64-unknown-linux-gnu",
       "x86_64-pc-windows-msvc"
     ],
+    "status": { "1": "TimeError::ClockUnavailable", "2": "TimeError::OutOfRange" },
     "functions": [
       {
         "symbol": "stark_time_monotonic_now_ns",

@@ -3,21 +3,18 @@
 Deterministic duration values and checked duration arithmetic, plus the value types for
 process-local monotonic time and Unix wall-clock time, for STARK Core v1.
 
-## Current status: PARTIAL — WAITING_PROVIDER_EXECUTION
+## Current status: COMPLETE — native provider-backed v0.1
 
-This package's pure logic is complete and tested (40 `stark test` cases). Its native clock
-provider crate (`native/`) is complete and unit-tested (13 `cargo test` cases) but is **not
-wired into any STARK program**: the repository does not yet have an owner-approved mechanism for
-generated STARK code to link against and call a native provider function. See `BLOCKERS.md` for
-the exact blocked requirement and evidence.
+This package's pure logic is complete and tested (42 `stark test` cases). Its native clock
+provider crate (`native/`) is complete and unit-tested (13 `cargo test` cases), and the public
+clock-reading APIs are exercised by `stark-time-consumer` through a native `stark build` binary.
 
 Concretely, this means:
 
 - `Duration`, `Instant`, and `UnixTimestamp` all exist and their non-clock-reading operations
   work today.
-- `Instant::now()`, `UnixTimestamp::now()`, and `Instant::elapsed()` are **not implemented** —
-  they are the three frozen-API members that require a live clock reading through the native
-  provider, and this package must not invent a way to call that provider itself.
+- `Instant::now()`, `UnixTimestamp::now()`, and `Instant::elapsed()` call the native `clock`
+  provider and return `Result<_, TimeError>`.
 
 ## `Duration` vs. `Instant` vs. `UnixTimestamp`
 
@@ -75,11 +72,11 @@ worked table.
 
 ## Provider / native trust disclosure
 
-`Instant::now()` and `UnixTimestamp::now()` (once implemented under a future work package) read
-the host clock through a native Rust provider (`native/`), not through anything expressible in
-pure STARK — Core v1 has no FFI, no raw pointers, and no `unsafe`. The provider crate itself uses
-only `std::time` from the Rust standard library; see `native/README.md` for its exact contract,
-panic-containment policy, and unsafe-boundary audit.
+`Instant::now()` and `UnixTimestamp::now()` read the host clock through a native Rust provider
+(`native/`), not through anything expressible in pure STARK — Core v1 has no FFI, no raw pointers,
+and no `unsafe`. The provider crate itself uses only `std::time` from the Rust standard library;
+see `native/README.md` for its exact contract, panic-containment policy, and unsafe-boundary
+audit.
 
 ## Supported targets
 

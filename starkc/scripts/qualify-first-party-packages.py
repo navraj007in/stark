@@ -69,6 +69,7 @@ class PackageCase:
     # `needs_echo_peer` / `needs_http_peer` are what make the resource category reachable: without
     # a live peer the consumer can only prove the failure path, which is the weaker claim.
     resources: tuple[str, ...] = ()
+    provider_functions: tuple[str, ...] = ()
     resource_consumer: str | None = None
     resource_expected_stdout: str | None = None
     needs_echo_peer: bool = False
@@ -81,10 +82,10 @@ class PackageCase:
     # the interpreter has no provider layer, so `stark run` cannot reach any of it. Such a case
     # sets this, and its execution evidence comes from the resource block instead.
     #
-    # This must not become a way to skip execution. It is only accepted alongside `resources` and a
-    # `resource_consumer`, so an exempt package is executed MORE than an ordinary one -- natively,
-    # against a live peer -- never less. Validated below rather than left to reviewer discipline,
-    # because CD-345 is the record of what an unexecuted gate step costs.
+    # This must not become a way to skip execution. It is only accepted alongside either resources
+    # or provider functions and a `resource_consumer`, so an exempt package is executed MORE than
+    # an ordinary one -- natively -- never less. Validated below rather than left to reviewer
+    # discipline, because CD-345 is the record of what an unexecuted gate step costs.
     interpreter_exempt: bool = False
     # CD-355: public callables that CANNOT be called, mapped to the open defect that blocks them.
     # Not a convenience waiver — the check REFUSES an entry whose item has become callable, so a
@@ -133,6 +134,15 @@ CASES = [
         package="stark-path",
         consumer="stark-path-consumer",
         expected_stdout="/usr/bin/stark.exe\n",
+    ),
+    PackageCase(
+        package="stark-time",
+        consumer="stark-time-consumer",
+        expected_stdout=None,
+        interpreter_exempt=True,
+        provider_functions=("monotonic_now_ns_raw", "unix_now_raw"),
+        resource_consumer="stark-time-consumer",
+        resource_expected_stdout="STARK_TIME_NATIVE_OK\n",
     ),
     # DEV-DISPLAY-DISPATCH's proof workload. `stark-fmt` exists to show that a generic
     # `T: Display` bound is usable by a package author, not only inside the compiler's own tests:
@@ -1128,17 +1138,17 @@ def main() -> int:
         run([str(stark), "fmt", "--check"], package_dir)
         run([str(stark), "check"], consumer_dir)
         if case.interpreter_exempt:
-            if not case.resources or case.resource_consumer is None:
+            if (not case.resources and not case.provider_functions) or case.resource_consumer is None:
                 raise SystemExit(
-                    f"{case.package} sets interpreter_exempt without declaring resources and a "
-                    f"resource_consumer. The exemption is only sound when native execution "
-                    f"replaces the skipped step; on its own it would skip execution outright, "
-                    f"which is the CD-345 hole."
+                    f"{case.package} sets interpreter_exempt without declaring resources or "
+                    f"provider_functions and a resource_consumer. The exemption is only sound "
+                    f"when native execution replaces the skipped step; on its own it would skip "
+                    f"execution outright, which is the CD-345 hole."
                 )
             print(
                 f"  step 5 (`stark run`) skipped for {case.consumer}: every operation in "
                 f"{case.package} requires a provider, and the interpreter has no provider layer. "
-                f"Execution evidence comes from the native resource run below.",
+                f"Execution evidence comes from the native provider run below.",
                 flush=True,
             )
         else:
@@ -1148,6 +1158,34 @@ def main() -> int:
                 consumer_dir / "target" / "stark" / "debug" / f"{case.consumer}{args.exe_suffix}"
             )
             run([str(artifact)], consumer_dir, expected_stdout=case.expected_stdout)
+
+        if case.provider_functions:
+            if case.resource_consumer is None:
+                raise SystemExit(
+                    f"{case.package} declares provider functions {case.provider_functions} but "
+                    f"names no native consumer. A function-shaped provider package must exercise "
+                    f"each capability family natively; `stark run` cannot supply providers."
+                )
+            resource_dir = packages_root / case.resource_consumer
+            if not resource_dir.is_dir():
+                raise SystemExit(
+                    f"{case.package}: native consumer {case.resource_consumer} does not exist"
+                )
+            run([str(stark), "check"], resource_dir)
+            run([str(stark), "fmt", "--check"], resource_dir)
+            run([str(stark), "build", "--no-build-cache", "--verbose"], resource_dir)
+            resource_artifact = (
+                resource_dir
+                / "target"
+                / "stark"
+                / "debug"
+                / f"{case.resource_consumer}{args.exe_suffix}"
+            )
+            run(
+                [str(resource_artifact)],
+                resource_dir,
+                expected_stdout=case.resource_expected_stdout,
+            )
 
         # CD-347: the executed-surface requirement. A package that declares resources must ship a
         # native consumer that acquires, uses and closes each one. `stark run` is deliberately NOT

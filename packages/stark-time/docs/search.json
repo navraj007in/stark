@@ -19,11 +19,17 @@
   {"name":"Duration::as_micros","kind":"method","module":"stark-time","signature":"pub fn as_micros(&self) -> Option<UInt64>","url":"Duration/index.html#as_micros"},
   {"name":"Duration::as_nanos","kind":"method","module":"stark-time","signature":"pub fn as_nanos(&self) -> Option<UInt64>","url":"Duration/index.html#as_nanos"},
   {"name":"Instant","kind":"struct","module":"stark-time","signature":"pub struct Instant","url":"Instant/index.html"},
+  {"name":"Instant::now","kind":"method","module":"stark-time","signature":"pub fn now() -> Result<Instant, TimeError>","url":"Instant/index.html#now"},
   {"name":"Instant::checked_duration_since","kind":"method","module":"stark-time","signature":"pub fn checked_duration_since(&self, earlier: &Instant) -> Option<Duration>","url":"Instant/index.html#checked_duration_since"},
+  {"name":"Instant::elapsed","kind":"method","module":"stark-time","signature":"pub fn elapsed(&self) -> Result<Duration, TimeError>","url":"Instant/index.html#elapsed"},
   {"name":"UnixTimestamp","kind":"struct","module":"stark-time","signature":"pub struct UnixTimestamp","url":"UnixTimestamp/index.html"},
   {"name":"UnixTimestamp::from_unix_seconds","kind":"method","module":"stark-time","signature":"pub fn from_unix_seconds(seconds: Int64) -> UnixTimestamp","url":"UnixTimestamp/index.html#from_unix_seconds"},
+  {"name":"UnixTimestamp::now","kind":"method","module":"stark-time","signature":"pub fn now() -> Result<UnixTimestamp, TimeError>","url":"UnixTimestamp/index.html#now"},
   {"name":"UnixTimestamp::from_unix_millis","kind":"method","module":"stark-time","signature":"pub fn from_unix_millis(milliseconds: Int64) -> UnixTimestamp","url":"UnixTimestamp/index.html#from_unix_millis"},
   {"name":"UnixTimestamp::seconds","kind":"method","module":"stark-time","signature":"pub fn seconds(&self) -> Int64","url":"UnixTimestamp/index.html#seconds"},
   {"name":"UnixTimestamp::subsec_nanos","kind":"method","module":"stark-time","signature":"pub fn subsec_nanos(&self) -> UInt32","url":"UnixTimestamp/index.html#subsec_nanos"},
-  {"name":"UnixTimestamp::to_unix_millis","kind":"method","module":"stark-time","signature":"pub fn to_unix_millis(&self) -> Option<Int64>","url":"UnixTimestamp/index.html#to_unix_millis"}
+  {"name":"UnixTimestamp::to_unix_millis","kind":"method","module":"stark-time","signature":"pub fn to_unix_millis(&self) -> Option<Int64>","url":"UnixTimestamp/index.html#to_unix_millis"},
+  {"name":"duration_seconds","kind":"fn","module":"stark-time","signature":"pub fn duration_seconds(seconds: UInt64) -> Duration","url":"duration_seconds/index.html"},
+  {"name":"duration_millis","kind":"fn","module":"stark-time","signature":"pub fn duration_millis(milliseconds: UInt64) -> Duration","url":"duration_millis/index.html"},
+  {"name":"duration_nanos","kind":"fn","module":"stark-time","signature":"pub fn duration_nanos(nanoseconds: UInt64) -> Duration","url":"duration_nanos/index.html"}
 ]

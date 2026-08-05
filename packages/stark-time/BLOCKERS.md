@@ -1,124 +1,24 @@
-# std-time v0.1 blockers
+# stark-time v0.1 blockers
 
-## Classification
+## Current status
 
-**DISCHARGED 2026-07-29 (CD-219) — was READY_PACKAGE_PROVIDER.**
+No package-local blocker remains for v0.1.
 
-The blocker below is resolved at its own terms. The provider-execution seam it waited on exists
-(WP-C7.8, CE4 disposition CD-198: statically linked, ABI-semantic), and **both** named symbols are
-called from generated STARK code and observed through their output slots — evidence in
-`starkc/tests/c785_time_closeout.rs`, which builds, links this crate unmodified, runs the binary and
-reads the values back.
+The original provider-execution blocker was discharged by the compiler/provider integration track:
+generated STARK binaries can link and call `stark-time-native` through the provider ABI. WP-TIME-B
+then wired that seam into the public STARK package APIs:
 
-**What is NOT discharged**, and is recorded here rather than left to inference: §24.1's note that
-`Instant::now`, `UnixTimestamp::now` and `Instant::elapsed` are not implemented still holds. Those
-are STARK-level package APIs, and no package surface generates provider calls yet. The *seam* is
-proven; the *package API* is not. This crate's own constraint (WP-TIME-A §1.1) is unchanged — it
-still may not invent that surface.
+- `Instant::now() -> Result<Instant, TimeError>`
+- `Instant::elapsed(&self) -> Result<Duration, TimeError>`
+- `UnixTimestamp::now() -> Result<UnixTimestamp, TimeError>`
 
-One defect surfaced while discharging this: the compiler's registry mirrored
-`stark_time_unix_now` with a single output slot when this crate declares two (seconds and
-nanoseconds). The generated call passed one pointer, and this provider's null check aborted rather
-than writing through it — the defensive check earning its place. Metadata validation could not have
-caught it, because a one-slot declaration is internally consistent and simply describes a different
-function; only execution could.
+`stark run` still cannot execute provider-backed programs because the interpreter has no provider
+layer. That is an execution-mode limitation, not a `stark-time` package blocker; the qualified path
+for clock reads is native `stark build` plus the generated binary.
 
-## Repository head
+## Historical note
 
-cf54fb09769e28b966035bb7b67a3c824329369d
-
-## Blocked requirement
-
-Real `extern "C"` provider linkage/invocation: STARK generated code calling
-`stark_time_monotonic_now_ns` / `stark_time_unix_now` through Native Provider ABI v0.1 and
-observing their `ProviderStatus`/output-slot results.
-
-## Evidence
-
-- command: `python3 STARKLANG/tools/build-core-spec.py --check` and reading
-  `STARKLANG/docs/compiler/native-provider-abi-v0.1.md` directly.
-- source: `starkc/src/backend/provider_abi.rs` module doc: "this is compile-time/build-time
-  validation, not a runtime check against an executing provider -- no provider actually executes
-  in the C5 MVP (§10.2's implementation boundary)."
-- expected (for `WP-TIME-A COMPLETE` per §29.1 and full `std-time v0.1 COMPLETE` per §29.2): a
-  documented, owner-approved way for generated Rust (`starkc/src/backend/generated_rust/`) to
-  declare an `extern "C"` symbol for a provider function, link a provider crate into the produced
-  binary, and call it from a MIR body.
-- actual: `COMPILER-STATE.md` (head `cf54fb0`) states, verbatim, under CD-053/CD-054: "No provider
-  executes. §10.2's boundary is unchanged." and "the ABI version stays `0.1` (nothing has shipped
-  or executed against it)." `starkc/src/backend/generated_rust/` has no provider-call code
-  generation; `starkc/src/backend/provider_abi.rs` and `stark-runtime/src/provider_abi.rs`
-  contain only metadata validation and `#[repr(C)]` type definitions, never `extern "C"`
-  declarations, dynamic loading, or a call site.
-- diagnostic: none (this is an absence of a mechanism, not a compiler error).
-- The ABI document's own scope boundary (`native-provider-abi-v0.1.md` lines 19-23, citing
-  `WP-C5-ENTRY.md` §10.2), quoted exactly: "This document specifies the v0.1 ABI shape and ships
-  a compile-time metadata validator plus mock fixtures (§17). It does **not** implement dynamic
-  loading, real `extern "C"` linkage, or any provider actually executing... No C5 exit claim may
-  say providers run natively." `std-time` is the first package to need a real provider, but
-  WP-TIME-A §1.1 explicitly forbids this package from being the one that invents that mechanism.
-
-## §24.1 mandatory provider-execution blocker acknowledgment
-
-- ABI v0.1 metadata validation exists (`starkc/src/backend/provider_abi.rs`, exercised in
-  `stark-time/native/src/lib.rs`'s `provider_metadata_validates_against_abi_v0_1` test).
-- ABI runtime boundary types exist (`stark-runtime/src/provider_abi.rs`: `ProviderStatus`,
-  `RawResourceHandle`, `OwnedResourceHandle`, `BorrowedBuffer(Mut)`).
-- Real linkage/invocation is explicitly deferred in the approved ABI document (quoted above).
-- `std-time` cannot claim native STARK execution until an owner-approved execution seam lands:
-  `Instant::now`, `UnixTimestamp::now`, and `Instant::elapsed` are not implemented, and no test in
-  this package claims they work.
-- No loader/linker/manifest policy was invented: the native crate is a standalone, unlinked Rust
-  library: nothing in `starkc/`, `stark-runtime/`, or any manifest schema was touched to make it
-  reachable from generated code.
-
-## Why this package cannot fix it
-
-Implementing this would require inventing a provider loader, linker contract, manifest schema,
-symbol-discovery mechanism, Cargo integration policy, or generated-code call shape from inside
-this package -- every one of those is explicitly prohibited by WP-TIME-A §1.1, and modifying
-`starkc/src/backend/generated_rust/` (native backend provider-call generation) or
-`starkc/src/backend/provider_abi.rs` / `stark-runtime/src/provider_abi.rs` (provider ABI types or
-rules) is listed as a prohibited modification in WP-TIME-A §7.2. This is compiler-track scope
-(the new Gate C0-C10 governance track, `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`), not
-package scope.
-
-## Existing approved owner
-
-None found. `COMPILER-STATE.md`'s current header (2026-07-24) lists Gate C6's open work
-(WP-C6.2b's remaining findings, C6.2c-e, WP-C6.3 runtime values/collections, C6.4 platform matrix,
-C6.5 differential corpus, C6.6 gate exit) and does not mention provider execution/linkage as a
-scheduled item. CE4 Amendment 1 (approved at revision 3, CD-054) extended the ABI's *type* model
-(the closed `AbiParam` form, the raw/owning handle split, close-function rules) but explicitly did
-not authorize execution: "No provider executes; §10.2's boundary is unchanged."
-
-## Minimum next decision
-
-The owner needs to authorize (or point to an existing, not-yet-discovered authorization for) one
-bounded provider-execution design: how generated Rust links an `extern "C"` provider function
-declared under Native Provider ABI v0.1 into a native STARK binary, and how a MIR body calls it.
-Nothing wider -- not a general FFI mechanism, not dynamic provider discovery, not plugin loading
-(all separately excluded by WP-TIME-A §4.2 and its own §1.1).
-
-## Work completed safely
-
-- `stark-time/starkpkg.json`, `stark-time/src/lib.stark` -- `TimeError`; `Duration` (all §11
-  operations: `zero`, `from_seconds`, `from_millis`, `from_micros`, `from_nanos`, `seconds`,
-  `subsec_nanos`, `is_zero`, `checked_add`, `checked_sub`, `as_millis`, `as_micros`, `as_nanos`);
-  `Instant::checked_duration_since` (pure, §12.3); `UnixTimestamp` (all §13 operations except
-  `now`: `from_unix_seconds`, `from_unix_millis`, `seconds`, `subsec_nanos`, `to_unix_millis`).
-  40 `fn test_*()` functions (§19/§20 corpora), all passing under `stark test`.
-- `stark-time/native/` -- a standalone Rust crate (`stark-time-native`, no third-party
-  dependency) implementing `stark_time_monotonic_now_ns` and `stark_time_unix_now` per §16
-  (panic-contained via `catch_unwind` + abort, guarded overflow checks, output written only on
-  success), plus the exact §15 `ProviderMetadata` declaration, validated against the repository's
-  real `starkc::backend::provider_abi::validate` (a dev-dependency on `starkc`/`stark-runtime`,
-  not linked into the shipped provider). 13 Rust unit tests, all passing under `cargo test`.
-- Intentionally NOT implemented: `Instant::now()`, `UnixTimestamp::now()`, `Instant::elapsed()` --
-  the three frozen-API (§9) members that require the blocked capability above. Their absence is
-  the visible boundary of this blocker; everything else in §9 that does not depend on a live
-  clock reading is implemented.
-
-## Closure status
-
-PARTIAL — WAITING_PROVIDER_EXECUTION
+Before WP-TIME-B, this file recorded a split state: the Rust provider and compiler seam existed,
+but the STARK package still exposed no public clock-reading wrapper. That split is now closed by
+the provider API entries in `starkpkg.json`, the generated raw bindings, and `map_raw_error` in
+`src/lib.stark`.
