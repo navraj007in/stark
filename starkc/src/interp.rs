@@ -420,6 +420,120 @@ enum Value {
     Ordering(std::cmp::Ordering),
 }
 
+/// **The name of a runtime representation, with no payload.** (WP-VALUE-REP-TOTAL, A1.)
+///
+/// A `Value` cannot be named in a diagnostic or a table without either cloning it or printing its
+/// contents, and a representation report must do neither: cloning is what the DEV-121 class is
+/// about, and the contents of a value are never the caller's problem when the *shape* is wrong.
+/// `ValueKind` is the shape alone.
+///
+/// **The enum, its display names and `ALL` are generated from one list**, so they cannot disagree.
+/// A hand-written `ALL` can both duplicate an entry and omit another while keeping its length — a
+/// count assertion passes on that list, which is why the count alone was not enough.
+macro_rules! define_value_kinds {
+    ($($kind:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum ValueKind {
+            $($kind),+
+        }
+
+        impl ValueKind {
+            /// Every kind, in declaration order. Generated, never maintained.
+            pub const ALL: &'static [ValueKind] = &[$(ValueKind::$kind),+];
+
+            /// How the kind is written in a diagnostic — the variant's own name, so a renamed
+            /// variant cannot keep an out-of-date label.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(ValueKind::$kind => stringify!($kind)),+
+                }
+            }
+        }
+    };
+}
+
+define_value_kinds!(
+    Unit,
+    Bool,
+    Int,
+    Float,
+    Char,
+    Str,
+    String,
+    Tuple,
+    Array,
+    Struct,
+    Enum,
+    Vec,
+    Boxed,
+    Option,
+    Result,
+    Range,
+    Slice,
+    Ref,
+    Function,
+    CharsIter,
+    SplitIter,
+    VecIter,
+    HashMap,
+    HashSet,
+    HashMapKeysIter,
+    HashMapValuesIter,
+    HashMapIter,
+    HashSetIter,
+    MapIter,
+    FilterIter,
+    Random,
+    IOError,
+    File,
+    Ordering,
+);
+
+impl Value {
+    /// The value's representation, without its contents.
+    ///
+    /// **No wildcard arm.** See [`ValueKind`] — this match is the forcing function that makes a new
+    /// `Value` variant a compile error until the matrix accounts for it.
+    pub fn kind(&self) -> ValueKind {
+        match self {
+            Value::Unit => ValueKind::Unit,
+            Value::Bool(_) => ValueKind::Bool,
+            Value::Int(_) => ValueKind::Int,
+            Value::Float(_, _) => ValueKind::Float,
+            Value::Char(_) => ValueKind::Char,
+            Value::Str(_) => ValueKind::Str,
+            Value::String(_) => ValueKind::String,
+            Value::Tuple(_) => ValueKind::Tuple,
+            Value::Array(_) => ValueKind::Array,
+            Value::Struct { .. } => ValueKind::Struct,
+            Value::Enum { .. } => ValueKind::Enum,
+            Value::Vec(_) => ValueKind::Vec,
+            Value::Boxed(_) => ValueKind::Boxed,
+            Value::Option(_) => ValueKind::Option,
+            Value::Result(_) => ValueKind::Result,
+            Value::Range { .. } => ValueKind::Range,
+            Value::Slice(_, _, _) => ValueKind::Slice,
+            Value::Ref(_) => ValueKind::Ref,
+            Value::Function(_) => ValueKind::Function,
+            Value::CharsIter(_, _) => ValueKind::CharsIter,
+            Value::SplitIter(_, _) => ValueKind::SplitIter,
+            Value::VecIter(_, _) => ValueKind::VecIter,
+            Value::HashMap(_) => ValueKind::HashMap,
+            Value::HashSet(_) => ValueKind::HashSet,
+            Value::HashMapKeysIter(_, _) => ValueKind::HashMapKeysIter,
+            Value::HashMapValuesIter(_, _) => ValueKind::HashMapValuesIter,
+            Value::HashMapIter(_, _) => ValueKind::HashMapIter,
+            Value::HashSetIter(_, _) => ValueKind::HashSetIter,
+            Value::MapIter(_, _) => ValueKind::MapIter,
+            Value::FilterIter(_, _) => ValueKind::FilterIter,
+            Value::Random(_) => ValueKind::Random,
+            Value::IOError(_) => ValueKind::IOError,
+            Value::File(_) => ValueKind::File,
+            Value::Ordering(_) => ValueKind::Ordering,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct FileResource(Rc<RefCell<Option<std::fs::File>>>);
 
@@ -7516,6 +7630,72 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// **A1: every `Value` variant is named in the representation table, exactly once.**
+    ///
+    /// Three mechanisms, each catching a different way of forgetting:
+    ///
+    /// * `Value::kind()` has no wildcard, so a new `Value` variant is a COMPILE error there. That
+    ///   is the strong guarantee and it needs no test.
+    /// * `ValueKind` and `ALL` are generated from one list by `define_value_kinds!`, so `ALL`
+    ///   cannot drift from the enum at all.
+    /// * `WP-VALUE-REP-TOTAL.md`'s matrix is prose the compiler cannot check. The count is asserted
+    ///   against the number that document states, so adding a kind without adding its row fails.
+    ///
+    /// **Uniqueness is asserted, not just length.** A hand-maintained list that duplicates one
+    /// entry and omits another keeps its length, so a count alone passes on a list that is wrong in
+    /// two places at once. Generation makes that unreachable today; the assertion stays because it
+    /// is what would catch a future hand-written `ALL` if the macro were ever unwound.
+    #[test]
+    fn every_value_variant_is_named_in_the_representation_matrix() {
+        assert_eq!(
+            ValueKind::ALL.len(),
+            34,
+            "WP-VALUE-REP-TOTAL.md §6 documents 34 representations; update the matrix and this \
+             count together, or the table stops describing the interpreter"
+        );
+
+        let unique: std::collections::HashSet<ValueKind> = ValueKind::ALL.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            ValueKind::ALL.len(),
+            "ValueKind::ALL duplicates a kind or omits one"
+        );
+
+        let names: std::collections::HashSet<&str> =
+            ValueKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            ValueKind::ALL.len(),
+            "two kinds render to the same diagnostic name"
+        );
+    }
+
+    /// `kind()` reports the representation and never the contents.
+    ///
+    /// A diagnostic that printed the value would leak program data into compiler output and, worse,
+    /// would need to clone or borrow the value to do it — which is the very behaviour this class of
+    /// check exists to police.
+    #[test]
+    fn a_value_kind_names_the_shape_and_not_the_contents() {
+        assert_eq!(
+            Value::String(String::from("secret")).kind(),
+            ValueKind::String
+        );
+        assert_eq!(Value::Str(String::from("secret")).kind(), ValueKind::Str);
+        assert_eq!(
+            Value::String(String::from("secret")).kind().as_str(),
+            "String"
+        );
+
+        // The pairing DEV-121 is about: identical payloads, different representations, and the
+        // difference is exactly what decides whether passing the value moves it.
+        assert_ne!(
+            Value::Str(String::from("x")).kind(),
+            Value::String(String::from("x")).kind(),
+            "Str and String are structurally identical and semantically opposite"
+        );
     }
 
     /// **A0 (DEV-121): a representation mismatch is a COMPILER DEFECT, not a language trap.**
