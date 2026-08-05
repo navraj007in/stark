@@ -7263,6 +7263,33 @@ impl<'a> Interpreter<'a> {
 
     fn drop_value(&mut self, mut value: Value) -> Result<(), RuntimeError> {
         if let Some(item) = nominal_item(&value) {
+            // **A3c-D: a GENERIC `Drop` implementation is refused, not guessed at.**
+            //
+            // Destruction reaches here with a `Value` and recovers the nominal through
+            // `nominal_item`, so `Wrapper<String>` and `Wrapper<Int32>` are indistinguishable — the
+            // type arguments that selected the impl are gone. Every way of proceeding is a guess:
+            // an empty generic frame, inference from the runtime fields, or scanning impls and
+            // hoping. A destructor is the last place to guess, because running the wrong one or
+            // running one with the wrong parameter bindings corrupts silently.
+            //
+            // Refused BEFORE the body executes, so no side effect happens at all — a partially run
+            // destructor is worse than none. Classified `internal` because it is a limitation of
+            // this engine, not a property of the program: MIR and native retain the arguments and
+            // execute it correctly, so calling it a language trap would tell the differential
+            // harness the program is at fault.
+            //
+            // Recorded rather than repaired (DEV-176's ledger entry): threading a concrete `Ty`
+            // through 44 `drop_value` call sites, or retaining type arguments in `Value`, is
+            // disproportionate to 0 `Drop` impls in the first-party packages and 2 generic-`Drop`
+            // fixtures in the whole corpus. The refusal is the signal to build it when that changes.
+            if self.drop_impl_is_generic(item) {
+                return Err(RuntimeError::internal(
+                    "the HIR oracle cannot execute a generic `Drop` implementation: destruction \
+                     retains no concrete nominal type arguments, so the destructor's generic \
+                     parameters cannot be bound (DEV-176, A3c-D)",
+                    self.hir.item(item).span,
+                ));
+            }
             if let Some(callable) = self.find_drop(item) {
                 let mut frame = Frame::default();
                 // Move the real value into the destructor's `self` binding rather than a clone:
@@ -7395,6 +7422,30 @@ impl<'a> Interpreter<'a> {
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
+    }
+
+    /// Whether the `Drop` implementation selected for `item` declares generic parameters.
+    ///
+    /// Matched the same way `find_drop` matches, so the two cannot disagree about which impl is in
+    /// question — a check that looked at a different impl than the one about to run would be worse
+    /// than no check.
+    fn drop_impl_is_generic(&self, item: ItemId) -> bool {
+        self.hir.items.iter().enumerate().any(|(idx, candidate)| {
+            let hir::ItemKind::Impl {
+                generics,
+                trait_: Some(reference),
+                self_ty,
+                ..
+            } = &candidate.kind
+            else {
+                return false;
+            };
+            let _ = idx;
+            reference.res == Res::CoreTrait(hir::CoreTrait::Drop)
+                && matches!(&self.hir.ty(*self_ty).kind,
+                    hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item)
+                && !generics.is_empty()
+        })
     }
 
     fn find_drop(&self, item: ItemId) -> Option<Callable> {
