@@ -1,0 +1,860 @@
+//! `stark-get` -- fetch a URL over HTTP/1.1 or HTTPS.
+//!
+//! A proving application: it exists to exercise the package stack (`stark-args`, `stark-env`,
+//! `stark-http-client`, `stark-io`, `stark-json`) the way a real program would, end to end, over a
+//! real network.
+//!
+//! **The two rules that shape every branch below.** stdout carries the response body and nothing
+//! else, so a caller can redirect it into a file and get exactly the bytes the peer sent; every
+//! diagnostic goes to stderr. And a transport failure and an HTTP error status are different
+//! things -- a `404` that arrived intact is a completed exchange and exits `0`, unless
+//! `--fail-status` says otherwise.
+
+mod tests;
+
+use stark_args::is_present;
+use stark_args::parse;
+use stark_args::value;
+use stark_args::values;
+use stark_env::args;
+use stark_http_client::default_config;
+use stark_http_client::error_text;
+use stark_http_client::get;
+use stark_http_client::new_client;
+use stark_http_client::send;
+use stark_http_client::HttpError;
+use stark_http_core::append;
+use stark_io::write;
+use stark_io::FileError;
+
+// ---------------------------------------------------------------------------------------------- the command line --
+
+/// 8 MiB. Large enough for the API responses and pages this is meant to fetch, small enough that a
+/// hostile peer cannot exhaust memory before the limit fires.
+pub fn default_max_body() -> UInt64 {
+    8388608u64
+}
+
+pub fn program_name() -> String {
+    String::from("stark-get")
+}
+
+pub fn version_text() -> String {
+    String::from("stark-get 0.1.0")
+}
+
+pub fn specs() -> Vec<stark_args::ArgSpec> {
+    let mut out = Vec::new();
+    out.push(stark_args::flag("help", Some('h'), "help", "print this help and exit"));
+    out.push(stark_args::flag("version", None, "version", "print the version and exit"));
+    out.push(
+        stark_args::repeated_option(
+            "header",
+            Some('H'),
+            "header",
+            "add a request header, 'Name: Value'",
+        ),
+    );
+    out.push(stark_args::option("max-body", None, "max-body", "maximum response body in bytes"));
+    out.push(
+        stark_args::option(
+            "output",
+            Some('o'),
+            "output",
+            "write the body to a file instead of stdout",
+        ),
+    );
+    out.push(stark_args::flag("json", None, "json", "require the body to be valid JSON"));
+    out.push(
+        stark_args::flag("include", Some('i'), "include", "print the status line and headers first"),
+    );
+    out.push(
+        stark_args::flag(
+            "quiet",
+            Some('q'),
+            "quiet",
+            "suppress diagnostics; the exit code still reports",
+        ),
+    );
+    out.push(
+        stark_args::flag("fail-status", None, "fail-status", "exit non-zero on a 4xx or 5xx status"),
+    );
+    out
+}
+
+pub fn help_text() -> String {
+    let mut out = String::new();
+    out.push_str("stark-get 0.1.0 -- fetch a URL over HTTP/1.1 or HTTPS.\n");
+    out.push_str("\n");
+    out.push_str("Usage: stark-get [options] <url>\n");
+    out.push_str("\n");
+    out.push_str("Options:\n");
+    out.push_str("  -h, --help              print this help and exit\n");
+    out.push_str("      --version           print the version and exit\n");
+    out.push_str("  -H, --header <h>        add a request header, 'Name: Value'; repeatable\n");
+    out.push_str("      --max-body <n>      maximum response body in bytes (default 8388608)\n");
+    out.push_str("  -o, --output <path>     write the body to a file instead of stdout\n");
+    out.push_str("      --json              require the body to be valid JSON\n");
+    out.push_str("  -i, --include           print the status line and headers before the body\n");
+    out.push_str("  -q, --quiet             suppress diagnostics; the exit code still reports\n");
+    out.push_str("      --fail-status       exit 9 on a 4xx or 5xx status\n");
+    out.push_str("\n");
+    out.push_str("Only http:// and https:// URLs are accepted.\n");
+    out.push_str("The body goes to stdout; every diagnostic goes to stderr.\n");
+    out.push_str("\n");
+    out.push_str("Exit codes:\n");
+    out.push_str("  0  the exchange completed\n");
+    out.push_str("  2  command-line usage error\n");
+    out.push_str("  3  invalid URL, header, or option value\n");
+    out.push_str("  4  DNS, TCP or TLS failure -- no exchange took place\n");
+    out.push_str("  5  the response was not valid HTTP\n");
+    out.push_str("  6  the body exceeded --max-body\n");
+    out.push_str("  7  --json was given and the body is not valid JSON\n");
+    out.push_str("  8  --output was given and the file could not be written\n");
+    out.push_str("  9  --fail-status was given and the status was 4xx or 5xx\n");
+    out.push_str(" 10  an internal failure\n");
+    out
+}
+
+/// The options this program refuses to have.
+///
+/// `--insecure`/`-k` would disable certificate verification, which is the one thing a TLS client
+/// must not make easy; there is no flag for it because a flag is exactly how it gets used in
+/// anger. `--connect-timeout` is absent for a different reason: `ClientConfig` accepts a connect
+/// timeout and does not currently enforce it (DEV-165), so the option would parse, appear to work,
+/// and do nothing.
+///
+/// Both are named here so the answer is a reason rather than "unknown option '--insecure'", which
+/// reads like a spelling mistake and invites the caller to go looking for the right spelling.
+pub fn rejected_option_text(argument: &str) -> Option<String> {
+    if argument == "--insecure" || argument == "-k" {
+        return Some(
+            String::from("certificate verification cannot be disabled; there is no --insecure"),
+        );
+    }
+    if argument == "--connect-timeout" {
+        return Some(
+            String::from(
+                "--connect-timeout is not offered: the timeout is accepted but not yet enforced (DEV-165), and an option that does nothing is worse than an absent one",
+            ),
+        );
+    }
+    None
+}
+
+/// Scan the raw arguments for a refused option before parsing.
+///
+/// This runs first because the argument parser would report `--insecure` as an unknown option, and
+/// the whole point is to say why it is missing rather than that it is missing.
+pub fn refused_argument(args: &[String]) -> Option<String> {
+    let mut i = 0u64;
+    while i < args.len() {
+        match rejected_option_text(args[i].as_str()) {
+            Some(text) => {
+                return Some(text);
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+/// `--max-body` in bytes.
+///
+/// Zero is refused rather than treated as "no limit": a limit of nothing cannot be what anyone
+/// means, and reading it as unlimited would turn a typo into an unbounded read. Overflow is
+/// refused during accumulation, because integer overflow *traps* -- a long digit string would
+/// abort the process rather than produce this error.
+pub fn parse_max_body(text: &str) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return None;
+    }
+    let mut value = 0u64;
+    let mut i = 0u64;
+    while i < n {
+        let byte = bytes[i];
+        if byte < 48u8 || byte > 57u8 {
+            return None;
+        }
+        let digit = (byte - 48u8) as UInt64;
+        if value > (18_446_744_073_709_551_615u64 - digit) / 10u64 {
+            return None;
+        }
+        value = value * 10u64 + digit;
+        i = i + 1u64;
+    }
+    if value == 0u64 {
+        return None;
+    }
+    Some(value)
+}
+
+/// Whether the URL is one this program will fetch.
+///
+/// Only `http://` and `https://`. The check is here, before the client sees it, so that a `file://`
+/// or `ftp://` argument is a usage error with a clear message rather than whatever the client's own
+/// URL parser decides to call it.
+pub fn scheme_is_supported(url: &str) -> Bool {
+    starts_with_ascii_ci(url, "http://") || starts_with_ascii_ci(url, "https://")
+}
+
+/// Scheme comparison is case-insensitive per RFC 3986, so `HTTP://` is the same scheme. Only ASCII
+/// case is folded, which is all a scheme can contain.
+fn starts_with_ascii_ci(haystack: &str, prefix: &str) -> Bool {
+    let h = haystack.bytes();
+    let p = prefix.bytes();
+    if h.len() < p.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < p.len() {
+        if lower_ascii(h[i]) != lower_ascii(p[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn lower_ascii(byte: UInt8) -> UInt8 {
+    if byte >= 65u8 && byte <= 90u8 {
+        byte + 32u8
+    } else {
+        byte
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------- exit codes --
+
+/// Success.
+pub fn exit_ok() -> Int32 {
+    0
+}
+
+/// Command-line usage or validation error.
+pub fn exit_usage() -> Int32 {
+    2
+}
+
+/// URL or request-construction error, including an invalid `--header`.
+pub fn exit_request() -> Int32 {
+    3
+}
+
+/// DNS, TCP or TLS failure -- the request never completed an exchange.
+pub fn exit_transport() -> Int32 {
+    4
+}
+
+/// HTTP protocol or response-framing failure: bytes arrived, and they were not a valid response.
+pub fn exit_protocol() -> Int32 {
+    5
+}
+
+/// The response body exceeded the configured limit.
+pub fn exit_body_limit() -> Int32 {
+    6
+}
+
+/// `--json` was given and the body is not valid JSON.
+pub fn exit_json() -> Int32 {
+    7
+}
+
+/// `--output` was given and the file could not be created or written.
+pub fn exit_output() -> Int32 {
+    8
+}
+
+/// `--fail-status` was given and the response carried a 4xx or 5xx status.
+pub fn exit_http_status() -> Int32 {
+    9
+}
+
+/// An internal failure that should not happen. Distinct from every other code so it cannot be
+/// mistaken for a condition the program understands.
+pub fn exit_internal() -> Int32 {
+    10
+}
+
+/// Write a diagnostic to stderr, prefixed with the program name.
+///
+/// **Diagnostics go to stderr, always.** stdout carries the response body, and a program piping
+/// `stark-get` into a file must not find an error message mixed into its data.
+pub fn fail(message: &str) {
+    eprintln(f"stark-get: {message}");
+}
+
+// ------------------------------------------------------------------------------------------------- --header args --
+
+/// Why a `--header` argument could not become a header:
+///
+/// * `MissingColon` -- no `:` at all, so the argument is not a header;
+/// * `InvalidName` -- the name was empty, or held a byte a header name may not;
+/// * `InvalidValue` -- the value held a byte a header value may not, which includes CR and LF.
+///
+/// (Written as one comment on the type because DEV-156 evicts a variant's own doc comment to after
+/// the enum, where it documents nothing.)
+pub enum HeaderArgError {
+    MissingColon,
+    InvalidName,
+    InvalidValue,
+}
+
+pub fn header_arg_error_text(error: &HeaderArgError) -> String {
+    match *error {
+        HeaderArgError::MissingColon => {
+            String::from("expected 'Name: Value'")
+        }
+        HeaderArgError::InvalidName => String::from("invalid header name"),
+        HeaderArgError::InvalidValue => String::from("invalid header value"),
+    }
+}
+
+/// Split `Name: Value` and validate both halves.
+///
+/// The split is at the FIRST colon: a value may legitimately contain one (`Host: example.com:8080`,
+/// any absolute URL), so splitting at the last would corrupt those.
+///
+/// Optional whitespace after the colon is stripped, per RFC 7230's `OWS`. Whitespace inside the
+/// name is not: a name with a space is invalid, and trimming it would accept a header the peer
+/// would reject.
+pub fn parse_header_arg(argument: &str) -> Result<stark_http_core::Header, HeaderArgError> {
+    let bytes = argument.bytes();
+    let n = bytes.len();
+    let mut colon = n;
+    let mut i = 0u64;
+    while i < n {
+        if bytes[i] == 58u8 {
+            colon = i;
+            i = n;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    if colon == n {
+        return Err(HeaderArgError::MissingColon);
+    }
+
+    let name = argument.substring(0u64, colon);
+
+    // Strip the optional whitespace after the colon (RFC 7230 `OWS`). Only leading OWS is stripped:
+    // a value's own trailing spaces are its content as far as this program is concerned, and
+    // `stark_http_core::header` is the authority on whether they are legal.
+    let mut value_start = colon + 1u64;
+    let mut scanning = true;
+    while scanning {
+        if value_start >= n {
+            scanning = false;
+        } else {
+            let byte = bytes[value_start];
+            if byte == 32u8 || byte == 9u8 {
+                value_start = value_start + 1u64;
+            } else {
+                scanning = false;
+            }
+        }
+    }
+    let value = argument.substring(value_start, n);
+
+    match stark_http_core::header(name, value) {
+        Ok(entry) => Ok(entry),
+        Err(error) => match error {
+            stark_http_core::HttpError::InvalidHeaderName => Err(HeaderArgError::InvalidName),
+            // `header` returns exactly these two; the rest of `HttpError` belongs to the request
+            // flow and cannot arrive from a header construction.
+            _ => Err(HeaderArgError::InvalidValue),
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------------------- rendering --
+
+/// The status line and headers, in the order the peer sent them.
+///
+/// Order is preserved rather than sorted because repeated headers are meaningful -- several
+/// `Set-Cookie` lines are several cookies -- and because a caller diffing this against another
+/// client's output should see the wire order.
+pub fn response_head(response: &stark_http_core::HttpResponse) -> String {
+    let mut out = String::new();
+    out.push_str(f"HTTP/1.1 {response.status} {response.reason.as_str()}\n".as_str());
+    let entries = response.headers.entries.as_slice();
+    let mut i = 0u64;
+    while i < entries.len() {
+        let entry = &entries[i];
+        out.push_str(f"{entry.name.as_str()}: {entry.value.as_str()}\n".as_str());
+        i = i + 1u64;
+    }
+    out
+}
+
+/// A one-line summary of the request, with credential-bearing headers reduced to their names.
+///
+/// **This is why the summary exists rather than a plain dump.** A diagnostic that helpfully echoed
+/// the request would put an `Authorization` bearer token into stderr, and from there into whatever
+/// log or CI transcript captured it. The name is enough to answer "was my header sent"; the value
+/// is never the answer to anything a diagnostic needs to say.
+pub fn redacted_request_summary(url: &str, headers: &[stark_http_core::Header]) -> String {
+    let mut out = String::new();
+    out.push_str(f"GET {url}".as_str());
+    let mut i = 0u64;
+    while i < headers.len() {
+        if i == 0u64 {
+            out.push_str(" with headers ");
+        } else {
+            out.push_str(", ");
+        }
+        out.push_str(headers[i].name.as_str());
+        if header_is_sensitive(headers[i].name.as_str()) {
+            out.push_str(" (value redacted)");
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Whether a header name carries a credential.
+///
+/// The list is short and deliberately errs toward redacting: a header wrongly redacted costs a
+/// caller one guess, and a credential wrongly printed cannot be taken back out of a log.
+pub fn header_is_sensitive(name: &str) -> Bool {
+    equals_ascii_ci(name, "authorization") || equals_ascii_ci(name, "proxy-authorization") || equals_ascii_ci(
+        name,
+        "cookie",
+    ) || equals_ascii_ci(name, "x-api-key")
+}
+
+/// Header names are case-insensitive (RFC 7230 §3.2), so `AUTHORIZATION` must redact exactly as
+/// `authorization` does. Comparing case-sensitively would leave a trivial bypass.
+fn equals_ascii_ci(left: &str, right: &str) -> Bool {
+    let a = left.bytes();
+    let b = right.bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < a.len() {
+        if lower_ascii(a[i]) != lower_ascii(b[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+/// Whether a status is one `--fail-status` should fail on: 4xx and 5xx, and nothing else.
+///
+/// A 3xx is not a failure here. The client follows redirects itself, so a 3xx that reaches this
+/// point is one it declined to follow, and the response is still a real answer.
+pub fn status_is_error(status: UInt16) -> Bool {
+    status >= 400u16 && status < 600u16
+}
+
+/// The number of headers, for a diagnostic that wants to say how much arrived without printing it.
+pub fn header_count_of(map: &stark_http_core::HeaderMap) -> UInt64 {
+    map.entries.len()
+}
+
+// ----------------------------------------------------------------------------------------------- body decoding --
+
+/// Why a body could not be decoded. The offset is the byte that made it undecodable, which is what
+/// a caller needs to know to go looking.
+pub enum Utf8Error {
+    UnexpectedContinuation(UInt64),
+    TruncatedSequence(UInt64),
+    InvalidLeadingByte(UInt64),
+    OverlongEncoding(UInt64),
+    SurrogateCodepoint(UInt64),
+    CodepointOutOfRange(UInt64),
+}
+
+pub fn utf8_error_text(error: &Utf8Error) -> String {
+    match *error {
+        Utf8Error::UnexpectedContinuation(_) => {
+            String::from("continuation byte outside a sequence")
+        }
+        Utf8Error::TruncatedSequence(_) => String::from("truncated multi-byte sequence"),
+        Utf8Error::InvalidLeadingByte(_) => String::from("byte cannot begin a sequence"),
+        Utf8Error::OverlongEncoding(_) => String::from("over-long encoding"),
+        Utf8Error::SurrogateCodepoint(_) => String::from("surrogate code point"),
+        Utf8Error::CodepointOutOfRange(_) => String::from("code point above U+10FFFF"),
+    }
+}
+
+/// The byte offset the error was found at. Every variant carries one, so this is total.
+pub fn utf8_error_offset(error: &Utf8Error) -> UInt64 {
+    match *error {
+        Utf8Error::UnexpectedContinuation(at) => at,
+        Utf8Error::TruncatedSequence(at) => at,
+        Utf8Error::InvalidLeadingByte(at) => at,
+        Utf8Error::OverlongEncoding(at) => at,
+        Utf8Error::SurrogateCodepoint(at) => at,
+        Utf8Error::CodepointOutOfRange(at) => at,
+    }
+}
+
+/// Decode a whole body, or say precisely why it is not text.
+///
+/// The leading-byte ranges are written out rather than derived arithmetically because the
+/// exclusions are the substance: `0xC0` and `0xC1` can only ever begin an over-long two-byte
+/// encoding of an ASCII character, and `0xF5` upward can only ever encode above U+10FFFF. Both are
+/// rejected at the leading byte, before any continuation is read.
+pub fn decode(bytes: &[UInt8]) -> Result<String, Utf8Error> {
+    let mut out = String::new();
+    let n = bytes.len();
+    let mut i = 0u64;
+    while i < n {
+        let b0 = bytes[i];
+        if b0 < 0x80u8 {
+            out.push(scalar(b0 as UInt32, i)?);
+            i = i + 1u64;
+        } else if b0 < 0xC2u8 {
+            // 0x80..=0xBF is a continuation with nothing to continue; 0xC0 and 0xC1 are over-long.
+            if b0 < 0xC0u8 {
+                return Err(Utf8Error::UnexpectedContinuation(i));
+            }
+            return Err(Utf8Error::OverlongEncoding(i));
+        } else if b0 < 0xE0u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let value = (b0 - 0xC0u8) as UInt32 * 64u32 + c1;
+            out.push(scalar(value, i)?);
+            i = i + 2u64;
+        } else if b0 < 0xF0u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let c2 = continuation(bytes, i + 2u64, n)?;
+            let value = (b0 - 0xE0u8) as UInt32 * 4096u32 + c1 * 64u32 + c2;
+            if value < 0x800u32 {
+                return Err(Utf8Error::OverlongEncoding(i));
+            }
+            if value >= 0xD800u32 && value <= 0xDFFFu32 {
+                return Err(Utf8Error::SurrogateCodepoint(i));
+            }
+            out.push(scalar(value, i)?);
+            i = i + 3u64;
+        } else if b0 < 0xF5u8 {
+            let c1 = continuation(bytes, i + 1u64, n)?;
+            let c2 = continuation(bytes, i + 2u64, n)?;
+            let c3 = continuation(bytes, i + 3u64, n)?;
+            let value = (b0 - 0xF0u8) as UInt32 * 262144u32 + c1 * 4096u32 + c2 * 64u32 + c3;
+            if value < 0x10000u32 {
+                return Err(Utf8Error::OverlongEncoding(i));
+            }
+            if value > 0x10FFFFu32 {
+                return Err(Utf8Error::CodepointOutOfRange(i));
+            }
+            out.push(scalar(value, i)?);
+            i = i + 4u64;
+        } else {
+            return Err(Utf8Error::InvalidLeadingByte(i));
+        }
+    }
+    Ok(out)
+}
+
+/// Read one continuation byte, refusing a sequence that runs off the end of the body.
+///
+/// A truncated sequence at the very end of a body is the ordinary case for a response that was cut
+/// short, so it gets its own error rather than being folded into "invalid".
+fn continuation(bytes: &[UInt8], at: UInt64, n: UInt64) -> Result<UInt32, Utf8Error> {
+    if at >= n {
+        return Err(Utf8Error::TruncatedSequence(at));
+    }
+    let byte = bytes[at];
+    if byte < 0x80u8 || byte > 0xBFu8 {
+        return Err(Utf8Error::TruncatedSequence(at));
+    }
+    Ok((byte - 0x80u8) as UInt32)
+}
+
+fn scalar(value: UInt32, at: UInt64) -> Result<Char, Utf8Error> {
+    if value > 0x10FFFFu32 {
+        return Err(Utf8Error::CodepointOutOfRange(at));
+    }
+    if value >= 0xD800u32 && value <= 0xDFFFu32 {
+        return Err(Utf8Error::SurrogateCodepoint(at));
+    }
+    match Char::from_u32(value) {
+        Some(ch) => Ok(ch),
+        None => Err(Utf8Error::InvalidLeadingByte(at)),
+    }
+}
+
+// -------------------------------------------------------------------------------------------------------- main --
+
+fn main() -> Int32 {
+    let argv: Vec<String>;
+    match args() {
+        Ok(list) => {
+            argv = list;
+        }
+        Err(_) => {
+            fail("could not read the command line");
+            return exit_internal();
+        }
+    }
+
+    // `args()` includes argv[0]; the parser expects only what follows it.
+    let mut rest: Vec<String> = Vec::new();
+    let mut i = 1u64;
+    while i < argv.len() {
+        rest.push(String::from(argv[i].as_str()));
+        i = i + 1u64;
+    }
+
+    run(rest.as_slice())
+}
+
+fn run(arguments: &[String]) -> Int32 {
+    // Refused options are answered before parsing, so `--insecure` gets a reason instead of being
+    // reported as an unrecognised spelling.
+    match refused_argument(arguments) {
+        Some(reason) => {
+            fail(reason.as_str());
+            return exit_usage();
+        }
+        None => {}
+    }
+
+    let parsed: stark_args::ParsedArgs;
+    match parse(specs().as_slice(), arguments) {
+        Ok(result) => {
+            parsed = result;
+        }
+        Err(_) => {
+            fail("invalid arguments; run with --help");
+            return exit_usage();
+        }
+    }
+
+    // `--help` and `--version` are answered before anything is validated, so they work even when
+    // the rest of the command line is wrong -- which is when help is most likely to be wanted.
+    if is_present(&parsed, "help") {
+        print(help_text().as_str());
+        return exit_ok();
+    }
+    if is_present(&parsed, "version") {
+        println(version_text().as_str());
+        return exit_ok();
+    }
+
+    let quiet = is_present(&parsed, "quiet");
+
+    if parsed.positionals.len() == 0u64 {
+        report(quiet, "no URL given; run with --help");
+        return exit_usage();
+    }
+    if parsed.positionals.len() > 1u64 {
+        report(quiet, "more than one URL given; this fetches exactly one");
+        return exit_usage();
+    }
+    let url = String::from(parsed.positionals[0u64].as_str());
+    if !scheme_is_supported(url.as_str()) {
+        report(quiet, "only http:// and https:// URLs are supported");
+        return exit_request();
+    }
+
+    let max_body: UInt64;
+    match value(&parsed, "max-body") {
+        Some(text) => match parse_max_body(text.as_str()) {
+            Some(limit) => {
+                max_body = limit;
+            }
+            None => {
+                report(quiet, "--max-body must be a positive number of bytes");
+                return exit_request();
+            }
+        }
+        None => {
+            max_body = default_max_body();
+        }
+    }
+
+    let mut request = get(url.as_str());
+    let header_args = values(&parsed, "header");
+    let mut h = 0u64;
+    while h < header_args.len() {
+        match parse_header_arg(header_args[h].as_str()) {
+            Ok(entry) => {
+                append(&mut request.headers, entry);
+            }
+            Err(error) => {
+                // The offending header's TEXT is not echoed: a `--header` argument is exactly where
+                // a credential is passed, and a diagnostic that quoted it back would put a bearer
+                // token on stderr. The reason and the position are enough to fix it.
+                let reason = header_arg_error_text(&error);
+                report(quiet, f"--header #{h + 1u64}: {reason.as_str()}".as_str());
+                return exit_request();
+            }
+        }
+        h = h + 1u64;
+    }
+
+    // A default `User-Agent`, unless the caller gave one. Servers do reject requests without it --
+    // api.github.com answers 403 -- so omitting it entirely makes the program look broken against
+    // real peers. It is set AFTER the caller's headers so an explicit `-H "User-Agent: ..."` wins.
+    if !contains_header(&request.headers, "user-agent") {
+        match stark_http_core::header("User-Agent", "stark-get/0.1.0") {
+            Ok(entry) => {
+                append(&mut request.headers, entry);
+            }
+            Err(_) => {
+                report(quiet, "could not set the default User-Agent");
+                return exit_internal();
+            }
+        }
+    }
+
+    let mut config = default_config();
+    config.max_response_bytes = max_body;
+    let client = new_client(config);
+
+    let response: stark_http_core::HttpResponse;
+    match send(&client, request) {
+        Ok(received) => {
+            response = received;
+        }
+        Err(error) => {
+            let text = error_text(&error);
+            report(quiet, text.as_str());
+            return transport_exit(&error);
+        }
+    }
+
+    if is_present(&parsed, "include") {
+        print(response_head(&response).as_str());
+    }
+
+    let body = response.body.as_slice();
+
+    if is_present(&parsed, "json") {
+        match decode(body) {
+            Ok(text) => match stark_json::parse(text.as_str()) {
+                Ok(_) => {}
+                Err(_) => {
+                    report(quiet, "--json was given and the body is not valid JSON");
+                    return exit_json();
+                }
+            }
+            Err(_) => {
+                report(quiet, "--json was given and the body is not valid UTF-8");
+                return exit_json();
+            }
+        }
+    }
+
+    match value(&parsed, "output") {
+        Some(path) => match write(path.as_str(), body) {
+            Ok(_) => {}
+            Err(error) => {
+                // The reason is named rather than swallowed: one message for a read-only directory,
+                // a full disk and a path that is a directory leaves the caller unable to act on any
+                // of them.
+                let reason = file_error_text(&error);
+                report(quiet, f"--output: {reason.as_str()}".as_str());
+                return exit_output();
+            }
+        }
+        None => match decode(body) {
+            Ok(text) => {
+                print(text.as_str());
+            }
+            Err(error) => {
+                // There is no byte-level stdout in the language, so a body that is not text cannot
+                // go there at all. `--output` writes the exact bytes, which is the answer.
+                let reason = utf8_error_text(&error);
+                let at = utf8_error_offset(&error);
+                report(
+                    quiet,
+                    f"the body is not valid UTF-8 at byte {at}: {reason.as_str()}".as_str(),
+                );
+                report(quiet, "use --output to write the exact bytes to a file");
+                return exit_protocol();
+            }
+        }
+    }
+
+    if is_present(&parsed, "fail-status") {
+        if status_is_error(response.status) {
+            report(quiet, f"the peer answered {response.status}".as_str());
+            return exit_http_status();
+        }
+    }
+
+    exit_ok()
+}
+
+/// Which exit code a client error deserves.
+///
+/// The split is by whether an exchange took place: DNS, TCP and TLS failures mean the request never
+/// happened, and are retryable in a way a malformed response is not. The variants are written out
+/// rather than defaulted with a wildcard so that a new `HttpError` variant fails to compile here
+/// instead of silently becoming an internal error.
+fn transport_exit(error: &HttpError) -> Int32 {
+    match *error {
+        HttpError::InvalidUrl => exit_request(),
+        HttpError::UnsupportedScheme => exit_request(),
+        HttpError::InvalidRequest(_) => exit_request(),
+        HttpError::Dns(_) => exit_transport(),
+        HttpError::Network(_) => exit_transport(),
+        HttpError::Tls(_) => exit_transport(),
+        HttpError::NoAddresses => exit_transport(),
+        HttpError::ConnectFailed => exit_transport(),
+        HttpError::TimeoutSetupFailed => exit_transport(),
+        HttpError::Timeout(_) => exit_transport(),
+        HttpError::ClosedEarly => exit_transport(),
+        HttpError::InvalidResponse(_) => exit_protocol(),
+        HttpError::TooManyRedirects => exit_protocol(),
+        HttpError::RedirectLoop => exit_protocol(),
+        HttpError::MissingLocation => exit_protocol(),
+        HttpError::InvalidRedirectTarget => exit_protocol(),
+        HttpError::InsecureRedirect => exit_protocol(),
+        HttpError::AmbiguousLocation => exit_protocol(),
+        HttpError::ResponseTooLarge => exit_body_limit(),
+    }
+}
+
+/// Write a diagnostic unless `--quiet`.
+///
+/// **`--quiet` silences stderr and nothing else.** It does not touch stdout, because stdout is the
+/// data; and it does not touch the exit code, which is what a quiet caller is reading instead.
+fn report(quiet: Bool, message: &str) {
+    if !quiet {
+        fail(message);
+    }
+}
+
+/// Whether the request already carries a header, compared case-insensitively per RFC 7230 §3.2.
+fn contains_header(map: &stark_http_core::HeaderMap, name: &str) -> Bool {
+    let entries = map.entries.as_slice();
+    let mut i = 0u64;
+    while i < entries.len() {
+        if equals_ascii_ci(entries[i].name.as_str(), name) {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// Why an `--output` write failed, in the caller's terms.
+///
+/// Written out variant by variant so a new `FileError` fails to compile here rather than silently
+/// becoming "other".
+fn file_error_text(error: &FileError) -> String {
+    match *error {
+        FileError::NotFound => String::from("the path does not exist"),
+        FileError::PermissionDenied => String::from("permission denied"),
+        FileError::InvalidInput => String::from("the path is not usable"),
+        FileError::InvalidData => String::from("the write could not use that data"),
+        FileError::IsDirectory => String::from("the path is a directory"),
+        FileError::AlreadyExists => String::from("the path already exists"),
+        FileError::Unsupported => String::from("the filesystem does not support this write"),
+        FileError::LimitExceeded => String::from("a filesystem limit was exceeded"),
+        FileError::UnexpectedEof => String::from("the file ended unexpectedly"),
+        FileError::WriteZero => String::from("the write stopped making progress"),
+        FileError::Other => String::from("the write failed"),
+    }
+}
