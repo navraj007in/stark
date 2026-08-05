@@ -61,7 +61,7 @@ These are the ones most often got wrong:
   another engine.
 - **Tooling**: `stark fmt`, `stark test`, `stark doc`, `stark doctor`, `starkc lsp` with a VS Code
   extension, and `starkide`, a terminal IDE.
-- **Packages**: 26 first-party packages under `packages/`, each with a `*-consumer` that must
+- **Packages**: 27 first-party packages under `packages/`, each with a `*-consumer` that must
   actually *call* its declared surface. Includes an HTTP/1.1 and HTTPS client written in STARK
   (HC0–HC13, closed 2026-08-03), TLS, JSON, CSV, URL and the encoding family.
 - **Host access**: capability-declared and provider-backed. A package names `clock`, `filesystem`,

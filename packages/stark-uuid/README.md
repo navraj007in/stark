@@ -10,13 +10,15 @@ Implemented:
 - canonical lowercase formatting;
 - nil UUID;
 - byte construction and byte extraction;
+- UUID v4 construction from caller-provided random bytes;
+- UUID v7 construction from caller-provided Unix milliseconds and random fields;
 - version inspection;
 - variant inspection;
 - nil, equality, and ordering helpers.
 
 Excluded from v0.1:
 
-- UUID generation;
+- provider-backed UUID generation;
 - compact 32-character parsing;
 - braced parsing;
 - URN parsing;

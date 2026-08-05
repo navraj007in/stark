@@ -5,6 +5,7 @@ use super::is_absolute;
 use super::join;
 use super::normalize;
 use super::parent;
+use super::separator;
 use super::stem;
 use super::with_extension;
 use super::PathStyle;
@@ -28,6 +29,15 @@ fn assert_none(value: Option<String>) {
             panic("expected none");
         }
         None => {}
+    }
+}
+
+fn test_separator() {
+    if separator(PathStyle::Unix) != '/' {
+        panic("unix separator mismatch");
+    }
+    if separator(PathStyle::Windows) != '\\' {
+        panic("windows separator mismatch");
     }
 }
 

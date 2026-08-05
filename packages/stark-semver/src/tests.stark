@@ -1,0 +1,107 @@
+use super::compare;
+use super::equals;
+use super::format;
+use super::matches;
+use super::parse;
+use super::SemverError;
+
+fn must_parse(input: &str) -> super::Version {
+    match parse(input) {
+        Ok(version) => version,
+        Err(_) => panic("semver parse failed"),
+    }
+}
+
+fn assert_order(left: &str, right: &str) {
+    let l = must_parse(left);
+    let r = must_parse(right);
+    if compare(&l, &r) != -1i32 {
+        panic("semver order mismatch");
+    }
+}
+
+fn test_parse_and_canonical_format() {
+    let version = must_parse("1.2.3-alpha.1+build.5");
+    if version.major != 1u64 {
+        panic("core version mismatch");
+    }
+    if version.minor != 2u64 {
+        panic("core version mismatch");
+    }
+    if version.patch != 3u64 {
+        panic("core version mismatch");
+    }
+    if version.prerelease.len() != 2u64 {
+        panic("identifier count mismatch");
+    }
+    if version.build.len() != 2u64 {
+        panic("identifier count mismatch");
+    }
+    if format(&version).as_str() != "1.2.3-alpha.1+build.5" {
+        panic("format mismatch");
+    }
+}
+
+fn test_official_precedence_vectors() {
+    assert_order("1.0.0-alpha", "1.0.0-alpha.1");
+    assert_order("1.0.0-alpha.1", "1.0.0-alpha.beta");
+    assert_order("1.0.0-alpha.beta", "1.0.0-beta");
+    assert_order("1.0.0-beta", "1.0.0-beta.2");
+    assert_order("1.0.0-beta.2", "1.0.0-beta.11");
+    assert_order("1.0.0-beta.11", "1.0.0-rc.1");
+    assert_order("1.0.0-rc.1", "1.0.0");
+}
+
+fn test_build_metadata_does_not_affect_precedence() {
+    let a = must_parse("1.0.0+001");
+    let b = must_parse("1.0.0+20130313144700");
+    if compare(&a, &b) != 0i32 {
+        panic("build metadata affected precedence");
+    }
+    if !equals(&a, &b) {
+        panic("semver equality mismatch");
+    }
+}
+
+fn test_invalid_inputs() {
+    match parse("01.2.3") {
+        Err(SemverError::InvalidNumber(_)) => {}
+        _ => panic("leading zero core must fail"),
+    }
+    match parse("1.2.3-01") {
+        Err(SemverError::InvalidIdentifier(_)) => {}
+        _ => panic("leading zero prerelease must fail"),
+    }
+    match parse("1.2") {
+        Err(SemverError::InvalidCore) => {}
+        _ => panic("missing patch must fail"),
+    }
+    match parse("1.2.3-") {
+        Err(SemverError::InvalidIdentifier(_)) => {}
+        _ => panic("empty prerelease must fail"),
+    }
+}
+
+fn test_requirement_matching() {
+    let version = must_parse("1.2.3");
+    match matches(&version, "1.2.3") {
+        Ok(true) => {}
+        _ => panic("exact requirement mismatch"),
+    }
+    match matches(&version, "^1.2.0") {
+        Ok(true) => {}
+        _ => panic("caret requirement mismatch"),
+    }
+    match matches(&version, "~1.2.0") {
+        Ok(true) => {}
+        _ => panic("tilde requirement mismatch"),
+    }
+    match matches(&version, ">=1.0.0,<2.0.0") {
+        Ok(true) => {}
+        _ => panic("comparison set mismatch"),
+    }
+    match matches(&version, ">=2.0.0") {
+        Ok(false) => {}
+        _ => panic("negative comparison mismatch"),
+    }
+}

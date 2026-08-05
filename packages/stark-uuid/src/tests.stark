@@ -7,6 +7,8 @@ use super::is_nil;
 use super::nil;
 use super::parse;
 use super::variant;
+use super::v4_from_random_bytes;
+use super::v7_from_parts;
 use super::version;
 use super::UuidError;
 use super::UuidVariant;
@@ -162,6 +164,68 @@ fn test_version_and_variant() {
         Some(_) => {
             panic("nil uuid version expected none");
         }
+    }
+}
+
+fn test_v4_constructor_sets_version_and_variant_bits() {
+    let uuid = v4_from_random_bytes(
+        [
+            0x00u8,
+            0x11u8,
+            0x22u8,
+            0x33u8,
+            0x44u8,
+            0x55u8,
+            0xffu8,
+            0x77u8,
+            0xffu8,
+            0x99u8,
+            0xaau8,
+            0xbbu8,
+            0xccu8,
+            0xddu8,
+            0xeeu8,
+            0xffu8,
+        ],
+    );
+    if format(&uuid).as_str() != "00112233-4455-4f77-bf99-aabbccddeeff" {
+        panic("uuid v4 constructor format mismatch");
+    }
+    match version(&uuid) {
+        Some(v) => {
+            if v != 4u8 {
+                panic("uuid v4 version mismatch");
+            }
+        }
+        None => panic("uuid v4 version missing"),
+    }
+    match variant(&uuid) {
+        UuidVariant::Rfc4122 => {}
+        _ => panic("uuid v4 variant mismatch"),
+    }
+}
+
+fn test_v7_constructor_orders_by_timestamp_then_random_fields() {
+    let tail: [UInt8; 8] = [0x00u8, 0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8, 0x66u8, 0x77u8];
+    let a = v7_from_parts(0x0000_018f_f4c0_0000u64, 0x0123u16, tail);
+    let b = v7_from_parts(0x0000_018f_f4c0_0001u64, 0x0000u16, tail);
+    if format(&a).as_str() != "018ff4c0-0000-7123-8011-223344556677" {
+        panic("uuid v7 format mismatch");
+    }
+    match version(&a) {
+        Some(v) => {
+            if v != 7u8 {
+                panic("uuid v7 version mismatch");
+            }
+        }
+        None => panic("uuid v7 version missing"),
+    }
+    match variant(&a) {
+        UuidVariant::Rfc4122 => {}
+        _ => panic("uuid v7 variant mismatch"),
+    }
+    if compare(&a, &b) != -1i32 {
+        panic("uuid v7 timestamp ordering mismatch");
     }
 }
 

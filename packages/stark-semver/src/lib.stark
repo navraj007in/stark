@@ -1,0 +1,501 @@
+pub struct Version {
+    pub major: UInt64,
+    pub minor: UInt64,
+    pub patch: UInt64,
+    pub prerelease: Vec<String>,
+    pub build: Vec<String>,
+}
+
+pub enum SemverError {
+    Empty,
+    InvalidCore,
+    InvalidNumber(String),
+    InvalidIdentifier(String),
+    InvalidRequirement(String),
+}
+
+pub fn parse(input: &str) -> Result<Version, SemverError> {
+    if input.len() == 0u64 {
+        return Err(SemverError::Empty);
+    }
+    let plus = find_byte(input, 43u8);
+    let dash = find_byte(input, 45u8);
+    let core_end = min_optional(plus, dash, input.len());
+    let core = input.substring(0u64, core_end);
+    let core_parts = split(core, '.');
+    if core_parts.len() != 3u64 {
+        return Err(SemverError::InvalidCore);
+    }
+    let major = parse_number(core_parts[0u64].as_str())?;
+    let minor = parse_number(core_parts[1u64].as_str())?;
+    let patch = parse_number(core_parts[2u64].as_str())?;
+    let prerelease = parse_prerelease(input, dash, plus)?;
+    let build = parse_build(input, plus)?;
+    Ok(Version { major, minor, patch, prerelease, build })
+}
+
+pub fn format(version: &Version) -> String {
+    let mut out = String::new();
+    out.push_str(u64_to_string(version.major).as_str());
+    out.push('.');
+    out.push_str(u64_to_string(version.minor).as_str());
+    out.push('.');
+    out.push_str(u64_to_string(version.patch).as_str());
+    if version.prerelease.len() > 0u64 {
+        out.push('-');
+        append_joined(&mut out, version.prerelease.as_slice());
+    }
+    if version.build.len() > 0u64 {
+        out.push('+');
+        append_joined(&mut out, version.build.as_slice());
+    }
+    out
+}
+
+pub fn compare(left: &Version, right: &Version) -> Int32 {
+    if left.major < right.major {
+        return -1i32;
+    }
+    if left.major > right.major {
+        return 1i32;
+    }
+    if left.minor < right.minor {
+        return -1i32;
+    }
+    if left.minor > right.minor {
+        return 1i32;
+    }
+    if left.patch < right.patch {
+        return -1i32;
+    }
+    if left.patch > right.patch {
+        return 1i32;
+    }
+    compare_prerelease(left.prerelease.as_slice(), right.prerelease.as_slice())
+}
+
+pub fn equals(left: &Version, right: &Version) -> Bool {
+    compare(left, right) == 0i32
+}
+
+pub fn matches(version: &Version, requirement: &str) -> Result<Bool, SemverError> {
+    if requirement.len() == 0u64 {
+        return Err(SemverError::InvalidRequirement(String::from(requirement)));
+    }
+    let parts = split(requirement, ',');
+    let mut i = 0u64;
+    while i < parts.len() {
+        if !matches_one(version, parts[i].as_str())? {
+            return Ok(false);
+        }
+        i = i + 1u64;
+    }
+    Ok(true)
+}
+
+fn matches_one(version: &Version, requirement: &str) -> Result<Bool, SemverError> {
+    if starts_with(requirement, "^") {
+        let base = parse(requirement.substring(1u64, requirement.len()))?;
+        let upper = caret_upper(&base);
+        Ok(in_range(version, &base, &upper))
+    } else if starts_with(requirement, "~") {
+        let base = parse(requirement.substring(1u64, requirement.len()))?;
+        let upper = Version {
+            major: base.major,
+            minor: base.minor + 1u64,
+            patch: 0u64,
+            prerelease: Vec::new(),
+            build: Vec::new(),
+        };
+        Ok(in_range(version, &base, &upper))
+    } else if starts_with(requirement, ">=") {
+        let base = parse(requirement.substring(2u64, requirement.len()))?;
+        Ok(compare(version, &base) >= 0i32)
+    } else if starts_with(requirement, "<=") {
+        let base = parse(requirement.substring(2u64, requirement.len()))?;
+        Ok(compare(version, &base) <= 0i32)
+    } else if starts_with(requirement, ">") {
+        let base = parse(requirement.substring(1u64, requirement.len()))?;
+        Ok(compare(version, &base) > 0i32)
+    } else if starts_with(requirement, "<") {
+        let base = parse(requirement.substring(1u64, requirement.len()))?;
+        Ok(compare(version, &base) < 0i32)
+    } else if starts_with(requirement, "=") {
+        let base = parse(requirement.substring(1u64, requirement.len()))?;
+        Ok(equals(version, &base))
+    } else {
+        let base = parse(requirement)?;
+        Ok(equals(version, &base))
+    }
+}
+
+fn caret_upper(base: &Version) -> Version {
+    if base.major > 0u64 {
+        Version {
+            major: base.major + 1u64,
+            minor: 0u64,
+            patch: 0u64,
+            prerelease: Vec::new(),
+            build: Vec::new(),
+        }
+    } else if base.minor > 0u64 {
+        Version {
+            major: 0u64,
+            minor: base.minor + 1u64,
+            patch: 0u64,
+            prerelease: Vec::new(),
+            build: Vec::new(),
+        }
+    } else {
+        Version {
+            major: 0u64,
+            minor: 0u64,
+            patch: base.patch + 1u64,
+            prerelease: Vec::new(),
+            build: Vec::new(),
+        }
+    }
+}
+
+fn in_range(version: &Version, lower: &Version, upper: &Version) -> Bool {
+    if compare(version, lower) < 0i32 {
+        false
+    } else {
+        compare(version, upper) < 0i32
+    }
+}
+
+fn parse_prerelease(input: &str, dash: Option<UInt64>, plus: Option<UInt64>) -> Result<Vec<String>, SemverError> {
+    match dash {
+        Some(start) => {
+            let end = match plus {
+                Some(pos) => pos,
+                None => input.len(),
+            };
+            parse_identifiers(input.substring(start + 1u64, end), true)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_build(input: &str, plus: Option<UInt64>) -> Result<Vec<String>, SemverError> {
+    match plus {
+        Some(start) => parse_identifiers(input.substring(start + 1u64, input.len()), false),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_identifiers(input: &str, reject_numeric_leading_zero: Bool) -> Result<Vec<String>, SemverError> {
+    if input.len() == 0u64 {
+        return Err(SemverError::InvalidIdentifier(String::from(input)));
+    }
+    let ids = split(input, '.');
+    let mut i = 0u64;
+    while i < ids.len() {
+        if !identifier_valid(ids[i].as_str(), reject_numeric_leading_zero) {
+            return Err(SemverError::InvalidIdentifier(String::from(ids[i].as_str())));
+        }
+        i = i + 1u64;
+    }
+    Ok(ids)
+}
+
+fn identifier_valid(input: &str, reject_numeric_leading_zero: Bool) -> Bool {
+    if input.len() == 0u64 {
+        return false;
+    }
+    let bytes = input.bytes();
+    let mut numeric = true;
+    let mut i = 0u64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !identifier_byte_valid(b) {
+            return false;
+        }
+        if !is_digit(b) {
+            numeric = false;
+        }
+        i = i + 1u64;
+    }
+    if reject_numeric_leading_zero {
+        if numeric {
+            if bytes.len() > 1u64 {
+                return bytes[0u64] != 48u8;
+            }
+        }
+    }
+    true
+}
+
+fn parse_number(input: &str) -> Result<UInt64, SemverError> {
+    let bytes = input.bytes();
+    if bytes.len() == 0u64 {
+        return Err(SemverError::InvalidNumber(String::from(input)));
+    }
+    if bytes.len() > 1u64 {
+        if bytes[0u64] == 48u8 {
+            return Err(SemverError::InvalidNumber(String::from(input)));
+        }
+    }
+    let mut value = 0u64;
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if !is_digit(bytes[i]) {
+            return Err(SemverError::InvalidNumber(String::from(input)));
+        }
+        let digit = (bytes[i] - 48u8) as UInt64;
+        if value > (18_446_744_073_709_551_615u64 - digit) / 10u64 {
+            return Err(SemverError::InvalidNumber(String::from(input)));
+        }
+        value = value * 10u64 + digit;
+        i = i + 1u64;
+    }
+    Ok(value)
+}
+
+fn compare_prerelease(left: &[String], right: &[String]) -> Int32 {
+    if left.len() == 0u64 {
+        if right.len() == 0u64 {
+            return 0i32;
+        }
+    }
+    if left.len() == 0u64 {
+        return 1i32;
+    }
+    if right.len() == 0u64 {
+        return -1i32;
+    }
+    let mut i = 0u64;
+    while i < left.len() {
+        if i >= right.len() {
+            break;
+        }
+        let c = compare_identifier(left[i].as_str(), right[i].as_str());
+        if c != 0i32 {
+            return c;
+        }
+        i = i + 1u64;
+    }
+    if left.len() < right.len() {
+        -1i32
+    } else if left.len() > right.len() {
+        1i32
+    } else {
+        0i32
+    }
+}
+
+fn compare_identifier(left: &str, right: &str) -> Int32 {
+    let left_numeric = all_digits(left);
+    let right_numeric = all_digits(right);
+    if left_numeric {
+        if !right_numeric {
+            return -1i32;
+        }
+        let l = parse_number(left).unwrap();
+        let r = parse_number(right).unwrap();
+        if l < r {
+            -1i32
+        } else if l > r {
+            1i32
+        } else {
+            0i32
+        }
+    } else if right_numeric {
+        1i32
+    } else {
+        compare_ascii(left, right)
+    }
+}
+
+fn compare_ascii(left: &str, right: &str) -> Int32 {
+    let lb = left.bytes();
+    let rb = right.bytes();
+    let mut i = 0u64;
+    while i < lb.len() {
+        if i >= rb.len() {
+            break;
+        }
+        if lb[i] < rb[i] {
+            return -1i32;
+        }
+        if lb[i] > rb[i] {
+            return 1i32;
+        }
+        i = i + 1u64;
+    }
+    if lb.len() < rb.len() {
+        -1i32
+    } else if lb.len() > rb.len() {
+        1i32
+    } else {
+        0i32
+    }
+}
+
+fn split(input: &str, delimiter: Char) -> Vec<String> {
+    let bytes = input.bytes();
+    let delim = delimiter_byte(delimiter);
+    let mut out = Vec::new();
+    let mut start = 0u64;
+    let mut i = 0u64;
+    while i <= bytes.len() {
+        if i == bytes.len() {
+            out.push(String::from(input.substring(start, i)));
+            start = i + 1u64;
+        } else if bytes[i] == delim {
+            out.push(String::from(input.substring(start, i)));
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+fn append_joined(out: &mut String, parts: &[String]) {
+    let mut i = 0u64;
+    while i < parts.len() {
+        if i > 0u64 {
+            out.push('.');
+        }
+        out.push_str(parts[i].as_str());
+        i = i + 1u64;
+    }
+}
+
+fn u64_to_string(value: UInt64) -> String {
+    if value == 0u64 {
+        return String::from("0");
+    }
+    let mut n = value;
+    let mut digits: Vec<UInt8> = Vec::new();
+    while n > 0u64 {
+        digits.push((n % 10u64) as UInt8);
+        n = n / 10u64;
+    }
+    let mut out = String::new();
+    let mut i = digits.len();
+    while i > 0u64 {
+        i = i - 1u64;
+        out.push(digit_char(digits[i]));
+    }
+    out
+}
+
+fn min_optional(a: Option<UInt64>, b: Option<UInt64>, fallback: UInt64) -> UInt64 {
+    match a {
+        Some(av) => match b {
+            Some(bv) => {
+                if av < bv {
+                    av
+                } else {
+                    bv
+                }
+            }
+            None => av,
+        }
+        None => match b {
+            Some(bv) => bv,
+            None => fallback,
+        }
+    }
+}
+
+fn find_byte(text: &str, byte: UInt8) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == byte {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn starts_with(text: &str, prefix: &str) -> Bool {
+    if text.len() < prefix.len() {
+        return false;
+    }
+    text.substring(0u64, prefix.len()) == prefix
+}
+
+fn all_digits(text: &str) -> Bool {
+    let bytes = text.bytes();
+    if bytes.len() == 0u64 {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if !is_digit(bytes[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn is_digit(byte: UInt8) -> Bool {
+    if byte < 48u8 {
+        false
+    } else {
+        byte <= 57u8
+    }
+}
+
+fn is_alpha(byte: UInt8) -> Bool {
+    if byte >= 65u8 {
+        if byte <= 90u8 {
+            return true;
+        }
+    }
+    if byte >= 97u8 {
+        byte <= 122u8
+    } else {
+        false
+    }
+}
+
+fn identifier_byte_valid(byte: UInt8) -> Bool {
+    if is_digit(byte) {
+        true
+    } else if is_alpha(byte) {
+        true
+    } else {
+        byte == 45u8
+    }
+}
+
+fn delimiter_byte(ch: Char) -> UInt8 {
+    if ch == '.' {
+        46u8
+    } else {
+        44u8
+    }
+}
+
+fn digit_char(nibble: UInt8) -> Char {
+    if nibble == 0u8 {
+        '0'
+    } else if nibble == 1u8 {
+        '1'
+    } else if nibble == 2u8 {
+        '2'
+    } else if nibble == 3u8 {
+        '3'
+    } else if nibble == 4u8 {
+        '4'
+    } else if nibble == 5u8 {
+        '5'
+    } else if nibble == 6u8 {
+        '6'
+    } else if nibble == 7u8 {
+        '7'
+    } else if nibble == 8u8 {
+        '8'
+    } else {
+        '9'
+    }
+}
+
+mod tests;

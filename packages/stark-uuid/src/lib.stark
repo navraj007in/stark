@@ -21,6 +21,32 @@ pub fn from_bytes(bytes: [UInt8; 16]) -> Uuid {
     Uuid { bytes: bytes }
 }
 
+pub fn v4_from_random_bytes(mut bytes: [UInt8; 16]) -> Uuid {
+    bytes[6u64] = bytes[6u64] & 0x0Fu8 | 0x40u8;
+    bytes[8u64] = bytes[8u64] & 0x3Fu8 | 0x80u8;
+    Uuid { bytes: bytes }
+}
+
+pub fn v7_from_parts(unix_millis: UInt64, rand_a: UInt16, random_tail: [UInt8; 8]) -> Uuid {
+    let timestamp = unix_millis & 0x0000_FFFF_FFFF_FFFFu64;
+    let mut bytes: [UInt8; 16] = [0u8; 16];
+    bytes[0u64] = (timestamp >> 40u64 & 0xFFu64) as UInt8;
+    bytes[1u64] = (timestamp >> 32u64 & 0xFFu64) as UInt8;
+    bytes[2u64] = (timestamp >> 24u64 & 0xFFu64) as UInt8;
+    bytes[3u64] = (timestamp >> 16u64 & 0xFFu64) as UInt8;
+    bytes[4u64] = (timestamp >> 8u64 & 0xFFu64) as UInt8;
+    bytes[5u64] = (timestamp & 0xFFu64) as UInt8;
+    bytes[6u64] = 0x70u8 | (rand_a >> 8u16 & 0x0Fu16) as UInt8;
+    bytes[7u64] = (rand_a & 0xFFu16) as UInt8;
+    bytes[8u64] = random_tail[0u64] & 0x3Fu8 | 0x80u8;
+    let mut i = 1u64;
+    while i < 8u64 {
+        bytes[8u64 + i] = random_tail[i];
+        i = i + 1u64;
+    }
+    Uuid { bytes: bytes }
+}
+
 pub fn as_bytes(uuid: &Uuid) -> [UInt8; 16] {
     uuid.bytes
 }

@@ -124,6 +124,16 @@ CASES = [
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",
     ),
+    PackageCase(
+        package="stark-semver",
+        consumer="stark-semver-consumer",
+        expected_stdout="1.2.3-alpha.1+build.5\n",
+    ),
+    PackageCase(
+        package="stark-path",
+        consumer="stark-path-consumer",
+        expected_stdout="/usr/bin/stark.exe\n",
+    ),
     # DEV-DISPLAY-DISPATCH's proof workload. `stark-fmt` exists to show that a generic
     # `T: Display` bound is usable by a package author, not only inside the compiler's own tests:
     # `Line::value` is an ordinary generic method whose only tool is `Display::fmt`. The expected
