@@ -10723,6 +10723,16 @@ fn dtype_from_primitive(p: Primitive) -> Option<DType> {
     })
 }
 
+/// Whether `ty` is `Copy`, given the set of `Copy`-eligible nominals.
+///
+/// **Published for WP-VALUE-REP-TOTAL A2.** The representation relation permits `&T` to be
+/// represented by a bare `T` only when the POINTEE is `Copy`, and that must be the same answer the
+/// checker uses — a second Copy predicate in the interpreter would be a second definition of move
+/// behaviour, which is the disagreement WP-COPY-CANON exists to prevent.
+pub fn is_copy_type_with(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
+    is_copy_with_impls(ty, copy_types)
+}
+
 fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
     match ty {
         Ty::Primitive(primitive) => is_copy_primitive(*primitive),

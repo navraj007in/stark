@@ -119,6 +119,14 @@ and the repair belongs at the producer.
 | `Float64` | `Float` | width is `F64` | |
 | `Char` | `Char` | — | |
 | `String` (owned) | `String` | — | must never be `Str`: an owned value represented as a view would not move when moved |
+| `Float16`, `BFloat16` | **none** | — | `tensor` extension element types (D3); not executable in Core v1 |
+
+**Owned `String` has two spellings**, and A2's exhaustive match is what surfaced it: the resolver
+maps the source name `String` to `Ty::Primitive(Primitive::String)`, while
+`Ty::Core(CoreType::String, _)` also occurs in the type system. Both denote the same owned type and
+both permit exactly `Value::String`. Handling only the `Core` spelling would have left every
+ordinary `String` binding silently unvalidated — the precise failure this package exists to
+prevent, caught by the compiler rather than by a differential.
 | `str` standalone | **none** | — | unsized; a bare `str` value is an internal defect. Legal only behind a reference — see 6.4 |
 
 #### 6.2.1 Representation is not numeric domain
@@ -215,7 +223,7 @@ Reaching a boundary with any of these is an internal compiler defect, reported a
 | `Error` | a type error reached runtime |
 | `Param(_)` unsubstituted | the generic frame did not cover this parameter — the failure mode `concrete_runtime_ty` exists to catch |
 | `Slice(_)` standalone | unsized; only `&[T]` is a value |
-| `Extension(_)`, `Tensor(_)`, `Model(_)`, `ModelError` | not executable in Core v1; reaching the oracle means extension gating failed |
+| `Extension(_)` | not executable in Core v1; reaching the oracle means extension gating failed. Tensor, model and model-error types live *inside* this variant rather than beside it — `Ty` has no separate `Tensor`/`Model`/`ModelError` arm |
 
 ### 6.7 Variant coverage
 

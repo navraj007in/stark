@@ -534,6 +534,47 @@ impl Value {
     }
 }
 
+/// Where a value crossed into typed storage. (WP-VALUE-REP-TOTAL, A2.)
+///
+/// Named rather than a `&str` so a boundary cannot be misspelled at a call site, and so adding a
+/// boundary in A4 is a deliberate edit here rather than a new string literal. It appears in the
+/// diagnostic because "expected `&[UInt8]`, found owned `Vec`" is far cheaper to act on when it
+/// also says whether that happened at a parameter or a return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepBoundary {
+    LetBinding,
+    Parameter,
+    Receiver,
+    Return,
+    Propagation,
+    MatchBinding,
+    LoopBinding,
+    Assignment,
+    FieldWrite,
+    ElementWrite,
+    AggregateField,
+}
+
+impl RepBoundary {
+    /// How the boundary reads in a diagnostic, as a noun phrase that completes
+    /// "representation mismatch at ...".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepBoundary::LetBinding => "a let binding",
+            RepBoundary::Parameter => "a function parameter",
+            RepBoundary::Receiver => "a method receiver",
+            RepBoundary::Return => "a function return",
+            RepBoundary::Propagation => "a propagated return",
+            RepBoundary::MatchBinding => "a match binding",
+            RepBoundary::LoopBinding => "a loop binding",
+            RepBoundary::Assignment => "an assignment",
+            RepBoundary::FieldWrite => "a field write",
+            RepBoundary::ElementWrite => "an element write",
+            RepBoundary::AggregateField => "an aggregate field",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct FileResource(Rc<RefCell<Option<std::fs::File>>>);
 
@@ -1725,6 +1766,245 @@ impl<'a> Interpreter<'a> {
             hir::StmtKind::Item(_) => Ok(Flow::Value(Value::Unit)),
             hir::StmtKind::Error => Err(RuntimeError::new("invalid statement", stmt.span)),
         }
+    }
+
+    /// **The one entry point every boundary uses.** (WP-VALUE-REP-TOTAL, A2 §7.)
+    ///
+    /// Normalises `expected` against the active instantiation, then asks the relation. A refusal is
+    /// `FailureClass::InternalInvariant` — a compiler defect, never a language trap and never a
+    /// user type error — so the differential harness fails loudly rather than accepting an oracle
+    /// bug as a program outcome and pressuring MIR and native into reproducing it.
+    ///
+    /// **The diagnostic names the shape and never the contents.** Printing the value would leak
+    /// program data into compiler output, and describing it would mean cloning or borrowing it,
+    /// which is the behaviour this class of check exists to police.
+    ///
+    /// Wired to no boundary yet: A4 does that. At A2 this is reachable only from tests, which is
+    /// deliberate — the relation is provable before it is enforced.
+    fn check_value_for_ty(
+        &self,
+        expected: &Ty,
+        value: &Value,
+        span: Span,
+        boundary: RepBoundary,
+    ) -> Result<(), RuntimeError> {
+        let concrete = self.concrete_runtime_ty(expected, span)?;
+        if self.value_matches_ty(&concrete, value) {
+            return Ok(());
+        }
+        Err(RuntimeError::internal(
+            format!(
+                "DEV-121 representation mismatch at {}: expected `{concrete:?}`, found `{}`",
+                boundary.as_str(),
+                value.kind().as_str()
+            ),
+            span,
+        ))
+    }
+
+    /// [`check_value_for_ty`] against a local's declared type.
+    ///
+    /// A local with no recorded type is not an error here: the tables do not type every internal
+    /// local the interpreter creates, and inventing a type to check against would be worse than
+    /// checking nothing. A6's producer inventory is what closes that gap, by finding the producers
+    /// rather than by guessing at the consumers.
+    #[allow(dead_code)]
+    fn check_local_value(
+        &self,
+        local: LocalId,
+        value: &Value,
+        span: Span,
+        boundary: RepBoundary,
+    ) -> Result<(), RuntimeError> {
+        let Some(ty) = self.tables.local_types.get(&local) else {
+            return Ok(());
+        };
+        self.check_value_for_ty(&ty.clone(), value, span, boundary)
+    }
+
+    /// The relation of WP-VALUE-REP-TOTAL §6, as executable code.
+    ///
+    /// **Returns whether the pairing is PERMITTED. It never converts.** A validator that turned a
+    /// `String` into a `Str`, a `Vec` into a `Slice`, or dereferenced a `Ref` to make a check pass
+    /// would destroy the evidence it exists to expose; the repair belongs at the producer.
+    ///
+    /// The `Ty` match is exhaustive with no permissive wildcard. Where a type admits more than one
+    /// representation the alternatives are named individually, so "permitted" is always a closed
+    /// set and never an absence of opinion.
+    fn value_matches_ty(&self, expected: &Ty, value: &Value) -> bool {
+        use crate::ast::Primitive;
+        let kind = value.kind();
+        match expected {
+            // ---------------------------------------------------------------- §6.2 scalars/text --
+            Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
+            Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
+            Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
+            // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
+            // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
+            Ty::Primitive(
+                Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64,
+            ) => kind == ValueKind::Int,
+            // `Value::Float` DOES carry a width, so it is checked: this examines information the
+            // model genuinely possesses.
+            Ty::Primitive(Primitive::Float32) => {
+                matches!(value, Value::Float(_, FloatWidth::F32))
+            }
+            Ty::Primitive(Primitive::Float64) => {
+                matches!(value, Value::Float(_, FloatWidth::F64))
+            }
+            // **Owned `String` has two spellings in the type system**, found by this match refusing
+            // to compile without both: the resolver maps the name `String` to
+            // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
+            // Both are the same owned type and both must permit exactly `Value::String`; covering
+            // only the `Core` one would have left every `String` binding unvalidated.
+            Ty::Primitive(Primitive::String) => kind == ValueKind::String,
+            // An unsized `str` is never a standalone value — only `&str` is (§6.6).
+            Ty::Primitive(Primitive::Str) => false,
+            // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
+            // boundary with one means extension gating failed.
+            Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
+
+            // ------------------------------------------------------------------ §6.4 references --
+            Ty::Ref { mutable: true, .. } => kind == ValueKind::Ref,
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } => self.shared_ref_matches(inner, value),
+
+            // --------------------------------------------------- §6.3 owned aggregates/collections --
+            Ty::Tuple(elements) => match value {
+                Value::Tuple(slots) => slots.len() == elements.len(),
+                _ => false,
+            },
+            Ty::Array(_, len) => match value {
+                Value::Array(slots) => slots.len() as u64 == *len,
+                _ => false,
+            },
+            Ty::Struct(item, _) => match value {
+                Value::Struct { item: actual, .. } => actual == item,
+                _ => false,
+            },
+            Ty::Enum(item, _) => match value {
+                Value::Enum { item: actual, .. } => actual == item,
+                _ => false,
+            },
+            Ty::Core(core, _) => Self::core_ty_matches(*core, kind),
+            Ty::Range(_) => kind == ValueKind::Range,
+            Ty::Fn { .. } => kind == ValueKind::Function,
+
+            // -------------------------------------------------------- §6.6 never at a boundary --
+            // Listed individually rather than folded into a `_` arm: each is a distinct compiler
+            // defect, and a wildcard here would also swallow any `Ty` variant added later.
+            Ty::Slice(_) => false,
+            Ty::Never => false,
+            Ty::Param(_) => false,
+            Ty::Infer(_) => false,
+            Ty::Error => false,
+            // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
+            // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
+            // one means extension gating failed.
+            Ty::Extension(_) => false,
+        }
+    }
+
+    /// `&T` for shared `T` — the multi-valued row, and the one that has to be a rule rather than a
+    /// list (§6.4, §6.8).
+    fn shared_ref_matches(&self, inner: &Ty, value: &Value) -> bool {
+        use crate::ast::Primitive;
+        let kind = value.kind();
+
+        // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
+        // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
+        // storage.
+        if matches!(inner, Ty::Primitive(Primitive::Str)) {
+            return kind == ValueKind::Str || kind == ValueKind::Ref;
+        }
+
+        // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
+        // one; `Vec`/`Array` immediately is the owned-storage error again.
+        if matches!(inner, Ty::Slice(_)) {
+            return kind == ValueKind::Slice || kind == ValueKind::Ref;
+        }
+
+        if kind == ValueKind::Ref {
+            return true;
+        }
+
+        // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
+        // cannot consume, invalidate or destroy the referent, so the two representations are
+        // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
+        // for convenience.
+        self.pointee_is_copy(inner) && self.value_matches_ty(inner, value)
+    }
+
+    /// §6.5. One representation each, named individually — a "these are all iterators" row would be
+    /// a wildcard.
+    fn core_ty_matches(core: hir::CoreType, kind: ValueKind) -> bool {
+        use hir::CoreType;
+        match core {
+            CoreType::String => kind == ValueKind::String,
+            CoreType::Vec => kind == ValueKind::Vec,
+            CoreType::Box => kind == ValueKind::Boxed,
+            CoreType::Option => kind == ValueKind::Option,
+            CoreType::Result => kind == ValueKind::Result,
+            CoreType::Range | CoreType::RangeInclusive => kind == ValueKind::Range,
+            CoreType::CharsIter => kind == ValueKind::CharsIter,
+            CoreType::SplitIter => kind == ValueKind::SplitIter,
+            CoreType::VecIter => kind == ValueKind::VecIter,
+            CoreType::HashMap => kind == ValueKind::HashMap,
+            CoreType::HashSet => kind == ValueKind::HashSet,
+            CoreType::KeysIter => kind == ValueKind::HashMapKeysIter,
+            CoreType::ValuesIter => kind == ValueKind::HashMapValuesIter,
+            // One core type serves both containers; the pair is closed and both are named.
+            CoreType::Iter => kind == ValueKind::HashMapIter || kind == ValueKind::HashSetIter,
+            CoreType::MapIter => kind == ValueKind::MapIter,
+            CoreType::FilterIter => kind == ValueKind::FilterIter,
+            CoreType::Random => kind == ValueKind::Random,
+            CoreType::IOError => kind == ValueKind::IOError,
+            CoreType::File => kind == ValueKind::File,
+            CoreType::Ordering => kind == ValueKind::Ordering,
+        }
+    }
+
+    /// Normalise `ty` against the active generic instantiation, or refuse.
+    ///
+    /// **A2 (WP-VALUE-REP-TOTAL §8).** Validation is meaningless against a type that still contains
+    /// a parameter: `T` permits every representation, so a relation asked about `T` can only answer
+    /// "yes". Refusing is the point — an unsubstituted parameter reaching a value boundary means
+    /// the instantiation frame did not cover it, which is a compiler defect and not a program
+    /// outcome.
+    ///
+    /// It reuses `typecheck::substitute_ty` and `ty_contains_param` rather than walking types
+    /// again here, because a second substitution algorithm is a second answer to what a generic
+    /// instantiation means.
+    fn concrete_runtime_ty(&self, ty: &Ty, span: Span) -> Result<Ty, RuntimeError> {
+        let concrete = match self.generic_frames.borrow().last() {
+            Some(map) => crate::typecheck::substitute_ty(ty, map),
+            None => ty.clone(),
+        };
+        if crate::typecheck::ty_contains_param(&concrete) {
+            return Err(RuntimeError::internal(
+                format!(
+                    "DEV-121: `{concrete:?}` still contains an unsubstituted generic parameter at a \
+                     value boundary — the active instantiation did not cover it"
+                ),
+                span,
+            ));
+        }
+        Ok(concrete)
+    }
+
+    /// Whether the pointee of a shared reference is `Copy`, which is what licenses the bare-value
+    /// representation. Answered by the CHECKER's predicate, never by a second one here.
+    fn pointee_is_copy(&self, ty: &Ty) -> bool {
+        crate::typecheck::is_copy_type_with(ty, &self.copy_items)
     }
 
     /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
@@ -7630,6 +7910,286 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    // ------------------------------------------------ WP-VALUE-REP-TOTAL A2: the relation --
+
+    /// An interpreter over a trivial program, for exercising the relation directly.
+    ///
+    /// The relation is a pure function of a type and a value, so it does not need a running
+    /// program — but it DOES need the `Copy` set, which is computed from the HIR, so a real
+    /// interpreter is cheaper than faking one.
+    fn relation_probe(source: &str) -> (Hir, Arc<SourceFile>, TypeTables) {
+        let file = Arc::new(SourceFile::new("test.stark", source));
+        let (ast, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&ast, file.clone());
+        let tables = typecheck::analyze(&hir, file.clone()).tables;
+        (hir, file, tables)
+    }
+
+    /// A place standing for "somewhere in the frame". The relation only ever asks a value's SHAPE,
+    /// so where the place points is irrelevant here — and constructing one this way keeps the tests
+    /// from depending on frame layout.
+    fn probe_place() -> Place {
+        Place {
+            frame: 0,
+            local: LocalId(0),
+            projections: Vec::new(),
+        }
+    }
+
+    fn str_ref() -> Ty {
+        Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Str)),
+        }
+    }
+
+    fn byte_slice_ref() -> Ty {
+        Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(
+                crate::ast::Primitive::UInt8,
+            )))),
+        }
+    }
+
+    /// **The DEV-121 pairing, both directions.** `&str` may be a detached view or a reference to
+    /// text; it may NOT be owned storage. That last row is the whole defect class: the static type
+    /// says borrowed while runtime move behaviour sees owned storage, so passing it consumes what
+    /// it only borrows.
+    #[test]
+    fn a_borrowed_text_type_permits_a_view_and_refuses_owned_storage() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        assert!(interp.value_matches_ty(&str_ref(), &Value::Str(String::from("x"))));
+        assert!(interp.value_matches_ty(&str_ref(), &Value::Ref(probe_place())));
+        assert!(
+            !interp.value_matches_ty(&str_ref(), &Value::String(String::from("x"))),
+            "an owned String behind `&str` is the DEV-121 ownership error"
+        );
+    }
+
+    /// The same shape for slices, which is the pairing INV-VALUE-REP-001 already rejected at `let`.
+    #[test]
+    fn a_borrowed_slice_permits_a_view_and_refuses_owned_storage() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        assert!(interp.value_matches_ty(&byte_slice_ref(), &Value::Slice(probe_place(), 0, 0)));
+        assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Vec(Vec::new())));
+        assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Array(Vec::new())));
+    }
+
+    /// **The Copy-pointee rule, stated as a predicate rather than an exception list.**
+    ///
+    /// `&Int32` may be the bare scalar, because copying a Copy pointee cannot consume, invalidate
+    /// or destroy the referent — the two representations are indistinguishable to anything the
+    /// oracle can observe. `&String` may not, because flattening it would copy a non-Copy value,
+    /// which is precisely a move-semantics violation.
+    #[test]
+    fn a_shared_reference_flattens_only_when_the_pointee_is_copy() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let int_ref = Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Int32)),
+        };
+        assert!(interp.value_matches_ty(&int_ref, &Value::Int(1)));
+        assert!(interp.value_matches_ty(&int_ref, &Value::Ref(probe_place())));
+
+        let string_ref = Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::String)),
+        };
+        assert!(interp.value_matches_ty(&string_ref, &Value::Ref(probe_place())));
+        assert!(
+            !interp.value_matches_ty(&string_ref, &Value::String(String::new())),
+            "flattening a non-Copy pointee would copy a value that must move"
+        );
+    }
+
+    /// A mutable reference is never flattened, whatever the pointee. A `&mut Int32` that is a bare
+    /// scalar cannot write through, and `take(&mut v)` needs the place itself.
+    #[test]
+    fn a_mutable_reference_is_never_flattened_even_for_a_copy_pointee() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let mut_int = Ty::Ref {
+            mutable: true,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Int32)),
+        };
+        assert!(interp.value_matches_ty(&mut_int, &Value::Ref(probe_place())));
+        assert!(!interp.value_matches_ty(&mut_int, &Value::Int(1)));
+    }
+
+    /// **Owned `String` has two spellings**, and A2's exhaustive match is what surfaced it. Both
+    /// denote the same type and both must permit exactly `Value::String`; covering only one would
+    /// have left every binding written the other way unvalidated.
+    #[test]
+    fn both_spellings_of_owned_string_permit_the_same_representation() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let primitive = Ty::Primitive(crate::ast::Primitive::String);
+        let core = Ty::Core(hir::CoreType::String, Vec::new());
+        for ty in [primitive, core] {
+            assert!(interp.value_matches_ty(&ty, &Value::String(String::new())));
+            assert!(
+                !interp.value_matches_ty(&ty, &Value::Str(String::new())),
+                "an owned String represented as a view would not move when moved"
+            );
+        }
+    }
+
+    /// Nominal identity, not shape: two structs with identical fields are different types, so the
+    /// `ItemId` is what the relation compares. Arity is checked for tuples and arrays for the same
+    /// reason — it is what catches a truncated aggregate.
+    #[test]
+    fn nominals_are_matched_by_identity_and_aggregates_by_arity() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let one = Ty::Struct(ItemId(1), Vec::new());
+        assert!(interp.value_matches_ty(
+            &one,
+            &Value::Struct {
+                item: ItemId(1),
+                fields: BTreeMap::new(),
+            }
+        ));
+        assert!(
+            !interp.value_matches_ty(
+                &one,
+                &Value::Struct {
+                    item: ItemId(2),
+                    fields: BTreeMap::new(),
+                }
+            ),
+            "a different struct is a different type however similar its fields"
+        );
+
+        let pair = Ty::Tuple(vec![
+            Ty::Primitive(crate::ast::Primitive::Int32),
+            Ty::Primitive(crate::ast::Primitive::Int32),
+        ]);
+        assert!(interp.value_matches_ty(&pair, &Value::Tuple(vec![None, None])));
+        assert!(!interp.value_matches_ty(&pair, &Value::Tuple(vec![None])));
+
+        let three = Ty::Array(Box::new(Ty::Primitive(crate::ast::Primitive::Int32)), 3);
+        assert!(interp.value_matches_ty(&three, &Value::Array(vec![None, None, None])));
+        assert!(!interp.value_matches_ty(&three, &Value::Array(vec![None, None])));
+    }
+
+    /// Unsized and non-runtime types have NO permitted representation. A standalone `Ty::Slice` is
+    /// distinct from `Value::Slice`, which is a perfectly valid view — same word, opposite
+    /// meanings, which is why §6.6 is a separate table.
+    #[test]
+    fn unsized_and_non_runtime_types_permit_nothing() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let standalone_slice = Ty::Slice(Box::new(Ty::Primitive(crate::ast::Primitive::UInt8)));
+        assert!(!interp.value_matches_ty(&standalone_slice, &Value::Slice(probe_place(), 0, 0)));
+        assert!(!interp.value_matches_ty(&standalone_slice, &Value::Vec(Vec::new())));
+
+        assert!(!interp.value_matches_ty(
+            &Ty::Primitive(crate::ast::Primitive::Str),
+            &Value::Str(String::new())
+        ));
+        assert!(!interp.value_matches_ty(&Ty::Never, &Value::Unit));
+        assert!(!interp.value_matches_ty(&Ty::Error, &Value::Unit));
+        assert!(!interp.value_matches_ty(&Ty::Param(String::from("T")), &Value::Int(1)));
+    }
+
+    /// A surviving `Ty::Param` is refused by NORMALISATION rather than by the relation, and the
+    /// refusal is an internal invariant: `T` permits every representation, so a relation asked
+    /// about it could only ever answer "yes".
+    #[test]
+    fn an_unsubstituted_parameter_is_refused_before_the_relation_sees_it() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let error = interp
+            .check_value_for_ty(
+                &Ty::Param(String::from("T")),
+                &Value::Int(1),
+                Span { lo: 0, hi: 0 },
+                RepBoundary::Parameter,
+            )
+            .expect_err("an unsubstituted parameter cannot be validated against");
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert!(
+            error.message.contains("unsubstituted generic parameter"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// The diagnostic names the boundary and both shapes, and never the value's contents — printing
+    /// them would leak program data, and describing them would mean cloning or borrowing the value,
+    /// which is the behaviour this check exists to police.
+    #[test]
+    fn the_diagnostic_names_the_boundary_and_the_shapes_but_not_the_contents() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let error = interp
+            .check_value_for_ty(
+                &byte_slice_ref(),
+                &Value::Vec(Vec::new()),
+                Span { lo: 0, hi: 0 },
+                RepBoundary::Parameter,
+            )
+            .expect_err("an owned Vec behind `&[UInt8]` is a mismatch");
+
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert_eq!(error.trap_category, None);
+        assert!(error.message.contains("DEV-121"), "{}", error.message);
+        assert!(
+            error.message.contains("a function parameter"),
+            "the boundary is what makes the report actionable: {}",
+            error.message
+        );
+        assert!(error.message.contains("Vec"), "{}", error.message);
+    }
+
+    /// A value that DOES match produces no error, at every boundary. The relation must not be
+    /// merely strict — a check that refused correct programs would be withdrawn, which is how an
+    /// invariant becomes advisory.
+    #[test]
+    fn a_matching_value_is_accepted_at_every_boundary() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        for boundary in [
+            RepBoundary::LetBinding,
+            RepBoundary::Parameter,
+            RepBoundary::Receiver,
+            RepBoundary::Return,
+            RepBoundary::Propagation,
+            RepBoundary::MatchBinding,
+            RepBoundary::LoopBinding,
+            RepBoundary::Assignment,
+            RepBoundary::FieldWrite,
+            RepBoundary::ElementWrite,
+            RepBoundary::AggregateField,
+        ] {
+            assert!(
+                interp
+                    .check_value_for_ty(
+                        &str_ref(),
+                        &Value::Str(String::from("x")),
+                        Span { lo: 0, hi: 0 },
+                        boundary,
+                    )
+                    .is_ok(),
+                "{boundary:?} rejected a correct representation"
+            );
+        }
     }
 
     /// **A1: every `Value` variant is named in the representation table, exactly once.**
