@@ -1,6 +1,7 @@
 # WP-VALUE-REP-TOTAL — a total type→representation mapping for the oracle
 
-**Status:** ACTIVE. A0 and A1 landed; A2 next.
+**Status:** ACTIVE. A0–A3c landed; A3c-Q then A4 next. **DEV-121 is still OPEN** — no
+representation boundary is enforced yet.
 **Filed by:** CD-321, on owner direction, when INV-VALUE-REP-001 landed narrow.
 **Owning track:** compiler (Gate C-series governance, `COMPILER-CHARTER.md` §1.6).
 **Prerequisite deviations:** DEV-121 (narrowed, not class-closed).
@@ -245,8 +246,29 @@ type list in 6.6 contributes no rows and is counted separately:
 
 ### 6.9 Not yet enforced
 
-The matrix is a statement of intent at A1. Only the `let`-binding subset of 6.4 is executed today
-(INV-VALUE-REP-001). A2 implements the relation; A4 wires the boundaries; 121B covers typed
-mutation. **DEV-121 stays open until then** — this document is the specification of the close, not
-the close.
+Only the `let`-binding subset of 6.4 is executed today (INV-VALUE-REP-001). A2 implemented the
+relation and A3c made every callable's signature concretisable, but **no boundary is wired**: A4
+does that, and 121B covers typed mutation. **DEV-121 stays open until then** — this document is the
+specification of the close, not the close.
+
+### 6.10 Position after A3c
+
+| stage | state |
+| --- | --- |
+| A0 classification | done — a representation mismatch is `InternalInvariant`, not a trap |
+| A1 matrix + `ValueKind` | done — 34 representations, no wildcard |
+| A2 relation | done — `value_matches_ty`, `concrete_runtime_ty`, `check_value_for_ty` |
+| A3 propagation boundary | done — `pending_propagation` may not cross a call |
+| A3b signatures | done — `callable_types`, exact-set coverage over six callable classes |
+| A3c-S generic context | done — DEV-176 fixed, `generic_insts` deleted |
+| A3c-D generic `Drop` | done — refused, recorded, not repaired |
+| A3c-Q qualification | **next** — MIR differential, C6 corpus, package qualification, perf |
+| A4 boundaries | blocked on A3c-Q |
+| 121B typed mutation | separate, needs its own inventory |
+
+**What A3c bought A4.** `Callable::ret` no longer needs to be `Option<Ty>`: A3b publishes every
+executable body's signature and A3c-S makes it concretisable at every use, so A4 can require a
+signature and treat its absence as an internal defect rather than a skip. The
+"returns validated for free functions, silently skipped for methods" hole is closed before it could
+be claimed as enforcement.
 

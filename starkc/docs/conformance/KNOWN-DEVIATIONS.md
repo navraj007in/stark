@@ -4666,7 +4666,7 @@ Two defects, recorded together because the first concealed the second.
 
 ---
 
-## DEV-176 — generic callable bodies execute without their checker-established context (OPEN)
+## DEV-176 — generic callable bodies execute without their checker-established context (RESOLVED, WP-VALUE-REP-TOTAL A3c-S)
 
 - **Normative expectation:** `03-Type-System.md` §Generics: "Generic parameters are in scope within
   the item body and signatures", and instantiation occurs at use sites with monomorphization and
@@ -4731,6 +4731,27 @@ Two defects, recorded together because the first concealed the second.
   arguments in `Value`, is disproportionate to **0** first-party `Drop` impls and 2 generic-`Drop`
   fixtures. A3c-D therefore refuses a generic `Drop` as `InternalInvariant` before running the
   destructor body, rather than guessing or silently skipping it.
+- **Fix (A3c-S):** the checker publishes the environment it already selected — `GenericBinder`
+  recording each binding's origin, `CallableInstantiation` keyed by CALL EXPRESSION because one
+  generic body is legitimately invoked at two types in one program. `push_callable_env` installs it
+  for every callable kind and composes it against the caller's active frame.
+  `TypeTables::generic_insts` is **deleted**, not supplemented: all four consumers migrated, MIR
+  derives its ordered view from `own_arguments()`, and the E0004 undetermined-instantiation check
+  moved across but deliberately over the same subset it always covered.
+- **Two subtleties the fix cost:** `Self` is published as the impl's self type and so references the
+  impl's own parameters, requiring parameters to be concretised BEFORE `Self` is substituted through
+  them — a flat loop leaves `Self = Wrapper<Param("T")>`. And DEV-101's provenance rule empties the
+  environment *silently*: resolving a callee's parameter names with the caller's `decl_text` rather
+  than `item_text` makes every lookup miss, publishing empty bindings instead of failing. Only
+  `cross_package_generics` could see it; single-package tests and the three-engine differential were
+  green while it was broken.
+- **Generic `Drop` is excluded and refused (A3c-D):** destruction retains no type arguments, so a
+  generic `Drop` is refused as `InternalInvariant` before its body runs rather than executed with
+  unbound parameters. Recorded rather than repaired — 44 `drop_value` call sites against 0
+  first-party `Drop` impls. See the A3c-D tests.
+- **Evidence:** `tests/dev176_generic_callable_context.rs` (5, including one body answering
+  differently at two instantiations), `tests/a3cd_generic_drop.rs` (4),
+  `tests/cross_package_generics.rs` (11), `three_engine_differential` (109), lib (523).
 - **Owning gate:** compiler track, WP-VALUE-REP-TOTAL A3c.
 
 ---
