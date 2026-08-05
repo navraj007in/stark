@@ -4663,3 +4663,127 @@ Two defects, recorded together because the first concealed the second.
   A recorded limitation with a test that fails when it is lifted is a better artifact than a
   to-do — it is why this repair took one commit rather than a rediscovery.
 - **Owning gate:** package/application track, CD-381.
+
+---
+
+## DEV-176 — generic callable bodies execute without their checker-established context (OPEN)
+
+- **Normative expectation:** `03-Type-System.md` §Generics: "Generic parameters are in scope within
+  the item body and signatures", and instantiation occurs at use sites with monomorphization and
+  dictionary-passing required to be observably equivalent. A generic body must therefore execute
+  knowing what its parameters stand for, whatever kind of callable it is.
+- **Current behaviour:** the HIR interpreter installs a substitution frame only for **direct calls
+  to free functions**. `push_generic_frame` reads its parameter names from `hir::ItemKind::Fn` and
+  returns an empty list for every other item kind, and it has exactly one call site — the
+  `Res::Item` path in `eval_expr`. A method call never pushes a frame at all. So none of these are
+  ever bound: impl-level generics, method-level generics, trait-level generics, or `Self`.
+- **Reproducer** (verified 2026-08-05):
+
+  ```stark
+  fn free_size<T>() -> UInt64 {
+      size_of::<T>()          // works
+  }
+
+  struct Wrapper<T> { value: T }
+
+  impl<T> Wrapper<T> {
+      fn size(&self) -> UInt64 {
+          size_of::<T>()      // fails
+      }
+  }
+  ```
+
+  > `layout query on Param("T") still contains an unsubstituted generic parameter: the active
+  > instantiation did not cover it`
+
+- **User impact:** a program the checker accepts fails at run time in the HIR engine, with a message
+  describing a compiler-internal condition. Any construct needing the type parameter inside a
+  generic method is affected; `size_of::<T>()` is simply the one with an existing observable.
+- **Security/soundness impact:** none directly — it is a refusal, not a wrong answer. The
+  *classification* is the soundness-adjacent part, and is DEV-176's sibling repair: see below.
+- **Misclassification (repaired separately):** the failure was raised through `RuntimeError::new`,
+  making it `FailureClass::Trap` — a **language outcome**. The HIR interpreter is the behavioural
+  oracle the other three engines are compared against, so an oracle defect presented as a trap is
+  something the differential harness can accept as legitimate and then pressure MIR and native into
+  reproducing. Only the surviving-`Ty::Param` condition is reclassified; ordinary `layout_of`
+  refusals are left alone pending individual classification, because some of them correspond to
+  genuinely invalid programs.
+- **Measured exposure** (2026-08-05, all 28 first-party packages): **0** generic impls, **0** traits,
+  **0** generic methods across 1108 functions; 14 non-generic impls. The construct appears in the
+  compiler's own Rust tests (48 generic impls) and in 7 of 116 spec fixtures. Commands:
+
+  ```bash
+  grep -rn "^impl<" packages/*/src/*.stark | wc -l
+  grep -rn "^pub trait \|^trait " packages/*/src/*.stark | wc -l
+  grep -rn "^    fn [a-z_]*<" packages/*/src/*.stark | wc -l
+  ```
+
+- **Workaround:** move the parameter-dependent operation into a free generic function and call it
+  from the method.
+- **Proposed disposition:** repaired by WP-VALUE-REP-TOTAL A3c-S, which replaces
+  `TypeTables::generic_insts` with a single provenance-carrying callable-instantiation table and
+  installs the checker-selected environment for every source-invoked callable. The interpreter must
+  consume that environment, never reconstruct one from names, runtime values or impl scanning — a
+  second instantiation algorithm would be a second answer to what a generic call means.
+- **Explicitly excluded:** generic `Drop`. `drop_value` receives a `Value` and recovers the nominal
+  through `nominal_item`, so `Wrapper<String>` is indistinguishable from `Wrapper<Int32>` at
+  destruction. Threading a concrete type through **44** `drop_value` call sites, or retaining type
+  arguments in `Value`, is disproportionate to **0** first-party `Drop` impls and 2 generic-`Drop`
+  fixtures. A3c-D therefore refuses a generic `Drop` as `InternalInvariant` before running the
+  destructor body, rather than guessing or silently skipping it.
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL A3c.
+
+---
+
+## DEV-177 — generic-parameter shadowing accepted, contrary to NAME-SHADOW-001 (OPEN)
+
+- **Normative expectation:** `04-Semantic-Analysis.md` **NAME-SHADOW-001**: "Generic parameters may
+  not duplicate another generic parameter or an item-level `Self`; a nested item introduces fresh
+  item scopes."
+- **Current behaviour:** the checker accepts a method generic that duplicates its impl's generic,
+  and the program runs.
+- **Reproducer** (verified 2026-08-05):
+
+  ```stark
+  struct Wrapper<T> { value: T }
+
+  impl<T> Wrapper<T> {
+      fn choose<T>(self, value: T) -> T {
+          value
+      }
+  }
+
+  fn main() {
+      let w = Wrapper { value: 7 };            // impl T = Int32
+      let s = w.choose(String::from("text"));  // method T = String
+      println(s.as_str());                     // prints: text
+  }
+  ```
+
+  `stark check` reports **OK** and the program prints `text`. Two distinct types are bound to the
+  name `T` in one signature.
+- **User impact:** a program the specification forbids is accepted. It currently *runs* only because
+  the interpreter never consults the impl binding at all (DEV-176) — the two defects are
+  independent, but this one is masked by that one.
+- **Security/soundness impact:** no wrong answer today. The exposure is prospective and specific:
+  `Ty::Param` identifies a parameter by `String`, so while duplicate names are legal a name-keyed
+  substitution environment could bind one concrete type to two different binders. Every tie-break
+  available — last-insertion-wins, first-insertion-wins, method-shadows-impl — is a guess at
+  semantics the type system does not carry.
+- **Why this is a conformance gap and not a design question:** the rule already exists and is
+  normative. It does **not** require giving `Ty::Param` declaration identity; that would be
+  machinery built to support a construct the language prohibits. Enforcing NAME-SHADOW-001 makes
+  `Ty::Param(String)` unambiguous by construction across every set of generic scopes simultaneously
+  active in a callable, which is precisely what a name-keyed runtime substitution needs.
+- **Enforcement boundary:** reject a duplicate within one generic list, an impl generic duplicated
+  by a method generic, a trait generic duplicated by a default-method generic, and a generic named
+  `Self` where item-level `Self` is in scope. The distinction is *inherited* scope, not lexical
+  nesting: `fn outer<T>() { fn inner<T>() {} }` is legal because a nested item is a fresh item
+  scope, and two sibling methods each declaring `U` do not overlap. `check_fn_def` already has
+  `current_impl_generics` and `current_fn_generics`, which are the owners normatively in scope.
+- **Discovered by:** WP-VALUE-REP-TOTAL's binder-identity probe, run before designing A3c-S's
+  substitution representation.
+- **Proposed disposition:** enforce the existing rule before A3c-S. Blocks A3c-S's name-keyed
+  substitution while it stands.
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL (prerequisite to A3c-S).
+

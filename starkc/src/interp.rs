@@ -3393,10 +3393,26 @@ impl<'a> Interpreter<'a> {
             None => queried,
         };
         if crate::typecheck::ty_contains_param(&concrete) {
-            return Err(RuntimeError::new(
+            // **DEV-176: a compiler defect, not a language trap.**
+            //
+            // An accepted program reached execution with a type parameter the oracle could not
+            // resolve, because `push_generic_frame` installs a substitution frame only for direct
+            // free-function calls — impl, method and trait generics and `Self` are never bound. The
+            // program is valid; the oracle lacks the context.
+            //
+            // Classified `internal` because the HIR interpreter is the behavioural oracle: a
+            // trap-classified oracle defect is one the differential harness can accept as a
+            // legitimate program outcome and then pressure MIR and native into reproducing.
+            //
+            // Deliberately NARROW. Only this condition changes — ordinary `layout_of` refusals keep
+            // their classification until each is individually judged, because some of them do
+            // correspond to genuinely invalid programs and folding those into `InternalInvariant`
+            // would make the class meaningless.
+            return Err(RuntimeError::internal(
                 format!(
-                    "layout query on {concrete:?} still contains an unsubstituted generic \
-                     parameter: the active instantiation did not cover it"
+                    "DEV-176: layout query on {concrete:?} still contains an unsubstituted generic \
+                     parameter: the oracle installs generic context only for direct free-function \
+                     calls, so an impl, method or trait parameter is never bound"
                 ),
                 span,
             ));
