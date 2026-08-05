@@ -1660,7 +1660,14 @@ impl<'a> Interpreter<'a> {
             Value::String(_) => "an owned String",
             _ => return Ok(()),
         };
-        Err(RuntimeError::new(
+        // **A0: this is a compiler defect, not a language trap.** The prose said "internal" from the
+        // day it was written while `RuntimeError::new` classified it `FailureClass::Trap` — so a
+        // representation failure in the ORACLE was presentable to the differential harness as a
+        // legitimate program outcome. That is the worst possible classification for it: the HIR
+        // interpreter is what MIR and native are compared against, so a trap-classified oracle bug
+        // invites the comparator to pressure the other engines into reproducing it. `internal`
+        // makes the harness fail loudly instead.
+        Err(RuntimeError::internal(
             format!(
                 "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
                  represented by a view, never by owned storage, or passing it consumes what it \
@@ -7509,6 +7516,58 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// **A0 (DEV-121): a representation mismatch is a COMPILER DEFECT, not a language trap.**
+    ///
+    /// The check has always called itself "internal" in its prose while constructing its error with
+    /// `RuntimeError::new`, which classifies as `FailureClass::Trap`. That combination is the
+    /// dangerous one: the HIR interpreter is the behavioural oracle, so an oracle representation
+    /// bug presented as a trap is something the differential harness can accept as a legitimate
+    /// program outcome — and then pressure MIR and native into agreeing with it. Classification is
+    /// what decides whether the harness fails loudly or quietly propagates the defect.
+    ///
+    /// `trap_category` is asserted `None` alongside the class because the two together are what the
+    /// comparator reads; a class change with a lingering category would still look trap-shaped.
+    ///
+    /// The mismatch is INJECTED rather than produced by a program on purpose. Every producer this
+    /// check knows about is currently correct, so a test that waited for a real firing would assert
+    /// nothing — and would start passing again for the wrong reason the day a producer regressed.
+    #[test]
+    fn a_representation_mismatch_is_classified_as_an_internal_invariant() {
+        let file = Arc::new(SourceFile::new("test.stark", "fn main() {}"));
+        let (ast, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&ast, file.clone());
+        let mut tables = typecheck::analyze(&hir, file.clone()).tables;
+
+        // A local the tables declare as `&[UInt8]` — a borrowed view.
+        let local = LocalId(0);
+        tables.local_types.insert(
+            local,
+            Ty::Ref {
+                mutable: false,
+                inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(
+                    crate::ast::Primitive::UInt8,
+                )))),
+            },
+        );
+
+        let interpreter = Interpreter::new(&hir, file, &tables);
+        let error = interpreter
+            .check_value_representation(local, &Value::Vec(Vec::new()), Span { lo: 0, hi: 0 })
+            .expect_err("an owned Vec behind a `&[UInt8]` binding is a representation mismatch");
+
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "a DEV-121 firing is a compiler defect: {}",
+            error.message
+        );
+        assert_eq!(
+            error.trap_category, None,
+            "an internal invariant has no trap category"
+        );
+        assert!(!error.is_trap(), "it must not read as a language trap");
     }
 
     #[test]

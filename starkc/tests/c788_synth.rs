@@ -283,10 +283,15 @@ fn generation_is_deterministic() {
 
 /// **An empty status vocabulary generates an UNINHABITED enum**, and that is the point.
 ///
-/// `clock` declares no recoverable status, so `RawTimeError` has no values and the `Err` arm of
-/// `Result<UInt64, RawTimeError>` cannot be constructed at all. The type system then says exactly
-/// what Packet 1 §1.2 says: every nonzero status from that provider is a contract violation, and no
-/// package code runs on it.
+/// A capability declaring no recoverable status gets a `RawTimeError` with no values, so the `Err`
+/// arm of `Result<UInt64, RawTimeError>` cannot be constructed at all. The type system then says
+/// exactly what Packet 1 §1.2 says: every nonzero status from that provider is a contract
+/// violation, and no package code runs on it.
+///
+/// The vocabulary here is this test's own, not the registry's: `clock` used to be the real example
+/// and stopped being one when `stark-time` gained live linkage and declared `ClockUnavailable` and
+/// `OutOfRange`. The empty case remains a legal input to synthesis, so it is still worth pinning —
+/// it just no longer has a first-party provider behind it.
 #[test]
 fn an_empty_vocabulary_generates_an_uninhabited_error_type() {
     let layer = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
