@@ -4590,6 +4590,13 @@ Two defects, recorded together because the first concealed the second.
   backslash, `\n` means a newline — so blanking it would silently alter the value. Those fields are
   refused with that reason. The forms the acceptance matrix named all work:
   `f"{choose(\"yes\", \"no\")}"`, `f"{lookup(\"name\")}"`, `f"{parse(\"42\").unwrap()}"`.
+- **Recorded as a language rule, not only here.** LEX-FORMAT-004 (01-Lexical-Grammar) states both
+  halves normatively: a nested literal's `\"` delimiters are read as delimiters, and a nested
+  literal needing a data-bearing escape is rejected with the bind-first workaround shown. A
+  restriction that lives only in a defect ledger is one a reader of the grammar never learns about.
+- **Do not describe the result as "complete ordinary-expression interpolation."**
+  `f"{lookup(\"a\nb\")}"` is a valid ordinary expression and is refused. The accurate claim is
+  "complete for the defined Core v1 interpolation surface".
 - **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_contain_a_nested_string_literal`
   (six forms, including a `:` and a `}` inside a nested string, a struct literal, and a format
   specification applied to one) and `::a_field_may_not_contain_an_escape_other_than_a_quote`.

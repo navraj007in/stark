@@ -36,7 +36,7 @@ grep -rnE '\b(two|three|four|five|six|seven|eight|nine|ten|[0-9]+) (gates?|comma
 ```
 
 Known live counts to keep honest: 25 packages, 22 consumers, 6 provider crates, 8 capability names,
-114 spec fixtures, 87 audited stdlib methods / 59 verified, four engine configurations.
+116 spec fixtures, 87 audited stdlib methods / 59 verified, four engine configurations.
 
 ## 2. Table vs. prose
 

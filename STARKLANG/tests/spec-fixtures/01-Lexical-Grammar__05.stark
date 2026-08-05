@@ -1,4 +1,2 @@
-'a'
-'\n'
-'\x41'
-'\u{1F600}'
+f"{lookup(\"name\")}"
+f"{choose(\"yes\", \"no\")}"

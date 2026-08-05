@@ -62,9 +62,26 @@ span_integrity 2.
 
 ### Status
 
-DEV-173 CLOSED. **WP-FMT-001 is complete ordinary-expression interpolation**, not v0.1 partial.
-CI on `7e41a1e` was green across all three Tier-1 lanes, which closes the qualification item that
-CD-381 recorded as outstanding.
+DEV-173 CLOSED.
+
+**WP-FMT-001 is complete for the defined Core v1 interpolation surface.** Plain nested string
+literals are supported; a nested literal carrying a DATA-BEARING escape (`\n`, `\t`, `\\`,
+`\u{...}`) remains an explicitly rejected future extension.
+
+That wording is a correction. This entry first said "complete ordinary-expression interpolation",
+which is literally broader than the implementation: `f"{lookup(\"a\nb\")}"` is a valid ordinary
+expression and is refused. **That is the third claim in this work package stated wider than what was
+built** — after §6's version claim and the `println(f"...")` evidence gap — and the pattern is the
+finding, not the individual wordings. Each was caught by review rather than by me, and each was a
+summary written from what the change was *for* rather than from what it *does*.
+
+The restriction is retained in the specification (01-Lexical-Grammar, LEX-FORMAT-004) rather than
+living only in a defect record, so a reader of the grammar sees it.
+
+Tier-1 qualification: `7e41a1e` was green across all three lanes, which closed CD-381's outstanding
+item. **That run does not cover this commit** — `c5b7581` changed the parser, AST/HIR literal
+storage, the interpreter and MIR lowering — so it carries its own CI result, and the evidence claim
+here rests on that one.
 
 
 ## CD-381 — WP-FMT-001 correction packet: six defects, one of them mine to admit (2026-08-04)

@@ -1,0 +1,2 @@
+let path: &str = "C:\\temp";
+f"{lookup(path)}"

@@ -320,9 +320,32 @@ f"|{name:^12}|"
 f"{flags:#010x}"
 ```
 
-*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and a field whose
-source carries the enclosing literal's escape sequences — which any nested
-string literal must, since the enclosing literal is delimited by `"`.
+**LEX-FORMAT-004.** A field's expression MAY contain a string literal. Because
+the enclosing literal is delimited by `"`, the nested literal's quotes are
+written `\"`, and an implementation MUST read those as the nested literal's
+delimiters rather than as an escape in the enclosing literal's text:
+
+```stark
+f"{lookup(\"name\")}"
+f"{choose(\"yes\", \"no\")}"
+```
+
+A `:` or `}` inside such a literal is that literal's content, not a format
+specification separator or the end of the field.
+
+A nested literal whose own content requires an escape — `\n`, `\t`, `\\`,
+`\x`, `\u{...}` — is **rejected**. Such an escape is data rather than
+punctuation the enclosing literal forced, and no reading of the field's source
+recovers both the enclosing literal's text and the nested literal's value.
+Bind the value first:
+
+```stark
+let path: &str = "C:\\temp";
+f"{lookup(path)}"
+```
+
+*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and the
+data-bearing nested escapes above.
 
 #### Character Literals
 ```

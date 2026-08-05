@@ -15,6 +15,15 @@
 > **DEV-173 was solved in CD-382**, and Tier-1 qualification came back green on `7e41a1e`. Both of
 > the reasons this report was not closable are gone; the status line above reflects that, and the
 > history of how it got there is left standing.
+>
+> **A third wording correction, and the pattern behind all three.** CD-382 first described the
+> result as "complete ordinary-expression interpolation". It is not:
+> `f"{lookup(\"a\nb\")}"` is a valid ordinary expression and is refused. The accurate statement is
+> the one in §1 — complete for the defined Core v1 interpolation surface, with data-bearing escapes
+> inside a nested literal an explicitly rejected extension. Together with §6's version claim and the
+> `println(f"...")` evidence gap, that is three summaries in one work package written from what the
+> change was *for* rather than from what it *does*, each caught by review. The restriction now lives
+> in the grammar (LEX-FORMAT-004), not only in a defect record.
 
 ```stark
 let message = f"pkg={name} n={count:04} r={ratio:.2} ok={ok}";
