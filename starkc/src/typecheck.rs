@@ -9442,10 +9442,11 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Impl generics are searched FIRST only for readability; a method may not redeclare an
     /// impl-level parameter name, so the two sets are disjoint and order cannot change the answer.
-    /// Whether a bound on generic parameter `param_name` is the Core trait `required`.
+    /// Whether generic parameter `param_name` carries a bound denoting the CORE trait `required`.
     ///
-    /// **DEV-171: by resolved identity, not by spelling.** This compared `text(bound.path.span)`
-    /// against `"Eq"`, so an unrelated trait imported under that name authorised `==`:
+    /// **DEV-171: by resolved identity, not by spelling.** The operator path compared
+    /// `text(bound.path.span)` against `"Eq"`, so an unrelated trait imported under that name
+    /// authorised `==`:
     ///
     /// ```text
     /// mod fake { pub trait Eq { fn unrelated(&self) -> Int32; } }
@@ -9454,14 +9455,15 @@ impl<'a> TypeChecker<'a> {
     /// ```
     ///
     /// Written qualified (`T: fake::Eq`) the same program was rejected — the tell that the answer
-    /// depended on how the bound was spelled rather than on what it denoted. Operators dispatch to
-    /// the CANONICAL Core trait (03-Type-System.md, "Operators and Traits"), so only that trait
-    /// satisfies the obligation; `hir::resolved_bound_trait` is the same identity the method path
-    /// uses since CD-379.
+    /// depended on how the bound was spelled. Operators dispatch to the CANONICAL Core trait
+    /// (03-Type-System.md, "Operators and Traits"), so only that trait discharges the obligation.
     ///
-    /// `required` is a Core trait name supplied by the compiler at each operator site, never user
-    /// text, so a name that is not a Core trait is a compiler defect rather than a program's.
-    fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+    /// **This is deliberately separate from [`Self::param_declares_bound`].** That one answers a
+    /// different question — "does this parameter carry the bound being discharged", where the
+    /// bound may be any user trait — and folding the two together made every qualified user-trait
+    /// bound stop satisfying anything, because a user trait is not a Core trait. Caught by
+    /// `dev_bound_trait_identity::a_qualified_bound_forwards_through_nested_generics` on CI.
+    fn param_declares_core_bound(&self, param_name: &str, required: &str) -> bool {
         let Some(required) = crate::resolve::resolve_core_trait(required) else {
             return false;
         };
@@ -9475,6 +9477,28 @@ impl<'a> TypeChecker<'a> {
                         hir::resolved_bound_trait(self.hir, bound)
                             == Some(hir::BoundTrait::Core(required))
                     })
+            })
+    }
+
+    /// Whether generic parameter `param_name` carries the bound `required`, for GENERAL bound
+    /// satisfaction — where `required` may name any trait, including a user one.
+    ///
+    /// Both sides here are written bounds, so comparing their spellings compares like with like:
+    /// `fn outer<T: traits::Render>` discharging `fn inner<U: traits::Render>` matches because the
+    /// caller and callee wrote the same path. DEV-171's defect was in the OPERATOR path, which
+    /// compared a written bound against a compiler-supplied trait NAME; that one now resolves
+    /// identity in `param_declares_core_bound`.
+    fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .any(|param| {
+                self.text(param.name) == param_name
+                    && param
+                        .bounds
+                        .iter()
+                        .any(|bound| self.text(bound.path.span) == required)
             })
     }
 
@@ -9527,7 +9551,7 @@ impl<'a> TypeChecker<'a> {
                 let inner = self.resolve(inner);
                 self.ty_satisfies_operator_bound(&inner, required)
             }
-            Ty::Param(name) => self.param_declares_bound(name, required),
+            Ty::Param(name) => self.param_declares_core_bound(name, required),
             // DEV-073 (WP-C4.7-5): a GENERIC impl satisfies a concrete instantiation's bound —
             // `impl<T> Eq for W<T>` satisfies `W<Int32>: Eq`. This used to demand
             // `types_equal(impl_self_ty, ty)`, an EXACT match, so the impl's written self type

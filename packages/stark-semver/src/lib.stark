@@ -19,7 +19,12 @@ pub fn parse(input: &str) -> Result<Version, SemverError> {
         return Err(SemverError::Empty);
     }
     let plus = find_byte(input, 43u8);
-    let dash = find_byte(input, 45u8);
+    // A `-` delimits the prerelease only when it comes BEFORE the `+`, or when there is no `+` at
+    // all. SemVer permits a hyphen inside a BUILD identifier (`1.2.3+build-alpha`), and taking the
+    // first hyphen anywhere made that version's prerelease run from the hyphen back to the plus --
+    // a backwards range, which TRAPPED on a substring boundary rather than returning an error. A
+    // valid version aborted the process.
+    let dash = prerelease_delimiter(input, plus);
     let core_end = min_optional(plus, dash, input.len());
     let core = input.substring(0u64, core_end);
     let core_parts = split(core, '.');
@@ -380,6 +385,25 @@ fn u64_to_string(value: UInt64) -> String {
         out.push(digit_char(digits[i]));
     }
     out
+}
+
+/// The index of the `-` that begins the prerelease, if there is one.
+///
+/// Only a hyphen before the build delimiter can start a prerelease; one after it is build content.
+fn prerelease_delimiter(input: &str, plus: Option<UInt64>) -> Option<UInt64> {
+    match find_byte(input, 45u8) {
+        Some(dash) => match plus {
+            Some(plus_at) => {
+                if dash < plus_at {
+                    Some(dash)
+                } else {
+                    None
+                }
+            }
+            None => Some(dash),
+        }
+        None => None,
+    }
 }
 
 fn min_optional(a: Option<UInt64>, b: Option<UInt64>, fallback: UInt64) -> UInt64 {

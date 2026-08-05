@@ -159,3 +159,41 @@ fn test_normalize() {
         panic("windows normalize mismatch");
     }
 }
+
+/// A relative path may climb ABOVE where it started, and those `..` must survive.
+///
+/// `a/../../b` cancels `a`, leaving an empty relative stack, and the second `..` then has nothing
+/// left to cancel -- so it is itself part of the answer. Dropping it turns `../b` into `b`, which
+/// names a different file: one directory level off, silently.
+fn test_normalize_keeps_excess_parents() {
+    if normalize(PathStyle::Unix, "a/../../b").as_str() != "../b" {
+        panic("excess parent dropped");
+    }
+    if normalize(PathStyle::Unix, "../a/../../b").as_str() != "../../b" {
+        panic("leading and excess parents dropped");
+    }
+    if normalize(PathStyle::Unix, "a/../..").as_str() != ".." {
+        panic("trailing excess parent dropped");
+    }
+    if normalize(PathStyle::Windows, "a\\..\\..\\b").as_str() != "..\\b" {
+        panic("windows excess parent dropped");
+    }
+}
+
+/// The root is its own parent's floor: `..` at the root stays at the root, and `parent` of a
+/// first-level entry is the root rather than nothing.
+fn test_root_parent_boundary() {
+    match parent(PathStyle::Unix, "/usr") {
+        Some(value) => {
+            if value.as_str() != "/" {
+                panic("parent of /usr should be /");
+            }
+        }
+        None => {
+            panic("parent of /usr should exist");
+        }
+    }
+    if normalize(PathStyle::Unix, "/../a").as_str() != "/a" {
+        panic("parent above root should stay at root");
+    }
+}

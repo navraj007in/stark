@@ -105,3 +105,53 @@ fn test_requirement_matching() {
         _ => panic("negative comparison mismatch"),
     }
 }
+
+/// A hyphen inside BUILD metadata is not a prerelease delimiter.
+///
+/// SemVer allows `-` in a build identifier, so `1.2.3+build-alpha` has no prerelease at all. The
+/// parser looked for the first `-` anywhere in the input, found the one after `+`, and then tried
+/// to read a prerelease running from index 11 to index 5 -- a backwards range. A dash delimits a
+/// prerelease only when it comes BEFORE the plus, or when there is no plus.
+fn test_hyphen_inside_build_metadata() {
+    match parse("1.2.3+build-alpha") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3+build-alpha" {
+                panic("build metadata with a hyphen did not round-trip");
+            }
+            if version.prerelease.len() != 0u64 {
+                panic("a hyphen after '+' is not a prerelease");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3+build-alpha is a valid version");
+        }
+    }
+    match parse("1.2.3+build.abc-def") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3+build.abc-def" {
+                panic("dotted build metadata with a hyphen did not round-trip");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3+build.abc-def is a valid version");
+        }
+    }
+}
+
+/// A hyphen may also appear INSIDE a prerelease identifier, and there may be one on each side of
+/// the plus. The first dash is the delimiter; the rest are content.
+fn test_hyphens_in_both_sections() {
+    match parse("1.2.3-alpha-beta+build-one") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3-alpha-beta+build-one" {
+                panic("hyphens on both sides did not round-trip");
+            }
+            if version.prerelease.len() != 1u64 {
+                panic("alpha-beta is one identifier");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3-alpha-beta+build-one is a valid version");
+        }
+    }
+}
