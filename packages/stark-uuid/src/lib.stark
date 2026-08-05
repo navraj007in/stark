@@ -1,9 +1,14 @@
 pub struct Uuid { bytes: [UInt8; 16] }
 
+/// Why a UUID could not be produced. The first three describe malformed text given to [parse]; the
+/// last two describe field values given to [v7_from_parts] that do not fit the layout RFC 9562
+/// defines for them.
 pub enum UuidError {
     InvalidLength(UInt64),
     InvalidHyphen(UInt64),
     InvalidCharacter(UInt64, UInt8),
+    TimestampOutOfRange(UInt64),
+    RandomFieldOutOfRange(UInt16),
 }
 
 pub enum UuidVariant {
@@ -27,8 +32,23 @@ pub fn v4_from_random_bytes(mut bytes: [UInt8; 16]) -> Uuid {
     Uuid { bytes: bytes }
 }
 
-pub fn v7_from_parts(unix_millis: UInt64, rand_a: UInt16, random_tail: [UInt8; 8]) -> Uuid {
-    let timestamp = unix_millis & 0x0000_FFFF_FFFF_FFFFu64;
+/// A version 7 UUID from its parts: a 48-bit Unix millisecond timestamp, a 12-bit `rand_a` field,
+/// and 64 random bits (the top two of which are replaced by the RFC 4122 variant marker).
+///
+/// **Values that do not fit are rejected, not truncated.** Both fields used to be masked down
+/// silently — `unix_millis & 0x0000_FFFF_FFFF_FFFF` and `rand_a & 0x0FFF` — so a timestamp past
+/// year 10889, or a caller passing 16 bits of randomness because `rand_a` is a `UInt16`, produced a
+/// perfectly well-formed UUID encoding a different instant or different entropy than was asked for.
+/// A UUID's whole job is to be the value you were given; silently returning another one is worse
+/// than refusing, because nothing downstream can tell.
+pub fn v7_from_parts(unix_millis: UInt64, rand_a: UInt16, random_tail: [UInt8; 8]) -> Result<Uuid, UuidError> {
+    if unix_millis > 0x0000_FFFF_FFFF_FFFFu64 {
+        return Err(UuidError::TimestampOutOfRange(unix_millis));
+    }
+    if rand_a > 0x0FFFu16 {
+        return Err(UuidError::RandomFieldOutOfRange(rand_a));
+    }
+    let timestamp = unix_millis;
     let mut bytes: [UInt8; 16] = [0u8; 16];
     bytes[0u64] = (timestamp >> 40u64 & 0xFFu64) as UInt8;
     bytes[1u64] = (timestamp >> 32u64 & 0xFFu64) as UInt8;
@@ -44,7 +64,7 @@ pub fn v7_from_parts(unix_millis: UInt64, rand_a: UInt16, random_tail: [UInt8; 8
         bytes[8u64 + i] = random_tail[i];
         i = i + 1u64;
     }
-    Uuid { bytes: bytes }
+    Ok(Uuid { bytes: bytes })
 }
 
 pub fn as_bytes(uuid: &Uuid) -> [UInt8; 16] {

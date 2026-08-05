@@ -155,3 +155,50 @@ fn test_hyphens_in_both_sections() {
         }
     }
 }
+
+/// **The caret upper bound at the top of the range.** `^18446744073709551615.0.0` is well formed
+/// and so is the version it is matched against, but computing `major + 1` overflowed and integer
+/// overflow *traps* — the process aborted rather than answering. The bound is now `None`, which is
+/// what it actually is: no representable version reaches `18446744073709551616.0.0`.
+fn test_caret_upper_bound_at_uint64_max() {
+    assert_matches("18446744073709551615.0.0", "^18446744073709551615.0.0", true);
+}
+
+/// The same boundary on the other two caret branches, because the increment sits in a different
+/// field in each.
+fn test_caret_upper_bound_on_minor_and_patch() {
+    assert_matches("0.18446744073709551615.0", "^0.18446744073709551615.0", true);
+    assert_matches("0.0.18446744073709551615", "^0.0.18446744073709551615", true);
+}
+
+/// The tilde bound increments the minor, so `~x.MAX.z` is its overflow case.
+fn test_tilde_upper_bound_at_uint64_max() {
+    assert_matches("1.18446744073709551615.7", "~1.18446744073709551615.0", true);
+}
+
+/// **The control.** An unbounded-above range must not swallow versions an ordinary range excludes.
+/// This is what a saturating fix would have broken: a representable upper bound still excludes.
+fn test_ordinary_caret_and_tilde_ranges_still_exclude() {
+    assert_matches("1.9.9", "^1.2.3", true);
+    assert_matches("2.0.0", "^1.2.3", false);
+    assert_matches("0.2.9", "^0.2.3", true);
+    assert_matches("0.3.0", "^0.2.3", false);
+    assert_matches("0.0.3", "^0.0.3", true);
+    assert_matches("0.0.4", "^0.0.3", false);
+    assert_matches("1.2.9", "~1.2.3", true);
+    assert_matches("1.3.0", "~1.2.3", false);
+}
+
+fn assert_matches(version: &str, requirement: &str, expected: Bool) {
+    let parsed = parse(version).unwrap();
+    match matches(&parsed, requirement) {
+        Ok(hit) => {
+            if hit != expected {
+                panic("the requirement did not decide the version as expected");
+            }
+        }
+        Err(_) => {
+            panic("both the version and the requirement are well formed");
+        }
+    }
+}

@@ -207,8 +207,8 @@ fn test_v4_constructor_sets_version_and_variant_bits() {
 
 fn test_v7_constructor_orders_by_timestamp_then_random_fields() {
     let tail: [UInt8; 8] = [0x00u8, 0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8, 0x66u8, 0x77u8];
-    let a = v7_from_parts(0x0000_018f_f4c0_0000u64, 0x0123u16, tail);
-    let b = v7_from_parts(0x0000_018f_f4c0_0001u64, 0x0000u16, tail);
+    let a = v7_from_parts(0x0000_018f_f4c0_0000u64, 0x0123u16, tail).unwrap();
+    let b = v7_from_parts(0x0000_018f_f4c0_0001u64, 0x0000u16, tail).unwrap();
     if format(&a).as_str() != "018ff4c0-0000-7123-8011-223344556677" {
         panic("uuid v7 format mismatch");
     }
@@ -297,5 +297,50 @@ fn test_comparison() {
     }
     if !equals(&a, &a2) || equals(&a, &b) {
         panic("uuid equals mismatch");
+    }
+}
+
+/// **A timestamp that does not fit 48 bits is refused, not masked.** The reported value comes back
+/// with the error, because the caller cannot recover it from a UUID that was built from something
+/// else.
+fn test_v7_rejects_a_timestamp_wider_than_48_bits() {
+    let tail: [UInt8; 8] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    match v7_from_parts(0x0001_0000_0000_0000u64, 0u16, tail) {
+        Ok(_) => panic("a 49-bit timestamp does not fit the v7 layout"),
+        Err(UuidError::TimestampOutOfRange(reported)) => {
+            if reported != 0x0001_0000_0000_0000u64 {
+                panic("the error must report the timestamp it was given");
+            }
+        }
+        Err(_) => panic("wrong error for an over-range timestamp"),
+    }
+}
+
+/// The largest timestamp that DOES fit is still accepted — the guard rejects one value too many if
+/// it is written with the wrong comparison.
+fn test_v7_accepts_the_widest_timestamp_that_fits() {
+    let tail: [UInt8; 8] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    match v7_from_parts(0x0000_FFFF_FFFF_FFFFu64, 0x0FFFu16, tail) {
+        Ok(uuid) => {
+            if format(&uuid).as_str() != "ffffffff-ffff-7fff-8000-000000000000" {
+                panic("the widest in-range parts did not encode as expected");
+            }
+        }
+        Err(_) => panic("the widest in-range timestamp and rand_a are valid"),
+    }
+}
+
+/// `rand_a` is 12 bits inside a `UInt16`, so the four spare bits are exactly where a caller passing
+/// 16 bits of entropy loses it silently.
+fn test_v7_rejects_a_rand_a_wider_than_12_bits() {
+    let tail: [UInt8; 8] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    match v7_from_parts(0u64, 0x1000u16, tail) {
+        Ok(_) => panic("a 13-bit rand_a does not fit the v7 layout"),
+        Err(UuidError::RandomFieldOutOfRange(reported)) => {
+            if reported != 0x1000u16 {
+                panic("the error must report the rand_a it was given");
+            }
+        }
+        Err(_) => panic("wrong error for an over-range rand_a"),
     }
 }

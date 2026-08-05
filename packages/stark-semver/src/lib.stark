@@ -102,17 +102,11 @@ fn matches_one(version: &Version, requirement: &str) -> Result<Bool, SemverError
     if starts_with(requirement, "^") {
         let base = parse(requirement.substring(1u64, requirement.len()))?;
         let upper = caret_upper(&base);
-        Ok(in_range(version, &base, &upper))
+        Ok(in_range(version, &base, upper))
     } else if starts_with(requirement, "~") {
         let base = parse(requirement.substring(1u64, requirement.len()))?;
-        let upper = Version {
-            major: base.major,
-            minor: base.minor + 1u64,
-            patch: 0u64,
-            prerelease: Vec::new(),
-            build: Vec::new(),
-        };
-        Ok(in_range(version, &base, &upper))
+        let upper = tilde_upper(&base);
+        Ok(in_range(version, &base, upper))
     } else if starts_with(requirement, ">=") {
         let base = parse(requirement.substring(2u64, requirement.len()))?;
         Ok(compare(version, &base) >= 0i32)
@@ -134,39 +128,81 @@ fn matches_one(version: &Version, requirement: &str) -> Result<Bool, SemverError
     }
 }
 
-fn caret_upper(base: &Version) -> Version {
+/// The exclusive upper bound of a caret range, or `None` when that bound is not representable.
+///
+/// `^18446744073709551615.0.0` means `>=18446744073709551615.0.0, <18446744073709551616.0.0`, and
+/// the limit exceeds `UInt64`. Computing it anyway *trapped*: integer overflow aborts the process
+/// in every build mode, so a well-formed requirement against a well-formed version killed the
+/// program instead of answering it. `None` states the bound exactly rather than approximating it —
+/// no representable version reaches it, so every version at or above `base` is inside the range.
+fn caret_upper(base: &Version) -> Option<Version> {
     if base.major > 0u64 {
-        Version {
-            major: base.major + 1u64,
-            minor: 0u64,
-            patch: 0u64,
-            prerelease: Vec::new(),
-            build: Vec::new(),
+        if base.major == 18_446_744_073_709_551_615u64 {
+            return None;
         }
+        Some(
+            Version {
+                major: base.major + 1u64,
+                minor: 0u64,
+                patch: 0u64,
+                prerelease: Vec::new(),
+                build: Vec::new(),
+            },
+        )
     } else if base.minor > 0u64 {
-        Version {
-            major: 0u64,
-            minor: base.minor + 1u64,
-            patch: 0u64,
-            prerelease: Vec::new(),
-            build: Vec::new(),
+        if base.minor == 18_446_744_073_709_551_615u64 {
+            return None;
         }
+        Some(
+            Version {
+                major: 0u64,
+                minor: base.minor + 1u64,
+                patch: 0u64,
+                prerelease: Vec::new(),
+                build: Vec::new(),
+            },
+        )
     } else {
-        Version {
-            major: 0u64,
-            minor: 0u64,
-            patch: base.patch + 1u64,
-            prerelease: Vec::new(),
-            build: Vec::new(),
+        if base.patch == 18_446_744_073_709_551_615u64 {
+            return None;
         }
+        Some(
+            Version {
+                major: 0u64,
+                minor: 0u64,
+                patch: base.patch + 1u64,
+                prerelease: Vec::new(),
+                build: Vec::new(),
+            },
+        )
     }
 }
 
-fn in_range(version: &Version, lower: &Version, upper: &Version) -> Bool {
+/// The exclusive upper bound of a tilde range, `None` when unrepresentable — see [caret_upper].
+fn tilde_upper(base: &Version) -> Option<Version> {
+    if base.minor == 18_446_744_073_709_551_615u64 {
+        None
+    } else {
+        Some(
+            Version {
+                major: base.major,
+                minor: base.minor + 1u64,
+                patch: 0u64,
+                prerelease: Vec::new(),
+                build: Vec::new(),
+            },
+        )
+    }
+}
+
+fn in_range(version: &Version, lower: &Version, upper: Option<Version>) -> Bool {
     if compare(version, lower) < 0i32 {
         false
     } else {
-        compare(version, upper) < 0i32
+        match upper {
+            Some(bound) => compare(version, &bound) < 0i32,
+            None => true,
+        }
     }
 }
 

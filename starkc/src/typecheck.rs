@@ -9480,25 +9480,43 @@ impl<'a> TypeChecker<'a> {
             })
     }
 
-    /// Whether generic parameter `param_name` carries the bound `required`, for GENERAL bound
-    /// satisfaction — where `required` may name any trait, including a user one.
+    /// Whether generic parameter `param_name` carries the bound being discharged.
     ///
-    /// Both sides here are written bounds, so comparing their spellings compares like with like:
-    /// `fn outer<T: traits::Render>` discharging `fn inner<U: traits::Render>` matches because the
-    /// caller and callee wrote the same path. DEV-171's defect was in the OPERATOR path, which
-    /// compared a written bound against a compiler-supplied trait NAME; that one now resolves
-    /// identity in `param_declares_core_bound`.
-    fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+    /// **By resolved identity when there is one.** `required_res` is the obligation's own
+    /// resolution, so two bounds naming the same trait match however each was SPELLED:
+    ///
+    /// ```text
+    /// use traits::Render;
+    /// fn inner<U: traits::Render>(v: &U) { }
+    /// fn outer<T: Render>(v: &T) { inner(v) }      // the same trait, two spellings
+    /// ```
+    ///
+    /// Comparing spellings rejected that — an over-refusal, and the reason the first version of
+    /// this split was only half a repair. It also could not have distinguished `left::Render` from
+    /// `right::Render` had both been reachable unqualified, which is the same defect pointing the
+    /// other way.
+    ///
+    /// **Spelling remains the fallback, and only for obligations with no resolution.** DEV-118's
+    /// built-in obligations — `HashMap<K, V>` requiring `K: Hash + Eq` — have no `TraitRef` in any
+    /// source, because nobody wrote them; the standard library states them. Those arrive with
+    /// `required_res == None` and are matched by name, which is the only handle they have.
+    fn param_declares_bound(
+        &self,
+        param_name: &str,
+        required: &str,
+        required_res: Option<Res>,
+    ) -> bool {
+        let required_identity = required_res.and_then(|res| hir::bound_trait_of_res(self.hir, res));
         self.current_impl_generics
             .iter()
             .flatten()
             .chain(self.current_fn_generics.iter().flatten())
             .any(|param| {
                 self.text(param.name) == param_name
-                    && param
-                        .bounds
-                        .iter()
-                        .any(|bound| self.text(bound.path.span) == required)
+                    && param.bounds.iter().any(|bound| match required_identity {
+                        Some(wanted) => hir::resolved_bound_trait(self.hir, bound) == Some(wanted),
+                        None => self.text(bound.path.span) == required,
+                    })
             })
     }
 
@@ -9840,7 +9858,7 @@ impl<'a> TypeChecker<'a> {
             // (TYPE-GENERIC-001: the caller's own bound discharges the callee's obligation).
             // This mirrors the `Ty::Param` arm `ty_satisfies_operator_bound` already had for the
             // operator-desugaring bounds, so the two bound checks now agree about parameters.
-            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name),
+            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name, bound_res),
             Ty::Error => true,
             _ => false,
         }

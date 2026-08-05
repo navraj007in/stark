@@ -640,7 +640,16 @@ pub enum BoundTrait {
 /// there — and a caller must treat it as "this bound contributes nothing", never as an invitation
 /// to fall back to the spelling.
 pub fn resolved_bound_trait(hir: &Hir, bound: &TraitRef) -> Option<BoundTrait> {
-    match bound.res {
+    bound_trait_of_res(hir, bound.res)
+}
+
+/// The trait identity a resolution names, if it names one.
+///
+/// Split out of [`resolved_bound_trait`] so a caller holding only a `Res` — a bound obligation
+/// being discharged, which is carried as a resolution rather than as a `TraitRef` — asks the same
+/// question and gets the same answer.
+pub fn bound_trait_of_res(hir: &Hir, res: Res) -> Option<BoundTrait> {
+    match res {
         Res::Item(item_id) => match &hir.item(item_id).kind {
             ItemKind::Trait { .. } => Some(BoundTrait::User(item_id)),
             // A bound position naming a non-trait item is already reported by the checker's own

@@ -12,7 +12,9 @@ Implemented:
 - SemVer precedence comparison, ignoring build metadata;
 - exact requirements;
 - caret requirements;
-- tilde requirements;
+- tilde requirements — whose exclusive upper bound is *unbounded* when incrementing the relevant
+  field would leave `UInt64`, because computing it anyway trapped and integer overflow aborts the
+  process in every build mode;
 - comma-separated comparison sets such as `>=1.2.0,<2.0.0`;
 - malformed-input errors for empty input, invalid core versions, invalid numbers, invalid
   identifiers, and invalid requirements.

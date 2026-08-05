@@ -711,3 +711,116 @@ fn main() {}
         }
     }
 }
+
+// ------------------------------------------------------- general bound forwarding by identity --
+
+/// **The same trait, two spellings, both directions.**
+///
+/// `use traits::Render;` makes `Render` and `traits::Render` one trait. Forwarding a bound between
+/// them compared SOURCE TEXT and rejected both directions — an over-refusal, and the half of the
+/// DEV-171 repair that was missing until CD-384.
+#[test]
+fn a_bound_forwards_between_spellings_of_one_trait() {
+    agree_completing_with_stdout(
+        "bti_spelling_forward",
+        "\
+mod traits {
+    pub trait Render {
+        fn render(&self) -> String;
+    }
+}
+
+use traits::Render;
+
+struct Item {
+    n: Int32,
+}
+
+impl traits::Render for Item {
+    fn render(&self) -> String {
+        self.n.fmt()
+    }
+}
+
+fn inner_qualified<U: traits::Render>(value: &U) -> String {
+    value.render()
+}
+
+fn inner_imported<U: Render>(value: &U) -> String {
+    value.render()
+}
+
+fn outer_imported<T: Render>(value: &T) -> String {
+    inner_qualified(value)
+}
+
+fn outer_qualified<T: traits::Render>(value: &T) -> String {
+    inner_imported(value)
+}
+
+fn main() {
+    let item = Item { n: 5 };
+    println(outer_imported(&item).as_str());
+    println(outer_qualified(&item).as_str());
+}
+",
+        "5\n5\n",
+    );
+}
+
+/// The control in the other direction: two DIFFERENT traits that share a local name must not
+/// forward to each other. Identity comparison has to reject this for the same reason it accepts
+/// the case above — it is looking at the trait, not the text.
+#[test]
+fn a_bound_does_not_forward_between_two_same_named_traits() {
+    rejects_at_typecheck(
+        "bti_spelling_distinct",
+        "\
+mod left {
+    pub trait Render {
+        fn left_only(&self) -> String;
+    }
+}
+
+mod right {
+    pub trait Render {
+        fn right_only(&self) -> String;
+    }
+}
+
+fn needs_right<U: right::Render>(value: &U) -> String {
+    value.right_only()
+}
+
+fn forward<T: left::Render>(value: &T) -> String {
+    needs_right(value)
+}
+
+fn main() {}
+",
+        "E0500",
+    );
+}
+
+/// **The spelling fallback still has a job.** DEV-118's built-in obligations — `HashMap<K, V>`
+/// requiring `K: Hash + Eq` — are stated by the standard library, not written in any source, so
+/// they arrive with no resolution to compare. They are matched by name because a name is the only
+/// handle they have, and this pins that the fallback path still works.
+#[test]
+fn a_builtin_obligation_is_still_discharged_by_a_declared_bound() {
+    agree_completing_with_stdout(
+        "bti_builtin_obligation",
+        "\
+fn count_keys<K: Hash + Eq>(key: K) -> UInt64 {
+    let mut map: HashMap<K, Int32> = HashMap::new();
+    map.insert(key, 1);
+    map.len()
+}
+
+fn main() {
+    println(count_keys(7));
+}
+",
+        "1\n",
+    );
+}
