@@ -1,0 +1,8 @@
+{
+  "name": "stark-args-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_args": { "package": "stark-args", "path": "../stark-args", "version": "0.1.0" }
+  }
+}

@@ -4421,7 +4421,7 @@ Two defects, recorded together because the first concealed the second.
   which checks the shape through the front end and the oracle and states this limitation.
 - **Owning gate:** unassigned.
 
-## DEV-169 — an explicit `.drop()` call is accepted (OPEN, pre-existing)
+## DEV-169 — an explicit `.drop()` call ran the destructor TWICE (RESOLVED, CD-383)
 
 - **Normative expectation:** `03-Type-System.md` "Copy and Drop" — destructors run exactly once
   and there are no explicit `Drop::drop` calls.
@@ -4431,11 +4431,27 @@ Two defects, recorded together because the first concealed the second.
 - **Security/soundness impact:** potentially real — an explicit call followed by the automatic one
   is a double destruction at the source level. Not investigated here; whether the drop flag
   suppresses the second run is unverified.
-- **Discovered by:** DEV-DISPLAY-DISPATCH, while deciding which Core-trait methods a bound should
-  make callable. `Drop::drop` was included so the generic path matches the concrete one exactly —
-  the deviation is in the concrete path, and hiding it from the generic path would have made the
-  two disagree for no stated reason.
-- **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).
+- **The unverified half, now verified — and it is worse than recorded.** This entry said "whether
+  the drop flag suppresses the second run is unverified". It does not. The program above prints:
+
+  ```text
+  dropped
+  after
+  dropped
+  ```
+
+  The destructor runs **twice on one value**: once for the explicit call, once at scope end. For a
+  resource-bearing type that is a double release. This was an over-acceptance that produced a
+  **soundness violation**, not merely a program the language forbids.
+- **Fix (CD-383):** the check runs at IMPL-MEMBER SELECTION — when a call resolves into an
+  `impl Drop for T` block — rather than on the method's name. An inherent method named `drop` is
+  unaffected, which a name-keyed check would have broken. Diagnostic **E0307**, naming the free
+  function `drop(value)` as the sanctioned way to destroy early. The free function MOVES its
+  argument, so the destructor still runs exactly once.
+- **Evidence:** `tests/over_acceptance_audit.rs` — the rejection, an inherent `drop` still callable,
+  `drop(value)` destroying exactly once (`released` before `after`, not again at scope end), and
+  automatic destruction still running once.
+- **Owning gate:** package/application track, CD-383.
 
 ## DEV-170 — a generic bound's trait identity was reconstructed from its spelling (RESOLVED, DEV-BOUND-TRAIT-IDENTITY)
 
@@ -4488,12 +4504,12 @@ Two defects, recorded together because the first concealed the second.
   own `Res::Item`.
 - **Owning gate:** package/application track, CD-379.
 
-## DEV-171 — an unrelated trait can satisfy an OPERATOR bound by spelling (OPEN)
+## DEV-171 — an unrelated trait satisfied an OPERATOR bound by spelling (RESOLVED, CD-383)
 
 - **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `==` on a generic
   parameter requires `T: Eq`, meaning the Core `Eq` (06-Standard-Library.md STD-TRAIT-001), not a
   user trait that happens to be spelled that way.
-- **Current behaviour:** accepted. Reproduced 2026-08-04:
+- **Behaviour before the fix:** accepted. Reproduced 2026-08-04:
 
   ```stark
   mod fake {
@@ -4521,8 +4537,20 @@ Two defects, recorded together because the first concealed the second.
   identity, and the repair decides what happens when a user trait shadows a Core trait's name for
   operator purposes — a semantics ruling rather than a mechanical fix.
 - **Related:** the same function also serves built-in obligations that have no `TraitRef` at all
-  (DEV-118's name-addressable mechanism), so the fix cannot simply delete the name comparison.
-- **Owning gate:** unassigned. Needs a spec-vs-implementation ruling (CE2-shaped).
+  (DEV-118's name-addressable mechanism), so the fix could not simply delete the name comparison.
+- **Fix (CD-383):** `param_declares_bound` resolves each bound through `hir::resolved_bound_trait`
+  — the identity path CD-379 established — and compares it to the Core trait the operator requires.
+  `satisfies_bound_parts` keeps its name-addressable form, because DEV-118's built-in obligations
+  genuinely have no `TraitRef`; only the GENERIC-PARAMETER branch changed, which is the one that
+  had a written bound to resolve all along.
+- **Scope of the repair:** `Eq`, `Ord` and `Num` all go through this branch, so all three are
+  covered by construction rather than by enumerating them.
+- **This rejects programs that previously compiled.** That is the intent — they were accepted
+  against the specification, which requires operators to dispatch to the canonical Core trait — but
+  it is a behaviour change and is called one here rather than described as a pure bug fix.
+- **Evidence:** `tests/over_acceptance_audit.rs` — the imported and qualified fake `Eq`, fake `Ord`
+  and fake `Num`, plus genuine `Eq`/`Ord`/`Num` bounds and a user `impl Eq` still working.
+- **Owning gate:** package/application track, CD-383.
 
 ## DEV-172 — no signed type can express its own minimum value (OPEN, pre-existing)
 

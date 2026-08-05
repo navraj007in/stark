@@ -1,0 +1,52 @@
+use stark_args::flag;
+use stark_args::is_present;
+use stark_args::option;
+use stark_args::parse;
+use stark_args::repeated_option;
+use stark_args::value;
+use stark_args::values;
+use stark_args::ArgSpec;
+
+fn specs() -> Vec<ArgSpec> {
+    let mut out = Vec::new();
+    out.push(flag("verbose", Some('v'), "verbose", "enable verbose output"));
+    out.push(option("limit", Some('l'), "limit", "maximum count"));
+    out.push(repeated_option("tag", Some('t'), "tag", "tag value"));
+    out
+}
+
+fn main() {
+    let mut input = Vec::new();
+    input.push(String::from("--verbose"));
+    input.push(String::from("--limit=7"));
+    input.push(String::from("--tag"));
+    input.push(String::from("alpha"));
+    input.push(String::from("--"));
+    input.push(String::from("--literal"));
+
+    match parse(specs().as_slice(), input.as_slice()) {
+        Ok(parsed) => {
+            if !is_present(&parsed, "verbose") {
+                panic("verbose missing");
+            }
+            match value(&parsed, "limit") {
+                Some(limit) => {
+                    print(limit.as_str());
+                }
+                None => panic("limit missing"),
+            }
+            let tag_values = values(&parsed, "tag");
+            if tag_values.len() != 1u64 {
+                panic("tag count mismatch");
+            }
+            print("|");
+            print(tag_values[0u64].as_str());
+            print("|");
+            if parsed.positionals.len() != 1u64 {
+                panic("positional count mismatch");
+            }
+            println(parsed.positionals[0u64].as_str());
+        }
+        Err(_) => panic("parse failed"),
+    }
+}

@@ -1,5 +1,94 @@
 # STARK Compiler STATE
 
+## CD-383 — two over-acceptances, one of them a double destruction (2026-08-05)
+
+An external audit separated the open defects by direction: programs the checker REJECTS that it
+should accept (DEV-167, DEV-168, DEV-172) against programs it ACCEPTS that the language forbids.
+The second kind ships; the first is visible the moment you compile. Both of the second kind are
+fixed here.
+
+### DEV-169 — and the answer to the question the ledger left open
+
+The record said "whether the drop flag suppresses the second run is unverified". **It does not.**
+
+```stark
+let mut resource = Resource { id: 1 };
+resource.drop();
+println("after");
+```
+```text
+dropped
+after
+dropped
+```
+
+The destructor runs **twice on one value**. For a resource-bearing type that is a double release.
+This was not an over-acceptance with cosmetic consequences; it was a soundness violation, and the
+ledger had classified it as "potentially safety-significant" precisely because nobody had run it.
+Running it took one minute and should have happened when the defect was recorded.
+
+03-Type-System.md, "Copy and Drop" is unambiguous: "`Drop::drop` MUST NOT be called explicitly; use
+the free function `drop(value)`." The check now runs at IMPL-MEMBER SELECTION — when a call
+resolves into an `impl Drop for T` block — rather than on the method's NAME. That distinction is
+the difference between a correct fix and a broken one: an inherent method called `drop` is an
+ordinary method and stays callable, which a name-keyed check would have refused.
+
+### DEV-171 — operator bounds by identity, not spelling
+
+```stark
+mod fake { pub trait Eq { fn unrelated(&self) -> Int32; } }
+use fake::Eq;
+fn compare<T: Eq>(a: T, b: T) -> Bool { a == b }   // was accepted
+```
+
+`param_declares_bound` compared the bound's SOURCE TEXT against `"Eq"`. Written qualified
+(`T: fake::Eq`) the same program was rejected — the tell that the answer depended on spelling. It
+now resolves each bound through `hir::resolved_bound_trait`, the identity path CD-379 established,
+and compares it to the Core trait the operator requires. `Eq`, `Ord` and `Num` all route through
+that one branch, so all three are covered by construction rather than by enumeration.
+
+`satisfies_bound_parts` keeps its name-addressable form deliberately: DEV-118's built-in
+obligations have no `TraitRef` to resolve. Only the generic-parameter branch changed — the one that
+had a written bound all along.
+
+**This rejects programs that previously compiled**, which is the intent and is stated as a
+behaviour change rather than described as a pure bug fix.
+
+### What was NOT taken on, and why
+
+* **DEV-121's class closure** (a runtime representation contradicting the checked type) is a
+  representation-invariant extension across loop bindings, call arguments and every
+  reference-producing intrinsic. Different mechanism, different pass; bundling it here would make
+  neither reviewable.
+* **DEV-165** (`connect_timeout` accepted and ignored) is an HTTP-client defect, not a compiler
+  one, and the audit itself said it does not belong in a compiler correctness packet.
+
+Both remain open with their priority recorded.
+
+### stark-args
+
+Verified and included in the same commit at the owner's request: `stark check`, 9 package tests,
+`stark fmt --check`, **10 of 10 declared callables called**, consumer check/run/build, and
+byte-identical output from the interpreter and the native binary (`7|alpha|--literal`). Counts moved
+25 → 26 packages and 22 → 23 consumers across README, CLAUDE.md, AGENTS.md, the website and the
+sweep skill, and the README package table gained a Command line row.
+
+### Evidence
+
+`starkc/tests/over_acceptance_audit.rs` — 8 tests. Each fix is paired with the cases that must keep
+working, because the risk in both repairs is over-rejection: a method merely NAMED `drop`, the free
+function `drop(value)` destroying exactly once, automatic destruction still firing, and genuine
+`Eq`/`Ord`/`Num` bounds including a user `impl Eq`.
+
+Regression: adversarial_trait_impls, c62d_operator_coretrait, gate2_valid, conformance all green.
+
+### Status
+
+DEV-169 and DEV-171 CLOSED. **Every known accepted-invalid program in the compiler checker is now
+rejected**; DEV-121 (accepted-valid program, wrong execution) and DEV-165 (accepted configuration,
+no effect) remain open and are different categories.
+
+
 ## CD-382 — DEV-173 CLOSED: a nested string literal inside an interpolation field (2026-08-05)
 
 ```stark

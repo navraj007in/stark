@@ -110,6 +110,11 @@ CASES = [
         expected_stdout="Zm9vYmFy\n",
     ),
     PackageCase(
+        package="stark-args",
+        consumer="stark-args-consumer",
+        expected_stdout="7|alpha|--literal\n",
+    ),
+    PackageCase(
         package="stark-hex",
         consumer="stark-hex-consumer",
         expected_stdout="48656c6c6f\n",

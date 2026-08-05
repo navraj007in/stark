@@ -24,7 +24,7 @@ Adding one item to a list orphans every sentence that counted the old list.
 # with no starkpkg.json, so counting directories yields 25 and every doc says 24.
 ls -d packages/stark-*/ | grep -v -- '-consumer' \
   | while read -r d; do [ -f "$d/starkpkg.json" ] && echo x; done | wc -l
-grep -rn '25 first-party\|25 packages\|Twenty-five' README.md CLAUDE.md AGENTS.md website/src/content.ts
+grep -rn '26 first-party\|26 packages\|Twenty-six' README.md CLAUDE.md AGENTS.md website/src/content.ts
 
 # spec fixture count
 grep -c '^\[' STARKLANG/tests/spec-fixtures/manifest.toml
@@ -35,7 +35,7 @@ grep -rnE '\b(two|three|four|five|six|seven|eight|nine|ten|[0-9]+) (gates?|comma
   README.md ROADMAP.md CLAUDE.md AGENTS.md starkc/README.md
 ```
 
-Known live counts to keep honest: 25 packages, 22 consumers, 6 provider crates, 8 capability names,
+Known live counts to keep honest: 26 packages, 23 consumers, 6 provider crates, 8 capability names,
 116 spec fixtures, 87 audited stdlib methods / 59 verified, four engine configurations.
 
 ## 2. Table vs. prose

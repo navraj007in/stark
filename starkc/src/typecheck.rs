@@ -7437,6 +7437,40 @@ impl<'a> TypeChecker<'a> {
     /// This is candidate COLLECTION only. Selection, ambiguity and argument checking happen once,
     /// at the call site, over whatever this returns — which is the whole point: a compiler-known
     /// bound and a user bound reach the same selection through the same list.
+    /// DEV-169: refuse an explicit call to a `Drop` implementation's `drop`.
+    ///
+    /// 03-Type-System.md, "Copy and Drop": "`Drop::drop` MUST NOT be called explicitly; use the
+    /// free function `drop(value)`." The free function is a different thing — it MOVES its
+    /// argument, so the destructor still runs exactly once.
+    fn reject_explicit_drop(&mut self, impl_item: ItemId, name: &str, span: Span) {
+        if name != "drop" {
+            return;
+        }
+        let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            ..
+        } = &self.hir.item(impl_item).kind
+        else {
+            return;
+        };
+        if !matches!(
+            hir::resolved_bound_trait(self.hir, trait_ref),
+            Some(hir::BoundTrait::Core(hir::CoreTrait::Drop))
+        ) {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error("'Drop::drop' cannot be called explicitly", span)
+                .with_code("E0307")
+                .with_label("the destructor runs automatically when the value goes out of scope")
+                .with_note(
+                    "to destroy a value early, move it into the free function 'drop(value)'; \
+                     calling the method here would run the destructor twice"
+                        .to_string(),
+                ),
+        );
+    }
+
     fn bound_method_candidates(&self, p_name: &str, name: &str) -> Vec<BoundMethod> {
         // WP-C6.2b-F5: consult the method's own generics AND the enclosing impl's generics, so
         // a bound written on the impl head (`impl<T: Sh> W<T>`) is visible in the method body.
@@ -8015,6 +8049,15 @@ impl<'a> TypeChecker<'a> {
             if !is_trait {
                 self.check_member_visible(*is_pub, *impl_item_id, "method", &name_str, call_span);
             }
+            // DEV-169: `Drop::drop` MUST NOT be called explicitly (03-Type-System.md, "Copy and
+            // Drop"). Accepting it was a DOUBLE DESTRUCTION, not merely an over-acceptance:
+            // `r.drop()` ran the destructor once for the call and again when the value went out of
+            // scope. Confirmed empirically before the fix — `dropped / after / dropped`.
+            //
+            // Checked at IMPL-MEMBER SELECTION rather than on the method's name, so it fires
+            // exactly when a call resolves into an `impl Drop for T` block and never for an
+            // unrelated method that happens to be called `drop`.
+            self.reject_explicit_drop(*impl_item_id, &name_str, call_span);
         }
         // CD-358: the impl's ItemId is carried through, because the signature conversion below
         // must read its spans against the impl's own file.
@@ -9399,17 +9442,39 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Impl generics are searched FIRST only for readability; a method may not redeclare an
     /// impl-level parameter name, so the two sets are disjoint and order cannot change the answer.
+    /// Whether a bound on generic parameter `param_name` is the Core trait `required`.
+    ///
+    /// **DEV-171: by resolved identity, not by spelling.** This compared `text(bound.path.span)`
+    /// against `"Eq"`, so an unrelated trait imported under that name authorised `==`:
+    ///
+    /// ```text
+    /// mod fake { pub trait Eq { fn unrelated(&self) -> Int32; } }
+    /// use fake::Eq;
+    /// fn compare<T: Eq>(a: T, b: T) -> Bool { a == b }   // was ACCEPTED
+    /// ```
+    ///
+    /// Written qualified (`T: fake::Eq`) the same program was rejected — the tell that the answer
+    /// depended on how the bound was spelled rather than on what it denoted. Operators dispatch to
+    /// the CANONICAL Core trait (03-Type-System.md, "Operators and Traits"), so only that trait
+    /// satisfies the obligation; `hir::resolved_bound_trait` is the same identity the method path
+    /// uses since CD-379.
+    ///
+    /// `required` is a Core trait name supplied by the compiler at each operator site, never user
+    /// text, so a name that is not a Core trait is a compiler defect rather than a program's.
     fn param_declares_bound(&self, param_name: &str, required: &str) -> bool {
+        let Some(required) = crate::resolve::resolve_core_trait(required) else {
+            return false;
+        };
         self.current_impl_generics
             .iter()
             .flatten()
             .chain(self.current_fn_generics.iter().flatten())
             .any(|param| {
                 self.text(param.name) == param_name
-                    && param
-                        .bounds
-                        .iter()
-                        .any(|bound| self.text(bound.path.span) == required)
+                    && param.bounds.iter().any(|bound| {
+                        hir::resolved_bound_trait(self.hir, bound)
+                            == Some(hir::BoundTrait::Core(required))
+                    })
             })
     }
 
