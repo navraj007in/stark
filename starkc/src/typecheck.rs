@@ -193,6 +193,8 @@ pub struct TypeChecker<'a> {
     struct_fields: HashMap<ItemId, HashMap<String, Ty>>,
     enum_variants: HashMap<ItemId, Vec<VariantTy>>,
     fn_sigs: HashMap<ItemId, FnSigTy>,
+    /// A3b: raw (pre-grounding) callable signatures, keyed by body.
+    callable_sigs: HashMap<BlockId, CallableSigTy>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
     /// WP-C4.5c: ordered generic-argument types for every use of a *generic* fn item, keyed
@@ -617,6 +619,23 @@ impl LayoutTables {
     }
 }
 
+/// The checker-established signature of one executable callable body. (WP-VALUE-REP-TOTAL, A3b.)
+///
+/// **Keyed by `BlockId`, because that is the identity execution has.** `fn_types` is keyed by
+/// `ItemId` and therefore covers free functions only: `hir::FnDef` carries no `ItemId`, so an
+/// inherent method, a trait implementation method, an associated function, `Drop::drop` and a trait
+/// default body all have signatures the checker computed and nothing could look up. A `Callable`
+/// already carries the selected body, so no name lookup or reconstructed identity is needed.
+///
+/// Bodyless trait declarations are excluded structurally rather than by a filter — they have no
+/// `BlockId` to key on.
+#[derive(Debug, Clone)]
+pub struct CallableSigTy {
+    pub receiver: Option<Ty>,
+    pub params: Vec<Ty>,
+    pub ret: Ty,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TypeTables {
     pub expr_types: HashMap<ExprId, Ty>,
@@ -627,6 +646,15 @@ pub struct TypeTables {
     /// package can remain library-importable without imposing a `main`
     /// requirement during type checking.
     pub fn_types: HashMap<ItemId, (Vec<Ty>, Ty)>,
+    /// WP-VALUE-REP-TOTAL A3b: every executable callable body's signature, keyed by its body.
+    ///
+    /// Covers all six classes `check_fn_def` sees — free functions, inherent methods, trait
+    /// implementation methods, associated functions, `Drop::drop`, and trait default bodies with
+    /// a body. Publication only: nothing consumes it until A4 wires the boundaries.
+    ///
+    /// Entries may still contain `Ty::Param`. A generic body is checked ONCE, so its signature is
+    /// parametric by nature; concretising it per invocation is A3c's job, not this table's.
+    pub callable_types: HashMap<BlockId, CallableSigTy>,
     /// WP-C4.5c: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
@@ -695,6 +723,7 @@ pub fn analyze_with_options(
         struct_fields: HashMap::new(),
         enum_variants: HashMap::new(),
         fn_sigs: HashMap::new(),
+        callable_sigs: HashMap::new(),
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         generic_insts: HashMap::new(),
@@ -732,6 +761,20 @@ pub fn analyze_with_options(
         .local_types
         .iter()
         .map(|(&id, ty)| (id, checker.ground(ty)))
+        .collect();
+    let callable_types = checker
+        .callable_sigs
+        .iter()
+        .map(|(&body, sig)| {
+            (
+                body,
+                CallableSigTy {
+                    receiver: sig.receiver.as_ref().map(|ty| checker.ground(ty)),
+                    params: sig.params.iter().map(|ty| checker.ground(ty)).collect(),
+                    ret: checker.ground(&sig.ret),
+                },
+            )
+        })
         .collect();
     let fn_types = checker
         .fn_sigs
@@ -796,6 +839,7 @@ pub fn analyze_with_options(
         local_types,
         local_mutability: checker.local_mutability,
         fn_types,
+        callable_types,
         generic_insts,
         layout_queries,
         layout,
@@ -4431,6 +4475,8 @@ impl<'a> TypeChecker<'a> {
 
         // Parameters in local_types
         let mut state = HashSet::new();
+        let mut published_receiver: Option<Ty> = None;
+        let mut published_params: Vec<Ty> = Vec::new();
         if let Some(receiver) = &sig.receiver {
             let local = sig.receiver_local.expect("lowered receiver has a local ID");
             let self_ty = self.current_self_ty.clone().unwrap_or(Ty::Error);
@@ -4445,6 +4491,7 @@ impl<'a> TypeChecker<'a> {
                     inner: Box::new(self_ty),
                 },
             };
+            published_receiver = Some(receiver_ty.clone());
             self.local_types.insert(local, receiver_ty);
             self.local_mutability
                 .insert(local, matches!(receiver, hir::Receiver::RefMut));
@@ -4462,9 +4509,37 @@ impl<'a> TypeChecker<'a> {
                     .with_code("E0001"),
                 );
             }
+            published_params.push(ty.clone());
             self.local_types.insert(param.local, ty);
             self.local_mutability.insert(param.local, param.mutable);
             state.insert(param.local);
+        }
+
+        // **A3b: publish this body's signature.** `check_fn_def` is the single entry point for all
+        // six executable callable classes, so publishing here covers free functions, inherent
+        // methods, trait implementation methods, associated functions, `Drop::drop` and trait
+        // default bodies — and cannot reach a bodyless trait declaration, which has no body to key
+        // on. Publishing from the types the checker JUST established, rather than reconverting the
+        // HIR signature later, is what keeps this from becoming a second answer to what the
+        // signature is.
+        let previous = self.callable_sigs.insert(
+            def.body,
+            CallableSigTy {
+                receiver: published_receiver,
+                params: published_params,
+                ret: expected_ret.clone(),
+            },
+        );
+        if previous.is_some() {
+            // One HIR body belongs to exactly one callable. Two signatures for one body would mean
+            // the arena is shared, and a later reader would silently get whichever landed last.
+            self.diags.push(
+                Diagnostic::error(
+                    "internal: one HIR body was assigned two callable signatures",
+                    sig.span,
+                )
+                .with_code("E0001"),
+            );
         }
 
         let ret_ty = self.check_block(def.body, &mut state);
