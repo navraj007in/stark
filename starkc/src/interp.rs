@@ -1641,6 +1641,24 @@ impl<'a> Interpreter<'a> {
         if args.len() != callable.params.len() {
             return Err(RuntimeError::new("runtime argument count mismatch", span));
         }
+        // **A3: `pending_propagation` is an intra-expression adapter, never live across a call.**
+        //
+        // It is interpreter state, not frame state, and `expect_value` parks a propagated value
+        // there while returning a dummy `Value::Unit` for the caller to consume immediately. That
+        // makes it correct only within one expression's evaluation: a value still parked when a
+        // callable boundary is crossed would be attributed to the WRONG function — read against a
+        // callee's return type on the way in, or a caller's on the way out.
+        //
+        // Establishing this as a checked invariant is what makes A4's return validation sound. It
+        // is the difference between "validate `Flow::Propagate` against `callable.ret`" being true
+        // and being an assumption, and it is why this lands before the wiring rather than with it.
+        if self.pending_propagation.is_some() {
+            return Err(RuntimeError::internal(
+                "DEV-121: a pending propagation entered a callable boundary — `?` must be consumed \
+                 within the expression that produced it",
+                span,
+            ));
+        }
         // WP-C7.9 Packet F: the interpreter's own call-depth capacity, checked BEFORE the frame is
         // pushed. Without it, a deeply recursive STARK program consumed the host's Rust stack and
         // the process aborted — taking the test runner with it, with no classification and no way
@@ -1686,6 +1704,16 @@ impl<'a> Interpreter<'a> {
             return result.map(|_| Value::Unit);
         }
         let flow = result?;
+        // The other half of the invariant: nothing may still be parked on the way out either. A
+        // value left here would be picked up by whatever the CALLER evaluates next, silently
+        // becoming that expression's propagation.
+        if self.pending_propagation.is_some() {
+            return Err(RuntimeError::internal(
+                "DEV-121: a pending propagation escaped expression handling and reached a callable \
+                 boundary",
+                span,
+            ));
+        }
         self.cleanup_current_frame()?;
         self.file = caller_file;
         self.frames.pop();
@@ -7910,6 +7938,72 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    // ------------------------------------------ WP-VALUE-REP-TOTAL A3: propagation ownership --
+    /// The first function item in a probe program.
+    fn first_fn(hir: &Hir) -> ItemId {
+        (0..hir.items.len())
+            .map(|index| ItemId(index as u32))
+            .find(|item| matches!(&hir.item(*item).kind, hir::ItemKind::Fn(_)))
+            .expect("the probe declares a function")
+    }
+
+    /// **A pending propagation may never cross a callable boundary.**
+    ///
+    /// `pending_propagation` is interpreter state rather than frame state, and `expect_value` parks
+    /// a value there while handing the caller a dummy `Value::Unit` to consume immediately. It is
+    /// therefore an intra-expression adapter: a value still parked when a call begins would be
+    /// attributed to the wrong function — read against the callee's return type on the way in, or
+    /// the caller's on the way out.
+    ///
+    /// This is what makes A4's "validate `Flow::Propagate` against `callable.ret`" sound rather
+    /// than assumed, which is why it lands before the wiring. The state is injected because no
+    /// correct program can produce it — the invariant's whole claim is that it does not happen.
+    #[test]
+    fn a_pending_propagation_may_not_enter_a_callable_boundary() {
+        let (hir, file, tables) = relation_probe("fn helper() -> Int32 { 1 }\nfn main() {}");
+        let mut interp = Interpreter::new(&hir, file, &tables);
+        interp.frames.push(Frame::default());
+
+        let callable = interp
+            .item_callable(first_fn(&hir))
+            .expect("the probe declares a callable function");
+
+        interp.pending_propagation = Some(Value::Int(7));
+        let error = interp
+            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .err()
+            .expect("a parked propagation must not cross into a call");
+
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert!(
+            error.message.contains("pending propagation entered"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// The invariant holds for ORDINARY calls, which is the half that keeps it from being satisfied
+    /// by refusing everything: a call with nothing parked must still run.
+    #[test]
+    fn an_ordinary_call_crosses_the_boundary_with_nothing_pending() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let mut interp = Interpreter::new(&hir, file, &tables);
+        interp.frames.push(Frame::default());
+
+        let callable = interp
+            .item_callable(first_fn(&hir))
+            .expect("the probe declares a callable function");
+
+        assert!(interp.pending_propagation.is_none());
+        assert!(interp
+            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .is_ok());
+        assert!(
+            interp.pending_propagation.is_none(),
+            "nothing may be left parked after a call returns"
+        );
     }
 
     // ------------------------------------------------ WP-VALUE-REP-TOTAL A2: the relation --
