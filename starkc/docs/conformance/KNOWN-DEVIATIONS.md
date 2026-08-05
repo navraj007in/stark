@@ -4553,7 +4553,7 @@ Two defects, recorded together because the first concealed the second.
   range check (DEV-015's area), which must learn that a literal in unary-minus position is checked
   against the negated range.
 
-## DEV-173 — an interpolation field may not contain an escape sequence (OPEN, deferred by decision)
+## DEV-173 — an interpolation field may not contain a nested string literal (RESOLVED, CD-382)
 
 - **Normative expectation:** `01-Lexical-Grammar.md` LEX-FORMAT-002 admits an arbitrary expression
   in a field. A nested string literal is an expression.
@@ -4572,11 +4572,28 @@ Two defects, recorded together because the first concealed the second.
   (`let s = "slice".to_string(); f"{s}"`). Every other expression form works, including calls,
   indexing, field access, struct literals and qualified paths.
 - **Security/soundness impact:** none — a refusal.
-- **Proposed disposition:** give AST nodes a source origin independent of the root file (the
-  mechanism `item_files` already provides per item, needed per node), then parse decoded field text
-  against a retained buffer. That is an arena change, not a formatting change.
-- **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_not_carry_an_escape_sequence`.
-- **Owning gate:** unassigned.
+- **Resolution (CD-382), in two halves, both required.**
+  1. **A length-preserving stand-in.** The field is parsed against a copy of the whole file in
+     which each `\"` inside that field becomes ` "` when it opens a nested literal and `" ` when it
+     closes one. Every byte offset is unchanged, so the spans the sub-parse produces are already
+     real file spans and nothing needs remapping — which matters because spans are embedded
+     throughout the AST (paths, segments, names), not only on nodes. **Which side the space lands
+     on is load-bearing:** blanking the closing backslash in place puts the space inside the
+     literal, and `f"{choose(\"yes\", ..)}"` renders `yes ` with a trailing space. That was
+     observed during implementation, not reasoned about afterwards.
+  2. **Literals carry their decoded value.** `Ast::str_lits`/`Hir::str_lits` hold every string
+     literal's value, interned at parse time from whatever buffer the parser was reading;
+     `Lit::Str` names its entry. Spans are now purely diagnostic. Without this the stand-in is not
+     enough: a literal would still read its value back from the real file's `\"a\"`.
+- **What remains refused, and why that is not the same defect.** An escape OTHER than `\"` in a
+  field source belongs to the enclosing literal and *changes* the inner text — `\\` means one
+  backslash, `\n` means a newline — so blanking it would silently alter the value. Those fields are
+  refused with that reason. The forms the acceptance matrix named all work:
+  `f"{choose(\"yes\", \"no\")}"`, `f"{lookup(\"name\")}"`, `f"{parse(\"42\").unwrap()}"`.
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_contain_a_nested_string_literal`
+  (six forms, including a `:` and a `}` inside a nested string, a struct literal, and a format
+  specification applied to one) and `::a_field_may_not_contain_an_escape_other_than_a_quote`.
+- **Owning gate:** package/application track, CD-382.
 
 ## DEV-174 — `eprint`/`eprintln` took `&str` instead of a `Display` value (RESOLVED, CD-381)
 

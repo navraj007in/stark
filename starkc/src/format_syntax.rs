@@ -244,41 +244,160 @@ fn decode_escape(text: &str) -> Option<String> {
 /// Depth counts `(`, `[` and `{`; a `{` inside the field is a struct literal's, not the end of the
 /// field, which is what makes `f"{Point { x: 1, y: 2 }}"` parse. A nested string literal is
 /// skipped whole, so a brace or colon inside it is text.
-fn find_field_end(src: &[u8], start: usize, hi: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut i = start;
+/// DEV-173: a parseable stand-in for a field whose source carries the enclosing literal's escapes.
+///
+/// A nested string literal inside a field must be written `\"a\"` — the enclosing literal is
+/// delimited by `"`, so its quotes have to be escaped — and `\"` is not expression syntax. The
+/// field therefore cannot be lexed from the file as written.
+///
+/// The stand-in is the WHOLE file with each backslash **in this field** replaced by a space. That
+/// is length-preserving, so every byte offset outside and inside the field is unchanged: an
+/// identifier, a call, a number and the nested literal's own quotes all sit exactly where they sit
+/// in the real file, and every span the sub-parse produces is already a real file span. Nothing has
+/// to be remapped — which matters, because spans are embedded throughout the AST (paths, segments,
+/// names), not only on nodes, and a remapping pass would have to find every one of them.
+///
+/// **Which side the space lands on matters.** An OPENING `\"` becomes ` "` — the space is
+/// whitespace before the literal. A CLOSING `\"` becomes `" ` — the space must go AFTER the quote,
+/// because a space written before it would land inside the string and append itself to the value.
+/// That is not hypothetical: writing both as ` "` renders `f"{choose(\"yes\", ...)}"` as `yes `.
+///
+/// **Only `\"` is handled**, and that is deliberate rather than incidental. Any other escape in a
+/// field source belongs to the enclosing literal and *changes* the inner text — `\\` means one
+/// backslash, `\n` means a newline — so blanking it would silently alter the value. Those fields
+/// are refused, with the reason stated, rather than mis-decoded.
+pub fn field_scratch_source(file: &SourceFile, range: Span) -> Option<String> {
+    let src = file.src.as_bytes();
+    let lo = range.lo as usize;
+    let hi = (range.hi as usize).min(src.len());
+    let mut out = file.src.clone().into_bytes();
+    let mut i = lo;
+    let mut in_string = false;
     while i < hi {
-        match src[i] {
-            // An escape inside a field is consumed whole. A nested string literal is written
-            // `\"..\"` — the f-string's own delimiter forces it — so an unescaped `"` byte here
-            // would be the literal's end, and `\"` must not be read as one.
-            b'\\' => i += 2,
-            // A field delegates to the ordinary expression parser, so it admits ordinary
-            // COMMENTS — and a `}` or `:` inside one is text. `f"{value /* } */}"` closes at the
-            // last brace, not the commented one.
-            b'/' if i + 1 < hi && src[i + 1] == b'/' => i = skip_line_comment(src, i, hi),
-            b'/' if i + 1 < hi && src[i + 1] == b'*' => i = skip_block_comment(src, i, hi),
-            b'"' => i = skip_string(src, i, hi),
-            b'\'' => i = skip_char_literal(src, i, hi),
+        if src[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        if i + 1 >= hi || src[i + 1] != b'"' {
+            return None;
+        }
+        if in_string {
+            // Closing: `\"` -> `" `. The quote moves to where the backslash was, so the space
+            // falls outside the literal instead of becoming its last character.
+            out[i] = b'"';
+            out[i + 1] = b' ';
+        } else {
+            // Opening: `\"` -> ` "`.
+            out[i] = b' ';
+        }
+        in_string = !in_string;
+        i += 2;
+    }
+    if in_string {
+        // An unbalanced `\"` would leave the stand-in with an unterminated literal; the field is
+        // malformed, and saying so beats handing the parser a buffer that cannot close.
+        return None;
+    }
+    // Replacing an ASCII backslash with an ASCII space cannot break UTF-8.
+    String::from_utf8(out).ok()
+}
+
+fn find_field_end(src: &[u8], start: usize, hi: usize) -> Option<usize> {
+    let mut scan = FieldScan::new(start);
+    while scan.i < hi {
+        if scan.step(src, hi) {
+            continue;
+        }
+        match src[scan.i] {
             b'(' | b'[' | b'{' => {
-                depth += 1;
-                i += 1;
+                scan.depth += 1;
+                scan.i += 1;
             }
             b')' | b']' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
+                scan.depth = scan.depth.saturating_sub(1);
+                scan.i += 1;
             }
             b'}' => {
-                if depth == 0 {
-                    return Some(i);
+                if scan.depth == 0 {
+                    return Some(scan.i);
                 }
-                depth -= 1;
-                i += 1;
+                scan.depth -= 1;
+                scan.i += 1;
             }
-            _ => i += 1,
+            _ => scan.i += 1,
         }
     }
     None
+}
+
+/// DEV-173: the state a field scan carries.
+///
+/// A field's source is raw: a nested string literal is delimited by `\"`, not `"`, because the
+/// enclosing literal is. So "inside a string" cannot be decided by looking for a bare quote — the
+/// scanner tracks it, and while inside, a `}` or `:` is text.
+struct FieldScan {
+    i: usize,
+    depth: usize,
+    in_escaped_string: bool,
+}
+
+impl FieldScan {
+    fn new(start: usize) -> FieldScan {
+        FieldScan {
+            i: start,
+            depth: 0,
+            in_escaped_string: false,
+        }
+    }
+
+    /// Consume whatever is at `i` if it is an escape, a comment, a plain string or a char literal.
+    /// Returns `true` when it consumed something, meaning the caller should not inspect this byte.
+    fn step(&mut self, src: &[u8], hi: usize) -> bool {
+        let i = self.i;
+        if src[i] == b'\\' && i + 1 < hi {
+            match src[i + 1] {
+                // `\"` opens or closes a nested string literal.
+                b'"' => {
+                    self.in_escaped_string = !self.in_escaped_string;
+                    self.i += 2;
+                }
+                // `\u{...}` contains braces; consume it whole so they are never field structure.
+                b'u' => {
+                    let mut j = i + 2;
+                    while j < hi && src[j] != b'}' {
+                        j += 1;
+                    }
+                    self.i = (j + 1).min(hi);
+                }
+                _ => self.i += 2,
+            }
+            return true;
+        }
+        if self.in_escaped_string {
+            // Inside a nested string, every other byte is content.
+            self.i += 1;
+            return true;
+        }
+        // A field delegates to the ordinary expression parser, so it admits ordinary comments —
+        // and a `}` or `:` inside one is text. Block comments nest (01-Lexical-Grammar §6).
+        if src[i] == b'/' && i + 1 < hi && src[i + 1] == b'/' {
+            self.i = skip_line_comment(src, i, hi);
+            return true;
+        }
+        if src[i] == b'/' && i + 1 < hi && src[i + 1] == b'*' {
+            self.i = skip_block_comment(src, i, hi);
+            return true;
+        }
+        if src[i] == b'"' {
+            self.i = skip_string(src, i, hi);
+            return true;
+        }
+        if src[i] == b'\'' {
+            self.i = skip_char_literal(src, i, hi);
+            return true;
+        }
+        false
+    }
 }
 
 /// The index of the `:` that separates the expression from its specification, or `None`.
@@ -286,37 +405,33 @@ fn find_field_end(src: &[u8], start: usize, hi: usize) -> Option<usize> {
 /// Only a TOP-LEVEL, single `:` counts. A `:` at depth > 0 belongs to a struct literal's field; a
 /// `::` is a path separator. Both are inside the expression.
 fn find_spec_colon(src: &[u8], start: usize, end: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut i = start;
-    while i < end {
-        match src[i] {
-            b'\\' => i += 2,
-            b'/' if i + 1 < end && src[i + 1] == b'/' => i = skip_line_comment(src, i, end),
-            b'/' if i + 1 < end && src[i + 1] == b'*' => i = skip_block_comment(src, i, end),
-            b'"' => i = skip_string(src, i, end),
-            b'\'' => i = skip_char_literal(src, i, end),
+    let mut scan = FieldScan::new(start);
+    while scan.i < end {
+        if scan.step(src, end) {
+            continue;
+        }
+        match src[scan.i] {
             b'(' | b'[' | b'{' => {
-                depth += 1;
-                i += 1;
+                scan.depth += 1;
+                scan.i += 1;
             }
             b')' | b']' | b'}' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
+                scan.depth = scan.depth.saturating_sub(1);
+                scan.i += 1;
             }
-            b':' if depth == 0 => {
-                if i + 1 < end && src[i + 1] == b':' {
-                    i += 2; // `::` — a path, not a specification.
+            b':' if scan.depth == 0 => {
+                if scan.i + 1 < end && src[scan.i + 1] == b':' {
+                    scan.i += 2; // `::` — a path, not a specification.
                     continue;
                 }
-                return Some(i);
+                return Some(scan.i);
             }
-            _ => i += 1,
+            _ => scan.i += 1,
         }
     }
     None
 }
 
-/// Past a `//` line comment, to the newline that ends it (or `hi`).
 fn skip_line_comment(src: &[u8], start: usize, hi: usize) -> usize {
     let mut i = start + 2;
     while i < hi && src[i] != b'\n' {

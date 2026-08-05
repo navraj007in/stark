@@ -587,6 +587,60 @@ impl Parser<'_> {
     /// into segments; each field's expression is then lexed **over its own byte range in the
     /// original file** and parsed by the ordinary expression parser, so its spans are real file
     /// spans and its grammar is the language's, not a second implementation of it.
+    /// DEV-173: parse a field whose source carries the enclosing literal's escapes.
+    ///
+    /// Parsed against a length-preserving stand-in for the file (see
+    /// `format_syntax::field_scratch_source`), so every span it produces is already a real file
+    /// span and nothing needs remapping. Only the nested literal's VALUE differs between the two
+    /// buffers, and that value is interned during this parse rather than recovered from a span
+    /// later — which is the whole of the repair.
+    fn subparse_decoded_expr(&mut self, range: Span) -> ExprId {
+        let Some(scratch_src) = crate::format_syntax::field_scratch_source(self.file, range) else {
+            self.diags.push(
+                Diagnostic::error(
+                    "an interpolation field may only contain an escaped quote",
+                    range,
+                )
+                .with_code("E0218")
+                .with_label(
+                    "other escapes belong to the enclosing literal and would change the value; \
+                     bind it to a variable first",
+                ),
+            );
+            return self.ast.alloc_expr(ExprKind::Error, range);
+        };
+        let scratch = crate::source::SourceFile::new(self.file.name.clone(), scratch_src);
+        let (tokens, lex_diags) = crate::lexer::tokenize_range(&scratch, range.lo, range.hi);
+        self.diags.extend(lex_diags);
+        let mut inner = Parser {
+            file: &scratch,
+            tokens,
+            pos: 0,
+            diags: Vec::new(),
+            ast: self.ast,
+            options: self.options,
+            in_impl_or_trait: self.in_impl_or_trait,
+            depth: self.depth,
+            depth_reported: self.depth_reported,
+        };
+        let expr = inner.expr(DEFAULT);
+        let trailing = !matches!(inner.peek().kind, TokenKind::Eof);
+        let leftover = inner.peek().span;
+        let inner_diags = inner.diags;
+        self.depth_reported = inner.depth_reported;
+        self.diags.extend(inner_diags);
+        if trailing {
+            self.diags.push(
+                Diagnostic::error(
+                    "unexpected trailing tokens in an interpolation field",
+                    leftover,
+                )
+                .with_code("E0218"),
+            );
+        }
+        expr
+    }
+
     fn format_string(&mut self, span: Span) -> ExprId {
         // `f"` opens and `"` closes.
         let body = Span::new(span.lo + 2, span.hi.saturating_sub(1));
@@ -630,27 +684,33 @@ impl Parser<'_> {
     /// `in_impl_or_trait` and the current recursion depth — an interpolation inside a method body
     /// must see `Self` exactly as the surrounding code does, and must not get a fresh depth budget
     /// (LIMIT: the parser's existing `MAX_DEPTH`, not a second one).
+    /// DEV-173: decode a string literal ONCE, from the buffer this parser is reading, and record
+    /// the value.
+    ///
+    /// Which buffer that is matters: a sub-parse of an interpolation field reads the DECODED field
+    /// text, so a nested literal's value is decoded from text that has already had the enclosing
+    /// literal's escapes removed. Recovering the value from the span later cannot do that — the
+    /// span reads back `\"a\"`, not `"a"` — which is what DEV-173 recorded.
+    fn intern_str_lit(&mut self, span: Span, raw: bool) -> StrLitId {
+        let text = self.text(span).to_string();
+        let value = crate::literal::parse_string(&text, raw);
+        self.ast.str_lits.push(value);
+        StrLitId(self.ast.str_lits.len() as u32 - 1)
+    }
+
     fn subparse_expr(&mut self, range: Span) -> ExprId {
         let source = &self.file.src[range.lo as usize..range.hi as usize];
-        // WP-FMT-001 deferred: a field containing the OUTER literal's escapes is refused.
+        // DEV-173: a field carrying the ENCLOSING literal's escapes is decoded first.
         //
-        // A nested string literal inside a field necessarily carries them — the f-string's own `"`
-        // delimiter forces `f"{call(\"a\")}"` — and it cannot be parsed soundly here. Every
-        // expression node reads its text from its SPAN, and a decoded copy of the field has no
-        // span in the real file: a string literal parsed from a scratch buffer and retagged to the
-        // field's span reads the field's raw source back, quotes and all, rendering `\"slice\"`
-        // where the program said `slice`. Producing the wrong string silently is worse than
-        // refusing, so this refuses and the limitation is recorded rather than hidden.
+        // Any nested string literal must carry them — the f-string's own `"` delimiter forces
+        // `f"{call(\"a\")}"` — and `\"` is not expression syntax, so the field cannot be lexed in
+        // place. It is decoded into a scratch buffer, parsed there, and then every span it
+        // produced is mapped BACK to real file offsets. Literal values were interned during that
+        // parse (`intern_str_lit`), so nothing later re-reads a value from a span; that split —
+        // values from the table, spans for locations only — is what makes this sound where the
+        // earlier span-collapsing attempt was not.
         if source.contains('\\') {
-            self.diags.push(
-                Diagnostic::error(
-                    "an interpolation field may not contain an escape sequence",
-                    range,
-                )
-                .with_code("E0218")
-                .with_label("bind the value to a variable first, then interpolate it"),
-            );
-            return self.ast.alloc_expr(ExprKind::Error, range);
+            return self.subparse_decoded_expr(range);
         }
         let (tokens, lex_diags) = crate::lexer::tokenize_range(self.file, range.lo, range.hi);
         self.diags.extend(lex_diags);
@@ -1989,8 +2049,9 @@ impl Parser<'_> {
             }
             TokenKind::Str { raw } => {
                 self.bump();
+                let value = self.intern_str_lit(token.span, raw);
                 self.ast
-                    .alloc_expr(ExprKind::Lit(Lit::Str { raw }), token.span)
+                    .alloc_expr(ExprKind::Lit(Lit::Str { raw, value }), token.span)
             }
             // WP-FMT-001: `f"..."`. The literal arrived as ONE token; this splits it and parses
             // each field's expression with the ordinary expression parser.
@@ -2230,8 +2291,9 @@ impl Parser<'_> {
             }
             TokenKind::Str { raw } => {
                 self.bump();
+                let value = self.intern_str_lit(token.span, raw);
                 self.ast
-                    .alloc_pat(PatKind::Lit(Lit::Str { raw }), token.span)
+                    .alloc_pat(PatKind::Lit(Lit::Str { raw, value }), token.span)
             }
             TokenKind::CharLit => {
                 self.bump();

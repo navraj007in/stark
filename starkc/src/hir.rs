@@ -239,6 +239,9 @@ pub struct Hir {
     /// `lo >= 0x8000_0000` that index no real file). Copied from the AST so consumers past
     /// resolution (MIR lowering's module-path walk) can read them.
     pub synthetic_spans: std::collections::HashMap<crate::source::Span, String>,
+    /// DEV-173: every string literal's decoded value, copied from the AST. A `Lit::Str` names its
+    /// entry, so no pass re-decodes a literal from its span.
+    pub str_lits: Vec<String>,
 }
 
 pub enum Root {

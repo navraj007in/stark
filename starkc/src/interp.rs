@@ -2310,7 +2310,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_lit(&self, lit: Lit, span: Span) -> Result<Value, RuntimeError> {
         let text = self.text(span);
-        let value = literal::eval_lit_value(lit, text)
+        let value = literal::eval_lit_value(lit, text, &self.hir.str_lits)
             .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
         // WP-C1.5 (DEV-015): defense-in-depth mirror of typecheck.rs's suffixed-literal
         // magnitude check (`check_expr`'s `Lit::Int` arm) -- re-verified here in case a literal

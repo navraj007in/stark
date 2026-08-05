@@ -92,7 +92,7 @@ impl<'a> Dumper<'a> {
         match lit {
             Lit::Int { .. } => format!("lit-int {text}"),
             Lit::Float { .. } => format!("lit-float {text}"),
-            Lit::Str { raw } => format!("lit-str{} {text}", if *raw { " raw" } else { "" }),
+            Lit::Str { raw, .. } => format!("lit-str{} {text}", if *raw { " raw" } else { "" }),
             Lit::Char => format!("lit-char {text}"),
             Lit::Bool(b) => format!("lit-bool {b}"),
         }

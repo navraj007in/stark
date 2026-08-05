@@ -166,6 +166,8 @@ pub fn resolve_with_options(
     // C4.5f-3c: carry the synthetic-span names (dependency-package mod wrappers) into HIR
     // so MIR lowering's module-path walk can read them.
     resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
+    // DEV-173: literal values travel with the HIR; nothing downstream re-decodes from a span.
+    resolver.hir.str_lits = resolver.ast.str_lits.clone();
 
     // WP-C6.2b-F1: expose the module map so the type checker can enforce member/field visibility.
     resolver.hir.item_modules = resolver

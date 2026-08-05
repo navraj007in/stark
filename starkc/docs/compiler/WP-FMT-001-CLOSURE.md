@@ -1,6 +1,6 @@
 # WP-FMT-001 — closure report
 
-**Status: IMPLEMENTED — v0.1 partial interpolation. Ledger: CD-380, corrected by CD-381.**
+**Status: COMPLETE. Ledger: CD-380, corrected by CD-381, completed by CD-382.**
 **Base: `70aca83`. Design note: `WP-FMT-001-DESIGN.md`.**
 
 > **Correction, 2026-08-04 (CD-381).** This report originally declared FMT-0 through FMT-5 closed
@@ -11,6 +11,10 @@
 > repaired in CD-381; the scope statement is corrected here rather than by editing the original
 > claims away. **Formatting is not "complete ordinary-expression interpolation" until DEV-173 is
 > solved.**
+>
+> **DEV-173 was solved in CD-382**, and Tier-1 qualification came back green on `7e41a1e`. Both of
+> the reasons this report was not closable are gone; the status line above reflects that, and the
+> history of how it got there is left standing.
 
 ```stark
 let message = f"pkg={name} n={count:04} r={ratio:.2} ok={ok}";

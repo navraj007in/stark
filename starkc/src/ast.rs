@@ -28,6 +28,8 @@ arena_id!(ItemId);
 arena_id!(PatId);
 arena_id!(BlockId);
 arena_id!(DimId);
+// DEV-173: `StrLitId` indexes a string literal's DECODED value in `Ast::str_lits`.
+arena_id!(StrLitId);
 
 /// WP-FMT-001: arena high-water marks, so every node a sub-parse creates can be found afterwards.
 #[derive(Clone, Copy)]
@@ -53,6 +55,14 @@ pub struct Ast {
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
     pub synthetic_spans: std::collections::HashMap<Span, String>,
+    /// DEV-173: every string literal's DECODED value, in allocation order.
+    ///
+    /// A literal used to be re-decoded from its own source span on demand. That works only while
+    /// a literal's span reads back as its own source — which an interpolation field breaks, since
+    /// a nested string literal there is written `\"a\"` and carries the ENCLOSING literal's
+    /// escapes. Decoding is done once, at parse time, from whatever buffer the parser was reading;
+    /// spans are then purely diagnostic.
+    pub str_lits: Vec<String>,
 }
 
 /// What was parsed. `Program` is the source-language entry point
@@ -448,6 +458,8 @@ pub enum Lit {
     },
     Str {
         raw: bool,
+        /// DEV-173: the decoded value, resolved at parse time (see `Ast::str_lits`).
+        value: StrLitId,
     },
     Char,
     Bool(bool),
@@ -751,7 +763,7 @@ pub enum UseTree {
 // ---------------------------------------------------------------- arena --
 
 impl Ast {
-    /// WP-FMT-001: the current arena sizes, for [`Ast::retag_spans_since`].
+    /// WP-FMT-001: the current arena sizes, for [`Ast::remap_spans_since`].
     pub fn marks(&self) -> ArenaMarks {
         ArenaMarks {
             types: self.types.len(),
@@ -762,26 +774,39 @@ impl Ast {
         }
     }
 
-    /// WP-FMT-001: give every node allocated since `marks` the span `span`.
+    /// DEV-173: translate every span allocated since `marks` from a scratch buffer's offsets back
+    /// to the real file's, through `map`.
     ///
-    /// Used only by the decoded sub-parse of an interpolation field containing escapes: those
-    /// nodes' spans index a scratch buffer nothing downstream can read, so they are replaced with
-    /// the field's own span. Every consumer then reports a location that exists in the real file.
-    pub fn retag_spans_since(&mut self, marks: ArenaMarks, span: Span) {
+    /// The decoded sub-parse of an interpolation field reads a buffer whose offsets are its own.
+    /// `map[i]` is the file offset the decoded byte `i` came from, so remapping restores REAL
+    /// spans — a diagnostic inside such a field points at the sub-expression, not at the field.
+    ///
+    /// An earlier version collapsed every span to the field's instead. That was not merely coarse:
+    /// a literal read its value from its span, so collapsing made a nested string literal read the
+    /// whole field's source back. Values now come from `str_lits`, and spans are only ever
+    /// locations.
+    pub fn remap_spans_since(&mut self, marks: ArenaMarks, map: &[u32]) {
+        let remap = |span: &mut Span| {
+            let lo = map.get(span.lo as usize).copied();
+            let hi = map.get(span.hi as usize).copied();
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                *span = Span::new(lo, hi);
+            }
+        };
         for node in &mut self.types[marks.types..] {
-            node.span = span;
+            remap(&mut node.span);
         }
         for node in &mut self.exprs[marks.exprs..] {
-            node.span = span;
+            remap(&mut node.span);
         }
         for node in &mut self.stmts[marks.stmts..] {
-            node.span = span;
+            remap(&mut node.span);
         }
         for node in &mut self.pats[marks.pats..] {
-            node.span = span;
+            remap(&mut node.span);
         }
         for node in &mut self.blocks[marks.blocks..] {
-            node.span = span;
+            remap(&mut node.span);
         }
     }
 

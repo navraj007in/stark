@@ -1,5 +1,72 @@
 # STARK Compiler STATE
 
+## CD-382 — DEV-173 CLOSED: a nested string literal inside an interpolation field (2026-08-05)
+
+```stark
+println(f"{choose(\"yes\", \"no\", true)}");
+println(f"{lookup(\"name\")}");
+```
+
+The form the original WP-FMT-001 acceptance matrix asked for, and the one CD-380 refused. With it,
+interpolation admits ordinary expressions rather than ordinary-expressions-minus-string-literals,
+and WP-FMT-001 is no longer "v0.1 partial".
+
+### Why it was hard, stated exactly
+
+A nested string literal inside a field must be written `\"a\"` — the enclosing literal is delimited
+by `"`, so its quotes have to be escaped — and `\"` is not expression syntax. The field cannot be
+lexed from the file as written.
+
+CD-380 tried parsing a DECODED copy and retagging the resulting spans to the field's span. That
+produced the WRONG STRING: a literal read its value from its span, so a retagged literal read the
+field's raw source back and rendered `\"slice\"` where the program said `slice`. Refusing was the
+right call at the time. A later attempt at proper span REMAPPING failed for a second reason worth
+recording: spans are embedded throughout the AST — in `Path`, `PathSegment`, names — not only on
+nodes, so remapping node spans left identifiers pointing at file offset 0.
+
+### The repair, in two halves, both required
+
+1. **A length-preserving stand-in.** The field is parsed against a copy of the whole file in which
+   each `\"` inside that field becomes ` "` when it opens a nested literal and `" ` when it closes
+   one. Every byte offset is unchanged, so every span the sub-parse produces is already a real file
+   span and nothing is remapped — which is what sidesteps the embedded-span problem entirely.
+
+   **Which side the space lands on is load-bearing.** Blanking the closing backslash in place puts
+   the space INSIDE the literal: `f"{choose(\"yes\", ..)}"` renders `yes ` with a trailing space.
+   Observed while running it, not reasoned about afterwards.
+
+2. **Literals carry their decoded value.** `Ast::str_lits`/`Hir::str_lits` hold every string
+   literal's value, interned at parse time from whatever buffer the parser was reading, and
+   `Lit::Str` names its entry. **Spans are now purely diagnostic.** This is the architectural half
+   the DEV-173 record predicted, and it is what makes the stand-in sound: without it a literal would
+   still read its value back from the real file's `\"a\"`.
+
+### What is still refused, and why it is a different thing
+
+An escape other than `\"` in a field source belongs to the enclosing literal and *changes* the
+inner text — `\\` means one backslash, `\n` means a newline — so blanking it would silently alter
+the value. Those fields are refused with that reason. This is not the old blanket refusal narrowed
+by convenience: it is the boundary between "the escape is punctuation the outer literal forced" and
+"the escape is data".
+
+### Evidence
+
+`tests/wp_fmt_001_interpolation.rs` — 40 tests. `a_field_may_contain_a_nested_string_literal`
+covers six forms including a `:` and a `}` INSIDE a nested string (both of which the field scanner
+must read as text, not structure), a struct literal, and a format specification applied to a nested
+literal. `a_field_may_not_contain_an_escape_other_than_a_quote` pins the remaining refusal.
+
+Regression: three_engine_differential 109, mir_differential 132, dev_display_dispatch 21,
+dev_bound_trait_identity 15, adversarial_stderr 11, gate2_valid 56, conformance 3, robustness 6,
+span_integrity 2.
+
+### Status
+
+DEV-173 CLOSED. **WP-FMT-001 is complete ordinary-expression interpolation**, not v0.1 partial.
+CI on `7e41a1e` was green across all three Tier-1 lanes, which closes the qualification item that
+CD-381 recorded as outstanding.
+
+
 ## CD-381 — WP-FMT-001 correction packet: six defects, one of them mine to admit (2026-08-04)
 
 An external review of `987369b` reopened WP-FMT-001. It was right on every point, and one of them is

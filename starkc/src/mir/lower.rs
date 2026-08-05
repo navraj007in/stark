@@ -4786,7 +4786,8 @@ impl<'a> FnLowerer<'a> {
             }
             // A1 (CD-031): a decoded UTF-8 `&str` literal.
             Lit::Str { .. } => {
-                let value = match literal::eval_lit_value(*lit, self.text(span)) {
+                let value = match literal::eval_lit_value(*lit, self.text(span), &self.hir.str_lits)
+                {
                     Some(crate::literal::LitValue::Str(s)) => s,
                     _ => {
                         return unsupported("unparseable string literal", span);
@@ -4795,7 +4796,7 @@ impl<'a> FnLowerer<'a> {
                 Ok(Operand::Const(Constant::Str(value)))
             }
             // f-3b: a Char literal is its Unicode scalar codepoint, typed Char.
-            Lit::Char => match literal::eval_lit_value(*lit, self.text(span)) {
+            Lit::Char => match literal::eval_lit_value(*lit, self.text(span), &self.hir.str_lits) {
                 Some(crate::literal::LitValue::Char(c)) => Ok(Operand::Const(Constant::Int(
                     i128::from(u32::from(c)),
                     MirTy::Char,
@@ -10451,7 +10452,11 @@ impl<'a> FnLowerer<'a> {
                         }
                         // A2: a Char literal pattern is its Unicode scalar codepoint (the same
                         // representation Char literals lower to as expressions).
-                        Lit::Char => match literal::eval_lit_value(*lit, self.text(pat_span)) {
+                        Lit::Char => match literal::eval_lit_value(
+                            *lit,
+                            self.text(pat_span),
+                            &self.hir.str_lits,
+                        ) {
                             Some(crate::literal::LitValue::Char(c)) => u128::from(u32::from(c)),
                             _ => return unsupported("unparseable char literal pattern", pat_span),
                         },
@@ -10760,15 +10765,19 @@ impl<'a> FnLowerer<'a> {
                                 what: "unparseable literal pattern".to_string(),
                                 span: pat_span,
                             })?,
-                            Lit::Char => match literal::eval_lit_value(*lit, &text) {
-                                Some(crate::literal::LitValue::Char(c)) => i128::from(u32::from(c)),
-                                _ => {
-                                    return unsupported(
-                                        "unparseable char literal pattern",
-                                        pat_span,
-                                    )
+                            Lit::Char => {
+                                match literal::eval_lit_value(*lit, &text, &self.hir.str_lits) {
+                                    Some(crate::literal::LitValue::Char(c)) => {
+                                        i128::from(u32::from(c))
+                                    }
+                                    _ => {
+                                        return unsupported(
+                                            "unparseable char literal pattern",
+                                            pat_span,
+                                        )
+                                    }
                                 }
-                            },
+                            }
                             _ => return unsupported("literal/type mismatch in pattern", pat_span),
                         };
                         let eq = self.new_temp(MirTy::Bool);
@@ -10820,7 +10829,7 @@ impl<'a> FnLowerer<'a> {
                         let Lit::Str { .. } = lit else {
                             return unsupported("literal/type mismatch in pattern", pat_span);
                         };
-                        let value = match literal::eval_lit_value(*lit, &text) {
+                        let value = match literal::eval_lit_value(*lit, &text, &self.hir.str_lits) {
                             Some(crate::literal::LitValue::Str(s)) => s,
                             _ => {
                                 return unsupported("unparseable string literal pattern", pat_span)

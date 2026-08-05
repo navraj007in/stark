@@ -897,8 +897,8 @@ impl<'a> TypeChecker<'a> {
                 // values from their source text (the same logic `interp.rs` uses to evaluate
                 // them) and compare those instead.
                 match (
-                    literal::eval_lit_value(*la, self.text(a.span)),
-                    literal::eval_lit_value(*lb, self.text(b.span)),
+                    literal::eval_lit_value(*la, self.text(a.span), &self.hir.str_lits),
+                    literal::eval_lit_value(*lb, self.text(b.span), &self.hir.str_lits),
                 ) {
                     (Some(va), Some(vb)) => va == vb,
                     // Unparseable literal: fall back to the old shape-only comparison rather

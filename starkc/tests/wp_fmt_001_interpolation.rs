@@ -758,27 +758,68 @@ fn bad_specifications_are_diagnosed() {
     }
 }
 
-/// **A deferred limitation, pinned so it cannot regress silently.**
+/// **DEV-173 RESOLVED (CD-382): a nested string literal inside a field.**
 ///
-/// A field carrying the outer literal's escapes — which any nested string literal must — is
-/// refused rather than mis-parsed. §9.1 lists nested string literals as something the field scanner
-/// should handle; this states plainly that WP-FMT-001 does not, and why refusing beats the
-/// alternative (a string literal reads its value from its span, and a decoded copy has no span in
-/// the real file, so it would render `\"slice\"` where the program said `slice`).
+/// These are the forms the original acceptance matrix asked for and the first implementation
+/// refused. A nested literal must be written `\"a\"` — the enclosing literal is delimited by `"` —
+/// so the field's source is not expression syntax as written.
+///
+/// Two things make it work, and both are needed. The field is parsed against a **length-preserving
+/// stand-in** for the file, in which each `\"` becomes ` "` when it opens and `" ` when it closes:
+/// every offset is unchanged, so the spans the sub-parse produces are already real file spans and
+/// nothing has to be remapped. And a string literal's VALUE is interned during that parse rather
+/// than recovered from its span afterwards, so it reads the stand-in's `"a"` and not the file's
+/// `\"a\"`.
+///
+/// The `:` and `}` cases are the ones the scanner has to get right: both sit INSIDE a nested
+/// string, where they are text rather than field structure.
 #[test]
-fn a_field_may_not_carry_an_escape_sequence() {
-    let source = "fn main() { let _t = f\"{call(\\\"a\\\")}\"; }";
-    let file = std::sync::Arc::new(starkc::source::SourceFile::new(
-        "fmt_escape_field",
-        source.to_string(),
-    ));
-    let (_ast, diags) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0218") && d.message.contains("escape sequence")),
-        "expected the escape-in-field refusal, got {diags:?}"
+fn a_field_may_contain_a_nested_string_literal() {
+    agree_completing_with_stdout(
+        "fmt_nested_string",
+        "\
+fn choose(a: &str, b: &str, ok: Bool) -> String {
+    if ok { a.to_string() } else { b.to_string() }
+}
+
+fn main() {
+    println(f\"{choose(\\\"yes\\\", \\\"no\\\", true)}\".as_str());
+    println(f\"{choose(\\\"yes\\\", \\\"no\\\", false)}\".as_str());
+    println(f\"a={\\\"lit\\\"} b={\\\"x\\\"}\".as_str());
+    println(f\"{\\\"padded\\\":>10}\".as_str());
+    println(f\"{\\\"a:b\\\"}\".as_str());
+    println(f\"{\\\"has}brace\\\"}\".as_str());
+}
+",
+        "yes\nno\na=lit b=x\n    padded\na:b\nhas}brace\n",
     );
+}
+
+/// The remaining refusal, narrowed and pinned. An escape OTHER than `\"` in a field source belongs
+/// to the enclosing literal and changes the inner text — `\\` means one backslash, `\n` means a
+/// newline — so blanking it would silently alter the value. Refused with that reason rather than
+/// mis-decoded.
+#[test]
+fn a_field_may_not_contain_an_escape_other_than_a_quote() {
+    for (tag, source) in [
+        (
+            "fmt_escape_tab",
+            "fn main() { let _t = f\"{\\\"tab\\\\there\\\"}\"; }",
+        ),
+        (
+            "fmt_escape_backslash",
+            "fn main() { let _t = f\"{\\\"a\\\\\\\\b\\\"}\"; }",
+        ),
+    ] {
+        let file = std::sync::Arc::new(starkc::source::SourceFile::new(tag, source.to_string()));
+        let (_ast, diags) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("E0218") && d.message.contains("escaped quote")),
+            "{tag}: expected the narrowed refusal, got {diags:?}"
+        );
+    }
 }
 
 /// `stark-fmt`'s builder still works, and interpolation needs no dependency on it: this program
