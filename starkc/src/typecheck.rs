@@ -195,6 +195,8 @@ pub struct TypeChecker<'a> {
     fn_sigs: HashMap<ItemId, FnSigTy>,
     /// A3b: raw (pre-grounding) callable signatures, keyed by body.
     callable_sigs: HashMap<BlockId, CallableSigTy>,
+    /// A3c-S: raw (pre-grounding) callable environments, keyed by the call expression.
+    callable_envs: HashMap<ExprId, CallableInstantiation>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
     /// WP-C4.5c: ordered generic-argument types for every use of a *generic* fn item, keyed
@@ -202,7 +204,6 @@ pub struct TypeChecker<'a> {
     /// `TypeTables::generic_insts` for MIR monomorphisation; an instantiation still
     /// containing `Ty::Infer` once inference completes is rejected with E0004
     /// (TYPE-GENERIC-001 / TYPE-FN-002 — the DEV-064 fix).
-    generic_insts: HashMap<ExprId, Vec<Ty>>,
     /// WP-C5.3e: the queried type of each `size_of::<T>()` / `align_of::<T>()`, keyed by the
     /// builtin's own path expression. Kept OUT of `generic_insts` deliberately: that table drives
     /// MIR monomorphisation of generic fn instances, and a layout query is not one.
@@ -619,6 +620,105 @@ impl LayoutTables {
     }
 }
 
+/// Where a generic parameter was DECLARED. (WP-VALUE-REP-TOTAL, A3c-S.)
+///
+/// Provenance is kept because the consumers need different views of one answer: the HIR oracle
+/// wants a name→type map, MIR wants the method's own arguments in declaration order, and a
+/// diagnostic wants to say which declaration a binding came from. Storing one table with origins
+/// lets each derive its view; storing several tables would be several authorities on what a generic
+/// call means.
+///
+/// **Names are unique across every binder simultaneously in scope**, guaranteed by NAME-SHADOW-001
+/// (enforced for DEV-177). That is what makes the derived `HashMap<String, Ty>` sound — the
+/// provenance here is for ordering and diagnostics, not to disambiguate colliding names.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GenericBinder {
+    /// The implicit `Self` of an impl or trait.
+    SelfType,
+    /// A free function's own parameter.
+    FunctionParam { index: usize, name: String },
+    /// The enclosing impl's parameter.
+    ImplParam { index: usize, name: String },
+    /// The enclosing trait's parameter.
+    TraitParam { index: usize, name: String },
+    /// The callable's own parameter, when the callable is a method or associated function.
+    MethodParam { index: usize, name: String },
+}
+
+impl GenericBinder {
+    /// The name this binder introduces. `Self` is spelled as the type keyword because that is how
+    /// `Ty::Param` carries it inside a trait default body.
+    pub fn name(&self) -> &str {
+        match self {
+            GenericBinder::SelfType => "Self",
+            GenericBinder::FunctionParam { name, .. }
+            | GenericBinder::ImplParam { name, .. }
+            | GenericBinder::TraitParam { name, .. }
+            | GenericBinder::MethodParam { name, .. } => name,
+        }
+    }
+}
+
+/// One call site's inputs to [`Checker::publish_callable_env`].
+///
+/// A struct rather than seven positional parameters: the two name slices are the same type and
+/// differ only in which declaration they came from, so an argument-order slip would compile and
+/// publish an environment with impl and method binders exchanged.
+struct PublishedEnv<'a> {
+    call_expr: ExprId,
+    body: BlockId,
+    self_ty: Option<Ty>,
+    impl_names: &'a [String],
+    own_names: &'a [String],
+    own_is_method: bool,
+    map: &'a HashMap<String, Ty>,
+}
+
+/// The generic environment the checker selected for ONE callable use. (A3c-S.)
+///
+/// Keyed by the call expression, never by the body: one generic body is legitimately invoked as
+/// `Wrapper<Int32>` and `Wrapper<String>` in the same program, so an environment attached to the
+/// body could only hold one of them.
+///
+/// Bindings may themselves contain `Ty::Param` when the CALLER is generic — `fn outer<T>(w:
+/// Wrapper<T>)` publishes `impl T -> T`. The interpreter concretises against its active frame
+/// before installing, which is what composes the two.
+#[derive(Debug, Clone)]
+pub struct CallableInstantiation {
+    /// The body this use selected, so a consumer can pair the environment with A3b's signature.
+    pub body: BlockId,
+    pub bindings: Vec<(GenericBinder, Ty)>,
+}
+
+impl CallableInstantiation {
+    /// The callable's OWN parameters in declaration order — the view MIR monomorphisation needs,
+    /// and exactly what `generic_insts` used to store on its own.
+    ///
+    /// Impl, trait and `Self` bindings are excluded: a monomorphisation key is per callable, and
+    /// including the enclosing impl's arguments would change the key's arity.
+    pub fn own_arguments(&self) -> Vec<Ty> {
+        self.bindings
+            .iter()
+            .filter(|(binder, _)| {
+                matches!(
+                    binder,
+                    GenericBinder::FunctionParam { .. } | GenericBinder::MethodParam { .. }
+                )
+            })
+            .map(|(_, ty)| ty.clone())
+            .collect()
+    }
+
+    /// The name→type view the runtime substitutes with. Sound because NAME-SHADOW-001 forbids two
+    /// binders in scope sharing a name.
+    pub fn substitutions(&self) -> HashMap<String, Ty> {
+        self.bindings
+            .iter()
+            .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
+            .collect()
+    }
+}
+
 /// The checker-established signature of one executable callable body. (WP-VALUE-REP-TOTAL, A3b.)
 ///
 /// **Keyed by `BlockId`, because that is the identity execution has.** `fn_types` is keyed by
@@ -655,12 +755,17 @@ pub struct TypeTables {
     /// Entries may still contain `Ty::Param`. A generic body is checked ONCE, so its signature is
     /// parametric by nature; concretising it per invocation is A3c's job, not this table's.
     pub callable_types: HashMap<BlockId, CallableSigTy>,
+    /// WP-VALUE-REP-TOTAL A3c-S: the generic environment selected for each callable USE.
+    ///
+    /// Supersedes `generic_insts`, which recorded only a free function's or a method's OWN
+    /// parameters positionally and therefore could not express impl generics, trait generics or
+    /// `Self` — the reason DEV-176 exists.
+    pub callable_instantiations: HashMap<ExprId, CallableInstantiation>,
     /// WP-C4.5c: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
     /// the enclosing instantiation substitutes its own arguments. Entries never contain
     /// `Ty::Infer` — undetermined instantiations are rejected during checking (E0004).
-    pub generic_insts: HashMap<ExprId, Vec<Ty>>,
     /// WP-C5.3e: the QUERIED TYPE of each layout query, keyed by the builtin's path expression.
     /// Before it existed the oracle returned a hardcoded `8` without even looking at the type.
     ///
@@ -724,9 +829,9 @@ pub fn analyze_with_options(
         enum_variants: HashMap::new(),
         fn_sigs: HashMap::new(),
         callable_sigs: HashMap::new(),
+        callable_envs: HashMap::new(),
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
-        generic_insts: HashMap::new(),
         layout_queries: HashMap::new(),
         bound_trait_calls: HashMap::new(),
         current_self_ty: None,
@@ -762,6 +867,23 @@ pub fn analyze_with_options(
         .iter()
         .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
+    let callable_instantiations = checker
+        .callable_envs
+        .iter()
+        .map(|(&expr, env)| {
+            (
+                expr,
+                CallableInstantiation {
+                    body: env.body,
+                    bindings: env
+                        .bindings
+                        .iter()
+                        .map(|(binder, ty)| (binder.clone(), checker.ground(ty)))
+                        .collect(),
+                },
+            )
+        })
+        .collect();
     let callable_types = checker
         .callable_sigs
         .iter()
@@ -795,18 +917,23 @@ pub fn analyze_with_options(
     // unconstrained, the call requires explicit arguments"; TYPE-FN-002 for the fn-value
     // coercion form), never left for a backend to trip over. `Ty::Param` entries are fine:
     // inside a generic body they are determined by the enclosing instantiation.
-    let mut generic_insts = HashMap::new();
+    // A3c-S: the undetermined-instantiation check moved onto the single table, but deliberately
+    // over the SAME subset it always covered — a callable's OWN arguments. The environment also
+    // carries impl, trait and `Self` bindings, and validating those here would reject programs that
+    // previously passed, turning a table migration into a language change.
     let mut undetermined: Vec<Span> = Vec::new();
-    for (&expr_id, tys) in &checker.generic_insts {
-        let grounded: Vec<Ty> = tys.iter().map(|ty| checker.ground(ty)).collect();
+    for (&expr_id, env) in &checker.callable_envs {
+        let grounded: Vec<Ty> = env
+            .own_arguments()
+            .iter()
+            .map(|ty| checker.ground(ty))
+            .collect();
         if grounded.iter().any(ty_contains_error) {
             continue; // the use site already failed checking; avoid a cascade
         }
         if grounded.iter().any(ty_contains_infer) {
             undetermined.push(hir.expr(expr_id).span);
-            continue;
         }
-        generic_insts.insert(expr_id, grounded);
     }
     let layout_queries: HashMap<ExprId, Ty> = checker
         .layout_queries
@@ -840,7 +967,7 @@ pub fn analyze_with_options(
         local_mutability: checker.local_mutability,
         fn_types,
         callable_types,
-        generic_insts,
+        callable_instantiations,
         layout_queries,
         layout,
         bound_trait_calls: checker.bound_trait_calls,
@@ -4446,6 +4573,67 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// **A3c-S: record the generic environment the checker selected for one callable use.**
+    ///
+    /// `map` is the substitution the caller already built while selecting the callable — impl
+    /// parameters from candidate selection, then the callable's own parameters. `self_ty` is the
+    /// impl's or trait's `Self`. All of it is already computed at every call site; before this it
+    /// was discarded except for one positional slice, which is why impl generics, trait generics
+    /// and `Self` never reached execution (DEV-176).
+    ///
+    /// Binders are recorded with their origin so consumers can derive an ordered view (MIR) or a
+    /// name view (the oracle) from one stored answer rather than from separate tables.
+    /// **Names arrive already resolved, and that is DEV-101's rule, not a convenience.** A generic
+    /// parameter's name is a span into the file that DECLARED it, so a cross-package callee's
+    /// parameters must be read with `item_text` against the callee's file — reading them with the
+    /// caller's `decl_text` yields a different string, every `map` lookup misses, and the
+    /// environment silently publishes as empty. Resolving names inside this helper is exactly how
+    /// that regression happened, so the caller supplies them.
+    fn publish_callable_env(&mut self, published: PublishedEnv<'_>) {
+        let PublishedEnv {
+            call_expr,
+            body,
+            self_ty,
+            impl_names,
+            own_names,
+            own_is_method,
+            map,
+        } = published;
+        let mut bindings: Vec<(GenericBinder, Ty)> = Vec::new();
+        if let Some(self_ty) = self_ty {
+            bindings.push((GenericBinder::SelfType, self_ty));
+        }
+        for (index, name) in impl_names.iter().enumerate() {
+            if let Some(ty) = map.get(name) {
+                bindings.push((
+                    GenericBinder::ImplParam {
+                        index,
+                        name: name.clone(),
+                    },
+                    ty.clone(),
+                ));
+            }
+        }
+        for (index, name) in own_names.iter().enumerate() {
+            if let Some(ty) = map.get(name) {
+                let binder = if own_is_method {
+                    GenericBinder::MethodParam {
+                        index,
+                        name: name.clone(),
+                    }
+                } else {
+                    GenericBinder::FunctionParam {
+                        index,
+                        name: name.clone(),
+                    }
+                };
+                bindings.push((binder, ty.clone()));
+            }
+        }
+        self.callable_envs
+            .insert(call_expr, CallableInstantiation { body, bindings });
+    }
+
     /// **NAME-SHADOW-001 (DEV-177): a generic parameter may not duplicate another one in scope.**
     ///
     /// 04-Semantic-Analysis.md: "Generic parameters may not duplicate another generic parameter or
@@ -4465,7 +4653,7 @@ impl<'a> TypeChecker<'a> {
     /// against inherited owners is what would keep it correct if it ever could be.
     ///
     /// A generic named `Self` needs no check here: the parser already refuses it with "expected a
-    /// generic parameter name, found `Self`". Duplicating that as a type check would be a second
+    /// generic parameter name, found `Self`". Duplicating that as a type-check would be a second
     /// answer to a question already settled.
     fn check_generic_shadowing(
         &mut self,
@@ -6924,15 +7112,27 @@ impl<'a> TypeChecker<'a> {
             })
         });
         if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
-            let ordered: Vec<Ty> = generics
-                .iter()
-                .map(|param| {
-                    // DEV-101: callee-declared name → callee's file, matching the map keys above.
-                    let name = self.item_text(item_id, param.name).to_string();
-                    map.get(&name).cloned().unwrap_or(Ty::Error)
-                })
-                .collect();
-            self.generic_insts.insert(expr_id, ordered);
+            // A3c-S: the same instantiation as a provenance-carrying environment. A free function
+            // has no impl, no trait and no `Self`, so this is the degenerate case of the table —
+            // recorded through the same path so there is one answer to what a generic call means
+            // rather than one table for free functions and another for methods.
+            if let hir::ItemKind::Fn(def) = &self.hir.item(item_id).kind {
+                let body = def.body;
+                let own_names: Vec<String> = generics
+                    .iter()
+                    .map(|param| self.item_text(item_id, param.name).to_string())
+                    .collect();
+                let env_map = map.clone();
+                self.publish_callable_env(PublishedEnv {
+                    call_expr: expr_id,
+                    body,
+                    self_ty: None,
+                    impl_names: &[],
+                    own_names: &own_names,
+                    own_is_method: false,
+                    map: &env_map,
+                });
+            }
         }
 
         // Associated-type equality bindings participate in substitution, so a
@@ -8251,11 +8451,16 @@ impl<'a> TypeChecker<'a> {
                 // DEV-069: a trait default's name belongs to the trait's own file, which may
                 // differ from both the impl's file and the file being checked.
                 trait_items.iter().find_map(|trait_item| match trait_item {
-                    hir::TraitItem::Method { sig, body: Some(_) }
-                        if self.item_text(trait_id, sig.name) == name_str =>
-                    {
-                        Some((sig.clone(), map.clone(), impl_self_ty.clone(), trait_id))
-                    }
+                    hir::TraitItem::Method {
+                        sig,
+                        body: Some(body),
+                    } if self.item_text(trait_id, sig.name) == name_str => Some((
+                        sig.clone(),
+                        map.clone(),
+                        impl_self_ty.clone(),
+                        trait_id,
+                        *body,
+                    )),
                     _ => None,
                 })
             })
@@ -8263,7 +8468,7 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
-        if let Some((sig, mut map, impl_self_ty, trait_id)) = default_fallback {
+        if let Some((sig, mut map, impl_self_ty, trait_id, trait_body)) = default_fallback {
             // CD-358: a trait default's signature is declared in the TRAIT's file, which may
             // differ from the impl's file and from the file under check. DEV-069 already applied
             // that rule to the default's NAME; its parameter and return types need it too.
@@ -8289,17 +8494,33 @@ impl<'a> TypeChecker<'a> {
             }
             // Record this call site's method-level instantiation for MIR monomorphisation, as
             // the selected-impl path does.
-            if !sig.generics.is_empty() {
-                let ordered: Vec<Ty> = sig
-                    .generics
-                    .iter()
-                    .map(|param| {
-                        let name = self.decl_text(param.name).to_string();
-                        map.get(&name).cloned().unwrap_or(Ty::Error)
-                    })
-                    .collect();
-                self.generic_insts.insert(call_expr, ordered);
-            }
+            // A3c-S: the full environment, including `Self` and the trait's own parameters, which
+            // the positional record above cannot express. A trait default body carries
+            // `Ty::Param("Self")` from the checker, so without this the oracle has no binding for
+            // it at all (DEV-176).
+            let trait_generics = match &self.hir.item(trait_id).kind {
+                hir::ItemKind::Trait { generics, .. } => generics.clone(),
+                _ => Vec::new(),
+            };
+            let env_map = map.clone();
+            let trait_names: Vec<String> = trait_generics
+                .iter()
+                .map(|param| self.item_text(trait_id, param.name).to_string())
+                .collect();
+            let own_names: Vec<String> = sig
+                .generics
+                .iter()
+                .map(|param| self.decl_text(param.name).to_string())
+                .collect();
+            self.publish_callable_env(PublishedEnv {
+                call_expr,
+                body: trait_body,
+                self_ty: Some(impl_self_ty.clone()),
+                impl_names: &trait_names,
+                own_names: &own_names,
+                own_is_method: true,
+                map: &env_map,
+            });
             if matches!(sig.receiver, Some(hir::Receiver::RefMut))
                 && !self.is_mutable_place(base_expr)
             {
@@ -8381,18 +8602,33 @@ impl<'a> TypeChecker<'a> {
             // uses for top-level generic fns, which had no method equivalent. Recorded in the
             // method's own declaration order, and only when the method actually declares
             // parameters, so non-generic methods add no entries.
-            if !def.sig.generics.is_empty() {
-                let ordered: Vec<Ty> = def
-                    .sig
-                    .generics
-                    .iter()
-                    .map(|param| {
-                        let name = self.decl_text(param.name).to_string();
-                        map.get(&name).cloned().unwrap_or(Ty::Error)
-                    })
-                    .collect();
-                self.generic_insts.insert(call_expr, ordered);
-            }
+            // A3c-S: the full environment. `map` already carries the IMPL's parameters from
+            // candidate selection plus the method's own — everything DEV-176 needs was computed
+            // here and thrown away, except for the positional slice above.
+            let impl_generics = match &self.hir.item(impl_item_id).kind {
+                hir::ItemKind::Impl { generics, .. } => generics.clone(),
+                _ => Vec::new(),
+            };
+            let env_map = map.clone();
+            let env_self = impl_self_ty.clone();
+            let env_generics = def.sig.generics.clone();
+            let impl_names: Vec<String> = impl_generics
+                .iter()
+                .map(|param| self.item_text(impl_item_id, param.name).to_string())
+                .collect();
+            let own_names: Vec<String> = env_generics
+                .iter()
+                .map(|param| self.decl_text(param.name).to_string())
+                .collect();
+            self.publish_callable_env(PublishedEnv {
+                call_expr,
+                body: def.body,
+                self_ty: Some(env_self),
+                impl_names: &impl_names,
+                own_names: &own_names,
+                own_is_method: true,
+                map: &env_map,
+            });
             if matches!(def.sig.receiver, Some(hir::Receiver::RefMut))
                 && !self.is_mutable_place(base_expr)
             {
@@ -14077,11 +14313,11 @@ mod tests {
         assert!(
             result
                 .tables
-                .generic_insts
+                .callable_instantiations
                 .values()
-                .any(|args| args == &vec![Ty::Primitive(Primitive::Int32)]),
+                .any(|env| env.own_arguments() == vec![Ty::Primitive(Primitive::Int32)]),
             "expected a published [Int32] instantiation, got: {:?}",
-            result.tables.generic_insts
+            result.tables.callable_instantiations
         );
     }
 

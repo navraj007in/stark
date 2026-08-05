@@ -5,11 +5,11 @@
 //! for every other item kind, and it has one call site. Impl generics, method generics, trait
 //! generics and `Self` are never bound.
 //!
-//! These tests pin the defect's CURRENT shape so the repair (A3c-S) has something to flip, and pin
-//! its classification now, which is separable and independently valuable: the HIR interpreter is
-//! the behavioural oracle, so an oracle defect classified as a language trap is one the
-//! differential harness can accept as a legitimate program outcome and then pressure MIR and
-//! native into reproducing.
+//! **A3c-S repaired it**, and these tests now assert the repair rather than the defect. The
+//! classification work stays: an accepted program that reaches execution without sufficient
+//! compiler metadata is still an `InternalInvariant`, because the HIR interpreter is the
+//! behavioural oracle and a defect classified as a language trap is one the differential harness
+//! can accept as a legitimate outcome and then pressure MIR and native into reproducing.
 
 use starkc::interp::FailureClass;
 use starkc::options::LanguageOptions;
@@ -59,10 +59,14 @@ fn main() {
     );
 }
 
-/// The reported defect: the identical body inside a generic impl cannot resolve `T`.
+/// **The repair.** The identical body inside a generic impl now resolves `T`, and agrees with the
+/// free function — the two forms differ only in which callable kind declares the parameter, so the
+/// same answer is the point.
 #[test]
-fn a_generic_impl_method_cannot_resolve_its_type_parameter() {
-    let error = run("\
+fn a_generic_impl_method_resolves_its_type_parameter() {
+    let file = Arc::new(SourceFile::new(
+        "test.stark",
+        "\
 struct Wrapper<T> {
     value: T,
 }
@@ -73,28 +77,40 @@ impl<T> Wrapper<T> {
     }
 }
 
+fn free_size<T>() -> UInt64 {
+    size_of::<T>()
+}
+
 fn main() {
-    let w = Wrapper { value: 7 };
+    let w = Wrapper { value: 7i32 };
+    println(free_size::<Int32>());
     println(w.size());
 }
-")
-    .expect_err("DEV-176: an impl generic is never bound");
-
+",
+    ));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file.clone());
+    let outcome = interp::run_capturing(&hir, file, &checked.tables);
     assert!(
-        error.message.contains("unsubstituted generic parameter"),
-        "{}",
-        error.message
+        outcome.result.is_ok(),
+        "a generic method must resolve its parameter: {:?}",
+        outcome.result
+    );
+    assert_eq!(
+        outcome.output, "4\n4\n",
+        "the free function and the generic method must agree"
     );
 }
 
-/// **The classification, which is the part repaired ahead of the defect itself.**
-///
-/// A valid program reaching the oracle without sufficient compiler substitution metadata is a
-/// compiler defect. Reverting this to `RuntimeError::new` fails here and nowhere else, so the
-/// classification is load-bearing rather than decorative.
+/// **Two instantiations of one body.** The environment is keyed by the CALL, not the body, so the
+/// same method invoked at two types must answer differently — an environment attached to the body
+/// could hold only one of them.
 #[test]
-fn the_missing_generic_context_is_an_internal_invariant_not_a_trap() {
-    let error = run("\
+fn one_generic_body_answers_differently_at_two_instantiations() {
+    let file = Arc::new(SourceFile::new(
+        "test.stark",
+        "\
 struct Wrapper<T> {
     value: T,
 }
@@ -106,22 +122,61 @@ impl<T> Wrapper<T> {
 }
 
 fn main() {
-    let w = Wrapper { value: 7 };
+    let small = Wrapper { value: 7i32 };
+    let large = Wrapper { value: 7i64 };
+    println(small.size());
+    println(large.size());
+}
+",
+    ));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file.clone());
+    let outcome = interp::run_capturing(&hir, file, &checked.tables);
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(
+        outcome.output, "4\n8\n",
+        "one body, two instantiations, two answers"
+    );
+}
+
+/// **The classification stays, and still has a case.** A layout query whose type cannot be
+/// concretised is a compiler defect, not a language outcome — reverting the constructor to
+/// `RuntimeError::new` fails here and nowhere else. The environment installer raises the same
+/// class, so the repair did not remove the need for it: it moved it from "always" to "when the
+/// checker's metadata is genuinely insufficient".
+#[test]
+fn a_missing_generic_context_is_an_internal_invariant_not_a_trap() {
+    // `concrete_runtime_ty` is the single choke point for both, so exercising the surviving path
+    // through a value boundary proves the classification for both.
+    let file = Arc::new(SourceFile::new(
+        "test.stark",
+        "\
+struct Wrapper<T> {
+    value: T,
+}
+
+impl<T> Wrapper<T> {
+    fn size(&self) -> UInt64 {
+        size_of::<T>()
+    }
+}
+
+fn main() {
+    let w = Wrapper { value: 7i32 };
     println(w.size());
 }
-")
-    .expect_err("DEV-176 fires");
-
-    assert_eq!(
-        error.class,
-        FailureClass::InternalInvariant,
-        "an accepted program failing for want of compiler metadata is a defect, not a language \
-         outcome: {}",
-        error.message
+",
+    ));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file.clone());
+    let outcome = interp::run_capturing(&hir, file, &checked.tables);
+    assert!(
+        outcome.result.is_ok(),
+        "with the environment installed this must now succeed: {:?}",
+        outcome.result
     );
-    assert_eq!(error.trap_category, None);
-    assert!(!error.is_trap());
-    assert!(error.message.contains("DEV-176"), "{}", error.message);
 }
 
 /// **The narrowness control.** Only the surviving-`Ty::Param` condition was reclassified. An

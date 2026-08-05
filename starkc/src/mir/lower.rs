@@ -5949,7 +5949,15 @@ impl<'a> FnLowerer<'a> {
                     };
                     // Method-level generic arguments come from the checker's per-call-site
                     // recording, exactly as for `recv.m::<T>(...)` (WP-C4.7-8.4).
-                    let method_args = match self.tables.generic_insts.get(&expr) {
+                    // A3c-S: one table now answers "what generic context applies at this use".
+                    // MIR wants the callable's OWN arguments in order; the environment carries
+                    // impl and `Self` bindings too, which are not part of a monomorphisation key.
+                    let own = self
+                        .tables
+                        .callable_instantiations
+                        .get(&expr)
+                        .map(|env| env.own_arguments());
+                    let method_args = match own.as_deref() {
                         Some(tys) => tys
                             .iter()
                             .map(|t| self.mir_ty(t, span))
@@ -6103,7 +6111,12 @@ impl<'a> FnLowerer<'a> {
         let type_args = if def.sig.generics.is_empty() {
             Vec::new()
         } else {
-            let Some(recorded) = self.tables.generic_insts.get(&use_expr) else {
+            let recorded_env = self
+                .tables
+                .callable_instantiations
+                .get(&use_expr)
+                .map(|env| env.own_arguments());
+            let Some(recorded) = recorded_env.as_deref() else {
                 // The checker records every accepted use of a generic fn (undetermined ones
                 // are E0004-rejected before lowering), so a miss is a pipeline invariant
                 // violation, not a user error — still reported cleanly, never mislowered.
@@ -6608,7 +6621,12 @@ impl<'a> FnLowerer<'a> {
         // call, so they come from the checker's recording keyed by this call expression. The
         // recorded types are grounded but may still mention the ENCLOSING body's parameters, so
         // the active substitution applies — the same treatment top-level generic calls get.
-        let recorded_method_args = match self.tables.generic_insts.get(&call_expr) {
+        let own_args = self
+            .tables
+            .callable_instantiations
+            .get(&call_expr)
+            .map(|env| env.own_arguments());
+        let recorded_method_args = match own_args.as_deref() {
             Some(tys) => tys
                 .iter()
                 .map(|t| self.mir_ty(t, span))

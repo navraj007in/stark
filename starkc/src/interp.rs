@@ -3277,7 +3277,11 @@ impl<'a> Interpreter<'a> {
                         // `Ty::Param`. Pushed and popped around the call on every path — the
                         // guard's `Drop` covers traps and interpreter errors too, which a manual
                         // pop after `?` would not.
-                        let _frame = self.push_generic_frame(*item, callee);
+                        // A3c-S: one installer for every callable kind. The old
+                        // `push_generic_frame` bound only a free function's own parameters and did
+                        // not compose with an enclosing instantiation; `push_callable_env` does
+                        // both, so a generic call inside a generic body now resolves too.
+                        let _frame = self.push_callable_env(callee, span)?;
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
                     }
@@ -3437,33 +3441,69 @@ impl<'a> Interpreter<'a> {
     /// arguments, and never falls back to a partial map. A generic item whose call site has no
     /// recorded instantiation, or whose arity disagrees, installs NOTHING — the query then fails
     /// as an unsubstituted parameter rather than silently answering from a stale or partial frame.
-    fn push_generic_frame(&mut self, item: ItemId, callee: ExprId) -> GenericFrame {
-        let names: Vec<String> = match &self.hir.item(item).kind {
-            hir::ItemKind::Fn(def) => def
-                .sig
-                .generics
-                .iter()
-                .map(|p| self.text(p.name).to_string())
-                .collect(),
-            _ => Vec::new(),
+    /// **A3c-S: install the checker-selected generic environment for one callable use.**
+    ///
+    /// `push_generic_frame` binds only a free function's own parameters, which is DEV-176: impl
+    /// generics, method generics, trait generics and `Self` were never bound, so a generic method
+    /// body executed with no idea what its parameters stood for.
+    ///
+    /// **Composition happens BEFORE the push, and that ordering is load-bearing.** Published
+    /// bindings may themselves contain `Ty::Param` when the CALLER is generic — `fn outer<T>(w:
+    /// Wrapper<T>)` publishes `impl T -> T`. Each value is concretised against the currently active
+    /// frame first; pushing first and substituting after would resolve `T -> T` against itself and
+    /// silently keep the parameter.
+    ///
+    /// The interpreter CONSUMES this environment and never reconstructs one from names, runtime
+    /// values or impl scanning — a second instantiation algorithm would be a second answer to what
+    /// a generic call means.
+    fn push_callable_env(
+        &mut self,
+        callee: ExprId,
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        let Some(env) = self.tables.callable_instantiations.get(&callee).cloned() else {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
         };
-        let pushed = if names.is_empty() {
-            false
-        } else {
-            match self.tables.generic_insts.get(&callee) {
-                Some(args) if args.len() == names.len() => {
-                    let map: HashMap<String, Ty> =
-                        names.into_iter().zip(args.iter().cloned()).collect();
-                    self.generic_frames.borrow_mut().push(map);
-                    true
-                }
-                _ => false,
-            }
-        };
-        GenericFrame {
-            frames: self.generic_frames.clone(),
-            pushed,
+        if env.bindings.is_empty() {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
         }
+        // **Two passes, because the bindings have a dependency order.** `Self` is published as the
+        // impl's self type — `Wrapper<T>` — which references the impl's OWN parameters, so it
+        // cannot be resolved against the caller's frame alone. The parameters are concretised
+        // first, then `Self` is substituted through them before its own concretisation. A flat
+        // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
+        // boundary.
+        let mut concrete: HashMap<String, Ty> = HashMap::new();
+        for (binder, ty) in &env.bindings {
+            if matches!(binder, crate::typecheck::GenericBinder::SelfType) {
+                continue;
+            }
+            concrete.insert(
+                binder.name().to_string(),
+                self.concrete_runtime_ty(ty, span)?,
+            );
+        }
+        for (binder, ty) in &env.bindings {
+            if !matches!(binder, crate::typecheck::GenericBinder::SelfType) {
+                continue;
+            }
+            let through_params = crate::typecheck::substitute_ty(ty, &concrete);
+            concrete.insert(
+                binder.name().to_string(),
+                self.concrete_runtime_ty(&through_params, span)?,
+            );
+        }
+        self.generic_frames.borrow_mut().push(concrete);
+        Ok(GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed: true,
+        })
     }
 
     /// **DEV-126: flatten a reference argument that refers to a STRING.**
@@ -3985,9 +4025,14 @@ impl<'a> Interpreter<'a> {
             }
         };
         match self.eval_call_arguments(args)? {
-            Ok(values) => self
-                .call_user_method(method, receiver_place, receiver_value, values, span)
-                .map(Flow::Value),
+            Ok(values) => {
+                // A3c-S: the callee's generic environment, live for the whole call. The guard's
+                // `Drop` covers traps, propagation and internal failures, which a manual pop after
+                // `?` would not.
+                let _env = self.push_callable_env(expr_id, span)?;
+                self.call_user_method(method, receiver_place, receiver_value, values, span)
+                    .map(Flow::Value)
+            }
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
     }
