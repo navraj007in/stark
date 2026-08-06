@@ -1,7 +1,7 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** PROPOSED — approval is requested only for AS0 + AS1a; later packets require the AS0
-report and a second owner decision.
+**Status:** PROPOSED — approval is requested only for the Sprint 1 opening items plus AS0 + AS1a;
+later packets require the AS0 report and a second owner decision.
 **Date:** 2026-08-06.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
@@ -13,11 +13,13 @@ compiler position must be recorded in `COMPILER-STATE.md`.
 
 ## 1. Decision requested
 
-Approve **AS0 + AS1a only** as the first bounded packet:
+Approve **Sprint 1's opening items plus AS0 + AS1a only** as the first bounded packet:
 
-1. establish the baseline and exact inventories;
-2. close the reproduced package source-identity/provenance defect;
-3. report what the evidence says about the size, order and value of the remaining packets.
+1. retire the Cranelift dev-dependencies and audit first-party manifest strictness — both
+   audit-gated, neither changing compiler behaviour;
+2. establish the baseline, the exact inventories and the entry-point characterization tests;
+3. close the reproduced package source-identity/provenance defect;
+4. report what the evidence says about the size, order and value of the remaining packets.
 
 Do **not** approve Campaigns A and B wholesale yet. Their current scope and ordering are a proposal
 to be resized after AS0. In particular, the proposed Campaign A gate would block the project
@@ -48,6 +50,7 @@ pipeline.
 
 | Scope | Decision now | Later integration gate if approved |
 | --- | --- | --- |
+| Cranelift retirement, manifest strictness audit | approve or reject now | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
 | AS0 + AS1a | approve or reject now | none; this is a defect/inventory packet |
 | remainder of Campaign A | reserve until the AS0 report | before structured-concurrency compiler/runtime work |
 | Campaign B | reserve until Campaign A and C8 positions are known | before C10 release qualification |
@@ -55,6 +58,40 @@ pipeline.
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
 remains binding: only one major compiler/runtime packet is active at once.
+
+### Execution units
+
+Campaigns are **evidence groupings**: they state what must be true before an outside commitment may
+be made. Sprints are **execution units**: how the work is written and tested. The rhythm is *one
+formal evidence closeout per sprint, multiple coherent commits inside the sprint, and targeted tests
+at the semantic checkpoints each packet names* — never one enormous commit whose first meaningful
+test runs days later. §7 defines the three evidence tiers; each packet's **Checkpoint evidence**
+section names its own tier-2 boundaries.
+
+| Sprint | Packets | Rhythm |
+| ---: | --- | --- |
+| 1 | Cranelift retirement, AS0, AS1a, AS2 | Isolated build-hygiene commit; targeted provenance and characterization checkpoints; then the driver-consolidation marathon and one formal sprint closeout |
+| 2 | AS1b, AS5 | Long implementation runs, with SourceId diagnostic tests and the JSON corpus as separate checkpoints |
+| 3 | AS3, then AS4 | Deliberately incremental. AS3's semantic-complete checkpoint authorises AS4; both close formally at the Sprint 3 closeout |
+| 4 | AS6, AS7, then AS8 | Extension-isolation checkpoint, then the modularisation marathon, then assurance written against the finished result |
+
+Which packets tolerate long uninterrupted implementation runs is a **property of the packet, not of
+the sprint**. AS2 and AS7 are the two genuine refactoring marathons: their failure modes are largely
+compiler-visible. AS1a, AS3 and AS4 change what the compiler decides and stay incremental. AS1b,
+AS5 and AS6 permit long runs but change observable behaviour — diagnostic and trap locations,
+accepted JSON, extension-conditioned semantics — so each carries mid-sprint checkpoints that
+`cargo check` cannot stand in for. AS8 is assurance written against finished work, not
+implementation to be batched with it.
+
+**Sprints and campaigns intentionally do not nest.** AS5 belongs to Campaign B but executes in
+Sprint 2, because its strict-parsing decisions are cheapest to settle alongside AS1b's source-map
+work. This does not move the Campaign A exit gate: that gate is reached only when AS0, AS1a, AS2,
+AS1b, AS3 and AS4 are closed and owner-reviewed — the end of Sprint 3 — regardless of AS5 having
+landed earlier. AS5 and AS8 remain subject to the C8 gate decision in §4 wherever they touch
+protocol or editor behaviour.
+
+Sprint 4 may not begin until Sprint 3 reports a green semantic boundary. AS8 must not certify work
+that is still moving.
 
 ---
 
@@ -117,48 +154,129 @@ architecture commit. Non-blocking adjacent findings remain follow-ups under the 
 ## 4. Dependency and integration map
 
 ```text
-AS0 Baseline and reproductions
+[SPRINT 1]
+Cranelift retirement (isolated commit, audit-gated)
  |
- +--> AS1a Canonical package source identity and provenance
- |      |
- |      +--> AS2 One compiler driver
- |                |
- |                +--> AS1b SourceId-bearing spans
- |                          |
- |                          +--> AS3 Callable-use totality -> resume value-representation enforcement
- |
- +--> AS4 Semantic type-property authority
+ +--> AS0 Baseline, reproductions and characterization
+        |
+        +--> AS1a Canonical package source identity and provenance
+               |
+               +--> AS2 One compiler driver
+                        (characterization baseline is AS2's mid-flight oracle)
+
+[SPRINT 2]
+ +--> AS1b SourceId-bearing spans
+ |         <checkpoint: diagnostic/trap location tests>
+ +--> AS5 Protocol and version contracts        [requires C8 gate decision]
+           <checkpoint: JSON conformance corpus>
+
+[SPRINT 3]
+ +--> AS3 Callable-use totality -> resume value-representation enforcement
+        |
+        [SEMANTIC-COMPLETE CHECKPOINT — AS3 evidence green before AS4 opens]
+        |
+        +--> AS4 Semantic type-property authority
 
                   [CAMPAIGN A EXIT]
+        AS0, AS1a, AS2, AS1b, AS3, AS4 closed and owner-reviewed
         required before structured-concurrency compiler/runtime work
 
-C8 explicit gate exit/owner decision
- |
- +--> AS5 Protocol and version contracts
- |
- +--> AS8 post-C8 tooling scale work
+        [SEMANTIC-GREEN GATE — Sprint 4 does not open until Campaign A is green]
 
-Campaign A exit
- |
+[SPRINT 4]
  +--> AS6 Core/extension quarantine
- |
+ |         <checkpoint: Core-only and tensor-enabled session isolation>
  +--> AS7 Pass modularisation and compiler API boundary
  |
+ |         [IMPLEMENTATION FREEZE — AS6/AS7 Tier-2 checkpoints green]
+ |
  +--> AS8 Engine independence, tooling scale and governance closure
+           [post-C8 tooling scale work requires the C8 gate decision]
 
                   [CAMPAIGN B EXIT]
                  required before C10
 ```
 
-Only AS0 + AS1a are proposed for approval now. AS1a and AS4 may later be designed in parallel, but
-not implemented concurrently. AS1b follows AS2 so SourceId is threaded through one pipeline rather
-than several assemblies that AS2 would immediately delete. AS3 follows both; otherwise callable
-metadata would be integrated into several pipelines independently. C8 must receive an explicit gate
-decision before AS5 or AS8 takes on overlapping protocol/editor work.
+Only AS0 + AS1a are proposed for approval now.
+
+- **AS1b follows AS2** so SourceId is threaded through one pipeline rather than through several
+  assemblies AS2 would immediately delete.
+- **AS4 follows AS3**, and does not begin until AS3's semantic-complete checkpoint is green. AS3
+  remains formally open until the shared Sprint 3 Tier-3 closeout. AS4 consolidates the
+  type-property authorities that AS3's callable metadata feeds; building it on unvalidated metadata
+  would mean re-doing it. This replaces the earlier proposal to design AS1a and AS4 in parallel.
+- **AS2 requires AS0's characterization baseline.** The currently identified pipeline assemblies
+  are not behaviourally identical, and AS0 must establish their exact count, so consolidation
+  necessarily chooses a winner. Without a captured baseline, "the entry points now agree" is
+  satisfiable by every assembly having silently changed.
+- **C8 must receive an explicit gate decision** before AS5 or AS8 takes on overlapping
+  protocol/editor work.
 
 ---
 
 ## 5. Campaign A — correctness foundations
+
+### Sprint 1 opening — Cranelift retirement (not a packet)
+
+A build/test-surface retirement with no production semantic claim, taken as one isolated commit
+before AS0 so that subsequent clean test and all-target builds avoid obsolete dev-dependencies.
+
+**Audit gate — all three must hold before the commit:**
+
+1. no `src/` module references cranelift or `target-lexicon`;
+2. the crates are `[dev-dependencies]` only, so the shipped compiler's dependency surface is
+   unchanged (charter §1.10);
+3. the only consumer is the disposable WP-C3.3 direct-backend spike, and its own dependency note
+   authorises removing both the dependencies and `tests/spike_cranelift.rs` after Gate C3 selects a
+   backend.
+
+**Work:** remove the four `cranelift-*` crates and `target-lexicon` from default builds, and
+remove `tests/spike_cranelift.rs`. Preserve the historical measurements and selection evidence in
+the existing C3.3/C3.4 spike documents. **Two documents then hold dangling pointers and both must
+be corrected in the same commit:** `WP-C3.3.md`'s deliverables list names the removed test file, and
+`starkc/docs/compiler/spikes/WP-C3.3-direct-cranelift.md` carries a literal reproduction command
+(`cargo test --test spike_cranelift`) that will no longer run. Replace each with an explicit
+historical/non-runnable notice rather than deleting the record. The commit is build hygiene plus
+test-surface retirement, not a dependency-only change.
+
+**Checkpoint evidence:** `cargo check --all-targets`, `cargo test --lib`, and a recorded
+before/after clean **test/all-target** build time to substantiate the benefit claim. Confirm the
+staged ownership set contains the Cargo files, the disposable spike test and the C3.3 documentation
+correction. No qualification cycle.
+
+If any audit condition fails, stop and leave the dependencies in place; the retirement then returns
+to AS7 where the boundary work can absorb it.
+
+---
+
+### Sprint 1 opening — manifest strictness audit (read-only, feeds AS5)
+
+A read-only measurement taken in Sprint 1 because its result decides AS5's *shape*, and learning it
+mid-Sprint-2 is expensive.
+
+**Work:** parse every first-party `starkpkg.json` and lockfile under `packages/` with both the
+current parser and a candidate strict RFC 8259 parser. The audit compares **values, not just
+verdicts**, and records three deltas:
+
+1. current accepts, strict rejects — invalid JSON such as trailing commas, unescaped control
+   characters and malformed escapes;
+2. strict accepts, current rejects — valid JSON the current implementation cannot consume;
+3. both accept, values differ — silent corruption, where a parser produces a string the input did
+   not denote.
+
+The third is the dangerous cell and is known to be non-empty at proposal time: `package.rs` rejects
+every `\u` escape outright (`Unsupported escape`), while the LSP parser accepts `\u`, silently drops
+any scalar `char::from_u32` refuses, and never pairs surrogates — so a valid `😀` parses to
+the empty string rather than failing. A verdict-only audit would call that agreement.
+
+**Outcome, recorded in the AS0 report:** classify AS5 on all three axes. Existing repository files
+rejected by the strict parser require a **repository migration** before tightening. Valid RFC 8259
+inputs rejected by the current parser require a **compatibility correction**, even when the
+checked-in corpus is strict-clean. Value divergence on commonly accepted input is a **correctness
+defect** with its own DEV record, not an AS5 design choice. If none exists and the only delta is
+invalid input currently accepted, AS5 is a tightening. Nothing is rewritten in Sprint 1.
+
+---
 
 ### AS0 — Baseline, reproduction and authority inventory
 
@@ -177,6 +295,17 @@ module-size impression.
 - Build the same package in two absolute checkout locations and compare source maps, MIR dumps and
   native build keys.
 - Inventory every parse/resolve/typecheck pipeline assembly by entry point.
+- **Capture a bounded characterization matrix** for those entry points. Each assembly runs every
+  applicable row and records `NOT-APPLICABLE` for unsupported modes:
+  - a valid Core package/program;
+  - an invalid root source with ordered diagnostics;
+  - an invalid dependency source proving source/provenance attribution;
+  - a provider-overlay package proving synthesized-source handling;
+  - Core and tensor language-option sessions, sequentially and in parallel where the entry point
+    exposes extension configuration.
+  Pin ordered diagnostics, source names/provenance, overlay handling, language options and whether
+  the entry constructs its root `SourceFile` with a disk path. The exact assembly count is an AS0
+  output, not a number assumed by this proposal. Divergences are findings, not test failures.
 - Inventory every explicit and implicit user-callable execution site.
 - Adopt the predicate inventory required by
   `WP-C7.8-RB0-MIR-Type-Property-Authority.md` rather than creating a second list.
@@ -195,10 +324,21 @@ module-size impression.
 1. The duplicate-identity and wrong-provenance halves are each reproduced or closed with contrary
    executable evidence.
 2. The driver, callable, predicate and JSON inventories are exact-set checked where practical.
-3. Performance commands and raw results are recorded and repeatable.
-4. The pinned samples-suite result is recorded, or its absence is explicit rather than silently
+3. The entry-point characterization baseline is committed as executable tests, and every observed
+   divergence between assemblies is recorded as a named finding AS2 must consciously resolve.
+4. All three manifest-parser deltas are recorded, including value divergence on commonly accepted
+   input, and AS5 is classified as tightening, compatibility correction, repository migration,
+   correctness defect, or the applicable combination.
+5. Performance commands and raw results are recorded and repeatable, including the clean-build
+   before/after for Cranelift retirement.
+6. The pinned samples-suite result is recorded, or its absence is explicit rather than silently
    reducing the independent evidence set.
-5. Each later packet has a bounded ownership set and an identified rollback point.
+7. Each later packet has a bounded ownership set and an identified rollback point.
+
+#### Checkpoint evidence
+
+`cargo test --lib`; the new characterization and reproduction tests; the two read-only audits. No
+differential, native or package qualification — AS0 changes no compiler behaviour.
 
 #### Stop condition
 
@@ -235,6 +375,13 @@ finding and do not manufacture an AS1 root fix. SourceId work remains independen
 4. No canonical absolute checkout path participates in reproducible source identity.
 5. Package, package-with-overlay and native-build paths share the same logical-entry helper and
    focused regression.
+
+#### Checkpoint evidence
+
+`cargo test --lib`; source-map and provenance regressions; the two-root relocation test comparing
+logical source maps, MIR dumps and build keys; the AS0 characterization tests re-run to show which
+recorded divergences this packet closed and which it left for AS2. Build keys change once here —
+state that as an expected cache invalidation, not a regression.
 
 #### Risks and escalation
 
@@ -282,6 +429,15 @@ diagnostic and source-identity behaviour.
 4. Provider-backed packages use the same analysis result for checking and native building.
 5. Existing unit, integration, fixture, package and differential suites remain green.
 
+#### Checkpoint evidence
+
+A refactoring marathon, but not a test-free one. `cargo check` is the inner loop; the checkpoints are
+**per migrated entry point**, not one at the end: after each entry point moves onto the driver, run
+`cargo test --lib` plus that entry point's characterization tests from AS0 and record whether its
+behaviour was preserved or deliberately changed. A deliberate change needs a one-line justification
+in the packet record — that is the difference between consolidating the assemblies and silently
+replacing all but one of them.
+
 #### Non-goal
 
 This is not an incremental query engine and does not introduce persistent compiler state between
@@ -313,6 +469,15 @@ commands.
 5. Superseded diagnostic ambient-file guessing is removed only after exact-set migration evidence
    exists; item-to-file metadata used for separate module semantics is retained or removed on its
    own demonstrated purpose.
+
+#### Checkpoint evidence
+
+Long implementation runs are fine; the checkpoint is not optional. `cargo test --lib` plus the
+diagnostic-location and trap-provenance suites at each phase boundary (AST, HIR, MIR, query paths).
+**The type system cannot prove the correct `SourceId` was attached** — only that one was — so every
+phase whose spans are converted needs a test that a diagnostic in a *dependency* file still resolves
+to that file. Removing the interim wrong-source detector is its own checkpoint, gated on the
+exact-set migration evidence in criterion 5.
 
 #### Risks and escalation
 
@@ -356,6 +521,20 @@ debug-contract change beyond source identity is a CE3 decision and is excluded f
 4. The frozen corpus and all engine comparisons remain green.
 5. DEV-121 closes only with a class-level evidence statement, not one regression case.
 
+#### Checkpoint evidence
+
+**Deliberately incremental — this packet is not batched.** Each dispatch family in work item 4 (free
+calls, methods, associated functions, function values, trait defaults, qualified calls, equality,
+ordering, iteration, display) is its own checkpoint: `cargo test --lib`, the exact-set invariant
+test, and the affected differential rows before the next family opens.
+
+AS3 reaches its **semantic-complete checkpoint** when the full four-engine matrix and frozen corpus
+are green; that checkpoint authorises AS4 to open. AS3 remains formally open until the shared Sprint
+3 Tier-3 closeout satisfies the charter's work-package definition of done. This is the most
+expensive checkpoint in the programme; budget it as wall-clock, not as a formality. DEV-121's class
+closure is a class-level claim and may outlast the checkpoint; carry it explicitly rather than
+declaring it satisfied by one green run.
+
 #### Risks and escalation
 
 Callable metadata is a semantic compiler contract. If the work changes overload selection, trait
@@ -366,10 +545,14 @@ into this packet.
 
 ### AS4 — One authority for semantic type properties
 
-#### Dependency
+#### Dependencies
 
-Execute the existing `WP-C7.8-RB0-MIR-Type-Property-Authority.md`; do not replace it with a fresh
-cleanup design.
+- **AS3 at its green semantic-complete checkpoint.** AS4 consolidates authorities that AS3's
+  callable metadata feeds; building it on unvalidated metadata would mean re-doing it. AS4 does not
+  open until that checkpoint is green, while AS3's formal closure waits for the shared Sprint 3
+  Tier-3 closeout.
+- Execute the existing `WP-C7.8-RB0-MIR-Type-Property-Authority.md`; do not replace it with a fresh
+  cleanup design.
 
 #### Work
 
@@ -401,6 +584,15 @@ cleanup design.
    and native engines.
 5. Any behavioural correction receives its own decision record; AS4 itself does not disguise one
    as refactoring.
+
+#### Checkpoint evidence
+
+Incremental, like AS3. Per property consolidated: the equivalence/adversarial matrix over the full
+type-variant set **before** the duplicate predicate is deleted, then `cargo test --lib` and the
+affected differential rows. Deleting a duplicate before its equivalence evidence exists is the
+failure mode this ordering prevents. The reference-containment family (three known copies, one
+already documented as disagreeing with the others on `FnPtr`) needs its disagreement resolved as a
+recorded decision, not silently harmonised by whichever copy survives.
 
 #### Campaign A exit gate
 
@@ -454,6 +646,21 @@ semantics may continue under `ROADMAP.md`'s WIP limits.
    identity.
 5. Security-sensitive parsing decisions receive CE9 review where applicable.
 
+#### Checkpoint evidence
+
+Long implementation runs, with the corpus as a separate checkpoint from the consolidation. **AS5 is
+behavioural**: stricter parsing changes which manifests and JSON-RPC messages are accepted, and no
+type check reaches that. Checkpoints: the RFC 8259 conformance corpus; the first-party manifest set
+re-parsed under the new authority with the Sprint 1 audit as the expected result; positive
+round-trip tests for valid escapes and surrogate pairs; negative tests for invalid Unicode scalars
+and unpaired surrogates; the LSP protocol suite if C8's gate decision put that surface in scope.
+
+If the Sprint 1 audit identified a repository migration, the manifest rewrite is its own commit with
+its own checkpoint, taken before the parser tightens — not folded into the consolidation. A
+compatibility correction likewise carries positive fixtures for every valid input class the current
+parser rejected. Any value-divergence finding is repaired under its own DEV record with a
+fails-before-the-repair test, not absorbed into the consolidation commit.
+
 ---
 
 ### AS6 — Quarantine extension-specific compiler knowledge
@@ -482,6 +689,17 @@ semantics may continue under `ROADMAP.md`'s WIP limits.
 4. No public extension/plugin/provider API is introduced.
 5. Part B generic artifact-provider work remains blocked unless C9.3's independent evidence exists.
 
+#### Checkpoint evidence
+
+Long runs are acceptable; the risk is directional and needs both directions tested at each move.
+Per surface quarantined (lexer/parser, resolver, checker, formatter, diagnostics, LSP): the C9.1
+session-isolation suite, a Core-only session proving the tensor name is **absent**, and a
+tensor-enabled session proving the same behaviour is **unchanged**. A quarantine that suppresses
+tensor semantics passes the first test and fails the second; one that leaks passes the second and
+fails the first. Neither is visible to `cargo check`.
+
+AS6 completes before AS7 opens, so modularisation cuts on boundaries that are already clean.
+
 ---
 
 ### AS7 — Pass modularisation and compiler API boundary
@@ -502,8 +720,10 @@ moving code.
   missing restore can alter later work.
 - Define a narrow supported compiler facade; make implementation modules `pub(crate)` unless an
   actual external consumer requires them.
-- Move obsolete backend spikes and Cranelift-only development dependencies out of default compiler
-  builds, preserving historical evidence in documentation or a non-default spike crate if needed.
+- Move any remaining obsolete backend spikes out of default compiler builds, preserving historical
+  evidence in documentation or a non-default spike crate. The Cranelift dependency retirement is
+  taken in Sprint 1 as an isolated commit under its own audit gate (§5); it returns here only if
+  that audit failed.
 
 #### Exit criteria
 
@@ -512,6 +732,22 @@ moving code.
 3. Internal modules are not accidentally part of the supported public API.
 4. Default dependency/build surfaces contain only active compiler architecture.
 5. File-size reduction is reported as an outcome, not used as the acceptance criterion.
+
+#### Checkpoint evidence
+
+The second genuine marathon. Pure code motion is compiler-verified and needs only `cargo check`
+between commits — but **ambient-state replacement is not code motion**. Replacing current-file,
+current-module, current-impl and generic-environment state with scoped context objects can restore
+the wrong context with every field present and every signature type-checking; this repo has already
+paid for that class once, in file-provenance drift between `self.text` and item-level file metadata.
+
+Split the packet accordingly: take the ambient-state conversions **first**, as separate commits with
+`cargo test --lib` plus the provenance, generics and trait-resolution suites at each; then take the
+file splitting as the marathon, where the checkpoint is genuinely `cargo check`.
+
+**Exclusive tree ownership is a precondition.** Splitting a 14,000-line pass cannot survive a
+parallel session editing the same file — take a worktree, or hold an explicit agreement that no
+other session touches the declared ownership set for the duration.
 
 ---
 
@@ -555,6 +791,15 @@ moving code.
    reconstructing chronology.
 5. Architecture documentation matches production entry points and module ownership.
 
+#### Checkpoint evidence
+
+AS8 is assurance, not implementation, and cannot be batched with the work it challenges. It opens
+only after AS6 and AS7 reach an implementation freeze with their Tier-2 checkpoints green. Its own
+checkpoints are the mutation trials (a survivor is a recorded test gap, not a blocked packet), the
+coverage baseline, the pinned samples-suite run, and the LSP before/after measurements. Sprint 4
+becomes formally green only after AS8 and the Tier-3 closeout finish. Any LSP change AS8 makes on
+the strength of its own measurements is ordinary implementation and takes ordinary checkpoints.
+
 #### Campaign B exit gate
 
 Campaign B passes only when AS5–AS8 are complete or explicitly deferred with owner-approved
@@ -563,14 +808,39 @@ stability or conformance claim.
 
 ---
 
-## 7. Required evidence for every packet
+## 7. Evidence cadence
 
-Unless a packet states stricter requirements, its closeout includes:
+Evidence runs at **three levels**. A full qualification cycle per packet would spend most of the
+programme's time in gate ceremony; running nothing until a sprint ends would mean discovering on day
+three that day one was wrong. The rule is: **one formal closeout per sprint, multiple coherent
+commits inside it, and targeted tests at the checkpoints each packet names.**
+
+### Tier 1 — inner loop (continuous)
+
+- `cargo check`, or `cargo check --all-targets` when test code is in the ownership set;
+- the one directly affected unit or integration test;
+- no qualification, no differential, no native build.
+
+This is the normal rhythm of a refactoring marathon. For AS2 and AS7's code-motion phase it is
+almost the whole rhythm.
+
+### Tier 2 — coherent checkpoint (at each packet's named boundaries)
+
+- `cargo test --lib` — cheap when warm, and the default checkpoint everywhere;
+- the focused integration tests named in that packet's **Checkpoint evidence** section;
+- the affected four-engine differential rows where the packet changes semantics.
+
+Checkpoints are not optional for packets that change observable behaviour, and they are not
+substitutable by `cargo check`: source-location attachment (AS1b), pipeline selection (AS2), accepted
+JSON (AS5), extension conditioning (AS6) and ambient-context restoration (AS7) are all invisible to
+the type system. A local checkpoint commit is taken at each, so rollback costs one boundary rather
+than a sprint.
+
+### Tier 3 — sprint closeout (once per sprint)
 
 - `cargo fmt --check`;
 - `cargo clippy --all-targets -- -D warnings`;
-- scoped local Rust tests selected from the packet's ownership and risk surface;
-- the full Rust suite through CI, or from an isolated clean worktree when explicitly required—not
+- the full Rust suite through CI, or from an isolated clean worktree when explicitly required — not
   by running a broad shared-checkout command as an unrecorded substitute for CI;
 - Core positive and negative fixture conformance;
 - HIR/MIR/native debug/native release differential rows for affected semantics;
@@ -578,13 +848,28 @@ Unless a packet states stricter requirements, its closeout includes:
 - deterministic outputs executed twice when identity, ordering or generated output is claimed;
 - package/provider qualification when package loading, capabilities, runtime or build metadata is
   touched;
-- the pinned external samples suite for packets affecting accepted programs, ownership, execution,
+- the pinned external samples suite for sprints affecting accepted programs, ownership, execution,
   packages or engine agreement, when that suite is available;
-- focused tests demonstrated to fail before the repair when the packet closes a defect;
+- focused tests demonstrated to fail before the repair when the sprint closes a defect;
 - updated deviations, coverage records, `COMPILER-STATE.md` and architecture documentation.
 
 Provider-backed packages are built, not run through the interpreter. Provider crates receive their
 own `--manifest-path` build/test rows where their sources are touched.
+
+### Sprint-internal gates that are not closeouts
+
+Three checkpoints carry gate authority without being sprint closeouts, because the work after them
+would have to be redone if they were skipped:
+
+| Gate | Position | Requirement |
+| --- | --- | --- |
+| AS3 semantic-complete checkpoint | inside Sprint 3, between AS3 and AS4 | full four-engine matrix and frozen corpus green before AS4 opens; AS3 remains formally open until Tier 3 |
+| Semantic-green gate | Sprint 3 → Sprint 4 | Campaign A exit report accepted before AS6 opens |
+| AS6+AS7 implementation freeze | inside Sprint 4, before AS8 | both packets' Tier-2 checkpoints green and the implementation ownership set frozen before assurance begins |
+
+A sprint may also be interrupted at any point by the live-defect pre-emption rule in §3. A defect
+repair taken mid-sprint keeps its own DEV/CD evidence and its own focused tests; it is not absorbed
+into the sprint's closeout.
 
 ---
 
