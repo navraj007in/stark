@@ -112,6 +112,35 @@ fn run(bin: &str, args: &[&str], cwd: &Path, scrub: &[&Path]) -> Observation {
     }
 }
 
+/// Path separators inside an already-scrubbed `<TMP>` path, forced to `/`.
+///
+/// **Found by the Windows lane, not locally.** Scrubbing the temp directory prefix is not enough:
+/// what follows it is still a real path, and on Windows that means `<TMP>\single_ok.stark` against
+/// a baseline recorded on macOS as `<TMP>/single_ok.stark`. Four rows differed, all of them
+/// single-file ones.
+///
+/// That difference is AS0 finding D4 showing up in CI — package sources are named logically with
+/// `/`, single-file sources carry the platform's own separator, and that split is deliberate. The
+/// baseline should therefore record one canonical spelling rather than the host's.
+///
+/// Only separators *within* a scrubbed path are touched, and only up to the next whitespace, so a
+/// backslash anywhere else in the output — an escape in a diagnostic, say — is left alone and stays
+/// visible as behaviour.
+fn normalise_scrubbed_separators(text: &str) -> String {
+    const MARK: &str = "<TMP>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at + MARK.len()]);
+        rest = &rest[at + MARK.len()..];
+        let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+        out.push_str(&rest[..end].replace('\\', "/"));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Replace anything that varies between machines or runs. What SURVIVES normalisation is the
 /// behaviour being pinned — so a surviving absolute path is itself a finding.
 fn normalise(text: &str, scrub: &[&Path]) -> String {
@@ -132,6 +161,7 @@ fn normalise(text: &str, scrub: &[&Path]) -> String {
     for path in paths {
         out = out.replace(&path, "<TMP>");
     }
+    out = normalise_scrubbed_separators(&out);
     // Timings and durations.
     let mut cleaned = String::new();
     for line in out.lines() {
