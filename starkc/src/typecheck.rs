@@ -199,13 +199,13 @@ pub struct TypeChecker<'a> {
     callable_envs: HashMap<ExprId, CallableInstantiation>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
-    /// WP-C4.5c: ordered generic-argument types for every use of a *generic* fn item, keyed
+    /// WP-C4.5c / A3c-S: ordered generic-argument types for every use of a *generic* fn item, keyed
     /// by the referencing path expression. Grounded and published as
-    /// `TypeTables::generic_insts` for MIR monomorphisation; an instantiation still
+    /// `TypeTables::callable_instantiations` for MIR monomorphisation; an instantiation still
     /// containing `Ty::Infer` once inference completes is rejected with E0004
     /// (TYPE-GENERIC-001 / TYPE-FN-002 — the DEV-064 fix).
     /// WP-C5.3e: the queried type of each `size_of::<T>()` / `align_of::<T>()`, keyed by the
-    /// builtin's own path expression. Kept OUT of `generic_insts` deliberately: that table drives
+    /// builtin's own path expression. Kept OUT of `callable_instantiations` deliberately: that table drives
     /// MIR monomorphisation of generic fn instances, and a layout query is not one.
     layout_queries: HashMap<ExprId, Ty>,
     /// DEV-BOUND-TRAIT-IDENTITY: for each method call resolved through a generic parameter's
@@ -692,7 +692,7 @@ pub struct CallableInstantiation {
 
 impl CallableInstantiation {
     /// The callable's OWN parameters in declaration order — the view MIR monomorphisation needs,
-    /// and exactly what `generic_insts` used to store on its own.
+    /// and exactly what the deleted `generic_insts` stored on its own.
     ///
     /// Impl, trait and `Self` bindings are excluded: a monomorphisation key is per callable, and
     /// including the enclosing impl's arguments would change the key's arity.
@@ -757,11 +757,11 @@ pub struct TypeTables {
     pub callable_types: HashMap<BlockId, CallableSigTy>,
     /// WP-VALUE-REP-TOTAL A3c-S: the generic environment selected for each callable USE.
     ///
-    /// Supersedes `generic_insts`, which recorded only a free function's or a method's OWN
+    /// Replaced `generic_insts`, which recorded only a free function's or a method's OWN
     /// parameters positionally and therefore could not express impl generics, trait generics or
     /// `Self` — the reason DEV-176 exists.
     pub callable_instantiations: HashMap<ExprId, CallableInstantiation>,
-    /// WP-C4.5c: grounded, ordered generic-argument types for each use of a generic fn item,
+    /// WP-C4.5c / A3c-S: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
     /// the enclosing instantiation substitutes its own arguments. Entries never contain
@@ -5429,7 +5429,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Res::Primitive(p) => Ty::Primitive(*p),
                 Res::AssociatedFn(item_id, name) => {
-                    self.associated_fn_type(*item_id, *name, turbofish.as_ref(), expr.span)
+                    self.associated_fn_type(*item_id, *name, turbofish.as_ref(), expr.span, expr_id)
                 }
                 Res::ModelLoad(item_id) => {
                     self.validate_generic_arity(
@@ -7652,6 +7652,7 @@ impl<'a> TypeChecker<'a> {
         name_span: Span,
         turbofish: Option<&hir::GenericArgs>,
         call_span: Span,
+        use_expr: ExprId,
     ) -> Ty {
         let name = self.text(name_span).to_string();
         let mut inherent = Vec::new();
@@ -7779,6 +7780,45 @@ impl<'a> TypeChecker<'a> {
                 let infer = self.new_type_var();
                 map.insert(self.item_text(impl_item_id, param.name).to_string(), infer);
             }
+        }
+        // A3c-S2/A4: an associated call has a generic environment like any other callable use.
+        // It was the one publication site A3c-S missed, invisible until A4 resolved signatures:
+        // the BODY worked because nothing needed the frame, and only the signature could tell.
+        // Names are read against the IMPL's file, matching this `map`'s keys (DEV-101).
+        if let Some((body, own_generics)) =
+            self.hir
+                .items
+                .get(impl_item_id.0 as usize)
+                .and_then(|item| match &item.kind {
+                    hir::ItemKind::Impl { items, .. } => items.iter().find_map(|it| match it {
+                        hir::ImplItem::Fn { def, .. }
+                            if self.item_text(impl_item_id, def.sig.name) == name =>
+                        {
+                            Some((def.body, def.sig.generics.clone()))
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+        {
+            let impl_names: Vec<String> = impl_generics
+                .iter()
+                .map(|param| self.item_text(impl_item_id, param.name).to_string())
+                .collect();
+            let own_names: Vec<String> = own_generics
+                .iter()
+                .map(|param| self.item_text(impl_item_id, param.name).to_string())
+                .collect();
+            let env_map = map.clone();
+            self.publish_callable_env(PublishedEnv {
+                call_expr: use_expr,
+                body,
+                self_ty: None,
+                impl_names: &impl_names,
+                own_names: &own_names,
+                own_is_method: true,
+                map: &env_map,
+            });
         }
         self.foreign_sig_item = previous_sig_item;
         params = params

@@ -264,9 +264,10 @@ fn differential(name: &str, source: String) {
             // classified `InternalInvariant`; every other oracle failure — including any other
             // internal invariant — is still a hard failure, because that class exists to make an
             // oracle defect loud.
-            if oracle_err.class == starkc::interp::FailureClass::InternalInvariant
-                && oracle_err.message.contains("generic `Drop`")
-            {
+            // A3c-S2: recognised by TYPED reason, not message text. Qualification must not
+            // depend on diagnostic wording — a reword would break the comparator, and an unrelated
+            // internal message could match by accident.
+            if oracle_err.limitation == Some(starkc::interp::OracleLimitation::GenericDrop) {
                 eprintln!(
                     "{name}: SKIPPED — {} (MIR stdout {:?})",
                     oracle_err.message, mir_exec.output

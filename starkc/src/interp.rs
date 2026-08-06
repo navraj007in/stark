@@ -29,6 +29,9 @@ pub struct RuntimeError {
     /// tell them apart either treats a stack overflow as a language outcome or treats a real trap
     /// as noise.
     pub class: FailureClass,
+    /// Which named oracle limitation this is, if any. `None` claims none — the ordinary case,
+    /// including every other internal invariant.
+    pub limitation: Option<OracleLimitation>,
     /// DEV-106 (CD-136): the trap category when the interpreter KNOWS it, rather than leaving it to
     /// be recovered by matching this error's prose.
     ///
@@ -69,6 +72,19 @@ pub struct RuntimeError {
 /// stack behaviour and a program should not become executable by changing engines.
 pub const MAX_CALL_DEPTH: usize = 512;
 
+/// A named oracle limitation, recognised WITHOUT matching prose.
+///
+/// The differential comparator must tell "this engine cannot execute this construct" from "the
+/// engines disagree about the language". Doing that by substring made qualification depend on
+/// diagnostic wording — a reword breaks it, and an unrelated internal message could match by
+/// accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleLimitation {
+    /// Destruction retains no concrete nominal type arguments, so a generic `Drop`'s parameters
+    /// cannot be bound. MIR and native retain them and execute it correctly (DEV-176, A3c-D).
+    GenericDrop,
+}
+
 /// What kind of failure ended a run (WP-C7.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureClass {
@@ -101,6 +117,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Trap,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -113,6 +130,19 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::InternalInvariant,
+            limitation: None,
+            trap_category: None,
+            file: None,
+        }
+    }
+
+    /// An internal invariant that is a NAMED limitation of this engine.
+    fn limitation(message: impl Into<String>, span: Span, limitation: OracleLimitation) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            class: FailureClass::InternalInvariant,
+            limitation: Some(limitation),
             trap_category: None,
             file: None,
         }
@@ -126,6 +156,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::HostResource,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -141,6 +172,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Trap,
+            limitation: None,
             trap_category: Some(category),
             file: None,
         }
@@ -151,6 +183,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Entry,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -4366,10 +4399,19 @@ impl<'a> Interpreter<'a> {
             // method runs (shared borrow, single-threaded), and the old clone was discarded
             // without STARK drop effects. (`&mut self` keeps its take/write-back model.)
             hir::Receiver::Ref => Value::Ref(receiver_place.clone()),
-            hir::Receiver::RefMut => self
-                .place_slot_mut(&receiver_place, span)?
-                .take()
-                .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?,
+            // **DEV-180: a `&mut self` receiver is a REFERENCE, like `&self`.**
+            //
+            // It used to take the owned value out of the caller's slot, bind that as `self`, and
+            // write it back afterwards — so a local typed `&mut Self` held a `Struct` for the whole
+            // body, the flattening WP-VALUE-REP-TOTAL §6.4 forbids. DEV-070 moved `&self` to a
+            // genuine reference and left this alone; its safety argument ("the referent cannot
+            // mutate during the call") is about SHARED borrows and never applied here.
+            //
+            // Nothing required take/write-back: writing through a mutable reference already works
+            // for every `&mut` parameter in the language, and this uses that same path. Mutation
+            // permission comes from the static type and the borrow checker, not from the runtime
+            // representation — now identical for both borrowed receivers.
+            hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
         };
         let mut frame = Frame::default();
         frame.insert(receiver_local, Some(receiver));
@@ -4398,25 +4440,23 @@ impl<'a> Interpreter<'a> {
             return Err(error);
         }
         let flow = result?;
-        let restored = if receiver_kind == hir::Receiver::Value {
-            None
-        } else {
+        // DEV-180: only a shared receiver still needs taking back out of the frame; a `&mut`
+        // receiver was never removed from the caller's place, so there is nothing to restore.
+        let restored = if receiver_kind == hir::Receiver::Ref {
             self.frame_mut()
                 .values
                 .get_mut(&receiver_local)
                 .and_then(Option::take)
+        } else {
+            None
         };
+        let _ = &restored;
         // Destructors for the method's own locals still belong to the method's file, so the
         // restore happens after cleanup (matching `call_callable`).
         self.cleanup_current_frame()?;
         self.file = caller_file;
         self.frames.pop();
-        if receiver_kind == hir::Receiver::RefMut {
-            let restored = restored.ok_or_else(|| {
-                RuntimeError::new("mutable receiver was moved by its method", span)
-            })?;
-            self.write_place(&receiver_place, restored, span)?;
-        }
+
         let mut value = match flow {
             Flow::Value(value) | Flow::Return(value) => value,
             Flow::Propagate(value) => value,
@@ -7392,11 +7432,12 @@ impl<'a> Interpreter<'a> {
             // disproportionate to 0 `Drop` impls in the first-party packages and 2 generic-`Drop`
             // fixtures in the whole corpus. The refusal is the signal to build it when that changes.
             if self.drop_impl_is_generic(item) {
-                return Err(RuntimeError::internal(
+                return Err(RuntimeError::limitation(
                     "the HIR oracle cannot execute a generic `Drop` implementation: destruction \
                      retains no concrete nominal type arguments, so the destructor's generic \
                      parameters cannot be bound (DEV-176, A3c-D)",
                     self.hir.item(item).span,
+                    OracleLimitation::GenericDrop,
                 ));
             }
             if let Some(callable) = self.find_drop(item) {

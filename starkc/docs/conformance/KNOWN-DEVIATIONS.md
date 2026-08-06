@@ -4888,3 +4888,57 @@ Two defects, recorded together because the first concealed the second.
   E0105 stops rejecting these adapters.
 - **Owning gate:** compiler track, whichever work package lifts E0105.
 
+---
+
+## DEV-180 — the HIR interpreter flattens `&mut self` into owned receiver storage (OPEN)
+
+- **Class:** runtime representation / receiver-lowering defect. **Independent of DEV-121** — A4 only
+  exposed it.
+- **Status:** CONFIRMED, reachable from accepted Core v1 programs.
+- **Normative expectation:** a value stored under `Ty::Ref { mutable: true, .. }` is a reference.
+  WP-VALUE-REP-TOTAL §6.4: a mutable reference must never be flattened to a bare value — it cannot
+  write through, and `take(&mut v)` needs the place itself.
+- **Current behaviour:** for `hir::Receiver::RefMut`, `call_user_method` removes the owned receiver
+  from the caller's place and binds that owned value as `self`:
+
+  ```rust
+  hir::Receiver::RefMut => self
+      .place_slot_mut(&receiver_place, span)?
+      .take()
+      .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?,
+  ```
+
+  One arm above, `hir::Receiver::Ref` binds `Value::Ref(receiver_place.clone())` — a genuine
+  reference. The asymmetry is deliberate and commented: "(`&mut self` keeps its take/write-back
+  model.)"
+- **Violation:** the checker types the `self` local `&mut Self`, so a value under
+  `Ty::Ref { mutable: true, .. }` has `ValueKind::Struct` rather than `ValueKind::Ref` for the whole
+  body.
+- **Mechanism:** take from the caller's slot → bind the owned value as `self` → execute → write
+  back.
+- **Observed exposure:** five receiver tests fail once A4 validates the receiver boundary —
+  `mut_reference_returned_from_mut_self_method_writes_through`,
+  `receiver_restructure_preserves_mutation_and_move_semantics`,
+  `references_write_through_and_core_methods_auto_deref`,
+  `language_protocols_ignore_same_named_inherent_methods`,
+  `for_loop_accepts_standard_and_user_iterators`.
+- **Effect:** the oracle executes a reference-typed local with owned-value semantics, which can
+  conceal ownership, aliasing, returned-reference and mutation differences from MIR and native.
+- **Two consequences worth checking on their own merits**, independent of DEV-121: the caller's slot
+  is EMPTY for the duration of the call, so the receiver can appear moved; and every error path must
+  restore it or the value is lost.
+- **Candidate repair, NOT approved:** bind `Value::Ref(receiver_place.clone())` as `&self` does,
+  with mutability governed by the static `Ty` and the borrow checker. Writes through `*self` and
+  `self.field` would then mutate the caller's place directly, returned references would point into
+  caller storage rather than a method-frame temporary, and restoration with its failure paths would
+  disappear.
+- **Explicitly forbidden repairs:** permitting `&mut T → bare T` in `value_matches_ty`; a
+  receiver-specific validator exception; or keeping take/write-back while wrapping the taken value
+  in a synthetic reference to method-local storage — that would satisfy the shape check while
+  leaving returned references pointing at temporary storage.
+- **Open before repair:** why DEV-070 excluded `&mut self` when `&self` moved to genuine references;
+  whether that limitation still holds; and whether the returned-reference test depends on rebasing
+  out of the method frame.
+- **Discovered by:** WP-DEV-121 A4 receiver-boundary enforcement.
+- **Owning gate:** compiler track, its own repair — sequenced before A4 resumes.
+
