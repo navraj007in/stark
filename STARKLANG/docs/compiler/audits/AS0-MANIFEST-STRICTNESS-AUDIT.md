@@ -17,7 +17,7 @@ probe silently tested the *character* instead of the *escape* and proved nothing
 | --- | --- | --- |
 | Repository migration | **NO** | the checked-in corpus is strict-clean, 108/108 |
 | Compatibility correction | **YES** | `package.rs` rejects valid RFC 8259 input: all `\u` escapes, all exponent numbers |
-| Correctness defect | **YES** | the LSP parser silently corrupts valid surrogate pairs to the empty string |
+| Correctness defect | **YES — since FIXED** (DEV-182/CD-384) | the LSP parser silently corrupted valid surrogate pairs to the empty string |
 | Tightening | **YES** | both parsers accept invalid input; the sets differ |
 
 **AS5 is not a tightening.** It is a tightening *plus* a compatibility correction *plus* at least
@@ -78,6 +78,12 @@ completion label loses it silently.
 **Disposition:** own DEV record, own fails-before-the-repair test, repaired outside AS5's
 consolidation commit.
 
+**RESOLVED 2026-08-06 — DEV-182 / CD-384.** Repaired on its own branch under the §3 live-defect
+pre-emption rule and merged to `develop`: surrogates are paired per RFC 8259 §7, and a lone or
+mis-paired surrogate, a malformed hex escape and a truncated escape are now rejected instead of
+swallowed. Eight tests, five of which failed before the repair. **AS5 inherits the class, not the
+instance** — the remaining verdict-level gaps in F2 and F3 are untouched.
+
 ### F2 — `package.rs` rejects valid JSON (compatibility correction)
 
 Two families, both valid RFC 8259 that a hand-written or third-party-generated manifest may contain:
@@ -107,8 +113,8 @@ either parser's current behaviour.
 
 - AS5's classification is recorded as **tightening + compatibility correction + correctness
   defect**; the migration axis is closed as NOT REQUIRED.
-- F1 does not wait for AS5. It is a live correctness defect with a DEV record of its own, eligible
-  for the §3 live-defect pre-emption rule.
+- F1 did not wait for AS5. It was taken under the §3 live-defect pre-emption rule the same day as
+  DEV-182 / CD-384 and is **fixed**; F2 and F3 remain AS5's.
 - AS5's exit criterion 2 ("a standard JSON test corpus ... passes") should be read against the
   12-construct table above as the project-specific minimum, since it already distinguishes the two
   parsers.
