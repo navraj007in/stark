@@ -1,8 +1,8 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprint 1 approved and delivered.** The Sprint 1 opening items, AS0
-(partial), AS1a and AS2 were approved in session on 2026-08-06 and have landed on
-`wp-arch-stability/sprint-1`. Campaign A's remainder and Campaign B remain **reserved** and require a
+**Status:** **IN EXECUTION — Sprint 1 CLOSED.** The Sprint 1 opening items, AS0 (partial), AS1a and
+AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
+Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
 second owner decision, which the AS0 report now enables — see §1.
 **Date:** 2026-08-06.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
@@ -72,7 +72,7 @@ pipeline.
 | AS0 | **APPROVED, PARTIAL** — report delivered, five items open (§7) | none; inventory packet. Campaign A's exit needs it closed |
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
-| Sprint 1 Tier-3 closeout | **OUTSTANDING** — awaiting CI | required before Sprint 2 opens |
+| Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
 | remainder of Campaign A (AS1b, AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
 | Campaign B (AS5–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS5/AS8 are unblocked on that axis | before C10 release qualification |
 
