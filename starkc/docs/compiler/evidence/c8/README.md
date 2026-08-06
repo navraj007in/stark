@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 Qualified commit: `6556a0d`
-Status: `C8-CANDIDATE-COMPLETE`
+Status: `C8-CLOSED` (CD-385, 2026-08-06). Prior status: `C8-CANDIDATE-COMPLETE`.
 
 ## Verification Commands
 
@@ -68,5 +68,5 @@ Result: pass.
 
 The VS Code extension was build-validated with `npm run compile`.
 
-No interactive Extension Development Host run was recorded in this environment. That is the only reason this gate is marked `C8-CANDIDATE-COMPLETE` instead of `C8-CLOSED`.
+No interactive Extension Development Host run was recorded in this environment at the time this evidence set was assembled. One was recorded on 2026-07-31 covering hover, go-to-definition and find-references; the remaining seven advertised features are still protocol-tested only. CD-385 closed the gate with that limit stated (`STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` §2), and DEV-012 remains open and narrowed to those seven.
 

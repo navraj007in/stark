@@ -229,15 +229,25 @@ impact, workaround, proposed disposition, owning future gate.
 - **Owning gate:** none scheduled; revisit if WP-C8.2 (hover) or a documentation feature needs
   it.
 
-## DEV-012 — VS Code extension UI never interactively verified
+## DEV-012 — VS Code extension UI interactively verified for 3 of 10 features (OPEN, NARROWED)
+
+**Narrowed 2026-08-06 (CD-385).** Gate C8 closed with this deviation open rather than by declaring
+it satisfied — the gate's claim is correspondingly narrower. See
+`STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` §2.
 
 - **Normative expectation:** Charter WP-C8.7: "protocol tests alone do not prove UI behaviour"
   — real editor validation requires an Extension Development Host or packaged-extension session.
-- **Current behaviour:** no `code` CLI / Extension Development Host has been available in the
-  implementing environment. Verified so far: TypeScript correctness (`tsc`/ESLint/esbuild
-  bundling) and raw LSP JSON-RPC exchange (a script bypassing VS Code entirely). Status bar
-  rendering, command palette entries, format-on-save actually firing on a real save, and hover
-  popups have never been interactively confirmed.
+- **Interactively confirmed (2026-07-31**, VS Code 1.130.0, `starklang.stark-language@0.2.0`,
+  macOS 26.5.2 arm64, real STARK package): **hover, go-to-definition, find-references.**
+- **Still unverified in an editor, and the remaining scope of this deviation:** diagnostics (on
+  type and on save), formatting / format-on-save, completion, signature help, rename, document
+  symbols, semantic tokens. Each is covered by protocol tests only, which is the distinction this
+  deviation exists to draw. Status bar rendering and command palette entries are likewise
+  unconfirmed.
+- **Environmental note that will bite the next validator:** the extension defaults
+  `stark.compiler.path` to `starkc`, and VS Code launched from Finder does not inherit a shell
+  `PATH` — a `~/.local/bin` install is invisible to it unless the setting is given an absolute
+  path.
 - **User impact:** unknown — the extension may work correctly in a real VS Code session, or may
   not; this has genuinely not been tested at the UI level despite being labeled "Complete" in
   `WP8_4_VSCODE_EXTENSION_IMPLEMENTATION.md` (with the honest caveat "interactive VS Code

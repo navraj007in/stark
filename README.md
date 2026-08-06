@@ -554,8 +554,9 @@ code --install-extension stark-language.vsix
 
 **Confirmed in a real editor session:** hover, go-to-definition, find-references. Rename,
 diagnostics, formatting, completion, signature help, document symbols and semantic tokens are
-advertised and protocol-tested, but have no interactive record yet — which is why Gate C8 is
-candidate-complete rather than closed.
+advertised and protocol-tested, but have no interactive record yet. Gate C8 **closed** on 2026-08-06
+(CD-385) with exactly that limit stated rather than removed, and `DEV-012` stays open for those
+seven features.
 
 One setup trap worth knowing: the extension defaults `stark.compiler.path` to `starkc` on `PATH`,
 and a VS Code launched from a desktop environment does not inherit a shell `PATH`. If the server
@@ -624,7 +625,8 @@ The following areas are working:
 * native compilation of ordinary Core programs, debug and release, on Linux, macOS and Windows
   (Gate C7) — over a *qualified* subset: Gate C6 audited 87 standard-library methods and verified
   an invocation for 59, and makes no claim of full Core or standard-library native conformance;
-* compiler-backed language services over LSP (Gate C8, candidate-complete);
+* compiler-backed language services over LSP (Gate C8, closed with DEV-012 open for
+  seven features);
 * lock files (`stark.lock`) with SHA-256 content hashing;
 * offline and locked build modes;
 * 28 first-party packages written in STARK, each with a consumer package that calls its declared

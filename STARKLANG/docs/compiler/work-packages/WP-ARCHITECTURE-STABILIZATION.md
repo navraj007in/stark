@@ -53,7 +53,7 @@ pipeline.
 | Cranelift retirement, manifest strictness audit | approve or reject now | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
 | AS0 + AS1a | approve or reject now | none; this is a defect/inventory packet |
 | remainder of Campaign A | reserve until the AS0 report | before structured-concurrency compiler/runtime work |
-| Campaign B | reserve until Campaign A and C8 positions are known | before C10 release qualification |
+| Campaign B | reserve until Campaign A's position is known; C8 is settled (CLOSED, CD-385) | before C10 release qualification |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
@@ -87,8 +87,8 @@ implementation to be batched with it.
 Sprint 2, because its strict-parsing decisions are cheapest to settle alongside AS1b's source-map
 work. This does not move the Campaign A exit gate: that gate is reached only when AS0, AS1a, AS2,
 AS1b, AS3 and AS4 are closed and owner-reviewed — the end of Sprint 3 — regardless of AS5 having
-landed earlier. AS5 and AS8 remain subject to the C8 gate decision in §4 wherever they touch
-protocol or editor behaviour.
+landed earlier. The C8 gate decision that AS5 and AS8 were waiting on is made — CLOSED, CD-385 —
+so neither is blocked on it; both inherit the limits §4 records.
 
 Sprint 4 may not begin until Sprint 3 reports a green semantic boundary. AS8 must not certify work
 that is still moving.
@@ -167,7 +167,7 @@ Cranelift retirement (isolated commit, audit-gated)
 [SPRINT 2]
  +--> AS1b SourceId-bearing spans
  |         <checkpoint: diagnostic/trap location tests>
- +--> AS5 Protocol and version contracts        [requires C8 gate decision]
+ +--> AS5 Protocol and version contracts        [C8 gate decision MADE: CLOSED, CD-385]
            <checkpoint: JSON conformance corpus>
 
 [SPRINT 3]
@@ -191,7 +191,7 @@ Cranelift retirement (isolated commit, audit-gated)
  |         [IMPLEMENTATION FREEZE — AS6/AS7 Tier-2 checkpoints green]
  |
  +--> AS8 Engine independence, tooling scale and governance closure
-           [post-C8 tooling scale work requires the C8 gate decision]
+           [post-C8 tooling scale work: C8 gate decision MADE, CLOSED, CD-385]
 
                   [CAMPAIGN B EXIT]
                  required before C10
@@ -209,8 +209,9 @@ Only AS0 + AS1a are proposed for approval now.
   are not behaviourally identical, and AS0 must establish their exact count, so consolidation
   necessarily chooses a winner. Without a captured baseline, "the entry points now agree" is
   satisfiable by every assembly having silently changed.
-- **C8 must receive an explicit gate decision** before AS5 or AS8 takes on overlapping
-  protocol/editor work.
+- **C8's gate decision is made.** CD-385 closed it on 2026-08-06 with a stated limit — three of ten
+  advertised features carry interactive evidence, and DEV-012 stays open and narrowed to the other
+  seven (`GATE-C8-CLOSURE.md` §2). AS5 and AS8 therefore take their "C8 closes first" branches.
 
 ---
 
@@ -613,14 +614,17 @@ semantics may continue under `ROADMAP.md`'s WIP limits.
 
 #### Dependencies
 
-- C8 is CANDIDATE-COMPLETE, not closed, at proposal time; it receives an explicit owner gate
-  decision before AS5 begins.
+- C8 is **CLOSED** (CD-385, 2026-08-06). It was CANDIDATE-COMPLETE at proposal time and this
+  packet was gated on the decision; the decision is made, so AS5 is unblocked on that axis.
 - EI3 of `WP-ENGINE-INDEPENDENCE.md` supplies the rustc/toolchain assumption inventory; AS5 decides
   how that proposal integrates with version and build-provenance contracts.
-- If C8 remains open, malformed/trailing JSON-RPC handling and real editor validation belong to
-  WP-C8.7/C8 exit first. AS5 consumes that evidence; it does not silently reopen or duplicate C8.
-- If C8 closes first, AS5 preserves its protocol/interactive baseline while consolidating the
-  shared JSON implementation used by non-LSP surfaces.
+- **The "C8 closes first" branch applies.** AS5 preserves C8's protocol and interactive baseline
+  while consolidating the shared JSON implementation used by non-LSP surfaces. It does not reopen
+  C8's scope.
+- **C8's protocol evidence has a stated limit AS5 must not lean on.** `GATE-C8-CLOSURE.md` §4
+  records that protocol validation compared verdicts, not values, and that DEV-182 — the LSP parser
+  decoding every escaped non-BMP character to the empty string — passed it. AS5's conformance corpus
+  is where value-level agreement gets established; "C8's protocol tests pass" does not supply it.
 
 #### Work
 
@@ -755,8 +759,9 @@ other session touches the declared ownership set for the duration.
 
 #### Dependencies
 
-- Explicit C8 gate exit. AS8 is post-C8 performance/ownership work, not a substitute for C8's
-  protocol and interactive semantic validation.
+- C8 gate exit: **done** (CD-385, 2026-08-06). AS8 is post-C8 performance/ownership work, not a
+  substitute for C8's protocol and interactive semantic validation — and DEV-012 remains open for
+  seven features, so AS8 must not be read as supplying that evidence either.
 
 #### Work
 

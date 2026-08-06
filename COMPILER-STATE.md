@@ -1,5 +1,35 @@
 # STARK Compiler STATE
 
+## CD-385 — Gate C8 CLOSED, deliberately short on one requirement (2026-08-06)
+
+**Owner ruling. `STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` is the record.**
+
+C8 had been CANDIDATE-COMPLETE since 2026-07-31 on a single blocking reason: missing interactive
+editor validation. The 2026-07-31 session answered it for **three of ten** advertised features —
+hover, go-to-definition, find-references. The other seven (diagnostics, formatting, completion,
+signature help, rename, document symbols, semantic tokens) are protocol-tested only.
+
+**The gate closes with that limit stated, not removed.** The execution plan's §17.2 lists ten
+requirements for `C8-CLOSED`; nine are met and item 8, "real VS Code validation passes", is
+**partially met and overridden by owner decision**. The closure document marks it that way so an
+auditor reads "deliberately closed short" rather than "met". **DEV-012 stays OPEN, narrowed** to the
+seven unvalidated features — the deviation carries the residue, exactly as C7 closed without a
+steady-state runtime-performance claim.
+
+Why close rather than hold: the blocking reason was environmental, holding the gate open does not
+itself produce the missing evidence, and the ambiguity — not the risk — was blocking AS5 and AS8.
+
+**A limit this ruling adds that the exit report did not have.** CD-384 (DEV-182, the same day) found
+the LSP parser decoding every escaped non-BMP character to the empty string. WP-C8.7 is "Protocol
+and editor validation" and that defect passed it, because a protocol test asserting a well-formed
+exchange records agreement when both sides say "ok". C8's protocol evidence demonstrates *verdict*
+agreement, not *value* agreement. Recorded as a standing limit; AS5's conformance corpus is where
+value-level agreement gets established.
+
+**Consequences.** AS5 and AS8 take their "C8 closes first" branches and are unblocked.
+`WP-ARCHITECTURE-STABILIZATION.md`, the C8 exit report, the C8 evidence README, the C9 plan's
+starting-position note and `KNOWN-DEVIATIONS.md` were all reconciled in the same change.
+
 ## CD-384 — DEV-182, the LSP parser silently ate every non-BMP character (2026-08-06)
 
 Taken as a live-defect pre-emption under `WP-ARCHITECTURE-STABILIZATION.md` §3, on its own branch
