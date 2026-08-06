@@ -1,0 +1,71 @@
+use super::to_string;
+use super::Line;
+
+struct Point { x: Int32, y: Int32 }
+
+impl Display for Point {
+    fn fmt(&self) -> String {
+        let mut out = String::new();
+        out.push_str("(");
+        let x = self.x.fmt();
+        out.push_str(x.as_str());
+        out.push_str(",");
+        let y = self.y.fmt();
+        out.push_str(y.as_str());
+        out.push_str(")");
+        out
+    }
+}
+
+fn expect(actual: String, expected: &str) {
+    if actual.as_str() != expected {
+        panic("stark-fmt: rendering mismatch");
+    }
+}
+
+pub fn test_empty_line_is_empty() {
+    expect(Line::new().done(), "");
+}
+
+pub fn test_text_only() {
+    expect(Line::new().text("abc").text("def").done(), "abcdef");
+}
+
+pub fn test_integer_value() {
+    let n: Int32 = 42;
+    expect(Line::new().text("n=").value(&n).done(), "n=42");
+}
+
+pub fn test_every_display_primitive() {
+    let i: Int64 = -5;
+    let u: UInt32 = 7;
+    let f: Float64 = 0.75;
+    let g: Float32 = 0.5f32;
+    let b: Bool = true;
+    let c: Char = 'k';
+    let s: String = "own".to_string();
+    let line = Line::new().value(&i).text(" ").value(&u).text(" ").value(&f).text(" ").value(&g).text(
+        " ",
+    ).value(&b).text(" ").value(&c).text(" ").value(&s).text(" ").value("slice").done();
+    expect(line, "-5 7 0.75 0.5 true k own slice");
+}
+
+pub fn test_user_display_impl() {
+    let p = Point { x: 1, y: 2 };
+    expect(Line::new().text("p=").value(&p).done(), "p=(1,2)");
+}
+
+/// `value` borrows: the same value is rendered twice and then used a third time.
+pub fn test_value_is_borrowed_not_consumed() {
+    let p = Point { x: 3, y: 4 };
+    let line = Line::new().value(&p).text("/").value(&p).done();
+    expect(line, "(3,4)/(3,4)");
+    expect(p.fmt(), "(3,4)");
+}
+
+pub fn test_to_string_free_function() {
+    let n: Int32 = 9;
+    expect(to_string(&n), "9");
+    let p = Point { x: 0, y: 0 };
+    expect(to_string(&p), "(0,0)");
+}

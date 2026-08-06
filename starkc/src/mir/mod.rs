@@ -62,7 +62,20 @@ pub const MIR_VERSION: &str = "0.3";
 /// own amendment document rather than a rev. 14 of the A1 string/collection surface. The constant
 /// still advances because a consumer that cannot represent provider calls must reject an A10
 /// program before consuming any body (V-SURFACE-1).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A13";
+///
+/// `0.1-A14` (CD-381): the formatting surface. Adds **twelve** `RuntimeFn` members in two
+/// families:
+///
+/// * `FmtInt64`, `FmtUInt64`, `FmtBool`, `FmtFloat64`, `FmtFloat32`, `FmtChar`, `FmtUnit` —
+///   `Display::fmt` on a standard-library receiver (CD-378);
+/// * `FmtPad`, `FmtIntSpec`, `FmtUIntSpec`, `FmtFloat64Spec`, `FmtFloat32Spec` — format
+///   specification application (CD-380).
+///
+/// **Both families were added without advancing this constant**, in CD-378 and CD-380
+/// respectively; A14 corrects both omissions at once. A consumer built against A13 cannot
+/// represent any of the twelve and must reject an A14 program before consuming a body — which is
+/// the whole purpose of the revision, and what was missing while the constant lagged.
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A14";
 
 // ------------------------------------------------------------------ identity --
 
@@ -605,6 +618,34 @@ pub enum RuntimeFn {
     StrSubstring,
     StrEq,
     StrCmp,
+    // --- DEV-DISPLAY-DISPATCH: `Display::fmt(&self) -> String` on the standard-library
+    // primitives. These RETURN the canonical rendering instead of submitting it to an output
+    // sink, which is what `x.fmt()` needs — including after a generic `T: Display` has been
+    // monomorphised down to a primitive. They share `stark_runtime::format`'s renderers with the
+    // `Print*` family above, so a value cannot format one way and print another. Integer widths
+    // widen to `Int64`/`UInt64` at lowering, exactly as the print family does. ---
+    FmtInt64,
+    FmtUInt64,
+    FmtBool,
+    FmtFloat64,
+    FmtFloat32,
+    FmtChar,
+    FmtUnit,
+    // --- WP-FMT-001: format-SPECIFICATION application. Five operations, not one per syntax
+    // combination: everything about HOW a value renders lives in the packed specification word,
+    // and the operation only says which value family it is. Both extra operands are compile-time
+    // constants — the spec bitfield and the fill scalar — so no format string is ever parsed at
+    // run time. Every one calls `stark_runtime::fmt_spec`, shared with the interpreters. ---
+    /// `(&str, UInt64 spec, Char fill) -> String` — alignment, fill and width on rendered text.
+    FmtPad,
+    /// `(Int64, UInt64 spec, Char fill) -> String`
+    FmtIntSpec,
+    /// `(UInt64, UInt64 spec, Char fill) -> String`
+    FmtUIntSpec,
+    /// `(Float64, UInt64 spec, Char fill) -> String`
+    FmtFloat64Spec,
+    /// `(Float32, UInt64 spec, Char fill) -> String`
+    FmtFloat32Spec,
     // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT
     // here: STARK's `.iter()` is by-reference (`&T`), which A1 reserved to an interior-
     // reference sub-slice; activating it needs an owner-reviewed surface bump. ---

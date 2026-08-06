@@ -545,7 +545,7 @@ fn the_contract_violation_names_provider_and_function() {
     assert!(src.contains("\"stark_time_monotonic_now_ns\""), "{src}");
 }
 
-/// With an empty status vocabulary — `stark-time`'s real case — **every** nonzero status is a
+/// With an empty status vocabulary, **every** nonzero status is a
 /// contract violation, so the match has exactly two arms.
 #[test]
 fn an_empty_vocabulary_gives_success_and_violation_only() {

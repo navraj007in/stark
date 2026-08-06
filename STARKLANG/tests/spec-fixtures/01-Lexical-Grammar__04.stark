@@ -1,4 +1,4 @@
-'a'
-'\n'
-'\x41'
-'\u{1F600}'
+f"pkg={name} n={count:04} r={ratio:.2} ok={ok}"
+f"object={{ name: {name} }}"
+f"|{name:^12}|"
+f"{flags:#010x}"

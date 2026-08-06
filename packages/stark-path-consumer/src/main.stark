@@ -1,11 +1,52 @@
+use stark_path::components;
 use stark_path::extension;
+use stark_path::file_name;
+use stark_path::is_absolute;
 use stark_path::join;
 use stark_path::normalize;
+use stark_path::parent;
+use stark_path::separator;
+use stark_path::stem;
+use stark_path::with_extension;
 use stark_path::PathStyle;
 
 fn main() {
     let path = join(PathStyle::Unix, "/usr", "local/../bin/stark.exe");
     let normalized = normalize(PathStyle::Unix, path.as_str());
+    if separator(PathStyle::Unix) != '/' {
+        panic("separator mismatch");
+    }
+    if !is_absolute(PathStyle::Unix, normalized.as_str()) {
+        panic("absolute mismatch");
+    }
+    let parts = components(PathStyle::Unix, normalized.as_str());
+    if parts.len() != 3u64 || parts[2u64].as_str() != "stark.exe" {
+        panic("components mismatch");
+    }
+    match parent(PathStyle::Unix, normalized.as_str()) {
+        Some(dir) => {
+            if dir.as_str() != "/usr/bin" {
+                panic("parent mismatch");
+            }
+        }
+        None => panic("parent missing"),
+    }
+    match file_name(PathStyle::Unix, normalized.as_str()) {
+        Some(name) => {
+            if name.as_str() != "stark.exe" {
+                panic("file name mismatch");
+            }
+        }
+        None => panic("file name missing"),
+    }
+    match stem(PathStyle::Unix, normalized.as_str()) {
+        Some(name) => {
+            if name.as_str() != "stark" {
+                panic("stem mismatch");
+            }
+        }
+        None => panic("stem missing"),
+    }
     match extension(PathStyle::Unix, normalized.as_str()) {
         Some(ext) => {
             if ext.as_str() != "exe" {
@@ -15,6 +56,9 @@ fn main() {
         None => {
             panic("missing extension");
         }
+    }
+    if with_extension(PathStyle::Unix, normalized.as_str(), "stark").as_str() != "/usr/bin/stark.stark" {
+        panic("with extension mismatch");
     }
     println(normalized.as_str());
 }

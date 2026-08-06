@@ -84,7 +84,14 @@ pub fn parent(style: PathStyle, path: &str) -> Option<String> {
                 ),
             )
         }
+    } else if root > 0u64 {
+        // No separator ABOVE the root -- `/usr`, `C:\\Users`. `last_separator_before` scans only
+        // indices greater than `root`, so the root's own separator is never among its answers, and
+        // treating "no separator" as "no parent" loses the one every absolute first-level entry
+        // has. The parent of `/usr` is `/`.
+        Some(String::from(path.substring(0u64, root)))
     } else {
+        // A relative first-level entry (`usr`) genuinely has no parent within the path.
         None
     }
 }
@@ -225,7 +232,14 @@ fn pop_component(style: PathStyle, current: String, root: UInt64) -> String {
                 String::from(current.as_str().substring(0u64, idx))
             }
         } else if root == 0u64 {
-            String::from(".")
+            // The relative stack is now EMPTY, and empty is not `.`.
+            //
+            // Returning `.` here made a later `..` unable to recognise that there was nothing left
+            // to cancel: it saw a one-component path, found no separator, and returned `.` again,
+            // so `a/../../b` normalised to `b` instead of `../b` -- one directory level off, with
+            // no diagnostic. Empty is the honest representation, `append_component` already treats
+            // it as empty, and `normalize`'s tail already renders a wholly-cancelled path as `.`.
+            String::new()
         } else {
             String::from(current.as_str().substring(0u64, root))
         }

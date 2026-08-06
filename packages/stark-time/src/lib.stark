@@ -1,9 +1,8 @@
-// std-time v0.1 -- WP-TIME-A (pure package logic + provider crate).
+// stark-time v0.1 -- duration arithmetic plus provider-backed clock reads.
 //
-// `Instant::now`, `UnixTimestamp::now`, and `Instant::elapsed` are NOT implemented in this pass:
-// the repository's Native Provider ABI v0.1 has compile-time metadata validation but no real
-// provider linkage/invocation yet (see BLOCKERS.md). Everything else in the frozen public API
-// that does not depend on a live clock reading is implemented and tested here.
+// `stark test` covers the pure logic. `Instant::now`, `Instant::elapsed`, and
+// `UnixTimestamp::now` require the native `clock` capability and are exercised by the native
+// consumer rather than the interpreter, which has no provider layer.
 
 pub enum TimeError {
     ClockUnavailable,
@@ -130,26 +129,52 @@ impl Duration {
 pub struct Instant { ticks_nanos: UInt64 }
 
 impl Instant {
+    pub fn now() -> Result<Instant, TimeError> {
+        match monotonic_now_ns_raw() {
+            Ok(ticks) => Ok(Instant { ticks_nanos: ticks }),
+            Err(error) => Err(map_raw_error(error)),
+        }
+    }
     pub fn checked_duration_since(&self, earlier: &Instant) -> Option<Duration> {
-        // `now()` is intentionally absent -- see BLOCKERS.md. Calling the monotonic provider has no
-        // approved execution seam yet, and this package must not invent one.
-
         if self.ticks_nanos < earlier.ticks_nanos {
             return None;
         }
         let delta = self.ticks_nanos - earlier.ticks_nanos;
         Some(Duration::from_nanos(delta))
     }
+    pub fn elapsed(&self) -> Result<Duration, TimeError> {
+        let current: Instant;
+        match Instant::now() {
+            Ok(value) => {
+                current = value;
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        }
+        match current.checked_duration_since(self) {
+            Some(duration) => Ok(duration),
+            None => Err(TimeError::ClockWentBackwards),
+        }
+    }
 }
-// `elapsed()` is intentionally absent: §12.4 defines it in terms of `Instant::now()`.
 
 pub struct UnixTimestamp { seconds: Int64, nanoseconds: UInt32 }
 
 impl UnixTimestamp {
     pub fn from_unix_seconds(seconds: Int64) -> UnixTimestamp {
-        // `now()` is intentionally absent -- see BLOCKERS.md.
-
         UnixTimestamp { seconds: seconds, nanoseconds: 0u32 }
+    }
+    pub fn now() -> Result<UnixTimestamp, TimeError> {
+        match unix_now_raw() {
+            Ok(value) => {
+                if value.1 >= NANOS_PER_SECOND as UInt32 {
+                    return Err(TimeError::OutOfRange);
+                }
+                Ok(UnixTimestamp { seconds: value.0, nanoseconds: value.1 })
+            }
+            Err(error) => Err(map_raw_error(error)),
+        }
     }
     pub fn from_unix_millis(milliseconds: Int64) -> UnixTimestamp {
         let q = milliseconds / 1000i64;
@@ -179,6 +204,13 @@ impl UnixTimestamp {
             return None;
         }
         Some(sec_part + nanos_part)
+    }
+}
+
+fn map_raw_error(error: RawTimeError) -> TimeError {
+    match error {
+        RawTimeError::ClockUnavailable => TimeError::ClockUnavailable,
+        RawTimeError::OutOfRange => TimeError::OutOfRange,
     }
 }
 
@@ -530,6 +562,17 @@ fn test_instant_checked_duration_since_regression_is_none() {
     }
 }
 
+fn test_raw_time_error_mapping() {
+    match map_raw_error(RawTimeError::ClockUnavailable) {
+        TimeError::ClockUnavailable => {}
+        _ => panic("ClockUnavailable mapping mismatch"),
+    }
+    match map_raw_error(RawTimeError::OutOfRange) {
+        TimeError::OutOfRange => {}
+        _ => panic("OutOfRange mapping mismatch"),
+    }
+}
+
 // -------------------------------------------------------------- UnixTimestamp: constructors --
 
 fn test_unix_timestamp_from_unix_seconds() {
@@ -552,6 +595,13 @@ fn test_unix_timestamp_from_unix_seconds() {
     let e = UnixTimestamp::from_unix_seconds(I64_MAX_FOR_TESTS);
     if e.seconds() != I64_MAX_FOR_TESTS || e.subsec_nanos() != 0u32 {
         panic("from_unix_seconds(Int64::MAX) mismatch");
+    }
+}
+
+fn test_unix_timestamp_private_canonical_construction() {
+    let t = UnixTimestamp { seconds: 123i64, nanoseconds: 999999999u32 };
+    if t.seconds() != 123i64 || t.subsec_nanos() != 999999999u32 {
+        panic("canonical timestamp construction mismatch");
     }
 }
 

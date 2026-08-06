@@ -1,0 +1,57 @@
+use stark_time::Instant;
+use stark_time::UnixTimestamp;
+
+fn main() {
+    let first: Instant;
+    match Instant::now() {
+        Ok(value) => {
+            first = value;
+        }
+        Err(_) => {
+            panic("Instant::now failed");
+        }
+    }
+
+    let second: Instant;
+    match Instant::now() {
+        Ok(value) => {
+            second = value;
+        }
+        Err(_) => {
+            panic("second Instant::now failed");
+        }
+    }
+
+    match second.checked_duration_since(&first) {
+        Some(_) => {}
+        None => {
+            panic("monotonic clock regressed");
+        }
+    }
+
+    match first.elapsed() {
+        Ok(_) => {}
+        Err(_) => {
+            panic("Instant::elapsed failed");
+        }
+    }
+
+    match UnixTimestamp::now() {
+        Ok(wall) => {
+            if wall.subsec_nanos() >= 1000000000u32 {
+                panic("UnixTimestamp::now returned noncanonical nanoseconds");
+            }
+            match wall.to_unix_millis() {
+                Some(_) => {}
+                None => {
+                    panic("UnixTimestamp::now did not fit milliseconds");
+                }
+            }
+        }
+        Err(_) => {
+            panic("UnixTimestamp::now failed");
+        }
+    }
+
+    println("STARK_TIME_NATIVE_OK");
+}

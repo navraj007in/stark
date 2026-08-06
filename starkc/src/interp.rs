@@ -29,6 +29,9 @@ pub struct RuntimeError {
     /// tell them apart either treats a stack overflow as a language outcome or treats a real trap
     /// as noise.
     pub class: FailureClass,
+    /// Which named oracle limitation this is, if any. `None` claims none — the ordinary case,
+    /// including every other internal invariant.
+    pub limitation: Option<OracleLimitation>,
     /// DEV-106 (CD-136): the trap category when the interpreter KNOWS it, rather than leaving it to
     /// be recovered by matching this error's prose.
     ///
@@ -69,6 +72,19 @@ pub struct RuntimeError {
 /// stack behaviour and a program should not become executable by changing engines.
 pub const MAX_CALL_DEPTH: usize = 512;
 
+/// A named oracle limitation, recognised WITHOUT matching prose.
+///
+/// The differential comparator must tell "this engine cannot execute this construct" from "the
+/// engines disagree about the language". Doing that by substring made qualification depend on
+/// diagnostic wording — a reword breaks it, and an unrelated internal message could match by
+/// accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleLimitation {
+    /// Destruction retains no concrete nominal type arguments, so a generic `Drop`'s parameters
+    /// cannot be bound. MIR and native retain them and execute it correctly (DEV-176, A3c-D).
+    GenericDrop,
+}
+
 /// What kind of failure ended a run (WP-C7.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureClass {
@@ -101,6 +117,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Trap,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -113,6 +130,19 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::InternalInvariant,
+            limitation: None,
+            trap_category: None,
+            file: None,
+        }
+    }
+
+    /// An internal invariant that is a NAMED limitation of this engine.
+    fn limitation(message: impl Into<String>, span: Span, limitation: OracleLimitation) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            class: FailureClass::InternalInvariant,
+            limitation: Some(limitation),
             trap_category: None,
             file: None,
         }
@@ -126,6 +156,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::HostResource,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -141,6 +172,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Trap,
+            limitation: None,
             trap_category: Some(category),
             file: None,
         }
@@ -151,6 +183,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             class: FailureClass::Entry,
+            limitation: None,
             trap_category: None,
             file: None,
         }
@@ -398,7 +431,7 @@ enum Value {
     /// `Array`. The bounds are half-open indices into `place`.
     Slice(Place, usize, usize),
     Ref(Place),
-    Function(ItemId),
+    Function(FunctionValue),
     CharsIter(String, usize),
     SplitIter(Vec<String>, usize),
     VecIter(Place, usize),
@@ -418,6 +451,191 @@ enum Value {
     /// WP-C2.2 (DEV-027): runtime representation of the prelude `Ordering` enum, mirroring
     /// `IOError`'s builtin-backed pattern (no HIR item; variants resolve to `Builtin`s).
     Ordering(std::cmp::Ordering),
+}
+
+/// **The name of a runtime representation, with no payload.** (WP-VALUE-REP-TOTAL, A1.)
+///
+/// A `Value` cannot be named in a diagnostic or a table without either cloning it or printing its
+/// contents, and a representation report must do neither: cloning is what the DEV-121 class is
+/// about, and the contents of a value are never the caller's problem when the *shape* is wrong.
+/// `ValueKind` is the shape alone.
+///
+/// **The enum, its display names and `ALL` are generated from one list**, so they cannot disagree.
+/// A hand-written `ALL` can both duplicate an entry and omit another while keeping its length — a
+/// count assertion passes on that list, which is why the count alone was not enough.
+macro_rules! define_value_kinds {
+    ($($kind:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum ValueKind {
+            $($kind),+
+        }
+
+        impl ValueKind {
+            /// Every kind, in declaration order. Generated, never maintained.
+            pub const ALL: &'static [ValueKind] = &[$(ValueKind::$kind),+];
+
+            /// How the kind is written in a diagnostic — the variant's own name, so a renamed
+            /// variant cannot keep an out-of-date label.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(ValueKind::$kind => stringify!($kind)),+
+                }
+            }
+        }
+    };
+}
+
+define_value_kinds!(
+    Unit,
+    Bool,
+    Int,
+    Float,
+    Char,
+    Str,
+    String,
+    Tuple,
+    Array,
+    Struct,
+    Enum,
+    Vec,
+    Boxed,
+    Option,
+    Result,
+    Range,
+    Slice,
+    Ref,
+    Function,
+    CharsIter,
+    SplitIter,
+    VecIter,
+    HashMap,
+    HashSet,
+    HashMapKeysIter,
+    HashMapValuesIter,
+    HashMapIter,
+    HashSetIter,
+    MapIter,
+    FilterIter,
+    Random,
+    IOError,
+    File,
+    Ordering,
+);
+
+impl Value {
+    /// The value's representation, without its contents.
+    ///
+    /// **No wildcard arm.** See [`ValueKind`] — this match is the forcing function that makes a new
+    /// `Value` variant a compile error until the matrix accounts for it.
+    pub fn kind(&self) -> ValueKind {
+        match self {
+            Value::Unit => ValueKind::Unit,
+            Value::Bool(_) => ValueKind::Bool,
+            Value::Int(_) => ValueKind::Int,
+            Value::Float(_, _) => ValueKind::Float,
+            Value::Char(_) => ValueKind::Char,
+            Value::Str(_) => ValueKind::Str,
+            Value::String(_) => ValueKind::String,
+            Value::Tuple(_) => ValueKind::Tuple,
+            Value::Array(_) => ValueKind::Array,
+            Value::Struct { .. } => ValueKind::Struct,
+            Value::Enum { .. } => ValueKind::Enum,
+            Value::Vec(_) => ValueKind::Vec,
+            Value::Boxed(_) => ValueKind::Boxed,
+            Value::Option(_) => ValueKind::Option,
+            Value::Result(_) => ValueKind::Result,
+            Value::Range { .. } => ValueKind::Range,
+            Value::Slice(_, _, _) => ValueKind::Slice,
+            Value::Ref(_) => ValueKind::Ref,
+            Value::Function(_) => ValueKind::Function,
+            Value::CharsIter(_, _) => ValueKind::CharsIter,
+            Value::SplitIter(_, _) => ValueKind::SplitIter,
+            Value::VecIter(_, _) => ValueKind::VecIter,
+            Value::HashMap(_) => ValueKind::HashMap,
+            Value::HashSet(_) => ValueKind::HashSet,
+            Value::HashMapKeysIter(_, _) => ValueKind::HashMapKeysIter,
+            Value::HashMapValuesIter(_, _) => ValueKind::HashMapValuesIter,
+            Value::HashMapIter(_, _) => ValueKind::HashMapIter,
+            Value::HashSetIter(_, _) => ValueKind::HashSetIter,
+            Value::MapIter(_, _) => ValueKind::MapIter,
+            Value::FilterIter(_, _) => ValueKind::FilterIter,
+            Value::Random(_) => ValueKind::Random,
+            Value::IOError(_) => ValueKind::IOError,
+            Value::File(_) => ValueKind::File,
+            Value::Ordering(_) => ValueKind::Ordering,
+        }
+    }
+}
+
+/// Where a value crossed into typed storage. (WP-VALUE-REP-TOTAL, A2.)
+///
+/// Named rather than a `&str` so a boundary cannot be misspelled at a call site, and so adding a
+/// boundary in A4 is a deliberate edit here rather than a new string literal. It appears in the
+/// diagnostic because "expected `&[UInt8]`, found owned `Vec`" is far cheaper to act on when it
+/// also says whether that happened at a parameter or a return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepBoundary {
+    LetBinding,
+    Parameter,
+    Receiver,
+    Return,
+    Propagation,
+    MatchBinding,
+    LoopBinding,
+    Assignment,
+    FieldWrite,
+    ElementWrite,
+    AggregateField,
+}
+
+impl RepBoundary {
+    /// How the boundary reads in a diagnostic, as a noun phrase that completes
+    /// "representation mismatch at ...".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepBoundary::LetBinding => "a let binding",
+            RepBoundary::Parameter => "a function parameter",
+            RepBoundary::Receiver => "a method receiver",
+            RepBoundary::Return => "a function return",
+            RepBoundary::Propagation => "a propagated return",
+            RepBoundary::MatchBinding => "a match binding",
+            RepBoundary::LoopBinding => "a loop binding",
+            RepBoundary::Assignment => "an assignment",
+            RepBoundary::FieldWrite => "a field write",
+            RepBoundary::ElementWrite => "an element write",
+            RepBoundary::AggregateField => "an aggregate field",
+        }
+    }
+}
+
+/// A function ITEM that has become a value, carrying the instantiation it was created with.
+/// (WP-VALUE-REP-TOTAL A3c-S2, DEV-178.)
+///
+/// **The environment travels with the value because it is fixed at the COERCION, not the call.**
+/// `let f: fn() -> UInt64 = type_size::<Int32>;` selects `T = Int32` when the item becomes a value;
+/// the later `f()` has call-site type `fn() -> UInt64`, which says what the result is and can never
+/// say what `T` was. Validating an indirect call against that caller-side type would satisfy a
+/// parameter check while leaving the body without its generic context — a patch over DEV-176's
+/// defect rather than a repair of it.
+///
+/// `bindings` are already CONCRETE. A function value may outlive the generic frame that created it,
+/// so an unresolved caller parameter stored here would reference a frame that no longer exists.
+///
+/// A payload change, not a new representation: `Ty::Fn` still maps to `ValueKind::Function`, so
+/// §6's matrix is unchanged and `value_matches_ty` is untouched.
+#[derive(Clone, Debug)]
+struct FunctionValue {
+    item: ItemId,
+    bindings: Vec<(String, Ty)>,
+}
+
+impl PartialEq for FunctionValue {
+    /// Equal when they name the same item. Two values of one function at different instantiations
+    /// are the same function; `Ty` is not comparable, and comparing bindings would make `f == f`
+    /// depend on how each was created.
+    fn eq(&self, other: &Self) -> bool {
+        self.item == other.item
+    }
 }
 
 #[derive(Clone)]
@@ -664,7 +882,7 @@ impl fmt::Display for Value {
             } => write!(f, "{start}..{}{end}", if *inclusive { "=" } else { "" }),
             Value::Slice(_, start, end) => write!(f, "<slice {start}..{end}>"),
             Value::Ref(_) => write!(f, "<reference>"),
-            Value::Function(item) => write!(f, "fn#{}", item.0),
+            Value::Function(func) => write!(f, "fn#{}", func.item.0),
             Value::CharsIter(..) => write!(f, "<CharsIter>"),
             Value::SplitIter(..) => write!(f, "<SplitIter>"),
             Value::VecIter(..) => write!(f, "<VecIter>"),
@@ -828,7 +1046,7 @@ impl Ord for Value {
                 .cmp(&b.frame)
                 .then_with(|| a.local.0.cmp(&b.local.0))
                 .then_with(|| a.projections.len().cmp(&b.projections.len())),
-            (Value::Function(a), Value::Function(b)) => a.cmp(b),
+            (Value::Function(a), Value::Function(b)) => a.item.cmp(&b.item),
             (Value::HashMap(a), Value::HashMap(b)) => a.canonical_cmp(b),
             (Value::HashSet(a), Value::HashSet(b)) => a.canonical_cmp(b),
             (Value::MapIter(ia, fa), Value::MapIter(ib, fb)) => ia.cmp(ib).then_with(|| fa.cmp(fb)),
@@ -1280,7 +1498,7 @@ impl<'a> Interpreter<'a> {
             },
             Value::Slice(place, start, end) => Value::Slice(place.clone(), *start, *end),
             Value::Ref(place) => Value::Ref(place.clone()),
-            Value::Function(item) => Value::Function(*item),
+            Value::Function(func) => Value::Function(func.clone()),
             Value::CharsIter(..) => Value::CharsIter(String::new(), 0),
             Value::SplitIter(..) => Value::SplitIter(Vec::new(), 0),
             Value::VecIter(place, _) => Value::VecIter(place.clone(), 0),
@@ -1486,6 +1704,24 @@ impl<'a> Interpreter<'a> {
         if args.len() != callable.params.len() {
             return Err(RuntimeError::new("runtime argument count mismatch", span));
         }
+        // **A3: `pending_propagation` is an intra-expression adapter, never live across a call.**
+        //
+        // It is interpreter state, not frame state, and `expect_value` parks a propagated value
+        // there while returning a dummy `Value::Unit` for the caller to consume immediately. That
+        // makes it correct only within one expression's evaluation: a value still parked when a
+        // callable boundary is crossed would be attributed to the WRONG function — read against a
+        // callee's return type on the way in, or a caller's on the way out.
+        //
+        // Establishing this as a checked invariant is what makes A4's return validation sound. It
+        // is the difference between "validate `Flow::Propagate` against `callable.ret`" being true
+        // and being an assumption, and it is why this lands before the wiring rather than with it.
+        if self.pending_propagation.is_some() {
+            return Err(RuntimeError::internal(
+                "DEV-121: a pending propagation entered a callable boundary — `?` must be consumed \
+                 within the expression that produced it",
+                span,
+            ));
+        }
         // WP-C7.9 Packet F: the interpreter's own call-depth capacity, checked BEFORE the frame is
         // pushed. Without it, a deeply recursive STARK program consumed the host's Rust stack and
         // the process aborted — taking the test runner with it, with no classification and no way
@@ -1531,6 +1767,16 @@ impl<'a> Interpreter<'a> {
             return result.map(|_| Value::Unit);
         }
         let flow = result?;
+        // The other half of the invariant: nothing may still be parked on the way out either. A
+        // value left here would be picked up by whatever the CALLER evaluates next, silently
+        // becoming that expression's propagation.
+        if self.pending_propagation.is_some() {
+            return Err(RuntimeError::internal(
+                "DEV-121: a pending propagation escaped expression handling and reached a callable \
+                 boundary",
+                span,
+            ));
+        }
         self.cleanup_current_frame()?;
         self.file = caller_file;
         self.frames.pop();
@@ -1613,6 +1859,245 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// **The one entry point every boundary uses.** (WP-VALUE-REP-TOTAL, A2 §7.)
+    ///
+    /// Normalises `expected` against the active instantiation, then asks the relation. A refusal is
+    /// `FailureClass::InternalInvariant` — a compiler defect, never a language trap and never a
+    /// user type error — so the differential harness fails loudly rather than accepting an oracle
+    /// bug as a program outcome and pressuring MIR and native into reproducing it.
+    ///
+    /// **The diagnostic names the shape and never the contents.** Printing the value would leak
+    /// program data into compiler output, and describing it would mean cloning or borrowing it,
+    /// which is the behaviour this class of check exists to police.
+    ///
+    /// Wired to no boundary yet: A4 does that. At A2 this is reachable only from tests, which is
+    /// deliberate — the relation is provable before it is enforced.
+    fn check_value_for_ty(
+        &self,
+        expected: &Ty,
+        value: &Value,
+        span: Span,
+        boundary: RepBoundary,
+    ) -> Result<(), RuntimeError> {
+        let concrete = self.concrete_runtime_ty(expected, span)?;
+        if self.value_matches_ty(&concrete, value) {
+            return Ok(());
+        }
+        Err(RuntimeError::internal(
+            format!(
+                "DEV-121 representation mismatch at {}: expected `{concrete:?}`, found `{}`",
+                boundary.as_str(),
+                value.kind().as_str()
+            ),
+            span,
+        ))
+    }
+
+    /// [`check_value_for_ty`] against a local's declared type.
+    ///
+    /// A local with no recorded type is not an error here: the tables do not type every internal
+    /// local the interpreter creates, and inventing a type to check against would be worse than
+    /// checking nothing. A6's producer inventory is what closes that gap, by finding the producers
+    /// rather than by guessing at the consumers.
+    #[allow(dead_code)]
+    fn check_local_value(
+        &self,
+        local: LocalId,
+        value: &Value,
+        span: Span,
+        boundary: RepBoundary,
+    ) -> Result<(), RuntimeError> {
+        let Some(ty) = self.tables.local_types.get(&local) else {
+            return Ok(());
+        };
+        self.check_value_for_ty(&ty.clone(), value, span, boundary)
+    }
+
+    /// The relation of WP-VALUE-REP-TOTAL §6, as executable code.
+    ///
+    /// **Returns whether the pairing is PERMITTED. It never converts.** A validator that turned a
+    /// `String` into a `Str`, a `Vec` into a `Slice`, or dereferenced a `Ref` to make a check pass
+    /// would destroy the evidence it exists to expose; the repair belongs at the producer.
+    ///
+    /// The `Ty` match is exhaustive with no permissive wildcard. Where a type admits more than one
+    /// representation the alternatives are named individually, so "permitted" is always a closed
+    /// set and never an absence of opinion.
+    fn value_matches_ty(&self, expected: &Ty, value: &Value) -> bool {
+        use crate::ast::Primitive;
+        let kind = value.kind();
+        match expected {
+            // ---------------------------------------------------------------- §6.2 scalars/text --
+            Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
+            Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
+            Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
+            // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
+            // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
+            Ty::Primitive(
+                Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64,
+            ) => kind == ValueKind::Int,
+            // `Value::Float` DOES carry a width, so it is checked: this examines information the
+            // model genuinely possesses.
+            Ty::Primitive(Primitive::Float32) => {
+                matches!(value, Value::Float(_, FloatWidth::F32))
+            }
+            Ty::Primitive(Primitive::Float64) => {
+                matches!(value, Value::Float(_, FloatWidth::F64))
+            }
+            // **Owned `String` has two spellings in the type system**, found by this match refusing
+            // to compile without both: the resolver maps the name `String` to
+            // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
+            // Both are the same owned type and both must permit exactly `Value::String`; covering
+            // only the `Core` one would have left every `String` binding unvalidated.
+            Ty::Primitive(Primitive::String) => kind == ValueKind::String,
+            // An unsized `str` is never a standalone value — only `&str` is (§6.6).
+            Ty::Primitive(Primitive::Str) => false,
+            // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
+            // boundary with one means extension gating failed.
+            Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
+
+            // ------------------------------------------------------------------ §6.4 references --
+            Ty::Ref { mutable: true, .. } => kind == ValueKind::Ref,
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } => self.shared_ref_matches(inner, value),
+
+            // --------------------------------------------------- §6.3 owned aggregates/collections --
+            Ty::Tuple(elements) => match value {
+                Value::Tuple(slots) => slots.len() == elements.len(),
+                _ => false,
+            },
+            Ty::Array(_, len) => match value {
+                Value::Array(slots) => slots.len() as u64 == *len,
+                _ => false,
+            },
+            Ty::Struct(item, _) => match value {
+                Value::Struct { item: actual, .. } => actual == item,
+                _ => false,
+            },
+            Ty::Enum(item, _) => match value {
+                Value::Enum { item: actual, .. } => actual == item,
+                _ => false,
+            },
+            Ty::Core(core, _) => Self::core_ty_matches(*core, kind),
+            Ty::Range(_) => kind == ValueKind::Range,
+            Ty::Fn { .. } => kind == ValueKind::Function,
+
+            // -------------------------------------------------------- §6.6 never at a boundary --
+            // Listed individually rather than folded into a `_` arm: each is a distinct compiler
+            // defect, and a wildcard here would also swallow any `Ty` variant added later.
+            Ty::Slice(_) => false,
+            Ty::Never => false,
+            Ty::Param(_) => false,
+            Ty::Infer(_) => false,
+            Ty::Error => false,
+            // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
+            // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
+            // one means extension gating failed.
+            Ty::Extension(_) => false,
+        }
+    }
+
+    /// `&T` for shared `T` — the multi-valued row, and the one that has to be a rule rather than a
+    /// list (§6.4, §6.8).
+    fn shared_ref_matches(&self, inner: &Ty, value: &Value) -> bool {
+        use crate::ast::Primitive;
+        let kind = value.kind();
+
+        // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
+        // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
+        // storage.
+        if matches!(inner, Ty::Primitive(Primitive::Str)) {
+            return kind == ValueKind::Str || kind == ValueKind::Ref;
+        }
+
+        // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
+        // one; `Vec`/`Array` immediately is the owned-storage error again.
+        if matches!(inner, Ty::Slice(_)) {
+            return kind == ValueKind::Slice || kind == ValueKind::Ref;
+        }
+
+        if kind == ValueKind::Ref {
+            return true;
+        }
+
+        // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
+        // cannot consume, invalidate or destroy the referent, so the two representations are
+        // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
+        // for convenience.
+        self.pointee_is_copy(inner) && self.value_matches_ty(inner, value)
+    }
+
+    /// §6.5. One representation each, named individually — a "these are all iterators" row would be
+    /// a wildcard.
+    fn core_ty_matches(core: hir::CoreType, kind: ValueKind) -> bool {
+        use hir::CoreType;
+        match core {
+            CoreType::String => kind == ValueKind::String,
+            CoreType::Vec => kind == ValueKind::Vec,
+            CoreType::Box => kind == ValueKind::Boxed,
+            CoreType::Option => kind == ValueKind::Option,
+            CoreType::Result => kind == ValueKind::Result,
+            CoreType::Range | CoreType::RangeInclusive => kind == ValueKind::Range,
+            CoreType::CharsIter => kind == ValueKind::CharsIter,
+            CoreType::SplitIter => kind == ValueKind::SplitIter,
+            CoreType::VecIter => kind == ValueKind::VecIter,
+            CoreType::HashMap => kind == ValueKind::HashMap,
+            CoreType::HashSet => kind == ValueKind::HashSet,
+            CoreType::KeysIter => kind == ValueKind::HashMapKeysIter,
+            CoreType::ValuesIter => kind == ValueKind::HashMapValuesIter,
+            // One core type serves both containers; the pair is closed and both are named.
+            CoreType::Iter => kind == ValueKind::HashMapIter || kind == ValueKind::HashSetIter,
+            CoreType::MapIter => kind == ValueKind::MapIter,
+            CoreType::FilterIter => kind == ValueKind::FilterIter,
+            CoreType::Random => kind == ValueKind::Random,
+            CoreType::IOError => kind == ValueKind::IOError,
+            CoreType::File => kind == ValueKind::File,
+            CoreType::Ordering => kind == ValueKind::Ordering,
+        }
+    }
+
+    /// Normalise `ty` against the active generic instantiation, or refuse.
+    ///
+    /// **A2 (WP-VALUE-REP-TOTAL §8).** Validation is meaningless against a type that still contains
+    /// a parameter: `T` permits every representation, so a relation asked about `T` can only answer
+    /// "yes". Refusing is the point — an unsubstituted parameter reaching a value boundary means
+    /// the instantiation frame did not cover it, which is a compiler defect and not a program
+    /// outcome.
+    ///
+    /// It reuses `typecheck::substitute_ty` and `ty_contains_param` rather than walking types
+    /// again here, because a second substitution algorithm is a second answer to what a generic
+    /// instantiation means.
+    fn concrete_runtime_ty(&self, ty: &Ty, span: Span) -> Result<Ty, RuntimeError> {
+        let concrete = match self.generic_frames.borrow().last() {
+            Some(map) => crate::typecheck::substitute_ty(ty, map),
+            None => ty.clone(),
+        };
+        if crate::typecheck::ty_contains_param(&concrete) {
+            return Err(RuntimeError::internal(
+                format!(
+                    "DEV-121: `{concrete:?}` still contains an unsubstituted generic parameter at a \
+                     value boundary — the active instantiation did not cover it"
+                ),
+                span,
+            ));
+        }
+        Ok(concrete)
+    }
+
+    /// Whether the pointee of a shared reference is `Copy`, which is what licenses the bare-value
+    /// representation. Answered by the CHECKER's predicate, never by a second one here.
+    fn pointee_is_copy(&self, ty: &Ty) -> bool {
+        crate::typecheck::is_copy_type_with(ty, &self.copy_items)
+    }
+
     /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
     ///
     /// WP-COPY-CANON's law is that Copy/move behaviour AND the representation carrying it follow
@@ -1660,7 +2145,14 @@ impl<'a> Interpreter<'a> {
             Value::String(_) => "an owned String",
             _ => return Ok(()),
         };
-        Err(RuntimeError::new(
+        // **A0: this is a compiler defect, not a language trap.** The prose said "internal" from the
+        // day it was written while `RuntimeError::new` classified it `FailureClass::Trap` — so a
+        // representation failure in the ORACLE was presentable to the differential harness as a
+        // legitimate program outcome. That is the worst possible classification for it: the HIR
+        // interpreter is what MIR and native are compared against, so a trap-classified oracle bug
+        // invites the comparator to pressure the other engines into reproducing it. `internal`
+        // makes the harness fail loudly instead.
+        Err(RuntimeError::internal(
             format!(
                 "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
                  represented by a view, never by owned storage, or passing it consumes what it \
@@ -1668,6 +2160,125 @@ impl<'a> Interpreter<'a> {
             ),
             span,
         ))
+    }
+
+    /// WP-FMT-001: pack a source-level format specification into the runtime's spec word.
+    fn format_spec_word(spec: &crate::ast::FormatSpec) -> (u64, char) {
+        use crate::ast::FormatKind;
+        use stark_runtime::fmt_spec::{Align, Kind, Sign, Spec};
+        let align = match spec.align {
+            None => Align::Default,
+            Some(crate::ast::FormatAlign::Left) => Align::Left,
+            Some(crate::ast::FormatAlign::Right) => Align::Right,
+            Some(crate::ast::FormatAlign::Center) => Align::Center,
+        };
+        let sign = match spec.sign {
+            None | Some(crate::ast::FormatSign::Minus) => Sign::Minus,
+            Some(crate::ast::FormatSign::Plus) => Sign::Plus,
+            Some(crate::ast::FormatSign::Space) => Sign::Space,
+        };
+        let kind = match spec.kind {
+            None => Kind::Display,
+            Some(FormatKind::Bin) => Kind::Bin,
+            Some(FormatKind::Oct) => Kind::Oct,
+            Some(FormatKind::LowerHex) => Kind::LowerHex,
+            Some(FormatKind::UpperHex) => Kind::UpperHex,
+            Some(FormatKind::Fixed) => Kind::Fixed,
+        };
+        let word = Spec::pack(
+            spec.width.unwrap_or(0),
+            spec.precision.map(|p| p as u16),
+            align,
+            sign,
+            spec.alternate,
+            spec.zero_pad,
+            kind,
+        );
+        (word, spec.fill.unwrap_or(' '))
+    }
+
+    /// WP-FMT-001: whether a specification asks for a NUMERIC rendering, which owns sign placement
+    /// and radix and therefore takes the value rather than its `Display` text.
+    fn format_spec_is_numeric(spec: &crate::ast::FormatSpec) -> bool {
+        spec.kind.is_some()
+            || spec.precision.is_some()
+            || spec.sign.is_some()
+            || spec.alternate
+            || spec.zero_pad
+    }
+
+    /// WP-FMT-001: whether this expression denotes a PLACE.
+    ///
+    /// A place is borrowed for formatting and left alone; anything else is a temporary this
+    /// evaluation created and must destroy. That distinction is what makes `f"{x}"` twice, then
+    /// `use_value(x)`, legal while still dropping `f"{make_value()}"`'s temporary exactly once.
+    fn format_field_is_place(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Path { res, .. } => {
+                matches!(res, Res::Local(_) | Res::SelfValue(_))
+            }
+            hir::ExprKind::Field { .. } | hir::ExprKind::TupleField { .. } => true,
+            hir::ExprKind::Unary {
+                op: UnOp::Deref, ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    /// WP-FMT-001: render one field.
+    ///
+    /// A numeric specification renders the VALUE through `stark_runtime::fmt_spec` — the same
+    /// functions the MIR interpreter and generated native code call, so there is no
+    /// interpreter-local padding or rounding rule. Everything else renders through `display_text`,
+    /// the very path `println` uses, and is then padded; that is what makes `f"{x}"` and `x.fmt()`
+    /// agree by construction rather than by coincidence.
+    fn render_format_field(
+        &mut self,
+        value: Value,
+        spec: &crate::ast::FormatSpec,
+        span: Span,
+        owned: bool,
+    ) -> Result<String, RuntimeError> {
+        let (word, fill) = Self::format_spec_word(spec);
+        if Self::format_spec_is_numeric(spec) {
+            match &value {
+                Value::Int(v) => {
+                    let text = if *v < 0 {
+                        let narrowed = i64::try_from(*v).map_err(|_| {
+                            RuntimeError::new("integer out of range for formatting", span)
+                        })?;
+                        stark_runtime::fmt_spec::fmt_int_spec(narrowed, word, fill)
+                    } else {
+                        let narrowed = u64::try_from(*v).map_err(|_| {
+                            RuntimeError::new("integer out of range for formatting", span)
+                        })?;
+                        stark_runtime::fmt_spec::fmt_uint_spec(narrowed, word, fill)
+                    };
+                    return Ok(text);
+                }
+                Value::Float(f, width) => {
+                    let text = match width {
+                        FloatWidth::F32 => {
+                            stark_runtime::fmt_spec::fmt_float32_spec(*f as f32, word, fill)
+                        }
+                        FloatWidth::F64 => {
+                            stark_runtime::fmt_spec::fmt_float64_spec(*f, word, fill)
+                        }
+                    };
+                    return Ok(text);
+                }
+                _ => {}
+            }
+        }
+        let (text, arg_place) = self.display_text(value, span)?;
+        // A BORROWED field must not run the value's destructor: `display_text` promoted a copy of
+        // a place's contents, and the place still owns the original.
+        if owned {
+            self.finish_display(arg_place, span)?;
+        } else if let Some(place) = arg_place {
+            let _ = self.take_place(&place, span);
+        }
+        Ok(stark_runtime::fmt_spec::fmt_pad_spec(&text, word, fill))
     }
 
     fn eval_expr(&mut self, expr_id: ExprId) -> Result<Flow, RuntimeError> {
@@ -1678,6 +2289,40 @@ impl<'a> Interpreter<'a> {
                 Ok(Flow::Value(
                     self.normalize_numeric(value, expr_id, expr.span)?,
                 ))
+            }
+            // WP-FMT-001: fields are evaluated in source order and exactly ONCE each. A place is
+            // borrowed (its value cloned for rendering, the place untouched); anything else is a
+            // temporary this evaluation owns and destroys after its bytes are appended.
+            hir::ExprKind::FormatString { segments } => {
+                let segments = segments.clone();
+                let mut out = String::new();
+                for segment in &segments {
+                    match segment {
+                        hir::FormatSegment::Literal { text, .. } => out.push_str(text),
+                        hir::FormatSegment::Field {
+                            expr,
+                            spec,
+                            expr_span,
+                            ..
+                        } => {
+                            let is_place = self.format_field_is_place(*expr);
+                            let (value, owned) = if is_place {
+                                let place = self.expr_place(*expr)?;
+                                let place = self.deref_place(place, *expr_span)?;
+                                (self.clone_place_value(&place, *expr_span)?, false)
+                            } else {
+                                match self.eval_expr(*expr)? {
+                                    Flow::Value(value) => (value, true),
+                                    other => return Ok(other),
+                                }
+                            };
+                            let rendered =
+                                self.render_format_field(value, spec, *expr_span, owned)?;
+                            out.push_str(&rendered);
+                        }
+                    }
+                }
+                Ok(Flow::Value(Value::String(out)))
             }
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
             hir::ExprKind::Unary { op, operand } => {
@@ -2157,7 +2802,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_lit(&self, lit: Lit, span: Span) -> Result<Value, RuntimeError> {
         let text = self.text(span);
-        let value = literal::eval_lit_value(lit, text)
+        let value = literal::eval_lit_value(lit, text, &self.hir.str_lits)
             .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
         // WP-C1.5 (DEV-015): defense-in-depth mirror of typecheck.rs's suffixed-literal
         // magnitude check (`check_expr`'s `Lit::Int` arm) -- re-verified here in case a literal
@@ -2205,7 +2850,14 @@ impl<'a> Interpreter<'a> {
                 self.take_place(&place, self.hir.expr(expr).span)
             }
             Res::Item(item) => match &self.hir.item(item).kind {
-                hir::ItemKind::Fn(_) => Ok(Value::Function(item)),
+                // **DEV-178: capture the instantiation here, where it is selected.** The later
+                // call cannot recover it — see `FunctionValue`. Concretised against the ACTIVE
+                // frame before storage, because the value may outlive that frame.
+                hir::ItemKind::Fn(_) => Ok(Value::Function(self.capture_function_value(
+                    item,
+                    expr,
+                    self.hir.expr(expr).span,
+                )?)),
                 hir::ItemKind::Const { .. } => self.eval_const_item(item),
                 _ => Err(RuntimeError::new(
                     "item is not a runtime value",
@@ -2695,7 +3347,11 @@ impl<'a> Interpreter<'a> {
                         // `Ty::Param`. Pushed and popped around the call on every path — the
                         // guard's `Drop` covers traps and interpreter errors too, which a manual
                         // pop after `?` would not.
-                        let _frame = self.push_generic_frame(*item, callee);
+                        // A3c-S: one installer for every callable kind. The old
+                        // `push_generic_frame` bound only a free function's own parameters and did
+                        // not compose with an enclosing instantiation; `push_callable_env` does
+                        // both, so a generic call inside a generic body now resolves too.
+                        let _frame = self.push_callable_env(callee, span)?;
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
                     }
@@ -2743,12 +3399,12 @@ impl<'a> Interpreter<'a> {
                     if let Some(propagated) = self.pending_propagation.take() {
                         return Ok(Flow::Propagate(propagated));
                     }
-                    let Value::Function(item) = function else {
+                    let Value::Function(callee) = function else {
                         return Err(RuntimeError::new("expression is not callable", span));
                     };
                     match self.eval_call_arguments(args)? {
                         Ok(values) => {
-                            let callable = self.item_callable(item).ok_or_else(|| {
+                            let callable = self.item_callable(callee.item).ok_or_else(|| {
                                 RuntimeError::new("expression is not callable", span)
                             })?;
                             self.call_callable(callable, None, values, span)
@@ -2767,13 +3423,13 @@ impl<'a> Interpreter<'a> {
                 if let Some(propagated) = self.pending_propagation.take() {
                     return Ok(Flow::Propagate(propagated));
                 }
-                let Value::Function(item) = function else {
+                let Value::Function(callee) = function else {
                     return Err(RuntimeError::new("expression is not callable", span));
                 };
                 match self.eval_call_arguments(args)? {
                     Ok(values) => {
                         let callable = self
-                            .item_callable(item)
+                            .item_callable(callee.item)
                             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
@@ -2811,10 +3467,26 @@ impl<'a> Interpreter<'a> {
             None => queried,
         };
         if crate::typecheck::ty_contains_param(&concrete) {
-            return Err(RuntimeError::new(
+            // **DEV-176: a compiler defect, not a language trap.**
+            //
+            // An accepted program reached execution with a type parameter the oracle could not
+            // resolve, because `push_generic_frame` installs a substitution frame only for direct
+            // free-function calls — impl, method and trait generics and `Self` are never bound. The
+            // program is valid; the oracle lacks the context.
+            //
+            // Classified `internal` because the HIR interpreter is the behavioural oracle: a
+            // trap-classified oracle defect is one the differential harness can accept as a
+            // legitimate program outcome and then pressure MIR and native into reproducing.
+            //
+            // Deliberately NARROW. Only this condition changes — ordinary `layout_of` refusals keep
+            // their classification until each is individually judged, because some of them do
+            // correspond to genuinely invalid programs and folding those into `InternalInvariant`
+            // would make the class meaningless.
+            return Err(RuntimeError::internal(
                 format!(
-                    "layout query on {concrete:?} still contains an unsubstituted generic \
-                     parameter: the active instantiation did not cover it"
+                    "DEV-176: layout query on {concrete:?} still contains an unsubstituted generic \
+                     parameter: the oracle installs generic context only for direct free-function \
+                     calls, so an impl, method or trait parameter is never bound"
                 ),
                 span,
             ));
@@ -2839,33 +3511,112 @@ impl<'a> Interpreter<'a> {
     /// arguments, and never falls back to a partial map. A generic item whose call site has no
     /// recorded instantiation, or whose arity disagrees, installs NOTHING — the query then fails
     /// as an unsubstituted parameter rather than silently answering from a stale or partial frame.
-    fn push_generic_frame(&mut self, item: ItemId, callee: ExprId) -> GenericFrame {
-        let names: Vec<String> = match &self.hir.item(item).kind {
-            hir::ItemKind::Fn(def) => def
-                .sig
-                .generics
-                .iter()
-                .map(|p| self.text(p.name).to_string())
-                .collect(),
-            _ => Vec::new(),
+    /// Build a function value, capturing the environment the checker selected at this use.
+    ///
+    /// A non-generic function captures nothing, which is the common case and costs a map lookup.
+    /// A generic one captures its bindings CONCRETISED against the active frame, so
+    /// `fn outer<T>() { let f: fn() -> UInt64 = type_size::<T>; }` stores `T`'s caller-resolved
+    /// value rather than the parameter.
+    fn capture_function_value(
+        &self,
+        item: ItemId,
+        use_expr: ExprId,
+        span: Span,
+    ) -> Result<FunctionValue, RuntimeError> {
+        let Some(env) = self.tables.callable_instantiations.get(&use_expr) else {
+            return Ok(FunctionValue {
+                item,
+                bindings: Vec::new(),
+            });
         };
-        let pushed = if names.is_empty() {
-            false
-        } else {
-            match self.tables.generic_insts.get(&callee) {
-                Some(args) if args.len() == names.len() => {
-                    let map: HashMap<String, Ty> =
-                        names.into_iter().zip(args.iter().cloned()).collect();
-                    self.generic_frames.borrow_mut().push(map);
-                    true
-                }
-                _ => false,
+        // The published environment must belong to the body this item actually runs — the
+        // signature is body-keyed and the environment call-site-keyed, so their agreement is
+        // asserted rather than assumed.
+        if let hir::ItemKind::Fn(def) = &self.hir.item(item).kind {
+            if def.body != env.body {
+                return Err(RuntimeError::internal(
+                    format!(
+                        "DEV-178: the environment published for this use names body {:?}, but the \
+                         function item executes {:?}",
+                        env.body, def.body
+                    ),
+                    span,
+                ));
             }
-        };
-        GenericFrame {
-            frames: self.generic_frames.clone(),
-            pushed,
         }
+        let mut bindings = Vec::new();
+        for (binder, ty) in &env.bindings {
+            bindings.push((
+                binder.name().to_string(),
+                self.concrete_runtime_ty(ty, span)?,
+            ));
+        }
+        Ok(FunctionValue { item, bindings })
+    }
+
+    /// **A3c-S: install the checker-selected generic environment for one callable use.**
+    ///
+    /// `push_generic_frame` binds only a free function's own parameters, which is DEV-176: impl
+    /// generics, method generics, trait generics and `Self` were never bound, so a generic method
+    /// body executed with no idea what its parameters stood for.
+    ///
+    /// **Composition happens BEFORE the push, and that ordering is load-bearing.** Published
+    /// bindings may themselves contain `Ty::Param` when the CALLER is generic — `fn outer<T>(w:
+    /// Wrapper<T>)` publishes `impl T -> T`. Each value is concretised against the currently active
+    /// frame first; pushing first and substituting after would resolve `T -> T` against itself and
+    /// silently keep the parameter.
+    ///
+    /// The interpreter CONSUMES this environment and never reconstructs one from names, runtime
+    /// values or impl scanning — a second instantiation algorithm would be a second answer to what
+    /// a generic call means.
+    fn push_callable_env(
+        &mut self,
+        callee: ExprId,
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        let Some(env) = self.tables.callable_instantiations.get(&callee).cloned() else {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        };
+        if env.bindings.is_empty() {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
+        // **Two passes, because the bindings have a dependency order.** `Self` is published as the
+        // impl's self type — `Wrapper<T>` — which references the impl's OWN parameters, so it
+        // cannot be resolved against the caller's frame alone. The parameters are concretised
+        // first, then `Self` is substituted through them before its own concretisation. A flat
+        // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
+        // boundary.
+        let mut concrete: HashMap<String, Ty> = HashMap::new();
+        for (binder, ty) in &env.bindings {
+            if matches!(binder, crate::typecheck::GenericBinder::SelfType) {
+                continue;
+            }
+            concrete.insert(
+                binder.name().to_string(),
+                self.concrete_runtime_ty(ty, span)?,
+            );
+        }
+        for (binder, ty) in &env.bindings {
+            if !matches!(binder, crate::typecheck::GenericBinder::SelfType) {
+                continue;
+            }
+            let through_params = crate::typecheck::substitute_ty(ty, &concrete);
+            concrete.insert(
+                binder.name().to_string(),
+                self.concrete_runtime_ty(&through_params, span)?,
+            );
+        }
+        self.generic_frames.borrow_mut().push(concrete);
+        Ok(GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed: true,
+        })
     }
 
     /// **DEV-126: flatten a reference argument that refers to a STRING.**
@@ -3351,13 +4102,50 @@ impl<'a> Interpreter<'a> {
         let receiver_place = self.core_receiver_place(base, span)?;
         let receiver_value = self.clone_place_value(&receiver_place, span)?;
         let nominal = nominal_item(&receiver_value);
-        let method = self.find_method(nominal, &name, None).ok_or_else(|| {
-            RuntimeError::new(format!("method '{name}' not found at runtime"), span)
-        })?;
+        // DEV-BOUND-TRAIT-IDENTITY: when this call resolved through a generic parameter's bound,
+        // the checker recorded WHICH trait supplied the method. Selecting by name alone ran the
+        // first impl on this nominal declaring it, so two bounds naming two different same-named
+        // traits both reached the same implementation.
+        let trait_filter = self.tables.bound_trait_calls.get(&expr_id).copied();
+        let method = match self.find_method(nominal, &name, trait_filter) {
+            Some(method) => method,
+            // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
+            // `is_core_value` above could not classify it — `Ty::Param` names no shape. The
+            // RUNTIME value settles it: a value with no nominal item (an `Int32`, a `String`, a
+            // `Vec`) is a Core value, and a `T: Display` bound made `x.fmt()` legal for exactly
+            // that instantiation. Dispatch it through the Core surface with the place already in
+            // hand. A generic parameter instantiated at a user nominal never reaches here —
+            // `find_method` resolves its `impl` — so this is additive, not a redirection.
+            None if nominal.is_none() && self.receiver_is_type_param(base) => {
+                let result = self.call_core_method_at(
+                    Some(expr_id),
+                    receiver_place,
+                    base,
+                    &name,
+                    args,
+                    span,
+                )?;
+                return Ok(match self.pending_propagation.take() {
+                    Some(propagated) => Flow::Propagate(propagated),
+                    None => Flow::Value(result),
+                });
+            }
+            None => {
+                return Err(RuntimeError::new(
+                    format!("method '{name}' not found at runtime"),
+                    span,
+                ))
+            }
+        };
         match self.eval_call_arguments(args)? {
-            Ok(values) => self
-                .call_user_method(method, receiver_place, receiver_value, values, span)
-                .map(Flow::Value),
+            Ok(values) => {
+                // A3c-S: the callee's generic environment, live for the whole call. The guard's
+                // `Drop` covers traps, propagation and internal failures, which a manual pop after
+                // `?` would not.
+                let _env = self.push_callable_env(expr_id, span)?;
+                self.call_user_method(method, receiver_place, receiver_value, values, span)
+                    .map(Flow::Value)
+            }
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
     }
@@ -3611,10 +4399,19 @@ impl<'a> Interpreter<'a> {
             // method runs (shared borrow, single-threaded), and the old clone was discarded
             // without STARK drop effects. (`&mut self` keeps its take/write-back model.)
             hir::Receiver::Ref => Value::Ref(receiver_place.clone()),
-            hir::Receiver::RefMut => self
-                .place_slot_mut(&receiver_place, span)?
-                .take()
-                .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?,
+            // **DEV-180: a `&mut self` receiver is a REFERENCE, like `&self`.**
+            //
+            // It used to take the owned value out of the caller's slot, bind that as `self`, and
+            // write it back afterwards — so a local typed `&mut Self` held a `Struct` for the whole
+            // body, the flattening WP-VALUE-REP-TOTAL §6.4 forbids. DEV-070 moved `&self` to a
+            // genuine reference and left this alone; its safety argument ("the referent cannot
+            // mutate during the call") is about SHARED borrows and never applied here.
+            //
+            // Nothing required take/write-back: writing through a mutable reference already works
+            // for every `&mut` parameter in the language, and this uses that same path. Mutation
+            // permission comes from the static type and the borrow checker, not from the runtime
+            // representation — now identical for both borrowed receivers.
+            hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
         };
         let mut frame = Frame::default();
         frame.insert(receiver_local, Some(receiver));
@@ -3643,25 +4440,23 @@ impl<'a> Interpreter<'a> {
             return Err(error);
         }
         let flow = result?;
-        let restored = if receiver_kind == hir::Receiver::Value {
-            None
-        } else {
+        // DEV-180: only a shared receiver still needs taking back out of the frame; a `&mut`
+        // receiver was never removed from the caller's place, so there is nothing to restore.
+        let restored = if receiver_kind == hir::Receiver::Ref {
             self.frame_mut()
                 .values
                 .get_mut(&receiver_local)
                 .and_then(Option::take)
+        } else {
+            None
         };
+        let _ = &restored;
         // Destructors for the method's own locals still belong to the method's file, so the
         // restore happens after cleanup (matching `call_callable`).
         self.cleanup_current_frame()?;
         self.file = caller_file;
         self.frames.pop();
-        if receiver_kind == hir::Receiver::RefMut {
-            let restored = restored.ok_or_else(|| {
-                RuntimeError::new("mutable receiver was moved by its method", span)
-            })?;
-            self.write_place(&receiver_place, restored, span)?;
-        }
+
         let mut value = match flow {
             Flow::Value(value) | Flow::Return(value) => value,
             Flow::Propagate(value) => value,
@@ -3681,6 +4476,17 @@ impl<'a> Interpreter<'a> {
         // backstop, not a silent rebase.
         rebase_frame_refs(&mut value, method_frame, receiver_local, &receiver_place);
         Ok(value)
+    }
+
+    /// DEV-DISPLAY-DISPATCH: whether the receiver expression's static type is (a reference to) a
+    /// generic parameter. Such a receiver has no shape until the call is instantiated, so
+    /// [`Self::is_core_value`] cannot classify it and dispatch has to consult the runtime value.
+    fn receiver_is_type_param(&self, expr: ExprId) -> bool {
+        let mut ty = self.tables.expr_types.get(&expr);
+        while let Some(Ty::Ref { inner, .. }) = ty {
+            ty = Some(inner.as_ref());
+        }
+        matches!(ty, Some(Ty::Param(_)))
     }
 
     fn is_core_value(&self, expr: ExprId) -> bool {
@@ -3901,6 +4707,24 @@ impl<'a> Interpreter<'a> {
         // arguments first and resolved the receiver lazily inside each method-name branch
         // (also re-resolving it — and re-running index subexpressions — once per use).
         let receiver_place = self.core_receiver_place(base, span)?;
+        self.call_core_method_at(expr_id, receiver_place, base, name, args, span)
+    }
+
+    /// The Core method surface, entered with the receiver place ALREADY resolved.
+    ///
+    /// DEV-DISPLAY-DISPATCH split this out so the generic-receiver path in [`Self::call_method`]
+    /// can reach the Core surface without resolving the receiver a second time. Resolving twice
+    /// would re-run a non-place receiver expression (`make_thing().fmt()`), which is exactly the
+    /// double evaluation WP-C2.2/DEV-033 removed.
+    fn call_core_method_at(
+        &mut self,
+        expr_id: Option<ExprId>,
+        receiver_place: Place,
+        base: ExprId,
+        name: &str,
+        args: &[ExprId],
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let receiver_ty = self
             .tables
             .expr_types
@@ -4040,14 +4864,14 @@ impl<'a> Interpreter<'a> {
             let func = values.next().ok_or_else(|| {
                 RuntimeError::new(format!("{name} expects a function argument"), span)
             })?;
-            let Value::Function(func_item) = func else {
+            let Value::Function(callee) = func else {
                 return Err(RuntimeError::new(
                     format!("{name} expects a function value"),
                     span,
                 ));
             };
             let callable = self
-                .item_callable(func_item)
+                .item_callable(callee.item)
                 .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
             let receiver = self.take_place(&receiver_place, span)?;
             return match (receiver, name) {
@@ -4609,12 +5433,12 @@ impl<'a> Interpreter<'a> {
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("map expects function argument", span))?;
-            let Value::Function(func_item) = f else {
+            let Value::Function(callee) = f else {
                 return Err(RuntimeError::new("expected function pointer for map", span));
             };
             let iter_val = self.place_value(&place, span)?.clone();
             let iter_mut = self.place_value_mut(&place, span)?;
-            *iter_mut = Value::MapIter(Box::new(iter_val), func_item);
+            *iter_mut = Value::MapIter(Box::new(iter_val), callee.item);
             return Ok(self.place_value(&place, span)?.clone());
         }
         if name == "filter" {
@@ -4622,7 +5446,7 @@ impl<'a> Interpreter<'a> {
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("filter expects function argument", span))?;
-            let Value::Function(pred_item) = f else {
+            let Value::Function(pred_callee) = f else {
                 return Err(RuntimeError::new(
                     "expected function pointer for filter",
                     span,
@@ -4630,7 +5454,7 @@ impl<'a> Interpreter<'a> {
             };
             let iter_val = self.place_value(&place, span)?.clone();
             let iter_mut = self.place_value_mut(&place, span)?;
-            *iter_mut = Value::FilterIter(Box::new(iter_val), pred_item);
+            *iter_mut = Value::FilterIter(Box::new(iter_val), pred_callee.item);
             return Ok(self.place_value(&place, span)?.clone());
         }
         if name == "append" {
@@ -5973,13 +6797,37 @@ impl<'a> Interpreter<'a> {
         values: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        let Value::Function(item) = func else {
+        let Value::Function(callee) = func else {
             return Err(RuntimeError::new("expected a function pointer", span));
         };
         let callable = self
-            .item_callable(item)
+            .item_callable(callee.item)
             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
+        // **DEV-178: install the environment the VALUE carries, never one looked up on this call
+        // expression.** The instantiation was selected at the coercion; this call site knows only
+        // the function's type. `_env` lives for the whole call and its `Drop` covers traps,
+        // propagation and internal failures.
+        let _env = self.push_captured_env(&callee);
         self.call_callable(callable, None, values, span)
+    }
+
+    /// Install a function value's captured environment for the duration of its call.
+    ///
+    /// Already concrete — `capture_function_value` resolved it against the frame that created the
+    /// value, which may since have gone. Nothing is substituted here.
+    fn push_captured_env(&mut self, callee: &FunctionValue) -> GenericFrame {
+        if callee.bindings.is_empty() {
+            return GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            };
+        }
+        let map: HashMap<String, Ty> = callee.bindings.iter().cloned().collect();
+        self.generic_frames.borrow_mut().push(map);
+        GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed: true,
+        }
     }
 
     fn iterator_step(
@@ -6158,7 +7006,10 @@ impl<'a> Interpreter<'a> {
                 **inner = updated_inner;
                 if let Some(x) = next_opt {
                     let called =
-                        self.call_function_pointer(Value::Function(*func), vec![x], span)?;
+                        // DEV-179 (DORMANT): sound only while E0105 makes MapIter/FilterIter unreachable
+                        // from accepted Core v1 source. Before lifting E0105, retain the callback's
+                        // captured FunctionValue rather than reconstructing it with empty bindings.
+                        self.call_function_pointer(Value::Function(FunctionValue { item: *func, bindings: Vec::new() }), vec![x], span)?;
                     Ok((Some(called), iter))
                 } else {
                     Ok((None, iter))
@@ -6173,7 +7024,9 @@ impl<'a> Interpreter<'a> {
                     if let Some(x) = next_opt {
                         let x_ref = Value::Ref(self.promote_to_temp_place(x.clone(), span)?);
                         let res =
-                            self.call_function_pointer(Value::Function(*pred), vec![x_ref], span)?;
+                            // DEV-179 (DORMANT): see the `map` site above — empty bindings are sound only
+                            // while E0105 keeps this unreachable.
+                            self.call_function_pointer(Value::Function(FunctionValue { item: *pred, bindings: Vec::new() }), vec![x_ref], span)?;
                         if let Value::Bool(true) = res {
                             **inner = current_inner;
                             return Ok((Some(x), iter));
@@ -6559,6 +7412,34 @@ impl<'a> Interpreter<'a> {
 
     fn drop_value(&mut self, mut value: Value) -> Result<(), RuntimeError> {
         if let Some(item) = nominal_item(&value) {
+            // **A3c-D: a GENERIC `Drop` implementation is refused, not guessed at.**
+            //
+            // Destruction reaches here with a `Value` and recovers the nominal through
+            // `nominal_item`, so `Wrapper<String>` and `Wrapper<Int32>` are indistinguishable — the
+            // type arguments that selected the impl are gone. Every way of proceeding is a guess:
+            // an empty generic frame, inference from the runtime fields, or scanning impls and
+            // hoping. A destructor is the last place to guess, because running the wrong one or
+            // running one with the wrong parameter bindings corrupts silently.
+            //
+            // Refused BEFORE the body executes, so no side effect happens at all — a partially run
+            // destructor is worse than none. Classified `internal` because it is a limitation of
+            // this engine, not a property of the program: MIR and native retain the arguments and
+            // execute it correctly, so calling it a language trap would tell the differential
+            // harness the program is at fault.
+            //
+            // Recorded rather than repaired (DEV-176's ledger entry): threading a concrete `Ty`
+            // through 44 `drop_value` call sites, or retaining type arguments in `Value`, is
+            // disproportionate to 0 `Drop` impls in the first-party packages and 2 generic-`Drop`
+            // fixtures in the whole corpus. The refusal is the signal to build it when that changes.
+            if self.drop_impl_is_generic(item) {
+                return Err(RuntimeError::limitation(
+                    "the HIR oracle cannot execute a generic `Drop` implementation: destruction \
+                     retains no concrete nominal type arguments, so the destructor's generic \
+                     parameters cannot be bound (DEV-176, A3c-D)",
+                    self.hir.item(item).span,
+                    OracleLimitation::GenericDrop,
+                ));
+            }
             if let Some(callable) = self.find_drop(item) {
                 let mut frame = Frame::default();
                 // Move the real value into the destructor's `self` binding rather than a clone:
@@ -6691,6 +7572,30 @@ impl<'a> Interpreter<'a> {
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
+    }
+
+    /// Whether the `Drop` implementation selected for `item` declares generic parameters.
+    ///
+    /// Matched the same way `find_drop` matches, so the two cannot disagree about which impl is in
+    /// question — a check that looked at a different impl than the one about to run would be worse
+    /// than no check.
+    fn drop_impl_is_generic(&self, item: ItemId) -> bool {
+        self.hir.items.iter().enumerate().any(|(idx, candidate)| {
+            let hir::ItemKind::Impl {
+                generics,
+                trait_: Some(reference),
+                self_ty,
+                ..
+            } = &candidate.kind
+            else {
+                return false;
+            };
+            let _ = idx;
+            reference.res == Res::CoreTrait(hir::CoreTrait::Drop)
+                && matches!(&self.hir.ty(*self_ty).kind,
+                    hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item)
+                && !generics.is_empty()
+        })
     }
 
     fn find_drop(&self, item: ItemId) -> Option<Callable> {
@@ -7295,6 +8200,470 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    // ------------------------------------------ WP-VALUE-REP-TOTAL A3: propagation ownership --
+    /// The first function item in a probe program.
+    fn first_fn(hir: &Hir) -> ItemId {
+        (0..hir.items.len())
+            .map(|index| ItemId(index as u32))
+            .find(|item| matches!(&hir.item(*item).kind, hir::ItemKind::Fn(_)))
+            .expect("the probe declares a function")
+    }
+
+    /// **A pending propagation may never cross a callable boundary.**
+    ///
+    /// `pending_propagation` is interpreter state rather than frame state, and `expect_value` parks
+    /// a value there while handing the caller a dummy `Value::Unit` to consume immediately. It is
+    /// therefore an intra-expression adapter: a value still parked when a call begins would be
+    /// attributed to the wrong function — read against the callee's return type on the way in, or
+    /// the caller's on the way out.
+    ///
+    /// This is what makes A4's "validate `Flow::Propagate` against `callable.ret`" sound rather
+    /// than assumed, which is why it lands before the wiring. The state is injected because no
+    /// correct program can produce it — the invariant's whole claim is that it does not happen.
+    #[test]
+    fn a_pending_propagation_may_not_enter_a_callable_boundary() {
+        let (hir, file, tables) = relation_probe("fn helper() -> Int32 { 1 }\nfn main() {}");
+        let mut interp = Interpreter::new(&hir, file, &tables);
+        interp.frames.push(Frame::default());
+
+        let callable = interp
+            .item_callable(first_fn(&hir))
+            .expect("the probe declares a callable function");
+
+        interp.pending_propagation = Some(Value::Int(7));
+        let error = interp
+            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .err()
+            .expect("a parked propagation must not cross into a call");
+
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert!(
+            error.message.contains("pending propagation entered"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// The invariant holds for ORDINARY calls, which is the half that keeps it from being satisfied
+    /// by refusing everything: a call with nothing parked must still run.
+    #[test]
+    fn an_ordinary_call_crosses_the_boundary_with_nothing_pending() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let mut interp = Interpreter::new(&hir, file, &tables);
+        interp.frames.push(Frame::default());
+
+        let callable = interp
+            .item_callable(first_fn(&hir))
+            .expect("the probe declares a callable function");
+
+        assert!(interp.pending_propagation.is_none());
+        assert!(interp
+            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .is_ok());
+        assert!(
+            interp.pending_propagation.is_none(),
+            "nothing may be left parked after a call returns"
+        );
+    }
+
+    // ------------------------------------------------ WP-VALUE-REP-TOTAL A2: the relation --
+
+    /// An interpreter over a trivial program, for exercising the relation directly.
+    ///
+    /// The relation is a pure function of a type and a value, so it does not need a running
+    /// program — but it DOES need the `Copy` set, which is computed from the HIR, so a real
+    /// interpreter is cheaper than faking one.
+    fn relation_probe(source: &str) -> (Hir, Arc<SourceFile>, TypeTables) {
+        let file = Arc::new(SourceFile::new("test.stark", source));
+        let (ast, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&ast, file.clone());
+        let tables = typecheck::analyze(&hir, file.clone()).tables;
+        (hir, file, tables)
+    }
+
+    /// A place standing for "somewhere in the frame". The relation only ever asks a value's SHAPE,
+    /// so where the place points is irrelevant here — and constructing one this way keeps the tests
+    /// from depending on frame layout.
+    fn probe_place() -> Place {
+        Place {
+            frame: 0,
+            local: LocalId(0),
+            projections: Vec::new(),
+        }
+    }
+
+    fn str_ref() -> Ty {
+        Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Str)),
+        }
+    }
+
+    fn byte_slice_ref() -> Ty {
+        Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(
+                crate::ast::Primitive::UInt8,
+            )))),
+        }
+    }
+
+    /// **The DEV-121 pairing, both directions.** `&str` may be a detached view or a reference to
+    /// text; it may NOT be owned storage. That last row is the whole defect class: the static type
+    /// says borrowed while runtime move behaviour sees owned storage, so passing it consumes what
+    /// it only borrows.
+    #[test]
+    fn a_borrowed_text_type_permits_a_view_and_refuses_owned_storage() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        assert!(interp.value_matches_ty(&str_ref(), &Value::Str(String::from("x"))));
+        assert!(interp.value_matches_ty(&str_ref(), &Value::Ref(probe_place())));
+        assert!(
+            !interp.value_matches_ty(&str_ref(), &Value::String(String::from("x"))),
+            "an owned String behind `&str` is the DEV-121 ownership error"
+        );
+    }
+
+    /// The same shape for slices, which is the pairing INV-VALUE-REP-001 already rejected at `let`.
+    #[test]
+    fn a_borrowed_slice_permits_a_view_and_refuses_owned_storage() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        assert!(interp.value_matches_ty(&byte_slice_ref(), &Value::Slice(probe_place(), 0, 0)));
+        assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Vec(Vec::new())));
+        assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Array(Vec::new())));
+    }
+
+    /// **The Copy-pointee rule, stated as a predicate rather than an exception list.**
+    ///
+    /// `&Int32` may be the bare scalar, because copying a Copy pointee cannot consume, invalidate
+    /// or destroy the referent — the two representations are indistinguishable to anything the
+    /// oracle can observe. `&String` may not, because flattening it would copy a non-Copy value,
+    /// which is precisely a move-semantics violation.
+    #[test]
+    fn a_shared_reference_flattens_only_when_the_pointee_is_copy() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let int_ref = Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Int32)),
+        };
+        assert!(interp.value_matches_ty(&int_ref, &Value::Int(1)));
+        assert!(interp.value_matches_ty(&int_ref, &Value::Ref(probe_place())));
+
+        let string_ref = Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::String)),
+        };
+        assert!(interp.value_matches_ty(&string_ref, &Value::Ref(probe_place())));
+        assert!(
+            !interp.value_matches_ty(&string_ref, &Value::String(String::new())),
+            "flattening a non-Copy pointee would copy a value that must move"
+        );
+    }
+
+    /// A mutable reference is never flattened, whatever the pointee. A `&mut Int32` that is a bare
+    /// scalar cannot write through, and `take(&mut v)` needs the place itself.
+    #[test]
+    fn a_mutable_reference_is_never_flattened_even_for_a_copy_pointee() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let mut_int = Ty::Ref {
+            mutable: true,
+            inner: Box::new(Ty::Primitive(crate::ast::Primitive::Int32)),
+        };
+        assert!(interp.value_matches_ty(&mut_int, &Value::Ref(probe_place())));
+        assert!(!interp.value_matches_ty(&mut_int, &Value::Int(1)));
+    }
+
+    /// **Owned `String` has two spellings**, and A2's exhaustive match is what surfaced it. Both
+    /// denote the same type and both must permit exactly `Value::String`; covering only one would
+    /// have left every binding written the other way unvalidated.
+    #[test]
+    fn both_spellings_of_owned_string_permit_the_same_representation() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let primitive = Ty::Primitive(crate::ast::Primitive::String);
+        let core = Ty::Core(hir::CoreType::String, Vec::new());
+        for ty in [primitive, core] {
+            assert!(interp.value_matches_ty(&ty, &Value::String(String::new())));
+            assert!(
+                !interp.value_matches_ty(&ty, &Value::Str(String::new())),
+                "an owned String represented as a view would not move when moved"
+            );
+        }
+    }
+
+    /// Nominal identity, not shape: two structs with identical fields are different types, so the
+    /// `ItemId` is what the relation compares. Arity is checked for tuples and arrays for the same
+    /// reason — it is what catches a truncated aggregate.
+    #[test]
+    fn nominals_are_matched_by_identity_and_aggregates_by_arity() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let one = Ty::Struct(ItemId(1), Vec::new());
+        assert!(interp.value_matches_ty(
+            &one,
+            &Value::Struct {
+                item: ItemId(1),
+                fields: BTreeMap::new(),
+            }
+        ));
+        assert!(
+            !interp.value_matches_ty(
+                &one,
+                &Value::Struct {
+                    item: ItemId(2),
+                    fields: BTreeMap::new(),
+                }
+            ),
+            "a different struct is a different type however similar its fields"
+        );
+
+        let pair = Ty::Tuple(vec![
+            Ty::Primitive(crate::ast::Primitive::Int32),
+            Ty::Primitive(crate::ast::Primitive::Int32),
+        ]);
+        assert!(interp.value_matches_ty(&pair, &Value::Tuple(vec![None, None])));
+        assert!(!interp.value_matches_ty(&pair, &Value::Tuple(vec![None])));
+
+        let three = Ty::Array(Box::new(Ty::Primitive(crate::ast::Primitive::Int32)), 3);
+        assert!(interp.value_matches_ty(&three, &Value::Array(vec![None, None, None])));
+        assert!(!interp.value_matches_ty(&three, &Value::Array(vec![None, None])));
+    }
+
+    /// Unsized and non-runtime types have NO permitted representation. A standalone `Ty::Slice` is
+    /// distinct from `Value::Slice`, which is a perfectly valid view — same word, opposite
+    /// meanings, which is why §6.6 is a separate table.
+    #[test]
+    fn unsized_and_non_runtime_types_permit_nothing() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let standalone_slice = Ty::Slice(Box::new(Ty::Primitive(crate::ast::Primitive::UInt8)));
+        assert!(!interp.value_matches_ty(&standalone_slice, &Value::Slice(probe_place(), 0, 0)));
+        assert!(!interp.value_matches_ty(&standalone_slice, &Value::Vec(Vec::new())));
+
+        assert!(!interp.value_matches_ty(
+            &Ty::Primitive(crate::ast::Primitive::Str),
+            &Value::Str(String::new())
+        ));
+        assert!(!interp.value_matches_ty(&Ty::Never, &Value::Unit));
+        assert!(!interp.value_matches_ty(&Ty::Error, &Value::Unit));
+        assert!(!interp.value_matches_ty(&Ty::Param(String::from("T")), &Value::Int(1)));
+    }
+
+    /// A surviving `Ty::Param` is refused by NORMALISATION rather than by the relation, and the
+    /// refusal is an internal invariant: `T` permits every representation, so a relation asked
+    /// about it could only ever answer "yes".
+    #[test]
+    fn an_unsubstituted_parameter_is_refused_before_the_relation_sees_it() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let error = interp
+            .check_value_for_ty(
+                &Ty::Param(String::from("T")),
+                &Value::Int(1),
+                Span { lo: 0, hi: 0 },
+                RepBoundary::Parameter,
+            )
+            .expect_err("an unsubstituted parameter cannot be validated against");
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert!(
+            error.message.contains("unsubstituted generic parameter"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// The diagnostic names the boundary and both shapes, and never the value's contents — printing
+    /// them would leak program data, and describing them would mean cloning or borrowing the value,
+    /// which is the behaviour this check exists to police.
+    #[test]
+    fn the_diagnostic_names_the_boundary_and_the_shapes_but_not_the_contents() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        let error = interp
+            .check_value_for_ty(
+                &byte_slice_ref(),
+                &Value::Vec(Vec::new()),
+                Span { lo: 0, hi: 0 },
+                RepBoundary::Parameter,
+            )
+            .expect_err("an owned Vec behind `&[UInt8]` is a mismatch");
+
+        assert_eq!(error.class, FailureClass::InternalInvariant);
+        assert_eq!(error.trap_category, None);
+        assert!(error.message.contains("DEV-121"), "{}", error.message);
+        assert!(
+            error.message.contains("a function parameter"),
+            "the boundary is what makes the report actionable: {}",
+            error.message
+        );
+        assert!(error.message.contains("Vec"), "{}", error.message);
+    }
+
+    /// A value that DOES match produces no error, at every boundary. The relation must not be
+    /// merely strict — a check that refused correct programs would be withdrawn, which is how an
+    /// invariant becomes advisory.
+    #[test]
+    fn a_matching_value_is_accepted_at_every_boundary() {
+        let (hir, file, tables) = relation_probe("fn main() {}");
+        let interp = Interpreter::new(&hir, file, &tables);
+
+        for boundary in [
+            RepBoundary::LetBinding,
+            RepBoundary::Parameter,
+            RepBoundary::Receiver,
+            RepBoundary::Return,
+            RepBoundary::Propagation,
+            RepBoundary::MatchBinding,
+            RepBoundary::LoopBinding,
+            RepBoundary::Assignment,
+            RepBoundary::FieldWrite,
+            RepBoundary::ElementWrite,
+            RepBoundary::AggregateField,
+        ] {
+            assert!(
+                interp
+                    .check_value_for_ty(
+                        &str_ref(),
+                        &Value::Str(String::from("x")),
+                        Span { lo: 0, hi: 0 },
+                        boundary,
+                    )
+                    .is_ok(),
+                "{boundary:?} rejected a correct representation"
+            );
+        }
+    }
+
+    /// **A1: every `Value` variant is named in the representation table, exactly once.**
+    ///
+    /// Three mechanisms, each catching a different way of forgetting:
+    ///
+    /// * `Value::kind()` has no wildcard, so a new `Value` variant is a COMPILE error there. That
+    ///   is the strong guarantee and it needs no test.
+    /// * `ValueKind` and `ALL` are generated from one list by `define_value_kinds!`, so `ALL`
+    ///   cannot drift from the enum at all.
+    /// * `WP-VALUE-REP-TOTAL.md`'s matrix is prose the compiler cannot check. The count is asserted
+    ///   against the number that document states, so adding a kind without adding its row fails.
+    ///
+    /// **Uniqueness is asserted, not just length.** A hand-maintained list that duplicates one
+    /// entry and omits another keeps its length, so a count alone passes on a list that is wrong in
+    /// two places at once. Generation makes that unreachable today; the assertion stays because it
+    /// is what would catch a future hand-written `ALL` if the macro were ever unwound.
+    #[test]
+    fn every_value_variant_is_named_in_the_representation_matrix() {
+        assert_eq!(
+            ValueKind::ALL.len(),
+            34,
+            "WP-VALUE-REP-TOTAL.md §6 documents 34 representations; update the matrix and this \
+             count together, or the table stops describing the interpreter"
+        );
+
+        let unique: std::collections::HashSet<ValueKind> = ValueKind::ALL.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            ValueKind::ALL.len(),
+            "ValueKind::ALL duplicates a kind or omits one"
+        );
+
+        let names: std::collections::HashSet<&str> =
+            ValueKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            ValueKind::ALL.len(),
+            "two kinds render to the same diagnostic name"
+        );
+    }
+
+    /// `kind()` reports the representation and never the contents.
+    ///
+    /// A diagnostic that printed the value would leak program data into compiler output and, worse,
+    /// would need to clone or borrow the value to do it — which is the very behaviour this class of
+    /// check exists to police.
+    #[test]
+    fn a_value_kind_names_the_shape_and_not_the_contents() {
+        assert_eq!(
+            Value::String(String::from("secret")).kind(),
+            ValueKind::String
+        );
+        assert_eq!(Value::Str(String::from("secret")).kind(), ValueKind::Str);
+        assert_eq!(
+            Value::String(String::from("secret")).kind().as_str(),
+            "String"
+        );
+
+        // The pairing DEV-121 is about: identical payloads, different representations, and the
+        // difference is exactly what decides whether passing the value moves it.
+        assert_ne!(
+            Value::Str(String::from("x")).kind(),
+            Value::String(String::from("x")).kind(),
+            "Str and String are structurally identical and semantically opposite"
+        );
+    }
+
+    /// **A0 (DEV-121): a representation mismatch is a COMPILER DEFECT, not a language trap.**
+    ///
+    /// The check has always called itself "internal" in its prose while constructing its error with
+    /// `RuntimeError::new`, which classifies as `FailureClass::Trap`. That combination is the
+    /// dangerous one: the HIR interpreter is the behavioural oracle, so an oracle representation
+    /// bug presented as a trap is something the differential harness can accept as a legitimate
+    /// program outcome — and then pressure MIR and native into agreeing with it. Classification is
+    /// what decides whether the harness fails loudly or quietly propagates the defect.
+    ///
+    /// `trap_category` is asserted `None` alongside the class because the two together are what the
+    /// comparator reads; a class change with a lingering category would still look trap-shaped.
+    ///
+    /// The mismatch is INJECTED rather than produced by a program on purpose. Every producer this
+    /// check knows about is currently correct, so a test that waited for a real firing would assert
+    /// nothing — and would start passing again for the wrong reason the day a producer regressed.
+    #[test]
+    fn a_representation_mismatch_is_classified_as_an_internal_invariant() {
+        let file = Arc::new(SourceFile::new("test.stark", "fn main() {}"));
+        let (ast, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&ast, file.clone());
+        let mut tables = typecheck::analyze(&hir, file.clone()).tables;
+
+        // A local the tables declare as `&[UInt8]` — a borrowed view.
+        let local = LocalId(0);
+        tables.local_types.insert(
+            local,
+            Ty::Ref {
+                mutable: false,
+                inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(
+                    crate::ast::Primitive::UInt8,
+                )))),
+            },
+        );
+
+        let interpreter = Interpreter::new(&hir, file, &tables);
+        let error = interpreter
+            .check_value_representation(local, &Value::Vec(Vec::new()), Span { lo: 0, hi: 0 })
+            .expect_err("an owned Vec behind a `&[UInt8]` binding is a representation mismatch");
+
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "a DEV-121 firing is a compiler defect: {}",
+            error.message
+        );
+        assert_eq!(
+            error.trap_category, None,
+            "an internal invariant has no trap category"
+        );
+        assert!(!error.is_trap(), "it must not read as a language trap");
     }
 
     #[test]

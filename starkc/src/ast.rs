@@ -28,6 +28,18 @@ arena_id!(ItemId);
 arena_id!(PatId);
 arena_id!(BlockId);
 arena_id!(DimId);
+// DEV-173: `StrLitId` indexes a string literal's DECODED value in `Ast::str_lits`.
+arena_id!(StrLitId);
+
+/// WP-FMT-001: arena high-water marks, so every node a sub-parse creates can be found afterwards.
+#[derive(Clone, Copy)]
+pub struct ArenaMarks {
+    types: usize,
+    exprs: usize,
+    stmts: usize,
+    pats: usize,
+    blocks: usize,
+}
 
 #[derive(Default)]
 pub struct Ast {
@@ -43,6 +55,14 @@ pub struct Ast {
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
     pub synthetic_spans: std::collections::HashMap<Span, String>,
+    /// DEV-173: every string literal's DECODED value, in allocation order.
+    ///
+    /// A literal used to be re-decoded from its own source span on demand. That works only while
+    /// a literal's span reads back as its own source — which an interpolation field breaks, since
+    /// a nested string literal there is written `\"a\"` and carries the ENCLOSING literal's
+    /// escapes. Decoding is done once, at parse time, from whatever buffer the parser was reading;
+    /// spans are then purely diagnostic.
+    pub str_lits: Vec<String>,
 }
 
 /// What was parsed. `Program` is the source-language entry point
@@ -251,6 +271,14 @@ pub struct ExprNode {
 
 pub enum ExprKind {
     Lit(Lit),
+    /// WP-FMT-001: `f"pkg={name} n={count:04}"`.
+    ///
+    /// Not a macro, not a call and not a runtime-parsed format string: the segments below were
+    /// split at COMPILE TIME, and the expression in each field is an ordinary `ExprId` parsed by
+    /// the ordinary expression parser. Evaluating this expression produces an owned `String`.
+    FormatString {
+        segments: Vec<FormatSegment>,
+    },
     /// `x`, `String::from`, `Color::Red`, `size_of::<Int32>` (turbofish).
     Path {
         path: Path,
@@ -343,6 +371,82 @@ pub enum ExprKind {
     Error,
 }
 
+// ------------------------------------------------- WP-FMT-001: interpolated string literals --
+
+/// How a rendered field sits inside a wider one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FormatAlign {
+    Left,
+    Right,
+    Center,
+}
+
+/// What prefix a non-negative number carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FormatSign {
+    Plus,
+    Minus,
+    Space,
+}
+
+/// The value-family conversion a field asks for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FormatKind {
+    Bin,
+    Oct,
+    LowerHex,
+    UpperHex,
+    Fixed,
+}
+
+/// A field's format specification — everything after the top-level `:`.
+///
+/// Every part is a COMPILE-TIME constant. There is no dynamic width and no dynamic precision in
+/// v0.1, which is what lets the whole specification be packed into a constant and lets a bad
+/// combination be refused by the type checker rather than discovered at run time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct FormatSpec {
+    pub fill: Option<char>,
+    pub align: Option<FormatAlign>,
+    pub sign: Option<FormatSign>,
+    pub alternate: bool,
+    pub zero_pad: bool,
+    pub width: Option<u32>,
+    pub precision: Option<u32>,
+    pub kind: Option<FormatKind>,
+    /// The specification's own span (after the `:`), or `None` when none was written. Diagnostics
+    /// about a bad type/spec pairing point HERE, not at the whole literal.
+    pub span: Option<Span>,
+}
+
+impl FormatSpec {
+    /// Whether this specification asks for anything beyond padding. A padding-only specification
+    /// applies to any `Display` value; anything else constrains the type.
+    pub fn is_padding_only(&self) -> bool {
+        self.sign.is_none()
+            && !self.alternate
+            && !self.zero_pad
+            && self.precision.is_none()
+            && self.kind.is_none()
+    }
+}
+
+/// One piece of an interpolated string literal.
+#[derive(Clone, Debug)]
+pub enum FormatSegment {
+    /// Static text, with escapes and `{{`/`}}` already resolved.
+    Literal { text: String, span: Span },
+    /// `{ expression [: spec] }`.
+    Field {
+        expr: ExprId,
+        spec: FormatSpec,
+        /// The whole field including its braces.
+        span: Span,
+        /// The expression alone, for diagnostics that blame the value rather than the field.
+        expr_span: Span,
+    },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lit {
     Int {
@@ -354,6 +458,8 @@ pub enum Lit {
     },
     Str {
         raw: bool,
+        /// DEV-173: the decoded value, resolved at parse time (see `Ast::str_lits`).
+        value: StrLitId,
     },
     Char,
     Bool(bool),
@@ -657,6 +763,53 @@ pub enum UseTree {
 // ---------------------------------------------------------------- arena --
 
 impl Ast {
+    /// WP-FMT-001: the current arena sizes, for [`Ast::remap_spans_since`].
+    pub fn marks(&self) -> ArenaMarks {
+        ArenaMarks {
+            types: self.types.len(),
+            exprs: self.exprs.len(),
+            stmts: self.stmts.len(),
+            pats: self.pats.len(),
+            blocks: self.blocks.len(),
+        }
+    }
+
+    /// DEV-173: translate every span allocated since `marks` from a scratch buffer's offsets back
+    /// to the real file's, through `map`.
+    ///
+    /// The decoded sub-parse of an interpolation field reads a buffer whose offsets are its own.
+    /// `map[i]` is the file offset the decoded byte `i` came from, so remapping restores REAL
+    /// spans — a diagnostic inside such a field points at the sub-expression, not at the field.
+    ///
+    /// An earlier version collapsed every span to the field's instead. That was not merely coarse:
+    /// a literal read its value from its span, so collapsing made a nested string literal read the
+    /// whole field's source back. Values now come from `str_lits`, and spans are only ever
+    /// locations.
+    pub fn remap_spans_since(&mut self, marks: ArenaMarks, map: &[u32]) {
+        let remap = |span: &mut Span| {
+            let lo = map.get(span.lo as usize).copied();
+            let hi = map.get(span.hi as usize).copied();
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                *span = Span::new(lo, hi);
+            }
+        };
+        for node in &mut self.types[marks.types..] {
+            remap(&mut node.span);
+        }
+        for node in &mut self.exprs[marks.exprs..] {
+            remap(&mut node.span);
+        }
+        for node in &mut self.stmts[marks.stmts..] {
+            remap(&mut node.span);
+        }
+        for node in &mut self.pats[marks.pats..] {
+            remap(&mut node.span);
+        }
+        for node in &mut self.blocks[marks.blocks..] {
+            remap(&mut node.span);
+        }
+    }
+
     pub fn alloc_type(&mut self, kind: TypeKind, span: Span) -> TypeId {
         self.types.push(TypeNode { kind, span });
         TypeId(self.types.len() as u32 - 1)

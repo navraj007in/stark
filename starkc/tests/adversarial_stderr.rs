@@ -65,36 +65,56 @@ fn stdout_and_stderr_are_separate_ordered_streams() {
 
 // --------------------------------------------------------------------- value rendering --
 
-/// **Found during qualification: `eprint`/`eprintln` accept only `&str`.**
+/// **The `&str`-only restriction is gone (DEV-174, CD-381) — these are the cases it asked for.**
 ///
-/// `println(42)`, `println(p)` for a user `Display` type, and `println(some_string)` all
-/// type-check. The `eprint` family does not — its declared parameter is `&str`, so every one of
-/// those is a type error on the stderr channel. That asymmetry is a FRONT-END restriction that
-/// predates this work package, and widening it would change what the language accepts, which is
-/// outside WP-C7.9's scope (§1.2).
+/// WP-C7.9 recorded that `eprint`/`eprintln` accepted only `&str` while `println(42)`,
+/// `println(some_string)` and `println(p)` for a user `Display` type all type-checked. It said the
+/// lowering Packet D added was already fully type-directed, so **widening the signature would
+/// require no lowering work, only a signature change and cases** — and that the test pinning the
+/// restriction would fail the day that happened, which was "the right moment to add them".
 ///
-/// It is recorded here rather than left implicit because of what it costs and what it does not:
-/// the lowering Packet D added is fully type-directed — it dispatches `Ordering`, user `Display`,
-/// composites, `Float32` and the widened primitives to stderr exactly as it does to stdout — so
-/// **widening the signature requires no lowering work**, only a signature change and cases. This
-/// test fails the day that happens, which is the right moment to add them.
+/// That day is CD-381. 06-Standard-Library declares `fn eprintln<T: Display>(value: T)` and
+/// PRINT-DISPLAY-001 names all four output functions together, so the restriction was a
+/// conformance gap rather than a design. The prediction held exactly: the fix was the signature
+/// plus the shared `Display` check, and no lowering changed.
+///
+/// The three shapes below are the three the old test rejected, now proven to RENDER — byte for
+/// byte, on the stderr channel, through the same runtime operations the stdout path uses.
 #[test]
-fn the_eprint_family_accepts_only_str_today() {
-    for (tag, source) in [
-        ("eprint_int", "fn main() { eprintln(42); }"),
-        (
-            "eprint_owned_string",
-            "fn main() { let s: String = String::from(\"owned\"); eprintln(s); }",
-        ),
-        (
-            "eprint_display",
-            "struct P { v: Int32 }\n\
-             impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
-             fn main() { let p = P { v: 1 }; eprintln(p); }",
-        ),
-    ] {
-        support::differential::rejects_at_typecheck(&format!("{tag}.stark"), source, "E0001");
-    }
+fn the_eprint_family_accepts_every_display_value() {
+    support::differential::agree_completing_with_streams(
+        "eprint_int",
+        "fn main() { eprintln(42); }",
+        "",
+        "42\n",
+    );
+    support::differential::agree_completing_with_streams(
+        "eprint_owned_string",
+        "fn main() { let s: String = String::from(\"owned\"); eprintln(s); }",
+        "",
+        "owned\n",
+    );
+    support::differential::agree_completing_with_streams(
+        "eprint_display",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let p = P { v: 1 }; eprintln(p); }",
+        "",
+        "CUSTOM\n",
+    );
+}
+
+/// Widening the signature did NOT widen it to anything: a type with no `Display` is still refused
+/// on stderr, for the same reason and with the same diagnostic as on stdout. Both pairs now go
+/// through one deferred `Display` check, so they cannot drift apart again.
+#[test]
+fn the_eprint_family_still_requires_display() {
+    support::differential::rejects_at_typecheck(
+        "eprint_no_display.stark",
+        "struct Hidden { v: Int32 }\n\
+         fn main() { let h = Hidden { v: 1 }; eprintln(h); }",
+        "E0500",
+    );
 }
 
 /// What the channel DOES carry today, proven byte for byte: `&str` literals, and the `as_str` of an

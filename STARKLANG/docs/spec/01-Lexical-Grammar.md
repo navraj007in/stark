@@ -128,6 +128,74 @@ Examples:
 r"Raw string with \n literal backslashes"
 ```
 
+#### Interpolated String Literals
+
+```
+FORMAT_STRING := 'f"' (CHAR | ESCAPE_SEQUENCE | '{{' | '}}' | FIELD)* '"'
+FIELD         := '{' EXPRESSION [ ':' FORMAT_SPEC ] '}'
+FORMAT_SPEC   := [ [FILL] ALIGN ] [ SIGN ] [ '#' ] [ '0' ] [ WIDTH ]
+                 [ '.' PRECISION ] [ TYPE ]
+ALIGN         := '<' | '>' | '^'
+SIGN          := '+' | '-' | ' '
+TYPE          := 'b' | 'o' | 'x' | 'X' | 'f'
+FILL          := one Unicode scalar, only when immediately followed by ALIGN
+WIDTH         := decimal digits
+PRECISION     := decimal digits
+```
+
+**LEX-FORMAT-001.** An interpolated string literal is a `f`-prefixed cooked
+string. Its escape rules are `STRING`'s exactly. Additionally `{{` denotes one
+`{` and `}}` denotes one `}`; a `{` that is not part of `{{` opens a field, and
+a `}` that neither closes a field nor is part of `}}` rejects the literal.
+
+**LEX-FORMAT-002.** A field's expression extends to the top-level `:` that
+begins its specification, or to the top-level `}` that closes it. Depth is
+counted over `(`, `[` and `{`, so a struct literal's `:` and `}` are part of
+the expression; `::` is a path separator and never begins a specification. An
+escape sequence is consumed whole before any brace is considered, so
+`\u{1F600}` is one scalar and not a field.
+
+**LEX-FORMAT-003.** `WIDTH` and `PRECISION` are compile-time decimal
+constants; there is no dynamic width and no dynamic precision. An
+implementation MUST reject a `FORMAT_SPEC` it does not recognise rather than
+ignoring the unrecognised part, and MUST reject an `ALIGN` written without a
+`WIDTH`.
+
+Examples:
+```stark
+f"pkg={name} n={count:04} r={ratio:.2} ok={ok}"
+f"object={{ name: {name} }}"
+f"|{name:^12}|"
+f"{flags:#010x}"
+```
+
+**LEX-FORMAT-004.** A field's expression MAY contain a string literal. Because
+the enclosing literal is delimited by `"`, the nested literal's quotes are
+written `\"`, and an implementation MUST read those as the nested literal's
+delimiters rather than as an escape in the enclosing literal's text:
+
+```stark
+f"{lookup(\"name\")}"
+f"{choose(\"yes\", \"no\")}"
+```
+
+A `:` or `}` inside such a literal is that literal's content, not a format
+specification separator or the end of the field.
+
+A nested literal whose own content requires an escape — `\n`, `\t`, `\\`,
+`\x`, `\u{...}` — is **rejected**. Such an escape is data rather than
+punctuation the enclosing literal forced, and no reading of the field's source
+recovers both the enclosing literal's text and the nested literal's value.
+Bind the value first:
+
+```stark
+let path: &str = "C:\\temp";
+f"{lookup(path)}"
+```
+
+*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and the
+data-bearing nested escapes above.
+
 #### Character Literals
 ```
 CHAR := '\'' (CHAR_CONTENT | ESCAPE_SEQUENCE) '\''

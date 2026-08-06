@@ -4330,3 +4330,668 @@ Two defects, recorded together because the first concealed the second.
   graphs, covering generic methods, method-level generics, trait defaults, associated types,
   bounded generic functions, fields and enum variants, and two non-colliding parameters).
 - **Owning gate:** package track, CD-358.
+
+## DEV-166 — a compiler-known trait bound contributed no callable methods (RESOLVED, DEV-DISPLAY-DISPATCH)
+
+- **Normative expectation:** `03-Type-System.md` TYPE-METHOD-003 and `06-Standard-Library.md`
+  STD-TRAIT-002 (both added by this work package, as the canonical statement of a property the
+  spec had only implied): a Core trait identity is an ordinary trait for every purpose a program
+  can observe, and its declared methods are callable through a generic bound on exactly the terms
+  a user-declared trait's are. `STD-HOOK-001` already said `Display` is *not* a syntax hook and
+  "uses ordinary name resolution, method selection, trait dispatch".
+- **Behaviour before the fix:**
+
+  ```stark
+  fn show<T: Display>(x: T) -> String {
+      x.fmt()
+  }
+  ```
+
+  `[E0302] method 'fmt' not found for type 'T'`. The identical shape over a user-declared trait
+  compiled and ran. The bound was *checked* — `satisfies_bound` accepted `T: Display` — and then
+  contributed nothing to method resolution.
+- **Root cause:** `typecheck.rs::resolve_method`'s bounded-generic branch resolved each bound by
+  searching `hir::ItemKind::Trait` items for a matching name. A compiler-known trait has no
+  declaration item, so the search returned `None`, the branch fell through, and the impl scan
+  below it could not match a `Ty::Param` receiver either. Method visibility therefore depended on
+  whether a trait happened to be compiler-known — two trait models rather than one.
+- **DEV-023's relationship to this.** DEV-023 (closed in WP-C2.11) recorded that `Display`/`Hash`
+  as *bounds* were "already correctly recognized". That was true of bound CHECKING and false of
+  everything downstream of it; the concrete-receiver half it fixed (`"hi".fmt()`) left the generic
+  half open, and nothing distinguished the two claims. This entry is the other half.
+- **Two further defects the same branch was hiding**, both pre-existing and both fixed here
+  because the shape the work package requires cannot work without them:
+  - *Ownership.* `borrowck.rs::method_receiver` had no branch for a `Ty::Param` receiver at all,
+    so it returned `None` and its caller CONSUMED the receiver. Every `&self` method reached
+    through a bound moved its receiver — for user-declared traits too:
+    `fn f<T: Named>(x: T) { x.name(); x.name(); }` failed E0100 "use of moved value".
+  - *Ambiguity.* The branch returned on the FIRST bound supplying the name, so two bounds
+    declaring the same method resolved by written order instead of being reported ambiguous.
+- **User impact (while open):** no generic code could format a value. Every `Display`-generic
+  library function — the whole reason a `Display` bound exists — was unwritable, which is why
+  `packages/` contained no formatting package before this work.
+- **Security/soundness impact:** none. It refused valid programs; it never accepted a wrong one.
+  The ownership half is the one worth noting: it was also a REFUSAL (a spurious move error), not a
+  missed move.
+- **Fix:** `typecheck.rs` collects candidates from both kinds of trait into one list and runs one
+  selection over it; a Core trait's signatures come from `core_trait_contract`, the same table
+  user `impl` blocks are already checked against, so there is no second signature registry.
+  `borrowck.rs` reads the receiver form from the same source. `interp.rs` dispatches a
+  generic-parameter receiver through the Core surface when the runtime value has no nominal.
+  `mir/lower.rs` lowers `Display::fmt` on a standard-library receiver to new
+  `stark_runtime::format` calls that share their renderers with `print`/`println`.
+- **Evidence:** `tests/dev_display_dispatch.rs` — 21 tests: three-engine agreement over the
+  primitives, user impls, non-`Copy` and affine values, nested forwarding, both bound orders and
+  an impl-head bound; missing-bound, wrong-bound, unknown-method, non-`Display`-concrete-type,
+  arity and ambiguity rejections; a generated-source check that the native engine uses STARK's
+  renderers and not Rust's `Display`/`Debug`/`format!`/`ToString`; and debug-vs-release native
+  agreement. Plus `packages/stark-fmt`, whose whole surface is generic over `Display`.
+- **Owning gate:** package/application track, CD-378.
+
+## DEV-167 — `Display::fmt` has no method-form `to_string()` counterpart (OPEN, deferred by decision)
+
+- **Normative expectation:** `06-Standard-Library.md` describes `str::to_string`/`String::from`
+  but does not promise a `to_string()` method on every `Display` type. This entry exists so the
+  absence is recorded rather than rediscovered.
+- **Current behaviour:** `x.to_string()` resolves only for `str`/`String` receivers, through the
+  ordinary runtime-text surface. A `T: Display` parameter has no `to_string()`.
+- **Why it is deferred rather than fixed:** the principled mechanism is
+  `impl<T: Display> ToString for T`, and Core v1 has neither blanket implementations nor extension
+  traits. The alternative — a resolver branch keyed on the method name `to_string` — would
+  reintroduce exactly the two-tier model DEV-166 removed, for an ergonomic gain.
+- **Workaround, and it is a real one:** a free function over the ordinary bound.
+  `packages/stark-fmt` ships it as `to_string<T: Display>(value: &T) -> String`.
+- **Owning gate:** unassigned; blocked on a blanket-implementation decision, which is CE-shaped.
+
+## DEV-168 — a qualified call to a compiler-known trait's method has no MIR lowering (OPEN)
+
+- **Normative expectation:** TYPE-METHOD-001 — "Trait methods can always be called in
+  fully-qualified function form — `Display::fmt(&x)`". The spec names this exact call.
+- **Current behaviour:** `Display::fmt(&x)` type-checks (DEV-052) and runs under the HIR oracle,
+  and MIR lowering refuses it with "callee form (C4.5)". So the shape the spec offers as the
+  disambiguation mechanism for an ambiguous trait method cannot be built natively.
+- **User impact:** a program whose generic parameter is bounded by two traits declaring the same
+  method is correctly reported ambiguous, and the documented way to resolve it runs in only one
+  of the three engines. A user trait's qualified call (`OtherFormat::fmt(&x)`) has the same gap.
+- **Security/soundness impact:** none — a refusal at lowering, caught before any code is emitted.
+- **Discovered by:** DEV-DISPLAY-DISPATCH, while proving that the ambiguity it introduces is
+  resolvable. Deliberately not fixed there: adding a qualified-call lowering is a feature, and the
+  work package's scope statement excludes expanding into one.
+- **Evidence:** `tests/dev_display_dispatch.rs::qualified_calls_disambiguate_the_two_traits`,
+  which checks the shape through the front end and the oracle and states this limitation.
+- **Owning gate:** unassigned.
+
+## DEV-169 — an explicit `.drop()` call ran the destructor TWICE (RESOLVED, CD-383)
+
+- **Normative expectation:** `03-Type-System.md` "Copy and Drop" — destructors run exactly once
+  and there are no explicit `Drop::drop` calls.
+- **Current behaviour:** `r.drop()` on a type with `impl Drop for R` type-checks, because
+  `impl Drop`'s method is an ordinary `ImplItem::Fn` that the method candidate scan finds like any
+  other. Confirmed empirically 2026-08-04.
+- **Security/soundness impact:** potentially real — an explicit call followed by the automatic one
+  is a double destruction at the source level. Not investigated here; whether the drop flag
+  suppresses the second run is unverified.
+- **The unverified half, now verified — and it is worse than recorded.** This entry said "whether
+  the drop flag suppresses the second run is unverified". It does not. The program above prints:
+
+  ```text
+  dropped
+  after
+  dropped
+  ```
+
+  The destructor runs **twice on one value**: once for the explicit call, once at scope end. For a
+  resource-bearing type that is a double release. This was an over-acceptance that produced a
+  **soundness violation**, not merely a program the language forbids.
+- **Fix (CD-383):** the check runs at IMPL-MEMBER SELECTION — when a call resolves into an
+  `impl Drop for T` block — rather than on the method's name. An inherent method named `drop` is
+  unaffected, which a name-keyed check would have broken. Diagnostic **E0307**, naming the free
+  function `drop(value)` as the sanctioned way to destroy early. The free function MOVES its
+  argument, so the destructor still runs exactly once.
+- **Evidence:** `tests/over_acceptance_audit.rs` — the rejection, an inherent `drop` still callable,
+  `drop(value)` destroying exactly once (`released` before `after`, not again at scope end), and
+  automatic destruction still running once.
+- **Owning gate:** package/application track, CD-383.
+
+## DEV-170 — a generic bound's trait identity was reconstructed from its spelling (RESOLVED, DEV-BOUND-TRAIT-IDENTITY)
+
+- **Normative expectation:** `03-Type-System.md` TYPE-METHOD-003 — a generic parameter's candidates
+  come from "the traits named by `T`'s declared bounds", and `TYPE-NOMINAL-001` makes item identity
+  a package/module/name triple, not a bare name. Which trait a bound denotes is settled by name
+  resolution (04-Semantic-Analysis.md); no later pass re-decides it.
+- **Behaviour before the fix.** `typecheck::resolve_bound_trait` and
+  `borrowck::bound_method_receiver` each took `text(bound.path.span)` — the bound's SOURCE TEXT —
+  and scanned every HIR item for a trait declared with that name. Three failures, all reproduced
+  before any code changed:
+  1. **A qualified bound matched nothing.** `T: traits::Render` compared `"traits::Render"` against
+     the declaration's name `"Render"`. The bound contributed no methods, and `value.render()` was
+     rejected with *"method 'render' requires the bound 'T: Render'"* — on a function whose
+     signature already wrote exactly that bound.
+  2. **An unrelated trait captured the name.** `mod unrelated { pub trait Display { fn other(&self); } }`
+     anywhere in the program took over every `T: Display` bound, because a user trait of that
+     spelling was found and preferred over the Core trait the resolver had selected. `x.fmt()`
+     then failed.
+  3. **Declaration order decided ownership.** With two same-named traits, one `&self` and one
+     `self`, the borrow checker returned whichever appeared FIRST in HIR item order. The same
+     program compiled or failed E0100 depending only on the order its two trait declarations were
+     written in.
+- **And one level further down.** Even with identity fixed in both front-end passes, execution
+  still selected an implementation by method name on the receiver's nominal: a type implementing
+  two same-named `Render` traits ran the *same* body for both bounds, in the HIR interpreter and in
+  MIR. The type checker was right and every engine below it was wrong in the same way. The native
+  linkage preflight caught the underlying cause — `impl left::Render for Item` and
+  `impl right::Render for Item` produced the identical canonical symbol `Item::Render::tag@[]`,
+  "one symbol, two identities".
+- **User impact (while open):** a qualified trait bound was unusable, which is every bound on a
+  trait a package exports through a module. A same-named trait anywhere in the program could
+  silently redirect an unrelated bound. And ownership was order-dependent.
+- **Security/soundness impact:** the first two failures were refusals. The third and fourth were
+  **acceptances of the wrong program**: order-dependent move checking, and a call executing a
+  different trait's body than the one type checking approved. No memory-safety violation — the
+  wrongly selected body is still a well-typed method of the same receiver — but "which code runs"
+  differed from "which code was checked", which is the more serious half of this entry.
+- **Fix:** `hir::resolved_bound_trait` reads `TraitRef::res` and nothing else, with exhaustive
+  matches over `Res` and `ItemKind`; both front-end passes consume it, and `hir::BoundTrait` is now
+  shared rather than private to the type checker. The checker records the selected trait per call
+  (`TypeTables::bound_trait_calls`); the HIR interpreter passes it as `find_method`'s existing
+  trait filter, and MIR lowering passes it to `find_impl_fn`'s new one. Canonical symbols include
+  the trait's own module path, so two same-named traits are two symbols. A top-level trait's prefix
+  is empty, so every pre-existing symbol is unchanged.
+- **Evidence:** `tests/dev_bound_trait_identity.rs` — 15 tests, including the declaration-order
+  pair (the same program with its two trait declarations swapped, both of which must compile), the
+  cross-module `L`/`R` dispatch case that pins which body ran, receiver identity across `&self`,
+  `&mut self` and `self`, and a direct assertion that `resolved_bound_trait` returns the resolver's
+  own `Res::Item`.
+- **Owning gate:** package/application track, CD-379.
+
+## DEV-171 — an unrelated trait satisfied an OPERATOR bound by spelling (RESOLVED, CD-383)
+
+- **Normative expectation:** `03-Type-System.md` "Operators and Traits" — `==` on a generic
+  parameter requires `T: Eq`, meaning the Core `Eq` (06-Standard-Library.md STD-TRAIT-001), not a
+  user trait that happens to be spelled that way.
+- **Behaviour before the fix:** accepted. Reproduced 2026-08-04:
+
+  ```stark
+  mod fake {
+      pub trait Eq {
+          fn unrelated(&self) -> Int32;
+      }
+  }
+
+  use fake::Eq;
+
+  fn compare<T: Eq>(a: T, b: T) -> Bool {
+      a == b
+  }
+  ```
+
+  `ty_satisfies_operator_bound`'s generic-parameter branch compares
+  `text(bound.path.span) == required` — a string comparison against `"Eq"`. The imported `fake::Eq`
+  spells the same, so the operator bound is treated as satisfied. Written *qualified*
+  (`T: fake::Eq`) it is correctly rejected, which is the same spelling artefact seen from the other
+  side.
+- **Security/soundness impact:** this is an **acceptance**, not a refusal — the more serious
+  direction. What `a == b` then lowers to for such a `T` was not investigated.
+- **Discovered by:** DEV-BOUND-TRAIT-IDENTITY, while confirming no spelling-based bound lookup
+  remained. Deliberately not fixed there: this is operator-bound *satisfaction*, not method
+  identity, and the repair decides what happens when a user trait shadows a Core trait's name for
+  operator purposes — a semantics ruling rather than a mechanical fix.
+- **Related:** the same function also serves built-in obligations that have no `TraitRef` at all
+  (DEV-118's name-addressable mechanism), so the fix could not simply delete the name comparison.
+- **Fix (CD-383):** `param_declares_bound` resolves each bound through `hir::resolved_bound_trait`
+  — the identity path CD-379 established — and compares it to the Core trait the operator requires.
+  `satisfies_bound_parts` keeps its name-addressable form, because DEV-118's built-in obligations
+  genuinely have no `TraitRef`; only the GENERIC-PARAMETER branch changed, which is the one that
+  had a written bound to resolve all along.
+- **Scope of the repair:** `Eq`, `Ord` and `Num` all go through this branch, so all three are
+  covered by construction rather than by enumerating them.
+- **This rejects programs that previously compiled.** That is the intent — they were accepted
+  against the specification, which requires operators to dispatch to the canonical Core trait — but
+  it is a behaviour change and is called one here rather than described as a pure bug fix.
+- **Evidence:** `tests/over_acceptance_audit.rs` — the imported and qualified fake `Eq`, fake `Ord`
+  and fake `Num`, plus genuine `Eq`/`Ord`/`Num` bounds and a user `impl Eq` still working.
+- **Owning gate:** package/application track, CD-383.
+
+## DEV-172 — no signed type can express its own minimum value (OPEN, pre-existing)
+
+- **Normative expectation:** `03-Type-System.md` — `Int8` is "8-bit signed integer (-128 to 127)".
+  `-128` is an `Int8`.
+- **Current behaviour:** rejected. Confirmed empirically 2026-08-04, with no interpolation involved:
+
+  ```stark
+  let a: Int8 = -128;                    // [E0008] integer literal out of range for 'Int8'
+  let d: Int64 = -9223372036854775808;   // [E0008] integer literal out of range for 'Int64'
+  let u: UInt64 = 18446744073709551615;  // [E0008] out of range for 'Int64'
+  ```
+
+  A negative literal is a unary minus applied to a positive literal, and the magnitude is
+  range-checked against the target type *before* the negation. `128` does not fit `Int8`, so
+  `-128` is refused — and the same argument refuses every signed minimum. `UInt64::MAX` fails for a
+  related reason: the literal is classified against the signed default before its `UInt64` context
+  is applied.
+- **User impact:** the minimum of every signed width, and the maximum of `UInt64`, are
+  unwritable. A program needing `Int32::MIN` has no literal for it.
+- **Security/soundness impact:** none — a refusal, not an acceptance. But it is a conformance gap
+  against a range the specification states explicitly.
+- **Discovered by:** WP-FMT-001, while testing that formatting a minimum signed value does not
+  overflow while taking its magnitude. The RENDERER handles it correctly — pinned by
+  `stark_runtime::fmt_spec::tests::minimum_signed_values_do_not_overflow_their_own_width`, which
+  formats `i64::MIN` — but no STARK program can produce the value to hand it.
+- **Owning gate:** unassigned. Literal typing, not formatting; a fix belongs with the literal
+  range check (DEV-015's area), which must learn that a literal in unary-minus position is checked
+  against the negated range.
+
+## DEV-173 — an interpolation field may not contain a nested string literal (RESOLVED, CD-382)
+
+- **Normative expectation:** `01-Lexical-Grammar.md` LEX-FORMAT-002 admits an arbitrary expression
+  in a field. A nested string literal is an expression.
+- **Current behaviour:** refused with E0218, "an interpolation field may not contain an escape
+  sequence". Because the enclosing literal is delimited by `"`, a nested string literal must be
+  written `f"{call(\"a\")}"` — so its source carries the OUTER literal's escapes.
+- **Why it is refused rather than supported:** every expression node reads its text from its
+  `Span`. A field's expression is parsed by lexing the original file over the field's own byte
+  range, which keeps spans real; a field containing escapes cannot be lexed that way, because `\"`
+  is not valid expression syntax. Parsing a DECODED copy works, but the resulting nodes' spans
+  index a scratch buffer no consumer can read, and retagging them to the field's span makes a
+  string literal read the field's raw source back — `f"{\"slice\"}"` then renders `"slice"`, with
+  quotes, where the program said `slice`. That was observed during implementation, which is why
+  this is a refusal: producing the wrong string silently is worse than declining.
+- **User impact:** small and with a clean workaround — bind the value first
+  (`let s = "slice".to_string(); f"{s}"`). Every other expression form works, including calls,
+  indexing, field access, struct literals and qualified paths.
+- **Security/soundness impact:** none — a refusal.
+- **Resolution (CD-382), in two halves, both required.**
+  1. **A length-preserving stand-in.** The field is parsed against a copy of the whole file in
+     which each `\"` inside that field becomes ` "` when it opens a nested literal and `" ` when it
+     closes one. Every byte offset is unchanged, so the spans the sub-parse produces are already
+     real file spans and nothing needs remapping — which matters because spans are embedded
+     throughout the AST (paths, segments, names), not only on nodes. **Which side the space lands
+     on is load-bearing:** blanking the closing backslash in place puts the space inside the
+     literal, and `f"{choose(\"yes\", ..)}"` renders `yes ` with a trailing space. That was
+     observed during implementation, not reasoned about afterwards.
+  2. **Literals carry their decoded value.** `Ast::str_lits`/`Hir::str_lits` hold every string
+     literal's value, interned at parse time from whatever buffer the parser was reading;
+     `Lit::Str` names its entry. Spans are now purely diagnostic. Without this the stand-in is not
+     enough: a literal would still read its value back from the real file's `\"a\"`.
+- **What remains refused, and why that is not the same defect.** An escape OTHER than `\"` in a
+  field source belongs to the enclosing literal and *changes* the inner text — `\\` means one
+  backslash, `\n` means a newline — so blanking it would silently alter the value. Those fields are
+  refused with that reason. The forms the acceptance matrix named all work:
+  `f"{choose(\"yes\", \"no\")}"`, `f"{lookup(\"name\")}"`, `f"{parse(\"42\").unwrap()}"`.
+- **Recorded as a language rule, not only here.** LEX-FORMAT-004 (01-Lexical-Grammar) states both
+  halves normatively: a nested literal's `\"` delimiters are read as delimiters, and a nested
+  literal needing a data-bearing escape is rejected with the bind-first workaround shown. A
+  restriction that lives only in a defect ledger is one a reader of the grammar never learns about.
+- **Do not describe the result as "complete ordinary-expression interpolation."**
+  `f"{lookup(\"a\nb\")}"` is a valid ordinary expression and is refused. The accurate claim is
+  "complete for the defined Core v1 interpolation surface".
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::a_field_may_contain_a_nested_string_literal`
+  (six forms, including a `:` and a `}` inside a nested string, a struct literal, and a format
+  specification applied to one) and `::a_field_may_not_contain_an_escape_other_than_a_quote`.
+- **Owning gate:** package/application track, CD-382.
+
+## DEV-174 — `eprint`/`eprintln` took `&str` instead of a `Display` value (RESOLVED, CD-381)
+
+- **Normative expectation:** `06-Standard-Library.md` declares `fn eprint<T: Display>(value: T)` and
+  `fn eprintln<T: Display>(value: T)`, and PRINT-DISPLAY-001 names all four output functions
+  together as "implementation-provided generic functions".
+- **Behaviour before the fix:** `eprintln(s)` with `s: String` was rejected —
+  `[E0001] type mismatch: expected '&str', found 'String'` — while `println(s)` was accepted.
+  `builtin_type` typed the stderr pair with a `&str` parameter and the stdout pair with a fresh
+  inference variable. Nothing else differed: the runtime surface has carried the full stderr display
+  family (`EprintlnInt64`, `EprintBool`, `EprintlnFloat32`, …) since 0.1-A13, and lowering already
+  redirects the display path by channel. **Only the signature lagged.**
+- **User impact:** every `Display` type except `&str` was unprintable to stderr. A diagnostic path —
+  the one place a program most wants to render a value — was the one place it could not.
+- **Security/soundness impact:** none — a refusal.
+- **Discovered by:** WP-FMT-001's correction packet, proving `eprintln(f"...")` in its direct form
+  rather than through `.as_str()`. The original suite tested `.as_str()` only, which is exactly why
+  the gap survived the first pass.
+- **Fix:** the stderr pair is typed like the stdout pair, and both pairs now go through the same
+  deferred `Display` check, so `eprintln` of a type with no `Display` impl is rejected for the same
+  reason `println` is.
+- **Evidence:** `tests/wp_fmt_001_interpolation.rs::the_output_family_accepts_an_interpolated_temporary_directly`,
+  and `tests/adversarial_stderr.rs::the_eprint_family_accepts_every_display_value` — the three
+  shapes WP-C7.9's `the_eprint_family_accepts_only_str_today` had pinned as rejections, now proven
+  to render byte for byte on stderr. `::the_eprint_family_still_requires_display` pins that
+  widening the signature widened nothing else.
+- **A note on how this was found and how it was meant to be found.** WP-C7.9 recorded the
+  restriction deliberately, said the lowering already supported every `Display` shape so widening
+  would need "only a signature change and cases", and predicted that its pinning test would "fail
+  the day that happens, which is the right moment to add them". That is exactly what occurred: the
+  test failed in CI on the signature change, and the cases it asked for are the ones now present.
+  A recorded limitation with a test that fails when it is lifted is a better artifact than a
+  to-do — it is why this repair took one commit rather than a rediscovery.
+- **Owning gate:** package/application track, CD-381.
+
+---
+
+## DEV-176 — generic callable bodies execute without their checker-established context (RESOLVED, WP-VALUE-REP-TOTAL A3c-S)
+
+- **Normative expectation:** `03-Type-System.md` §Generics: "Generic parameters are in scope within
+  the item body and signatures", and instantiation occurs at use sites with monomorphization and
+  dictionary-passing required to be observably equivalent. A generic body must therefore execute
+  knowing what its parameters stand for, whatever kind of callable it is.
+- **Current behaviour:** the HIR interpreter installs a substitution frame only for **direct calls
+  to free functions**. `push_generic_frame` reads its parameter names from `hir::ItemKind::Fn` and
+  returns an empty list for every other item kind, and it has exactly one call site — the
+  `Res::Item` path in `eval_expr`. A method call never pushes a frame at all. So none of these are
+  ever bound: impl-level generics, method-level generics, trait-level generics, or `Self`.
+- **Reproducer** (verified 2026-08-05):
+
+  ```stark
+  fn free_size<T>() -> UInt64 {
+      size_of::<T>()          // works
+  }
+
+  struct Wrapper<T> { value: T }
+
+  impl<T> Wrapper<T> {
+      fn size(&self) -> UInt64 {
+          size_of::<T>()      // fails
+      }
+  }
+  ```
+
+  > `layout query on Param("T") still contains an unsubstituted generic parameter: the active
+  > instantiation did not cover it`
+
+- **User impact:** a program the checker accepts fails at run time in the HIR engine, with a message
+  describing a compiler-internal condition. Any construct needing the type parameter inside a
+  generic method is affected; `size_of::<T>()` is simply the one with an existing observable.
+- **Security/soundness impact:** none directly — it is a refusal, not a wrong answer. The
+  *classification* is the soundness-adjacent part, and is DEV-176's sibling repair: see below.
+- **Misclassification (repaired separately):** the failure was raised through `RuntimeError::new`,
+  making it `FailureClass::Trap` — a **language outcome**. The HIR interpreter is the behavioural
+  oracle the other three engines are compared against, so an oracle defect presented as a trap is
+  something the differential harness can accept as legitimate and then pressure MIR and native into
+  reproducing. Only the surviving-`Ty::Param` condition is reclassified; ordinary `layout_of`
+  refusals are left alone pending individual classification, because some of them correspond to
+  genuinely invalid programs.
+- **Measured exposure** (2026-08-05, all 28 first-party packages): **0** generic impls, **0** traits,
+  **0** generic methods across 1108 functions; 14 non-generic impls. The construct appears in the
+  compiler's own Rust tests (48 generic impls) and in 7 of 116 spec fixtures. Commands:
+
+  ```bash
+  grep -rn "^impl<" packages/*/src/*.stark | wc -l
+  grep -rn "^pub trait \|^trait " packages/*/src/*.stark | wc -l
+  grep -rn "^    fn [a-z_]*<" packages/*/src/*.stark | wc -l
+  ```
+
+- **Workaround:** move the parameter-dependent operation into a free generic function and call it
+  from the method.
+- **Proposed disposition:** repaired by WP-VALUE-REP-TOTAL A3c-S, which replaces
+  `TypeTables::generic_insts` with a single provenance-carrying callable-instantiation table and
+  installs the checker-selected environment for every source-invoked callable. The interpreter must
+  consume that environment, never reconstruct one from names, runtime values or impl scanning — a
+  second instantiation algorithm would be a second answer to what a generic call means.
+- **Explicitly excluded:** generic `Drop`. `drop_value` receives a `Value` and recovers the nominal
+  through `nominal_item`, so `Wrapper<String>` is indistinguishable from `Wrapper<Int32>` at
+  destruction. Threading a concrete type through **44** `drop_value` call sites, or retaining type
+  arguments in `Value`, is disproportionate to **0** first-party `Drop` impls and 2 generic-`Drop`
+  fixtures. A3c-D therefore refuses a generic `Drop` as `InternalInvariant` before running the
+  destructor body, rather than guessing or silently skipping it.
+- **Fix (A3c-S):** the checker publishes the environment it already selected — `GenericBinder`
+  recording each binding's origin, `CallableInstantiation` keyed by CALL EXPRESSION because one
+  generic body is legitimately invoked at two types in one program. `push_callable_env` installs it
+  for every callable kind and composes it against the caller's active frame.
+  `TypeTables::generic_insts` is **deleted**, not supplemented: all four consumers migrated, MIR
+  derives its ordered view from `own_arguments()`, and the E0004 undetermined-instantiation check
+  moved across but deliberately over the same subset it always covered.
+- **Two subtleties the fix cost:** `Self` is published as the impl's self type and so references the
+  impl's own parameters, requiring parameters to be concretised BEFORE `Self` is substituted through
+  them — a flat loop leaves `Self = Wrapper<Param("T")>`. And DEV-101's provenance rule empties the
+  environment *silently*: resolving a callee's parameter names with the caller's `decl_text` rather
+  than `item_text` makes every lookup miss, publishing empty bindings instead of failing. Only
+  `cross_package_generics` could see it; single-package tests and the three-engine differential were
+  green while it was broken.
+- **Generic `Drop` is excluded and refused (A3c-D):** destruction retains no type arguments, so a
+  generic `Drop` is refused as `InternalInvariant` before its body runs rather than executed with
+  unbound parameters. Recorded rather than repaired — 44 `drop_value` call sites against 0
+  first-party `Drop` impls. See the A3c-D tests.
+- **Evidence:** `tests/dev176_generic_callable_context.rs` (5, including one body answering
+  differently at two instantiations), `tests/a3cd_generic_drop.rs` (4),
+  `tests/cross_package_generics.rs` (11), `three_engine_differential` (109), lib (523).
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL A3c.
+
+---
+
+## DEV-177 — generic-parameter shadowing accepted, contrary to NAME-SHADOW-001 (OPEN)
+
+- **Normative expectation:** `04-Semantic-Analysis.md` **NAME-SHADOW-001**: "Generic parameters may
+  not duplicate another generic parameter or an item-level `Self`; a nested item introduces fresh
+  item scopes."
+- **Current behaviour:** the checker accepts a method generic that duplicates its impl's generic,
+  and the program runs.
+- **Reproducer** (verified 2026-08-05):
+
+  ```stark
+  struct Wrapper<T> { value: T }
+
+  impl<T> Wrapper<T> {
+      fn choose<T>(self, value: T) -> T {
+          value
+      }
+  }
+
+  fn main() {
+      let w = Wrapper { value: 7 };            // impl T = Int32
+      let s = w.choose(String::from("text"));  // method T = String
+      println(s.as_str());                     // prints: text
+  }
+  ```
+
+  `stark check` reports **OK** and the program prints `text`. Two distinct types are bound to the
+  name `T` in one signature.
+- **User impact:** a program the specification forbids is accepted. It currently *runs* only because
+  the interpreter never consults the impl binding at all (DEV-176) — the two defects are
+  independent, but this one is masked by that one.
+- **Security/soundness impact:** no wrong answer today. The exposure is prospective and specific:
+  `Ty::Param` identifies a parameter by `String`, so while duplicate names are legal a name-keyed
+  substitution environment could bind one concrete type to two different binders. Every tie-break
+  available — last-insertion-wins, first-insertion-wins, method-shadows-impl — is a guess at
+  semantics the type system does not carry.
+- **Why this is a conformance gap and not a design question:** the rule already exists and is
+  normative. It does **not** require giving `Ty::Param` declaration identity; that would be
+  machinery built to support a construct the language prohibits. Enforcing NAME-SHADOW-001 makes
+  `Ty::Param(String)` unambiguous by construction across every set of generic scopes simultaneously
+  active in a callable, which is precisely what a name-keyed runtime substitution needs.
+- **Enforcement boundary:** reject a duplicate within one generic list, an impl generic duplicated
+  by a method generic, a trait generic duplicated by a default-method generic, and a generic named
+  `Self` where item-level `Self` is in scope. The distinction is *inherited* scope, not lexical
+  nesting: `fn outer<T>() { fn inner<T>() {} }` is legal because a nested item is a fresh item
+  scope, and two sibling methods each declaring `U` do not overlap. `check_fn_def` already has
+  `current_impl_generics` and `current_fn_generics`, which are the owners normatively in scope.
+- **Discovered by:** WP-VALUE-REP-TOTAL's binder-identity probe, run before designing A3c-S's
+  substitution representation.
+- **Proposed disposition:** enforce the existing rule before A3c-S. Blocks A3c-S's name-keyed
+  substitution while it stands.
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL (prerequisite to A3c-S).
+
+---
+
+## DEV-178 — generic context is not retained for associated-function calls or function values (OPEN)
+
+- **Normative expectation:** as DEV-176 — a generic body executes knowing what its parameters stand
+  for, whatever callable kind declares them and however it is invoked.
+- **Class:** HIR oracle execution-context omission. Same class as DEV-176; two callable-use paths
+  its repair did not cover.
+- **Current behaviour:** an accepted generic callable reaches execution with a surviving
+  `Ty::Param`. Invisible until A4 validated parameters, because before that the environment was
+  consulted only by `size_of::<T>()`.
+- **Associated-function cause:** `Type::func()` neither publishes a call-site environment nor
+  installs one. The interpreter's `Res::AssociatedFn` branch calls `call_callable` directly while
+  ordinary method calls install an environment first — a parallel call funnel that remembered a
+  different subset of the steps.
+- **Function-value cause:** `Value::Function` retains only an `ItemId`, discarding the instantiation
+  selected when the item became a value. The instantiation is fixed at the COERCION, not the call:
+
+  ```stark
+  fn type_size<T>() -> UInt64 { size_of::<T>() }
+  let f: fn() -> UInt64 = type_size::<Int32>;
+  f();
+  ```
+
+  The call-site `Ty::Fn` says the result is `UInt64` and cannot tell the body what `T` is.
+  Validating indirect calls against the caller-side function type would make a parameter check pass
+  while leaving this execution defect in place.
+- **Reproducers** (all valid, all rejected by A4's first enforcement):
+  `Stack::identity(6)`, `Holder::new(7)`, and `let f: fn(Int32) -> Int32 = identity; f(41)`.
+- **Resolution:** publish and install associated-function environments; give the function
+  representation a payload carrying its concretised environment, captured at coercion. **No new
+  `ValueKind`** — `Ty::Fn` still maps to `ValueKind::Function`, so §6's matrix is unchanged; only
+  the payload grows. The environment must be concretised against the active frame BEFORE storage,
+  because a function value may outlive the generic frame that created it.
+- **How it was found, and how it should have been:** A4's parameter validation asked for the
+  environment that nothing else had needed. A3c-S was declared complete on evidence that could not
+  reach either path, and A3c-Q's suites did not either. Both paths were named in the work package's
+  required-contexts list; the gap was in the evidence, not in the specification.
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL A3c-S2.
+
+---
+
+## DEV-179 — `MapIter`/`FilterIter` discard a generic callback's instantiation (DORMANT)
+
+- **Status:** **DORMANT — unreachable while E0105 refuses iterator `map`/`filter`.** Not an active
+  conformance failure, not an executable oracle divergence, not a DEV-121 blocker, and no
+  first-party exposure. It is a **feature-activation prerequisite** and a known implementation
+  hazard.
+- **Class:** dormant execution-context defect — the same semantic class as DEV-178, reached through
+  deferred iterator execution rather than an ordinary indirect call.
+- **Cause:** `Value::MapIter` and `Value::FilterIter` retain only the callback's `ItemId`. When the
+  iterator steps, it reconstructs a function value with **empty bindings**, so the callback's
+  checker-selected environment is gone.
+- **Effect if activated:** a generic callback executes without its instantiation. A surviving
+  `Ty::Param` either fails as `InternalInvariant` at a validated boundary or — where no boundary is
+  enforced — produces incorrect oracle behaviour silently.
+- **Reachability gate:** Core v1 rejects the adapters at the front end:
+
+  ```text
+  [E0105] iterator method 'map' is not supported by this compiler;
+          use a 'for' loop over the iterator instead
+  ```
+
+  Verified 2026-08-06. Reachability governs the defect's URGENCY, not whether the implementation
+  contains it.
+- **Activation condition:** any change permitting `map`/`filter` construction, or otherwise exposing
+  these iterator variants directly.
+- **Why registered rather than commented:** the implementation looks complete. On the day E0105 is
+  lifted it activates silently with an empty environment, and whoever lifts it will be working in
+  the front end rather than in `interp.rs`. A comment is local and easy to miss; a ledger entry plus
+  a gate test that fails the moment the rejection is removed is what survives. DEV-174 is this
+  repo's precedent: a recorded limitation with a test that fails when it is lifted turned a
+  rediscovery into a one-commit repair.
+- **Resolution:** store a complete `FunctionValue` — or an equivalent captured environment — inside
+  `MapIter`/`FilterIter` rather than reconstructing one.
+- **Disposition:** **do not repair during A4.** Repair before, or as part of, lifting E0105.
+- **Evidence:** `tests/dev179_dormant_iterator_callbacks.rs` — the gate test, which fails the moment
+  E0105 stops rejecting these adapters.
+- **Owning gate:** compiler track, whichever work package lifts E0105.
+
+---
+
+## DEV-180 — the HIR interpreter flattens `&mut self` into owned receiver storage (OPEN)
+
+- **Class:** runtime representation / receiver-lowering defect. **Independent of DEV-121** — A4 only
+  exposed it.
+- **Status:** CONFIRMED, reachable from accepted Core v1 programs.
+- **Normative expectation:** a value stored under `Ty::Ref { mutable: true, .. }` is a reference.
+  WP-VALUE-REP-TOTAL §6.4: a mutable reference must never be flattened to a bare value — it cannot
+  write through, and `take(&mut v)` needs the place itself.
+- **Current behaviour:** for `hir::Receiver::RefMut`, `call_user_method` removes the owned receiver
+  from the caller's place and binds that owned value as `self`:
+
+  ```rust
+  hir::Receiver::RefMut => self
+      .place_slot_mut(&receiver_place, span)?
+      .take()
+      .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?,
+  ```
+
+  One arm above, `hir::Receiver::Ref` binds `Value::Ref(receiver_place.clone())` — a genuine
+  reference. The asymmetry is deliberate and commented: "(`&mut self` keeps its take/write-back
+  model.)"
+- **Violation:** the checker types the `self` local `&mut Self`, so a value under
+  `Ty::Ref { mutable: true, .. }` has `ValueKind::Struct` rather than `ValueKind::Ref` for the whole
+  body.
+- **Mechanism:** take from the caller's slot → bind the owned value as `self` → execute → write
+  back.
+- **Observed exposure:** five receiver tests fail once A4 validates the receiver boundary —
+  `mut_reference_returned_from_mut_self_method_writes_through`,
+  `receiver_restructure_preserves_mutation_and_move_semantics`,
+  `references_write_through_and_core_methods_auto_deref`,
+  `language_protocols_ignore_same_named_inherent_methods`,
+  `for_loop_accepts_standard_and_user_iterators`.
+- **Effect:** the oracle executes a reference-typed local with owned-value semantics, which can
+  conceal ownership, aliasing, returned-reference and mutation differences from MIR and native.
+- **Two consequences worth checking on their own merits**, independent of DEV-121: the caller's slot
+  is EMPTY for the duration of the call, so the receiver can appear moved; and every error path must
+  restore it or the value is lost.
+- **Candidate repair, NOT approved:** bind `Value::Ref(receiver_place.clone())` as `&self` does,
+  with mutability governed by the static `Ty` and the borrow checker. Writes through `*self` and
+  `self.field` would then mutate the caller's place directly, returned references would point into
+  caller storage rather than a method-frame temporary, and restoration with its failure paths would
+  disappear.
+- **Explicitly forbidden repairs:** permitting `&mut T → bare T` in `value_matches_ty`; a
+  receiver-specific validator exception; or keeping take/write-back while wrapping the taken value
+  in a synthetic reference to method-local storage — that would satisfy the shape check while
+  leaving returned references pointing at temporary storage.
+- **Open before repair:** why DEV-070 excluded `&mut self` when `&self` moved to genuine references;
+  whether that limitation still holds; and whether the returned-reference test depends on rebasing
+  out of the method frame.
+- **Discovered by:** WP-DEV-121 A4 receiver-boundary enforcement.
+- **Owning gate:** compiler track, its own repair — sequenced before A4 resumes.
+
+---
+
+## DEV-181 — a borrow taken by an assignment's own right-hand side blocks the assignment (OPEN)
+
+- **Class:** borrow-checker false positive. Same mechanism as DEV-137: a borrow is pushed onto
+  `Borrowck::active_borrows` and nothing pops it before the check that consults it.
+- **Reproducer** (verified 2026-08-06):
+
+  ```stark
+  struct Node { value: Int32, depth: Int32 }
+
+  impl Node {
+      fn deeper(&self) -> Node { Node { value: self.value * 2, depth: self.depth + 1 } }
+  }
+
+  fn main() {
+      let mut n = Node { value: 1, depth: 0 };
+      n = n.deeper();
+  }
+  ```
+
+  ```text
+  [E0101] cannot assign to variable 'n' because it is borrowed
+  ```
+
+- **Cause:** the `Assign` arm calls `self.check_expr(*rhs)` — which pushes the receiver auto-borrow
+  taken by `n.deeper()` — and then runs the write check against `active_borrows` with that borrow
+  still on the stack. `check_block` and `check_stmt` are the only things that truncate, and neither
+  runs between the two halves of one assignment.
+- **User impact:** `x = x.method()` is an everyday idiom — updating a value through a method that
+  returns a new one. It is met within the first hour of using the language, and unlike DEV-137 it
+  has no hoisting workaround; the statement must be split in two:
+
+  ```stark
+  let next = n.deeper();
+  n = next;
+  ```
+
+- **Security/soundness impact:** none — a false positive, a refusal.
+- **Precedent:** DEV-137 (CLOSED, CD-336) fixed the identical mechanism for `while` and `if`
+  conditions with `Borrowck::check_condition` — snapshot the depth, check the expression, truncate
+  back.
+- **Why the repair is NOT a copy of `check_condition`:** the RHS's borrow is sometimes the assigned
+  VALUE itself. `n = n.deeper()` produces an owned `Node`, so the temporary's borrow dies with it;
+  `r = &v.field` produces a reference whose borrow must survive the assignment. Truncating
+  unconditionally would drop a borrow the program still holds. The rule must therefore be gated on
+  whether the assigned type is borrow-carrying — the same kind of scope boundary DEV-137 drew when
+  it deliberately excluded `match` scrutinees and `for` iterators, whose borrows must span the body.
+- **Discovered by:** an ordinary-capability probe — recursion, nested control flow, methods,
+  collections — written to check what the language can actually do. Everything else in that program
+  worked; this was the only rejection.
+- **Owning gate:** compiler track.
+

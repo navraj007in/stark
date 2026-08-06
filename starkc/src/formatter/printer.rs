@@ -482,6 +482,18 @@ impl<'a> Printer<'a> {
                 let t = self.text(node.span);
                 self.write(t);
             }
+            // WP-FMT-001: an interpolated literal is written back VERBATIM from its own span.
+            //
+            // Reconstructing it would mean re-emitting escapes, `{{`/`}}` and every embedded
+            // expression from the AST, and any imperfection there is not a formatting difference
+            // but a semantic one — a lost escape or a re-spaced specification changes what the
+            // program prints. Reprinting the source text cannot do that. The cost is that embedded
+            // expressions are not re-formatted; §19 permits exactly this trade and asks that it be
+            // recorded, which the WP-FMT-001 closure report does.
+            ExprKind::FormatString { .. } => {
+                let t = self.text(node.span);
+                self.write(t);
+            }
             ExprKind::Path { path, turbofish } => {
                 let (path, turbofish) = (path.clone(), turbofish.clone());
                 self.path(&path);

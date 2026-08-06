@@ -1,0 +1,336 @@
+//! `stark-get` -- fetch a URL over HTTP/1.1 or HTTPS.
+//!
+//! A proving application: it exists to exercise the package stack (`stark-args`, `stark-env`,
+//! `stark-http-client`, `stark-io`, `stark-json`) the way a real program would, end to end, over a
+//! real network.
+//!
+//! **The two rules that shape every branch below.** stdout carries the response body and nothing
+//! else, so a caller can redirect it into a file and get exactly the bytes the peer sent; every
+//! diagnostic goes to stderr. And a transport failure and an HTTP error status are different
+//! things -- a `404` that arrived intact is a completed exchange and exits `0`, unless
+//! `--fail-status` says otherwise.
+
+pub mod ascii;
+pub mod cli;
+pub mod errors;
+pub mod headers;
+pub mod render;
+mod tests;
+pub mod utf8;
+
+use stark_args::is_present;
+use stark_args::parse;
+use stark_args::value;
+use stark_args::values;
+use stark_env::args;
+use stark_http_client::default_config;
+use stark_http_client::error_text;
+use stark_http_client::get;
+use stark_http_client::new_client;
+use stark_http_client::send;
+use stark_http_client::HttpError;
+use stark_http_core::append;
+use stark_io::write;
+use stark_io::FileError;
+
+use ascii::equals_ascii_ci;
+use cli::default_max_body;
+use cli::help_text;
+use cli::parse_max_body;
+use cli::refused_argument;
+use cli::scheme_is_supported;
+use cli::specs;
+use cli::version_text;
+use errors::exit_body_limit;
+use errors::exit_http_status;
+use errors::exit_internal;
+use errors::exit_json;
+use errors::exit_ok;
+use errors::exit_output;
+use errors::exit_protocol;
+use errors::exit_request;
+use errors::exit_transport;
+use errors::exit_usage;
+use errors::fail;
+use headers::header_arg_error_text;
+use headers::parse_header_arg;
+use render::response_head;
+use render::status_is_error;
+use utf8::decode;
+use utf8::utf8_error_offset;
+use utf8::utf8_error_text;
+
+fn main() -> Int32 {
+    let argv: Vec<String>;
+    match args() {
+        Ok(list) => {
+            argv = list;
+        }
+        Err(_) => {
+            fail("could not read the command line");
+            return exit_internal();
+        }
+    }
+
+    // `args()` includes argv[0]; the parser expects only what follows it.
+    let mut rest: Vec<String> = Vec::new();
+    let mut i = 1u64;
+    while i < argv.len() {
+        rest.push(String::from(argv[i].as_str()));
+        i = i + 1u64;
+    }
+
+    run(rest.as_slice())
+}
+
+fn run(arguments: &[String]) -> Int32 {
+    // Refused options are answered before parsing, so `--insecure` gets a reason instead of being
+    // reported as an unrecognised spelling.
+    match refused_argument(arguments) {
+        Some(reason) => {
+            fail(reason.as_str());
+            return exit_usage();
+        }
+        None => {}
+    }
+
+    let parsed: stark_args::ParsedArgs;
+    match parse(specs().as_slice(), arguments) {
+        Ok(result) => {
+            parsed = result;
+        }
+        Err(_) => {
+            fail("invalid arguments; run with --help");
+            return exit_usage();
+        }
+    }
+
+    // `--help` and `--version` are answered before anything is validated, so they work even when
+    // the rest of the command line is wrong -- which is when help is most likely to be wanted.
+    if is_present(&parsed, "help") {
+        print(help_text().as_str());
+        return exit_ok();
+    }
+    if is_present(&parsed, "version") {
+        println(version_text().as_str());
+        return exit_ok();
+    }
+
+    let quiet = is_present(&parsed, "quiet");
+
+    if parsed.positionals.len() == 0u64 {
+        report(quiet, "no URL given; run with --help");
+        return exit_usage();
+    }
+    if parsed.positionals.len() > 1u64 {
+        report(quiet, "more than one URL given; this fetches exactly one");
+        return exit_usage();
+    }
+    let url = String::from(parsed.positionals[0u64].as_str());
+    if !scheme_is_supported(url.as_str()) {
+        report(quiet, "only http:// and https:// URLs are supported");
+        return exit_request();
+    }
+
+    let max_body: UInt64;
+    match value(&parsed, "max-body") {
+        Some(text) => match parse_max_body(text.as_str()) {
+            Some(limit) => {
+                max_body = limit;
+            }
+            None => {
+                report(quiet, "--max-body must be a positive number of bytes");
+                return exit_request();
+            }
+        }
+        None => {
+            max_body = default_max_body();
+        }
+    }
+
+    let mut request = get(url.as_str());
+    let header_args = values(&parsed, "header");
+    let mut h = 0u64;
+    while h < header_args.len() {
+        match parse_header_arg(header_args[h].as_str()) {
+            Ok(entry) => {
+                append(&mut request.headers, entry);
+            }
+            Err(error) => {
+                // The offending header's TEXT is not echoed: a `--header` argument is exactly where
+                // a credential is passed, and a diagnostic that quoted it back would put a bearer
+                // token on stderr. The reason and the position are enough to fix it.
+                let reason = header_arg_error_text(&error);
+                report(quiet, f"--header #{h + 1u64}: {reason.as_str()}".as_str());
+                return exit_request();
+            }
+        }
+        h = h + 1u64;
+    }
+
+    // A default `User-Agent`, unless the caller gave one. Servers do reject requests without it --
+    // api.github.com answers 403 -- so omitting it entirely makes the program look broken against
+    // real peers. It is set AFTER the caller's headers so an explicit `-H "User-Agent: ..."` wins.
+    if !contains_header(&request.headers, "user-agent") {
+        match stark_http_core::header("User-Agent", "stark-get/0.1.0") {
+            Ok(entry) => {
+                append(&mut request.headers, entry);
+            }
+            Err(_) => {
+                report(quiet, "could not set the default User-Agent");
+                return exit_internal();
+            }
+        }
+    }
+
+    let mut config = default_config();
+    config.max_response_bytes = max_body;
+    let client = new_client(config);
+
+    let response: stark_http_core::HttpResponse;
+    match send(&client, request) {
+        Ok(received) => {
+            response = received;
+        }
+        Err(error) => {
+            let text = error_text(&error);
+            report(quiet, text.as_str());
+            return transport_exit(&error);
+        }
+    }
+
+    if is_present(&parsed, "include") {
+        print(response_head(&response).as_str());
+    }
+
+    let body = response.body.as_slice();
+
+    if is_present(&parsed, "json") {
+        match decode(body) {
+            Ok(text) => match stark_json::parse(text.as_str()) {
+                Ok(_) => {}
+                Err(_) => {
+                    report(quiet, "--json was given and the body is not valid JSON");
+                    return exit_json();
+                }
+            }
+            Err(_) => {
+                report(quiet, "--json was given and the body is not valid UTF-8");
+                return exit_json();
+            }
+        }
+    }
+
+    match value(&parsed, "output") {
+        Some(path) => match write(path.as_str(), body) {
+            Ok(_) => {}
+            Err(error) => {
+                // The reason is named rather than swallowed: one message for a read-only directory,
+                // a full disk and a path that is a directory leaves the caller unable to act on any
+                // of them.
+                let reason = file_error_text(&error);
+                report(quiet, f"--output: {reason.as_str()}".as_str());
+                return exit_output();
+            }
+        }
+        None => match decode(body) {
+            Ok(text) => {
+                print(text.as_str());
+            }
+            Err(error) => {
+                // There is no byte-level stdout in the language, so a body that is not text cannot
+                // go there at all. `--output` writes the exact bytes, which is the answer.
+                let reason = utf8_error_text(&error);
+                let at = utf8_error_offset(&error);
+                report(
+                    quiet,
+                    f"the body is not valid UTF-8 at byte {at}: {reason.as_str()}".as_str(),
+                );
+                report(quiet, "use --output to write the exact bytes to a file");
+                return exit_protocol();
+            }
+        }
+    }
+
+    if is_present(&parsed, "fail-status") {
+        if status_is_error(response.status) {
+            report(quiet, f"the peer answered {response.status}".as_str());
+            return exit_http_status();
+        }
+    }
+
+    exit_ok()
+}
+
+/// Which exit code a client error deserves.
+///
+/// The split is by whether an exchange took place: DNS, TCP and TLS failures mean the request never
+/// happened, and are retryable in a way a malformed response is not. The variants are written out
+/// rather than defaulted with a wildcard so that a new `HttpError` variant fails to compile here
+/// instead of silently becoming an internal error.
+fn transport_exit(error: &HttpError) -> Int32 {
+    match *error {
+        HttpError::InvalidUrl => exit_request(),
+        HttpError::UnsupportedScheme => exit_request(),
+        HttpError::InvalidRequest(_) => exit_request(),
+        HttpError::Dns(_) => exit_transport(),
+        HttpError::Network(_) => exit_transport(),
+        HttpError::Tls(_) => exit_transport(),
+        HttpError::NoAddresses => exit_transport(),
+        HttpError::ConnectFailed => exit_transport(),
+        HttpError::TimeoutSetupFailed => exit_transport(),
+        HttpError::Timeout(_) => exit_transport(),
+        HttpError::ClosedEarly => exit_transport(),
+        HttpError::InvalidResponse(_) => exit_protocol(),
+        HttpError::TooManyRedirects => exit_protocol(),
+        HttpError::RedirectLoop => exit_protocol(),
+        HttpError::MissingLocation => exit_protocol(),
+        HttpError::InvalidRedirectTarget => exit_protocol(),
+        HttpError::InsecureRedirect => exit_protocol(),
+        HttpError::AmbiguousLocation => exit_protocol(),
+        HttpError::ResponseTooLarge => exit_body_limit(),
+    }
+}
+
+/// Write a diagnostic unless `--quiet`.
+///
+/// **`--quiet` silences stderr and nothing else.** It does not touch stdout, because stdout is the
+/// data; and it does not touch the exit code, which is what a quiet caller is reading instead.
+fn report(quiet: Bool, message: &str) {
+    if !quiet {
+        fail(message);
+    }
+}
+
+/// Whether the request already carries a header, compared case-insensitively per RFC 7230 §3.2.
+fn contains_header(map: &stark_http_core::HeaderMap, name: &str) -> Bool {
+    let entries = map.entries.as_slice();
+    let mut i = 0u64;
+    while i < entries.len() {
+        if equals_ascii_ci(entries[i].name.as_str(), name) {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// Why an `--output` write failed, in the caller's terms.
+///
+/// Written out variant by variant so a new `FileError` fails to compile here rather than silently
+/// becoming "other".
+fn file_error_text(error: &FileError) -> String {
+    match *error {
+        FileError::NotFound => String::from("the path does not exist"),
+        FileError::PermissionDenied => String::from("permission denied"),
+        FileError::InvalidInput => String::from("the path is not usable"),
+        FileError::InvalidData => String::from("the write could not use that data"),
+        FileError::IsDirectory => String::from("the path is a directory"),
+        FileError::AlreadyExists => String::from("the path already exists"),
+        FileError::Unsupported => String::from("the filesystem does not support this write"),
+        FileError::LimitExceeded => String::from("a filesystem limit was exceeded"),
+        FileError::UnexpectedEof => String::from("the file ended unexpectedly"),
+        FileError::WriteZero => String::from("the write stopped making progress"),
+        FileError::Other => String::from("the write failed"),
+    }
+}

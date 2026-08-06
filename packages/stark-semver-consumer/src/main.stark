@@ -1,0 +1,11 @@
+use stark_semver::format;
+use stark_semver::parse;
+
+fn main() {
+    match parse("1.2.3-alpha.1+build.5") {
+        Ok(version) => {
+            println(format(&version).as_str());
+        }
+        Err(_) => panic("parse failed"),
+    }
+}

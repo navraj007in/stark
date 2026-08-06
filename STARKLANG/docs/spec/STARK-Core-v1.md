@@ -279,6 +279,74 @@ Examples:
 r"Raw string with \n literal backslashes"
 ```
 
+#### Interpolated String Literals
+
+```
+FORMAT_STRING := 'f"' (CHAR | ESCAPE_SEQUENCE | '{{' | '}}' | FIELD)* '"'
+FIELD         := '{' EXPRESSION [ ':' FORMAT_SPEC ] '}'
+FORMAT_SPEC   := [ [FILL] ALIGN ] [ SIGN ] [ '#' ] [ '0' ] [ WIDTH ]
+                 [ '.' PRECISION ] [ TYPE ]
+ALIGN         := '<' | '>' | '^'
+SIGN          := '+' | '-' | ' '
+TYPE          := 'b' | 'o' | 'x' | 'X' | 'f'
+FILL          := one Unicode scalar, only when immediately followed by ALIGN
+WIDTH         := decimal digits
+PRECISION     := decimal digits
+```
+
+**LEX-FORMAT-001.** An interpolated string literal is a `f`-prefixed cooked
+string. Its escape rules are `STRING`'s exactly. Additionally `{{` denotes one
+`{` and `}}` denotes one `}`; a `{` that is not part of `{{` opens a field, and
+a `}` that neither closes a field nor is part of `}}` rejects the literal.
+
+**LEX-FORMAT-002.** A field's expression extends to the top-level `:` that
+begins its specification, or to the top-level `}` that closes it. Depth is
+counted over `(`, `[` and `{`, so a struct literal's `:` and `}` are part of
+the expression; `::` is a path separator and never begins a specification. An
+escape sequence is consumed whole before any brace is considered, so
+`\u{1F600}` is one scalar and not a field.
+
+**LEX-FORMAT-003.** `WIDTH` and `PRECISION` are compile-time decimal
+constants; there is no dynamic width and no dynamic precision. An
+implementation MUST reject a `FORMAT_SPEC` it does not recognise rather than
+ignoring the unrecognised part, and MUST reject an `ALIGN` written without a
+`WIDTH`.
+
+Examples:
+```stark
+f"pkg={name} n={count:04} r={ratio:.2} ok={ok}"
+f"object={{ name: {name} }}"
+f"|{name:^12}|"
+f"{flags:#010x}"
+```
+
+**LEX-FORMAT-004.** A field's expression MAY contain a string literal. Because
+the enclosing literal is delimited by `"`, the nested literal's quotes are
+written `\"`, and an implementation MUST read those as the nested literal's
+delimiters rather than as an escape in the enclosing literal's text:
+
+```stark
+f"{lookup(\"name\")}"
+f"{choose(\"yes\", \"no\")}"
+```
+
+A `:` or `}` inside such a literal is that literal's content, not a format
+specification separator or the end of the field.
+
+A nested literal whose own content requires an escape — `\n`, `\t`, `\\`,
+`\x`, `\u{...}` — is **rejected**. Such an escape is data rather than
+punctuation the enclosing literal forced, and no reading of the field's source
+recovers both the enclosing literal's text and the nested literal's value.
+Bind the value first:
+
+```stark
+let path: &str = "C:\\temp";
+f"{lookup(path)}"
+```
+
+*Deferred, not omitted:* a raw interpolated form (`rf"..."`), and the
+data-bearing nested escapes above.
+
 #### Character Literals
 ```
 CHAR := '\'' (CHAR_CONTENT | ESCAPE_SEQUENCE) '\''
@@ -662,6 +730,7 @@ ArgumentList ::= Expression (',' Expression)* ','?
 
 PrimaryExpression ::= PathExpression
                     | Literal
+                    | InterpolatedString
                     | '(' Expression ')'    // Grouping
                     | TupleLiteral
                     | ArrayLiteral
@@ -730,6 +799,13 @@ Literal ::= INTEGER
           | STRING
           | CHAR
           | BOOLEAN
+
+// EXPR-FORMAT-001. An interpolated string literal (01-Lexical-Grammar.md,
+// FORMAT_STRING). Its type is always `String`, and its fields' expressions are
+// ordinary expressions of this grammar — an interpolation introduces no scope
+// and no new expression forms. It is neither a macro nor a call: the segments
+// are split at compile time, so no format string exists at run time.
+InterpolatedString ::= FORMAT_STRING
 
 TupleLiteral ::= '(' ')'                                  // Unit value
                | '(' Expression ',' ')'                   // Single-element tuple
@@ -1660,6 +1736,31 @@ may still undergo the closed set of built-in expected-type coercions defined in
 "Subtyping and Coercion" (the reference coercions and TYPE-COERCE-003); a
 function parameter is an expected-type boundary like any other. No
 user-defined coercion exists.
+
+**TYPE-METHOD-003.** When the receiver's type, after auto-dereference, is a
+generic parameter `T`, the candidate set is collected from the traits named by
+`T`'s declared bounds and from nowhere else: `T` has no inherent methods and no
+implementation to select against. Each bound resolves to exactly one trait
+identity — the one name resolution selected for the bound's path
+(04-Semantic-Analysis.md), which is a `TYPE-NOMINAL-001` item identity and not a
+spelling. Two traits with the same local name in different modules are two
+identities, and a bound on either admits only its own trait's methods; the
+implementation a call dispatches to is the one belonging to that same identity.
+A bound written twice names one trait rather than two. Collection
+is additive over the bounds, and the order in which bounds are written is not a
+selection rule; if two distinct bounds supply an applicable `m`, the call is
+ambiguous under TYPE-METHOD-001 step 2 and must be disambiguated with a
+fully-qualified call.
+
+A **compiler-known** trait (06-Standard-Library.md, STD-TRAIT-001) contributes
+candidates through this same collection, carrying the same signatures its
+implementations are required to provide. Compiler-known status identifies a
+trait to the implementation — it is what connects `Display` to
+`print`/`println`, `Iterator` to `for`, and `Eq`/`Ord` to the operators — and
+never changes which methods a bound makes callable, nor their priority against
+a user-declared trait's. `fn show<T: Display>(x: &T) -> String { x.fmt() }` is
+therefore well-formed, and a user trait that also declares `fmt` produces an
+ordinary ambiguity rather than a preference for either side.
 
 ### Operators and Traits
 Operator expressions on **primitive types** have built-in meaning (Numeric
@@ -3440,7 +3541,18 @@ fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never T
 document. An implementation claiming the Core profile must provide these
 canonical items and the primitive/standard-type implementations explicitly
 required here. Additional traits or implementations are extensions and may
-not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+not change Core resolution or coherence.
+
+**STD-TRAIT-002.** A Core trait identity is an *ordinary* trait for every
+purpose a program can observe: its declared methods are callable through a
+generic bound on exactly the terms a user-declared trait's are
+(03-Type-System.md, TYPE-METHOD-003), with the same signatures shown here, the
+same receiver forms, the same ambiguity rules, and no priority derived from
+being compiler-known. An implementation MAY represent these traits specially —
+it must, to connect them to the language hooks below — but that representation
+must not be observable as a difference in method visibility, selection, or
+diagnostics. A conforming implementation accepts
+`fn show<T: Display>(x: &T) -> String { x.fmt() }`. The semantic laws of `Eq`, `Ord`,
 and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
 by C2.9.
 
@@ -3919,12 +4031,75 @@ number of bytes accepted; callers must handle a short write. Dropping an open
 file attempts close but cannot surface a new language trap.
 
 **STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
-dispatch. `print`/`eprint` append exactly the bytes produced by the argument's
+dispatch. Its receiver is `&self`: formatting **borrows** the value and never
+consumes it, so a value remains usable after being formatted — including an
+affine or resource-bearing one, for which any other receiver form would make
+`Display` unusable. A `T: Display` bound therefore makes `x.fmt()` callable on
+an owned parameter without moving it (03-Type-System.md, TYPE-METHOD-003). `print`/`eprint` append exactly the bytes produced by the argument's
 `Display` (see PRINT-DISPLAY-001); `println`/`eprintln` append those bytes
 followed by byte `0x0A`, independent of host newline convention. Successful
 calls preserve program order. The process contract flushes submitted
 stdout/stderr before reporting normal return or a language trap; a stream
 write/flush failure is a host/process failure.
+
+**STD-FORMAT-002.** An interpolated string literal (`f"..."`,
+01-Lexical-Grammar.md LEX-FORMAT-001) evaluates to a newly owned `String`. For
+each segment in source order:
+
+1. a literal segment contributes its decoded text;
+2. a field evaluates its expression **exactly once**, renders it, and appends
+   the rendered text.
+
+Fields are evaluated strictly left to right, and no expression is evaluated a
+second time to determine a width, a type or anything else. A field **borrows**
+what it renders: `Display::fmt` takes `&self` (STD-FORMAT-001), so a place
+expression is not consumed, and a value remains usable after being
+interpolated — including a non-`Copy` or affine one. A field whose expression
+is a temporary destroys that temporary exactly once, after its bytes have been
+appended.
+
+`f"{value}"` with no specification is `value.fmt()`'s text appended to the
+output. Selection of `Display` is ordinary trait resolution
+(03-Type-System.md TYPE-METHOD-003): a compiler-known trait receives no
+priority, and a generic parameter must carry a bound that actually supplies
+`fmt`.
+
+**STD-FORMAT-003.** A format specification is checked against the field's type
+at compile time; an unsupported pairing is rejected, never deferred to run
+time. `b`, `o`, `x` and `X` require an integer type; `.precision` and `f`
+require `Float32` or `Float64`; a sign, `#` or zero-padding requires a numeric
+type. Padding alone applies to any `Display` type. Precision on a string is
+rejected: Core v1 defines no string truncation, because it would require a
+scalar-versus-grapheme-versus-byte ruling that does not exist.
+
+**STD-FORMAT-004.** Rendering is byte-exact:
+
+- **Width** is counted in Unicode scalar values — not bytes, and not terminal
+  cells. It never truncates: a value at least as wide as the field is
+  unchanged. Text defaults to left alignment in a wider field and a numeric
+  value to right. When centring needs an odd number of fill characters, the
+  extra one goes on the **right**.
+- **Sign** precedes any base prefix, which precedes zero-padding, which
+  precedes the digits: `-00042`, `0x000000ff`. `+` gives non-negatives a `+`;
+  ` ` gives them a space; `-` and an unwritten sign give them nothing.
+- **Bases** render the magnitude with a leading `-` when negative: `-255` in
+  hexadecimal is `-ff`. A two's-complement bit pattern is never exposed.
+  Alternate prefixes are `0b`, `0o` and `0x`; `0x` is used for both hexadecimal
+  cases, since the prefix names the base and the type character chooses the
+  digit case.
+- **Precision** is exactly that many digits after the point, rounding to
+  nearest with exact halfway cases going to even. `Float32` is rendered at its
+  declared width, never widened first. A non-finite value ignores precision
+  entirely: `NaN`, `inf` and `-inf` render as those three spellings.
+
+No formatting is locale-sensitive, and none contains grouping, currency or a
+trailing newline.
+
+**STD-FORMAT-005.** Interpolation is human-readable formatting. It performs no
+escaping of any kind and is not a serialisation format. Building JSON, HTML,
+SQL, shell or URL text by interpolation is incorrect for any value that can
+contain the target syntax's metacharacters; use a serialiser that owns the
+escaping rules.
 
 **PRINT-DISPLAY-001.** `print`, `println`, `eprint`, and `eprintln` are
 implementation-provided generic functions with the signatures

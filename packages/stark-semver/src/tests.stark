@@ -1,0 +1,204 @@
+use super::compare;
+use super::equals;
+use super::format;
+use super::matches;
+use super::parse;
+use super::SemverError;
+
+fn must_parse(input: &str) -> super::Version {
+    match parse(input) {
+        Ok(version) => version,
+        Err(_) => panic("semver parse failed"),
+    }
+}
+
+fn assert_order(left: &str, right: &str) {
+    let l = must_parse(left);
+    let r = must_parse(right);
+    if compare(&l, &r) != -1i32 {
+        panic("semver order mismatch");
+    }
+}
+
+fn test_parse_and_canonical_format() {
+    let version = must_parse("1.2.3-alpha.1+build.5");
+    if version.major != 1u64 {
+        panic("core version mismatch");
+    }
+    if version.minor != 2u64 {
+        panic("core version mismatch");
+    }
+    if version.patch != 3u64 {
+        panic("core version mismatch");
+    }
+    if version.prerelease.len() != 2u64 {
+        panic("identifier count mismatch");
+    }
+    if version.build.len() != 2u64 {
+        panic("identifier count mismatch");
+    }
+    if format(&version).as_str() != "1.2.3-alpha.1+build.5" {
+        panic("format mismatch");
+    }
+}
+
+fn test_official_precedence_vectors() {
+    assert_order("1.0.0-alpha", "1.0.0-alpha.1");
+    assert_order("1.0.0-alpha.1", "1.0.0-alpha.beta");
+    assert_order("1.0.0-alpha.beta", "1.0.0-beta");
+    assert_order("1.0.0-beta", "1.0.0-beta.2");
+    assert_order("1.0.0-beta.2", "1.0.0-beta.11");
+    assert_order("1.0.0-beta.11", "1.0.0-rc.1");
+    assert_order("1.0.0-rc.1", "1.0.0");
+}
+
+fn test_build_metadata_does_not_affect_precedence() {
+    let a = must_parse("1.0.0+001");
+    let b = must_parse("1.0.0+20130313144700");
+    if compare(&a, &b) != 0i32 {
+        panic("build metadata affected precedence");
+    }
+    if !equals(&a, &b) {
+        panic("semver equality mismatch");
+    }
+}
+
+fn test_invalid_inputs() {
+    match parse("01.2.3") {
+        Err(SemverError::InvalidNumber(_)) => {}
+        _ => panic("leading zero core must fail"),
+    }
+    match parse("1.2.3-01") {
+        Err(SemverError::InvalidIdentifier(_)) => {}
+        _ => panic("leading zero prerelease must fail"),
+    }
+    match parse("1.2") {
+        Err(SemverError::InvalidCore) => {}
+        _ => panic("missing patch must fail"),
+    }
+    match parse("1.2.3-") {
+        Err(SemverError::InvalidIdentifier(_)) => {}
+        _ => panic("empty prerelease must fail"),
+    }
+}
+
+fn test_requirement_matching() {
+    let version = must_parse("1.2.3");
+    match matches(&version, "1.2.3") {
+        Ok(true) => {}
+        _ => panic("exact requirement mismatch"),
+    }
+    match matches(&version, "^1.2.0") {
+        Ok(true) => {}
+        _ => panic("caret requirement mismatch"),
+    }
+    match matches(&version, "~1.2.0") {
+        Ok(true) => {}
+        _ => panic("tilde requirement mismatch"),
+    }
+    match matches(&version, ">=1.0.0,<2.0.0") {
+        Ok(true) => {}
+        _ => panic("comparison set mismatch"),
+    }
+    match matches(&version, ">=2.0.0") {
+        Ok(false) => {}
+        _ => panic("negative comparison mismatch"),
+    }
+}
+
+/// A hyphen inside BUILD metadata is not a prerelease delimiter.
+///
+/// SemVer allows `-` in a build identifier, so `1.2.3+build-alpha` has no prerelease at all. The
+/// parser looked for the first `-` anywhere in the input, found the one after `+`, and then tried
+/// to read a prerelease running from index 11 to index 5 -- a backwards range. A dash delimits a
+/// prerelease only when it comes BEFORE the plus, or when there is no plus.
+fn test_hyphen_inside_build_metadata() {
+    match parse("1.2.3+build-alpha") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3+build-alpha" {
+                panic("build metadata with a hyphen did not round-trip");
+            }
+            if version.prerelease.len() != 0u64 {
+                panic("a hyphen after '+' is not a prerelease");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3+build-alpha is a valid version");
+        }
+    }
+    match parse("1.2.3+build.abc-def") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3+build.abc-def" {
+                panic("dotted build metadata with a hyphen did not round-trip");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3+build.abc-def is a valid version");
+        }
+    }
+}
+
+/// A hyphen may also appear INSIDE a prerelease identifier, and there may be one on each side of
+/// the plus. The first dash is the delimiter; the rest are content.
+fn test_hyphens_in_both_sections() {
+    match parse("1.2.3-alpha-beta+build-one") {
+        Ok(version) => {
+            if format(&version).as_str() != "1.2.3-alpha-beta+build-one" {
+                panic("hyphens on both sides did not round-trip");
+            }
+            if version.prerelease.len() != 1u64 {
+                panic("alpha-beta is one identifier");
+            }
+        }
+        Err(_) => {
+            panic("1.2.3-alpha-beta+build-one is a valid version");
+        }
+    }
+}
+
+/// **The caret upper bound at the top of the range.** `^18446744073709551615.0.0` is well formed
+/// and so is the version it is matched against, but computing `major + 1` overflowed and integer
+/// overflow *traps* — the process aborted rather than answering. The bound is now `None`, which is
+/// what it actually is: no representable version reaches `18446744073709551616.0.0`.
+fn test_caret_upper_bound_at_uint64_max() {
+    assert_matches("18446744073709551615.0.0", "^18446744073709551615.0.0", true);
+}
+
+/// The same boundary on the other two caret branches, because the increment sits in a different
+/// field in each.
+fn test_caret_upper_bound_on_minor_and_patch() {
+    assert_matches("0.18446744073709551615.0", "^0.18446744073709551615.0", true);
+    assert_matches("0.0.18446744073709551615", "^0.0.18446744073709551615", true);
+}
+
+/// The tilde bound increments the minor, so `~x.MAX.z` is its overflow case.
+fn test_tilde_upper_bound_at_uint64_max() {
+    assert_matches("1.18446744073709551615.7", "~1.18446744073709551615.0", true);
+}
+
+/// **The control.** An unbounded-above range must not swallow versions an ordinary range excludes.
+/// This is what a saturating fix would have broken: a representable upper bound still excludes.
+fn test_ordinary_caret_and_tilde_ranges_still_exclude() {
+    assert_matches("1.9.9", "^1.2.3", true);
+    assert_matches("2.0.0", "^1.2.3", false);
+    assert_matches("0.2.9", "^0.2.3", true);
+    assert_matches("0.3.0", "^0.2.3", false);
+    assert_matches("0.0.3", "^0.0.3", true);
+    assert_matches("0.0.4", "^0.0.3", false);
+    assert_matches("1.2.9", "~1.2.3", true);
+    assert_matches("1.3.0", "~1.2.3", false);
+}
+
+fn assert_matches(version: &str, requirement: &str, expected: Bool) {
+    let parsed = parse(version).unwrap();
+    match matches(&parsed, requirement) {
+        Ok(hit) => {
+            if hit != expected {
+                panic("the requirement did not decide the version as expected");
+            }
+        }
+        Err(_) => {
+            panic("both the version and the requirement are well formed");
+        }
+    }
+}

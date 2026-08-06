@@ -1,0 +1,47 @@
+use stark_fmt::to_string;
+use stark_fmt::Line;
+
+struct Version {
+    major: Int32,
+    minor: Int32,
+}
+
+impl Display for Version {
+    fn fmt(&self) -> String {
+        let mut out = String::new();
+        let major = self.major.fmt();
+        out.push_str(major.as_str());
+        out.push_str(".");
+        let minor = self.minor.fmt();
+        out.push_str(minor.as_str());
+        out
+    }
+}
+
+fn main() {
+    let name: String = "stark".to_string();
+    let count: Int32 = 42;
+    let ratio: Float64 = 0.75;
+    let ok: Bool = true;
+
+    let msg = Line::new()
+        .text("pkg=")
+        .value(&name)
+        .text(" n=")
+        .value(&count)
+        .text(" r=")
+        .value(&ratio)
+        .text(" ok=")
+        .value(&ok)
+        .done();
+
+    println(msg.as_str());
+
+    // A user type with its own `Display` impl goes through the same generic method.
+    let version = Version { major: 0, minor: 1 };
+    let line = Line::new().text("v=").value(&version).done();
+    println(line.as_str());
+
+    // The value was borrowed, not consumed, so it is still usable here.
+    println(to_string(&version).as_str());
+}

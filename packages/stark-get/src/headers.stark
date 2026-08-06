@@ -1,0 +1,92 @@
+//! `--header "Name: Value"` parsing.
+//!
+//! **The validation is `stark-http-core`'s, not this file's.** `header` is the only way to build a
+//! `Header`, and it rejects an invalid name, an invalid value, and any control character -- which
+//! is what makes CR/LF injection unrepresentable rather than merely checked for here. This module
+//! only SPLITS `Name: Value` and hands both halves over. Re-implementing the character rules would
+//! create a second answer to "is this header legal", and the two would drift.
+
+use stark_http_core::header;
+use stark_http_core::Header;
+use stark_http_core::HttpError;
+
+/// Why a `--header` argument could not become a header:
+///
+/// * `MissingColon` -- no `:` at all, so the argument is not a header;
+/// * `InvalidName` -- the name was empty, or held a byte a header name may not;
+/// * `InvalidValue` -- the value held a byte a header value may not, which includes CR and LF.
+///
+/// (Written as one comment on the type because DEV-156 evicts a variant's own doc comment to after
+/// the enum, where it documents nothing.)
+pub enum HeaderArgError {
+    MissingColon,
+    InvalidName,
+    InvalidValue,
+}
+
+pub fn header_arg_error_text(error: &HeaderArgError) -> String {
+    match *error {
+        HeaderArgError::MissingColon => {
+            String::from("expected 'Name: Value'")
+        }
+        HeaderArgError::InvalidName => String::from("invalid header name"),
+        HeaderArgError::InvalidValue => String::from("invalid header value"),
+    }
+}
+
+/// Split `Name: Value` and validate both halves.
+///
+/// The split is at the FIRST colon: a value may legitimately contain one (`Host: example.com:8080`,
+/// any absolute URL), so splitting at the last would corrupt those.
+///
+/// Optional whitespace after the colon is stripped, per RFC 7230's `OWS`. Whitespace inside the
+/// name is not: a name with a space is invalid, and trimming it would accept a header the peer
+/// would reject.
+pub fn parse_header_arg(argument: &str) -> Result<stark_http_core::Header, HeaderArgError> {
+    let bytes = argument.bytes();
+    let n = bytes.len();
+    let mut colon = n;
+    let mut i = 0u64;
+    while i < n {
+        if bytes[i] == 58u8 {
+            colon = i;
+            i = n;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    if colon == n {
+        return Err(HeaderArgError::MissingColon);
+    }
+
+    let name = argument.substring(0u64, colon);
+
+    // Strip the optional whitespace after the colon (RFC 7230 `OWS`). Only leading OWS is stripped:
+    // a value's own trailing spaces are its content as far as this program is concerned, and
+    // `stark_http_core::header` is the authority on whether they are legal.
+    let mut value_start = colon + 1u64;
+    let mut scanning = true;
+    while scanning {
+        if value_start >= n {
+            scanning = false;
+        } else {
+            let byte = bytes[value_start];
+            if byte == 32u8 || byte == 9u8 {
+                value_start = value_start + 1u64;
+            } else {
+                scanning = false;
+            }
+        }
+    }
+    let value = argument.substring(value_start, n);
+
+    match stark_http_core::header(name, value) {
+        Ok(entry) => Ok(entry),
+        Err(error) => match error {
+            stark_http_core::HttpError::InvalidHeaderName => Err(HeaderArgError::InvalidName),
+            // `header` returns exactly these two; the rest of `HttpError` belongs to the request
+            // flow and cannot arrive from a header construction.
+            _ => Err(HeaderArgError::InvalidValue),
+        }
+    }
+}

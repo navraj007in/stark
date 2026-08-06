@@ -1,0 +1,8 @@
+{
+  "name": "stark-time-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_time": { "package": "stark-time", "path": "../stark-time", "version": "0.1.0" }
+  }
+}

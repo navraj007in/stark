@@ -8,7 +8,7 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 24 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 28 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
 
 ### Where the compiler actually is
 
@@ -193,16 +193,19 @@ Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](s
 
 ### First-party packages
 
-The repository carries 24 packages written in STARK under [`packages/`](packages/), each with its
+The repository carries 28 packages written in STARK under [`packages/`](packages/), each with its
 own `starkpkg.json`, lock file and test suite, and each exercised by a consumer package that must
 actually *call* the surface it declares.
 
 | Area | Packages |
 | --- | --- |
 | Encoding and text | `stark-ascii`, `stark-base64`, `stark-hex`, `stark-percent`, `stark-checksum`, `stark-uuid` |
+| Formatting | `stark-fmt` |
 | Data formats | `stark-json`, `stark-csv`, `stark-form`, `stark-mime`, `stark-query` |
 | Paths and URLs | `stark-path`, `stark-glob`, `stark-url` |
 | Host access | `stark-time`, `stark-env`, `stark-io`, `stark-random` |
+| Command line | `stark-args` |
+| Versioning | `stark-semver` |
 | Networking | `stark-net` (TCP + DNS), `stark-tls` |
 | HTTP | `stark-http-core`, `stark-http-parser`, `stark-http-serialize`, `stark-http-client` |
 
@@ -624,7 +627,7 @@ The following areas are working:
 * compiler-backed language services over LSP (Gate C8, candidate-complete);
 * lock files (`stark.lock`) with SHA-256 content hashing;
 * offline and locked build modes;
-* 24 first-party packages written in STARK, each with a consumer package that calls its declared
+* 28 first-party packages written in STARK, each with a consumer package that calls its declared
   surface;
 * manifest-declared host capabilities backed by native provider crates — clock, filesystem,
   environment, random, TCP/DNS and TLS — with cross-provider ownership transfer and affine host
@@ -785,7 +788,7 @@ cargo doc --no-deps
 
 The repository includes:
 
-* 113 extracted specification fixtures, each triaged in
+* 116 extracted specification fixtures, each triaged in
   [`STARKLANG/tests/spec-fixtures/manifest.toml`](STARKLANG/tests/spec-fixtures/manifest.toml);
 * parser and semantic conformance tests;
 * valid-program suites;

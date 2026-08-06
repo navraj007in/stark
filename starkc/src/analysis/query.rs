@@ -738,6 +738,15 @@ impl<'a, 'q> AstIndexer<'a, 'q> {
         let module = item.and_then(|item| self.index.node(item).and_then(|node| node.module));
         self.index.add_node(handle, source, expr.span, item, module);
         match &expr.kind {
+            // WP-FMT-001: a field's expression is an ordinary expression and belongs in the index,
+            // so go-to-definition and find-references work on a name used inside `f"..."`.
+            ast::ExprKind::FormatString { segments } => {
+                for segment in segments {
+                    if let ast::FormatSegment::Field { expr, .. } = segment {
+                        self.expr(*expr, source, item);
+                    }
+                }
+            }
             ast::ExprKind::Unary { operand, .. } | ast::ExprKind::Try(operand) => {
                 self.expr(*operand, source, item)
             }
@@ -1113,6 +1122,15 @@ impl<'a, 'q> HirIndexer<'a, 'q> {
         let expr = self.hir.expr(id);
         self.index.add_node(handle, source, expr.span, item, module);
         match &expr.kind {
+            // WP-FMT-001: same reason as the AST walk above — an interpolated name is a real
+            // reference and editor features must find it.
+            hir::ExprKind::FormatString { segments } => {
+                for segment in segments {
+                    if let hir::FormatSegment::Field { expr, .. } = segment {
+                        self.expr(*expr, source, item, module);
+                    }
+                }
+            }
             hir::ExprKind::Path { path, res, .. } => self.resolution(*res, source, path.span),
             hir::ExprKind::Unary { operand, .. } | hir::ExprKind::Try(operand) => {
                 self.expr(*operand, source, item, module)

@@ -104,7 +104,18 @@ fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never T
 document. An implementation claiming the Core profile must provide these
 canonical items and the primitive/standard-type implementations explicitly
 required here. Additional traits or implementations are extensions and may
-not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+not change Core resolution or coherence.
+
+**STD-TRAIT-002.** A Core trait identity is an *ordinary* trait for every
+purpose a program can observe: its declared methods are callable through a
+generic bound on exactly the terms a user-declared trait's are
+(03-Type-System.md, TYPE-METHOD-003), with the same signatures shown here, the
+same receiver forms, the same ambiguity rules, and no priority derived from
+being compiler-known. An implementation MAY represent these traits specially —
+it must, to connect them to the language hooks below — but that representation
+must not be observable as a difference in method visibility, selection, or
+diagnostics. A conforming implementation accepts
+`fn show<T: Display>(x: &T) -> String { x.fmt() }`. The semantic laws of `Eq`, `Ord`,
 and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
 by C2.9.
 
@@ -583,12 +594,75 @@ number of bytes accepted; callers must handle a short write. Dropping an open
 file attempts close but cannot surface a new language trap.
 
 **STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
-dispatch. `print`/`eprint` append exactly the bytes produced by the argument's
+dispatch. Its receiver is `&self`: formatting **borrows** the value and never
+consumes it, so a value remains usable after being formatted — including an
+affine or resource-bearing one, for which any other receiver form would make
+`Display` unusable. A `T: Display` bound therefore makes `x.fmt()` callable on
+an owned parameter without moving it (03-Type-System.md, TYPE-METHOD-003). `print`/`eprint` append exactly the bytes produced by the argument's
 `Display` (see PRINT-DISPLAY-001); `println`/`eprintln` append those bytes
 followed by byte `0x0A`, independent of host newline convention. Successful
 calls preserve program order. The process contract flushes submitted
 stdout/stderr before reporting normal return or a language trap; a stream
 write/flush failure is a host/process failure.
+
+**STD-FORMAT-002.** An interpolated string literal (`f"..."`,
+01-Lexical-Grammar.md LEX-FORMAT-001) evaluates to a newly owned `String`. For
+each segment in source order:
+
+1. a literal segment contributes its decoded text;
+2. a field evaluates its expression **exactly once**, renders it, and appends
+   the rendered text.
+
+Fields are evaluated strictly left to right, and no expression is evaluated a
+second time to determine a width, a type or anything else. A field **borrows**
+what it renders: `Display::fmt` takes `&self` (STD-FORMAT-001), so a place
+expression is not consumed, and a value remains usable after being
+interpolated — including a non-`Copy` or affine one. A field whose expression
+is a temporary destroys that temporary exactly once, after its bytes have been
+appended.
+
+`f"{value}"` with no specification is `value.fmt()`'s text appended to the
+output. Selection of `Display` is ordinary trait resolution
+(03-Type-System.md TYPE-METHOD-003): a compiler-known trait receives no
+priority, and a generic parameter must carry a bound that actually supplies
+`fmt`.
+
+**STD-FORMAT-003.** A format specification is checked against the field's type
+at compile time; an unsupported pairing is rejected, never deferred to run
+time. `b`, `o`, `x` and `X` require an integer type; `.precision` and `f`
+require `Float32` or `Float64`; a sign, `#` or zero-padding requires a numeric
+type. Padding alone applies to any `Display` type. Precision on a string is
+rejected: Core v1 defines no string truncation, because it would require a
+scalar-versus-grapheme-versus-byte ruling that does not exist.
+
+**STD-FORMAT-004.** Rendering is byte-exact:
+
+- **Width** is counted in Unicode scalar values — not bytes, and not terminal
+  cells. It never truncates: a value at least as wide as the field is
+  unchanged. Text defaults to left alignment in a wider field and a numeric
+  value to right. When centring needs an odd number of fill characters, the
+  extra one goes on the **right**.
+- **Sign** precedes any base prefix, which precedes zero-padding, which
+  precedes the digits: `-00042`, `0x000000ff`. `+` gives non-negatives a `+`;
+  ` ` gives them a space; `-` and an unwritten sign give them nothing.
+- **Bases** render the magnitude with a leading `-` when negative: `-255` in
+  hexadecimal is `-ff`. A two's-complement bit pattern is never exposed.
+  Alternate prefixes are `0b`, `0o` and `0x`; `0x` is used for both hexadecimal
+  cases, since the prefix names the base and the type character chooses the
+  digit case.
+- **Precision** is exactly that many digits after the point, rounding to
+  nearest with exact halfway cases going to even. `Float32` is rendered at its
+  declared width, never widened first. A non-finite value ignores precision
+  entirely: `NaN`, `inf` and `-inf` render as those three spellings.
+
+No formatting is locale-sensitive, and none contains grouping, currency or a
+trailing newline.
+
+**STD-FORMAT-005.** Interpolation is human-readable formatting. It performs no
+escaping of any kind and is not a serialisation format. Building JSON, HTML,
+SQL, shell or URL text by interpolation is incorrect for any value that can
+contain the target syntax's metacharacters; use a serialiser that owns the
+escaping rules.
 
 **PRINT-DISPLAY-001.** `print`, `println`, `eprint`, and `eprintln` are
 implementation-provided generic functions with the signatures

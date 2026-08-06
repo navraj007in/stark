@@ -252,6 +252,7 @@ ArgumentList ::= Expression (',' Expression)* ','?
 
 PrimaryExpression ::= PathExpression
                     | Literal
+                    | InterpolatedString
                     | '(' Expression ')'    // Grouping
                     | TupleLiteral
                     | ArrayLiteral
@@ -320,6 +321,13 @@ Literal ::= INTEGER
           | STRING
           | CHAR
           | BOOLEAN
+
+// EXPR-FORMAT-001. An interpolated string literal (01-Lexical-Grammar.md,
+// FORMAT_STRING). Its type is always `String`, and its fields' expressions are
+// ordinary expressions of this grammar — an interpolation introduces no scope
+// and no new expression forms. It is neither a macro nor a call: the segments
+// are split at compile time, so no format string exists at run time.
+InterpolatedString ::= FORMAT_STRING
 
 TupleLiteral ::= '(' ')'                                  // Unit value
                | '(' Expression ',' ')'                   // Single-element tuple

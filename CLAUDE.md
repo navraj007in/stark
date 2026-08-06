@@ -8,7 +8,7 @@ optional tensor/model extension for AI/ML deployment. The `starkc/` implementati
 Core v1 front end (lexer, parser, name resolution, type/borrow checking), a reference interpreter,
 a MIR interpreter, native compilation on Linux/macOS/Windows, a tensor extension with bounded ONNX
 import/verify/deploy, a formatter, test runner, documentation generator, and an LSP server. Beyond
-the compiler there are 24 first-party packages under `packages/`, capability-declared host access
+the compiler there are 28 first-party packages under `packages/`, capability-declared host access
 backed by native provider crates, and an installable toolchain — see "Implementation Status" below
 for exactly what is closed vs. still open. It is not "specification-stage"; do not describe it
 that way.
@@ -121,7 +121,7 @@ conflict table.
   `CORE-V1-*.md` semantic chapters normative; concise and generated views non-normative).
 - Compiler: front end, semantic analysis and execution are done (`starkc/` — lexer, parser, name
   resolver, type/flow/borrow checker, a typed-HIR reference interpreter and a MIR interpreter; the
-  113-fixture conformance suite is green). **Native compilation through generated Rust works in
+  116-fixture conformance suite is green). **Native compilation through generated Rust works in
   debug and release on Linux, macOS and Windows** (Gate C7), over a *qualified* standard-library
   subset — Gate C6 audited 87 methods and verified an invocation for 59. Programs are compared
   across four engine configurations (HIR interpreter, MIR interpreter, native debug, native
@@ -131,7 +131,7 @@ conflict table.
   source formatter, a naming-convention test runner, a documentation generator, and an LSP server
   with a VS Code extension. The Python code in `STARKLANG/compiler/` and `Practice/Interpreter/`
   are pre-pivot prototypes and must not be extended for Core v1 work.
-- Packages and host access: **24 first-party packages live under `packages/`** (moved there
+- Packages and host access: **28 first-party packages live under `packages/`** (moved there
   2026-08-04), each with a `*-consumer` package that must actually *call* its declared surface.
   A package reaching outside the process declares a capability in `starkpkg.json` — `clock`,
   `filesystem`, `process.env`/`process.args`, `random`, `tcp`/`dns`, `tls` — satisfied at build
@@ -223,7 +223,7 @@ re-deriving the rules:
 **Status**: STARK is a **pre-alpha general-purpose language with a working implementation**,
 developed against the application-platform roadmap in `ROADMAP.md`. Core v1 specification
 complete; front end, semantic analysis, execution, native compilation (Gate C7, three Tier-1
-platforms) and compiler-backed language services done, over a qualified subset. 24 first-party
+platforms) and compiler-backed language services done, over a qualified subset. 28 first-party
 packages under `packages/`, capability-declared host access with native providers, an HTTP/1.1 and
 HTTPS client written in STARK (HC0–HC13, closed 2026-08-03), and an installable toolchain
 (Installer Phase I). The **tensor/ONNX extension is a deferred research track** on Gate 7's terms.

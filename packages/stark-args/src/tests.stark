@@ -1,0 +1,175 @@
+use super::flag;
+use super::is_present;
+use super::option;
+use super::option_with_default;
+use super::parse;
+use super::repeated_option;
+use super::required_option;
+use super::usage;
+use super::value;
+use super::values;
+use super::ArgError;
+use super::ArgSpec;
+
+fn specs() -> Vec<ArgSpec> {
+    let mut out = Vec::new();
+    out.push(flag("verbose", Some('v'), "verbose", "enable verbose output"));
+    out.push(option("limit", Some('l'), "limit", "maximum count"));
+    out.push(option_with_default("format", None, "format", "text", "output format"));
+    out.push(repeated_option("tag", Some('t'), "tag", "tag value"));
+    out
+}
+
+fn args(items: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0u64;
+    while i < items.len() {
+        out.push(String::from(items[i]));
+        i = i + 1u64;
+    }
+    out
+}
+
+fn test_long_flags_options_defaults_repeats_and_positionals() {
+    let input = args(&["--verbose", "--limit=10", "--tag", "a", "--tag=b", "file.txt"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Ok(parsed) => {
+            if !is_present(&parsed, "verbose") {
+                panic("verbose flag missing");
+            }
+            match value(&parsed, "limit") {
+                Some(v) => {
+                    if v.as_str() != "10" {
+                        panic("limit mismatch");
+                    }
+                }
+                None => panic("limit missing"),
+            }
+            match value(&parsed, "format") {
+                Some(v) => {
+                    if v.as_str() != "text" {
+                        panic("default mismatch");
+                    }
+                }
+                None => panic("default missing"),
+            }
+            let tag_values = values(&parsed, "tag");
+            if tag_values.len() != 2u64 || tag_values[0u64].as_str() != "a" || tag_values[1u64].as_str() != "b" {
+                panic("tag values mismatch");
+            }
+            if parsed.positionals.len() != 1u64 || parsed.positionals[0u64].as_str() != "file.txt" {
+                panic("positional mismatch");
+            }
+        }
+        Err(_) => panic("parse should succeed"),
+    }
+}
+
+fn test_short_flags_and_options() {
+    let input = args(&["-v", "-l", "5"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Ok(parsed) => {
+            if !is_present(&parsed, "verbose") {
+                panic("short flag missing");
+            }
+            match value(&parsed, "limit") {
+                Some(v) => {
+                    if v.as_str() != "5" {
+                        panic("short option mismatch");
+                    }
+                }
+                None => panic("short option missing"),
+            }
+        }
+        Err(_) => panic("short parse should succeed"),
+    }
+}
+
+fn test_terminator_stops_option_parsing() {
+    let input = args(&["--", "--verbose", "-l"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Ok(parsed) => {
+            if is_present(&parsed, "verbose") {
+                panic("terminator should stop option parsing");
+            }
+            if parsed.positionals.len() != 2u64 || parsed.positionals[0u64].as_str() != "--verbose" {
+                panic("terminator positionals mismatch");
+            }
+        }
+        Err(_) => panic("terminator parse should succeed"),
+    }
+}
+
+fn test_unknown_option_names_the_token() {
+    let input = args(&["--wat"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Err(ArgError::UnknownOption(token)) => {
+            if token.as_str() != "--wat" {
+                panic("unknown token mismatch");
+            }
+        }
+        Err(_) => panic("wrong error"),
+        Ok(_) => panic("unknown option should fail"),
+    }
+}
+
+fn test_missing_value_names_the_option() {
+    let input = args(&["--limit"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Err(ArgError::MissingValue(token)) => {
+            if token.as_str() != "--limit" {
+                panic("missing value token mismatch");
+            }
+        }
+        Err(_) => panic("wrong error"),
+        Ok(_) => panic("missing value should fail"),
+    }
+}
+
+fn test_duplicate_non_repeated_option_is_rejected() {
+    let input = args(&["--limit", "1", "--limit", "2"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Err(ArgError::DuplicateOption(name)) => {
+            if name.as_str() != "limit" {
+                panic("duplicate option name mismatch");
+            }
+        }
+        Err(_) => panic("wrong error"),
+        Ok(_) => panic("duplicate option should fail"),
+    }
+}
+
+fn test_required_option_is_enforced() {
+    let mut required = Vec::new();
+    required.push(required_option("output", Some('o'), "output", "output path"));
+    let input = args(&[]);
+    match parse(required.as_slice(), input.as_slice()) {
+        Err(ArgError::RequiredOptionMissing(name)) => {
+            if name.as_str() != "output" {
+                panic("required option name mismatch");
+            }
+        }
+        Err(_) => panic("wrong error"),
+        Ok(_) => panic("required option should fail"),
+    }
+}
+
+fn test_short_clustering_is_not_v0_1() {
+    let input = args(&["-vl"]);
+    match parse(specs().as_slice(), input.as_slice()) {
+        Err(ArgError::UnknownOption(token)) => {
+            if token.as_str() != "-vl" {
+                panic("cluster token mismatch");
+            }
+        }
+        Err(_) => panic("wrong error"),
+        Ok(_) => panic("cluster should fail"),
+    }
+}
+
+fn test_usage_is_generated_from_specs() {
+    let text = usage("tool", specs().as_slice());
+    if text.as_str() != "Usage: tool [options]\n  -v, --verbose  enable verbose output\n  -l, --limit <value>  maximum count\n      --format <value>  output format\n  -t, --tag <value>  tag value\n" {
+        panic("usage mismatch");
+    }
+}

@@ -1,0 +1,476 @@
+//! Tests for everything that does not need the network.
+//!
+//! The parts that decide what a command line MEANS, what a header argument becomes, and whether a
+//! body is text are all pure, and all of them are where a mistake is silent. The network path is
+//! proved separately by the consumer against a live peer.
+//!
+//! **The body decoder is fed hostile input on purpose.** It reads bytes from a remote peer, and the
+//! package-authoring rule for that case is that ordinary malformed-input tests are necessary and
+//! not sufficient: the tests below aim at the specific boundaries -- over-long encodings,
+//! surrogates, truncation at the very end of the buffer -- because a decoder that accepts those
+//! also passes every "is it rejected" test written against obviously-broken input.
+
+use super::cli::parse_max_body;
+use super::cli::refused_argument;
+use super::cli::scheme_is_supported;
+use super::headers::parse_header_arg;
+use super::headers::HeaderArgError;
+use super::render::header_is_sensitive;
+use super::render::redacted_request_summary;
+use super::render::status_is_error;
+use super::utf8::decode;
+use super::utf8::utf8_error_offset;
+use super::utf8::Utf8Error;
+
+// --------------------------------------------------------------------------------- the schemes --
+
+fn test_only_http_and_https_are_accepted() {
+    if !scheme_is_supported("http://example.com") {
+        panic("http is supported");
+    }
+    if !scheme_is_supported("https://example.com") {
+        panic("https is supported");
+    }
+    // RFC 3986 makes the scheme case-insensitive, so this is the same URL.
+    if !scheme_is_supported("HTTPS://example.com") {
+        panic("an uppercase scheme is the same scheme");
+    }
+    if scheme_is_supported("file:///etc/passwd") {
+        panic("file:// must not be fetched");
+    }
+    if scheme_is_supported("ftp://example.com") {
+        panic("ftp:// must not be fetched");
+    }
+    // A prefix that merely starts with the letters is not the scheme.
+    if scheme_is_supported("httpx://example.com") {
+        panic("httpx is not http");
+    }
+    if scheme_is_supported("example.com") {
+        panic("a bare host has no scheme");
+    }
+}
+
+// ------------------------------------------------------------------------------ refused options --
+
+/// `--insecure` and `--connect-timeout` must be answered with a REASON. Reporting them as unknown
+/// options would read like a spelling mistake and send the caller looking for the right spelling.
+fn test_refused_options_explain_themselves() {
+    let mut args: Vec<String> = Vec::new();
+    args.push(String::from("--insecure"));
+    args.push(String::from("https://example.com"));
+    match refused_argument(args.as_slice()) {
+        Some(_) => {}
+        None => panic("--insecure must be refused with a reason"),
+    }
+
+    let mut short: Vec<String> = Vec::new();
+    short.push(String::from("-k"));
+    match refused_argument(short.as_slice()) {
+        Some(_) => {}
+        None => panic("-k must be refused with a reason"),
+    }
+
+    let mut timeout: Vec<String> = Vec::new();
+    timeout.push(String::from("--connect-timeout"));
+    timeout.push(String::from("5"));
+    match refused_argument(timeout.as_slice()) {
+        Some(_) => {}
+        None => panic("--connect-timeout must be refused while DEV-165 is open"),
+    }
+
+    let mut ordinary: Vec<String> = Vec::new();
+    ordinary.push(String::from("--include"));
+    ordinary.push(String::from("https://example.com"));
+    match refused_argument(ordinary.as_slice()) {
+        Some(_) => panic("an ordinary command line must not be refused"),
+        None => {}
+    }
+}
+
+// ----------------------------------------------------------------------------------- --max-body --
+
+fn test_max_body_accepts_only_positive_byte_counts() {
+    match parse_max_body("1024") {
+        Some(value) => {
+            if value != 1024u64 {
+                panic("--max-body value mismatch");
+            }
+        }
+        None => panic("1024 is a valid --max-body"),
+    }
+    // Zero is refused rather than read as "unlimited", which would turn a typo into an unbounded
+    // read.
+    match parse_max_body("0") {
+        Some(_) => panic("zero is not a usable body limit"),
+        None => {}
+    }
+    match parse_max_body("") {
+        Some(_) => panic("an empty --max-body is not a number"),
+        None => {}
+    }
+    match parse_max_body("12x") {
+        Some(_) => panic("a trailing non-digit is not a number"),
+        None => {}
+    }
+    match parse_max_body("-1") {
+        Some(_) => panic("a negative body limit is not a number"),
+        None => {}
+    }
+    // The largest value that fits is accepted; one digit more must be REFUSED rather than
+    // overflow, because integer overflow traps and would abort the process.
+    match parse_max_body("18446744073709551615") {
+        Some(value) => {
+            if value != 18_446_744_073_709_551_615u64 {
+                panic("the widest limit did not round-trip");
+            }
+        }
+        None => panic("UInt64::MAX is a representable limit"),
+    }
+    match parse_max_body("18446744073709551616") {
+        Some(_) => panic("a limit past UInt64::MAX must be refused, not wrapped"),
+        None => {}
+    }
+    match parse_max_body("99999999999999999999999") {
+        Some(_) => panic("a long digit string must be refused, not trapped"),
+        None => {}
+    }
+}
+
+// -------------------------------------------------------------------------------- --header args --
+
+fn test_header_argument_splits_at_the_first_colon() {
+    match parse_header_arg("Accept: application/json") {
+        Ok(entry) => {
+            if entry.name.as_str() != "Accept" {
+                panic("header name mismatch");
+            }
+            if entry.value.as_str() != "application/json" {
+                panic("header value mismatch");
+            }
+        }
+        Err(_) => panic("'Accept: application/json' is a valid header"),
+    }
+
+    // A value may legitimately contain a colon; splitting at the LAST one would corrupt it.
+    match parse_header_arg("Host: example.com:8080") {
+        Ok(entry) => {
+            if entry.value.as_str() != "example.com:8080" {
+                panic("a colon inside the value must survive");
+            }
+        }
+        Err(_) => panic("'Host: example.com:8080' is a valid header"),
+    }
+
+    // Optional whitespace after the colon is stripped; several spaces are still optional
+    // whitespace.
+    match parse_header_arg("Accept:   text/plain") {
+        Ok(entry) => {
+            if entry.value.as_str() != "text/plain" {
+                panic("leading OWS must be stripped");
+            }
+        }
+        Err(_) => panic("padded OWS is still valid"),
+    }
+
+    // No colon at all.
+    match parse_header_arg("Accept") {
+        Ok(_) => panic("a header argument needs a colon"),
+        Err(HeaderArgError::MissingColon) => {}
+        Err(_) => panic("wrong error for a missing colon"),
+    }
+}
+
+/// **CR and LF must not be representable in a header.** This is request-splitting: a value carrying
+/// a newline would let a caller inject a second request into the stream. The rejection belongs to
+/// `stark-http-core`, which is the only thing that can build a `Header`; this pins that the
+/// rejection actually reaches here rather than being bypassed by the split above it.
+fn test_header_argument_rejects_control_characters() {
+    match parse_header_arg("X-Test: a\rb") {
+        Ok(_) => panic("a carriage return must not survive into a header"),
+        Err(HeaderArgError::InvalidValue) => {}
+        Err(_) => panic("wrong error for an embedded CR"),
+    }
+    match parse_header_arg("X-Test: a\nb") {
+        Ok(_) => panic("a line feed must not survive into a header"),
+        Err(HeaderArgError::InvalidValue) => {}
+        Err(_) => panic("wrong error for an embedded LF"),
+    }
+    match parse_header_arg("Bad Name: value") {
+        Ok(_) => panic("a space in a header name is invalid"),
+        Err(HeaderArgError::InvalidName) => {}
+        Err(_) => panic("wrong error for an invalid name"),
+    }
+    match parse_header_arg(": value") {
+        Ok(_) => panic("an empty header name is invalid"),
+        Err(HeaderArgError::InvalidName) => {}
+        Err(_) => panic("wrong error for an empty name"),
+    }
+}
+
+// ----------------------------------------------------------------------------------- redaction --
+
+/// The diagnostic summary must name a credential header without printing it.
+fn test_credentials_are_never_rendered() {
+    // Built through the package's own parser rather than as literals: it is the same path a real
+    // `--header` argument takes, so the redaction is proved against headers that actually arrived
+    // that way.
+    let mut headers = Vec::new();
+    headers.push(parse_header_arg("Authorization: Bearer super-secret-token").unwrap());
+    headers.push(parse_header_arg("Accept: application/json").unwrap());
+    let summary = redacted_request_summary("https://example.com", headers.as_slice());
+    if contains(summary.as_str(), "super-secret-token") {
+        panic("a credential must never reach a diagnostic");
+    }
+    if !contains(summary.as_str(), "Authorization") {
+        panic("the header's NAME is what the caller needs to see");
+    }
+    // A non-sensitive header's value is not printed either -- the summary names headers, it does
+    // not echo the request.
+    if contains(summary.as_str(), "application/json") {
+        panic("the summary names headers, it does not echo them");
+    }
+}
+
+/// Header names are case-insensitive, so the redaction cannot be dodged by changing the case.
+fn test_sensitivity_is_case_insensitive() {
+    if !header_is_sensitive("authorization") {
+        panic("authorization is sensitive");
+    }
+    if !header_is_sensitive("AUTHORIZATION") {
+        panic("an uppercase Authorization is the same header");
+    }
+    if !header_is_sensitive("Proxy-Authorization") {
+        panic("proxy credentials are credentials");
+    }
+    if !header_is_sensitive("Cookie") {
+        panic("a cookie is a credential");
+    }
+    if header_is_sensitive("Accept") {
+        panic("Accept carries nothing secret");
+    }
+}
+
+// ------------------------------------------------------------------------------- --fail-status --
+
+fn test_fail_status_covers_4xx_and_5xx_only() {
+    if status_is_error(200u16) {
+        panic("200 is not an error");
+    }
+    // A 3xx that reaches this point is one the client declined to follow, and is still an answer.
+    if status_is_error(301u16) {
+        panic("a redirect is not a failure status");
+    }
+    if !status_is_error(400u16) {
+        panic("400 is an error");
+    }
+    if !status_is_error(404u16) {
+        panic("404 is an error");
+    }
+    if !status_is_error(500u16) {
+        panic("500 is an error");
+    }
+    if !status_is_error(599u16) {
+        panic("599 is an error");
+    }
+    if status_is_error(600u16) {
+        panic("600 is not a defined error class");
+    }
+}
+
+// ---------------------------------------------------------------------------------- body decode --
+
+fn test_valid_utf8_decodes() {
+    let mut ascii: Vec<UInt8> = Vec::new();
+    ascii.push(104u8);
+    ascii.push(105u8);
+    match decode(ascii.as_slice()) {
+        Ok(text) => {
+            if text.as_str() != "hi" {
+                panic("ascii did not decode");
+            }
+        }
+        Err(_) => panic("ascii is valid UTF-8"),
+    }
+
+    // U+00E9 (two bytes), U+20AC (three), U+1F600 (four) -- one of each width, because the widths
+    // are separate branches.
+    let mut wide: Vec<UInt8> = Vec::new();
+    wide.push(0xC3u8);
+    wide.push(0xA9u8);
+    wide.push(0xE2u8);
+    wide.push(0x82u8);
+    wide.push(0xACu8);
+    wide.push(0xF0u8);
+    wide.push(0x9Fu8);
+    wide.push(0x98u8);
+    wide.push(0x80u8);
+    match decode(wide.as_slice()) {
+        Ok(text) => {
+            if text.as_str() != "é€😀" {
+                panic("multi-byte sequences did not decode");
+            }
+        }
+        Err(_) => panic("all three widths are valid UTF-8"),
+    }
+
+    let empty: Vec<UInt8> = Vec::new();
+    match decode(empty.as_slice()) {
+        Ok(text) => {
+            if text.len() != 0u64 {
+                panic("an empty body decodes to an empty string");
+            }
+        }
+        Err(_) => panic("an empty body is valid"),
+    }
+}
+
+/// **The Latin-1 trap.** `Char::from_u32(byte)` per byte accepts every one of these and returns the
+/// wrong text. A decoder that passes this test is doing UTF-8, not byte-widening.
+fn test_invalid_utf8_is_rejected_not_widened() {
+    // A bare continuation byte, with nothing to continue.
+    let mut orphan: Vec<UInt8> = Vec::new();
+    orphan.push(0x80u8);
+    match decode(orphan.as_slice()) {
+        Ok(_) => panic("a bare continuation byte is not text"),
+        Err(Utf8Error::UnexpectedContinuation(at)) => {
+            if at != 0u64 {
+                panic("the offset must point at the offending byte");
+            }
+        }
+        Err(_) => panic("wrong error for a bare continuation"),
+    }
+
+    // Over-long: 0xC0 0x80 is a two-byte encoding of NUL, which UTF-8 forbids because it gives a
+    // second spelling for a character that already has one -- historically a filter bypass.
+    let mut overlong: Vec<UInt8> = Vec::new();
+    overlong.push(0xC0u8);
+    overlong.push(0x80u8);
+    match decode(overlong.as_slice()) {
+        Ok(_) => panic("an over-long encoding must be rejected"),
+        Err(Utf8Error::OverlongEncoding(_)) => {}
+        Err(_) => panic("wrong error for an over-long encoding"),
+    }
+
+    // Over-long in three bytes: 0xE0 0x80 0x80 re-encodes NUL again.
+    let mut overlong3: Vec<UInt8> = Vec::new();
+    overlong3.push(0xE0u8);
+    overlong3.push(0x80u8);
+    overlong3.push(0x80u8);
+    match decode(overlong3.as_slice()) {
+        Ok(_) => panic("a three-byte over-long encoding must be rejected"),
+        Err(Utf8Error::OverlongEncoding(_)) => {}
+        Err(_) => panic("wrong error for a three-byte over-long encoding"),
+    }
+
+    // A surrogate half (U+D800), which is not a character and cannot appear in UTF-8.
+    let mut surrogate: Vec<UInt8> = Vec::new();
+    surrogate.push(0xEDu8);
+    surrogate.push(0xA0u8);
+    surrogate.push(0x80u8);
+    match decode(surrogate.as_slice()) {
+        Ok(_) => panic("a surrogate must be rejected"),
+        Err(Utf8Error::SurrogateCodepoint(_)) => {}
+        Err(_) => panic("wrong error for a surrogate"),
+    }
+
+    // Above U+10FFFF: 0xF5 cannot begin any valid sequence.
+    let mut too_high: Vec<UInt8> = Vec::new();
+    too_high.push(0xF5u8);
+    too_high.push(0x80u8);
+    too_high.push(0x80u8);
+    too_high.push(0x80u8);
+    match decode(too_high.as_slice()) {
+        Ok(_) => panic("a code point above U+10FFFF must be rejected"),
+        Err(Utf8Error::InvalidLeadingByte(_)) => {}
+        Err(_) => panic("wrong error for an out-of-range leading byte"),
+    }
+
+    // 0xFF is never valid anywhere in UTF-8.
+    let mut never: Vec<UInt8> = Vec::new();
+    never.push(0xFFu8);
+    match decode(never.as_slice()) {
+        Ok(_) => panic("0xFF is never valid UTF-8"),
+        Err(Utf8Error::InvalidLeadingByte(_)) => {}
+        Err(_) => panic("wrong error for 0xFF"),
+    }
+}
+
+/// **Truncation at the very end of the buffer.** This is the ordinary shape of a response that was
+/// cut short, and it is exactly where a decoder that trusts its leading byte reads past the end --
+/// which in this language is an out-of-bounds index, and traps.
+fn test_a_sequence_running_off_the_end_is_rejected_not_read_past() {
+    let mut two: Vec<UInt8> = Vec::new();
+    two.push(0xC3u8);
+    match decode(two.as_slice()) {
+        Ok(_) => panic("a two-byte sequence missing its continuation is truncated"),
+        Err(Utf8Error::TruncatedSequence(_)) => {}
+        Err(_) => panic("wrong error for a truncated two-byte sequence"),
+    }
+
+    let mut four: Vec<UInt8> = Vec::new();
+    four.push(0xF0u8);
+    four.push(0x9Fu8);
+    four.push(0x98u8);
+    match decode(four.as_slice()) {
+        Ok(_) => panic("a four-byte sequence missing its last byte is truncated"),
+        Err(Utf8Error::TruncatedSequence(_)) => {}
+        Err(_) => panic("wrong error for a truncated four-byte sequence"),
+    }
+
+    // Truncated because the next byte is not a continuation, rather than because the buffer ended.
+    let mut interrupted: Vec<UInt8> = Vec::new();
+    interrupted.push(0xC3u8);
+    interrupted.push(0x41u8);
+    match decode(interrupted.as_slice()) {
+        Ok(_) => panic("an interrupted sequence is not text"),
+        Err(Utf8Error::TruncatedSequence(_)) => {}
+        Err(_) => panic("wrong error for an interrupted sequence"),
+    }
+}
+
+/// The reported offset must point at the byte that broke, not at the start of the body -- it is the
+/// only thing that makes the error actionable on a large response.
+fn test_the_error_offset_locates_the_bad_byte() {
+    let mut body: Vec<UInt8> = Vec::new();
+    body.push(104u8);
+    body.push(105u8);
+    body.push(0xFFu8);
+    match decode(body.as_slice()) {
+        Ok(_) => panic("0xFF is not text"),
+        Err(error) => {
+            if utf8_error_offset(&error) != 2u64 {
+                panic("the offset must point at the offending byte");
+            }
+        }
+    }
+}
+
+fn contains(haystack: &str, needle: &str) -> Bool {
+    let h = haystack.bytes();
+    let n = needle.bytes();
+    if n.len() == 0u64 {
+        return true;
+    }
+    if n.len() > h.len() {
+        return false;
+    }
+    let last = h.len() - n.len();
+    let mut i = 0u64;
+    while i <= last {
+        let mut j = 0u64;
+        let mut same = true;
+        while j < n.len() {
+            if h[i + j] != n[j] {
+                same = false;
+                j = n.len();
+            } else {
+                j = j + 1u64;
+            }
+        }
+        if same {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}

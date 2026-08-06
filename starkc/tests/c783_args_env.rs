@@ -4,9 +4,10 @@
 //! and `06-Standard-Library.md` is untouched. Packet 5 makes them **read-only** — there is no
 //! environment-mutating function in the provider, and none may be added in C7.8.
 //!
-//! `stark-env` is also the first provider with a **non-empty status vocabulary**, so this is where
-//! ABI §12's channel one stops being vacuous. Every earlier slice had only `stark-time`, which
-//! declares no recoverable status and therefore treats every nonzero code as a contract violation.
+//! `stark-env` was the first provider with a **non-empty status vocabulary**, so this is where ABI
+//! §12's channel one stopped being vacuous. It is no longer the only one: `stark-time` declares
+//! `ClockUnavailable` and `OutOfRange` since gaining live `clock` linkage, and no first-party
+//! provider has an empty vocabulary today.
 
 use starkc::mir::ProviderCallId;
 use starkc::provider_abi::AbiParam;
@@ -186,8 +187,16 @@ fn declared_codes_are_recoverable_and_the_rest_are_violations() {
     }
 }
 
-/// `stark-time` still declares nothing, so the two providers demonstrate both shapes side by side.
-/// The vocabulary is per provider, not global.
+/// **The vocabulary is per provider, not global** — proved by collision rather than by contrast.
+///
+/// This used to demonstrate it with `stark-time` declaring nothing against `stark-env` declaring
+/// something. That contrast disappeared when `stark-time` gained real `clock` linkage and declared
+/// `ClockUnavailable`/`OutOfRange`, and no first-party provider has an empty vocabulary any more.
+///
+/// The replacement is stronger than the shape it lost: status **1** means `ClockUnavailable` to the
+/// clock and `InvalidName` to the environment. A global table could not hold both, so agreement on
+/// the number with disagreement on the meaning is exactly the property under test — and unlike an
+/// emptiness check, it cannot be satisfied by a provider that simply declares nothing.
 #[test]
 fn the_status_vocabulary_is_per_provider() {
     let clock = ProviderSet::select(
@@ -198,16 +207,29 @@ fn the_status_vocabulary_is_per_provider() {
     .expect("selects")
     .resolve("clock", "stark_time_monotonic_now_ns")
     .expect("resolves");
-
-    assert!(
-        clock.status_binding.is_empty(),
-        "stark-time declares no recoverable status"
-    );
-
     let env = selected()
         .resolve("process.env", "stark_env_var_fill")
         .expect("resolves");
-    assert!(!env.status_binding.is_empty());
+
+    let clock_one = clock
+        .status_binding
+        .declared_codes()
+        .find(|(code, _)| **code == 1)
+        .map(|(_, error)| error.clone())
+        .expect("the clock declares status 1");
+    let env_one = env
+        .status_binding
+        .declared_codes()
+        .find(|(code, _)| **code == 1)
+        .map(|(_, error)| error.clone())
+        .expect("the environment declares status 1");
+
+    assert_ne!(
+        clock_one, env_one,
+        "one status code must be free to mean different things to different providers"
+    );
+    assert_eq!(clock_one, "TimeError::ClockUnavailable");
+    assert_eq!(env_one, "ProcessError::InvalidName");
 }
 
 // ------------------------------------------------------- trust boundary --

@@ -1,0 +1,445 @@
+pub enum ArgError {
+    UnknownOption(String),
+    MissingValue(String),
+    DuplicateOption(String),
+    RequiredOptionMissing(String),
+    InvalidSpec(String),
+}
+
+pub struct ArgSpec {
+    pub name: String,
+    pub short: Option<Char>,
+    pub long: String,
+    pub takes_value: Bool,
+    pub required: Bool,
+    pub multiple: Bool,
+    pub has_default: Bool,
+    pub default_value: String,
+    pub help: String,
+}
+
+pub struct ParsedArg { pub name: String, pub value: String }
+
+pub struct ParsedArgs {
+    pub present: Vec<String>,
+    pub values: Vec<ParsedArg>,
+    pub defaults: Vec<ParsedArg>,
+    pub positionals: Vec<String>,
+}
+
+pub fn flag(name: &str, short: Option<Char>, long: &str, help: &str) -> ArgSpec {
+    ArgSpec {
+        name: String::from(name),
+        short,
+        long: String::from(long),
+        takes_value: false,
+        required: false,
+        multiple: false,
+        has_default: false,
+        default_value: String::new(),
+        help: String::from(help),
+    }
+}
+
+pub fn option(name: &str, short: Option<Char>, long: &str, help: &str) -> ArgSpec {
+    ArgSpec {
+        name: String::from(name),
+        short,
+        long: String::from(long),
+        takes_value: true,
+        required: false,
+        multiple: false,
+        has_default: false,
+        default_value: String::new(),
+        help: String::from(help),
+    }
+}
+
+pub fn required_option(name: &str, short: Option<Char>, long: &str, help: &str) -> ArgSpec {
+    ArgSpec {
+        name: String::from(name),
+        short,
+        long: String::from(long),
+        takes_value: true,
+        required: true,
+        multiple: false,
+        has_default: false,
+        default_value: String::new(),
+        help: String::from(help),
+    }
+}
+
+pub fn option_with_default(
+    name: &str,
+    short: Option<Char>,
+    long: &str,
+    default_value: &str,
+    help: &str,
+) -> ArgSpec {
+    ArgSpec {
+        name: String::from(name),
+        short,
+        long: String::from(long),
+        takes_value: true,
+        required: false,
+        multiple: false,
+        has_default: true,
+        default_value: String::from(default_value),
+        help: String::from(help),
+    }
+}
+
+pub fn repeated_option(name: &str, short: Option<Char>, long: &str, help: &str) -> ArgSpec {
+    ArgSpec {
+        name: String::from(name),
+        short,
+        long: String::from(long),
+        takes_value: true,
+        required: false,
+        multiple: true,
+        has_default: false,
+        default_value: String::new(),
+        help: String::from(help),
+    }
+}
+
+pub fn parse(specs: &[ArgSpec], args: &[String]) -> Result<ParsedArgs, ArgError> {
+    match validate_specs(specs) {
+        Ok(_) => {}
+        Err(error) => {
+            return Err(error);
+        }
+    }
+
+    let mut parsed = init_parsed(specs);
+    let mut i: UInt64 = 0u64;
+    let mut parsing_options = true;
+    while i < args.len() {
+        let token = args[i].as_str();
+        if parsing_options && token == "--" {
+            parsing_options = false;
+        } else if parsing_options && is_long_token(token) {
+            match parse_long(specs, &mut parsed, args, i) {
+                Ok(consumed) => {
+                    i = i + consumed;
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            }
+        } else if parsing_options && is_short_token(token) {
+            match parse_short(specs, &mut parsed, args, i) {
+                Ok(consumed) => {
+                    i = i + consumed;
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            }
+        } else {
+            parsed.positionals.push(String::from(token));
+        }
+        i = i + 1u64;
+    }
+
+    {
+        let required = require_present(specs, &parsed);
+        match required {
+            Ok(_) => {}
+            Err(error) => {
+                return Err(error);
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+pub fn is_present(parsed: &ParsedArgs, name: &str) -> Bool {
+    let mut i = 0u64;
+    while i < parsed.present.len() {
+        if parsed.present[i].as_str() == name {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+pub fn value(parsed: &ParsedArgs, name: &str) -> Option<String> {
+    let mut i = 0u64;
+    while i < parsed.values.len() {
+        if parsed.values[i].name.as_str() == name {
+            return Some(String::from(parsed.values[i].value.as_str()));
+        }
+        i = i + 1u64;
+    }
+
+    let mut j = 0u64;
+    while j < parsed.defaults.len() {
+        if parsed.defaults[j].name.as_str() == name {
+            return Some(String::from(parsed.defaults[j].value.as_str()));
+        }
+        j = j + 1u64;
+    }
+    None
+}
+
+pub fn values(parsed: &ParsedArgs, name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0u64;
+    while i < parsed.values.len() {
+        if parsed.values[i].name.as_str() == name {
+            out.push(String::from(parsed.values[i].value.as_str()));
+        }
+        i = i + 1u64;
+    }
+
+    if out.len() == 0u64 {
+        let mut j = 0u64;
+        while j < parsed.defaults.len() {
+            if parsed.defaults[j].name.as_str() == name {
+                out.push(String::from(parsed.defaults[j].value.as_str()));
+            }
+            j = j + 1u64;
+        }
+    }
+    out
+}
+
+pub fn usage(program: &str, specs: &[ArgSpec]) -> String {
+    let mut out = String::new();
+    out.push_str("Usage: ");
+    out.push_str(program);
+    out.push_str(" [options]");
+    out.push('\n');
+    let mut i = 0u64;
+    while i < specs.len() {
+        out.push_str("  ");
+        match specs[i].short {
+            Some(ch) => {
+                out.push('-');
+                out.push(ch);
+                out.push_str(", ");
+            }
+            None => {
+                out.push_str("    ");
+            }
+        }
+        out.push_str("--");
+        out.push_str(specs[i].long.as_str());
+        if specs[i].takes_value {
+            out.push_str(" <value>");
+        }
+        if specs[i].help.len() > 0u64 {
+            out.push_str("  ");
+            out.push_str(specs[i].help.as_str());
+        }
+        out.push('\n');
+        i = i + 1u64;
+    }
+    out
+}
+
+fn parse_long(specs: &[ArgSpec], parsed: &mut ParsedArgs, args: &[String], index: UInt64) -> Result<UInt64, ArgError> {
+    let token = args[index].as_str();
+    let without_prefix = token.substring(2u64, token.len());
+    let eq = find_byte(without_prefix, 61u8);
+    let name = match eq {
+        Some(pos) => without_prefix.substring(0u64, pos),
+        None => without_prefix,
+    };
+    let spec_index: UInt64;
+    match find_long_spec(specs, name) {
+        Some(found) => {
+            spec_index = found;
+        }
+        None => {
+            return Err(ArgError::UnknownOption(String::from(token)));
+        }
+    }
+    if specs[spec_index].takes_value {
+        match eq {
+            Some(pos) => {
+                let value_text = without_prefix.substring(pos + 1u64, without_prefix.len());
+                match set_option(specs, parsed, spec_index, value_text) {
+                    Ok(_) => Ok(0u64),
+                    Err(error) => Err(error),
+                }
+            }
+            None => {
+                if index + 1u64 >= args.len() {
+                    Err(ArgError::MissingValue(String::from(token)))
+                } else {
+                    match set_option(specs, parsed, spec_index, args[index + 1u64].as_str()) {
+                        Ok(_) => Ok(1u64),
+                        Err(error) => Err(error),
+                    }
+                }
+            }
+        }
+    } else {
+        if eq.is_some() {
+            Err(ArgError::InvalidSpec(String::from(token)))
+        } else {
+            match set_option(specs, parsed, spec_index, "true") {
+                Ok(_) => Ok(0u64),
+                Err(error) => Err(error),
+            }
+        }
+    }
+}
+
+fn parse_short(specs: &[ArgSpec], parsed: &mut ParsedArgs, args: &[String], index: UInt64) -> Result<UInt64, ArgError> {
+    let token = args[index].as_str();
+    if token.len() != 2u64 {
+        return Err(ArgError::UnknownOption(String::from(token)));
+    }
+    let ch = short_char(token.bytes()[1u64]);
+    let spec_index: UInt64;
+    match find_short_spec(specs, ch) {
+        Some(found) => {
+            spec_index = found;
+        }
+        None => {
+            return Err(ArgError::UnknownOption(String::from(token)));
+        }
+    }
+    if specs[spec_index].takes_value {
+        if index + 1u64 >= args.len() {
+            Err(ArgError::MissingValue(String::from(token)))
+        } else {
+            match set_option(specs, parsed, spec_index, args[index + 1u64].as_str()) {
+                Ok(_) => Ok(1u64),
+                Err(error) => Err(error),
+            }
+        }
+    } else {
+        match set_option(specs, parsed, spec_index, "true") {
+            Ok(_) => Ok(0u64),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn set_option(specs: &[ArgSpec], parsed: &mut ParsedArgs, spec_index: UInt64, option_value: &str) -> Result<(), ArgError> {
+    let target = specs[spec_index].name.as_str();
+    if is_present(parsed, target) && !specs[spec_index].multiple {
+        return Err(ArgError::DuplicateOption(String::from(specs[spec_index].long.as_str())));
+    }
+    parsed.present.push(String::from(target));
+    parsed.values.push(ParsedArg { name: String::from(target), value: String::from(option_value) });
+    Ok(())
+}
+
+fn init_parsed(specs: &[ArgSpec]) -> ParsedArgs {
+    let mut defaults = Vec::new();
+    let mut i = 0u64;
+    while i < specs.len() {
+        if specs[i].has_default {
+            defaults.push(
+                ParsedArg {
+                    name: String::from(specs[i].name.as_str()),
+                    value: String::from(specs[i].default_value.as_str()),
+                },
+            );
+        }
+        i = i + 1u64;
+    }
+    ParsedArgs { present: Vec::new(), values: Vec::new(), defaults, positionals: Vec::new() }
+}
+
+fn validate_specs(specs: &[ArgSpec]) -> Result<(), ArgError> {
+    let mut i = 0u64;
+    while i < specs.len() {
+        if specs[i].name.len() == 0u64 || specs[i].long.len() == 0u64 {
+            return Err(ArgError::InvalidSpec(String::from(specs[i].name.as_str())));
+        }
+        let mut j = i + 1u64;
+        while j < specs.len() {
+            if specs[i].name.as_str() == specs[j].name.as_str() || specs[i].long.as_str() == specs[j].long.as_str() {
+                return Err(ArgError::InvalidSpec(String::from(specs[i].name.as_str())));
+            }
+            match specs[i].short {
+                Some(left) => match specs[j].short {
+                    Some(right) => {
+                        if left == right {
+                            return Err(ArgError::InvalidSpec(String::from(specs[i].name.as_str())));
+                        }
+                    }
+                    None => {}
+                }
+                None => {}
+            }
+            j = j + 1u64;
+        }
+        i = i + 1u64;
+    }
+    Ok(())
+}
+
+fn require_present(specs: &[ArgSpec], parsed: &ParsedArgs) -> Result<(), ArgError> {
+    let mut i = 0u64;
+    while i < specs.len() {
+        if specs[i].required && !is_present(parsed, specs[i].name.as_str()) {
+            return Err(ArgError::RequiredOptionMissing(String::from(specs[i].long.as_str())));
+        }
+        i = i + 1u64;
+    }
+    Ok(())
+}
+
+fn find_long_spec(specs: &[ArgSpec], long: &str) -> Option<UInt64> {
+    let mut i = 0u64;
+    while i < specs.len() {
+        if specs[i].long.as_str() == long {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn find_short_spec(specs: &[ArgSpec], short: Char) -> Option<UInt64> {
+    let mut i = 0u64;
+    while i < specs.len() {
+        match specs[i].short {
+            Some(ch) => {
+                if ch == short {
+                    return Some(i);
+                }
+            }
+            None => {}
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn find_byte(text: &str, byte: UInt8) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let mut i = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == byte {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn is_long_token(token: &str) -> Bool {
+    token.len() > 2u64 && token.bytes()[0u64] == 45u8 && token.bytes()[1u64] == 45u8
+}
+
+fn is_short_token(token: &str) -> Bool {
+    token.len() > 1u64 && token.bytes()[0u64] == 45u8
+}
+
+fn short_char(byte: UInt8) -> Char {
+    match Char::from_u32(byte as UInt32) {
+        Some(ch) => ch,
+        None => '?',
+    }
+}
+
+mod tests;

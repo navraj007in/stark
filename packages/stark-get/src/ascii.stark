@@ -1,0 +1,48 @@
+//! ASCII case folding, shared by the modules that compare protocol tokens.
+//!
+//! Header names (RFC 7230 §3.2) and URL schemes (RFC 3986 §3.1) are both case-insensitive, and both
+//! are ASCII-only, so one fold serves both. It lives here rather than being written twice because a
+//! second copy is how the two drift -- and the consequence of drifting on header names is a
+//! credential redaction that can be dodged by changing the case.
+
+pub fn lower_ascii(byte: UInt8) -> UInt8 {
+    if byte >= 65u8 && byte <= 90u8 {
+        byte + 32u8
+    } else {
+        byte
+    }
+}
+
+/// Whether two ASCII strings are equal ignoring case.
+pub fn equals_ascii_ci(left: &str, right: &str) -> Bool {
+    let a = left.bytes();
+    let b = right.bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < a.len() {
+        if lower_ascii(a[i]) != lower_ascii(b[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+/// Whether `haystack` begins with `prefix`, ignoring ASCII case.
+pub fn starts_with_ascii_ci(haystack: &str, prefix: &str) -> Bool {
+    let h = haystack.bytes();
+    let p = prefix.bytes();
+    if h.len() < p.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < p.len() {
+        if lower_ascii(h[i]) != lower_ascii(p[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}

@@ -756,6 +756,31 @@ may still undergo the closed set of built-in expected-type coercions defined in
 function parameter is an expected-type boundary like any other. No
 user-defined coercion exists.
 
+**TYPE-METHOD-003.** When the receiver's type, after auto-dereference, is a
+generic parameter `T`, the candidate set is collected from the traits named by
+`T`'s declared bounds and from nowhere else: `T` has no inherent methods and no
+implementation to select against. Each bound resolves to exactly one trait
+identity — the one name resolution selected for the bound's path
+(04-Semantic-Analysis.md), which is a `TYPE-NOMINAL-001` item identity and not a
+spelling. Two traits with the same local name in different modules are two
+identities, and a bound on either admits only its own trait's methods; the
+implementation a call dispatches to is the one belonging to that same identity.
+A bound written twice names one trait rather than two. Collection
+is additive over the bounds, and the order in which bounds are written is not a
+selection rule; if two distinct bounds supply an applicable `m`, the call is
+ambiguous under TYPE-METHOD-001 step 2 and must be disambiguated with a
+fully-qualified call.
+
+A **compiler-known** trait (06-Standard-Library.md, STD-TRAIT-001) contributes
+candidates through this same collection, carrying the same signatures its
+implementations are required to provide. Compiler-known status identifies a
+trait to the implementation — it is what connects `Display` to
+`print`/`println`, `Iterator` to `for`, and `Eq`/`Ord` to the operators — and
+never changes which methods a bound makes callable, nor their priority against
+a user-declared trait's. `fn show<T: Display>(x: &T) -> String { x.fmt() }` is
+therefore well-formed, and a user trait that also declares `fmt` produces an
+ordinary ambiguity rather than a preference for either side.
+
 ### Operators and Traits
 Operator expressions on **primitive types** have built-in meaning (Numeric
 Semantics below). Equality and ordering on every non-primitive concrete type,

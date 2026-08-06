@@ -231,6 +231,16 @@ impl FlowChecker<'_> {
                     self.visit_expr(arg, state);
                 }
             }
+            // WP-FMT-001: fields are visited in source order, which is also their evaluation
+            // order, so a variable initialised by an earlier field is seen as initialised by a
+            // later one.
+            hir::ExprKind::FormatString { segments } => {
+                for segment in segments {
+                    if let hir::FormatSegment::Field { expr, .. } = segment {
+                        self.visit_expr(*expr, state);
+                    }
+                }
+            }
             hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
                 self.visit_expr(*base, state);
             }

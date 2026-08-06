@@ -64,6 +64,18 @@ note = "string literal examples"
 verdict = "lex-pass"
 note = "char literal examples"
 
+["01-Lexical-Grammar__05.stark"]
+verdict = "lex-pass"
+note = "WP-FMT-001 interpolated string literal examples"
+
+["01-Lexical-Grammar__06.stark"]
+verdict = "lex-pass"
+note = "LEX-FORMAT-004 nested string literals inside interpolation fields"
+
+["01-Lexical-Grammar__07.stark"]
+verdict = "lex-pass"
+note = "LEX-FORMAT-004 bind-first workaround for a data-bearing nested escape"
+
 ["02-Syntax-Grammar__01.stark"]
 verdict = "parse-pass"
 mode = "snippet"

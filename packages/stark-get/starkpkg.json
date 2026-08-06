@@ -1,0 +1,20 @@
+{
+  "name": "stark-get",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": [
+    "process.args",
+    "tcp",
+    "dns",
+    "tls",
+    "filesystem"
+  ],
+  "dependencies": {
+    "stark_args": { "package": "stark-args", "path": "../stark-args", "version": "0.1.0" },
+    "stark_env": { "package": "stark-env", "path": "../stark-env", "version": "0.1.0" },
+    "stark_http_client": { "package": "stark-http-client", "path": "../stark-http-client", "version": "0.1.0" },
+    "stark_http_core": { "package": "stark-http-core", "path": "../stark-http-core", "version": "0.1.0" },
+    "stark_io": { "package": "stark-io", "path": "../stark-io", "version": "0.1.0" },
+    "stark_json": { "package": "stark-json", "path": "../stark-json", "version": "0.1.0" }
+  }
+}

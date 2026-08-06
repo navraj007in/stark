@@ -2,5 +2,21 @@
   "name": "stark-time",
   "version": "0.1.0",
   "entry": "src/lib.stark",
+  "capabilities": ["clock"],
+  "provider_api": {
+    "errors": {
+      "clock": "RawTimeError"
+    },
+    "functions": {
+      "monotonic_now_ns_raw": {
+        "capability": "clock",
+        "symbol": "stark_time_monotonic_now_ns"
+      },
+      "unix_now_raw": {
+        "capability": "clock",
+        "symbol": "stark_time_unix_now"
+      }
+    }
+  },
   "dependencies": {}
 }

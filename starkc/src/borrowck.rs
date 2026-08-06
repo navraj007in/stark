@@ -63,6 +63,14 @@ pub struct BorrowChecker<'a> {
     /// DEV-150: spans already reported as a call-argument overlap, so the left-to-right walk that
     /// follows does not report the same read a second time in different words.
     overlap_reported: HashSet<(u32, u32)>,
+    /// DEV-DISPLAY-DISPATCH: the generic parameters in scope for the body being checked — the
+    /// function's own, plus the enclosing impl's (WP-C6.2b-F5). `method_receiver` needs them to
+    /// answer "what receiver does `x.fmt()` take" when `x`'s type is a bounded parameter: the
+    /// answer is on the BOUND, and without it the receiver defaulted to by-value and every
+    /// `&self` trait method silently MOVED its receiver.
+    current_generics: Vec<hir::GenericParam>,
+    /// The enclosing impl's generic parameters, set while its methods are checked.
+    enclosing_generics: Vec<hir::GenericParam>,
 }
 
 pub fn check(
@@ -81,6 +89,8 @@ pub fn check(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
 
     checker.check_crate();
@@ -104,6 +114,8 @@ pub fn check_fn(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
     checker.check_fn_def(def);
     checker.diags
@@ -127,6 +139,8 @@ pub fn check_snippet(
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
+        current_generics: Vec::new(),
+        enclosing_generics: Vec::new(),
     };
     for &stmt_id in stmts {
         checker.check_stmt(stmt_id);
@@ -392,10 +406,18 @@ impl<'a> BorrowChecker<'a> {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(def);
                 }
-                hir::ItemKind::Impl { items, .. } => {
+                hir::ItemKind::Impl {
+                    items,
+                    generics: impl_generics,
+                    ..
+                } => {
                     for impl_item in items {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            // WP-C6.2b-F5: a bound written on the impl head (`impl<T: Sh> W<T>`)
+                            // is in scope for every method body inside it.
+                            self.enclosing_generics = impl_generics.clone();
                             self.check_fn_def(def);
+                            self.enclosing_generics = Vec::new();
                         }
                     }
                 }
@@ -420,6 +442,8 @@ impl<'a> BorrowChecker<'a> {
     fn check_fn_def(&mut self, def: &hir::FnDef) {
         self.moved_places.clear();
         self.active_borrows.clear();
+        // DEV-DISPLAY-DISPATCH: the parameters a method call's receiver type may name.
+        self.current_generics = def.sig.generics.clone();
 
         // Parameters are initially owned/borrowed (not moved)
         self.check_block(def.body);
@@ -520,6 +544,36 @@ impl<'a> BorrowChecker<'a> {
                 !arms.is_empty() && arms.iter().all(|arm| self.expr_diverges(arm.body))
             }
             _ => false,
+        }
+    }
+
+    /// Whether a value of this type can carry a borrow — directly, or nested inside an aggregate.
+    ///
+    /// DEV-181 uses it to decide whether an assignment's right-hand side temporaries may be
+    /// released. An owned value's borrows end with the temporaries that produced it; a
+    /// borrow-carrying one keeps them, because the reference IS the value being stored.
+    ///
+    /// Conservative by construction: an unknown type answers `true`, so an unrecognised shape keeps
+    /// its borrows rather than silently releasing them. A false positive here is a refusal; a false
+    /// negative would be an untracked reference.
+    fn ty_carries_borrow(&self, ty: Option<&Ty>) -> bool {
+        let Some(ty) = ty else {
+            return true;
+        };
+        match ty {
+            Ty::Ref { .. } | Ty::Slice(_) => true,
+            Ty::Tuple(elements) => elements.iter().any(|t| self.ty_carries_borrow(Some(t))),
+            Ty::Array(element, _) => self.ty_carries_borrow(Some(element)),
+            // A nominal's or core type's ARGUMENTS may be references — `Option<&T>` is a
+            // borrow-carrying value per 03-Type-System.md's references-and-lifetimes rules.
+            Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+                args.iter().any(|t| self.ty_carries_borrow(Some(t)))
+            }
+            Ty::Range(inner) => self.ty_carries_borrow(Some(inner)),
+            Ty::Primitive(_) | Ty::Fn { .. } | Ty::Never => false,
+            // Anything else — parameters, inference variables, errors, extensions — is treated as
+            // carrying a borrow, which is the safe direction.
+            _ => true,
         }
     }
 
@@ -656,7 +710,23 @@ impl<'a> BorrowChecker<'a> {
                 self.check_expr(*rhs);
             }
             hir::ExprKind::Assign { lhs, rhs, .. } => {
+                // **DEV-181: a borrow taken by the assignment's OWN right-hand side must not block
+                // the assignment.** `n = n.deeper()` pushed the receiver auto-borrow from
+                // `n.deeper()` and then found it still on the stack in the write check below —
+                // refusing an everyday idiom with no hoisting workaround.
+                //
+                // Same mechanism as DEV-137, and the same shape of repair: snapshot, check,
+                // truncate. But NOT unconditionally, because the RHS's borrow is sometimes the
+                // assigned VALUE. `n.deeper()` yields an owned `Node`, so its temporary's borrow
+                // dies with it; `r = &v.field` yields a reference whose borrow must survive.
+                // Dropping that would hand out a reference the checker had stopped tracking, so the
+                // truncation is gated on the assigned type carrying no borrow — the same kind of
+                // boundary DEV-137 drew when it excluded `match` scrutinees and `for` iterators.
+                let borrows_before = self.active_borrows.len();
                 self.check_expr(*rhs);
+                if !self.ty_carries_borrow(self.expr_types.get(rhs)) {
+                    self.active_borrows.truncate(borrows_before);
+                }
 
                 // Write check: verify no active borrows on the place
                 let assigned = self.place_of(*lhs);
@@ -891,6 +961,52 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// DEV-DISPLAY-DISPATCH: the receiver form `method` is declared with, by whichever trait a
+    /// bound on generic parameter `param_name` supplies it.
+    ///
+    /// **DEV-BOUND-TRAIT-IDENTITY: the bound's identity comes from the resolver.** This pass used
+    /// to take the bound's SPELLING and scan every HIR item for a trait declared with that name,
+    /// which meant a qualified bound matched nothing, an unrelated same-named trait could win,
+    /// and — worst — with two same-named traits the receiver came from whichever appeared first
+    /// in HIR order. Two identical programs differing only in the order their traits were
+    /// declared then disagreed about whether `x.act()` moved `x`. Both passes now read
+    /// `hir::resolved_bound_trait`, so the trait the type checker selected a method FROM is the
+    /// trait this reads the receiver form OF.
+    ///
+    /// A user trait's declaration and a Core trait's contract are both consulted, and neither is
+    /// preferred — if two bounds supply the same name the type checker has already reported
+    /// E0203, and reading either signature here only affects which already-rejected program gets
+    /// a second diagnostic.
+    fn bound_method_receiver(&self, param_name: &str, method: &str) -> Option<hir::Receiver> {
+        let mut generics = self.current_generics.clone();
+        generics.extend(self.enclosing_generics.iter().cloned());
+        for param in &generics {
+            if self.text(param.name) != param_name {
+                continue;
+            }
+            for bound in &param.bounds {
+                let Some(bound_trait) = hir::resolved_bound_trait(self.hir, bound) else {
+                    continue;
+                };
+                let receiver = match bound_trait {
+                    // DEV-069: the trait's method names belong to the TRAIT's declaring file.
+                    hir::BoundTrait::User(trait_id) => {
+                        hir::trait_method_receiver(self.hir, trait_id, method, |item, span| {
+                            self.item_text(item, span).to_string()
+                        })
+                    }
+                    hir::BoundTrait::Core(core_trait) => {
+                        crate::typecheck::core_trait_method_receiver(core_trait, method)
+                    }
+                };
+                if let Some(receiver) = receiver {
+                    return Some(receiver);
+                }
+            }
+        }
+        None
+    }
+
     fn method_receiver(&self, base: ExprId, name: Span) -> Option<hir::Receiver> {
         let mut base_ty = self.expr_types.get(&base)?.clone();
         while let Ty::Ref { inner, .. } = base_ty {
@@ -974,6 +1090,19 @@ impl<'a> BorrowChecker<'a> {
                 )
             {
                 return Some(hir::Receiver::Ref);
+            }
+        }
+
+        // DEV-DISPLAY-DISPATCH: a BOUNDED GENERIC receiver. The receiver kind is declared by the
+        // bound, and there was no branch for it here at all — `Ty::Param` fell into the `None`
+        // below, whose caller CONSUMES the receiver. So every `&self` method reached through a
+        // bound moved its receiver, and `let a = x.fmt(); let b = x.fmt();` failed E0100 "use of
+        // moved value" for a `T: Display` parameter exactly as it did for a `T: Named` one. The
+        // signature comes from the same two sources the type checker selects from: a user trait's
+        // own declaration, or the Core trait's implementation contract.
+        if let Ty::Param(param_name) = &base_ty {
+            if let Some(receiver) = self.bound_method_receiver(param_name, method_name) {
+                return Some(receiver);
             }
         }
 

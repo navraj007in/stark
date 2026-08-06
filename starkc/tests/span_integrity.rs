@@ -105,6 +105,17 @@ fn check_expr_containment(ast: &Ast, id: ExprId, failures: &mut Vec<String>) {
     }
 
     match &node.kind {
+        // WP-FMT-001: a field's expression must be spanned INSIDE the literal that contains it.
+        // This is the property that makes a diagnostic about `f"{value:x}"` point at the value
+        // rather than at the whole literal, and it holds because the field is lexed over its own
+        // byte range in the original file rather than from a reconstructed copy.
+        ExprKind::FormatString { segments } => {
+            for segment in segments {
+                if let starkc::ast::FormatSegment::Field { expr, .. } = segment {
+                    check_child!(*expr, "interpolation field");
+                }
+            }
+        }
         ExprKind::Unary { operand, .. } => check_child!(*operand, "unary operand"),
         ExprKind::Binary { lhs, rhs, .. } => {
             check_child!(*lhs, "binary lhs");

@@ -1,5 +1,596 @@
 # STARK Compiler STATE
 
+## CD-383 — two over-acceptances, one of them a double destruction (2026-08-05)
+
+An external audit separated the open defects by direction: programs the checker REJECTS that it
+should accept (DEV-167, DEV-168, DEV-172) against programs it ACCEPTS that the language forbids.
+The second kind ships; the first is visible the moment you compile. Both of the second kind are
+fixed here.
+
+### DEV-169 — and the answer to the question the ledger left open
+
+The record said "whether the drop flag suppresses the second run is unverified". **It does not.**
+
+```stark
+let mut resource = Resource { id: 1 };
+resource.drop();
+println("after");
+```
+```text
+dropped
+after
+dropped
+```
+
+The destructor runs **twice on one value**. For a resource-bearing type that is a double release.
+This was not an over-acceptance with cosmetic consequences; it was a soundness violation, and the
+ledger had classified it as "potentially safety-significant" precisely because nobody had run it.
+Running it took one minute and should have happened when the defect was recorded.
+
+03-Type-System.md, "Copy and Drop" is unambiguous: "`Drop::drop` MUST NOT be called explicitly; use
+the free function `drop(value)`." The check now runs at IMPL-MEMBER SELECTION — when a call
+resolves into an `impl Drop for T` block — rather than on the method's NAME. That distinction is
+the difference between a correct fix and a broken one: an inherent method called `drop` is an
+ordinary method and stays callable, which a name-keyed check would have refused.
+
+### DEV-171 — operator bounds by identity, not spelling
+
+```stark
+mod fake { pub trait Eq { fn unrelated(&self) -> Int32; } }
+use fake::Eq;
+fn compare<T: Eq>(a: T, b: T) -> Bool { a == b }   // was accepted
+```
+
+`param_declares_bound` compared the bound's SOURCE TEXT against `"Eq"`. Written qualified
+(`T: fake::Eq`) the same program was rejected — the tell that the answer depended on spelling. It
+now resolves each bound through `hir::resolved_bound_trait`, the identity path CD-379 established,
+and compares it to the Core trait the operator requires. `Eq`, `Ord` and `Num` all route through
+that one branch, so all three are covered by construction rather than by enumeration.
+
+`satisfies_bound_parts` keeps its name-addressable form deliberately: DEV-118's built-in
+obligations have no `TraitRef` to resolve. Only the generic-parameter branch changed — the one that
+had a written bound all along.
+
+**This rejects programs that previously compiled**, which is the intent and is stated as a
+behaviour change rather than described as a pure bug fix.
+
+### What was NOT taken on, and why
+
+* **DEV-121's class closure** (a runtime representation contradicting the checked type) is a
+  representation-invariant extension across loop bindings, call arguments and every
+  reference-producing intrinsic. Different mechanism, different pass; bundling it here would make
+  neither reviewable.
+* **DEV-165** (`connect_timeout` accepted and ignored) is an HTTP-client defect, not a compiler
+  one, and the audit itself said it does not belong in a compiler correctness packet.
+
+Both remain open with their priority recorded.
+
+### stark-args
+
+Verified and included in the same commit at the owner's request: `stark check`, 9 package tests,
+`stark fmt --check`, **10 of 10 declared callables called**, consumer check/run/build, and
+byte-identical output from the interpreter and the native binary (`7|alpha|--literal`). Counts moved
+25 → 26 packages and 22 → 23 consumers across README, CLAUDE.md, AGENTS.md, the website and the
+sweep skill, and the README package table gained a Command line row.
+
+### Evidence
+
+`starkc/tests/over_acceptance_audit.rs` — 8 tests. Each fix is paired with the cases that must keep
+working, because the risk in both repairs is over-rejection: a method merely NAMED `drop`, the free
+function `drop(value)` destroying exactly once, automatic destruction still firing, and genuine
+`Eq`/`Ord`/`Num` bounds including a user `impl Eq`.
+
+Regression: adversarial_trait_impls, c62d_operator_coretrait, gate2_valid, conformance all green.
+
+### Status
+
+DEV-169 and DEV-171 CLOSED. **Every known accepted-invalid program in the compiler checker is now
+rejected**; DEV-121 (accepted-valid program, wrong execution) and DEV-165 (accepted configuration,
+no effect) remain open and are different categories.
+
+
+## CD-382 — DEV-173 CLOSED: a nested string literal inside an interpolation field (2026-08-05)
+
+```stark
+println(f"{choose(\"yes\", \"no\", true)}");
+println(f"{lookup(\"name\")}");
+```
+
+The form the original WP-FMT-001 acceptance matrix asked for, and the one CD-380 refused. With it,
+interpolation admits ordinary expressions rather than ordinary-expressions-minus-string-literals,
+and WP-FMT-001 is no longer "v0.1 partial".
+
+### Why it was hard, stated exactly
+
+A nested string literal inside a field must be written `\"a\"` — the enclosing literal is delimited
+by `"`, so its quotes have to be escaped — and `\"` is not expression syntax. The field cannot be
+lexed from the file as written.
+
+CD-380 tried parsing a DECODED copy and retagging the resulting spans to the field's span. That
+produced the WRONG STRING: a literal read its value from its span, so a retagged literal read the
+field's raw source back and rendered `\"slice\"` where the program said `slice`. Refusing was the
+right call at the time. A later attempt at proper span REMAPPING failed for a second reason worth
+recording: spans are embedded throughout the AST — in `Path`, `PathSegment`, names — not only on
+nodes, so remapping node spans left identifiers pointing at file offset 0.
+
+### The repair, in two halves, both required
+
+1. **A length-preserving stand-in.** The field is parsed against a copy of the whole file in which
+   each `\"` inside that field becomes ` "` when it opens a nested literal and `" ` when it closes
+   one. Every byte offset is unchanged, so every span the sub-parse produces is already a real file
+   span and nothing is remapped — which is what sidesteps the embedded-span problem entirely.
+
+   **Which side the space lands on is load-bearing.** Blanking the closing backslash in place puts
+   the space INSIDE the literal: `f"{choose(\"yes\", ..)}"` renders `yes ` with a trailing space.
+   Observed while running it, not reasoned about afterwards.
+
+2. **Literals carry their decoded value.** `Ast::str_lits`/`Hir::str_lits` hold every string
+   literal's value, interned at parse time from whatever buffer the parser was reading, and
+   `Lit::Str` names its entry. **Spans are now purely diagnostic.** This is the architectural half
+   the DEV-173 record predicted, and it is what makes the stand-in sound: without it a literal would
+   still read its value back from the real file's `\"a\"`.
+
+### What is still refused, and why it is a different thing
+
+An escape other than `\"` in a field source belongs to the enclosing literal and *changes* the
+inner text — `\\` means one backslash, `\n` means a newline — so blanking it would silently alter
+the value. Those fields are refused with that reason. This is not the old blanket refusal narrowed
+by convenience: it is the boundary between "the escape is punctuation the outer literal forced" and
+"the escape is data".
+
+### Evidence
+
+`tests/wp_fmt_001_interpolation.rs` — 40 tests. `a_field_may_contain_a_nested_string_literal`
+covers six forms including a `:` and a `}` INSIDE a nested string (both of which the field scanner
+must read as text, not structure), a struct literal, and a format specification applied to a nested
+literal. `a_field_may_not_contain_an_escape_other_than_a_quote` pins the remaining refusal.
+
+Regression: three_engine_differential 109, mir_differential 132, dev_display_dispatch 21,
+dev_bound_trait_identity 15, adversarial_stderr 11, gate2_valid 56, conformance 3, robustness 6,
+span_integrity 2.
+
+### Status
+
+DEV-173 CLOSED.
+
+**WP-FMT-001 is complete for the defined Core v1 interpolation surface.** Plain nested string
+literals are supported; a nested literal carrying a DATA-BEARING escape (`\n`, `\t`, `\\`,
+`\u{...}`) remains an explicitly rejected future extension.
+
+That wording is a correction. This entry first said "complete ordinary-expression interpolation",
+which is literally broader than the implementation: `f"{lookup(\"a\nb\")}"` is a valid ordinary
+expression and is refused. **That is the third claim in this work package stated wider than what was
+built** — after §6's version claim and the `println(f"...")` evidence gap — and the pattern is the
+finding, not the individual wordings. Each was caught by review rather than by me, and each was a
+summary written from what the change was *for* rather than from what it *does*.
+
+The restriction is retained in the specification (01-Lexical-Grammar, LEX-FORMAT-004) rather than
+living only in a defect record, so a reader of the grammar sees it.
+
+Tier-1 qualification: `7e41a1e` was green across all three lanes, which closed CD-381's outstanding
+item. **That run does not cover this commit** — `c5b7581` changed the parser, AST/HIR literal
+storage, the interpreter and MIR lowering — so it carries its own CI result, and the evidence claim
+here rests on that one.
+
+
+## CD-381 — WP-FMT-001 correction packet: six defects, one of them mine to admit (2026-08-04)
+
+An external review of `987369b` reopened WP-FMT-001. It was right on every point, and one of them is
+a **false statement in my own closure report**: §6 said the MIR runtime-surface version had changed.
+It had not. `MIR_RUNTIME_SURFACE` was still `0.1-A13` while twelve `RuntimeFn` members had been
+added across CD-378 and CD-380.
+
+### The six
+
+1. **Runtime surface unversioned.** `0.1-A14` now covers all twelve additions — CD-378's seven
+   `Fmt*` members as well as CD-380's five `Fmt*Spec` ones. Both work packages added runtime surface
+   without advancing the constant, so a consumer built against A13 would have accepted a program it
+   cannot represent instead of rejecting it (V-SURFACE-1). `MIR_VERSION` stays `0.3`: additive
+   surface, not a structural change.
+2. **The field scanner did not know comments.** `f"{value /* } */}"` mis-scanned, because the
+   scanner skipped escapes, strings and char literals but not `//` or `/* */`. A field delegates to
+   the ordinary expression parser, so it must admit ordinary comments — including NESTED block
+   comments, which 01-Lexical-Grammar §6 requires and which a one-character patch would not handle.
+3. **The verifier typed the specification operands but did not require them to be constants.**
+   Verified MIR could therefore have carried `FmtIntSpec(v, computed_word, computed_fill)` — dynamic
+   formatting beneath a feature defined as statically specified, with a specification word no front
+   end had validated. **MIR-0037** now requires both operands to be constants, requires the word to
+   decode to a valid specification with zero unused bits, and bounds width and precision by
+   LIMIT-FMT-WIDTH/PRECISION. A side effect worth stating: `Spec::unpack`'s defaults for unknown
+   align/sign/kind encodings are now unreachable in verified MIR rather than silently normalising
+   malformed compiler output.
+4. **Inert flags were accepted.** `f"{42:#}"` set `alternate` and rendered nothing different;
+   `f"{42:0}"` set `zero_pad` with width zero; `f"{1.25:f}"` asked for fixed-point with no
+   precision; `f"{n:<06}"` wrote an alignment that zero-padding then overrode. LEX-FORMAT-003 says
+   an implementation must reject a specification it does not act on — these were exactly the case it
+   names, and they are refused now.
+5. **LIMIT-FMT-SEGMENTS had an off-by-one hole.** The check ran after each field, so the trailing
+   literal segment could push the count one past the limit. Checked once over the finished list.
+6. **`println(f"...")` was only ever tested through `.as_str()`.** Proving the advertised form
+   failed immediately — which is the point. See DEV-174.
+
+### DEV-174, found by fixing the test rather than the code
+
+`eprint`/`eprintln` were typed `&str` while 06-Standard-Library declares
+`fn eprintln<T: Display>(value: T)` and PRINT-DISPLAY-001 names all four output functions together.
+`eprintln(s)` with an owned `String` was rejected; `println(s)` was accepted. The stderr half of the
+runtime surface has carried the full display family since 0.1-A13 and lowering already redirects by
+channel — **only the signature lagged**, and no test had ever passed `eprintln` anything but a
+`&str`. Both pairs are now typed alike and both go through the same deferred `Display` check.
+
+Testing the convenient form instead of the advertised one is how a gap survives a suite that looks
+thorough. Worth remembering beyond this work package.
+
+### Scope, corrected
+
+WP-FMT-001 is **IMPLEMENTED — v0.1 partial interpolation**, not closed. DEV-173 blocks a field
+containing an escape sequence, and the original acceptance matrix included
+`f"{choose(\"yes\", \"no\")}"`. Declaring closure while that is refused was an overclaim; the
+closure report now says so at the top rather than having the claim edited away. Tier-1 qualification
+is also still unobserved — the first push failed CI on clippy before reaching those lanes.
+
+### Evidence
+
+`tests/wp_fmt_001_interpolation.rs` — 39 tests, adding the direct `println(f"...")`/`eprintln`
+form, comments inside fields (including a nested block comment and `}`/`:` inside one), and the six
+inert-flag refusals.
+
+### CI found three more, and one of them is a guard working as designed
+
+The first push of this packet failed CI on three targets:
+
+* `a10_provider_call::runtime_surface_is_current` and
+  `a11_host_resource::the_mir_version_records_every_shape_amendment` both PIN the surface constant.
+  Bumping to A14 fired them, which is their purpose. **But note what that means:** these guards
+  pin the constant, not the surface, so they fail when the constant moves and stay silent when the
+  surface grows without it. They were green through CD-378 and CD-380 while twelve `RuntimeFn`
+  members were added unannounced. Recorded in `a10_provider_call.rs` rather than left implicit; a
+  guard that could fail for the right reason would have to derive something from the `RuntimeFn`
+  set itself.
+* `adversarial_stderr::the_eprint_family_accepts_only_str_today` — the WP-C7.9 test that pinned
+  DEV-174's restriction. Its own doc comment said the lowering already supported every `Display`
+  shape, that widening would need "only a signature change and cases", and that this test "fails
+  the day that happens, which is the right moment to add them." It did, and they are added: the
+  three shapes it rejected now render byte for byte on stderr, plus a negative pinning that a type
+  without `Display` is still refused there.
+
+A recorded limitation carrying a test that fails when it is lifted is worth more than a to-do
+comment. It turned this repair into one commit instead of a rediscovery.
+
+### Status
+
+DEV-174 CLOSED. DEV-173 remains open and is what stands between "v0.1 partial" and complete
+ordinary-expression interpolation. The architecture was not the problem and is unchanged.
+
+
+## CD-380 — WP-FMT-001: interpolated string literals (2026-08-04)
+
+```stark
+let message = f"pkg={name} n={count:04} r={ratio:.2} ok={ok}";
+```
+```text
+pkg=stark n=0042 r=0.76 ok=true
+```
+
+**STARK has a complete, compile-time-checked string formatting feature.** `f"..."` produces an
+ordinary owned `String` through the `Display` architecture CD-378 and CD-379 established. It is not
+a macro, not a variadic call, and not a runtime-parsed format string: segments are split at parse
+time, every specification is validated against its field's type at type checking, and no format
+string exists in a running program.
+
+### One implementation of the rules, three engines
+
+Alignment, fill, width, sign, radix, alternate prefix and fixed precision live in
+`stark_runtime::fmt_spec` and nowhere else. `starkc` already depends on that crate and every native
+binary links it, so the HIR oracle, the MIR interpreter and generated code call the SAME functions —
+the arrangement that already keeps `x.fmt()` and `println(x)` from drifting. A specification reaches
+the runtime as a packed `UInt64` word plus a `Char` fill, both compile-time constants.
+
+MIR gained **five** operations — `FmtPad`, `FmtIntSpec`, `FmtUIntSpec`, `FmtFloat64Spec`,
+`FmtFloat32Spec` — not one per syntax combination. Everything about *how* a value renders is in the
+word; the operation only says which value family it is.
+
+### Tokenizing without a token soup
+
+`f"..."` is ONE token, scanned exactly like a cooked string. The parser splits it and, for each
+field, lexes **the original file over that field's own byte range** (`lexer::tokenize_range`) and
+parses it with the ordinary expression parser. So spans inside an interpolation are real file spans
+— `tests/span_integrity.rs` now asserts a field's expression is spanned inside its literal — and
+nesting, calls, indexing, struct literals and paths are handled by the parser that already handles
+them. No source text is ever reconstructed or rewritten.
+
+The scanner tracks depth over `(`/`[`/`{` and consumes escapes whole, so `Point { x: 1, y: 2 }`'s
+`:` and `}` stay inside the expression, `module::CONST`'s `::` is not a specification separator, and
+`\u{1F600}`'s braces are an escape rather than a field.
+
+### Rulings taken, and why
+
+* **Width counts Unicode scalars**, not bytes and not terminal cells — the only choice that renders
+  identically on every platform. It never truncates.
+* **Odd centring puts the extra fill on the right**, so `{"x":^4}` is `| x  |`.
+* **Sign, then prefix, then zero-padding, then digits**: `-00042`, `0x000000ff`.
+* **A negative value in another base keeps its sign and renders its magnitude**: `-255` in hex is
+  `-ff`. The host's two's-complement pattern is never exposed.
+* **`0x` prefixes both hex cases** — the prefix names the base, the type character chooses digit case.
+* **Rounding is half-to-even**; `Float32` renders at its declared width, never widened first;
+  non-finite values ignore precision (`NaN`, not `NaN.00`).
+* **Precision on a string is REFUSED.** It could only mean truncation, and Core v1 has no ruling on
+  scalar-versus-grapheme-versus-byte cutting. Refusing beats guessing.
+* **Alignment without a width is refused** — it is a no-op, and almost always a typo.
+* **A numeric mode on a generic `T: Display` is refused.** `Display` does not prove integer
+  formatting, and inventing a numeric bound to make it compile was explicitly out of scope.
+
+### Ownership
+
+A field **borrows**. `Display::fmt` is `&self`, so a place expression is read, not moved: `f"{x}"`
+twice then `use_value(x)` is legal, for a non-`Copy` value and for an affine `Drop`-bearing one. A
+temporary field is destroyed exactly once after its bytes are appended. Fields evaluate strictly
+left to right, exactly once each — never a second time to discover a width.
+
+### Spec first
+
+**LEX-FORMAT-001/002/003** (01-Lexical-Grammar), **EXPR-FORMAT-001** (02-Syntax-Grammar) and
+**STD-FORMAT-002…005** (06-Standard-Library) state the grammar, evaluation order, ownership,
+type/spec compatibility, byte-exact rendering, and that interpolation is human-readable formatting
+rather than an escaping mechanism for JSON, HTML, SQL, shell or URLs. Compiled spec regenerated; the
+fixture corpus is now **114** blocks, the new one triaged in the same change.
+
+### Evidence
+
+- `starkc/tests/wp_fmt_001_interpolation.rs` — 36 tests. Every positive case runs the three-engine
+  comparator with stdout pinned in the test; plus debug-vs-release native agreement, and a
+  generated-source check that interpolation reaches `stark_runtime::fmt_spec` and that the crate
+  contains no `format!`, `write!`, `writeln!`, `std::fmt::Display`, `std::fmt::Debug` or
+  `#[derive(Debug`.
+- `stark_runtime::fmt_spec` — 16 unit tests on the rules themselves, including `i64::MIN`, `-ff`,
+  half-to-even, `Float32` width preservation and scalar-counted width.
+- `src/format_syntax.rs` — 12 unit tests on the scanner and specification grammar, including the
+  malformed inputs that must diagnose rather than panic.
+- `stark fmt` round-trips interpolated literals byte-identically; `packages/stark-fmt` is unchanged
+  and green, and interpolation needs no dependency on it.
+
+### Deliberate exclusions, recorded rather than implied
+
+* **No multiline interpolated form.** STARK has no multiline string literal to prefix; §2.5 said not
+  to invent one.
+* **No raw interpolated form** (`rf"..."`) — deferred, as §2.5 permits.
+* **The source formatter reprints an interpolated literal verbatim** rather than re-formatting its
+  embedded expressions. Reconstructing the literal risks changing what the program prints, which is
+  a semantic difference, not a formatting one. §19 permits this trade and asks that it be recorded.
+
+### Opened
+
+- **DEV-172 — no signed type can express its own minimum value.** `let a: Int8 = -128;` is
+  rejected: the magnitude is range-checked before the unary minus. Pre-existing, unrelated to
+  formatting, found while testing that formatting a minimum does not overflow. The RENDERER handles
+  `i64::MIN` correctly; no STARK program can produce the value to hand it.
+- **DEV-173 — an interpolation field may not contain an escape sequence.** A nested string literal
+  inside a field necessarily carries the outer literal's escapes, and parsing a decoded copy makes a
+  string literal read its own source back (`\"slice\"` for `slice`) because literals read their value
+  from their span. Refused rather than mis-parsed; workaround is to bind the value first.
+
+### Status
+
+WP-FMT-001 CLOSED for FMT-0 through FMT-5 as scoped. Formatting is sufficient for CLI output and
+structured log lines; see the closure report for the REST-server assessment.
+
+
+## CD-379 — DEV-BOUND-TRAIT-IDENTITY: a bound denoted whatever trait was spelled the same (2026-08-04)
+
+**A follow-up to CD-378, and a correction to it.** CD-378 unified method candidate *collection*
+across user and compiler-known traits. The step before that — deciding WHICH trait a bound denotes —
+was still done by spelling, in two passes, and below the front end execution did not use the answer
+at all.
+
+### Four failures, all reproduced before any code changed
+
+`typecheck::resolve_bound_trait` and `borrowck::bound_method_receiver` each took
+`text(bound.path.span)` and scanned every HIR item for a trait declared with that name.
+
+1. **A qualified bound matched nothing.** `T: traits::Render` compared `"traits::Render"` against
+   the declaration's name `"Render"`. The bound contributed no methods, and `value.render()` was
+   rejected with *"method 'render' requires the bound 'T: Render'"* — on a function whose signature
+   already wrote exactly that bound. Every bound on a trait a package exports through a module was
+   unusable.
+2. **An unrelated trait captured the name.** `mod unrelated { pub trait Display { fn other(&self); } }`
+   anywhere in the program took over every `T: Display` bound. CD-378's own §2 stated this as a
+   design — "a user trait of the same spelling wins, exactly as `resolve_path` does" — which was the
+   defect written down as a rule: `resolve_path` resolves against the bound's module and imports; a
+   global name scan does not.
+3. **Declaration order decided ownership.** Two same-named traits, one `&self` and one `self`: the
+   borrow checker returned whichever appeared FIRST in HIR item order. The same program compiled or
+   failed E0100 depending only on the order its two trait declarations were written in. The
+   regression test is that pair, both halves of which must compile.
+4. **Execution ignored the identity entirely.** Even with the front end fixed, both engines selected
+   an implementation by method NAME on the receiver's nominal, so a type implementing two same-named
+   `Render` traits ran the same body for both bounds. The type checker was right and every engine
+   below it was wrong the same way — which is exactly what three-engine agreement cannot detect.
+
+**Failures 1 and 2 are refusals. Failures 3 and 4 are acceptances of the wrong program** — an
+order-dependent move check, and a call executing a different trait's body than the one type checking
+approved. That is the more serious half of this entry.
+
+### The repair: one identity, read from the resolver
+
+`hir::resolved_bound_trait(hir, bound)` reads `TraitRef::res` and nothing else, with exhaustive
+matches over `Res` and `ItemKind` — a new resolution or item category forces a decision here rather
+than falling into a `_ => None`. `hir::BoundTrait` moved out of `typecheck` so both front-end passes
+consume the same type and the same answer. **No spelling-based bound lookup remains in either pass.**
+
+Below the front end: the checker records the selected trait per call site
+(`TypeTables::bound_trait_calls`, `Res::Item` or `Res::CoreTrait`); the HIR interpreter passes it to
+`find_method`'s already-existing trait filter, and MIR lowering passes it to a new one on
+`find_impl_fn`. A filtered lookup considers only that trait's impl — never an inherent method and
+never another trait's — exactly as a qualified call does.
+
+**Canonical symbols now carry the trait's module path.** `impl left::Render for Item` and
+`impl right::Render for Item` both produced `Item::Render::tag@[]`; the C5.4a linkage preflight
+refused the program as "one symbol, two identities", and it was right to. A top-level trait's prefix
+is empty, so every pre-existing symbol is byte-identical.
+
+### What CD-378 got right, kept
+
+Candidate collection, selection, ambiguity, the single Core-trait signature table, the `&self`
+ruling for `Display::fmt`, and the missing-bound diagnostic all stand unchanged. All 21 cases in
+`tests/dev_display_dispatch.rs` pass unmodified; `stark-fmt`'s public API, its 7 tests and both
+consumer paths are unchanged.
+
+### Evidence
+
+- `starkc/tests/dev_bound_trait_identity.rs` — 15 tests: qualified bounds through nested generics
+  and an impl head; two same-named traits in two modules dispatching to `L` and `R` (which pins
+  which BODY ran, not merely that it compiled); an unrelated `Display` failing to capture a Core
+  bound and an imported one correctly winning; receiver identity across `&self`, `&mut self` and
+  `self`; the declaration-order pair; and a direct assertion that `resolved_bound_trait` returns the
+  resolver's own `Res::Item`.
+- Correction appended to `starkc/docs/compiler/WP-DEV-DISPLAY-DISPATCH.md` — append-only, stating
+  what that report examined and what it did not, rather than editing it to look prescient.
+
+### Opened
+
+- **DEV-171 — an unrelated trait satisfies an OPERATOR bound by spelling.** `use fake::Eq;` then
+  `fn compare<T: Eq>(a: T, b: T) -> Bool { a == b }` is ACCEPTED; written qualified (`T: fake::Eq`)
+  it is correctly rejected. `ty_satisfies_operator_bound` compares the bound's text against `"Eq"`.
+  Not fixed here: it is bound *satisfaction* rather than method identity, the same function also
+  serves built-in obligations that have no `TraitRef` (DEV-118), and the repair decides what a
+  user trait shadowing a Core trait's name means for operators — a semantics ruling, CE2-shaped.
+
+### Status
+
+DEV-170 CLOSED. **DEV-DISPLAY-DISPATCH (CD-378) is now fully closed**: it was closed for the
+property it stated and open on one it did not state — that a bound denotes the trait the resolver
+selected. Both hold.
+
+
+## CD-378 — DEV-DISPLAY-DISPATCH: a compiler-known trait bound was not a trait bound (2026-08-04)
+
+**`fn show<T: Display>(x: T) -> String { x.fmt() }` was rejected.** `[E0302] method 'fmt' not found
+for type 'T'` — while the identical shape over a user-declared trait compiled and ran. The bound was
+*checked*; it contributed nothing to method resolution.
+
+### The defect is the trait model, not formatting
+
+`typecheck.rs::resolve_method`'s bounded-generic branch resolved each bound by searching
+`hir::ItemKind::Trait` items for a matching name. A compiler-known trait has no declaration item —
+`resolve.rs` turns `Display` into `Res::CoreTrait(CoreTrait::Display)` and there the trait ends — so
+the search returned `None`, the loop fell through, and the impl scan below could not match a
+`Ty::Param` receiver either. Method visibility depended on whether a trait happened to be
+compiler-known. That is two trait models, and the same hole covered `Ord::cmp`, `Clone::clone`,
+`Hash::hash`, `Iterator::next` and `Into::into` on a bounded parameter. `Display` is where it was
+noticed only because a `Display` bound has no purpose except calling `fmt`.
+
+**DEV-023 (WP-C2.11) recorded that `Display`/`Hash` as bounds were "already correctly recognized".**
+That was true of bound CHECKING and false of everything downstream. It fixed the concrete half
+(`"hi".fmt()`) and left the generic half open, and nothing in the entry distinguished the two claims.
+
+### Two more defects were in the same branch, and both are pre-existing
+
+* **The move checker had no bounded-generic receiver at all.** `borrowck.rs::method_receiver`
+  returned `None` for `Ty::Param`, and its caller's `None` arm CONSUMES the receiver. Every `&self`
+  method reached through any bound moved it — for USER traits too:
+  `fn f<T: Named>(x: T) { x.name(); x.name(); }` failed E0100 "use of moved value". Confirmed
+  empirically before the fix. This had to be fixed here, because "format a value and keep using it"
+  is the property the work package exists to establish.
+* **Bound order was a resolution rule.** The branch returned on the first bound supplying the name,
+  so `T: A + B` with both declaring `m` picked `A` silently instead of reporting ambiguity.
+
+### What landed: one candidate path
+
+`BoundTrait` makes both kinds of trait *an identity a bound resolves to* — `User(ItemId)` or
+`Core(CoreTrait)`. Candidates are collected additively from every bound, de-duplicated by trait
+identity, and then ONE selection runs: zero is a missing-bound diagnostic, one is checked, more than
+one is E0203 naming both traits. Argument checking, `Self` substitution, associated-type
+normalisation and diagnostics are shared from that point. A user trait of the same spelling wins,
+the same precedence `resolve_path` already applies.
+
+**No second signature registry was added.** `core_trait_contract` — WP-C7.9 Packet B's table for
+checking user `impl` blocks against a Core trait's required shape — already carried
+`fmt / Some(Ref) / [] / String`. A bound now reads that table. What a bound makes callable is by
+construction what an implementation must provide. The filter on which Core methods a bound exposes
+is `receiver.is_some()`, a property of the contract: `Default::default` and `From::from` have no
+receiver and therefore no method spelling to resolve. **No method-name branch exists anywhere in the
+change** — nothing keys on the string `"fmt"`.
+
+### The missing-bound diagnostic
+
+```text
+[E0302] method 'fmt' requires the bound 'T: Display'
+   |
+   |     x.fmt()
+   |     ^^^^^^^ 'T' has no bound that declares 'fmt'
+```
+
+Derived from the traits actually in scope, user and compiler-known alike, so it also names a user
+trait and says nothing when no trait declares the name (that case keeps the plain "not found"
+wording). Fires for `fn bad<T>(..)` and for `fn bad<T: Named>(..)` identically.
+
+### The concrete tail: primitives had no `Display` impl to find
+
+Monomorphisation grinds `T` down before MIR sees it. For a user nominal the ordinary impl path
+resolved `fmt` already; for a PRIMITIVE there is no impl item, because 06 declares
+`impl Display for Int32` "and similar for other types" and no source file writes those blocks. Seven
+`RuntimeFn` variants (`FmtInt64`, `FmtUInt64`, `FmtBool`, `FmtFloat64`, `FmtFloat32`, `FmtChar`,
+`FmtUnit`) are the lowering of exactly those declarations, sharing `stark_runtime::format`'s
+renderers with the `Print*` family — so `x.fmt()` and `println(x)` cannot disagree in any engine.
+`String`/`str` reuse `StringAsStr`/`StrToString`. The `RuntimeFn` matches in `emit_runtime.rs`,
+`mir/verify.rs` and `mir/interp.rs` are exhaustive, so all three were forced open by the addition.
+
+### Spec first
+
+**TYPE-METHOD-003** (03-Type-System.md) states that a generic parameter's candidates come from its
+bounds and nowhere else, that collection is additive, that written order is not a selection rule,
+and that a compiler-known trait contributes through the same collection with no priority.
+**STD-TRAIT-002** (06-Standard-Library.md) states the same property from the library side and names
+the program a conforming implementation must accept. STD-FORMAT-001 gained the sentence the
+ownership work depends on: `Display::fmt`'s receiver is `&self`; formatting borrows and never
+consumes, which is what makes `Display` usable at all for an affine type. Compiled spec regenerated.
+
+### Evidence
+
+- `starkc/tests/dev_display_dispatch.rs` — 21 tests. Every positive case goes through the shared
+  three-engine comparator with stdout pinned in the test rather than taken from an engine: all
+  `Display` primitives through one generic function, user impls, non-`Copy` and affine values used
+  after formatting, nested `outer<T>`→`inner<U>` forwarding, both bound orders, an impl-head bound,
+  and debug-vs-release native agreement. Negative: missing bound, wrong bound, unknown method,
+  non-`Display` concrete type, arity, and ambiguity in BOTH orders.
+- `native_selects_stark_formatting_not_rusts` reads the generated crate and requires
+  `stark_runtime::format::fmt_i64` present and `format!`, `std::fmt::Display`, `std::fmt::Debug`,
+  `#[derive(Debug`, `ToString` absent.
+- `packages/stark-fmt` + `packages/stark-fmt-consumer` — the proof workload, registered in the
+  qualification gate. `Line::value<T: Display>` and `to_string<T: Display>` are the whole surface.
+  7 package tests; consumer runs identically under the interpreter and as a native binary.
+- Full report: `starkc/docs/compiler/WP-DEV-DISPLAY-DISPATCH.md`.
+
+### One transitional compromise, stated plainly
+
+`core_trait_contract` is not an ordinary trait DECLARATION, and the preferred architecture asks for
+one. Core trait method metadata must eventually be derived from real prelude trait items carrying a
+lang-item-like classification, at which point that table and `BoundTrait::Core` both disappear and
+`BoundTrait` collapses to a single `ItemId`. That is a resolver-bootstrap change — the prelude has
+no source file today — and is a tracked follow-up, not part of this work package.
+
+### Opened
+
+- **DEV-167** — no method-form `to_string()`; needs blanket implementations. `stark-fmt` ships the
+  free function. Deferred by decision, NOT by resolver special-casing.
+- **DEV-168** — `Display::fmt(&x)` has no MIR lowering ("callee form (C4.5)"). TYPE-METHOD-001 names
+  this call as the way to disambiguate an ambiguous trait method, and it runs in one engine of three.
+  Found while proving the ambiguity this work package introduces is resolvable.
+- **DEV-169** — an explicit `.drop()` call type-checks. Pre-existing, in the CONCRETE path;
+  `Drop::drop` was included in the bound surface so the generic path matches it rather than
+  disagreeing for no stated reason. Needs a spec-vs-implementation ruling.
+- Untracked follow-up: `Clone::clone`, `Hash::hash`, `Iterator::next` and `Into::into` are now
+  callable through a bound at the front end, and their concrete lowering is uneven — a program using
+  them generically now fails at LOWERING rather than at type checking. Worse diagnostic position for
+  shapes that were rejected outright before; not a regression in what compiles.
+
+### Status
+
+DEV-166 CLOSED. The REST server's formatting prerequisite is **met** for rendering values into text;
+see the work-package report §8 for the two limits to scope around (no format strings; `Display` is
+not a serialisation format — use `stark-json` for payloads).
+
+
 ## CD-377 — installer Phase I: the layout the compiler could not find (2026-08-03)
 
 **The installed toolchain could not build anything on macOS or Windows.** CI caught the symptom on

@@ -22,11 +22,14 @@ pub enum LitValue {
 /// Parse a literal's value from its `Lit` shape tag and source text. Returns `None` on a
 /// malformed literal (should not happen for anything that passed the lexer/parser, but this
 /// stays fallible rather than panicking since it is also used for optimistic pattern comparison).
-pub fn eval_lit_value(lit: Lit, text: &str) -> Option<LitValue> {
+/// DEV-173: `str_lits` is the decoded-value table (`Ast::str_lits` / `Hir::str_lits`). A string
+/// literal reads its value from there rather than from `text`, because a literal nested inside an
+/// interpolation field carries the enclosing literal's escapes in its own source.
+pub fn eval_lit_value(lit: Lit, text: &str, str_lits: &[String]) -> Option<LitValue> {
     match lit {
         Lit::Bool(value) => Some(LitValue::Bool(value)),
         Lit::Char => parse_char(text).map(LitValue::Char),
-        Lit::Str { raw } => Some(LitValue::Str(parse_string(text, raw))),
+        Lit::Str { value, .. } => str_lits.get(value.0 as usize).cloned().map(LitValue::Str),
         Lit::Int { base, suffix } => parse_int_literal(text, base, suffix).map(LitValue::Int),
         Lit::Float { suffix } => parse_float_literal(text, suffix).map(LitValue::Float),
     }

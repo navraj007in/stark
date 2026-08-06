@@ -3,9 +3,9 @@
 The native clock provider for `stark-time` v0.1, implementing Native Provider ABI v0.1
 (`STARKLANG/docs/compiler/native-provider-abi-v0.1.md`, as amended by CE4 Amendment 1).
 
-**Not wired into `stark build`.** This crate builds and tests standalone. Nothing in the
-compiler links against it: the repository has no owner-approved provider execution/linkage
-mechanism yet. See `../BLOCKERS.md`.
+This crate builds and tests standalone, and `stark build` can link it into provider-backed
+programs that declare the `clock` capability. The package-level proof is
+`packages/stark-time-consumer`, which calls both clock families through the public STARK API.
 
 ## Provider identity
 

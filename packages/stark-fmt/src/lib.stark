@@ -1,0 +1,77 @@
+//! Minimal generic formatting for STARK.
+//!
+//! `Line` builds one line of text by alternating literal fragments with rendered values. It
+//! exists to prove that a generic `T: Display` bound is usable OUTSIDE the compiler's own tests:
+//! `value` is an ordinary generic method whose only tool is `Display::fmt`, and every primitive
+//! and every user type with an `impl Display` flows through it unchanged.
+//!
+//! Deliberately NOT here: format strings, interpolation, padding, width, precision, alignment,
+//! variadic arguments. Those are separate questions. This package answers one: can a package
+//! author write `fn value<T: Display>(..)` and have it work.
+//!
+//! Every method takes `self` by value and returns a new `Line`, so a line reads as a chain:
+//!
+//! ```text
+//! let msg = Line::new()
+//!     .text("pkg=")
+//!     .value(&name)
+//!     .text(" n=")
+//!     .value(&count)
+//!     .done();
+//! ```
+//!
+//! The value being rendered is BORROWED (`&T`), never consumed — `Display::fmt` is `&self`, so a
+//! caller may format a value and then keep using it.
+//!
+//! ## The surface
+//!
+//! * `Line::new()` — an empty line.
+//! * `Line::text(self, value: &str)` — append a literal fragment.
+//! * `Line::value<T: Display>(self, value: &T)` — append a value's `Display` rendering. This is
+//!   the whole point of the package: `T` is constrained only by `Display`, and the body calls
+//!   the trait's own method.
+//! * `Line::done(self)` — finish the line and take its text.
+//! * `to_string<T: Display>(value: &T)` — a value's rendering, as a free function.
+//!
+//! The per-item explanations live here rather than on the items because `stark fmt` relocates an
+//! item doc comment written inside an `impl` block into the method's BODY — DEV-156, which records
+//! the same eviction for struct fields and impl methods. One doc comment on the module survives
+//! formatting; five on the methods do not.
+
+mod tests;
+
+/// One line of text under construction. `buf` is private: a `Line` is built and then finished,
+/// never edited.
+pub struct Line { buf: String }
+
+impl Line {
+    pub fn new() -> Line {
+        Line { buf: String::new() }
+    }
+    pub fn text(self, value: &str) -> Line {
+        let mut buf = self.buf;
+        buf.push_str(value);
+
+        Line { buf }
+    }
+    pub fn value<T: Display>(self, value: &T) -> Line {
+        let mut buf = self.buf;
+        let rendered = value.fmt();
+        buf.push_str(rendered.as_str());
+
+        Line { buf }
+    }
+    pub fn done(self) -> String {
+        self.buf
+    }
+}
+
+/// The `Display` rendering of a value, as a free function.
+///
+/// Core v1 has no blanket implementations and no extension traits, so there is no principled way
+/// to give every `Display` type a `to_string()` METHOD. A free function needs neither: it is an
+/// ordinary generic function over an ordinary bound. See README.md for why the method form is
+/// deferred rather than special-cased in the resolver.
+pub fn to_string<T: Display>(value: &T) -> String {
+    value.fmt()
+}

@@ -1,0 +1,67 @@
+//! Exit codes and the one function that writes a diagnostic.
+//!
+//! **Exit codes are functions, not constants.** A `const` cannot be used from another file (E0215),
+//! and these are read from every module. The shape is forced by the compiler, not chosen.
+//!
+//! The table is stable and documented in README.md; a caller scripting `stark-get` can branch on
+//! it. The distinction it encodes is that a TRANSPORT failure and an HTTP error status are
+//! different things.
+
+/// Success.
+pub fn exit_ok() -> Int32 {
+    0
+}
+
+/// Command-line usage or validation error.
+pub fn exit_usage() -> Int32 {
+    2
+}
+
+/// URL or request-construction error, including an invalid `--header`.
+pub fn exit_request() -> Int32 {
+    3
+}
+
+/// DNS, TCP or TLS failure -- the request never completed an exchange.
+pub fn exit_transport() -> Int32 {
+    4
+}
+
+/// HTTP protocol or response-framing failure: bytes arrived, and they were not a valid response.
+pub fn exit_protocol() -> Int32 {
+    5
+}
+
+/// The response body exceeded the configured limit.
+pub fn exit_body_limit() -> Int32 {
+    6
+}
+
+/// `--json` was given and the body is not valid JSON.
+pub fn exit_json() -> Int32 {
+    7
+}
+
+/// `--output` was given and the file could not be created or written.
+pub fn exit_output() -> Int32 {
+    8
+}
+
+/// `--fail-status` was given and the response carried a 4xx or 5xx status.
+pub fn exit_http_status() -> Int32 {
+    9
+}
+
+/// An internal failure that should not happen. Distinct from every other code so it cannot be
+/// mistaken for a condition the program understands.
+pub fn exit_internal() -> Int32 {
+    10
+}
+
+/// Write a diagnostic to stderr, prefixed with the program name.
+///
+/// **Diagnostics go to stderr, always.** stdout carries the response body, and a program piping
+/// `stark-get` into a file must not find an error message mixed into its data.
+pub fn fail(message: &str) {
+    eprintln(f"stark-get: {message}");
+}

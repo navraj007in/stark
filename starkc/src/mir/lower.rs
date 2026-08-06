@@ -921,12 +921,25 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                     "{prefix}{type_name}::{method}@[{args_text}]{method_text}"
                 )),
                 Some(trait_ref) => {
+                    // DEV-BOUND-TRAIT-IDENTITY: the trait's own MODULE PATH is part of its name
+                    // here. Without it, `impl left::Render for Item` and
+                    // `impl right::Render for Item` produced the identical symbol
+                    // `Item::Render::tag@[]` — one symbol, two bodies — and the C5.4a linkage
+                    // preflight refused the program as a canonical-identity defect. It was right
+                    // to: the two impls are distinct callables. A trait declared at the top level
+                    // has an empty prefix, so every pre-existing symbol is unchanged.
                     let trait_name = match trait_ref.res {
-                        Res::Item(t) => item_name_text(hir, meta, t).unwrap_or("?"),
+                        Res::Item(t) => format!(
+                            "{}{}",
+                            meta.symbol_prefix(t),
+                            item_name_text(hir, meta, t).unwrap_or("?")
+                        ),
                         // C4.5d: compiler-known trait impls (`impl Drop for T`) render their
                         // source-level trait name — symbols stay injective and readable.
-                        Res::CoreTrait(_) => meta.item_text(*impl_item, trait_ref.path.span),
-                        _ => "?",
+                        Res::CoreTrait(_) => {
+                            meta.item_text(*impl_item, trait_ref.path.span).to_string()
+                        }
+                        _ => "?".to_string(),
                     };
                     Ok(format!(
                         "{prefix}{type_name}::{trait_name}::{method}@[{args_text}]{method_text}"
@@ -941,7 +954,13 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             self_args,
             method_args,
         } => {
-            let trait_name = item_name_text(hir, meta, *trait_item).unwrap_or("?");
+            // DEV-BOUND-TRAIT-IDENTITY: as above — two same-named traits in different modules
+            // must not share a default-method symbol either.
+            let trait_name = format!(
+                "{}{}",
+                meta.symbol_prefix(*trait_item),
+                item_name_text(hir, meta, *trait_item).unwrap_or("?")
+            );
             let type_name = item_name_text(hir, meta, *self_item).unwrap_or("?");
             let method_text = if method_args.is_empty() {
                 String::new()
@@ -3971,6 +3990,12 @@ impl<'a> FnLowerer<'a> {
         let span = self.hir.expr(expr).span;
         match &self.hir.expr(expr).kind {
             hir::ExprKind::Lit(lit) => self.lower_lit(expr, lit),
+            // WP-FMT-001: build the output `String` into a temp, then hand back that temp.
+            hir::ExprKind::FormatString { .. } => {
+                let out = self.new_temp(MirTy::String);
+                self.lower_format_string(expr, Place::local(out), span)?;
+                self.read_place(Place::local(out), &MirTy::String, span)
+            }
             hir::ExprKind::Path { res, .. } => match res {
                 Res::Local(local) | Res::SelfValue(local) => {
                     let mir_local = *self.local_map.get(&local.0).ok_or_else(|| LowerError {
@@ -4761,7 +4786,8 @@ impl<'a> FnLowerer<'a> {
             }
             // A1 (CD-031): a decoded UTF-8 `&str` literal.
             Lit::Str { .. } => {
-                let value = match literal::eval_lit_value(*lit, self.text(span)) {
+                let value = match literal::eval_lit_value(*lit, self.text(span), &self.hir.str_lits)
+                {
                     Some(crate::literal::LitValue::Str(s)) => s,
                     _ => {
                         return unsupported("unparseable string literal", span);
@@ -4770,7 +4796,7 @@ impl<'a> FnLowerer<'a> {
                 Ok(Operand::Const(Constant::Str(value)))
             }
             // f-3b: a Char literal is its Unicode scalar codepoint, typed Char.
-            Lit::Char => match literal::eval_lit_value(*lit, self.text(span)) {
+            Lit::Char => match literal::eval_lit_value(*lit, self.text(span), &self.hir.str_lits) {
                 Some(crate::literal::LitValue::Char(c)) => Ok(Operand::Const(Constant::Int(
                     i128::from(u32::from(c)),
                     MirTy::Char,
@@ -5775,9 +5801,13 @@ impl<'a> FnLowerer<'a> {
                     let nominal = *nominal;
                     let name_text = self.text(*name_span).to_string();
                     // Locate first (empty args), then infer and rebuild the key.
-                    let Some((located, _receiver)) =
-                        self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true, &[])
-                    else {
+                    let Some((located, _receiver)) = self.find_impl_fn(
+                        nominal,
+                        &name_text,
+                        /*receiverless=*/ true,
+                        &[],
+                        None,
+                    ) else {
                         return unsupported(
                             format!("associated function {name_text} not found"),
                             span,
@@ -5919,7 +5949,15 @@ impl<'a> FnLowerer<'a> {
                     };
                     // Method-level generic arguments come from the checker's per-call-site
                     // recording, exactly as for `recv.m::<T>(...)` (WP-C4.7-8.4).
-                    let method_args = match self.tables.generic_insts.get(&expr) {
+                    // A3c-S: one table now answers "what generic context applies at this use".
+                    // MIR wants the callable's OWN arguments in order; the environment carries
+                    // impl and `Self` bindings too, which are not part of a monomorphisation key.
+                    let own = self
+                        .tables
+                        .callable_instantiations
+                        .get(&expr)
+                        .map(|env| env.own_arguments());
+                    let method_args = match own.as_deref() {
                         Some(tys) => tys
                             .iter()
                             .map(|t| self.mir_ty(t, span))
@@ -6073,7 +6111,12 @@ impl<'a> FnLowerer<'a> {
         let type_args = if def.sig.generics.is_empty() {
             Vec::new()
         } else {
-            let Some(recorded) = self.tables.generic_insts.get(&use_expr) else {
+            let recorded_env = self
+                .tables
+                .callable_instantiations
+                .get(&use_expr)
+                .map(|env| env.own_arguments());
+            let Some(recorded) = recorded_env.as_deref() else {
                 // The checker records every accepted use of a generic fn (undetermined ones
                 // are E0004-rejected before lowering), so a miss is a pipeline invariant
                 // violation, not a user error — still reported cleanly, never mislowered.
@@ -6136,7 +6179,8 @@ impl<'a> FnLowerer<'a> {
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args, None)
+        else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
@@ -6185,7 +6229,8 @@ impl<'a> FnLowerer<'a> {
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args, None)
+        else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
                 span,
@@ -6240,12 +6285,21 @@ impl<'a> FnLowerer<'a> {
         Ok(Operand::Copy(Place::local(result)))
     }
 
+    /// `trait_filter` narrows the search to one trait's implementation.
+    ///
+    /// DEV-BOUND-TRAIT-IDENTITY: a call resolved through a generic parameter's BOUND already knows
+    /// which trait supplied its signature, and lowering must select that trait's impl. Without the
+    /// filter this answered "the first impl on this nominal declaring a method with that name",
+    /// so a type implementing two same-named traits ran the same body for both bounds — while the
+    /// type checker had correctly distinguished them. `None` keeps the ordinary
+    /// "what does `recv.m()` mean here" behaviour, inherent methods first.
     fn find_impl_fn(
         &self,
         nominal: ItemId,
         name: &str,
         receiverless: bool,
         type_args: &[MirTy],
+        trait_filter: Option<Res>,
     ) -> Option<(FnKey, Option<hir::Receiver>)> {
         let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
         let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
@@ -6257,6 +6311,14 @@ impl<'a> FnLowerer<'a> {
             let impl_item = ItemId(idx as u32);
             if impl_self_item(self.hir, impl_item) != Some(nominal) {
                 continue;
+            }
+            // A filtered lookup considers ONLY that trait's impl — never an inherent method, and
+            // never another trait's, exactly as a qualified call does.
+            if let Some(wanted) = trait_filter {
+                match trait_ {
+                    Some(trait_ref) if trait_ref.res == wanted => {}
+                    Some(_) | None => continue,
+                }
             }
             for (member, impl_member) in items.iter().enumerate() {
                 let hir::ImplItem::Fn { def, .. } = impl_member else {
@@ -6442,6 +6504,21 @@ impl<'a> FnLowerer<'a> {
         {
             return self.lower_primitive_cmp(base, args[0], dest, span);
         }
+        // DEV-DISPLAY-DISPATCH: `Display::fmt` on a standard-library receiver. Checked BEFORE the
+        // String/str dispatch below, which has no `fmt` entry of its own and would refuse the
+        // call.
+        //
+        // This is the concrete tail of generic `Display` dispatch, not a separate feature: by the
+        // time MIR sees `x.fmt()` inside `fn show<T: Display>(x: &T)`, monomorphisation has ground
+        // `T` down to a concrete type. When that type is a user nominal the ordinary nominal path
+        // further below already resolves its `impl Display` — but when it is a PRIMITIVE there is
+        // no impl item to find, because 06-Standard-Library declares those impls and no source
+        // file writes them. The runtime call below is the lowering of exactly those declarations.
+        if self.text(name_span) == "fmt" && args.is_empty() {
+            if let Some(kind) = FmtReceiver::of(&peeled_ty) {
+                return self.lower_display_fmt(base, &peeled_ty, base_ref_layers, kind, dest, span);
+            }
+        }
         // 0.1-A7: the method spelling `b.into_inner()` (the qualified `Box::into_inner(b)` form
         // goes through the builtin arm in `lower_call`). Core v1 has NO `Deref` trait, so this is
         // the ONLY way to get the value out of a box — `*b` is not a Core construct.
@@ -6531,7 +6608,11 @@ impl<'a> FnLowerer<'a> {
             }
         };
         let name_text = self.text(name_span).to_string();
-        let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false, &nominal_args)
+        // DEV-BOUND-TRAIT-IDENTITY: if the checker resolved this call through a generic
+        // parameter's bound, it recorded the trait; select that trait's impl and no other.
+        let bound_trait = self.tables.bound_trait_calls.get(&call_expr).copied();
+        let Some((key, receiver)) =
+            self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait)
         else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
@@ -6540,7 +6621,12 @@ impl<'a> FnLowerer<'a> {
         // call, so they come from the checker's recording keyed by this call expression. The
         // recorded types are grounded but may still mention the ENCLOSING body's parameters, so
         // the active substitution applies — the same treatment top-level generic calls get.
-        let recorded_method_args = match self.tables.generic_insts.get(&call_expr) {
+        let own_args = self
+            .tables
+            .callable_instantiations
+            .get(&call_expr)
+            .map(|env| env.own_arguments());
+        let recorded_method_args = match own_args.as_deref() {
             Some(tys) => tys
                 .iter()
                 .map(|t| self.mir_ty(t, span))
@@ -7956,7 +8042,7 @@ impl<'a> FnLowerer<'a> {
         targs: Vec<MirTy>,
         span: Span,
     ) -> Result<(), LowerError> {
-        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs) else {
+        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs, None) else {
             return unsupported(
                 "for over a non-range, non-Vec iterator without an Iterator impl",
                 span,
@@ -9366,7 +9452,8 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let nominal = *item;
                 let nominal_args = args.clone();
-                let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args)
+                let Some((key, receiver)) =
+                    self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
                 else {
                     return unsupported(
                         "Display::fmt not found for a composite element (only standard-library and \
@@ -9536,6 +9623,531 @@ impl<'a> FnLowerer<'a> {
     /// existing `StringAsStr` + `Print(ln)Str` runtime surface, then a visible `Drop` of the
     /// formatting `String` and (for an owned by-value argument) the argument itself. No new MIR
     /// shape, no new `RuntimeFn`, no runtime-surface bump.
+    /// DEV-DISPLAY-DISPATCH: lower `x.fmt()` where `x`'s type is one of the standard library's
+    /// own `Display` implementors (06-Standard-Library declares `impl Display for Int32` and
+    /// "similar for other types"; no source file writes those blocks, so `find_impl_fn` can never
+    /// find them).
+    ///
+    /// **Ownership.** `Display::fmt` takes `&self`, so this must not consume the receiver. Every
+    /// scalar here is `Copy`, so `read_place` yields a `Copy` operand and the receiver is
+    /// untouched; `String` is NOT `Copy`, so it is read through a shared reference and cloned.
+    /// That is what makes `let a = x.fmt(); let b = x.fmt();` legal at this level rather than a
+    /// V-MOVE-1 failure on the second call.
+    fn lower_display_fmt(
+        &mut self,
+        base: ExprId,
+        peeled_ty: &MirTy,
+        base_ref_layers: u32,
+        kind: FmtReceiver,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        // The receiver expression as a place AT ITS OWN TYPE — which may itself be a reference.
+        // A non-place receiver (`make_int().fmt()`) is materialised into a temp first, exactly as
+        // the ordinary method-receiver path does.
+        let base_place = match self.lower_place(base) {
+            Ok(place) => place,
+            Err(_) => {
+                let value = self.lower_expr_to_operand(base)?;
+                let base_ty = self.expr_mir_ty(base)?;
+                let temp = self.new_temp(base_ty);
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                Place::local(temp)
+            }
+        };
+        // `str` is unsized: the referent is never a place a `RefOf` may take, so the `&str` that
+        // already exists one level up is what gets read. Everything else projects all the way down
+        // to the value (TYPE-METHOD-002 auto-dereference).
+        if let FmtReceiver::StrSlice = kind {
+            let str_ref_ty = MirTy::Ref {
+                mutable: false,
+                inner: Box::new(MirTy::Str),
+            };
+            let ref_place = Self::deref_place(base_place, base_ref_layers.saturating_sub(1));
+            let str_op = self.read_place(ref_place, &str_ref_ty, span)?;
+            self.emit_runtime_call(RuntimeFn::StrToString, vec![str_op], dest, span);
+            return Ok(());
+        }
+        let place = Self::deref_place(base_place, base_ref_layers);
+        match kind {
+            FmtReceiver::Unit => {
+                self.emit_runtime_call(RuntimeFn::FmtUnit, Vec::new(), dest, span);
+            }
+            FmtReceiver::Scalar => {
+                let value = self.read_place(place, peeled_ty, span)?;
+                let (print_kind, widened) = self.widen_for_print(value, peeled_ty, span)?;
+                let rt = match print_kind {
+                    PrintKind::Int => RuntimeFn::FmtInt64,
+                    PrintKind::UInt => RuntimeFn::FmtUInt64,
+                    PrintKind::Bool => RuntimeFn::FmtBool,
+                    PrintKind::Char => RuntimeFn::FmtChar,
+                    PrintKind::Float => RuntimeFn::FmtFloat64,
+                };
+                self.emit_runtime_call(rt, vec![widened], dest, span);
+            }
+            FmtReceiver::Float32 => {
+                let value = self.read_place(place, peeled_ty, span)?;
+                self.emit_runtime_call(RuntimeFn::FmtFloat32, vec![value], dest, span);
+            }
+            // `&String -> StringAsStr -> &str -> StrToString`, the same borrow-then-copy shape
+            // `emit_display_value` uses for a `String` element. The receiver is never moved.
+            FmtReceiver::StringOwned => {
+                let owned_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::String),
+                };
+                let string_ref = self.new_temp(owned_ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(string_ref),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place,
+                        },
+                    ),
+                    self.info(span),
+                );
+                let str_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                };
+                let str_tmp = self.new_temp(str_ref_ty);
+                self.emit_runtime_call(
+                    RuntimeFn::StringAsStr,
+                    vec![Operand::Copy(Place::local(string_ref))],
+                    Place::local(str_tmp),
+                    span,
+                );
+                self.emit_runtime_call(
+                    RuntimeFn::StrToString,
+                    vec![Operand::Copy(Place::local(str_tmp))],
+                    dest,
+                    span,
+                );
+            }
+            // Handled above, before the receiver place was dereferenced.
+            FmtReceiver::StrSlice => unreachable!("str receiver is lowered before this match"),
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------ WP-FMT-001: interpolated string literals --
+
+    /// Pack a source-level specification into the runtime's word plus its fill scalar.
+    ///
+    /// The layout lives in `stark_runtime::fmt_spec::Spec`, next to the `unpack` that reads it, so
+    /// the two cannot disagree about a bit position.
+    fn format_spec_operands(spec: &crate::ast::FormatSpec) -> (Operand, Operand) {
+        use crate::ast::FormatKind;
+        use stark_runtime::fmt_spec::{Align, Kind, Sign, Spec};
+        let align = match spec.align {
+            None => Align::Default,
+            Some(crate::ast::FormatAlign::Left) => Align::Left,
+            Some(crate::ast::FormatAlign::Right) => Align::Right,
+            Some(crate::ast::FormatAlign::Center) => Align::Center,
+        };
+        let sign = match spec.sign {
+            None | Some(crate::ast::FormatSign::Minus) => Sign::Minus,
+            Some(crate::ast::FormatSign::Plus) => Sign::Plus,
+            Some(crate::ast::FormatSign::Space) => Sign::Space,
+        };
+        let kind = match spec.kind {
+            None => Kind::Display,
+            Some(FormatKind::Bin) => Kind::Bin,
+            Some(FormatKind::Oct) => Kind::Oct,
+            Some(FormatKind::LowerHex) => Kind::LowerHex,
+            Some(FormatKind::UpperHex) => Kind::UpperHex,
+            Some(FormatKind::Fixed) => Kind::Fixed,
+        };
+        let word = Spec::pack(
+            spec.width.unwrap_or(0),
+            spec.precision.map(|p| p as u16),
+            align,
+            sign,
+            spec.alternate,
+            spec.zero_pad,
+            kind,
+        );
+        let fill = spec.fill.unwrap_or(' ');
+        (
+            Operand::Const(Constant::Int(word as i128, MirTy::UInt64)),
+            Operand::Const(Constant::Int(u32::from(fill) as i128, MirTy::Char)),
+        )
+    }
+
+    /// Whether a specification asks for a NUMERIC rendering, which owns sign placement and radix
+    /// and therefore takes the value rather than its `Display` text.
+    fn format_spec_is_numeric(spec: &crate::ast::FormatSpec) -> bool {
+        spec.kind.is_some()
+            || spec.precision.is_some()
+            || spec.sign.is_some()
+            || spec.alternate
+            || spec.zero_pad
+    }
+
+    /// WP-FMT-001: lower `f"..."` into the construction of one output `String` at `dest`.
+    ///
+    /// One `StringNew`, then per segment either a `StringPushStr` of static text or a rendered
+    /// field appended and its temporary destroyed. **Adjacent literal segments were already merged
+    /// by the scanner**, which emits one `Literal` per run between fields, so no merging is needed
+    /// here (§12.3).
+    ///
+    /// Nothing about the format string survives to run time: the literal text is a `Constant::Str`
+    /// and every specification is a constant word (§12.1).
+    fn lower_format_string(
+        &mut self,
+        expr: ExprId,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let hir::ExprKind::FormatString { segments } = &self.hir.expr(expr).kind else {
+            return unsupported("lower_format_string on a non-format expression", span);
+        };
+        let segments = segments.clone();
+
+        self.emit_runtime_call(RuntimeFn::StringNew, Vec::new(), dest.clone(), span);
+
+        for segment in &segments {
+            match segment {
+                hir::FormatSegment::Literal { text, .. } => {
+                    self.push_str_onto(&dest, Operand::Const(Constant::Str(text.clone())), span)?;
+                }
+                hir::FormatSegment::Field {
+                    expr: field,
+                    spec,
+                    expr_span,
+                    ..
+                } => {
+                    let rendered = self.render_format_field(*field, spec, *expr_span)?;
+                    // `String::as_str` then push; the rendered temporary is destroyed straight
+                    // after its bytes are appended, exactly once.
+                    let str_ref_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::String),
+                    };
+                    let str_ref = self.new_temp(str_ref_ty);
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(str_ref),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: Place::local(rendered),
+                            },
+                        ),
+                        self.info(*expr_span),
+                    );
+                    let as_str_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::Str),
+                    };
+                    let as_str = self.new_temp(as_str_ty.clone());
+                    self.emit_runtime_call(
+                        RuntimeFn::StringAsStr,
+                        vec![Operand::Copy(Place::local(str_ref))],
+                        Place::local(as_str),
+                        *expr_span,
+                    );
+                    let str_op = self.read_place(Place::local(as_str), &as_str_ty, *expr_span)?;
+                    self.push_str_onto(&dest, str_op, *expr_span)?;
+                    let after_drop = self.new_block();
+                    self.terminate(
+                        Terminator::Drop {
+                            place: Place::local(rendered),
+                            target: after_drop,
+                        },
+                        self.info(*expr_span),
+                        after_drop,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `output.push_str(text)`.
+    fn push_str_onto(&mut self, dest: &Place, text: Operand, span: Span) -> Result<(), LowerError> {
+        let out_ref_ty = MirTy::Ref {
+            mutable: true,
+            inner: Box::new(MirTy::String),
+        };
+        let out_ref = self.new_temp(out_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(out_ref),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place: dest.clone(),
+                },
+            ),
+            self.info(span),
+        );
+        let unit = Place::local(self.new_temp(MirTy::Unit));
+        self.emit_runtime_call(
+            RuntimeFn::StringPushStr,
+            vec![Operand::Copy(Place::local(out_ref)), text],
+            unit,
+            span,
+        );
+        Ok(())
+    }
+
+    /// WP-FMT-001: render one field into a fresh `String` local, returning that local.
+    ///
+    /// A numeric specification renders the VALUE through the `Fmt*Spec` runtime ops; everything
+    /// else renders the value's `Display` text — through the very same machinery `x.fmt()` uses,
+    /// so `f"{x}"` and `x.fmt()` cannot disagree — and pads it if a width was asked for.
+    ///
+    /// **The field expression is lowered exactly once** (§10.2). It is never evaluated to discover
+    /// a width and again to render.
+    fn render_format_field(
+        &mut self,
+        field: ExprId,
+        spec: &crate::ast::FormatSpec,
+        span: Span,
+    ) -> Result<LocalId, LowerError> {
+        let (word, fill) = Self::format_spec_operands(spec);
+        let field_ty = self.expr_mir_ty(field)?;
+        let (peeled, _layers) = Self::peel_refs(field_ty.clone());
+        let out = self.new_temp(MirTy::String);
+
+        if Self::format_spec_is_numeric(spec) {
+            match &peeled {
+                MirTy::Float32 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtFloat32Spec,
+                        vec![value, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::Float64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtFloat64Spec,
+                        vec![value, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::Int8 | MirTy::Int16 | MirTy::Int32 | MirTy::Int64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    let widened = if matches!(peeled, MirTy::Int64) {
+                        value
+                    } else {
+                        self.cast_to_temp(value, MirTy::Int64, span)?
+                    };
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtIntSpec,
+                        vec![widened, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                MirTy::UInt8 | MirTy::UInt16 | MirTy::UInt32 | MirTy::UInt64 => {
+                    let value = self.lower_field_scalar(field, &peeled, span)?;
+                    let widened = if matches!(peeled, MirTy::UInt64) {
+                        value
+                    } else {
+                        self.cast_to_temp(value, MirTy::UInt64, span)?
+                    };
+                    self.emit_runtime_call(
+                        RuntimeFn::FmtUIntSpec,
+                        vec![widened, word, fill],
+                        Place::local(out),
+                        span,
+                    );
+                    return Ok(out);
+                }
+                // The type checker refuses a numeric specification on anything else, so reaching
+                // here means the checker and this lowering disagree — a compiler defect, reported
+                // as one rather than rendered as something else.
+                other => {
+                    return unsupported(
+                        format!(
+                        "numeric format specification on {other:?} (checker/lowering disagreement)"
+                    ),
+                        span,
+                    )
+                }
+            }
+        }
+
+        // `Display` text. `lower_display_fmt` is CD-378's own path, so a primitive renders through
+        // `stark_runtime::format` and a user nominal runs its `impl Display`.
+        let rendered = self.new_temp(MirTy::String);
+        self.lower_field_display(field, &peeled, Place::local(rendered), span)?;
+        if spec.width.unwrap_or(0) == 0 {
+            return Ok(rendered);
+        }
+        // Pad the rendered text. The rendered `String` is consumed here and destroyed by the
+        // caller's drop of `out`, so exactly one `String` survives per field.
+        let str_ref_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::String),
+        };
+        let str_ref = self.new_temp(str_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(str_ref),
+                Rvalue::RefOf {
+                    mutable: false,
+                    place: Place::local(rendered),
+                },
+            ),
+            self.info(span),
+        );
+        let as_str_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Str),
+        };
+        let as_str = self.new_temp(as_str_ty.clone());
+        self.emit_runtime_call(
+            RuntimeFn::StringAsStr,
+            vec![Operand::Copy(Place::local(str_ref))],
+            Place::local(as_str),
+            span,
+        );
+        let str_op = self.read_place(Place::local(as_str), &as_str_ty, span)?;
+        self.emit_runtime_call(
+            RuntimeFn::FmtPad,
+            vec![str_op, word, fill],
+            Place::local(out),
+            span,
+        );
+        let after_drop = self.new_block();
+        self.terminate(
+            Terminator::Drop {
+                place: Place::local(rendered),
+                target: after_drop,
+            },
+            self.info(span),
+            after_drop,
+        );
+        Ok(out)
+    }
+
+    /// A field's value as a scalar operand, read by COPY from its place when it has one.
+    ///
+    /// Every type reaching here is a `Copy` primitive, so reading the place leaves the field's
+    /// value untouched — `f"{x:04}"` does not move `x`.
+    fn lower_field_scalar(
+        &mut self,
+        field: ExprId,
+        peeled: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        match self.lower_place_autoderef(field) {
+            Ok((place, _)) => self.read_place(place, peeled, span),
+            Err(_) => self.lower_expr_to_operand(field),
+        }
+    }
+
+    /// A field's `Display` text into `dest`.
+    ///
+    /// Delegates to CD-378's `lower_display_fmt` for a standard-library receiver, and to the
+    /// nominal's own `impl Display` otherwise — the same two paths `x.fmt()` takes, so an
+    /// interpolated value and an explicitly formatted one render identically by construction.
+    fn lower_field_display(
+        &mut self,
+        field: ExprId,
+        peeled: &MirTy,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let field_ty = self.expr_mir_ty(field)?;
+        let (_, layers) = Self::peel_refs(field_ty);
+        if let Some(kind) = FmtReceiver::of(peeled) {
+            return self.lower_display_fmt(field, peeled, layers, kind, dest, span);
+        }
+        let (nominal, nominal_args) = match peeled {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                (*item, args.clone())
+            }
+            other => {
+                return unsupported(
+                    format!("interpolation of {other:?} (no Display lowering)"),
+                    span,
+                )
+            }
+        };
+        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        else {
+            return unsupported("Display::fmt not found for an interpolated value", span);
+        };
+        if !matches!(receiver, Some(hir::Receiver::Ref)) {
+            return unsupported("Display::fmt with a non-&self receiver", span);
+        }
+        // `&value`: a reference field passes through, an owned place is borrowed. Either way the
+        // field is BORROWED, never moved.
+        let recv_op = match self.lower_place_autoderef(field) {
+            Ok((place, _)) => {
+                let ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(peeled.clone()),
+                };
+                let ref_tmp = self.new_temp(ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(ref_tmp),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place,
+                        },
+                    ),
+                    self.info(span),
+                );
+                self.read_place(Place::local(ref_tmp), &ref_ty, span)?
+            }
+            Err(_) => {
+                // A temporary (`f"{make_point()}"`): materialise it, borrow it for `fmt`. Its
+                // destructor runs at end of body with the temp, as any other temporary's does.
+                let value = self.lower_expr_to_operand(field)?;
+                let tmp = self.new_temp(peeled.clone());
+                self.emit(
+                    Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                let ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(peeled.clone()),
+                };
+                let ref_tmp = self.new_temp(ref_ty.clone());
+                self.emit(
+                    Statement::Assign(
+                        Place::local(ref_tmp),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place: Place::local(tmp),
+                        },
+                    ),
+                    self.info(span),
+                );
+                self.read_place(Place::local(ref_tmp), &ref_ty, span)?
+            }
+        };
+        let instance = self.instance_from_key(&key)?;
+        self.discovered_callees.push(key);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(instance),
+                args: vec![recv_op],
+                dest,
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        Ok(())
+    }
+
     fn lower_print_display(
         &mut self,
         arg: ExprId,
@@ -9551,7 +10163,8 @@ impl<'a> FnLowerer<'a> {
             }
             other => return unsupported(format!("Display print on non-nominal {other:?}"), span),
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args) else {
+        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        else {
             return unsupported("Display::fmt not found for printed type", span);
         };
         if !matches!(receiver, Some(hir::Receiver::Ref)) {
@@ -9857,7 +10470,11 @@ impl<'a> FnLowerer<'a> {
                         }
                         // A2: a Char literal pattern is its Unicode scalar codepoint (the same
                         // representation Char literals lower to as expressions).
-                        Lit::Char => match literal::eval_lit_value(*lit, self.text(pat_span)) {
+                        Lit::Char => match literal::eval_lit_value(
+                            *lit,
+                            self.text(pat_span),
+                            &self.hir.str_lits,
+                        ) {
                             Some(crate::literal::LitValue::Char(c)) => u128::from(u32::from(c)),
                             _ => return unsupported("unparseable char literal pattern", pat_span),
                         },
@@ -10166,15 +10783,19 @@ impl<'a> FnLowerer<'a> {
                                 what: "unparseable literal pattern".to_string(),
                                 span: pat_span,
                             })?,
-                            Lit::Char => match literal::eval_lit_value(*lit, &text) {
-                                Some(crate::literal::LitValue::Char(c)) => i128::from(u32::from(c)),
-                                _ => {
-                                    return unsupported(
-                                        "unparseable char literal pattern",
-                                        pat_span,
-                                    )
+                            Lit::Char => {
+                                match literal::eval_lit_value(*lit, &text, &self.hir.str_lits) {
+                                    Some(crate::literal::LitValue::Char(c)) => {
+                                        i128::from(u32::from(c))
+                                    }
+                                    _ => {
+                                        return unsupported(
+                                            "unparseable char literal pattern",
+                                            pat_span,
+                                        )
+                                    }
                                 }
-                            },
+                            }
                             _ => return unsupported("literal/type mismatch in pattern", pat_span),
                         };
                         let eq = self.new_temp(MirTy::Bool);
@@ -10226,7 +10847,7 @@ impl<'a> FnLowerer<'a> {
                         let Lit::Str { .. } = lit else {
                             return unsupported("literal/type mismatch in pattern", pat_span);
                         };
-                        let value = match literal::eval_lit_value(*lit, &text) {
+                        let value = match literal::eval_lit_value(*lit, &text, &self.hir.str_lits) {
                             Some(crate::literal::LitValue::Str(s)) => s,
                             _ => {
                                 return unsupported("unparseable string literal pattern", pat_span)
@@ -11328,6 +11949,63 @@ enum PrintKind {
     Float,
 }
 
+/// DEV-DISPLAY-DISPATCH: which lowering a `Display::fmt` receiver takes when the implementation
+/// is the standard library's rather than a user `impl` block.
+///
+/// The match in [`FmtReceiver::of`] is deliberately **total over `MirTy`**: a new MIR type is a
+/// question about whether it is `Display`, and the answer belongs here rather than in a `_` arm
+/// that silently says "no".
+#[derive(Clone, Copy)]
+enum FmtReceiver {
+    /// The integer widths, `Bool`, `Char` and `Float64` — everything `widen_for_print` accepts.
+    Scalar,
+    /// `Float32` renders at its DECLARED width (DEV-105), so it must not be widened first.
+    Float32,
+    /// `String`. Cloned rather than moved: `fmt(&self)` must leave the receiver usable.
+    StringOwned,
+    /// `str`, which is only ever reached behind a reference.
+    StrSlice,
+    /// `Unit` renders as `()`.
+    Unit,
+}
+
+impl FmtReceiver {
+    fn of(ty: &MirTy) -> Option<FmtReceiver> {
+        match ty {
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Bool
+            | MirTy::Char
+            | MirTy::Float64 => Some(FmtReceiver::Scalar),
+            MirTy::Float32 => Some(FmtReceiver::Float32),
+            MirTy::String => Some(FmtReceiver::StringOwned),
+            MirTy::Str => Some(FmtReceiver::StrSlice),
+            MirTy::Unit => Some(FmtReceiver::Unit),
+            // Not standard-library `Display` receivers. A nominal is handled by the ordinary
+            // impl-resolution path in `lower_method_call`, which is where a user
+            // `impl Display for Point` is found; the rest have no `Display` at all in Core v1
+            // (`Ordering`/`IOError` render only through `print`/`println`, whose composite
+            // renderer walks them structurally — they have no `fmt` returning a `String`).
+            MirTy::Never
+            | MirTy::Struct(_, _)
+            | MirTy::Enum(_, _)
+            | MirTy::Tuple(_)
+            | MirTy::Array(_, _)
+            | MirTy::Slice(_)
+            | MirTy::Ref { .. }
+            | MirTy::FnPtr { .. }
+            | MirTy::Core(_, _)
+            | MirTy::HostResource(_) => None,
+        }
+    }
+}
+
 /// 0.1-A13 (WP-C7.9 Packet D): which stream an output operation writes to.
 ///
 /// PROC-STREAM-001 gives a program two independent streams; before Packet D the compiler could
@@ -11342,6 +12020,7 @@ enum OutChannel {
 fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
     match kind {
         hir::ExprKind::Lit(_) => "Lit",
+        hir::ExprKind::FormatString { .. } => "FormatString",
         hir::ExprKind::Path { .. } => "Path",
         hir::ExprKind::Unary { .. } => "Unary",
         hir::ExprKind::Binary { .. } => "Binary",
