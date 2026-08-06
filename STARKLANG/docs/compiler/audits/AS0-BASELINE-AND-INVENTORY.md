@@ -17,7 +17,7 @@ inventory, not from a module-size impression.
 | 2 | reproduce the provenance half separately | **DONE** §2 |
 | 3 | two-checkout comparison: source maps, MIR dumps, build keys | **DONE** §2.3 — closed by AS1a |
 | 4 | inventory pipeline assemblies by entry point | **DONE** §3 |
-| 5 | bounded characterization matrix | **OUTSTANDING** §7 |
+| 5 | bounded characterization matrix | **DONE** §3.2 |
 | 6 | inventory explicit and implicit callable execution sites | **OUTSTANDING** §7 |
 | 7 | adopt the `WP-C7.8-RB0` predicate inventory | **OUTSTANDING** §7 |
 | 8 | inventory JSON parsers, serializers, RFC 8259 deviations | **DONE** — `AS0-MANIFEST-STRICTNESS-AUDIT.md` |
@@ -116,13 +116,51 @@ separately in AS2: it may not need the full session.
 
 ### 3.1 The assemblies are not behaviourally identical
 
-Established by reading, and the reason AS2 needs a characterization baseline before it consolidates:
+Consolidation therefore *chooses* a behaviour. Without a captured baseline, "the entry points now
+agree" is satisfied equally well by every assembly having silently changed. §3.2 is that baseline.
 
-- `src/bin/stark.rs:172` builds its root `SourceFile` with the absolute entry path and **no**
-  `disk_path`; `analyze_project` sets no `disk_path` either but its overlay arm reads overlaid
-  content while its plain arm reads from disk.
-- Consolidation therefore *chooses* a behaviour. Without a captured baseline, "the entry points now
-  agree" is satisfied equally well by every assembly having silently changed.
+### 3.2 Characterization matrix
+
+Committed as `starkc/tests/as0_characterization.rs` with its baseline at
+`starkc/tests/as0-characterization/BASELINE.txt`. Entry points are driven as real subprocesses;
+status, stdout and stderr are pinned with temp paths scrubbed to `<TMP>` and timings to `<TIMING>`.
+Verified deterministic across consecutive runs. Regenerate deliberately with
+`STARK_UPDATE_CHARACTERIZATION=1`; committing a regenerated baseline asserts every diff was
+intended.
+
+Rows: valid package, invalid root source, invalid dependency source (for package entry points);
+valid and invalid single file (for file entry points). Assemblies that have no non-interactive
+surface are recorded `NOT-APPLICABLE` with the reason — `stark build` (needs a host toolchain;
+covered by `native_build_cli`), `starkide` (interactive TUI), LSP (stdio JSON-RPC), deploy/doc_gen
+(single-file driver callers), and ONNX verification (partial assembly: resolve without typecheck).
+
+**Divergences found. These are findings for AS2 to resolve consciously, not defects to fix here.**
+
+**D1 — a resolve error suppresses every type error.** The fixture has two errors: an undefined
+variable (E0200, resolve) and a `Bool`/integer mismatch (typecheck). Only the resolve error is ever
+reported, by every package entry point, because they return at the first phase that produced errors
+rather than continuing. "Ordered diagnostics" therefore pins a list of length one. AS2's exit
+criterion 2 compares ordered diagnostic structures across entry points; it should not be read as
+evidence that multi-phase diagnostics work.
+
+**D2 — success reporting differs across the three package commands.** On the same valid package:
+`stark check` prints `probe: OK`; `stark run` prints **nothing at all**; `stark test` prints a test
+summary. Three commands, three conventions.
+
+**D3 — failure summaries differ between the package and single-file paths.** Package commands end
+with `<package>: package compilation failed`; `starkc check` ends with `<file>: 1 error(s)`;
+`starkc run` prints the diagnostic and **no summary line at all**. A tool parsing compiler output
+has to special-case each.
+
+**D4 — naming is split by input kind, correctly, and AS2 must preserve it.** Package sources are
+logically named (`probe/src/main.stark`, and a dependency's error attributes to `lib/src/lib.stark`
+with its own package). Single-file sources are path-named. That is `SourceFile::name`'s documented
+contract — a single-file compile has no package, so the path is not identity-bearing there.
+Unifying these under one driver would be a regression, not a consolidation.
+
+**D5 — dependency attribution is correct at the CLI surface.** An error inside a dependency reports
+against the dependency's own logical file and line, not the root's. This is the property AS1a's
+provenance fix protects, now visible in shipped output rather than only in a unit test.
 
 ## 4. JSON inventory
 
@@ -164,13 +202,14 @@ total*.
 
 | Item | Why it is not done yet | Size |
 | --- | --- | --- |
-| characterization matrix (item 5) | the largest AS0 deliverable; 5 row types across 11 assemblies | large |
 | callable execution-site inventory (item 6) | feeds AS3, not AS1a/AS2 | large |
 | `WP-C7.8-RB0` predicate inventory (item 7) | delegated to that packet; adopt, do not duplicate | medium |
 | `WP-ENGINE-INDEPENDENCE.md` AS0 scope (item 10) | separate approved subpacket with its own record | medium |
 | pinned `stark-samples` run (item 11) | needs the suite pinned by commit hash first | small |
 | native build time / LSP latency (item 9) | need a harness | small |
 
-Nothing outstanding blocks **AS1a**: its two dependencies — the duplicate-identity and
-wrong-provenance reproductions — are discharged in §2. The characterization matrix blocks **AS2**,
-not AS1a.
+**AS1a is complete** — its two dependencies were discharged in §2 and the packet has landed.
+
+**AS2 is now unblocked.** The characterization matrix it depends on is committed (§3.2), with five
+recorded divergences it must resolve consciously rather than silently. The remaining outstanding
+items feed AS3, AS5, AS8 and C10 — none of them gates AS2.
