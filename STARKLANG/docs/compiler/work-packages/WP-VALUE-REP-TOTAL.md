@@ -262,8 +262,8 @@ specification of the close, not the close.
 | A3b signatures | done — `callable_types`, exact-set coverage over six callable classes |
 | A3c-S generic context | done — DEV-176 fixed, `generic_insts` deleted |
 | A3c-D generic `Drop` | done — refused, recorded, not repaired |
-| A3c-Q qualification | **next** — MIR differential, C6 corpus, package qualification, perf |
-| A4 boundaries | blocked on A3c-Q |
+| A3c-Q qualification | done — see §6.11 |
+| A4 boundaries | **next** |
 | 121B typed mutation | separate, needs its own inventory |
 
 **What A3c bought A4.** `Callable::ret` no longer needs to be `Option<Ty>`: A3b publishes every
@@ -271,4 +271,50 @@ executable body's signature and A3c-S makes it concretisable at every use, so A4
 signature and treat its absence as an internal defect rather than a skip. The
 "returns validated for free functions, silently skipped for methods" hole is closed before it could
 be claimed as enforcement.
+
+### 6.11 A3c-Q results
+
+**Correctness.** `mir_differential` 132, `c6_generated_corpus` 7, `c6_corpus_manifest` 33,
+`c6_metamorphic` 4, `three_engine_differential` 109, lib 523, and the 28-package qualification gate
+end to end (`PKG_EXIT=0`).
+
+Two defects surfaced here that the A3c sprint's own suites could not see.
+
+**A trait default on a generic impl had no binding for the impl's parameter.** `g.twice()` on a
+`Tagged<Int32>` published `Self = Tagged<T>` while the environment carried the *trait's* generics —
+and `trait Describe` declares none — so `T` had nothing to resolve against and a correct program was
+refused. `Self` is now substituted through the whole selection map at publish time, where every
+binding the checker made is available, rather than only through the individually named binders.
+Only `a1_full` could expose it: a fixture combining a generic impl, a trait default and a generic
+`Drop` in one program. 652 tests including the three-engine differential were green while it was
+broken.
+
+**The differential comparator called an oracle limitation `A MISSED TRAP`.** A3c-D's generic-`Drop`
+refusal is not a trap — MIR and native retain the type arguments and execute it correctly — so
+comparing them reported the ENGINES as disagreeing about the language when they disagree about what
+this engine can execute. The comparator now skips that one case, and only when classified
+`InternalInvariant`; every other oracle failure, including any other internal invariant, remains a
+hard failure so the class keeps its meaning.
+
+**Performance.** Baseline `78bd84c` (NAME-SHADOW-001, immediately pre-A3c-S) against head, five warm
+runs, median wall time, same machine and command:
+
+| workload | baseline | head | change |
+| --- | --- | --- | --- |
+| method-call-saturated microbenchmark | 211.1 ms | 242.9 ms | **+15.1%** |
+| real package (`stark-semver`, 11 tests) | 26.5 ms | 26.8 ms | **+1.1%** |
+
+The microbenchmark is a tight loop doing almost nothing but method calls, so the per-call
+environment install is nearly the whole runtime — it is the worst case by construction, not a
+program anyone writes. On real code the cost is inside measurement noise.
+
+**Decision: accepted, no cache.** The prescribed remedy — caching the concretised environment per
+instantiation — is correct and remains available, but adding cache state and its invalidation
+question to recover ~1% on real programs, in an engine that is a reference oracle rather than a
+performance target, is not worth its complexity now. **Revisit if A4's boundary validation moves the
+REAL-workload number materially**; it is the combination that would matter, measured the same way.
+
+The workload deliberately omits `size_of::<T>()` inside a generic method: that is DEV-176 itself and
+fails on the baseline, so including it would have compared a working program against a crashing one.
+What is measured is the overhead A3c-S adds to calls that already worked.
 

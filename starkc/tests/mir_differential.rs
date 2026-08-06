@@ -253,10 +253,31 @@ fn differential(name: &str, source: String) {
             "{name}: oracle succeeded (stdout {:?}) but MIR failed: {:?} (partial stdout {:?})",
             exec.output, mir_failure.error, mir_failure.output
         ),
-        (Err((oracle_err, _)), Ok(mir_exec)) => panic!(
-            "{name}: oracle trapped ({}) but MIR succeeded with stdout {:?} — A MISSED TRAP",
-            oracle_err.message, mir_exec.output
-        ),
+        (Err((oracle_err, _)), Ok(mir_exec)) => {
+            // **A3c-D: an oracle LIMITATION is not a missed trap.** The HIR oracle refuses a
+            // generic `Drop` because destruction retains no concrete type arguments; MIR and native
+            // keep them and execute it correctly. Comparing the two here would report the ENGINES
+            // as disagreeing about the language, when they disagree about what this engine can
+            // execute.
+            //
+            // Narrow on purpose. Only this documented limitation is exempt, and only when it is
+            // classified `InternalInvariant`; every other oracle failure — including any other
+            // internal invariant — is still a hard failure, because that class exists to make an
+            // oracle defect loud.
+            if oracle_err.class == starkc::interp::FailureClass::InternalInvariant
+                && oracle_err.message.contains("generic `Drop`")
+            {
+                eprintln!(
+                    "{name}: SKIPPED — {} (MIR stdout {:?})",
+                    oracle_err.message, mir_exec.output
+                );
+                return;
+            }
+            panic!(
+                "{name}: oracle trapped ({}) but MIR succeeded with stdout {:?} — A MISSED TRAP",
+                oracle_err.message, mir_exec.output
+            )
+        }
         (
             Err((oracle_err, _)),
             Err(MirFailure {

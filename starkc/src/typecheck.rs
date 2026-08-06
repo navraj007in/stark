@@ -4601,7 +4601,14 @@ impl<'a> TypeChecker<'a> {
         } = published;
         let mut bindings: Vec<(GenericBinder, Ty)> = Vec::new();
         if let Some(self_ty) = self_ty {
-            bindings.push((GenericBinder::SelfType, self_ty));
+            // **`Self` is substituted through the WHOLE map here, not only through the binders
+            // named below.** A trait default invoked on a generic impl publishes
+            // `Self = Tagged<T>` while the environment carries the TRAIT's generics — which for
+            // `trait Describe` are none — so `T` would have nothing to resolve against and the
+            // install would refuse a correct program. `map` holds every binding the checker
+            // selected, including the impl's, so resolving here uses all of them regardless of
+            // which are individually named as binders.
+            bindings.push((GenericBinder::SelfType, substitute_ty(&self_ty, map)));
         }
         for (index, name) in impl_names.iter().enumerate() {
             if let Some(ty) = map.get(name) {
