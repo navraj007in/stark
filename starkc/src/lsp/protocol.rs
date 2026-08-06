@@ -187,6 +187,53 @@ fn parse_json_array(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<
     Some(JsonValue::Array(arr))
 }
 
+/// The four hex digits of a `\uXXXX` escape, with `\u` already consumed.
+///
+/// Returns `None` on a non-hex digit or on end of input, so a malformed escape fails the parse
+/// instead of contributing nothing to a value that is then reported as successfully parsed.
+fn read_hex4(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<u32> {
+    let mut value = 0u32;
+    for _ in 0..4 {
+        value = value * 16 + chars.next()?.to_digit(16)?;
+    }
+    Some(value)
+}
+
+/// One `\u` escape, decoding a UTF-16 surrogate pair into the scalar it denotes (RFC 8259 §7).
+///
+/// **DEV-182.** This used to read four hex digits, call `char::from_u32`, and *discard the escape
+/// when that failed* — which it always does for a surrogate half, since a surrogate is not a Rust
+/// `char`. There was no pairing step and no error, so a valid escaped `U+1F600` parsed to the
+/// **empty string** and an unpaired surrogate was accepted as the empty string. Both parsers
+/// returned success; only the value was wrong, which is why no verdict-based comparison could see
+/// it. An editor sending a non-BMP character in any string — a completion label, a file path, a
+/// diagnostic message — lost it silently.
+fn parse_unicode_escape(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<char> {
+    const HIGH: std::ops::RangeInclusive<u32> = 0xD800..=0xDBFF;
+    const LOW: std::ops::RangeInclusive<u32> = 0xDC00..=0xDFFF;
+
+    let first = read_hex4(chars)?;
+    if HIGH.contains(&first) {
+        // A high surrogate is only meaningful paired with a low one, and the pair must be written
+        // as a second `\u` escape. Anything else is invalid JSON, including a bare non-BMP
+        // character or a second high surrogate.
+        if chars.next()? != '\\' || chars.next()? != 'u' {
+            return None;
+        }
+        let low = read_hex4(chars)?;
+        if !LOW.contains(&low) {
+            return None;
+        }
+        let combined = 0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00);
+        return char::from_u32(combined);
+    }
+    if LOW.contains(&first) {
+        // A low surrogate with no high surrogate before it denotes nothing.
+        return None;
+    }
+    char::from_u32(first)
+}
+
 fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<String> {
     if chars.next() != Some('"') {
         return None;
@@ -205,14 +252,7 @@ fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option
                 'n' => result.push('\n'),
                 'r' => result.push('\r'),
                 't' => result.push('\t'),
-                'u' => {
-                    let hex: String = (0..4).filter_map(|_| chars.next()).collect();
-                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            result.push(ch);
-                        }
-                    }
-                }
+                'u' => result.push(parse_unicode_escape(chars)?),
                 _ => return None,
             },
             _ => result.push(c),
@@ -426,4 +466,87 @@ mod tests {
             _ => panic!("Failed to parse request"),
         }
     }
+
+    /// DEV-182 — `\uXXXX` handling.
+    ///
+    /// Every case below FAILED before the repair. A surrogate pair produced the empty string, an
+    /// unpaired surrogate was accepted as the empty string, and an invalid `\u` was silently
+    /// dropped mid-string: the parser reported success and returned a value the input did not
+    /// denote. Nothing rejected them, so no verdict-based check could see it.
+    fn parsed_string(body: &str) -> Option<String> {
+        match parse_json(&format!(
+            "{{{}a{}:{}{}{}}}",
+            QUOTE, QUOTE, QUOTE, body, QUOTE
+        )) {
+            Some(JsonValue::Object(o)) => match o.get("a") {
+                Some(JsonValue::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    const QUOTE: char = '"';
+
+    #[test]
+    fn surrogate_pairs_decode_to_one_scalar() {
+        let body = format!("{BS}ud83d{BS}ude00", BS = BACKSLASH);
+        assert_eq!(
+            parsed_string(&body).as_deref(),
+            Some("\u{1F600}"),
+            "a valid surrogate pair must decode to U+1F600, not the empty string"
+        );
+    }
+
+    #[test]
+    fn basic_multilingual_plane_escapes_still_decode() {
+        let body = format!("{BS}u0041{BS}u00e9", BS = BACKSLASH);
+        assert_eq!(parsed_string(&body).as_deref(), Some("A\u{e9}"));
+    }
+
+    #[test]
+    fn an_escaped_nul_is_a_character_not_a_terminator() {
+        let body = format!("x{BS}u0000y", BS = BACKSLASH);
+        assert_eq!(parsed_string(&body).as_deref(), Some("x\u{0}y"));
+    }
+
+    #[test]
+    fn a_lone_high_surrogate_is_rejected() {
+        let body = format!("{BS}ud83d", BS = BACKSLASH);
+        assert_eq!(
+            parsed_string(&body),
+            None,
+            "an unpaired surrogate is invalid JSON and must be rejected, not swallowed"
+        );
+    }
+
+    #[test]
+    fn a_lone_low_surrogate_is_rejected() {
+        let body = format!("{BS}ude00", BS = BACKSLASH);
+        assert_eq!(parsed_string(&body), None);
+    }
+
+    #[test]
+    fn a_high_surrogate_followed_by_a_non_surrogate_is_rejected() {
+        let body = format!("{BS}ud83d{BS}u0041", BS = BACKSLASH);
+        assert_eq!(parsed_string(&body), None);
+    }
+
+    #[test]
+    fn a_malformed_hex_escape_is_rejected_rather_than_dropped() {
+        let body = format!("{BS}u00zz", BS = BACKSLASH);
+        assert_eq!(
+            parsed_string(&body),
+            None,
+            "a bad escape must fail the parse, not vanish from the value"
+        );
+    }
+
+    #[test]
+    fn a_truncated_escape_at_end_of_input_is_rejected() {
+        let body = format!("{BS}u00", BS = BACKSLASH);
+        assert_eq!(parsed_string(&body), None);
+    }
+
+    const BACKSLASH: char = '\\';
 }

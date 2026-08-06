@@ -1,5 +1,43 @@
 # STARK Compiler STATE
 
+## CD-384 — DEV-182, the LSP parser silently ate every non-BMP character (2026-08-06)
+
+Taken as a live-defect pre-emption under `WP-ARCHITECTURE-STABILIZATION.md` §3, on its own branch
+with its own evidence, rather than absorbed into the Sprint 1 architecture work that found it.
+
+`parse_json_string` read the four hex digits of a `\u` escape, called `char::from_u32`, and
+**discarded the escape when that failed**. It always fails for a surrogate half — a surrogate is not
+a Rust `char` — and there was no pairing step. So:
+
+```text
+"😀"   ->  ""      (should be U+1F600)
+"\ud83d"         ->  ""      (should be REJECTED: unpaired surrogate)
+"\u00zz"         ->  ""      (should be REJECTED: malformed escape)
+```
+
+Every case **parsed successfully** and returned a value the input did not denote. That is why it
+survived: a verdict-based comparison records agreement, because both sides say "ok". It was found by
+the AS0 manifest-strictness audit only because that audit compares **values, not just verdicts** —
+the third delta the work-package added after the first draft compared verdicts alone.
+
+Any editor sending a non-BMP character in a completion label, file path, or diagnostic message lost
+it silently. Emoji in a string literal is the ordinary case.
+
+The repair pairs surrogates per RFC 8259 §7 and rejects what cannot be paired: a lone high or low
+surrogate, a high surrogate not followed by a `\u` low surrogate, a malformed or truncated hex
+escape. `read_hex4` returns `None` on a non-hex digit rather than contributing nothing, so a bad
+escape now fails the parse instead of vanishing from a value reported as good.
+
+Eight tests, five of which failed before the repair (`surrogate_pairs_decode_to_one_scalar` returned
+`Some("")`). `cargo test --lib` 531 passed / 0 failed; `cargo fmt --check` and
+`cargo clippy --all-targets -D warnings` clean.
+
+**Not fixed here, and still open for AS5.** The same parser accepts trailing input after a complete
+value, and both it and `package.rs` accept raw control characters in strings; `escape_json_string`
+does not escape control characters on output; `package.rs` rejects all `\u` escapes and all exponent
+numbers. Those are the tightening and compatibility axes recorded in
+`AS0-MANIFEST-STRICTNESS-AUDIT.md`, not this defect.
+
 ## CD-383 — two over-acceptances, one of them a double destruction (2026-08-05)
 
 An external audit separated the open defects by direction: programs the checker REJECTS that it
