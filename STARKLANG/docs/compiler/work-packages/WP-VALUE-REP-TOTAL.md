@@ -1,7 +1,8 @@
 # WP-VALUE-REP-TOTAL — a total type→representation mapping for the oracle
 
-**Status:** ACTIVE. A0–A3c landed; A3c-Q then A4 next. **DEV-121 is still OPEN** — no
-representation boundary is enforced yet.
+**Status:** PAUSED at a decision gate. A0–A3c landed and the relation is executable;
+**A4's production enforcement is reverted** and DEV-121 is OPEN with enforcement DEFERRED.
+Blocked on `WP-CALLABLE-USE-TOTAL` — see §7.
 **Filed by:** CD-321, on owner direction, when INV-VALUE-REP-001 landed narrow.
 **Owning track:** compiler (Gate C-series governance, `COMPILER-CHARTER.md` §1.6).
 **Prerequisite deviations:** DEV-121 (narrowed, not class-closed).
@@ -260,10 +261,10 @@ specification of the close, not the close.
 | A2 relation | done — `value_matches_ty`, `concrete_runtime_ty`, `check_value_for_ty` |
 | A3 propagation boundary | done — `pending_propagation` may not cross a call |
 | A3b signatures | done — `callable_types`, exact-set coverage over six callable classes |
-| A3c-S generic context | **reopened** — associated functions and function values incomplete (DEV-178) |
+| A3c-S generic context | done for EXPLICIT calls; DEV-178 and the associated-function site repaired |
 | A3c-D generic `Drop` | done — refused, recorded, not repaired |
-| A3c-Q qualification | prior evidence retained, **not complete** — requalify after A3c-S2 |
-| A4 boundaries | **paused** — its first sound enforcement exposed DEV-178 |
+| A3c-Q qualification | evidence retained; re-run when A4 resumes |
+| A4 boundaries | **attempted, reverted** — see §7 |
 | 121B typed mutation | separate, needs its own inventory |
 
 **What A3c bought A4.** `Callable::ret` no longer needs to be `Option<Ty>`: A3b publishes every
@@ -317,4 +318,83 @@ REAL-workload number materially**; it is the combination that would matter, meas
 The workload deliberately omits `size_of::<T>()` inside a generic method: that is DEV-176 itself and
 fails on the baseline, so including it would have compared a working program against a crashing one.
 What is measured is the overhead A3c-S adds to calls that already worked.
+
+---
+
+## 7. A4's outcome, and the blocker it found
+
+**A4 is not a failure.** It was wired to receiver and parameter boundaries, and its first sound
+enforcement immediately exposed defects nothing else could see — because the environment reaches a
+BODY (which reads whatever frame exists) but only a resolved SIGNATURE can tell whether the right
+one was installed. Nothing before A4 resolved signatures.
+
+What it found, all repaired and pushed:
+
+| defect | |
+| --- | --- |
+| DEV-178 | function values discarded the instantiation selected at their coercion |
+| DEV-180 | `&mut self` held owned storage under a `&mut Self` type |
+| associated-function publication | A3c-S's missed site |
+| indirect-call funnels | routed without the environment their value carried |
+
+### 7.1 Why enforcement is reverted rather than narrowed
+
+Eight `InvocationContext::Implicit` sites remain across seven functions — `Eq`, `Ord`,
+`Iterator::next`, `Display`, and the qualified/core-trait paths. An experiment settled what they
+need: passing a call-site context is **not** sufficient, because the checker publishes **no
+environment at all** for implicit dispatch. A generic receiver therefore arrives as
+`&Wrapper<Param("T")>`.
+
+Refusing those would have been the narrower option and is the wrong one. Equality, ordering,
+iteration and display are foundational: refusing them would make ordinary valid programs
+oracle-ineligible and REDUCE differential coverage — the opposite of what the oracle is for. It
+would also leave a misleading state where direct calls are representation-checked and implicit calls
+are not executable, which is operationally worse than no enforcement with the relation retained as
+an executable specification.
+
+### 7.2 The blocker is one capability, not eight defects
+
+> Checker-selected callable identity and instantiation are not published for implicit dispatch.
+
+The eight sites are manifestations of that single omission. Registering them separately would
+misrepresent eight symptoms as eight defects; individual IDs are warranted only where a site has a
+distinct observable wrong behaviour outside the shared gap.
+
+Inventing a local key per dispatch kind would recreate exactly the fragmented authority that
+produced A3c-S's gaps, DEV-178 and the associated-function omission. The correct shape is a uniform
+identity for every callable use, explicit or implicit, with the syntactic form kept only as
+provenance — a `CallableUse` record carrying its target and environment, consumed by both HIR
+execution and MIR.
+
+That is a semantic-metadata project, not boundary wiring, and improvising it at the end of a long
+defect-finding sequence is how the previous fragmentation happened.
+
+### 7.3 Programme state
+
+```text
+DEV-121   OPEN — enforcement deferred, NOT resolved
+
+completed A0 classification
+          A1 representation matrix and ValueKind
+          A2 total executable relation
+          A3 propagation boundary
+          A3b complete callable signatures
+          A3c explicit-call generic context
+          producer defects DEV-178 and DEV-180 repaired
+
+A4        attempted; exposed producer and metadata defects;
+          stopped at a decision gate; production enforcement reverted
+
+blocker   implicit callable uses have no complete checker-published
+          identity or environment
+
+required  WP-CALLABLE-USE-TOTAL, whose exit condition is: every accepted
+          explicit or implicit user-callable execution has exactly one
+          checker-published CallableUse record, including an explicit empty
+          environment for non-generic uses
+```
+
+The relation, `ValueKind`, `check_value_for_ty`, `concrete_runtime_ty` and their tests all remain —
+as **tested executable specification, deliberately not wired to production boundaries**. A4 resumes
+only after `WP-CALLABLE-USE-TOTAL`.
 
