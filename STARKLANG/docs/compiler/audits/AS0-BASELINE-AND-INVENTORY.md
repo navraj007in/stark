@@ -15,7 +15,7 @@ inventory, not from a module-size impression.
 | ---: | --- | --- |
 | 1 | reproduce package-root source duplication | **DONE** §2 |
 | 2 | reproduce the provenance half separately | **DONE** §2 |
-| 3 | two-checkout comparison: source maps, MIR dumps, build keys | **PARTIAL** §2.3 — source maps done |
+| 3 | two-checkout comparison: source maps, MIR dumps, build keys | **DONE** §2.3 — closed by AS1a |
 | 4 | inventory pipeline assemblies by entry point | **DONE** §3 |
 | 5 | bounded characterization matrix | **OUTSTANDING** §7 |
 | 6 | inventory explicit and implicit callable execution sites | **OUTSTANDING** §7 |
@@ -66,14 +66,14 @@ maps differ. The test also pins the INVARIANT that the *logical* names are alrea
 relocation-stable — DEV-113 got that right — which localises the whole defect to one construction
 site rather than to the naming scheme.
 
-**Not yet done for this item:** the MIR file-table and native build-key halves. The data flow is
-established by reading — `analysis.root_file` is passed to `lower_program_with_providers`
-(`src/native_build.rs:749`), becomes `FileId(0)` in `ProgramMeta::build`
-(`src/mir/lower.rs:260-263`), and `build_key_input` writes `file.name` verbatim into the `[sources]`
-section of the build key (`src/backend/generated_rust/build.rs:625-631`) — but it is not yet pinned
-by a test. The consequence is a checkout-dependent cache key, not miscompilation: no span refers to
-`FileId(0)`, so nothing reaches generated code. Existing metamorphic tests already pin canonical
-symbols and trap provenance and are unaffected.
+**Closed by AS1a.** The MIR file-table half is now pinned by
+`the_mir_file_table_is_logical_and_relocation_stable`: no absolute path reaches `program.files`, and
+the table is identical from two independent roots. Since `build_key_input` writes those names
+verbatim into the build key's `[sources]` section
+(`src/backend/generated_rust/build.rs:625-631`), the key no longer varies with the checkout
+location. The pre-fix consequence was a checkout-dependent cache key, not miscompilation — no span
+referred to `FileId(0)`, so nothing reached generated code, and the metamorphic tests that pin
+canonical symbols and trap provenance were correct throughout and still pass.
 
 ## 3. Pipeline inventory — exact set
 

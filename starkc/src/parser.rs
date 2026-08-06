@@ -197,18 +197,11 @@ fn parse_package_rec(
     // Naming it by its absolute path made trap provenance move with the checkout, so the same
     // workspace observed differently in two directories — against PKG-IDENTITY-001 ("never an
     // absolute checkout path") and §15.2.
-    let package_root = pkg
-        .manifest_path
-        .parent()
-        .map(|dir| dir.to_path_buf())
-        .unwrap_or_default();
-    let entry_file = std::sync::Arc::new(
-        SourceFile::new(
-            logical_package_path(&pkg.name, &package_root, &pkg.entry),
-            entry_src,
-        )
-        .with_disk_path(pkg.entry.clone()),
-    );
+    //
+    // AS1a moved the construction itself into `Package::entry_source_file` so the parser and every
+    // other caller produce the SAME identity for this file. They did not, and the divergence was
+    // the defect.
+    let entry_file = pkg.entry_source_file(entry_src);
 
     let (root, mut entry_diags) =
         parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
@@ -283,28 +276,6 @@ fn parse_package_rec(
 /// `<package>/<path relative to the package root>`, always with `/` separators so the name is
 /// identical on every platform. Falls back to the file name alone if the path somehow escapes the
 /// package root — a logical name is never allowed to become an absolute one.
-fn logical_package_path(
-    package: &str,
-    package_root: &std::path::Path,
-    file: &std::path::Path,
-) -> String {
-    let relative = file
-        .strip_prefix(package_root)
-        .ok()
-        .map(|rel| {
-            rel.components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .unwrap_or_else(|| {
-            file.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "<unknown>".to_string())
-        });
-    format!("{package}/{relative}")
-}
-
 fn load_submodules_recursive(
     current_file: &SourceFile,
     items: &[ItemId],

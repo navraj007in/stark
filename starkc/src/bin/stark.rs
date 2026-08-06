@@ -169,10 +169,10 @@ fn main() -> ExitCode {
             }
         },
     };
-    let root_file = Arc::new(SourceFile::new(
-        root_pkg.entry.to_string_lossy().into_owned(),
-        entry_src,
-    ));
+    // AS1a: one construction for the package entry, shared with the parser and `analyze_project`.
+    // Naming it by the absolute path here gave this command a different source identity from the
+    // one the analysis pipeline used for the same file.
+    let root_file = root_pkg.entry_source_file(entry_src);
 
     if diags.iter().any(|d| d.severity == Severity::Error) {
         for diag in &diags {
@@ -1428,10 +1428,10 @@ fn cmd_test(args: &[String]) -> ExitCode {
             }
         },
     };
-    let root_file = Arc::new(SourceFile::new(
-        root_pkg.entry.to_string_lossy().into_owned(),
-        entry_src,
-    ));
+    // AS1a: the shared construction. The overlay above decides this file's CONTENT — including the
+    // synthesised `provider_api` items appended past the end of the on-disk text — but never its
+    // identity, which stays the package's one logical name.
+    let root_file = root_pkg.entry_source_file(entry_src);
 
     let mut overall_failed = false;
 
