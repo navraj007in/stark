@@ -260,10 +260,10 @@ specification of the close, not the close.
 | A2 relation | done — `value_matches_ty`, `concrete_runtime_ty`, `check_value_for_ty` |
 | A3 propagation boundary | done — `pending_propagation` may not cross a call |
 | A3b signatures | done — `callable_types`, exact-set coverage over six callable classes |
-| A3c-S generic context | done — DEV-176 fixed, `generic_insts` deleted |
+| A3c-S generic context | **reopened** — associated functions and function values incomplete (DEV-178) |
 | A3c-D generic `Drop` | done — refused, recorded, not repaired |
-| A3c-Q qualification | done — see §6.11 |
-| A4 boundaries | **next** |
+| A3c-Q qualification | prior evidence retained, **not complete** — requalify after A3c-S2 |
+| A4 boundaries | **paused** — its first sound enforcement exposed DEV-178 |
 | 121B typed mutation | separate, needs its own inventory |
 
 **What A3c bought A4.** `Callable::ret` no longer needs to be `Option<Ty>`: A3b publishes every

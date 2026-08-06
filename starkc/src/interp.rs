@@ -398,7 +398,7 @@ enum Value {
     /// `Array`. The bounds are half-open indices into `place`.
     Slice(Place, usize, usize),
     Ref(Place),
-    Function(ItemId),
+    Function(FunctionValue),
     CharsIter(String, usize),
     SplitIter(Vec<String>, usize),
     VecIter(Place, usize),
@@ -572,6 +572,36 @@ impl RepBoundary {
             RepBoundary::ElementWrite => "an element write",
             RepBoundary::AggregateField => "an aggregate field",
         }
+    }
+}
+
+/// A function ITEM that has become a value, carrying the instantiation it was created with.
+/// (WP-VALUE-REP-TOTAL A3c-S2, DEV-178.)
+///
+/// **The environment travels with the value because it is fixed at the COERCION, not the call.**
+/// `let f: fn() -> UInt64 = type_size::<Int32>;` selects `T = Int32` when the item becomes a value;
+/// the later `f()` has call-site type `fn() -> UInt64`, which says what the result is and can never
+/// say what `T` was. Validating an indirect call against that caller-side type would satisfy a
+/// parameter check while leaving the body without its generic context — a patch over DEV-176's
+/// defect rather than a repair of it.
+///
+/// `bindings` are already CONCRETE. A function value may outlive the generic frame that created it,
+/// so an unresolved caller parameter stored here would reference a frame that no longer exists.
+///
+/// A payload change, not a new representation: `Ty::Fn` still maps to `ValueKind::Function`, so
+/// §6's matrix is unchanged and `value_matches_ty` is untouched.
+#[derive(Clone, Debug)]
+struct FunctionValue {
+    item: ItemId,
+    bindings: Vec<(String, Ty)>,
+}
+
+impl PartialEq for FunctionValue {
+    /// Equal when they name the same item. Two values of one function at different instantiations
+    /// are the same function; `Ty` is not comparable, and comparing bindings would make `f == f`
+    /// depend on how each was created.
+    fn eq(&self, other: &Self) -> bool {
+        self.item == other.item
     }
 }
 
@@ -819,7 +849,7 @@ impl fmt::Display for Value {
             } => write!(f, "{start}..{}{end}", if *inclusive { "=" } else { "" }),
             Value::Slice(_, start, end) => write!(f, "<slice {start}..{end}>"),
             Value::Ref(_) => write!(f, "<reference>"),
-            Value::Function(item) => write!(f, "fn#{}", item.0),
+            Value::Function(func) => write!(f, "fn#{}", func.item.0),
             Value::CharsIter(..) => write!(f, "<CharsIter>"),
             Value::SplitIter(..) => write!(f, "<SplitIter>"),
             Value::VecIter(..) => write!(f, "<VecIter>"),
@@ -983,7 +1013,7 @@ impl Ord for Value {
                 .cmp(&b.frame)
                 .then_with(|| a.local.0.cmp(&b.local.0))
                 .then_with(|| a.projections.len().cmp(&b.projections.len())),
-            (Value::Function(a), Value::Function(b)) => a.cmp(b),
+            (Value::Function(a), Value::Function(b)) => a.item.cmp(&b.item),
             (Value::HashMap(a), Value::HashMap(b)) => a.canonical_cmp(b),
             (Value::HashSet(a), Value::HashSet(b)) => a.canonical_cmp(b),
             (Value::MapIter(ia, fa), Value::MapIter(ib, fb)) => ia.cmp(ib).then_with(|| fa.cmp(fb)),
@@ -1435,7 +1465,7 @@ impl<'a> Interpreter<'a> {
             },
             Value::Slice(place, start, end) => Value::Slice(place.clone(), *start, *end),
             Value::Ref(place) => Value::Ref(place.clone()),
-            Value::Function(item) => Value::Function(*item),
+            Value::Function(func) => Value::Function(func.clone()),
             Value::CharsIter(..) => Value::CharsIter(String::new(), 0),
             Value::SplitIter(..) => Value::SplitIter(Vec::new(), 0),
             Value::VecIter(place, _) => Value::VecIter(place.clone(), 0),
@@ -2787,7 +2817,14 @@ impl<'a> Interpreter<'a> {
                 self.take_place(&place, self.hir.expr(expr).span)
             }
             Res::Item(item) => match &self.hir.item(item).kind {
-                hir::ItemKind::Fn(_) => Ok(Value::Function(item)),
+                // **DEV-178: capture the instantiation here, where it is selected.** The later
+                // call cannot recover it — see `FunctionValue`. Concretised against the ACTIVE
+                // frame before storage, because the value may outlive that frame.
+                hir::ItemKind::Fn(_) => Ok(Value::Function(self.capture_function_value(
+                    item,
+                    expr,
+                    self.hir.expr(expr).span,
+                )?)),
                 hir::ItemKind::Const { .. } => self.eval_const_item(item),
                 _ => Err(RuntimeError::new(
                     "item is not a runtime value",
@@ -3329,12 +3366,12 @@ impl<'a> Interpreter<'a> {
                     if let Some(propagated) = self.pending_propagation.take() {
                         return Ok(Flow::Propagate(propagated));
                     }
-                    let Value::Function(item) = function else {
+                    let Value::Function(callee) = function else {
                         return Err(RuntimeError::new("expression is not callable", span));
                     };
                     match self.eval_call_arguments(args)? {
                         Ok(values) => {
-                            let callable = self.item_callable(item).ok_or_else(|| {
+                            let callable = self.item_callable(callee.item).ok_or_else(|| {
                                 RuntimeError::new("expression is not callable", span)
                             })?;
                             self.call_callable(callable, None, values, span)
@@ -3353,13 +3390,13 @@ impl<'a> Interpreter<'a> {
                 if let Some(propagated) = self.pending_propagation.take() {
                     return Ok(Flow::Propagate(propagated));
                 }
-                let Value::Function(item) = function else {
+                let Value::Function(callee) = function else {
                     return Err(RuntimeError::new("expression is not callable", span));
                 };
                 match self.eval_call_arguments(args)? {
                     Ok(values) => {
                         let callable = self
-                            .item_callable(item)
+                            .item_callable(callee.item)
                             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
@@ -3441,6 +3478,49 @@ impl<'a> Interpreter<'a> {
     /// arguments, and never falls back to a partial map. A generic item whose call site has no
     /// recorded instantiation, or whose arity disagrees, installs NOTHING — the query then fails
     /// as an unsubstituted parameter rather than silently answering from a stale or partial frame.
+    /// Build a function value, capturing the environment the checker selected at this use.
+    ///
+    /// A non-generic function captures nothing, which is the common case and costs a map lookup.
+    /// A generic one captures its bindings CONCRETISED against the active frame, so
+    /// `fn outer<T>() { let f: fn() -> UInt64 = type_size::<T>; }` stores `T`'s caller-resolved
+    /// value rather than the parameter.
+    fn capture_function_value(
+        &self,
+        item: ItemId,
+        use_expr: ExprId,
+        span: Span,
+    ) -> Result<FunctionValue, RuntimeError> {
+        let Some(env) = self.tables.callable_instantiations.get(&use_expr) else {
+            return Ok(FunctionValue {
+                item,
+                bindings: Vec::new(),
+            });
+        };
+        // The published environment must belong to the body this item actually runs — the
+        // signature is body-keyed and the environment call-site-keyed, so their agreement is
+        // asserted rather than assumed.
+        if let hir::ItemKind::Fn(def) = &self.hir.item(item).kind {
+            if def.body != env.body {
+                return Err(RuntimeError::internal(
+                    format!(
+                        "DEV-178: the environment published for this use names body {:?}, but the \
+                         function item executes {:?}",
+                        env.body, def.body
+                    ),
+                    span,
+                ));
+            }
+        }
+        let mut bindings = Vec::new();
+        for (binder, ty) in &env.bindings {
+            bindings.push((
+                binder.name().to_string(),
+                self.concrete_runtime_ty(ty, span)?,
+            ));
+        }
+        Ok(FunctionValue { item, bindings })
+    }
+
     /// **A3c-S: install the checker-selected generic environment for one callable use.**
     ///
     /// `push_generic_frame` binds only a free function's own parameters, which is DEV-176: impl
@@ -4744,14 +4824,14 @@ impl<'a> Interpreter<'a> {
             let func = values.next().ok_or_else(|| {
                 RuntimeError::new(format!("{name} expects a function argument"), span)
             })?;
-            let Value::Function(func_item) = func else {
+            let Value::Function(callee) = func else {
                 return Err(RuntimeError::new(
                     format!("{name} expects a function value"),
                     span,
                 ));
             };
             let callable = self
-                .item_callable(func_item)
+                .item_callable(callee.item)
                 .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
             let receiver = self.take_place(&receiver_place, span)?;
             return match (receiver, name) {
@@ -5313,12 +5393,12 @@ impl<'a> Interpreter<'a> {
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("map expects function argument", span))?;
-            let Value::Function(func_item) = f else {
+            let Value::Function(callee) = f else {
                 return Err(RuntimeError::new("expected function pointer for map", span));
             };
             let iter_val = self.place_value(&place, span)?.clone();
             let iter_mut = self.place_value_mut(&place, span)?;
-            *iter_mut = Value::MapIter(Box::new(iter_val), func_item);
+            *iter_mut = Value::MapIter(Box::new(iter_val), callee.item);
             return Ok(self.place_value(&place, span)?.clone());
         }
         if name == "filter" {
@@ -5326,7 +5406,7 @@ impl<'a> Interpreter<'a> {
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("filter expects function argument", span))?;
-            let Value::Function(pred_item) = f else {
+            let Value::Function(pred_callee) = f else {
                 return Err(RuntimeError::new(
                     "expected function pointer for filter",
                     span,
@@ -5334,7 +5414,7 @@ impl<'a> Interpreter<'a> {
             };
             let iter_val = self.place_value(&place, span)?.clone();
             let iter_mut = self.place_value_mut(&place, span)?;
-            *iter_mut = Value::FilterIter(Box::new(iter_val), pred_item);
+            *iter_mut = Value::FilterIter(Box::new(iter_val), pred_callee.item);
             return Ok(self.place_value(&place, span)?.clone());
         }
         if name == "append" {
@@ -6677,13 +6757,37 @@ impl<'a> Interpreter<'a> {
         values: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        let Value::Function(item) = func else {
+        let Value::Function(callee) = func else {
             return Err(RuntimeError::new("expected a function pointer", span));
         };
         let callable = self
-            .item_callable(item)
+            .item_callable(callee.item)
             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
+        // **DEV-178: install the environment the VALUE carries, never one looked up on this call
+        // expression.** The instantiation was selected at the coercion; this call site knows only
+        // the function's type. `_env` lives for the whole call and its `Drop` covers traps,
+        // propagation and internal failures.
+        let _env = self.push_captured_env(&callee);
         self.call_callable(callable, None, values, span)
+    }
+
+    /// Install a function value's captured environment for the duration of its call.
+    ///
+    /// Already concrete — `capture_function_value` resolved it against the frame that created the
+    /// value, which may since have gone. Nothing is substituted here.
+    fn push_captured_env(&mut self, callee: &FunctionValue) -> GenericFrame {
+        if callee.bindings.is_empty() {
+            return GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            };
+        }
+        let map: HashMap<String, Ty> = callee.bindings.iter().cloned().collect();
+        self.generic_frames.borrow_mut().push(map);
+        GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed: true,
+        }
     }
 
     fn iterator_step(
@@ -6862,7 +6966,10 @@ impl<'a> Interpreter<'a> {
                 **inner = updated_inner;
                 if let Some(x) = next_opt {
                     let called =
-                        self.call_function_pointer(Value::Function(*func), vec![x], span)?;
+                        // DEV-179 (DORMANT): sound only while E0105 makes MapIter/FilterIter unreachable
+                        // from accepted Core v1 source. Before lifting E0105, retain the callback's
+                        // captured FunctionValue rather than reconstructing it with empty bindings.
+                        self.call_function_pointer(Value::Function(FunctionValue { item: *func, bindings: Vec::new() }), vec![x], span)?;
                     Ok((Some(called), iter))
                 } else {
                     Ok((None, iter))
@@ -6877,7 +6984,9 @@ impl<'a> Interpreter<'a> {
                     if let Some(x) = next_opt {
                         let x_ref = Value::Ref(self.promote_to_temp_place(x.clone(), span)?);
                         let res =
-                            self.call_function_pointer(Value::Function(*pred), vec![x_ref], span)?;
+                            // DEV-179 (DORMANT): see the `map` site above — empty bindings are sound only
+                            // while E0105 keeps this unreachable.
+                            self.call_function_pointer(Value::Function(FunctionValue { item: *pred, bindings: Vec::new() }), vec![x_ref], span)?;
                         if let Value::Bool(true) = res {
                             **inner = current_inner;
                             return Ok((Some(x), iter));

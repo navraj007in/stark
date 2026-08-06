@@ -4808,3 +4808,83 @@ Two defects, recorded together because the first concealed the second.
   substitution while it stands.
 - **Owning gate:** compiler track, WP-VALUE-REP-TOTAL (prerequisite to A3c-S).
 
+---
+
+## DEV-178 — generic context is not retained for associated-function calls or function values (OPEN)
+
+- **Normative expectation:** as DEV-176 — a generic body executes knowing what its parameters stand
+  for, whatever callable kind declares them and however it is invoked.
+- **Class:** HIR oracle execution-context omission. Same class as DEV-176; two callable-use paths
+  its repair did not cover.
+- **Current behaviour:** an accepted generic callable reaches execution with a surviving
+  `Ty::Param`. Invisible until A4 validated parameters, because before that the environment was
+  consulted only by `size_of::<T>()`.
+- **Associated-function cause:** `Type::func()` neither publishes a call-site environment nor
+  installs one. The interpreter's `Res::AssociatedFn` branch calls `call_callable` directly while
+  ordinary method calls install an environment first — a parallel call funnel that remembered a
+  different subset of the steps.
+- **Function-value cause:** `Value::Function` retains only an `ItemId`, discarding the instantiation
+  selected when the item became a value. The instantiation is fixed at the COERCION, not the call:
+
+  ```stark
+  fn type_size<T>() -> UInt64 { size_of::<T>() }
+  let f: fn() -> UInt64 = type_size::<Int32>;
+  f();
+  ```
+
+  The call-site `Ty::Fn` says the result is `UInt64` and cannot tell the body what `T` is.
+  Validating indirect calls against the caller-side function type would make a parameter check pass
+  while leaving this execution defect in place.
+- **Reproducers** (all valid, all rejected by A4's first enforcement):
+  `Stack::identity(6)`, `Holder::new(7)`, and `let f: fn(Int32) -> Int32 = identity; f(41)`.
+- **Resolution:** publish and install associated-function environments; give the function
+  representation a payload carrying its concretised environment, captured at coercion. **No new
+  `ValueKind`** — `Ty::Fn` still maps to `ValueKind::Function`, so §6's matrix is unchanged; only
+  the payload grows. The environment must be concretised against the active frame BEFORE storage,
+  because a function value may outlive the generic frame that created it.
+- **How it was found, and how it should have been:** A4's parameter validation asked for the
+  environment that nothing else had needed. A3c-S was declared complete on evidence that could not
+  reach either path, and A3c-Q's suites did not either. Both paths were named in the work package's
+  required-contexts list; the gap was in the evidence, not in the specification.
+- **Owning gate:** compiler track, WP-VALUE-REP-TOTAL A3c-S2.
+
+---
+
+## DEV-179 — `MapIter`/`FilterIter` discard a generic callback's instantiation (DORMANT)
+
+- **Status:** **DORMANT — unreachable while E0105 refuses iterator `map`/`filter`.** Not an active
+  conformance failure, not an executable oracle divergence, not a DEV-121 blocker, and no
+  first-party exposure. It is a **feature-activation prerequisite** and a known implementation
+  hazard.
+- **Class:** dormant execution-context defect — the same semantic class as DEV-178, reached through
+  deferred iterator execution rather than an ordinary indirect call.
+- **Cause:** `Value::MapIter` and `Value::FilterIter` retain only the callback's `ItemId`. When the
+  iterator steps, it reconstructs a function value with **empty bindings**, so the callback's
+  checker-selected environment is gone.
+- **Effect if activated:** a generic callback executes without its instantiation. A surviving
+  `Ty::Param` either fails as `InternalInvariant` at a validated boundary or — where no boundary is
+  enforced — produces incorrect oracle behaviour silently.
+- **Reachability gate:** Core v1 rejects the adapters at the front end:
+
+  ```text
+  [E0105] iterator method 'map' is not supported by this compiler;
+          use a 'for' loop over the iterator instead
+  ```
+
+  Verified 2026-08-06. Reachability governs the defect's URGENCY, not whether the implementation
+  contains it.
+- **Activation condition:** any change permitting `map`/`filter` construction, or otherwise exposing
+  these iterator variants directly.
+- **Why registered rather than commented:** the implementation looks complete. On the day E0105 is
+  lifted it activates silently with an empty environment, and whoever lifts it will be working in
+  the front end rather than in `interp.rs`. A comment is local and easy to miss; a ledger entry plus
+  a gate test that fails the moment the rejection is removed is what survives. DEV-174 is this
+  repo's precedent: a recorded limitation with a test that fails when it is lifted turned a
+  rediscovery into a one-commit repair.
+- **Resolution:** store a complete `FunctionValue` — or an equivalent captured environment — inside
+  `MapIter`/`FilterIter` rather than reconstructing one.
+- **Disposition:** **do not repair during A4.** Repair before, or as part of, lifting E0105.
+- **Evidence:** `tests/dev179_dormant_iterator_callbacks.rs` — the gate test, which fails the moment
+  E0105 stops rejecting these adapters.
+- **Owning gate:** compiler track, whichever work package lifts E0105.
+
