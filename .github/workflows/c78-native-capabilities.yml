@@ -6,6 +6,22 @@ on:
   pull_request:
     branches: [main, develop]
 
+# The port collision this prevents (2026-08-06): a push to `develop` fires the push trigger AND the
+# pull_request trigger of the open develop->main PR, so the IDENTICAL commit runs twice in parallel.
+# Both spin up the qualification's echo/HTTP/TLS peers, which bind FIXED ports (39187-39191) because
+# the STARK consumer packages hardcode those addresses in their source — so the peers cannot simply
+# take an ephemeral port, and retrying on a different one would leave the consumer connecting to the
+# wrong place. Two runs therefore raced and one failed with `[Errno 98] Address already in use` on a
+# commit its sibling run proved green.
+#
+# Grouping by the tested COMMIT rather than the ref is what makes this work: the push and
+# pull_request events carry the same sha, so they land in one group and queue instead of racing.
+# `cancel-in-progress: false` queues rather than cancels, so both events still report — the goal is
+# to stop them overlapping, not to drop a result someone is waiting on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
