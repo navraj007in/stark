@@ -64,14 +64,11 @@ impl ProjectInput {
 }
 
 /// Stable source identity within one analysis result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SourceId(u32);
-
-impl SourceId {
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-}
+///
+/// AS1b-i moved the type and its allocator to `source`, next to `Span`. Re-exported here because
+/// `SourceId` is half of this module's published vocabulary and every consumer names it as
+/// `analysis::SourceId`.
+pub use crate::source::{SourceId, SourceRegistry};
 
 /// How a source file entered an analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +97,7 @@ impl SourceMap {
     }
 
     pub fn get(&self, id: SourceId) -> Option<&SourceRecord> {
-        self.files.get(id.0 as usize)
+        self.files.get(id.as_u32() as usize)
     }
 
     pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
@@ -555,27 +552,37 @@ fn is_identifier(value: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+/// A **view** over the AST's source registry: provenance and lookup, no allocation.
+///
+/// AS1b-i took id assignment out of here. This used to gather files from the root, `ast.item_files`
+/// and `hir.item_files`, dedup by name, sort, and hand out `SourceId`s — after the whole front end
+/// had run. Ids now come from `ast.sources`, where files are interned as they load, so a `SourceId`
+/// exists from the moment its source does. That is the precondition for a span carrying one.
+///
+/// `hir.item_files` is no longer consulted: it holds the same `Arc`s the parser put in
+/// `ast.item_files`, so it can contribute no file the registry has not already seen. The root is
+/// interned defensively because a parse that failed early may not have reached it.
 fn build_source_map(
     root: &Arc<SourceFile>,
     ast: &Ast,
-    hir: Option<&Hir>,
+    _hir: Option<&Hir>,
     graph: Option<&PackageGraph>,
 ) -> SourceMap {
-    let mut files = vec![root.clone()];
-    files.extend(ast.item_files.values().cloned());
-    if let Some(hir) = hir {
-        files.extend(hir.item_files.values().cloned());
+    let mut registry_files: Vec<(SourceId, Arc<SourceFile>)> = ast
+        .sources
+        .iter()
+        .map(|(id, file)| (id, file.clone()))
+        .collect();
+    if ast.sources.id_for_name(&root.name).is_none() {
+        // Nothing interned this root — an early parse failure. Give it the next id rather than
+        // dropping it, because diagnostics resolve against it.
+        let next = SourceId::from_u32(registry_files.len() as u32);
+        registry_files.push((next, root.clone()));
     }
-    let mut seen = HashSet::new();
-    files.retain(|file| seen.insert(file.name.clone()));
-    let mut non_root = files.split_off(1);
-    non_root.sort_by(|left, right| left.name.cmp(&right.name));
-    files.extend(non_root);
 
     let root_package = graph.map(|graph| graph.root_package_name.clone());
     let mut map = SourceMap::default();
-    for file in files {
-        let id = SourceId(map.files.len() as u32);
+    for (id, file) in registry_files {
         // AS1a: attribute by the logical name's OWNING PACKAGE SEGMENT, matched against the graph.
         //
         // This used to ask whether the source *name* started with the package entry's absolute

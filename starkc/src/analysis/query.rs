@@ -67,8 +67,9 @@ impl QueryIndex {
             });
         }
         for references in index.references.values_mut() {
-            references
-                .sort_by_key(|location| (location.source.0, location.span.lo, location.span.hi));
+            references.sort_by_key(|location| {
+                (location.source.as_u32(), location.span.lo, location.span.hi)
+            });
             references.dedup();
         }
         index

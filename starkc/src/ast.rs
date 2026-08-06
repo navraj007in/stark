@@ -54,6 +54,13 @@ pub struct Ast {
     pub dims: Vec<DimExprNode>,
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    /// Every source this AST was parsed from, interned in load order (AS1b-i).
+    ///
+    /// This is where `SourceId`s come from. Allocation used to happen in `build_source_map`, after
+    /// the whole front end had run, which meant a span could not carry the identity of the file it
+    /// indexes. Files are registered here as the parser loads them, so identity exists from the
+    /// moment source does.
+    pub sources: crate::source::SourceRegistry,
     pub synthetic_spans: std::collections::HashMap<Span, String>,
     /// DEV-173: every string literal's DECODED value, in allocation order.
     ///
@@ -763,6 +770,26 @@ pub enum UseTree {
 // ---------------------------------------------------------------- arena --
 
 impl Ast {
+    /// Intern `file` and hand back the shared `Arc`.
+    ///
+    /// Callers hold a `&SourceFile` (the parser borrows one), so this copies it exactly once, on
+    /// first sight, and returns the same `Arc` on every later call for that name.
+    pub fn interned_source(
+        &mut self,
+        file: &crate::source::SourceFile,
+    ) -> std::sync::Arc<crate::source::SourceFile> {
+        if let Some(id) = self.sources.id_for_name(&file.name) {
+            return self.sources.get(id).expect("just looked it up").clone();
+        }
+        let mut owned = crate::source::SourceFile::new(file.name.clone(), file.src.clone());
+        if let Some(path) = &file.disk_path {
+            owned = owned.with_disk_path(path.clone());
+        }
+        let arc = std::sync::Arc::new(owned);
+        self.sources.intern(arc.clone());
+        arc
+    }
+
     /// WP-FMT-001: the current arena sizes, for [`Ast::remap_spans_since`].
     pub fn marks(&self) -> ArenaMarks {
         ArenaMarks {

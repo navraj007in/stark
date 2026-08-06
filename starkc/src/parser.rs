@@ -265,6 +265,7 @@ fn parse_package_rec(
             name_span,
         );
 
+        ast.sources.intern(entry_file.clone());
         ast.item_files.insert(mod_item_id, entry_file.clone());
         root_items.push(mod_item_id);
     }
@@ -472,9 +473,12 @@ pub fn parse_with_options_into(
     options: LanguageOptions,
     ast: &mut Ast,
 ) -> (Root, Vec<Diagnostic>) {
+    // AS1b-i: intern first, so the registry is populated before the parser takes `&mut ast`.
+    let file_arc = ast.interned_source(file);
     let (tokens, lex_diags) = tokenize(file);
     let mut p = Parser {
         file,
+        file_arc: file_arc.clone(),
         tokens,
         pos: 0,
         diags: lex_diags,
@@ -494,7 +498,6 @@ pub fn parse_with_options_into(
             Root::Snippet { stmts, tail }
         }
     };
-    let file_arc = std::sync::Arc::new(SourceFile::new(file.name.clone(), file.src.clone()));
     for diag in &mut p.diags {
         if diag.file.is_none() {
             diag.file = Some(file_arc.clone());
@@ -533,6 +536,9 @@ enum ShapeGroupKind {
 
 struct Parser<'a> {
     file: &'a SourceFile,
+    /// The interned `Arc` for `file` (AS1b-i). Held so an item can record its source with an `Arc`
+    /// clone instead of rebuilding the whole `SourceFile` per item.
+    file_arc: std::sync::Arc<SourceFile>,
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
@@ -585,6 +591,10 @@ impl Parser<'_> {
         self.diags.extend(lex_diags);
         let mut inner = Parser {
             file: &scratch,
+            // AS1b-i: the scratch buffer is a DECODED view of a range of `self.file`, carrying the
+            // same logical name. It inherits the outer file's identity rather than interning a
+            // second one with the same name and different bytes.
+            file_arc: self.file_arc.clone(),
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -687,6 +697,7 @@ impl Parser<'_> {
         self.diags.extend(lex_diags);
         let mut inner = Parser {
             file: self.file,
+            file_arc: self.file_arc.clone(),
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -2825,11 +2836,10 @@ impl Parser<'_> {
             }
         };
         let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
-        let mut file = SourceFile::new(self.file.name.clone(), self.file.src.clone());
-        if let Some(path) = &self.file.disk_path {
-            file = file.with_disk_path(path.clone());
-        }
-        let file_arc = std::sync::Arc::new(file);
+        // AS1b-i: one interned `Arc` per file, shared by every item in it. This used to rebuild the
+        // entire `SourceFile` -- name AND full source text -- once per item, so a file with K items
+        // allocated K copies of itself.
+        let file_arc = self.file_arc.clone();
         self.ast.item_files.insert(item_id, file_arc);
         Some(item_id)
     }

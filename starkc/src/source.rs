@@ -29,6 +29,85 @@ impl Span {
     }
 }
 
+/// Stable identity for one source within a compilation.
+///
+/// **AS1b-i moved this here from `analysis`, and moved its allocation earlier.** It lived beside
+/// `SourceMap`, which assigned ids *after* parse, resolve and typecheck had already run — so the
+/// identity a span needs did not exist at the moment spans are created. `WP-SPAN-SOURCEID.md`
+/// describes `SourceId` as groundwork already in place; that was true of the type and not of when
+/// it was handed out.
+///
+/// It belongs in `source` because `Span` is here and will carry one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SourceId(u32);
+
+impl SourceId {
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Only for the one case a registry cannot cover: a root whose parse failed before anything
+    /// interned it. Not a general constructor — ids come from [`SourceRegistry::intern`].
+    pub(crate) fn from_u32(raw: u32) -> Self {
+        SourceId(raw)
+    }
+}
+
+/// The one allocator of [`SourceId`]. Files are interned as they are loaded, in load order.
+///
+/// Identity is the file's LOGICAL NAME, which after AS1a is `<package>/<path>` for package sources
+/// and the path for a single-file compile — one physical file, one name, one id. Interning the same
+/// name twice returns the first id rather than making a second identity, which is the invariant
+/// AS1a had to repair by hand in `build_source_map`.
+///
+/// `SourceMap` is now a *view* over this: it adds provenance and answers lookups, and no longer
+/// decides what an id is.
+#[derive(Default, Debug)]
+pub struct SourceRegistry {
+    files: Vec<std::sync::Arc<SourceFile>>,
+    by_name: std::collections::HashMap<String, SourceId>,
+}
+
+impl SourceRegistry {
+    /// Register `file`, or return the id it already has. Idempotent by logical name.
+    ///
+    /// The first registration wins: a later `Arc` with the same name is dropped rather than
+    /// replacing the first, so an id never silently changes what it denotes mid-compilation.
+    pub fn intern(&mut self, file: std::sync::Arc<SourceFile>) -> SourceId {
+        if let Some(&id) = self.by_name.get(&file.name) {
+            return id;
+        }
+        let id = SourceId(self.files.len() as u32);
+        self.by_name.insert(file.name.clone(), id);
+        self.files.push(file);
+        id
+    }
+
+    pub fn get(&self, id: SourceId) -> Option<&std::sync::Arc<SourceFile>> {
+        self.files.get(id.0 as usize)
+    }
+
+    pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
+        self.by_name.get(name).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Every registered source, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = (SourceId, &std::sync::Arc<SourceFile>)> {
+        self.files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| (SourceId(index as u32), file))
+    }
+}
+
 /// A loaded source file with precomputed line starts for position mapping.
 #[derive(Debug)]
 pub struct SourceFile {
