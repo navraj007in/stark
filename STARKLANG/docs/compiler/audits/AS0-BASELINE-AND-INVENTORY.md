@@ -80,6 +80,10 @@ canonical symbols and trap provenance were correct throughout and still pass.
 Every production site that assembles parse → resolve → typecheck. Test-module call sites are
 excluded and were checked individually for `#[cfg(test)]` rather than by file.
 
+> **Superseded by AS2.** The six bypassing assemblies below were migrated onto `CompilerSession`
+> and no longer exist; `starkc/tests/as2_one_pipeline.rs` keeps them gone as an exact set. The
+> inventory is kept as the record of what AS2 found and had to migrate.
+
 **Through the driver (`analyze_project`) — 5:**
 
 | Entry point | Site |

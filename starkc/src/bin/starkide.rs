@@ -4,12 +4,11 @@
 //! TUI crate so the compiler keeps its zero-dependency bootstrap footprint.
 
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::parser::{parse, ParseMode};
-use starkc::resolve::resolve;
+use starkc::options::LanguageOptions;
+use starkc::parser::ParseMode;
+use starkc::session::CompilerSession;
 use starkc::source::SourceFile;
 use starkc::source_extensions::is_stark_source;
-use starkc::typecheck;
 use std::cmp::min;
 use std::env;
 use std::fs;
@@ -681,21 +680,23 @@ impl App {
             .and_then(|p| p.to_str())
             .unwrap_or("untitled.stark");
         let file = Arc::new(SourceFile::new(name, self.editor.source()));
-        let (tree, mut diagnostics) = parse(&file, self.parse_mode);
-        if diagnostics.is_empty() {
-            let (hir, mut resolution_diagnostics) = resolve(&tree, file.clone());
-            diagnostics.append(&mut resolution_diagnostics);
-            if diagnostics.is_empty() {
-                let checked = typecheck::analyze(&hir, file.clone());
-                diagnostics.extend(checked.diagnostics.clone());
-                if run
-                    && checked
-                        .diagnostics
-                        .iter()
-                        .all(|diagnostic| diagnostic.severity != Severity::Error)
-                {
+        // AS2: the editor goes through the ONE pipeline like every other entry point. It was the
+        // sixth hand-rolled assembly, and the easiest to overlook -- a search of `main.rs` and
+        // `bin/stark.rs` missed it entirely until AS0 enumerated the exact set.
+        let mut diagnostics: Vec<starkc::diag::Diagnostic>;
+        match CompilerSession::for_source_in_mode(
+            file.clone(),
+            self.parse_mode,
+            LanguageOptions::CORE,
+        )
+        .check()
+        {
+            Err(failure) => diagnostics = failure.diagnostics().to_vec(),
+            Ok(program) => {
+                diagnostics = program.diagnostics().to_vec();
+                if run {
                     runtime_started = true;
-                    match interp::run(&hir, file.clone(), &checked.tables) {
+                    match program.execute_hir() {
                         Ok(execution) => {
                             self.program_output.clear();
                             self.program_output.push(format!("Running {name}"));

@@ -2,14 +2,11 @@ use sha2::{Digest, Sha256};
 use starkc::diag::Severity;
 use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
-use starkc::parser::{
-    parse_package_graph, parse_package_graph_with_overlays, parse_with_options, ParseMode,
-};
-use starkc::resolve::{resolve, resolve_with_options};
+use starkc::parser::{parse_with_options, ParseMode};
+use starkc::session::CompilerSession;
 use starkc::source::SourceFile;
 use starkc::source_extensions::is_stark_source;
 use starkc::test_runner::{self, Outcome};
-use starkc::typecheck;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -149,65 +146,31 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (ast, mut diags) = if overlays.is_empty() {
-        parse_package_graph(&graph, options)
+    // AS2: parse → resolve → typecheck through the ONE pipeline. This command used to assemble it
+    // by hand, decide for itself what counted as failure, and render diagnostics in its own order.
+    // Command-line parsing above and presentation below stay here; the pipeline does not.
+    let package_name = graph.root_package_name.clone();
+    let session = if overlays.is_empty() {
+        CompilerSession::for_package(graph, options)
     } else {
-        parse_package_graph_with_overlays(&graph, options, &overlays)
+        CompilerSession::for_package_with_overlays(graph, overlays, options)
     };
-    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
-    let entry_src = match overlays.get(&root_pkg.entry) {
-        Some(overlaid) => overlaid.clone(),
-        None => match std::fs::read_to_string(&root_pkg.entry) {
-            Ok(src) => src,
-            Err(e) => {
-                eprintln!(
-                    "Error: failed to read entry file '{}': {}",
-                    root_pkg.entry.display(),
-                    e
-                );
-                return ExitCode::FAILURE;
-            }
-        },
+    let program = match session.check() {
+        Ok(program) => program,
+        Err(failure) => {
+            eprint!("{}", failure.render());
+            eprintln!("{package_name}: package compilation failed");
+            return ExitCode::FAILURE;
+        }
     };
-    // AS1a: one construction for the package entry, shared with the parser and `analyze_project`.
-    // Naming it by the absolute path here gave this command a different source identity from the
-    // one the analysis pipeline used for the same file.
-    let root_file = root_pkg.entry_source_file(entry_src);
+    let root_file = program.root_file().clone();
 
-    if diags.iter().any(|d| d.severity == Severity::Error) {
-        for diag in &diags {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
-    let (hir, mut resolution) = resolve(&ast, root_file.clone());
-    diags.append(&mut resolution);
-    if diags.iter().any(|d| d.severity == Severity::Error) {
-        for diag in &diags {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
-    let checked = typecheck::analyze_with_options(&hir, root_file.clone(), options);
-    if checked
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
-        for diag in checked.diagnostics.iter().chain(diags.iter()) {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
     if cmd == "check" {
-        println!("{}: OK", root_pkg.name);
+        println!("{package_name}: OK");
         return ExitCode::SUCCESS;
     }
     if cmd == "run" {
-        return match starkc::interp::run(&hir, root_file.clone(), &checked.tables) {
+        return match program.execute_hir() {
             Ok(execution) => {
                 print!("{}", execution.output);
                 eprint!("{}", execution.stderr);
@@ -263,7 +226,7 @@ fn main() -> ExitCode {
             }
         };
     }
-    eprintln!("{}: package compilation failed", root_pkg.name);
+    eprintln!("{package_name}: package compilation failed");
     ExitCode::FAILURE
 }
 
@@ -1402,70 +1365,37 @@ fn cmd_test(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (ast, mut diags) = if overlays.is_empty() {
-        parse_package_graph(&graph, options)
-    } else {
-        parse_package_graph_with_overlays(&graph, options, &overlays)
-    };
-    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
-    // **The root file must be the OVERLAID source, not what is on disk.**
+    // AS2: the ONE pipeline. The overlaid entry source — synthesis appends generated `provider_api`
+    // items past the end of the on-disk text, and rendering a diagnostic in that region against the
+    // on-disk file panics with "byte index N is out of bounds" — is now the session's concern
+    // rather than something this command reconstructs.
     //
-    // Synthesis appends the generated `provider_api` items to the entry file's text, so every span
-    // in them lies past the end of the original. Rendering diagnostics against the on-disk file
-    // panics with "byte index N is out of bounds" the moment anything in the generated region is
-    // reported — which is what happened the first time this was wired up.
-    let entry_src = match overlays.get(&root_pkg.entry) {
-        Some(overlaid) => overlaid.clone(),
-        None => match std::fs::read_to_string(&root_pkg.entry) {
-            Ok(src) => src,
-            Err(e) => {
-                eprintln!(
-                    "Error: failed to read entry file '{}': {}",
-                    root_pkg.entry.display(),
-                    e
-                );
-                return ExitCode::FAILURE;
-            }
-        },
+    // It also removes a latent options split: this command resolved with `resolve()`, which is
+    // hard-wired to `LanguageOptions::CORE`, while typechecking with `options`. Both are CORE here,
+    // so nothing observable changed, but the session threads ONE options value through every phase
+    // and the split can no longer be reintroduced by editing one line.
+    let package_name = graph.root_package_name.clone();
+    let session = if overlays.is_empty() {
+        CompilerSession::for_package(graph, options)
+    } else {
+        CompilerSession::for_package_with_overlays(graph, overlays, options)
     };
-    // AS1a: the shared construction. The overlay above decides this file's CONTENT — including the
-    // synthesised `provider_api` items appended past the end of the on-disk text — but never its
-    // identity, which stays the package's one logical name.
-    let root_file = root_pkg.entry_source_file(entry_src);
+    let program = match session.check() {
+        Ok(program) => program,
+        Err(failure) => {
+            eprint!("{}", failure.render());
+            eprintln!("{package_name}: package compilation failed");
+            return ExitCode::FAILURE;
+        }
+    };
+    let root_file = program.root_file().clone();
+    let hir = program.hir();
+    let tables = program.tables();
 
     let mut overall_failed = false;
 
-    if diags.iter().any(|d| d.severity == Severity::Error) {
-        for diag in &diags {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
-    let (hir, mut resolution) = resolve(&ast, root_file.clone());
-    diags.append(&mut resolution);
-    if diags.iter().any(|d| d.severity == Severity::Error) {
-        for diag in &diags {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
-    let checked = typecheck::analyze_with_options(&hir, root_file.clone(), options);
-    if checked
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
-        for diag in checked.diagnostics.iter().chain(diags.iter()) {
-            eprint!("{}", diag.render(&root_file));
-        }
-        eprintln!("{}: package compilation failed", root_pkg.name);
-        return ExitCode::FAILURE;
-    }
-
     // ---- unit tests: fn test_*() discovered in the package's own module tree ----
-    let all_tests = test_runner::discover_tests(&hir, &root_file);
+    let all_tests = test_runner::discover_tests(hir, &root_file);
     let selected = test_runner::filter_by_name(&all_tests, name_filter.as_deref());
 
     println!("running {} tests", selected.len());
@@ -1481,7 +1411,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
             ignored += 1;
             continue;
         }
-        let result = test_runner::run_test(&hir, root_file.clone(), &checked.tables, test);
+        let result = test_runner::run_test(hir, root_file.clone(), tables, test);
         match &result.outcome {
             Outcome::Passed => {
                 passed += 1;
@@ -1605,29 +1535,18 @@ fn run_standalone_suite(dir: &Path, label: &str, options: LanguageOptions) -> Op
 
 fn run_standalone_program(path: &Path, options: LanguageOptions) -> Result<(), String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
-    let file = SourceFile::new(path.to_string_lossy().into_owned(), src);
-    let (tree, diagnostics) = parse_with_options(&file, ParseMode::Program, options);
-    let file = Arc::new(file);
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return Err(format!("{} parse error(s)", diagnostics.len()));
+    // AS2: a single-file session. The name stays the PATH — `SourceFile::name`'s contract for a
+    // compile with no package around it, and AS0 finding D4 says not to consolidate that away.
+    let file = Arc::new(SourceFile::new(path.to_string_lossy().into_owned(), src));
+    // The `<n> <phase> error(s)` format is documented in
+    // `docs/WP8_3_TEST_FRAMEWORK_IMPLEMENTATION.md`, so the session supplies the failing phase
+    // rather than this function keeping its own pipeline to know which one it was. The count now
+    // counts ERRORS; the parse and resolve arms previously reported the whole diagnostic list, so a
+    // program with warnings alongside a parse error over-reported.
+    match CompilerSession::for_source(file, options).check() {
+        Err(failure) => Err(failure.summary()),
+        Ok(program) => program.execute_hir().map(|_| ()).map_err(|e| e.message),
     }
-    let (hir, mut resolution) = resolve_with_options(&tree, file.clone(), options);
-    if resolution.iter().any(|d| d.severity == Severity::Error) {
-        return Err(format!("{} resolve error(s)", resolution.len()));
-    }
-    resolution.clear();
-    let checked = typecheck::analyze_with_options(&hir, file.clone(), options);
-    let errors: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    if !errors.is_empty() {
-        return Err(format!("{} typecheck error(s)", errors.len()));
-    }
-    starkc::interp::run(&hir, file, &checked.tables)
-        .map(|_| ())
-        .map_err(|e| e.message)
 }
 
 fn cmd_doc(args: &[String]) -> ExitCode {
