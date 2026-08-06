@@ -21,9 +21,9 @@ inventory, not from a module-size impression.
 | 6 | inventory explicit and implicit callable execution sites | **OUTSTANDING** §7 |
 | 7 | adopt the `WP-C7.8-RB0` predicate inventory | **OUTSTANDING** §7 |
 | 8 | inventory JSON parsers, serializers, RFC 8259 deviations | **DONE** — `AS0-MANIFEST-STRICTNESS-AUDIT.md` |
-| 9 | record performance/size baselines | **PARTIAL** §5 |
+| 9 | record performance/size baselines | **DONE** §5 |
 | 10 | execute the `WP-ENGINE-INDEPENDENCE.md` AS0 scope | **OUTSTANDING** §7 |
-| 11 | record and run the pinned `stark-samples` suite | **OUTSTANDING** §7 |
+| 11 | record and run the pinned `stark-samples` suite | **DONE** §5.2 |
 
 AS0 does not exit until every row is DONE or explicitly deferred by decision.
 
@@ -191,8 +191,75 @@ Binary sizes predate the Cranelift retirement but are unaffected by it: those cr
 `[dev-dependencies]` and never linked into a shipped binary. The lockfile count, by contrast, is
 post-retirement and is where the change shows.
 
-**Outstanding baselines:** native build time (end-to-end `stark build` of a provider-backed
-package) and LSP change latency. Both need a measurement harness rather than a single command.
+### 5.1 Native build and LSP change latency
+
+Measured with release binaries built from this branch, macOS arm64, using generated fixtures of
+`<modules> × 20` functions. LSP latency is the `didChange` → `publishDiagnostics` round trip against
+a real `starkc lsp --stdio` session — what a typist actually waits for.
+
+| Package size | `stark build` cold | LSP change latency (median) |
+| --- | ---: | ---: |
+| 2 files | 0.9 s | 0.2 ms |
+| 5 modules / 100 fns | — | 1.3 ms |
+| 20 modules / 400 fns | 0.6 s | 11.1 ms |
+| 50 modules / 1000 fns | — | 65.7 ms |
+| 100 modules / 2000 fns | 0.8 s | 257.5 ms |
+| 200 modules / 4000 fns | — | 1020.7 ms |
+
+`stark build` warm (cache hit, no source change) is **0.2 s**; after a source edit with the cargo
+target directory warm, **0.4 s**.
+
+**Two findings, and the second is the one that matters.**
+
+**B1 — the native build is fixed-cost dominated at these sizes.** 2000 functions cost no more than a
+two-file program. The floor is the `rustc` invocation and the link, so the numbers above measure
+that floor, not STARK compilation scaling.
+
+**B2 — LSP change latency is quadratic in package size.** Doubling the module count roughly
+quadruples the latency: 50→100 modules is 3.9×, 100→200 is 4.0×. At 4000 functions every keystroke
+costs **just over a second**.
+
+The LSP path runs the STARK front end without `rustc`, so it isolates what the build path hides
+under its fixed cost — which places the quadratic term **in the front end itself, not in the LSP's
+plumbing**. That inference is well-supported by the isolation but the locus *within* the front end
+is not identified here, and finding it is not AS0's job.
+
+The consequence for AS8 is direct: debounce and cancellation would stop the editor *feeling* slow
+while leaving the quadratic in place, and `stark build` reaches the same wall once package sizes
+outgrow rustc's fixed cost. AS8 should treat this as a measurement to explain, not merely to smooth.
+
+### 5.2 External sample suite (pinned)
+
+Already a required CI job, pinned and verified rather than depending on a developer home path —
+`AS0`'s item 11 asked for exactly that, and CI got there first.
+
+| Property | Value |
+| --- | --- |
+| Repository | `navraj007in/stark-samples` |
+| Pinned commit | `b3b28e757f38d691e7309f168d1209e28ac459af` |
+| Pin enforcement | CI re-reads `git rev-parse HEAD` and fails if it differs — `ref:` accepts a branch, so an accidental branch name would otherwise float silently |
+| Artifacts under test | release `stark` and `starkc` |
+| Evidence | `external-suite-results.json` + the suite's `manifest.json`, uploaded on every run |
+| Gate | a `needs:` dependency of `CI complete`, the single required check |
+
+**Result on this branch: 39 checks, 39 passed, 0 failed, 1.3 s.**
+
+Shape of the suite — it is not all happy paths, which is why it is worth having:
+
+| Kind | Count |
+| --- | ---: |
+| `package_run` | 16 |
+| `tensor_check_reject` | 7 |
+| `single_trap` | 6 |
+| `single_run_ok` | 5 |
+| `single_check_reject` | 2 |
+| `package_test`, `package_build_run`, `tensor_check_ok` | 1 each |
+
+Thirty accept, nine reject. **Six cases are pinned regressions for previously-escaped defects** —
+`DEV-134` through `DEV-139` (try-operator conversion, field-move tracking, conditional-move false
+positive, loop-condition borrow lifetime, iterator `str` item consumption, impl bounds invisible to
+operators). That is the independent-evidence value AS8 is meant to consume: defects this suite
+caught that the first-party suites did not.
 
 ## 6. Third-party dependency surface
 
@@ -209,11 +276,12 @@ total*.
 | callable execution-site inventory (item 6) | feeds AS3, not AS1a/AS2 | large |
 | `WP-C7.8-RB0` predicate inventory (item 7) | delegated to that packet; adopt, do not duplicate | medium |
 | `WP-ENGINE-INDEPENDENCE.md` AS0 scope (item 10) | separate approved subpacket with its own record | medium |
-| pinned `stark-samples` run (item 11) | needs the suite pinned by commit hash first | small |
-| native build time / LSP latency (item 9) | need a harness | small |
 
-**AS1a is complete** — its two dependencies were discharged in §2 and the packet has landed.
+**AS1a and AS2 are complete** and have landed. The characterization matrix AS2 depended on is
+committed (§3.2); its five recorded divergences were resolved consciously rather than silently, and
+the baseline did not move across any of the six migrations.
 
-**AS2 is now unblocked.** The characterization matrix it depends on is committed (§3.2), with five
-recorded divergences it must resolve consciously rather than silently. The remaining outstanding
-items feed AS3, AS5, AS8 and C10 — none of them gates AS2.
+**All three remaining items feed later packets, and none gates Sprint 2.** The callable inventory is
+AS3's real prerequisite; the predicate inventory is AS4's; the engine-independence scope feeds AS8
+and C10. AS0 formally exits when they are done or explicitly deferred by decision, and Campaign A's
+exit gate requires that.
