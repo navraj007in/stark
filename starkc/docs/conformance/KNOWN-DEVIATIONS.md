@@ -4942,3 +4942,56 @@ Two defects, recorded together because the first concealed the second.
 - **Discovered by:** WP-DEV-121 A4 receiver-boundary enforcement.
 - **Owning gate:** compiler track, its own repair — sequenced before A4 resumes.
 
+---
+
+## DEV-181 — a borrow taken by an assignment's own right-hand side blocks the assignment (OPEN)
+
+- **Class:** borrow-checker false positive. Same mechanism as DEV-137: a borrow is pushed onto
+  `Borrowck::active_borrows` and nothing pops it before the check that consults it.
+- **Reproducer** (verified 2026-08-06):
+
+  ```stark
+  struct Node { value: Int32, depth: Int32 }
+
+  impl Node {
+      fn deeper(&self) -> Node { Node { value: self.value * 2, depth: self.depth + 1 } }
+  }
+
+  fn main() {
+      let mut n = Node { value: 1, depth: 0 };
+      n = n.deeper();
+  }
+  ```
+
+  ```text
+  [E0101] cannot assign to variable 'n' because it is borrowed
+  ```
+
+- **Cause:** the `Assign` arm calls `self.check_expr(*rhs)` — which pushes the receiver auto-borrow
+  taken by `n.deeper()` — and then runs the write check against `active_borrows` with that borrow
+  still on the stack. `check_block` and `check_stmt` are the only things that truncate, and neither
+  runs between the two halves of one assignment.
+- **User impact:** `x = x.method()` is an everyday idiom — updating a value through a method that
+  returns a new one. It is met within the first hour of using the language, and unlike DEV-137 it
+  has no hoisting workaround; the statement must be split in two:
+
+  ```stark
+  let next = n.deeper();
+  n = next;
+  ```
+
+- **Security/soundness impact:** none — a false positive, a refusal.
+- **Precedent:** DEV-137 (CLOSED, CD-336) fixed the identical mechanism for `while` and `if`
+  conditions with `Borrowck::check_condition` — snapshot the depth, check the expression, truncate
+  back.
+- **Why the repair is NOT a copy of `check_condition`:** the RHS's borrow is sometimes the assigned
+  VALUE itself. `n = n.deeper()` produces an owned `Node`, so the temporary's borrow dies with it;
+  `r = &v.field` produces a reference whose borrow must survive the assignment. Truncating
+  unconditionally would drop a borrow the program still holds. The rule must therefore be gated on
+  whether the assigned type is borrow-carrying — the same kind of scope boundary DEV-137 drew when
+  it deliberately excluded `match` scrutinees and `for` iterators, whose borrows must span the body.
+- **Discovered by:** an ordinary-capability probe — recursion, nested control flow, methods,
+  collections — written to check what the language can actually do. Everything else in that program
+  worked; this was the only rejection.
+- **Owning gate:** compiler track.
+

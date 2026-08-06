@@ -547,6 +547,36 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// Whether a value of this type can carry a borrow — directly, or nested inside an aggregate.
+    ///
+    /// DEV-181 uses it to decide whether an assignment's right-hand side temporaries may be
+    /// released. An owned value's borrows end with the temporaries that produced it; a
+    /// borrow-carrying one keeps them, because the reference IS the value being stored.
+    ///
+    /// Conservative by construction: an unknown type answers `true`, so an unrecognised shape keeps
+    /// its borrows rather than silently releasing them. A false positive here is a refusal; a false
+    /// negative would be an untracked reference.
+    fn ty_carries_borrow(&self, ty: Option<&Ty>) -> bool {
+        let Some(ty) = ty else {
+            return true;
+        };
+        match ty {
+            Ty::Ref { .. } | Ty::Slice(_) => true,
+            Ty::Tuple(elements) => elements.iter().any(|t| self.ty_carries_borrow(Some(t))),
+            Ty::Array(element, _) => self.ty_carries_borrow(Some(element)),
+            // A nominal's or core type's ARGUMENTS may be references — `Option<&T>` is a
+            // borrow-carrying value per 03-Type-System.md's references-and-lifetimes rules.
+            Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+                args.iter().any(|t| self.ty_carries_borrow(Some(t)))
+            }
+            Ty::Range(inner) => self.ty_carries_borrow(Some(inner)),
+            Ty::Primitive(_) | Ty::Fn { .. } | Ty::Never => false,
+            // Anything else — parameters, inference variables, errors, extensions — is treated as
+            // carrying a borrow, which is the safe direction.
+            _ => true,
+        }
+    }
+
     fn check_condition(&mut self, cond: ExprId) {
         let borrows_before = self.active_borrows.len();
         self.check_expr(cond);
@@ -680,7 +710,23 @@ impl<'a> BorrowChecker<'a> {
                 self.check_expr(*rhs);
             }
             hir::ExprKind::Assign { lhs, rhs, .. } => {
+                // **DEV-181: a borrow taken by the assignment's OWN right-hand side must not block
+                // the assignment.** `n = n.deeper()` pushed the receiver auto-borrow from
+                // `n.deeper()` and then found it still on the stack in the write check below —
+                // refusing an everyday idiom with no hoisting workaround.
+                //
+                // Same mechanism as DEV-137, and the same shape of repair: snapshot, check,
+                // truncate. But NOT unconditionally, because the RHS's borrow is sometimes the
+                // assigned VALUE. `n.deeper()` yields an owned `Node`, so its temporary's borrow
+                // dies with it; `r = &v.field` yields a reference whose borrow must survive.
+                // Dropping that would hand out a reference the checker had stopped tracking, so the
+                // truncation is gated on the assigned type carrying no borrow — the same kind of
+                // boundary DEV-137 drew when it excluded `match` scrutinees and `for` iterators.
+                let borrows_before = self.active_borrows.len();
                 self.check_expr(*rhs);
+                if !self.ty_carries_borrow(self.expr_types.get(rhs)) {
+                    self.active_borrows.truncate(borrows_before);
+                }
 
                 // Write check: verify no active borrows on the place
                 let assigned = self.place_of(*lhs);
