@@ -12,9 +12,8 @@ use crate::hir::{
 };
 use crate::literal;
 use crate::options::LanguageOptions;
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 /// WP-C6.2b-F1: a selected inherent/trait method candidate carried through visibility enforcement:
 /// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
@@ -150,21 +149,16 @@ struct ControlSummary {
     may_return: bool,
 }
 
-/// A deferred trait-bound obligation (DEV-067/DEV-101): the concrete type, the bounds it must
-/// satisfy, the call span to report against, the caller's enclosing generic environment, and the
-/// file that DECLARES the bounds (so a bound's path name reads against the right file when the
-/// obligation is discharged after `self.file` has moved on).
-type BoundsCheck = (
-    Ty,
-    Vec<hir::TraitRef>,
-    Span,
-    Vec<hir::GenericParam>,
-    Arc<SourceFile>,
-);
+/// A deferred trait-bound obligation (DEV-067): the concrete type, the bounds it must satisfy,
+/// the call span to report against, and the caller's enclosing generic environment.
+///
+/// DEV-101 added a fifth element — the file declaring the bounds — so a bound path's name could be
+/// read correctly once the obligation was discharged. AS1b-ii-d removed it: the bound path's span
+/// names that file.
+type BoundsCheck = (Ty, Vec<hir::TraitRef>, Span, Vec<hir::GenericParam>);
 
 pub struct TypeChecker<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
     diags: Vec<Diagnostic>,
     subst: HashMap<TypeVarId, Ty>,
     /// WP-C4.7-6.3: inference variables introduced for UNSUFFIXED integer literals, with the
@@ -223,7 +217,6 @@ pub struct TypeChecker<'a> {
     /// DEV-148: the item whose FILE the signature currently being converted belongs to, or `None`
     /// when the signature is local. Every name sliced out of a foreign signature — type-parameter
     /// names above all — must be read from that file, not from the file under check.
-    foreign_sig_item: Option<ItemId>,
     current_assoc_types: HashMap<String, Ty>,
     /// WP-C6.2c: resolved associated-type bindings across the whole program, keyed by
     /// `(implementing nominal, associated-type name)`. Lets a concrete projection
@@ -259,10 +252,9 @@ pub struct TypeChecker<'a> {
     /// every body, by which time `current_fn_generics` belongs to whatever was checked last, so
     /// an obligation on a caller's own type parameter cannot be discharged unless the enclosing
     /// bounds travel with it.
-    // DEV-101: a deferred trait-bound obligation carries the file that DECLARES the bounds — a
-    // bound's path name is only meaningful against its own file, and these obligations are
-    // discharged after `self.file` has returned to the root file, so the declaring file must
-    // travel with the obligation.
+    // DEV-101 made a deferred obligation carry the file that DECLARES the bounds, because a
+    // bound's path name is only meaningful against its own file and these are discharged long
+    // after the checker has moved on. AS1b-ii-d dropped it: `bound.path.span` names that file.
     bounds_checks: Vec<BoundsCheck>,
 
     /// Enabled language extensions, threaded from the CLI through the whole
@@ -790,31 +782,25 @@ pub struct TypeCheckResult {
     pub tables: TypeTables,
 }
 
-pub fn check(hir: &Hir, file: Arc<SourceFile>) -> Vec<Diagnostic> {
-    analyze(hir, file).diagnostics
+/// AS1b-ii-d: no `file` parameter. The checker used to be handed the root file and re-aim it at
+/// each item's declaring file as it walked; every span it reads now names its own source, which the
+/// `Hir`'s registry resolves.
+pub fn check(hir: &Hir) -> Vec<Diagnostic> {
+    analyze(hir).diagnostics
 }
 
 /// Core-only [`check`], with the option-aware pipeline (Gate 4+).
-pub fn check_with_options(
-    hir: &Hir,
-    file: Arc<SourceFile>,
-    options: LanguageOptions,
-) -> Vec<Diagnostic> {
-    analyze_with_options(hir, file, options).diagnostics
+pub fn check_with_options(hir: &Hir, options: LanguageOptions) -> Vec<Diagnostic> {
+    analyze_with_options(hir, options).diagnostics
 }
 
-pub fn analyze(hir: &Hir, file: Arc<SourceFile>) -> TypeCheckResult {
-    analyze_with_options(hir, file, LanguageOptions::CORE)
+pub fn analyze(hir: &Hir) -> TypeCheckResult {
+    analyze_with_options(hir, LanguageOptions::CORE)
 }
 
-pub fn analyze_with_options(
-    hir: &Hir,
-    file: Arc<SourceFile>,
-    options: LanguageOptions,
-) -> TypeCheckResult {
+pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckResult {
     let mut checker = TypeChecker {
         hir,
-        file: file.clone(),
         options,
         diags: Vec::new(),
         subst: HashMap::new(),
@@ -835,7 +821,6 @@ pub fn analyze_with_options(
         layout_queries: HashMap::new(),
         bound_trait_calls: HashMap::new(),
         current_self_ty: None,
-        foreign_sig_item: None,
         current_assoc_types: HashMap::new(),
         assoc_projections: HashMap::new(),
         projection_obligations: Vec::new(),
@@ -954,13 +939,8 @@ pub fn analyze_with_options(
         );
     }
     let mut diagnostics = checker.diags;
-    diagnostics.extend(crate::flow::check(hir, file.clone(), &expr_types));
-    diagnostics.extend(crate::borrowck::check(
-        hir,
-        file.clone(),
-        &expr_types,
-        &local_types,
-    ));
+    diagnostics.extend(crate::flow::check(hir, &expr_types));
+    diagnostics.extend(crate::borrowck::check(hir, &expr_types, &local_types));
     let tables = TypeTables {
         expr_types,
         local_types,
@@ -972,15 +952,7 @@ pub fn analyze_with_options(
         layout,
         bound_trait_calls: checker.bound_trait_calls,
     };
-    // AS1b-ii: the registered root comes from the HIR's own registry.
-    if let Some(root) = hir
-        .sources
-        .id_for_name(&file.name)
-        .and_then(|id| hir.sources.get(id))
-        .cloned()
-    {
-        diagnostics.extend(crate::interp::check_constants(hir, root, &tables));
-    }
+    diagnostics.extend(crate::interp::check_constants(hir, &tables));
     TypeCheckResult {
         diagnostics,
         tables,
@@ -988,79 +960,64 @@ pub fn analyze_with_options(
 }
 
 impl<'a> TypeChecker<'a> {
-    /// Read a span belonging to the item currently being checked. `check_crate`'s item walks
-    /// keep `self.file` pointing at the current item's declaring file, so this is correct for
-    /// spans of the item under check — and WRONG for spans of any OTHER item, which must go
-    /// through `item_text` (DEV-069).
+    /// Read a span, against the source the SPAN NAMES.
     ///
-    /// Non-panicking since WP-C4.7-4: an out-of-range span used to panic "byte index N out of
-    /// bounds" whenever a dependency file was longer than the entry file (DEV-069 failure shape
-    /// (a)). A wrong-file read is now a visible `"?"` in a diagnostic instead of a compiler
-    /// crash. With the cross-item reads fixed this should be unreachable; it is a backstop, not
-    /// a mechanism.
+    /// AS1b-ii-d. This used to slice `self.file` — "the file currently being checked" — which was
+    /// right for the item under check and wrong for every span belonging to another item. Four
+    /// separate repairs of that one mistake are recorded (DEV-069, DEV-101, DEV-148 and its
+    /// generic second site), each adding another way to carry the declaring file to the read:
+    /// `item_text`, `item_src`, `item_file`, `decl_text`, a foreign-signature item stack, and a
+    /// per-item `self.file` swap. All of it existed to answer a question the span now answers.
+    ///
+    /// `"?"` remains for an unresolvable span rather than a panic (WP-C4.7-4): a wrong read should
+    /// be visible in a diagnostic, not a compiler crash.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
-            .unwrap_or("?")
-    }
-
-    /// The file that DECLARES `item`. Multi-file programs (`mod helper;`) parse each file
-    /// separately, so spans are file-relative and only meaningful against their own file's text.
-    fn item_src(&self, item: ItemId) -> &str {
-        match self.hir.item_file(item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        }
-    }
-
-    /// The `Arc<SourceFile>` that declares `item` (DEV-101), for obligations discharged later when
-    /// `self.file` no longer points at the declaring file. Falls back to the current file.
-    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
         self.hir
-            .item_file(item)
-            .cloned()
-            .unwrap_or_else(|| self.file.clone())
-    }
-
-    /// Read a span belonging to `item`, against the file that declares it. Every cross-item read
-    /// — another type's name, another impl's method names, another struct's field names — must
-    /// use this, because `self.file` is the file of the item being CHECKED, not the item being
-    /// LOOKED UP (DEV-069 failure shapes (b), (c), (d)).
-    /// Read a name off a DECLARATION, honouring whichever file declared it.
-    ///
-    /// CD-358: `self.text` slices the file currently being CHECKED. A name that belongs to a
-    /// declaration — an impl's generic parameter, a signature's, a field's — belongs to the file
-    /// that declared it, and across a module boundary those differ. Getting it wrong does not
-    /// error: it silently compares garbage, and a span running past the shorter file's end comes
-    /// back as `"?"`, so several names can COLLIDE on one key.
-    ///
-    /// This is the fourth time the same bug has been repaired (DEV-069, DEV-101, DEV-148 and its
-    /// generic second site), so it is a helper rather than a habit. Where a declaring item is in
-    /// scope, `foreign_sig_item` carries it and this resolves against it; where none is set the
-    /// declaration is local and the behaviour is unchanged.
-    fn decl_text(&self, span: Span) -> &str {
-        match self.foreign_sig_item {
-            Some(item) => self.item_text(item, span),
-            None => self.text(span),
-        }
-    }
-
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        self.item_src(item)
-            .get(span.lo as usize..span.hi as usize)
+            .sources
+            .get(span.source)
+            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
     }
 
-    fn find_package_root(&self, file_path: &str) -> Option<std::path::PathBuf> {
-        let mut path = std::path::Path::new(file_path);
-        while let Some(parent) = path.parent() {
-            if parent.join("starkpkg.json").exists() {
-                return Some(parent.to_path_buf());
-            }
-            path = parent;
+    /// The logical name of the file `span` belongs to.
+    fn source_name(&self, span: Span) -> &str {
+        self.hir
+            .sources
+            .get(span.source)
+            .map(|file| file.name.as_str())
+            .unwrap_or("<unknown>")
+    }
+
+    /// AS1b-ii-d: kept as a name, not a mechanism. CD-358 introduced this because a name belonging
+    /// to a DECLARATION had to be read against the declaring file while `self.text` read the file
+    /// being checked; across a module boundary those differ, and getting it wrong compared garbage
+    /// rather than erroring. A declaration's span names its own file, so this is `text`.
+    fn decl_text(&self, span: Span) -> &str {
+        self.text(span)
+    }
+
+    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
+    }
+
+    /// Which package a source belongs to, for the orphan rule.
+    ///
+    /// AS1a gives every package source the logical name `<package>/<path within the package>`, so
+    /// the package is the leading segment. `None` means "not a package build" — a single-file or
+    /// path-named compile, where every source belongs to the one program and everything is local.
+    ///
+    /// This replaced `find_package_root`, which walked the file's PATH upwards looking for a
+    /// `starkpkg.json` on disk. That only ever worked here by an asymmetry: the root file carried
+    /// an absolute disk path while every other item's file carried a logical name, so the root
+    /// probe found a manifest and the dependency probe found nothing, and "different package" fell
+    /// out of the difference. Reading identity off the names makes the comparison say what it
+    /// means, and stops it depending on the filesystem at type-check time.
+    fn source_package<'s>(&self, name: &'s str) -> Option<&'s str> {
+        if std::path::Path::new(name).is_absolute() {
+            return None;
         }
-        None
+        name.split_once('/').map(|(package, _)| package)
     }
 
     fn pat_subsumes(&self, a: &hir::PatNode, b: &hir::PatNode) -> bool {
@@ -2429,13 +2386,9 @@ impl<'a> TypeChecker<'a> {
                     Res::TypeParam => {
                         // DEV-148: a type parameter's NAME is a span into the file that declared
                         // the signature being converted, which is not the file being checked when
-                        // the call crosses a module boundary. `foreign_sig_item` carries that file
-                        // while a foreign signature is in flight; unset, this is the ordinary
-                        // same-file path and behaves exactly as before.
-                        let name_str = match self.foreign_sig_item {
-                            Some(item) => self.item_text(item, node.span),
-                            None => self.text(node.span),
-                        };
+                        // the call crosses a module boundary. AS1b-ii-d: the span says which file
+                        // that is, so no foreign-signature item has to be carried here.
+                        let name_str = self.text(node.span);
                         match self.generic_kinds.get(name_str).copied() {
                             Some(GenericKind::Dim) => {
                                 self.tensor_error(
@@ -3086,21 +3039,28 @@ impl<'a> TypeChecker<'a> {
                 diagnostic.span = *found;
             }
             if let Some(expected) = expected_span {
-                let (line, column) = self.file.line_col(expected.lo);
-                diagnostic = diagnostic
-                    .with_note(format!("expected dimension originates at {line}:{column}"));
+                if let Some(source) = self.hir.sources.get(expected.source) {
+                    let (line, column) = source.line_col(expected.lo);
+                    diagnostic = diagnostic
+                        .with_note(format!("expected dimension originates at {line}:{column}"));
+                }
             }
             if let Some(found) = found_span {
-                let (line, column) = self.file.line_col(found.lo);
-                diagnostic =
-                    diagnostic.with_note(format!("found dimension originates at {line}:{column}"));
+                if let Some(source) = self.hir.sources.get(found.source) {
+                    let (line, column) = source.line_col(found.lo);
+                    diagnostic = diagnostic
+                        .with_note(format!("found dimension originates at {line}:{column}"));
+                }
             }
         }
         self.diags.push(diagnostic);
     }
 
     fn check_crate(&mut self) {
-        let root_file = self.file.clone();
+        // AS1b-ii-d: each of this function's three item walks used to open by pointing `self.file`
+        // at the item's declaring file and close by restoring the root — DEV-069's mechanism for
+        // getting span reads and diagnostic attribution right. Reads go through the span's own
+        // source now, so there is no ambient file to aim.
         // Pass 1: Populate item signatures (structs, enums, functions)
         for item in &self.hir.items {
             let item_id = hir::ItemId(
@@ -3110,12 +3070,6 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
-            if let Some(item_file) = self.hir.item_file(item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
 
             match &item.kind {
                 hir::ItemKind::Struct { fields, .. } => {
@@ -3246,30 +3200,20 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         self.check_public_api_reachability();
         self.check_type_well_formedness();
 
-        let start_len = self.diags.len();
         self.validate_impl_rules();
-        let end_len = self.diags.len();
-        for i in start_len..end_len {
-            if self.diags[i].file.is_none() {
-                self.diags[i].file = Some(root_file.clone());
-            }
-        }
 
         // WP-C6.2c: precompute concrete associated-type bindings before checking bodies, so a
         // projection carried through generic instantiation (`Ty::Param("H::Item")`) can be
         // normalised to the impl's bound type at any call site.
-        self.build_assoc_projections(&root_file);
+        self.build_assoc_projections();
 
         // Pass 2: Typecheck bodies & run semantic checks
         for item in &self.hir.items {
@@ -3282,12 +3226,6 @@ impl<'a> TypeChecker<'a> {
             );
             // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
             self.current_module = self.hir.item_modules.get(&item_id).copied();
-            if let Some(item_file) = self.hir.item_file(item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
 
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
@@ -3351,17 +3289,13 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
-            self.file = root_file.clone();
             let mut state = HashSet::new();
             for &stmt_id in stmts {
                 self.check_stmt(stmt_id, &mut state);
@@ -3370,8 +3304,6 @@ impl<'a> TypeChecker<'a> {
                 let _tail_ty = self.check_expr(*tail_id);
             }
         }
-
-        self.file = root_file;
 
         // WP-C6.2c: resolve deferred associated-type projections (`T::Item` where the base was an
         // inference variable) now that every argument has unified — before int-literal defaulting,
@@ -3413,17 +3345,15 @@ impl<'a> TypeChecker<'a> {
 
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
-        for (concrete_ty, bounds_list, span, enclosing, decl_file) in bounds {
+        for (concrete_ty, bounds_list, span, enclosing) in bounds {
             // DEV-067(a): restore the generic environment this obligation was recorded in, so a
             // caller's own `T: Ord` can discharge a callee's `T: Ord` (TYPE-GENERIC-001).
             let saved_generics = self.current_fn_generics.replace(enclosing);
-            // DEV-101: a bound's path NAME is declared by the callee, so `satisfies_bound` (which
-            // identifies the trait by that text) and the diagnostic must read it against the
-            // callee's file. `self.file` has since returned to the root file, so select the
-            // declaring file for the reads and ALWAYS restore it before pushing a diagnostic, whose
-            // `span` belongs to the caller's call site. `ty_to_string` is item-aware, so the
-            // concrete type's name is unaffected by the temporary switch.
-            let saved_file = std::mem::replace(&mut self.file, decl_file);
+            // DEV-101 also swapped `self.file` to the declaring file around these reads, because
+            // `satisfies_bound` identifies the trait by the bound path's TEXT and the checker had
+            // long since returned to the root file. The swap is gone: `bound.path.span` names the
+            // callee's file, and the diagnostic's `span` names the caller's call site — the two
+            // no longer have to take turns owning one ambient file.
             let mut violations = Vec::new();
             for bound in bounds_list {
                 if !self.satisfies_bound(&concrete_ty, &bound) {
@@ -3433,7 +3363,6 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
-            self.file = saved_file;
             self.current_fn_generics = saved_generics;
             for (ty_str, bound_str) in violations {
                 self.diags.push(
@@ -3506,15 +3435,12 @@ impl<'a> TypeChecker<'a> {
         for (public_item, private_item, span) in exposures {
             let private_name = self.item_name(private_item);
             let public_name = self.item_name(public_item);
-            let mut diagnostic = Diagnostic::error(
+            let diagnostic = Diagnostic::error(
                 format!("public item '{public_name}' exposes non-public type '{private_name}'"),
                 span,
             )
             .with_code("E0209")
             .with_note("make the type publicly nameable or remove it from the public signature");
-            if let Some(file) = self.hir.item_file(public_item) {
-                diagnostic.file = Some(file.clone());
-            }
             self.diags.push(diagnostic);
         }
     }
@@ -3643,27 +3569,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn validate_impl_rules(&mut self) {
-        type ImplRecord = (Option<Res>, Ty, HashSet<String>, Span, Arc<SourceFile>);
+        type ImplRecord = (Option<Res>, Ty, HashSet<String>, Span);
         let mut impls: Vec<ImplRecord> = Vec::new();
         let mut copy_types = HashSet::new();
         let mut drop_types = HashSet::new();
-        let root_file = self.file.clone();
 
         for item in &self.hir.items {
-            let item_id = hir::ItemId(
-                self.hir
-                    .items
-                    .iter()
-                    .position(|i| std::ptr::eq(i, item))
-                    .unwrap() as u32,
-            );
-            if let Some(item_file) = self.hir.item_file(item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
-
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -3683,11 +3594,11 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect();
 
-            let impl_pkg = self.find_package_root(&self.file.name);
+            let impl_pkg = self.source_package(self.source_name(item.span));
 
             let trait_is_local = if let Some(Res::Item(trait_item_id)) = trait_res {
                 if let Some(trait_file) = self.hir.item_file(trait_item_id) {
-                    self.find_package_root(&trait_file.name) == impl_pkg
+                    self.source_package(&trait_file.name) == impl_pkg
                 } else {
                     false
                 }
@@ -3698,7 +3609,7 @@ impl<'a> TypeChecker<'a> {
             let self_type_is_local = match &self_ty {
                 Ty::Struct(struct_item_id, _) | Ty::Enum(struct_item_id, _) => {
                     if let Some(type_file) = self.hir.item_file(*struct_item_id) {
-                        self.find_package_root(&type_file.name) == impl_pkg
+                        self.source_package(&type_file.name) == impl_pkg
                     } else {
                         false
                     }
@@ -3722,34 +3633,32 @@ impl<'a> TypeChecker<'a> {
             }
 
             let mut conflicting = None;
-            for (previous_trait, previous_ty, previous_methods, prev_span, prev_file) in &impls {
+            for (previous_trait, previous_ty, previous_methods, prev_span) in &impls {
                 if *previous_trait == trait_res
                     && self.types_may_overlap(previous_ty, &self_ty)
                     && (trait_res.is_some() || !previous_methods.is_disjoint(&method_names))
                 {
-                    conflicting = Some((prev_span, prev_file));
+                    conflicting = Some(*prev_span);
                     break;
                 }
             }
 
-            if let Some((prev_span, prev_file)) = conflicting {
+            if let Some(prev_span) = conflicting {
+                // AS1b-ii-d: the record used to carry the impl's file alongside its span so this
+                // note could name it. The span names it.
+                let note = format!(
+                    "conflicting implementation found in {} at {:?}",
+                    self.source_name(prev_span),
+                    prev_span
+                );
                 self.diags.push(
                     Diagnostic::error("overlapping implementation for the same type", item.span)
                         .with_code("E0500")
                         .with_label("another applicable impl already exists")
-                        .with_note(format!(
-                            "conflicting implementation found in {} at {:?}",
-                            prev_file.name, prev_span
-                        )),
+                        .with_note(note),
                 );
             }
-            impls.push((
-                trait_res,
-                self_ty.clone(),
-                method_names,
-                item.span,
-                self.file.clone(),
-            ));
+            impls.push((trait_res, self_ty.clone(), method_names, item.span));
 
             let trait_name = trait_
                 .as_ref()
@@ -3948,36 +3857,22 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         for item_id in copy_types.intersection(&drop_types) {
-            let file = self
-                .hir
-                .item_file(*item_id)
-                .cloned()
-                .unwrap_or(root_file.clone());
             self.diags.push(
                 Diagnostic::error(
                     "a type cannot implement both Copy and Drop",
                     self.hir.item(*item_id).span,
                 )
-                .with_file(file)
                 .with_code("E0500"),
             );
         }
 
         for item_id in copy_types.iter().copied() {
-            let file = self
-                .hir
-                .item_file(item_id)
-                .cloned()
-                .unwrap_or(root_file.clone());
             let fields: Vec<Ty> = match &self.hir.item(item_id).kind {
                 hir::ItemKind::Struct { .. } => self
                     .struct_fields
@@ -4009,12 +3904,10 @@ impl<'a> TypeChecker<'a> {
                         "Copy may only be implemented when every field is Copy",
                         self.hir.item(item_id).span,
                     )
-                    .with_file(file)
                     .with_code("E0500"),
                 );
             }
         }
-        self.file = root_file;
     }
 
     fn trait_method_signature_matches(
@@ -4693,11 +4586,7 @@ impl<'a> TypeChecker<'a> {
                     )
                     .with_code("E0204")
                     .with_label(format!("'{name}' is already declared by {what}"))
-                    .with_related(
-                        self.file.clone(),
-                        first,
-                        format!("'{name}' first declared here"),
-                    ),
+                    .with_related(first, format!("'{name}' first declared here")),
                 );
             }
             seen.push((name, param.name));
@@ -5393,9 +5282,12 @@ impl<'a> TypeChecker<'a> {
                         // unaffected. Ownership-transferring cross-file constant use is deferred to
                         // the front-end/multi-file completion package (recorded in
                         // KNOWN-DEVIATIONS.md alongside DEV-083).
-                        let const_file = self.hir.item_file(*item_id);
-                        let cross_file =
-                            const_file.is_some_and(|declaring| declaring.name != self.file.name);
+                        // AS1b-ii-d: identity, not name equality against an ambient file.
+                        let cross_file = self
+                            .hir
+                            .item_sources
+                            .get(item_id)
+                            .is_some_and(|declaring| *declaring != expr.span.source);
                         if cross_file {
                             self.diags.push(
                                 Diagnostic::error(
@@ -7078,13 +6970,8 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_generic_env();
-                self.bounds_checks.push((
-                    arg_ty.clone(),
-                    trait_bounds,
-                    span,
-                    enclosing,
-                    self.item_file(item_id),
-                ));
+                self.bounds_checks
+                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, arg_ty);
             }
         } else {
@@ -7099,13 +6986,8 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_generic_env();
-                self.bounds_checks.push((
-                    var.clone(),
-                    trait_bounds,
-                    span,
-                    enclosing,
-                    self.item_file(item_id),
-                ));
+                self.bounds_checks
+                    .push((var.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, var);
             }
         }
@@ -7754,7 +7636,6 @@ impl<'a> TypeChecker<'a> {
         // the IMPL's file, not the caller's. The names must be sliced consistently on both sides —
         // the map's keys and the `Ty::Param`s they substitute into — or substitution silently
         // fails to fire and the caller sees a stray parameter type like `'r'`.
-        let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
         let self_ty = self.convert_hir_type(self_ty_id);
         let previous_self = self.current_self_ty.replace(self_ty);
         let mut params: Vec<Ty> = sig
@@ -7828,7 +7709,6 @@ impl<'a> TypeChecker<'a> {
                 map: &env_map,
             });
         }
-        self.foreign_sig_item = previous_sig_item;
         params = params
             .iter()
             .map(|ty| self.instantiate_ty(ty, &map))
@@ -8062,7 +7942,7 @@ impl<'a> TypeChecker<'a> {
 
     /// WP-C6.2c: populate `assoc_projections` from every impl's associated-type bindings, keyed by
     /// the implementing nominal's `ItemId` and the associated-type name.
-    fn build_assoc_projections(&mut self, root_file: &Arc<SourceFile>) {
+    fn build_assoc_projections(&mut self) {
         let count = self.hir.items.len();
         for index in 0..count {
             let item_id = ItemId(index as u32);
@@ -8083,11 +7963,6 @@ impl<'a> TypeChecker<'a> {
             if bindings.is_empty() {
                 continue;
             }
-            self.file = self
-                .hir
-                .item_file(item_id)
-                .cloned()
-                .unwrap_or_else(|| root_file.clone());
             let nominal = match self.convert_hir_type(self_ty) {
                 Ty::Struct(id, _) | Ty::Enum(id, _) => Some(id),
                 _ => None,
@@ -8099,7 +7974,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        self.file = root_file.clone();
     }
 
     /// WP-C6.2c: associated-type projections pinned by explicit binding constraints in scope
@@ -8235,20 +8109,23 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Checks a call's arguments against an already-resolved trait method signature (see
-    /// `find_trait_method_sig`) and returns its return type. `trait_id` is the declaring trait,
-    /// whose file the signature's types (including `Self::Item` associated-type spans) are read
-    /// against — DEV-101 provenance, needed for a cross-package trait.
+    /// `find_trait_method_sig`) and returns its return type.
+    ///
+    /// `trait_id` was the declaring trait, carried here for DEV-101 provenance: the signature's
+    /// types — including `Self::Item` associated-type spans — had to be read against the trait's
+    /// file, which differs from the caller's for a cross-package trait. AS1b-ii-d: those spans
+    /// name the trait's file themselves. The parameter is kept so the call sites still say which
+    /// trait they resolved.
     fn check_trait_member_call(
         &mut self,
-        trait_id: ItemId,
+        _trait_id: ItemId,
         sig: &hir::FnSig,
         args: &[ExprId],
         call_span: Span,
     ) -> Ty {
-        // The signature's types are declared in the TRAIT's file; convert them there, then restore
-        // the caller's file for the argument expressions below.
-        let trait_file = self.item_file(trait_id);
-        let caller_file = std::mem::replace(&mut self.file, trait_file);
+        // AS1b-ii-d: this used to swap `self.file` to the trait's file to convert the signature
+        // and swap back for the arguments. The signature's spans name the trait's file and the
+        // arguments' name the caller's, so both convert correctly with no swap at all.
         let params_ty: Vec<Ty> = sig
             .params
             .iter()
@@ -8259,7 +8136,6 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Ty(t) => self.convert_hir_type(t),
             hir::RetTy::Never(_) => Ty::Never,
         };
-        self.file = caller_file;
         self.check_call_arguments(params_ty, args, call_span);
         ret_ty
     }
@@ -8408,10 +8284,8 @@ impl<'a> TypeChecker<'a> {
                 // from the IMPL's file. Without this, `impl<T> Wrap<T>` resolved through a module
                 // boundary produced a parameter named from the caller's file — `Wrap<T>::get`
                 // returned `&S` — and no substitution could ever fire.
-                let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
                 let impl_self_ty = self.convert_hir_type(*impl_self_ty_id);
                 let matched = self.match_impl_type(&impl_self_ty, &receiver_ty, generics);
-                self.foreign_sig_item = previous_sig_item;
                 let Some(map) = matched else {
                     continue;
                 };
@@ -8526,7 +8400,6 @@ impl<'a> TypeChecker<'a> {
             // CD-358: a trait default's signature is declared in the TRAIT's file, which may
             // differ from the impl's file and from the file under check. DEV-069 already applied
             // that rule to the default's NAME; its parameter and return types need it too.
-            let previous_sig_item = self.foreign_sig_item.replace(trait_id);
             // WP-C4.7-9 audit: a TRAIT-DEFAULT method may declare its own generic parameters
             // too (`02:64`). WP-C4.7-8.4 gave the selected-impl path fresh per-call-site
             // variables for those; this path had the same gap, so `d.say(5)` on an
@@ -8604,7 +8477,6 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
-            self.foreign_sig_item = previous_sig_item;
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -8629,7 +8501,6 @@ impl<'a> TypeChecker<'a> {
         if let Some((def, _, mut map, impl_self_ty, impl_item_id)) = selected {
             // CD-358: every name below — the method's own generic parameters, and the parameter
             // and return TYPES — is a span into the impl's file.
-            let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
             // WP-C4.7-8.4: the candidate's `map` carries only the IMPL's generic parameters. A
             // method may declare its OWN (`02:64` puts `GenericParams?` on every `FunctionSig`,
             // and `02:120` makes an impl item a `Function`), and those need a fresh inference
@@ -8713,7 +8584,6 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
-            self.foreign_sig_item = previous_sig_item;
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -13478,12 +13348,18 @@ impl TypeChecker<'_> {
                         )
                         .is_err()
                     {
-                        let (line, column) = self.file.line_col(port_decl_span.lo);
-                        if let Some(diagnostic) = self.diags.get_mut(diagnostic_count) {
-                            diagnostic.notes.push(format!(
-                                "corresponding model port declared at {}:{line}:{column}",
-                                self.file.name
-                            ));
+                        let declared_at =
+                            self.hir.sources.get(port_decl_span.source).map(|source| {
+                                let (line, column) = source.line_col(port_decl_span.lo);
+                                format!(
+                                    "corresponding model port declared at {}:{line}:{column}",
+                                    source.name
+                                )
+                            });
+                        if let (Some(note), Some(diagnostic)) =
+                            (declared_at, self.diags.get_mut(diagnostic_count))
+                        {
+                            diagnostic.notes.push(note);
                         }
                     }
                 }
@@ -13512,6 +13388,8 @@ mod tests {
     use super::*;
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
+    use crate::source::SourceFile;
+    use std::sync::Arc;
 
     fn check_src(src: &str) -> Vec<Diagnostic> {
         let file = Arc::new(SourceFile::new("test.stark".to_string(), src.to_string()));
@@ -13519,7 +13397,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem_diags) = resolve(&tree, file.clone());
         let mut all_diags = sem_diags.clone();
-        let mut type_diags = check(&hir, file);
+        let mut type_diags = check(&hir);
         all_diags.append(&mut type_diags);
         all_diags
     }
@@ -13762,7 +13640,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem) = crate::resolve::resolve_with_options(&tree, file.clone(), opts);
         let mut all = sem;
-        all.extend(check_with_options(&hir, file, opts));
+        all.extend(check_with_options(&hir, opts));
         all
     }
 
@@ -14110,7 +13988,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem_diags) = resolve(&tree, file.clone());
         let mut all_diags = sem_diags.clone();
-        let mut type_diags = check(&hir, file);
+        let mut type_diags = check(&hir);
         all_diags.append(&mut type_diags);
         all_diags
     }
@@ -14358,7 +14236,7 @@ mod tests {
         assert!(parse_diags.is_empty());
         let (hir, resolve_diags) = crate::resolve::resolve(&ast, file.clone());
         assert!(resolve_diags.is_empty());
-        let result = analyze(&hir, file);
+        let result = analyze(&hir);
         assert!(
             result.diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",

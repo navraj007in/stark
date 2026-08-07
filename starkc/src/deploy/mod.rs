@@ -59,9 +59,13 @@ pub enum DeployError {
     Io(String),
     /// ONNX decode/verification failure (Gate 4 importer error surface).
     Onnx(String),
-    /// Front-end or lowering diagnostics against `file` (rendered by the CLI).
+    /// Front-end or lowering diagnostics (rendered by the CLI).
+    ///
+    /// AS1b-ii-d: carries the compilation's sources rather than one file. Each diagnostic resolves
+    /// against the source its own span names, so a single "the file this is about" no longer
+    /// answers anything — a deployment pipeline spans several.
     Diagnostics {
-        file: Arc<SourceFile>,
+        sources: crate::source::SourceRegistry,
         diagnostics: Vec<Diagnostic>,
     },
 }
@@ -72,10 +76,13 @@ impl DeployError {
         match self {
             DeployError::Io(message) => format!("Error: {message}\n"),
             DeployError::Onnx(message) => format!("Error: {message}\n"),
-            DeployError::Diagnostics { file, diagnostics } => {
+            DeployError::Diagnostics {
+                sources,
+                diagnostics,
+            } => {
                 let mut out = String::new();
                 for diagnostic in diagnostics {
-                    out.push_str(&diagnostic.render(file));
+                    out.push_str(&diagnostic.render(sources));
                 }
                 out
             }
@@ -103,7 +110,10 @@ pub fn lower_pipeline(
         .iter()
         .any(|diag| diag.severity == crate::diag::Severity::Error)
     {
-        return Err(DeployError::Diagnostics { file, diagnostics });
+        return Err(DeployError::Diagnostics {
+            sources: analysis.ast.sources.clone(),
+            diagnostics,
+        });
     }
     let hir = analysis.hir.expect("successful analysis has HIR");
     let tables = analysis
@@ -139,7 +149,10 @@ pub fn lower_pipeline(
         Ok(graph) => graph,
         Err(diags) => {
             diagnostics.extend(diags);
-            return Err(DeployError::Diagnostics { file, diagnostics });
+            return Err(DeployError::Diagnostics {
+                sources: analysis.ast.sources.clone(),
+                diagnostics,
+            });
         }
     };
 

@@ -159,7 +159,7 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
         resolve_diags.is_empty(),
         "the program must resolve:\n{source}\n{resolve_diags:#?}"
     );
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -328,7 +328,7 @@ fn a_program_binding_no_provider_is_unaffected() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
 
     let program = starkc::mir::lower::lower_program(
         &hir,

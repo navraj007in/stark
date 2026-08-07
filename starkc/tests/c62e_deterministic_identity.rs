@@ -45,7 +45,7 @@ fn symbols(root: &Path) -> Vec<String> {
     ));
     let (hir, rd) = resolve(&ast, rf.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, rf.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<String> = checked
         .diagnostics
         .iter()

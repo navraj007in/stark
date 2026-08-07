@@ -79,10 +79,12 @@ fn a_runtime_trap_inside_a_dependency_reports_that_dependency() {
         .execute_hir()
         .expect_err("dividing by zero must trap");
 
-    let file = error
-        .file
-        .as_ref()
-        .expect("a trap must name the source it happened in");
+    // AS1b-ii-d: resolved through the program's own registry, from the span alone. There is no
+    // file carried on the error to fall back to — if the span named the wrong source, this fails.
+    let file = program
+        .sources()
+        .get(error.span.source)
+        .expect("a trap's span must name a registered source");
     assert_eq!(
         file.name, "lib/src/lib.stark",
         "the trap belongs to the dependency, not the root"
@@ -117,7 +119,10 @@ fn a_trap_inside_a_cross_package_generic_reports_the_generic_s_own_file() {
         .execute_hir()
         .expect_err("dividing by zero must trap");
 
-    let file = error.file.as_ref().expect("a trap must name its source");
+    let file = program
+        .sources()
+        .get(error.span.source)
+        .expect("a trap's span must name a registered source");
     assert_eq!(
         file.name, "lib/src/lib.stark",
         "the trap belongs to the generic's defining package, not the instantiating one"
@@ -149,10 +154,10 @@ fn a_compile_error_inside_a_dependency_reports_that_dependency() {
         .collect();
     assert_eq!(errors.len(), 1, "exactly one error: {errors:?}");
 
-    let file = errors[0]
-        .file
-        .as_ref()
-        .expect("a diagnostic must name its source");
+    let file = failure
+        .sources()
+        .get(errors[0].span.source)
+        .expect("a diagnostic's span must name a registered source");
     assert_eq!(file.name, "lib/src/lib.stark");
     let (line, _) = file.line_col(errors[0].span.lo);
     assert_eq!(

@@ -215,24 +215,14 @@ impl<'a> Resolver<'a> {
         &self.modules[self.current_module.0 as usize].file
     }
 
-    fn current_file_arc(&self) -> Arc<SourceFile> {
-        self.modules[self.current_module.0 as usize].file.clone()
-    }
-
-    /// WP-C1.2 (2026-07-17): `self.current_module` accurately tracks which module (and
-    /// therefore which file) is being processed at every diagnostic-construction site (it is
-    /// saved/restored around every submodule descent in declare_items/resolve_imports/
-    /// lower_crate), but resolve.rs never attached that file to its own diagnostics -- every
-    /// resolve-stage diagnostic for a non-root file in a multi-file package rendered against
-    /// the wrong file. This mirrors typecheck.rs's own if-none backfill pattern
-    /// (typecheck.rs:2041-2044 etc.) rather than requiring every call site to remember to call
-    /// `.with_file(...)` itself. See COMPILER-STATE.md DEV-006.
+    /// WP-C1.2 (2026-07-17) attached the current module's file to every resolve diagnostic:
+    /// without it, a diagnostic for a non-root file in a multi-file package rendered against the
+    /// wrong file (DEV-006).
+    ///
+    /// AS1b-ii-d deleted the attachment. `current_module` still tracks where resolution is, but a
+    /// diagnostic's span already carries the source it was lexed from, so the file no longer has
+    /// to be re-derived from the resolver's position and cannot disagree with it.
     fn push_diag(&mut self, diag: Diagnostic) {
-        let diag = if diag.file.is_none() {
-            diag.with_file(self.current_file_arc())
-        } else {
-            diag
-        };
         self.diags.push(diag);
     }
 
@@ -2509,8 +2499,10 @@ mod tests {
     /// non-root file in a multi-file program used to render against the root file (the only
     /// file resolve.rs's callers ever backfilled), since resolve.rs never attached `.with_file`
     /// itself despite `current_module`/`current_file()` tracking the right file throughout.
-    /// Confirms a duplicate-definition error inside an inline submodule now carries that
-    /// submodule's own file identity, not silently the caller-supplied default.
+    ///
+    /// AS1b-ii-d rewrote what "carries its own file identity" means: there is no `Diagnostic.file`
+    /// to inspect, so the assertion is on the span's `SourceId` — which is the identity, rather
+    /// than a copy of it that could disagree.
     #[test]
     fn resolve_diagnostics_carry_their_own_file_not_the_caller_default() {
         let src = "mod inner {\n    fn dup() -> Unit {}\n    fn dup() -> Unit {}\n}\nfn main() -> Unit {}";
@@ -2522,10 +2514,14 @@ mod tests {
             .iter()
             .find(|d| d.code.as_deref() == Some("E0204"))
             .expect("expected an E0204 duplicate-definition diagnostic");
-        assert!(
-            dup.file.is_some(),
-            "resolve-stage diagnostic should carry its own file identity, not rely solely on \
-             the caller's default-file fallback at render time"
+        let registered = tree
+            .sources
+            .id_for_name("outer.stark")
+            .expect("the parse registered this file");
+        assert_eq!(
+            dup.span.source, registered,
+            "resolve-stage diagnostic should name the source it belongs to, not rely on a \
+             caller-supplied default at render time"
         );
     }
 

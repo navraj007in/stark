@@ -272,7 +272,7 @@ fn render(name: &str) -> String {
         resolve_diags.is_empty(),
         "{name}: resolve diagnostics: {resolve_diags:?}"
     );
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -423,7 +423,7 @@ fn build_and_run_relocatable_workspace(root: &Path) -> String {
     ));
     let (hir, resolve_diags) = resolve(&ast, root_file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {:?}", resolve_diags);
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -472,7 +472,7 @@ fn workspace_relocation_produces_identical_execution_output() {
     ));
     let (hir, resolve_diags) = resolve(&ast, root_file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {:?}", resolve_diags);
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

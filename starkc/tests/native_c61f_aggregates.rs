@@ -106,7 +106,7 @@ fn a_declared_reference_field_is_still_rejected() {
     let file = Arc::new(SourceFile::new("declared_ref_field.stark", src.to_string()));
     let (ast, pd) = parse(&file, ParseMode::Program);
     let (hir, rd) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let rejected = !pd.is_empty()
         || !rd.is_empty()
         || checked

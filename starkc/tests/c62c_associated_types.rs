@@ -193,7 +193,7 @@ fn cross_package_projection() {
     ));
     let (hir, rd) = resolve(&ast, root_file.clone());
     assert!(rd.is_empty(), "xpkg resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<String> = checked
         .diagnostics
         .iter()

@@ -26,7 +26,7 @@ fn execute(name: &str) -> String {
         resolve_diagnostics.is_empty(),
         "{name}: {resolve_diagnostics:?}"
     );
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -70,7 +70,7 @@ fn file_io_returns_results_instead_of_silently_failing() {
     assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
     let (hir, resolve_diagnostics) = resolve(&ast, file.clone());
     assert!(resolve_diagnostics.is_empty(), "{resolve_diagnostics:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

@@ -204,6 +204,16 @@ impl SourceRegistry {
         self.files.is_empty()
     }
 
+    /// The first source registered in this compilation.
+    ///
+    /// Registration order is load order and loading starts at the entry file, so this is the
+    /// entry — the source a failure with no position of its own (an interpreter invariant, a
+    /// missing entrypoint) is attributed to, so that it names a real registered source rather
+    /// than a fabricated one. `None` only when nothing has been parsed.
+    pub fn entry(&self) -> Option<&RegisteredSource> {
+        self.files.first()
+    }
+
     /// Every registered source, in id order.
     pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
         self.files.iter()
@@ -219,6 +229,34 @@ impl SourceRegistry {
 pub(crate) fn registered_for_test(name: &str, src: &str) -> RegisteredSource {
     let mut registry = SourceRegistry::default();
     registry.intern(std::sync::Arc::new(SourceFile::new(name, src)))
+}
+
+/// Anything that can answer "which source is this id?".
+///
+/// AS1b-ii-d: rendering resolves a span through its own `SourceId`, and the thing holding the
+/// sources differs by caller — the registry on an `Ast`/`Hir`, or the `SourceMap` a `ProjectAnalysis`
+/// exposes. Both answer the same question, so both implement this rather than one being converted
+/// into the other at every call.
+pub trait SourceLookup {
+    fn source(&self, id: SourceId) -> Option<&SourceFile>;
+}
+
+impl SourceLookup for SourceRegistry {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        self.get(id).map(|registered| registered.file().as_ref())
+    }
+}
+
+/// A single registered source answers for **its own id and no other**.
+///
+/// This is what the single-file paths (a one-file `stark run`, the standalone tools, unit tests)
+/// hand to rendering. It is not a "default file": a span naming a different source resolves to
+/// `None` and renders as an internal compiler error, rather than being measured against this file
+/// and producing a confident wrong location. That substitution was DEV-122.
+impl SourceLookup for RegisteredSource {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        (self.id == id).then(|| self.file.as_ref())
+    }
 }
 
 /// A loaded source file with precomputed line starts for position mapping.

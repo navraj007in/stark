@@ -163,7 +163,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let root_file = program.root_file().clone();
 
     if cmd == "check" {
         println!("{package_name}: OK");
@@ -204,24 +203,20 @@ fn main() -> ExitCode {
                 };
                 let mut diagnostic = starkc::diag::Diagnostic::error(headline, error.span);
                 diagnostic.code = code.map(str::to_string);
-                // **Render against the file the error was RAISED in, not the entry file.**
+                // **Rendered against the file the trap was RAISED in, not the entry file.**
                 //
-                // DEV-069 makes a body execute against its own file, and DEV-113-B stamps that file
-                // onto the error at the innermost frame — the interpreter has always known which
-                // file trapped. This renderer dropped it and indexed every span against the root,
-                // so a fault inside a dependency was reported at a line number in the CONSUMER's
-                // source. `SourceFile::line_col` clamps an out-of-range offset to end-of-file, so
-                // the result was not a visible error but a plausible, wrong location: a 21-line
-                // consumer was told the fault was at line 31 of itself.
+                // This renderer indexed every span against the root, so a fault inside a dependency
+                // was reported at a line number in the CONSUMER's source. `line_col` clamps an
+                // out-of-range offset to end-of-file, so the result was not a visible error but a
+                // plausible, wrong location: a 21-line consumer was told the fault was at line 31
+                // of itself. It cost real time on the `String::bytes()` defect (CD-305) — the first
+                // characterisation described the consumer's use of a match binding, and the
+                // reproducer built from it passed while the fault sat three frames away in
+                // `stark-mime`.
                 //
-                // That is worse than no location. It cost real time on the `String::bytes()` defect
-                // (CD-305): the span pointed into the consumer, so the first characterisation
-                // described the consumer's use of a match binding, and the reproducer built from it
-                // passed. The fault was three frames away in `stark-mime`.
-                if let Some(file) = &error.file {
-                    diagnostic = diagnostic.with_file(file.clone());
-                }
-                eprint!("{}", diagnostic.render(&root_file));
+                // DEV-113-B fixed it by stamping the raising file onto the error. AS1b-ii-d deleted
+                // the stamp: `error.span` names the source, and the program's registry resolves it.
+                eprint!("{}", diagnostic.render(program.sources()));
                 ExitCode::from(status)
             }
         };
@@ -1257,9 +1252,9 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
         let source = SourceFile::new(file_path.to_string_lossy().into_owned(), src.clone());
         let formatted = match starkc::formatter::format_file(&source, LanguageOptions::CORE) {
             Ok(f) => f,
-            Err(diags) => {
-                for diag in &diags {
-                    eprint!("{}", diag.render(&source));
+            Err(failure) => {
+                for diag in failure.diagnostics() {
+                    eprint!("{}", diag.render(failure.sources()));
                 }
                 eprintln!("Error: {}: formatting failed", file_path.display());
                 any_error = true;
@@ -1626,7 +1621,8 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         let (ast, diagnostics) = parse_with_options(&source, ParseMode::Program, options);
         if diagnostics.iter().any(|d| d.severity == Severity::Error) {
             for diag in &diagnostics {
-                eprint!("{}", diag.render(&source));
+                // AS1b-ii-d: the parse registered this file; its own registry resolves the spans.
+                eprint!("{}", diag.render(&ast.sources));
             }
             eprintln!("Error: {}: parse failed", file_path.display());
             had_errors = true;

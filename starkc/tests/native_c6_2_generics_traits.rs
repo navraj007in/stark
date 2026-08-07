@@ -220,7 +220,7 @@ fn c62a_cross_package_trait_method_call() {
     ));
     let (hir, rd) = resolve(&ast, root_file.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
@@ -439,7 +439,7 @@ fn c62b_ambiguous_unqualified_call_is_still_rejected() {
     let file = Arc::new(SourceFile::new("ambig.stark".to_string(), src.to_string()));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<_> = checked
         .diagnostics
         .iter()
@@ -465,7 +465,7 @@ fn c62b_receiverless_qualified_call_is_rejected_by_the_checker() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<_> = checked
         .diagnostics
         .iter()

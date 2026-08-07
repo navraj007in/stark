@@ -39,7 +39,7 @@ fn check(src: &str, tag: &str) -> Vec<String> {
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    typecheck::analyze(&hir, file.clone())
+    typecheck::analyze(&hir)
         .diagnostics
         .iter()
         .filter(|d| d.severity == starkc::diag::Severity::Error)

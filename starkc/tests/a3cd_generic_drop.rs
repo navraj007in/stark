@@ -26,7 +26,7 @@ fn run(source: &str) -> interp::ExecutionOutcome {
     assert!(parse_diags.is_empty(), "parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

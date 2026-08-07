@@ -7,10 +7,8 @@
 use crate::ast::{AssignOp, UnOp};
 use crate::diag::Diagnostic;
 use crate::hir::{self, BlockId, ExprId, Hir, LocalId, PatId, Res, StmtId};
-use crate::source::SourceFile;
 use crate::typecheck::Ty;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[derive(Clone, Default)]
 struct FlowState {
@@ -33,14 +31,12 @@ struct FlowState {
     diverged: bool,
 }
 
-pub fn check(
-    hir: &Hir,
-    file: Arc<SourceFile>,
-    expr_types: &HashMap<ExprId, Ty>,
-) -> Vec<Diagnostic> {
+/// AS1b-ii-d: no `file` parameter. WP-C1.4 added one so flow diagnostics could be attributed to
+/// the item's declaring file; the pass then swapped it per item and stamped it onto every
+/// diagnostic. A span names its own source, so the pass has no use for a file at all.
+pub fn check(hir: &Hir, expr_types: &HashMap<ExprId, Ty>) -> Vec<Diagnostic> {
     let mut checker = FlowChecker {
         hir,
-        file,
         expr_types,
         diagnostics: Vec::new(),
     };
@@ -50,35 +46,20 @@ pub fn check(
 
 struct FlowChecker<'a> {
     hir: &'a Hir,
-    // WP-C1.4 (2026-07-17): this was previously `_file` and structurally unused -- every flow
-    // diagnostic (E0400/E0401) rendered via the caller's default-file fallback regardless of
-    // which file the flagged item actually came from. Now swapped per item in `check_root`
-    // (mirroring borrowck.rs's identical fix, both part of DEV-006) and backfilled onto
-    // diagnostics via `push_diag`. See COMPILER-STATE.md DEV-006.
-    file: Arc<SourceFile>,
     expr_types: &'a HashMap<ExprId, Ty>,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl FlowChecker<'_> {
+    /// AS1b-ii-d: this used to backfill `self.file` onto any diagnostic that carried none. A
+    /// diagnostic's span now names its own source, so there is nothing left to attribute; the
+    /// method stays as the one place flow-check diagnostics enter the list.
     fn push_diag(&mut self, diag: Diagnostic) {
-        let diag = if diag.file.is_none() {
-            diag.with_file(self.file.clone())
-        } else {
-            diag
-        };
         self.diagnostics.push(diag);
     }
 
     fn check_root(&mut self) {
-        let root_file = self.file.clone();
-        for (index, item) in self.hir.items.iter().enumerate() {
-            let item_id = hir::ItemId(index as u32);
-            self.file = self
-                .hir
-                .item_file(item_id)
-                .cloned()
-                .unwrap_or_else(|| root_file.clone());
+        for item in self.hir.items.iter() {
             match &item.kind {
                 hir::ItemKind::Fn(def) => self.check_fn(def),
                 hir::ItemKind::Impl { items, .. } => {
@@ -102,7 +83,6 @@ impl FlowChecker<'_> {
                 _ => {}
             }
         }
-        self.file = root_file;
 
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
             let mut state = FlowState::default();

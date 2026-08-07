@@ -94,7 +94,7 @@ fn build_native(source: &str, name: &str, target_dir: &Path, runtime: &Path) -> 
     assert!(pd.is_empty(), "parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()

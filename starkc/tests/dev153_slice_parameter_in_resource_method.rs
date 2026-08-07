@@ -55,7 +55,7 @@ fn build(src: &str, tag: &str) -> Result<(), String> {
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(first) = checked
         .diagnostics
         .iter()

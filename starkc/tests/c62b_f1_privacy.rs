@@ -26,7 +26,7 @@ fn errors(tag: &str, src: &str) -> Vec<starkc::diag::Diagnostic> {
         .collect();
     let (hir, rd) = resolve(&ast, file.clone());
     ds.extend(rd.into_iter().filter(|d| d.severity == Severity::Error));
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     ds.extend(
         checked
             .diagnostics

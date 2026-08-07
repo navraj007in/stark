@@ -346,11 +346,10 @@ fn load_submodules_recursive(
                     ),
                     name_span,
                 )
-                .with_code("E0208")
-                .with_file(std::sync::Arc::new(SourceFile::new(
-                    current_file.name.clone(),
-                    current_file.src.clone(),
-                ))),
+                // AS1b-ii-d: this used to attach a freshly built `SourceFile` cloned from
+                // `current_file` — a second copy of a file already registered, so the diagnostic
+                // and the registry disagreed about what "this file" was. `name_span` names it.
+                .with_code("E0208"),
             );
             continue;
         }
@@ -361,11 +360,7 @@ fn load_submodules_recursive(
             } else {
                 diags.push(
                     Diagnostic::error(format!("cannot read file '{}'", path.display()), name_span)
-                        .with_code("E0208")
-                        .with_file(std::sync::Arc::new(SourceFile::new(
-                            current_file.name.clone(),
-                            current_file.src.clone(),
-                        ))),
+                        .with_code("E0208"),
                 );
                 continue;
             }
@@ -396,11 +391,7 @@ fn load_submodules_recursive(
                         ),
                         name_span,
                     )
-                    .with_code("E0208")
-                    .with_file(std::sync::Arc::new(SourceFile::new(
-                        current_file.name.clone(),
-                        current_file.src.clone(),
-                    ))),
+                    .with_code("E0208"),
                 );
             }
             (candidates[0].clone(), String::new())
@@ -497,7 +488,6 @@ pub fn parse_with_options_into(
 ) -> (Root, Vec<Diagnostic>) {
     // AS1b-i: intern first, so the registry is populated before the parser takes `&mut ast`.
     let registered = ast.interned_source(file);
-    let file_arc = registered.file().clone();
     let (tokens, lex_diags) = tokenize(file, registered.id());
     let mut p = Parser {
         file,
@@ -521,11 +511,6 @@ pub fn parse_with_options_into(
             Root::Snippet { stmts, tail }
         }
     };
-    for diag in &mut p.diags {
-        if diag.file.is_none() {
-            diag.file = Some(file_arc.clone());
-        }
-    }
     (root, p.diags)
 }
 

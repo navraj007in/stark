@@ -526,7 +526,7 @@ fn cmd_lex(path: &str) -> ExitCode {
         println!("{line}:{col}\t{:?}\t{text:?}", token.kind);
     }
     for diag in &diags {
-        eprint!("{}", diag.render(&file));
+        eprint!("{}", diag.render(&registered));
     }
     if diags.is_empty() {
         ExitCode::SUCCESS
@@ -542,7 +542,8 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool, options: LanguageOptions) 
     };
     let (tree, diags) = parse_with_options(&file, mode, options);
     for diag in &diags {
-        eprint!("{}", diag.render(&file));
+        // AS1b-ii-d: the parse registered this file, so its registry resolves the spans.
+        eprint!("{}", diag.render(&tree.sources));
     }
     if !diags.is_empty() {
         eprintln!("{}: {} error(s)", file.name, diags.len());
@@ -637,7 +638,7 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
             // Warnings that survived a successful check are still reported before the program
             // runs, which is where they appeared before.
             for diagnostic in program.diagnostics() {
-                eprint!("{}", diagnostic.render(&file));
+                eprint!("{}", diagnostic.render(program.sources()));
             }
             match program.execute_hir() {
                 Ok(execution) => {
@@ -670,7 +671,7 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
                     };
                     let mut diagnostic = starkc::diag::Diagnostic::error(headline, error.span);
                     diagnostic.code = code.map(str::to_string);
-                    eprint!("{}", diagnostic.render(&file));
+                    eprint!("{}", diagnostic.render(program.sources()));
                     ExitCode::from(status)
                 }
             }

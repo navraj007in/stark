@@ -155,6 +155,12 @@ impl CheckedProgram {
         &self.analysis.diagnostics
     }
 
+    /// The sources this compilation registered. AS1b-ii-d: rendering a diagnostic needs this, not
+    /// a single file — each one resolves against the source its own span names.
+    pub fn sources(&self) -> &crate::source::SourceRegistry {
+        &self.analysis.ast.sources
+    }
+
     /// Execute on the typed-HIR reference interpreter.
     pub fn execute_hir(&self) -> Result<Execution, RuntimeError> {
         crate::interp::run(self.hir(), self.root_source(), self.tables())
@@ -238,6 +244,12 @@ impl CompileFailure {
         &self.analysis.diagnostics
     }
 
+    /// The sources this compilation registered. AS1b-ii-d: rendering a diagnostic needs this, not
+    /// a single file — each one resolves against the source its own span names.
+    pub fn sources(&self) -> &crate::source::SourceRegistry {
+        &self.analysis.ast.sources
+    }
+
     pub fn root_file(&self) -> &Arc<SourceFile> {
         &self.analysis.root_file
     }
@@ -264,10 +276,12 @@ impl CompileFailure {
     /// can only differ in where earlier-phase *warnings* land. Pipeline order is the one worth
     /// keeping: it reads in the order the compiler did the work.
     pub fn render(&self) -> String {
-        let root = self.root_file();
+        // AS1b-ii-d: each diagnostic resolves against the source ITS OWN SPAN names. The root file
+        // is no longer passed in as a default, because there is nothing left for a default to
+        // decide.
         let mut out = String::new();
         for diagnostic in &self.analysis.diagnostics {
-            out.push_str(&diagnostic.render(root));
+            out.push_str(&diagnostic.render(&self.analysis.ast.sources));
         }
         out
     }

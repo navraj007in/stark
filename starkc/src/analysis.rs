@@ -91,6 +91,12 @@ pub struct SourceMap {
     by_name: HashMap<String, SourceId>,
 }
 
+impl crate::source::SourceLookup for SourceMap {
+    fn source(&self, id: SourceId) -> Option<&crate::source::SourceFile> {
+        self.get(id).map(|record| record.file.as_ref())
+    }
+}
+
 impl SourceMap {
     pub fn files(&self) -> &[SourceRecord] {
         &self.files
@@ -414,14 +420,11 @@ impl ProjectAnalysis {
     }
 
     pub fn diagnostic_batch(&self, source_versions: &HashMap<SourceId, i64>) -> DiagnosticBatch {
-        let root = self
-            .source_map
-            .id_for_name(&self.root_file.name)
-            .expect("analysis root source must exist in its source map");
+        // AS1b-ii-d: no default source. Every diagnostic's span names the source it belongs to,
+        // so there is nothing left for the root to stand in for.
         DiagnosticBatch::from_compiler_diagnostics(
             &self.diagnostics,
             &self.source_map,
-            root,
             source_versions,
             if self.options.tensor() {
                 vec!["tensor".to_string()]
@@ -461,8 +464,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
                     let diagnostic = Diagnostic::error(
                         format!("failed to read entry file: {error}"),
                         registered.synthetic_span(),
-                    )
-                    .with_file(file.clone());
+                    );
                     (file, Some(graph), ast, vec![diagnostic])
                 }
             }
@@ -505,7 +507,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
             crate::resolve::resolve_with_options(&ast, root_file.clone(), options);
         diagnostics.extend(resolve_diagnostics);
         if !has_errors(&diagnostics) {
-            let checked = analyze_with_options(&resolved, root_file.clone(), options);
+            let checked = analyze_with_options(&resolved, options);
             diagnostics.extend(checked.diagnostics);
             type_tables = Some(checked.tables);
         }
@@ -865,21 +867,17 @@ mod tests {
         assert!(analysis.enclosing(symbol).unwrap().module.is_some());
         assert_eq!(analysis.document_symbols(child_id).len(), 1);
 
-        let root_file = analysis.source_map.get(root_id).unwrap().file.clone();
-        let child_file = analysis.source_map.get(child_id).unwrap().file.clone();
+        // AS1b-ii-d: source identity travels in the spans. The primary belongs to the root and
+        // the related note to the child, and the transport below must preserve exactly that —
+        // previously it was told twice, once by a file and once by a span.
         analysis.diagnostics.push(
             Diagnostic::error(
                 "cross-file contract violation",
                 Span::in_source(root_id, 0, 3),
             )
-            .with_file(root_file)
             .with_code("E0999")
             .with_label("primary")
-            .with_related(
-                child_file,
-                Span::in_source(child_id, 7, 13),
-                "declared here",
-            )
+            .with_related(Span::in_source(child_id, 7, 13), "declared here")
             .with_note("transport note")
             .with_help("transport help")
             .with_rule_id("TEST-RULE-001")

@@ -19,7 +19,7 @@ fn main() {
         println!("RESOLVE-ERR: {}", rd[0].message);
         return;
     }
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(d) = checked
         .diagnostics
         .iter()

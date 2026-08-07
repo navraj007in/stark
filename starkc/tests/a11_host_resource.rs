@@ -985,7 +985,7 @@ fn a_diverging_arm_does_not_leave_a_variable_unassigned() {
         assert!(pd.is_empty(), "{pd:?}");
         let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
         assert!(rd.is_empty(), "{rd:?}");
-        let checked = starkc::typecheck::analyze(&hir, file);
+        let checked = starkc::typecheck::analyze(&hir);
         let errors: Vec<_> = checked
             .diagnostics
             .iter()
@@ -1013,7 +1013,7 @@ fn a_non_diverging_arm_that_skips_the_assignment_still_reports_e0401() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file);
+    let checked = starkc::typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

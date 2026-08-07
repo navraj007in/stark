@@ -153,7 +153,7 @@ fn extract_declaration(
     if !resolution_diagnostics.is_empty() {
         return Err(frontend_error("resolve", &resolution_diagnostics));
     }
-    let type_diagnostics = crate::typecheck::check_with_options(&hir, file.clone(), options);
+    let type_diagnostics = crate::typecheck::check_with_options(&hir, options);
     if type_diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)

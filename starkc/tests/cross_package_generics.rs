@@ -61,7 +61,7 @@ fn compile_app(root: &Path) -> Compiled {
     ));
     let (hir, resolve_diags) = resolve(&ast, root_file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let type_errors: Vec<String> = checked
         .diagnostics
         .iter()

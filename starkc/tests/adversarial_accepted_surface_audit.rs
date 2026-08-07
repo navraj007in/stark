@@ -91,7 +91,7 @@ fn check(tag: &str, src: &str) -> Checked {
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<&starkc::diag::Diagnostic> = checked
         .diagnostics
         .iter()

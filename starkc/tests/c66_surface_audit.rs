@@ -163,7 +163,7 @@ fn audit() {
         let file = std::sync::Arc::new(starkc::source::SourceFile::new(name, source.clone()));
         let (ast, pd) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
         let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
-        let checked = starkc::typecheck::analyze(&hir, file.clone());
+        let checked = starkc::typecheck::analyze(&hir);
         let errs: Vec<_> = checked
             .diagnostics
             .iter()

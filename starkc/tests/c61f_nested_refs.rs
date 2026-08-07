@@ -43,7 +43,7 @@ fn accepted(tag: &str, src: &str) {
     assert!(pd.is_empty(), "{tag} must PARSE: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
@@ -75,7 +75,7 @@ fn rejected_e0103(tag: &str, src: &str) {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<_> = checked
         .diagnostics
         .iter()

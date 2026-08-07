@@ -302,7 +302,7 @@ pub fn front_end(name: &str, source: &str) -> Front {
     assert!(pd.is_empty(), "{name}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -338,7 +338,7 @@ pub fn rejects_at_typecheck(name: &str, source: &str, expected_code: &str) -> Ve
         rd.is_empty(),
         "{name}: expected a clean resolve, got {rd:?}"
     );
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<&starkc::diag::Diagnostic> = checked
         .diagnostics
         .iter()
@@ -482,7 +482,7 @@ pub fn front_end_package(root_package: &Path) -> (Front, starkc::mir::MirProgram
         "{}: resolve: {resolve_diags:?}",
         root_package.display()
     );
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -592,12 +592,15 @@ pub fn run_hir(name: &str, front: &Front) -> Observation {
                  is a compiler error, not a language outcome the other engines can match",
                 err.message
             );
-            // DEV-113-B: the trap's OWN file when the oracle supplies one — for a multi-file or
-            // package program the raising file is not the entry file, and using the entry file made
-            // the oracle disagree with MIR about which file trapped.
-            let raised_in = err
-                .file
-                .clone()
+            // DEV-113-B: the trap's OWN file, not the entry file — for a multi-file or package
+            // program the raising file is not the entry, and using the entry made the oracle
+            // disagree with MIR about which file trapped. AS1b-ii-d: the span names it, so this
+            // resolves through the program's registry instead of a copy carried on the error.
+            let raised_in = front
+                .hir
+                .sources
+                .get(err.span.source)
+                .map(|source| source.file().clone())
                 .unwrap_or_else(|| front.file.file().clone());
             let (line, column) = raised_in.line_col(err.span.lo);
             // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`

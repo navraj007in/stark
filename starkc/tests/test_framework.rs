@@ -30,7 +30,7 @@ fn compile(
         resolve_diags
     );
 
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

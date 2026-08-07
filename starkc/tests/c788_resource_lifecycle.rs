@@ -244,7 +244,7 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
     assert!(parse_diags.is_empty(), "{parse_diags:#?}");
     let (hir, resolve_diags) = starkc::resolve::resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "{resolve_diags:#?}");
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

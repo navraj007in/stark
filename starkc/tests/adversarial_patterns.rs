@@ -136,7 +136,7 @@ fn a_borrowed_match_over_a_drop_type_is_refused_before_mir() {
     assert!(pd.is_empty(), "parse: {pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     assert!(
         !checked
             .diagnostics

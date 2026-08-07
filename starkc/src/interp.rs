@@ -6,15 +6,13 @@ use crate::hir::{
     self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
 };
 use crate::literal::{self, LitValue};
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use crate::typecheck::{Ty, TypeTables};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::rc::Rc;
-#[cfg(test)]
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -41,17 +39,6 @@ pub struct RuntimeError {
     /// than risk defaulting it to whatever category the other engines reported. Every other trap
     /// leaves this `None` and keeps its existing prose-matched classification.
     pub trap_category: Option<crate::mir::TrapCategory>,
-    /// DEV-113-B: the file the error was raised in.
-    ///
-    /// The span alone is not enough for a multi-file program: `call_callable` swaps `self.file` so a
-    /// body executes against its OWN file (DEV-069), and without carrying that here every trap was
-    /// attributed to the ENTRY file — so a trap inside a dependency was reported at the caller, and
-    /// the oracle disagreed with MIR about which file trapped. The interpreter always knew; it threw
-    /// the answer away at the raise site.
-    ///
-    /// `None` only for errors constructed before execution begins (entrypoint selection), where
-    /// there is no executing file yet.
-    pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
 /// This implementation's call-depth capacity (WP-C7.9 Packet F, `LIMIT-RESOURCE-001`).
@@ -120,7 +107,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -133,7 +119,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -145,7 +130,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: Some(limitation),
             trap_category: None,
-            file: None,
         }
     }
 
@@ -159,7 +143,6 @@ impl RuntimeError {
             class: FailureClass::HostResource,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -175,7 +158,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: Some(category),
-            file: None,
         }
     }
 
@@ -186,7 +168,6 @@ impl RuntimeError {
             class: FailureClass::Entry,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 }
@@ -220,12 +201,13 @@ pub struct ExecutionOutcome {
 /// Evaluate every declared constant before execution. This uses the same
 /// abstract-machine operations as the interpreter, but only after a closed
 /// syntactic-subset check has excluded runtime state and side effects.
-pub fn check_constants(
-    hir: &Hir,
-    file: crate::source::RegisteredSource,
-    tables: &TypeTables,
-) -> Vec<Diagnostic> {
-    let mut interpreter = Interpreter::new(hir, file.clone(), tables);
+pub fn check_constants(hir: &Hir, tables: &TypeTables) -> Vec<Diagnostic> {
+    // AS1b-ii-d: the entry source comes from the program's own registry rather than being threaded
+    // in beside it. An empty registry means nothing was parsed, so there are no constants either.
+    let Some(entry) = hir.sources.entry().cloned() else {
+        return Vec::new();
+    };
+    let mut interpreter = Interpreter::new(hir, entry, tables);
     interpreter.frames.push(Frame::default());
     let mut diagnostics = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
@@ -233,16 +215,8 @@ pub fn check_constants(
         let hir::ItemKind::Const { value, .. } = &item.kind else {
             continue;
         };
-        let item_file = hir
-            .item_file(item_id)
-            .cloned()
-            .unwrap_or_else(|| file.file().clone());
         if let Err((span, message)) = constant_expr_allowed(hir, *value) {
-            diagnostics.push(
-                Diagnostic::error(message, span)
-                    .with_code("E0215")
-                    .with_file(item_file),
-            );
+            diagnostics.push(Diagnostic::error(message, span).with_code("E0215"));
             continue;
         }
         // AS1b-ii: DEV-088's swap is gone with DEV-069's three. It existed because a cross-file
@@ -256,8 +230,7 @@ pub fn check_constants(
                     format!("constant evaluation failed: {}", error.message),
                     error.span,
                 )
-                .with_code("E0215")
-                .with_file(item_file),
+                .with_code("E0215"),
             );
         }
     }
@@ -1757,19 +1730,11 @@ impl<'a> Interpreter<'a> {
         // AS1b-ii: DEV-069's per-call file swap is GONE. It existed so `self.file` named the
         // executing body's file while `text()` sliced against it; `text()` now slices against the
         // source the span itself names, so there is nothing for the swap to keep correct.
-        let mut result = self.eval_block(callable.body);
-        if let Err(error) = &mut result {
-            // DEV-113-B: stamp the file the error was raised in, at the innermost frame that has
-            // not already been stamped. The stamp is now DERIVED FROM THE SPAN rather than from
-            // ambient state, so it cannot disagree with `error.span.source`.
-            if error.file.is_none() {
-                error.file = self
-                    .hir
-                    .sources
-                    .get(error.span.source)
-                    .map(|file| file.file().clone());
-            }
-        }
+        // DEV-113-B stamped the raising file onto the error here, because a trap inside a
+        // dependency was otherwise attributed to the entry file. AS1b-ii-d deleted the stamp: it
+        // was derived from `error.span.source`, so it was a copy of something the error already
+        // carried, and a copy is a thing that can disagree.
+        let result = self.eval_block(callable.body);
         if result.is_err() {
             self.frames.pop();
             return result.map(|_| Value::Unit);
@@ -8171,7 +8136,9 @@ mod tests {
     use super::*;
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
+    use crate::source::SourceFile;
     use crate::typecheck;
+    use std::sync::Arc;
 
     /// Type-check only, returning the diagnostics — for tests that assert a REJECTION rather
     /// than an execution result.
@@ -8179,7 +8146,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        typecheck::analyze(&hir, file).diagnostics
+        typecheck::analyze(&hir).diagnostics
     }
 
     fn stark_string_literal_contents(value: &str) -> String {
@@ -8287,7 +8254,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let tables = typecheck::analyze(&hir, file.clone()).tables;
+        let tables = typecheck::analyze(&hir).tables;
         // AS1b-ii: the identity the parse registered, not a fresh one.
         let registered = hir
             .source_named(&file.name)
@@ -8666,7 +8633,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", "fn main() {}"));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let mut tables = typecheck::analyze(&hir, file.clone()).tables;
+        let mut tables = typecheck::analyze(&hir).tables;
 
         // A local the tables declare as `&[UInt8]` — a borrowed view.
         let local = LocalId(0);
@@ -8729,7 +8696,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        typecheck::analyze(&hir, file)
+        typecheck::analyze(&hir)
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diag::Severity::Error)
@@ -8745,7 +8712,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics
@@ -10153,7 +10120,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics

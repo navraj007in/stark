@@ -217,3 +217,84 @@ held by behavioural tests instead.
 `Hir.sources` is described as frozen after parsing but is a public `SourceRegistry` whose `intern`
 is public and `&mut`. Downstream holders have `&Hir`, so it is effectively frozen — but not
 mechanically. Tighten at AS1b closeout rather than delaying ii-d.
+
+
+---
+
+## 6. AS1b-ii-d — what the invariant paid for (2026-08-07)
+
+ii-d was scoped as "make `resolve_span` total, delete `SpanResolutionError`, remove DEV-122's
+interim guard" — acceptance criteria 2 and 4. It is that, and it is also the checkpoint where the
+machinery those criteria existed to protect became dead code. The record below is the removal,
+because the removal is the argument for having done AS1b at all.
+
+### The rule that replaced everything
+
+`Diagnostic::render(&self, sources: &impl SourceLookup)`. There is no default file and no override.
+It was `self.file.as_deref().unwrap_or(default_file)` — **two authorities, with the caller's file
+winning over the span**. A `Diagnostic.file` disagreeing with its own span rendered against the
+file, and if the byte range happened to fit, the result was a confident wrong location. DEV-122's
+guard caught only the out-of-range half of that.
+
+`SourceLookup` has two implementations. A `SourceRegistry` answers for every source it holds. A
+single `RegisteredSource` answers **for its own id and no other** — that is what the one-file paths
+(a standalone lex, the editor, unit tests) pass, and it is deliberately not a "default file": a
+foreign span resolves to `None` and renders as an internal compiler error rather than being measured
+against whatever file was to hand.
+
+### Deleted
+
+| Removed | What it existed for |
+| --- | --- |
+| `Diagnostic.file`, `with_file` | attributing a diagnostic to a file separately from its span |
+| `RelatedDiagnostic.file`; `with_related` loses its file parameter | the same, for the secondary location |
+| `RuntimeError.file` (DEV-113-B) | naming the file a trap was raised in — it was **derived from `error.span.source`**, so it was a copy of something the error already carried |
+| `SpanResolutionError`, `resolve_span`'s `Result` | signalling "this span cannot be located against this file" |
+| DEV-122's three interim guard checks | detecting a span measured against the wrong source |
+| per-item `self.file` swaps in `typecheck` (×3 walks), `borrowck`, `flow` | DEV-006/DEV-069: pointing an ambient file at the item being checked |
+| `typecheck::{item_src, item_file}`, the foreign-signature item stack, `BoundsCheck`'s 5th element | DEV-069/DEV-101/DEV-148: four separate repairs, each carrying a declaring file to a read |
+| `borrowck::item_text`'s distinct body; `typecheck::{item_text, decl_text}` bodies | the cross-item read that `text` got wrong |
+| the `file` parameter of `typecheck::{check, analyze, check_with_options, analyze_with_options}`, `borrowck::{check, check_fn, check_snippet}`, `flow::check` | threading the root file into passes that only ever wanted to read spans |
+| `interp::check_constants`' `file` parameter | replaced by `SourceRegistry::entry()` — the compilation's own first-registered source |
+| the parser's three `SourceFile::new(current_file.name.clone(), current_file.src.clone())` clones | attaching a file to a module-resolution diagnostic; each built a **second copy of an already-registered file** |
+| `DiagnosticBatch::from_compiler_diagnostics`' `default_source` | the fallback that attributed an unattributed diagnostic to the root |
+
+Net across the compiler: **599 insertions, 808 deletions** over 108 files, most of the deletion in
+`typecheck.rs` (269 removed), `diag.rs` (154) and `interp.rs` (56).
+
+### One defect found by the removal
+
+`validate_impl_rules`' orphan-rule check compared packages by calling `find_package_root`, which
+walked each file's path upward looking for a `starkpkg.json` **on disk, during type checking**. It
+only ever distinguished two packages by an asymmetry: the root file carried an absolute disk path
+while every other item's file carried AS1a's logical `<package>/<path>` name, so the root probe found
+a manifest and the dependency probe found nothing, and "different package" fell out of the
+difference. Making the three reads consistent made all three answer `None`, and
+`test_cross_package_coherence_orphan_rule_with_real_packages` failed — correctly.
+
+Replaced by `source_package`, which reads the package off the logical name. The comparison now says
+what it means and does not touch the filesystem. The pre-existing test is the evidence; no test was
+adjusted to fit.
+
+### What the record must not overclaim
+
+- The interpreter still holds a `RegisteredSource` for `entry_source()` — a real registered source
+  for failures that have no position of their own (an invariant violation, a missing entrypoint).
+  That is identity, not an ambient file to read spans against.
+- `Span::synthetic(source)` still resolves to the start of its source, so "no location" still
+  renders as a location. Making absence representable needs `Option<Span>` through `Diagnostic`,
+  which is a separate change (§4).
+- Acceptance criterion 4 is met because synthetic spans now name a real registered source, not
+  because the synthetic-span question was answered.
+
+### Evidence
+
+`--lib` (532), `as1b_span_provenance`, `as1b_source_registry`, `as0_source_identity`,
+`as0_characterization` (baseline **unchanged**), `as2_one_pipeline`, `diag_format`, `gate2_valid`,
+`gate2_package`, `multi_file_spans`, `conformance`, `c6_package`, `cross_package_generics`,
+`c62c_associated_types` all pass.
+
+`as1b_span_provenance`'s three cases were rewritten to resolve through the program's own registry
+from the span alone — there is no longer a file on the error or the diagnostic to fall back to, so a
+wrong `SourceId` now fails the test rather than being masked by a correct side-channel. That makes
+them stronger than when they were written as regression guards in §4.

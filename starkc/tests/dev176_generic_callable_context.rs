@@ -25,7 +25,7 @@ fn run(source: &str) -> Result<u8, starkc::interp::RuntimeError> {
     assert!(parse_diags.is_empty(), "parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -95,7 +95,7 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let outcome = interp::run_capturing(
         &hir,
         hir.source_named(&file.name).expect("registered"),
@@ -140,7 +140,7 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let outcome = interp::run_capturing(
         &hir,
         hir.source_named(&file.name).expect("registered"),
@@ -183,7 +183,7 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let outcome = interp::run_capturing(
         &hir,
         hir.source_named(&file.name).expect("registered"),

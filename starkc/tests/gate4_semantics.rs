@@ -74,7 +74,7 @@ fn diagnostics(case: &Case) -> Vec<starkc::diag::Diagnostic> {
         let (hir, mut resolve_diagnostics) =
             starkc::resolve::resolve_with_options(&ast, file.clone(), options);
         diagnostics.append(&mut resolve_diagnostics);
-        diagnostics.extend(starkc::typecheck::check_with_options(&hir, file, options));
+        diagnostics.extend(starkc::typecheck::check_with_options(&hir, options));
     }
     diagnostics
 }

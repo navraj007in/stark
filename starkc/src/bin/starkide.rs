@@ -684,6 +684,9 @@ impl App {
         // sixth hand-rolled assembly, and the easiest to overlook -- a search of `main.rs` and
         // `bin/stark.rs` missed it entirely until AS0 enumerated the exact set.
         let mut diagnostics: Vec<starkc::diag::Diagnostic>;
+        // AS1b-ii-d: the compilation's registry is captured alongside its diagnostics, because
+        // rendering resolves each span against the source it names rather than against `file`.
+        let sources: starkc::source::SourceRegistry;
         match CompilerSession::for_source_in_mode(
             file.clone(),
             self.parse_mode,
@@ -691,9 +694,13 @@ impl App {
         )
         .check()
         {
-            Err(failure) => diagnostics = failure.diagnostics().to_vec(),
+            Err(failure) => {
+                diagnostics = failure.diagnostics().to_vec();
+                sources = failure.sources().clone();
+            }
             Ok(program) => {
                 diagnostics = program.diagnostics().to_vec();
+                sources = program.sources().clone();
                 if run {
                     runtime_started = true;
                     match program.execute_hir() {
@@ -731,7 +738,7 @@ impl App {
             self.output.push(format!("Compiling {name}"));
             for diagnostic in &diagnostics {
                 self.output
-                    .extend(diagnostic.render(&file).lines().map(str::to_owned));
+                    .extend(diagnostic.render(&sources).lines().map(str::to_owned));
             }
             self.output.push(format!(
                 "Success: syntax and semantic checks passed (0 errors, {} warning(s)).",
@@ -742,7 +749,7 @@ impl App {
             self.output.push(format!("Compiling {name}"));
             for diagnostic in &diagnostics {
                 self.output
-                    .extend(diagnostic.render(&file).lines().map(str::to_owned));
+                    .extend(diagnostic.render(&sources).lines().map(str::to_owned));
             }
             self.output
                 .push(format!("Build failed: {error_count} error(s)."));
