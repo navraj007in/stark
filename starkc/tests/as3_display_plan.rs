@@ -267,3 +267,76 @@ fn a_nested_container_publishes_the_full_path() {
     );
     assert_eq!(out, "Some([A!])\n");
 }
+
+// ---- interpolation: the second `Display` entry point ----
+//
+// `f"{w}"` renders exactly as `println(w)` does — `W`'s own `fmt` runs and the walk stops. It
+// therefore goes through the SAME queue and the SAME walk rather than getting a dispatch mechanism
+// of its own, which is how `find_impl_fn(nominal, "fmt", ..)` came to serve two callers.
+
+#[test]
+fn an_interpolated_nominal_publishes_a_position() {
+    let (plan, out) = plan_and_output(&main_with(
+        "    let a: A = A { v: 1 };\n    println(f\"{a}\");",
+    ));
+    assert_eq!(plan, vec![(vec![], "Static")]);
+    assert_eq!(out, "A!\n");
+}
+
+#[test]
+fn interpolation_obeys_the_same_stop_rule() {
+    let (plan, out) = plan_and_output(&main_with(
+        "    let w: W<A> = W { v: A { v: 1 } };\n    println(f\"{w}\");",
+    ));
+    assert_eq!(
+        plan,
+        vec![(vec![], "Static")],
+        "the inner `A` is not rendered, so it must not be published"
+    );
+    assert_eq!(out, "W!\n");
+}
+
+#[test]
+fn two_interpolated_fields_are_two_positions() {
+    // Same empty path, different root expressions — which is why the key is a PAIR. Keying on the
+    // path alone would collapse these two into one entry.
+    let (plan, out) = plan_and_output(&main_with(
+        "    let a: A = A { v: 1 };\n    let b: B = B { v: 2 };\n    println(f\"{a} {b}\");",
+    ));
+    assert_eq!(plan.len(), 2, "two fields, two render positions");
+    assert_eq!(out, "A! B!\n");
+}
+
+#[test]
+fn an_interpolated_generic_parameter_publishes_a_bound_position() {
+    let (plan, out) = plan_and_output(&format!(
+        "{DECLS}fn show<T: Display>(x: T) {{ println(f\"{{x}}\"); }}\n\
+         fn main() {{ show(A {{ v: 1 }}); }}\n"
+    ));
+    assert_eq!(plan, vec![(vec![], "Bound")]);
+    assert_eq!(out, "A!\n");
+}
+
+#[test]
+fn an_interpolated_primitive_publishes_no_position() {
+    let (plan, out) = plan_and_output(&main_with(
+        "    let n: Int32 = 7;\n    println(f\"n={n}\");",
+    ));
+    assert!(plan.is_empty());
+    assert_eq!(out, "n=7\n");
+}
+
+#[test]
+fn interpolation_and_println_agree_on_the_same_value() {
+    // The claim of routing both through one walk is that they cannot drift. Asserted directly.
+    let via_println = plan(&main_with(
+        "    let w: W<Int32> = W { v: 1 };\n    println(w);",
+    ));
+    let via_interpolation = plan(&main_with(
+        "    let w: W<Int32> = W { v: 1 };\n    println(f\"{w}\");",
+    ));
+    assert_eq!(
+        via_println, via_interpolation,
+        "one value, one render, one plan — regardless of which syntax reached Display"
+    );
+}

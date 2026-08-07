@@ -172,19 +172,16 @@ pub struct TypeChecker<'a> {
     int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
-    /// The generic scope is captured alongside, because the check is DEFERRED to Pass 3 and
-    /// `bound_method_candidates` reads live scope (`current_fn_generics`/`current_impl_generics`),
-    /// which is empty by then. Without it, `println(x)` inside `fn show<T: Display>` published no
-    /// dispatch plan — the walk reached `Ty::Param("T")` and found zero candidates for a bound that
-    /// is plainly written.
-    #[allow(clippy::type_complexity)]
-    display_checks: Vec<(
-        ExprId,
-        Ty,
-        Span,
-        Option<Vec<hir::GenericParam>>,
-        Option<Vec<hir::GenericParam>>,
-    )>,
+    display_checks: Vec<(Ty, Span)>,
+    /// **AS3 Boundary 4: the queue the `Display` dispatch plan is built from.**
+    ///
+    /// Separate from `display_checks`, which exists to emit E0500. One queue per job: a queue that
+    /// both reports errors and publishes a plan is the one a fourth concern gets added to.
+    ///
+    /// Both `println`-family arguments and interpolation fields land here, so the plan is built by
+    /// ONE walk regardless of which syntax reached `Display`.
+    ///
+    display_plans: Vec<DeferredDisplayPlan>,
     /// DEV-134: deferred `?` propagation compatibility — (operand type, enclosing return type,
     /// span). Deferred for the same reason as `display_checks`: the operand's error type is
     /// routinely an inference variable while the body is being checked (`Err(make())?`), so
@@ -906,6 +903,32 @@ pub enum ReceiverBinding {
     Exclusive,
 }
 
+/// **A `Display` render position queued for Pass 3.**
+///
+/// A named structure rather than a tuple because the third field is the reason this type exists,
+/// and a tuple hides that: `generic_scope` is the function/impl generic environment *as it was
+/// where the expression was written*.
+///
+/// The walk runs in Pass 3, since it keys positions off RESOLVED types. But
+/// `bound_method_candidates` reads LIVE scope, which Pass 3 has already torn down — so without
+/// carrying it, the walk reached `Ty::Param("T")` inside `fn show<T: Display>` and found no
+/// candidates for a bound that is plainly written, publishing nothing and saying nothing.
+///
+/// The general rule, which is not about `Display`: a deferred obligation may read resolved types
+/// freely, but any **scope-sensitive** question it asks is a question about a scope that no longer
+/// exists. Capture the scope with the obligation.
+struct DeferredDisplayPlan {
+    /// The expression that renders — a `println`-family argument or an interpolation field. Both
+    /// are roots in their own right; an interpolation field has its own `ExprId`.
+    root: ExprId,
+    ty: Ty,
+    /// `(current_fn_generics, current_impl_generics)` at the point of writing.
+    generic_scope: (
+        Option<Vec<hir::GenericParam>>,
+        Option<Vec<hir::GenericParam>>,
+    ),
+}
+
 /// **One structural position inside a `println` argument's STATIC type.**
 ///
 /// `println((a, b))` is one expression and two `Display::fmt` bodies; `println(vec)` is one body
@@ -1139,6 +1162,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         subst: HashMap::new(),
         int_literal_vars: HashMap::new(),
         display_checks: Vec::new(),
+        display_plans: Vec::new(),
         try_checks: Vec::new(),
         var_count: 0,
         expr_types: HashMap::new(),
@@ -3695,23 +3719,11 @@ impl<'a> TypeChecker<'a> {
 
         // WP-C4.7-9 audit: `print`/`println` require a `Display`-able argument.
         let display = std::mem::take(&mut self.display_checks);
-        for (arg_expr, ty, span, fn_generics, impl_generics) in display {
+        for (ty, span) in display {
             let resolved = self.resolve(&ty);
             if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
                 continue; // already failed, or undetermined — no cascade
             }
-            // Restore the scope this argument was WRITTEN in, so a `T: Display` bound is visible
-            // to the walk below exactly as it was at the call site.
-            let saved_fn = std::mem::replace(&mut self.current_fn_generics, fn_generics);
-            let saved_impl = std::mem::replace(&mut self.current_impl_generics, impl_generics);
-            if self.type_is_displayable(&resolved) {
-                // **AS3 Boundary 4: publish the dispatch plan.** Here, not at the call site: the
-                // walk needs the RESOLVED type, and that is what this deferred pass exists to
-                // have. Publishing early would key positions off inference variables.
-                self.publish_display_uses(arg_expr, &resolved, span);
-            }
-            self.current_fn_generics = saved_fn;
-            self.current_impl_generics = saved_impl;
             if !self.type_is_displayable(&resolved) {
                 self.diags.push(
                     Diagnostic::error(
@@ -3724,6 +3736,33 @@ impl<'a> TypeChecker<'a> {
                     .with_code("E0500"),
                 );
             }
+        }
+
+        // **AS3 Boundary 4: build the `Display` dispatch plan.**
+        //
+        // Here, not at the call sites: the walk keys positions off the RESOLVED type, and this is
+        // the first point where every one of them is settled. Publishing earlier would key
+        // positions off inference variables.
+        let plans = std::mem::take(&mut self.display_plans);
+        for plan in plans {
+            let DeferredDisplayPlan {
+                root,
+                ty,
+                generic_scope: (fn_generics, impl_generics),
+            } = plan;
+            let resolved = self.resolve(&ty);
+            if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
+                continue;
+            }
+            // Restore the scope this expression was WRITTEN in, so a `T: Display` bound is visible
+            // to the walk exactly as it was where the programmer wrote it.
+            let saved_fn = std::mem::replace(&mut self.current_fn_generics, fn_generics);
+            let saved_impl = std::mem::replace(&mut self.current_impl_generics, impl_generics);
+            if self.type_is_displayable(&resolved) {
+                self.publish_display_uses(root, &resolved, self.hir.expr(root).span);
+            }
+            self.current_fn_generics = saved_fn;
+            self.current_impl_generics = saved_impl;
         }
 
         // DEV-134: `?` propagation compatibility, for the same reason and at the same point.
@@ -5648,6 +5687,9 @@ impl<'a> TypeChecker<'a> {
         // path — a user trait merely NAMED `Display` does not satisfy it.
         if let Ty::Param(param_name) = &stripped {
             let param_name = param_name.clone();
+            // Queued before the guard: a parameter WITH the bound is a real late-bound render
+            // position, and this branch returns early.
+            self.record_display_plan(expr, stripped.clone());
             if self.bound_method_candidates(&param_name, "fmt").is_empty() {
                 self.diags.push(
                     Diagnostic::error(
@@ -5660,6 +5702,11 @@ impl<'a> TypeChecker<'a> {
             }
             return;
         }
+        // **AS3 Boundary 4: interpolation is the SECOND `Display` entry point**, and it renders the
+        // same way — `"{w}"` on a `W<A>` runs `W`'s own `fmt` and stops, exactly as `println(w)`
+        // does. So it queues the same walk rather than getting a dispatch mechanism of its own,
+        // which is what left `find_impl_fn(nominal, "fmt", ..)` serving two callers.
+        self.record_display_plan(expr, stripped.clone());
         if !self.type_is_displayable(&stripped) {
             self.diags.push(
                 Diagnostic::error(
@@ -6146,13 +6193,9 @@ impl<'a> TypeChecker<'a> {
                             Builtin::Print | Builtin::Println | Builtin::Eprint | Builtin::Eprintln
                         ) {
                             if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
-                                self.display_checks.push((
-                                    *arg,
-                                    ty.clone(),
-                                    self.hir.expr(*arg).span,
-                                    self.current_fn_generics.clone(),
-                                    self.current_impl_generics.clone(),
-                                ));
+                                self.display_checks
+                                    .push((ty.clone(), self.hir.expr(*arg).span));
+                                self.record_display_plan(*arg, ty.clone());
                             }
                         }
                         match self.resolve(&callee_ty) {
@@ -10681,6 +10724,19 @@ impl<'a> TypeChecker<'a> {
     /// into its fields. So the walk stops at the first nominal with a `Display` impl. Descending
     /// further would publish uses no engine executes, and a totality claim over those would be
     /// false.
+    /// Queue one expression that renders through `Display`, with the generic scope it was
+    /// written in. Called by `println`-family arguments and by interpolation fields alike.
+    fn record_display_plan(&mut self, root: ExprId, ty: Ty) {
+        self.display_plans.push(DeferredDisplayPlan {
+            root,
+            ty,
+            generic_scope: (
+                self.current_fn_generics.clone(),
+                self.current_impl_generics.clone(),
+            ),
+        });
+    }
+
     fn publish_display_uses(&mut self, root: ExprId, ty: &Ty, span: Span) {
         self.walk_display_ty(root, ty, DisplayPath::default(), span, 0);
     }
