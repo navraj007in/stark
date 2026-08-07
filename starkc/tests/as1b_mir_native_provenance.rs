@@ -1,28 +1,32 @@
-//! AS1b-ii-e — the invariant at the MIR and native boundaries.
+//! AS1b-ii-e / iii — the invariant at the MIR and native boundaries.
 //!
 //! `as1b_span_provenance.rs` covers the compile-time and HIR-runtime paths: a span belonging to a
-//! dependency resolves against that dependency. Two boundaries were outstanding, and they are the
-//! ones where the invariant is easiest to lose, because **MIR keeps its own file identity**.
+//! dependency resolves against that dependency. These are the two boundaries below it — the MIR
+//! engine's trap location, and the location a *generated native binary* prints when it aborts,
+//! which is baked in at compile time and is the last thing a user sees.
 //!
-//! `SourceInfo { file: FileId, span: Span }` names a source twice. `FileId` indexes
-//! `MirProgram::files`, a table the lowerer interns by name and sets per lowered function; `span`
-//! carries the `SourceId` AS1b-ii gave it. Both answer "which file is this?", and nothing in the
-//! type system makes them agree — which is the shape of DEV-122 itself. Everything downstream reads
-//! the `FileId`: `resolve_source_location` in the native backend bakes `files[info.file]` and
-//! `info.span.lo` into the generated abort call at compile time, and the differential harness
-//! resolves a MIR trap the same way.
+//! **What changed under these tests.** When ii-e wrote them, `SourceInfo` named a source twice:
+//! a MIR-local `FileId` into `MirProgram::files`, and the `SourceId` on the span. Everything
+//! downstream read the `FileId`, and nothing made the two agree, so a fourth test swept every
+//! `SourceInfo` in a lowered program asserting they did — a compensating control for a
+//! representable disagreement.
 //!
-//! So the first test here is not behavioural. It walks every `SourceInfo` a real cross-package
-//! program produces and asserts the two identities name the same file. A single trap fixture
-//! proves one path; this proves the whole lowered program, which is what "at that boundary" has to
-//! mean for a defect class that only shows up on the paths nobody wrote a fixture for.
+//! AS1b-iii removed the duplication: `SourceInfo` is `{ span, origin }` and `MirProgram` carries
+//! the source registry. **The sweep is deleted, not weakened** — it existed because two identities
+//! could disagree, and there is now one. What replaces it is V-SRC-1, which the verifier checks on
+//! every `SourceInfo` of every program: the span names a source the program can resolve. A
+//! verifier proving a claim the lowerer cannot satisfy by construction is worth more than a test
+//! comparing lowering against itself.
+//!
+//! These four remain because they are behavioural: they pin the answer a user is given, which no
+//! amount of internal agreement establishes.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::mir::{MirProgram, Origin, SourceInfo, Terminator};
 use starkc::options::LanguageOptions;
 use starkc::package::PackageGraph;
 use starkc::session::CompilerSession;
-use starkc::source::SourceRegistry;
+use starkc::source::SourceTable;
 
 /// 8 lines of padding, so the dependency's interesting line sits past the end of the 3-line app.
 /// A span resolved against the wrong file would have to clamp — CD-306's exact shape.
@@ -105,14 +109,16 @@ fn trap_source(terminator: &Terminator) -> Option<SourceInfo> {
     }
 }
 
-/// The load-bearing check: `SourceInfo`'s two source identities agree, everywhere.
+/// Every `SourceInfo` in a real cross-package program resolves — the V-SRC-1 claim, checked from
+/// outside the verifier and against a program the verifier has not been asked about.
 ///
-/// If this fails, a native trap or a MIR trap reports a location measured against one file using a
-/// byte offset into another. `SourceFile::line_col` clamps, so the result is not an error — it is a
-/// plausible, wrong location, which is the defect AS1b exists to make unrepresentable.
+/// This is what is left of ii-e's agreement sweep. That version compared MIR's `FileId` against the
+/// span's `SourceId` and required them to name the same file; AS1b-iii deleted the `FileId`, so the
+/// comparison has no second term. The remaining question — does the one identity resolve — is worth
+/// asking here because lowering, not the verifier, is what could get it wrong.
 #[test]
-fn every_mir_source_info_agrees_with_the_span_it_carries() {
-    let base = unique_base("agree");
+fn every_mir_source_info_resolves_in_the_programs_own_registry() {
+    let base = unique_base("resolve");
     let app = stage(
         &base,
         &format!("{PAD}pub fn boom(a: Int32) -> Int32 {{\n    a / 0\n}}\npub fn fine(a: Int32) -> Int32 {{\n    a + 1\n}}\n"),
@@ -125,52 +131,41 @@ fn every_mir_source_info_agrees_with_the_span_it_carries() {
     let mir = program
         .lower_mir()
         .unwrap_or_else(|error| panic!("the fixture must lower: {}", error.what));
-    let sources: &SourceRegistry = program.sources();
+    let sources: &SourceTable = &mir.sources;
 
     let infos = every_source_info(&mir);
-    let mut mismatches = Vec::new();
-    let mut named_by_file_id = std::collections::BTreeSet::new();
-    for (symbol, info) in &infos {
-        let by_file_id = mir
-            .files
-            .get(info.file.0 as usize)
-            .unwrap_or_else(|| panic!("{symbol}: SourceInfo carries an out-of-range FileId"));
-        named_by_file_id.insert(by_file_id.name.clone());
-        let by_span = sources
-            .get(info.span.source)
-            .unwrap_or_else(|| panic!("{symbol}: the span names a source the registry lacks"));
-        if by_file_id.name != by_span.name {
-            mismatches.push(format!(
-                "{symbol} ({:?}): FileId says {}, span says {}",
-                info.origin, by_file_id.name, by_span.name
-            ));
-        }
+    let mut named = std::collections::BTreeSet::new();
+    for (tag, info) in &infos {
+        let source = sources.get(info.span.source).unwrap_or_else(|| {
+            panic!(
+                "{tag}: span names source {:?}, which the program's registry cannot resolve",
+                info.span.source
+            )
+        });
+        named.insert(source.name.clone());
     }
-
-    assert!(
-        mismatches.is_empty(),
-        "MIR's FileId and the span's SourceId disagree about the file at {} of {} sites:\n  {}\n\n\
-         Both are read downstream — the native backend bakes files[info.file] resolved at \
-         info.span.lo into every abort call — so a disagreement is a plausible wrong trap location.",
-        mismatches.len(),
-        infos.len(),
-        mismatches.join("\n  ")
-    );
 
     // Non-vacuity, stated as facts about the fixture rather than a site count: the sweep really
     // did cross a package boundary, and really did see a trap site — the case that matters.
     assert!(
-        named_by_file_id.len() >= 2,
-        "the fixture must lower code from more than one file, got {named_by_file_id:?}"
+        named.len() >= 2,
+        "the fixture must lower code from more than one file, got {named:?}"
     );
     assert!(
-        named_by_file_id.iter().any(|name| name.starts_with("lib/")),
-        "the dependency's own file must appear among the lowered bodies: {named_by_file_id:?}"
+        named.iter().any(|name| name.starts_with("lib/")),
+        "the dependency's own file must appear among the lowered bodies: {named:?}"
     );
     assert!(
         infos.iter().any(|(tag, _)| tag.contains("trap")),
         "the sweep must include at least one trap site: {:?}",
         infos.iter().map(|(tag, _)| tag).collect::<Vec<_>>()
+    );
+
+    // The program's registry IS the compilation's registry — not a copy that could drift.
+    assert_eq!(
+        mir.sources.len(),
+        program.sources().len(),
+        "MIR must carry the compilation's own sources"
     );
 
     let _ = std::fs::remove_dir_all(&base);
@@ -210,16 +205,10 @@ fn a_mir_trap_inside_a_dependency_reports_that_dependency() {
         source.origin
     );
 
-    // Both identities, checked against each other and against the answer.
-    let by_file_id = &mir.files[source.file.0 as usize];
-    let by_span = program
-        .sources()
+    let by_span = mir
+        .sources
         .get(source.span.source)
         .expect("the trap's span must name a registered source");
-    assert_eq!(
-        by_file_id.name, by_span.name,
-        "the MIR trap's FileId and its span disagree about which file trapped"
-    );
     assert_eq!(
         by_span.name, "lib/src/lib.stark",
         "the trap belongs to the dependency, not the root"
@@ -290,7 +279,7 @@ fn a_native_trap_inside_a_dependency_reports_that_dependency() {
 /// A terminator is where a trap is raised, so its `SourceInfo` is the one users see. Kept separate
 /// from the whole-program sweep so a regression names the narrower fact.
 #[test]
-fn every_trapping_terminator_names_a_resolvable_source() {
+fn every_trap_site_names_a_resolvable_source() {
     let base = unique_base("terminators");
     let app = stage(
         &base,
@@ -312,15 +301,12 @@ fn every_trapping_terminator_names_a_resolvable_source() {
                 continue;
             };
             checked += 1;
-            let by_span = program
-                .sources()
-                .get(info.span.source)
-                .expect("a trap site's span must name a registered source");
-            assert_eq!(
-                mir.files[info.file.0 as usize].name, by_span.name,
-                "trap site in {}: FileId and span disagree",
-                body.instance.symbol
-            );
+            let by_span = mir.sources.get(info.span.source).unwrap_or_else(|| {
+                panic!(
+                    "trap site in {}: span names an unregistered source",
+                    body.instance.symbol
+                )
+            });
             // The location a user is shown, resolved the way the backend resolves it.
             let (line, _column) = by_span.line_col(info.span.lo);
             assert!(

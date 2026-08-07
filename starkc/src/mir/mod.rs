@@ -11,8 +11,9 @@
 //! - Verified MIR is monomorphised-only: no `Param`/`Infer` types survive lowering.
 //! - `Option`/`Result` are logical enums (`EnumRef::CoreOption`/`CoreResult`) sharing the
 //!   user-enum aggregate/discriminant/match machinery (CD-028 required change #2).
-//! - Every statement and terminator carries `SourceInfo` with an explicit interned `FileId`
-//!   (the DEV-006 lesson) and either a user span or a labeled synthetic origin.
+//! - Every statement and terminator carries `SourceInfo`: a span, which names its own source
+//!   (AS1b), and either a user origin or a labeled synthetic one. MIR does **not** keep a second
+//!   file-identity namespace — see `SourceInfo`.
 //! - The textual dump is deterministic and versioned (`MIR_VERSION`).
 
 pub mod drop_plan;
@@ -23,9 +24,8 @@ pub mod provider_lower;
 pub mod provider_sig;
 pub mod verify;
 
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 /// Bumped whenever the MIR shape changes (contract §11). Consumers state the version they
 /// accept; mismatch is a hard error.
@@ -42,7 +42,18 @@ use std::sync::Arc;
 /// partial-storage model, but the version still advances: a cached artifact produced before the
 /// statement existed was produced by a lowering that could not end a partially moved local's
 /// storage, and serving it would reintroduce the defect this amendment fixes.
-pub const MIR_VERSION: &str = "0.3";
+///
+/// `0.4` (AS1b-iii): **source identity collapses onto the span.** [`SourceInfo`] loses its `file`
+/// field and `MirProgram` replaces `files: Vec<Arc<SourceFile>>` with a
+/// [`crate::source::SourceRegistry`]; `FileId` no longer exists. Two fields of the data model are
+/// removed and one changes type, so this is a shape change by the plainest reading of §11.
+///
+/// The increment is doing real work, not bookkeeping. A cached artifact produced under `0.3` was
+/// produced by a backend that resolved trap locations through the MIR-local `FileId` and ignored
+/// `span.source`; serving it under the new contract would present a location computed by the
+/// authority this amendment removed. `MIR_RUNTIME_SURFACE` is deliberately unchanged — no runtime
+/// operation is added, removed or altered.
+pub const MIR_VERSION: &str = "0.4";
 
 /// Runtime-surface revision (Amendment A1, CD-031). Additive `RuntimeFn`/String/Vec growth
 /// bumps this, not `MIR_VERSION`. Stamped onto every `MirProgram`; a consumer rejects a
@@ -78,10 +89,6 @@ pub const MIR_VERSION: &str = "0.3";
 pub const MIR_RUNTIME_SURFACE: &str = "0.1-A14";
 
 // ------------------------------------------------------------------ identity --
-
-/// Interned source-file identity. MIR must never carry a file-less span (V-SRC-1).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FileId(pub u32);
 
 /// Nominal identity for enum types: user enums carry their HIR item; `Option`/`Result`/
 /// `Ordering` are logical core enums with no user item (contract §3, CD-028 required change #2;
@@ -284,9 +291,20 @@ pub enum Origin {
     Synthetic(SyntheticKind),
 }
 
+/// Where a statement, terminator or trap came from.
+///
+/// **One source identity, and it is the span's.** This carried a `FileId` into `MirProgram::files`
+/// as well, a table the lowerer interned by name and set per lowered function — so a `SourceInfo`
+/// named a source twice and nothing made the two agree. Everything downstream read the `FileId`:
+/// the native backend baked `files[info.file]` resolved at `info.span.lo` into every abort call at
+/// compile time. Since `line_col` clamps, a disagreement was not an error but a plausible, wrong
+/// filename and line — DEV-122's failure class, one layer below where AS1b removed it.
+///
+/// `info.span.source` is now the only answer, and `MirProgram::sources` is the only thing that
+/// resolves it. V-SRC-1 checks that resolution rather than the range of an id the lowerer minted
+/// for itself.
 #[derive(Clone, Copy, Debug)]
 pub struct SourceInfo {
-    pub file: FileId,
     pub span: Span,
     pub origin: Origin,
 }
@@ -1075,11 +1093,15 @@ pub(crate) fn mir_ty_is_copy(ty: &MirTy, nominal_is_copy_eligible: &dyn Fn(u32) 
 
 #[derive(Clone, Debug)]
 pub struct MirProgram {
-    /// Interned source files; `FileId` indexes here.
-    pub files: Vec<Arc<SourceFile>>,
-    /// AS1b-ii: the registered id of the entry source (`FileId(0)`). Carried so a trap with no
-    /// expression to blame — PROC-EXIT-001's invalid exit status — can name a real source rather
-    /// than a fabricated one.
+    /// The program's sources, and the only authority that resolves a `SourceId`.
+    ///
+    /// AS1b-iii: this was `files: Vec<Arc<SourceFile>>` indexed by a MIR-local `FileId`, a second
+    /// identity namespace parallel to the `SourceId` every span already carried. Carrying the
+    /// registry means the lexer, the front end, MIR, the MIR interpreter and the native backend
+    /// all resolve a source the same way, through the id minted when the file was loaded.
+    pub sources: crate::source::SourceTable,
+    /// The registered id of the entry source. Carried so a trap with no expression to blame —
+    /// PROC-EXIT-001's invalid exit status — can name a real source rather than a fabricated one.
     pub entry_source: crate::source::SourceId,
     /// Bodies sorted by canonical symbol (dump determinism).
     pub bodies: Vec<MirBody>,
@@ -1199,13 +1221,20 @@ impl MirProgram {
     }
 
     fn dump_source(&self, info: &SourceInfo) -> String {
-        let file = &self.files[info.file.0 as usize];
-        let (line, col) = file.line_col(info.span.lo);
         let origin = match info.origin {
             Origin::UserCode => String::new(),
             Origin::Synthetic(kind) => format!(" synthetic:{kind:?}"),
         };
-        format!("{}:{line}:{col}{origin}", file.name)
+        // AS1b-iii: resolved through the span's own source. `<unresolved>` is unreachable in
+        // verified MIR — V-SRC-1 is exactly this lookup — and the dump reports rather than panics
+        // because dumping unverified MIR is a debugging aid.
+        match self.sources.get(info.span.source) {
+            Some(file) => {
+                let (line, col) = file.line_col(info.span.lo);
+                format!("{}:{line}:{col}{origin}", file.name)
+            }
+            None => format!("<unresolved source {}>{origin}", info.span.source.as_u32()),
+        }
     }
 
     fn dump_terminator(&self, term: &Terminator) -> String {

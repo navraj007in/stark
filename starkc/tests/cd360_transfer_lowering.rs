@@ -39,16 +39,28 @@ use starkc::mir::{
     SourceInfo, Terminator, TypeContext, ValidatedProviderCall,
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity};
-use starkc::source::SourceFile;
-use std::sync::Arc;
 
 /// AS1b-ii: a real registered source for a hand-built MIR program.
-fn test_source() -> starkc::source::RegisteredSource {
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
     let mut registry = starkc::source::SourceRegistry::default();
     registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
         "test.stark",
         "",
-    )))
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
 }
 
 fn host_triple() -> String {
@@ -59,7 +71,6 @@ fn host_triple() -> String {
 
 fn source_info() -> SourceInfo {
     SourceInfo {
-        file: mir::FileId(0),
         span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
@@ -164,7 +175,7 @@ fn transfer_program() -> MirProgram {
 
     MirProgram {
         entry_source: test_source().id(),
-        files: vec![Arc::new(SourceFile::new("transfer.stark", ""))],
+        sources: test_sources(),
         bodies: vec![MirBody {
             instance: mir::Instance {
                 item: ItemId(0),

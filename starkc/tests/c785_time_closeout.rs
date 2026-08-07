@@ -22,9 +22,7 @@ use starkc::mir::{
 };
 use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
-use starkc::source::SourceFile;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 #[path = "support/paths.rs"]
 mod paths;
@@ -32,12 +30,26 @@ use paths::repo_provider_root;
 
 /// AS1b-ii: a hand-built MIR program still needs a real registered source for its spans. The
 /// registry is local to the test; the id it mints is genuine rather than fabricated.
-fn test_source() -> starkc::source::RegisteredSource {
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
     let mut registry = starkc::source::SourceRegistry::default();
     registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
         "test.stark",
         "",
-    )))
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
 }
 
 fn host_triple() -> String {
@@ -48,7 +60,6 @@ fn host_triple() -> String {
 
 fn info() -> SourceInfo {
     SourceInfo {
-        file: mir::FileId(0),
         span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
@@ -236,7 +247,7 @@ fn run_clock(function: &str, scalar: MirTy, printer: RuntimeFn, extra: Option<Mi
 
     let program = MirProgram {
         entry_source: test_source().id(),
-        files: vec![Arc::new(SourceFile::new("clock.stark", ""))],
+        sources: test_sources(),
         bodies: vec![entry_body(scalar, printer, extra)],
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),

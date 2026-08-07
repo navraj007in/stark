@@ -235,8 +235,8 @@ fn differential(name: &str, source: String) {
             // oracle's span exactly (both derive from the same HIR spans); synthetic-origin
             // traps (e.g. for-loop desugar) compare their documented classification instead.
             assert!(
-                (source.file.0 as usize) < program.files.len(),
-                "{name}: MIR trap carries an invalid FileId"
+                program.sources.get(source.span.source).is_some(),
+                "{name}: MIR trap names a source absent from the program's registry"
             );
             match source.origin {
                 starkc::mir::Origin::UserCode => assert_eq!(
@@ -1316,8 +1316,8 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
         "expected the module-qualified fn symbol, got {symbols:?}"
     );
     assert!(
-        program.files.len() >= 2,
-        "expected the helper file interned in the file table"
+        program.sources.len() >= 2,
+        "expected the helper file present in the program's source registry"
     );
     let verified = verify_program(&program).expect("multi-file program verifies");
     let exec = match run_program(verified) {

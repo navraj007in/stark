@@ -265,3 +265,87 @@ fn every_item_source_resolves_in_the_registry() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------------------------
+// AS1b-iii — loading is a phase, and it ends
+// ---------------------------------------------------------------------------------------------
+
+/// Interning happens while sources are being LOADED, and nowhere else.
+///
+/// `SourceTable` makes this structural for everything downstream — it has no `intern`, and the only
+/// way to build one is `SourceRegistry::freeze`, which consumes the registry. This catches the
+/// remaining case the type system cannot: a new `intern` call added to a pass that runs *during*
+/// loading but has no business minting identity, which is how `build_source_map` became a second
+/// allocator in the first place.
+///
+/// The allow-list is deliberately small and each entry is a real loading site. Adding to it should
+/// require an argument, which is the point of the test failing rather than the list being implicit.
+#[test]
+fn only_the_loading_phase_interns() {
+    const LOADING_SITES: &[&str] = &[
+        // The registry itself, and its test helper.
+        "src/source.rs",
+        // Parsing: the entry, each submodule, and each dependency package as it is discovered.
+        "src/parser.rs",
+        // The arena's own interning helper, called by the parser.
+        "src/ast.rs",
+        // Entry-read failure: the file is registered so the diagnostic belongs to a real source,
+        // and the root is registered even when the parse never reached it.
+        "src/analysis.rs",
+        // Single-file CLI operations that own their one-file registry.
+        "src/main.rs",
+        // The standalone syntax highlighter, which owns a one-file registry.
+        "src/doc_gen/highlight.rs",
+    ];
+
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    walk(&src, &mut files);
+    files.sort();
+    assert!(files.len() > 20, "source scan found only {}", files.len());
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let relative = file
+            .strip_prefix(src.parent().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if LOADING_SITES.contains(&relative.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(file).unwrap().replace("\r\n", "\n");
+        // Everything before a top-level `#[cfg(test)]`; tests may build their own registries.
+        let production = match text.find("\n#[cfg(test)]") {
+            Some(at) => &text[..at + 1],
+            None => &text[..],
+        };
+        for (number, line) in production.lines().enumerate() {
+            if line.contains(".intern(") {
+                offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these intern a source outside the loading phase:\n  {}\n\n\
+         After parsing, a compilation's sources are a `SourceTable`, which cannot mint an id. A \
+         new `intern` call before that point still needs a reason — a second allocator is exactly \
+         how identity came to be assigned after the front end had already run.",
+        offenders.join("\n  ")
+    );
+}

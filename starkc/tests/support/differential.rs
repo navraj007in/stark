@@ -666,16 +666,19 @@ pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Observation {
             stderr,
         }) => {
             assert!(
-                (source.file.0 as usize) < program.files.len(),
-                "{name}: MIR trap carries an invalid FileId"
-            );
-            assert!(
                 matches!(source.origin, Origin::UserCode),
                 "{name}: trap origin is {:?}; the harness compares exact user-source locations, \
                  so a synthetic-origin trap needs its own documented correspondence rule",
                 source.origin
             );
-            let file = &program.files[source.file.0 as usize];
+            // AS1b-iii: resolved through the span's own source. This used to index
+            // `program.files` by the trap's `FileId` and measure `span.lo` against whatever it
+            // found — the harness chose the rival authority, so it could not have detected the two
+            // disagreeing. V-SRC-1 guarantees the lookup succeeds for verified MIR.
+            let file = program
+                .sources
+                .get(source.span.source)
+                .unwrap_or_else(|| panic!("{name}: MIR trap names an unregistered source"));
             let (line, column) = file.line_col(source.span.lo);
             let (line, column) = (line as u32, column as u32);
             let scan =

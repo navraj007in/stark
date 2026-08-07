@@ -262,27 +262,36 @@ fn the_mir_file_table_is_logical_and_relocation_stable() {
             Ok(program) => program,
             Err(error) => panic!("lowering must succeed: {}", error.what),
         };
-        let mut names: Vec<String> = program.files.iter().map(|f| f.name.clone()).collect();
+        // AS1b-iii: the MIR source table IS the compilation's registry; there is no separate
+        // MIR-local file list to check for absolute names.
+        let mut names: Vec<String> = program
+            .sources
+            .iter()
+            .map(|source| source.name.clone())
+            .collect();
         names.sort();
         names
     };
 
     let (a, b) = (mir_files(&one), mir_files(&two));
 
-    // AS1a-4: the MIR file table feeds the native build key's `[sources]` section verbatim
+    // AS1a-4: the MIR source table feeds the native build key's `[sources]` section verbatim
     // (backend/generated_rust/build.rs). An absolute name there made the build key depend on where
     // the checkout happened to live.
     assert!(
         !a.iter().any(|n| std::path::Path::new(n).is_absolute()),
-        "no absolute path may reach the MIR file table: {a:?}"
+        "no absolute path may reach the MIR source table: {a:?}"
     );
     assert!(
         !a.is_empty(),
-        "an absolute-path check over an empty file table would be vacuous"
+        "an absolute-path check over an empty source table would be vacuous"
     );
 
     // AS1a-3: and it is the same table from either root.
-    assert_eq!(a, b, "MIR file tables must not depend on the checkout path");
+    assert_eq!(
+        a, b,
+        "MIR source tables must not depend on the checkout path"
+    );
 
     let _ = std::fs::remove_dir_all(&one);
     let _ = std::fs::remove_dir_all(&two);

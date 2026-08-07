@@ -100,23 +100,36 @@ fn every_lowerable_program_verifies_clean() {
 // ------------------------------------------------------------------ negative --
 
 use mir::{
-    AggKind, BasicBlock, BlockId, Callee, Constant, EnumRef, FileId, Instance, LocalDecl, LocalId,
+    AggKind, BasicBlock, BlockId, Callee, Constant, EnumRef, Instance, LocalDecl, LocalId,
     LocalKind, MirBody, MirProgram, MirTy, Operand, Origin, Place, Projection, RuntimeFn, Rvalue,
     SourceInfo, Statement, Terminator, TypeContext,
 };
 
 /// AS1b-ii: a real registered source for a hand-built MIR program.
-fn test_source() -> starkc::source::RegisteredSource {
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
     let mut registry = starkc::source::SourceRegistry::default();
     registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
         "test.stark",
         "",
-    )))
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
 }
 
 fn info() -> SourceInfo {
     SourceInfo {
-        file: FileId(0),
         span: test_source().synthetic_span(),
         origin: Origin::UserCode,
     }
@@ -140,7 +153,7 @@ fn body(locals: Vec<LocalDecl>, blocks: Vec<BasicBlock>) -> MirBody {
 fn program_with(bodies: Vec<MirBody>) -> MirProgram {
     MirProgram {
         entry_source: test_source().id(),
-        files: vec![Arc::new(SourceFile::new("hand.stark", ""))],
+        sources: test_sources(),
         bodies,
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
@@ -465,11 +478,32 @@ fn rejects_comparison_on_fn_values() {
     expect_code(&program_with(vec![b]), "MIR-0011");
 }
 
+/// V-SRC-1 (MIR-0013): a `SourceInfo` naming a source the program cannot resolve.
+///
+/// AS1b-iii changed both the defect and how a test can produce it. It used to be an out-of-range
+/// `FileId` — trivial to build, and a check on an identity the lowerer invented for itself. Now the
+/// only way to get an unresolvable `SourceId` is one minted by a DIFFERENT registry, which is
+/// exactly the residual risk `RegisteredSource`'s doc comment records: the type proves a source was
+/// registered, not that it was registered *here*. The verifier is what closes that gap for MIR.
 #[test]
-fn rejects_invalid_file_id() {
+fn rejects_a_source_id_the_program_cannot_resolve() {
+    // A second registry, whose second file gets an id the program's one-file registry has no
+    // record of. Nothing in the type system prevents the two being confused; V-SRC-1 catches it.
+    let mut foreign = starkc::source::SourceRegistry::default();
+    foreign.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )));
+    let unknown = foreign.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "foreign.stark",
+        "",
+    )));
+    assert!(
+        test_sources().get(unknown.id()).is_none(),
+        "the fixture must actually name a source the program lacks"
+    );
     let bad_info = SourceInfo {
-        file: FileId(42),
-        span: test_source().synthetic_span(),
+        span: unknown.synthetic_span(),
         origin: Origin::UserCode,
     };
     let b = MirBody {

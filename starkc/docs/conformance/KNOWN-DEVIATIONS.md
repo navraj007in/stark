@@ -5005,3 +5005,41 @@ Two defects, recorded together because the first concealed the second.
   worked; this was the only rejection.
 - **Owning gate:** compiler track.
 
+
+---
+
+## DEV-183 — TRAIT-COHERENCE-001's cross-package clause was never enforced (CLOSED, AS1b-iii)
+
+- **Rule:** 03-Type-System, TRAIT-COHERENCE-001: *"Inherent implementations are permitted only for a
+  nominal type defined by the current package."*
+- **Status:** CLOSED. The check now works; the one first-party violation it found is repaired.
+- **Symptom:** none, which is the problem. The compiler accepted every cross-package inherent impl
+  in every package build, silently.
+- **Cause:** `typecheck::validate_impl_rules` decided "same package" by calling `find_package_root`,
+  which walked a file's PATH upward looking for a `starkpkg.json` **on disk, during type checking**.
+  After AS1a gave package sources logical `<package>/<path>` names, that path does not exist
+  relative to any working directory, so the probe returned `None` for the impl's file *and* for the
+  type's file. `None == None` made every type look local, and the rule could not fire.
+
+  It fired before AS1a only by an asymmetry: the root file carried an absolute disk path while every
+  other item's file carried a logical name, so the root probe found a manifest and the dependency
+  probe found nothing. "Different package" fell out of the difference, not out of a comparison.
+- **How it surfaced:** AS1b-ii-d removed the ambient `self.file` the probe read, replacing it with
+  the source the impl's span names. That made all three reads consistent, all three answered `None`,
+  and `test_cross_package_coherence_orphan_rule_with_real_packages` — a test written specifically to
+  pin this behaviour, and passing until then — failed. Replacing the disk probe with `source_package`
+  (the leading segment of the logical name) turned the rule on for the first time.
+- **What it found:** exactly one violation across the 28 first-party packages.
+  `stark-http-client/src/lib.stark:1468` wrote `impl HttpResponse { ... }` for `HttpResponse`, which
+  is defined in `stark-http-core`. Three packages failed to check as a result: `stark-http-client`,
+  `stark-http-client-consumer` and `stark-get`, all through that one impl.
+- **Repair:** the two methods became a locally declared `JsonBody` trait implemented for
+  `HttpResponse`. That is what TRAIT-COHERENCE-001 is designed to permit — coherence holds when the
+  current package owns *either* the trait or the head type, and `stark-http-client` owns the trait.
+  Behaviour and method names are unchanged; call sites still write `response.json()`.
+- **User impact:** a package could extend a dependency's type with inherent methods, which the
+  language does not permit. Nothing miscompiled — the accepted programs were well-typed — but two
+  packages could have added conflicting inherent `json()` methods to the same foreign type with no
+  diagnostic, and the ambiguity would have surfaced as a method-resolution failure far from either.
+- **Security/soundness impact:** none.
+- **Owning gate:** compiler track, AS1b-iii (WP-ARCHITECTURE-STABILIZATION).

@@ -250,7 +250,6 @@ fn entry_termination(
                 MirRunError::Trap {
                     category: TrapCategory::InvalidExitStatus,
                     source: SourceInfo {
-                        file: FileId(0),
                         span: crate::source::Span::synthetic(entry_source),
                         origin: Origin::UserCode,
                     },

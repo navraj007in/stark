@@ -20,8 +20,8 @@ use starkc::hir::ItemId;
 use starkc::mir::lower::lower_program;
 use starkc::mir::verify::verify_program;
 use starkc::mir::{
-    BasicBlock, BlockId, Callee, Constant, FileId, Instance, LocalId, MirBody, MirProgram, MirTy,
-    Operand, Origin, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
+    BasicBlock, BlockId, Callee, Constant, Instance, LocalId, MirBody, MirProgram, MirTy, Operand,
+    Origin, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
 };
 use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
@@ -33,19 +33,32 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// AS1b-ii: a real registered source for a hand-built MIR program.
-fn test_source() -> starkc::source::RegisteredSource {
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
     let mut registry = starkc::source::SourceRegistry::default();
     registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
         "test.stark",
         "",
-    )))
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
 }
 
 // ------------------------------------------------------------- hand-built MIR --
 
 fn info() -> SourceInfo {
     SourceInfo {
-        file: FileId(0),
         span: test_source().synthetic_span(),
         origin: Origin::UserCode,
     }
@@ -54,7 +67,7 @@ fn info() -> SourceInfo {
 fn program(bodies: Vec<MirBody>) -> MirProgram {
     MirProgram {
         entry_source: test_source().id(),
-        files: Vec::new(),
+        sources: test_sources(),
         bodies,
         types: TypeContext::default(),
         mir_version: "test".to_string(),

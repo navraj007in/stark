@@ -218,6 +218,68 @@ impl SourceRegistry {
     pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
         self.files.iter()
     }
+
+    /// End the loading phase. The result resolves ids and cannot mint one.
+    pub fn freeze(self) -> SourceTable {
+        SourceTable(self)
+    }
+}
+
+/// A compilation's **finished** source set: it resolves ids, and cannot mint one.
+///
+/// AS1b-iii. `Hir` and `MirProgram` described their registry as frozen after parsing, but held a
+/// [`SourceRegistry`] whose `intern` is public and `&mut` — the freeze was a comment. Everything
+/// after the parser now carries this instead, so "nobody downstream mints a `SourceId`" is a
+/// property of the type rather than a convention.
+///
+/// The only way to build one is [`SourceRegistry::freeze`], which consumes the registry: loading is
+/// a phase that ends.
+#[derive(Clone, Debug, Default)]
+pub struct SourceTable(SourceRegistry);
+
+impl SourceTable {
+    pub fn get(&self, id: SourceId) -> Option<&RegisteredSource> {
+        self.0.get(id)
+    }
+
+    pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
+        self.0.id_for_name(name)
+    }
+
+    /// The source a name denotes, as a handle. `None` if this compilation never loaded it.
+    pub fn named(&self, name: &str) -> Option<&RegisteredSource> {
+        self.id_for_name(name).and_then(|id| self.get(id))
+    }
+
+    /// The first source registered, i.e. the entry — see [`SourceRegistry::entry`].
+    pub fn entry(&self) -> Option<&RegisteredSource> {
+        self.0.entry()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every source, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
+        self.0.iter()
+    }
+}
+
+impl From<SourceRegistry> for SourceTable {
+    fn from(registry: SourceRegistry) -> Self {
+        SourceTable(registry)
+    }
+}
+
+impl SourceLookup for SourceTable {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        self.0.source(id)
+    }
 }
 
 /// A registered source for the crate's own unit tests.

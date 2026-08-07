@@ -354,3 +354,96 @@ is the compensating control and the disagreement is a live risk, correctly state
 `as1b_mir_native_provenance.rs`, 4 tests: the whole-program `SourceInfo` sweep, a narrower
 trap-site sweep, a MIR-engine dependency trap, and a native dependency trap that builds and runs the
 binary.
+
+
+---
+
+## 8. AS1b-iii — MIR source identity collapse (2026-08-07)
+
+Approved as a separate checkpoint after ii-e, on the reasoning that this changes the MIR data model
+and the backend contract rather than finishing the span migration mechanically.
+
+### What was true before
+
+```rust
+pub struct SourceInfo { pub file: FileId, pub span: Span, pub origin: Origin }
+```
+
+Two source identities. The verifier proved only that the `FileId` was **in range**:
+
+```rust
+if (info.file.0 as usize) >= self.program.files.len() { MIR-0013 }
+```
+
+— saying nothing about whether it and `span.source` named the same file. And the native backend
+chose the rival:
+
+```rust
+let file = &files[info.file.0 as usize];
+let (line, col) = file.line_col(info.span.lo);   // span.source ignored
+```
+
+`line_col` clamps, so a disagreement would not have been an error. It would have been a confident,
+wrong filename and line baked into a generated binary's abort call at compile time.
+
+### What is true now
+
+```rust
+pub struct SourceInfo { pub span: Span, pub origin: Origin }
+```
+
+`FileId` no longer exists. `MirProgram::files: Vec<Arc<SourceFile>>` is `sources: SourceTable`, the
+compilation's own registry — so identity runs unbroken from the lexer to native emission with no
+translation into a second namespace:
+
+```text
+HIR Span.source → MIR Span.source → MIR interpreter → native backend
+```
+
+V-SRC-1 now means what its name says: **every `SourceInfo.span.source` resolves in the program's
+source registry.** That is a claim the verifier can put to lowering independently, rather than
+validating an id lowering minted for itself.
+
+Three ambient-file readers went with it: `FnLowerer::src` (which sliced the defining file with a
+bare index, so a foreign span was garbage or a panic), `ProgramMeta::item_src`/`item_file`, and the
+per-body file the lowerer aimed at each item.
+
+### MIR 0.3 → 0.4
+
+Two fields removed and one retyped is a shape change under contract §11. The increment is
+load-bearing: a cached artifact produced under `0.3` came from a backend that resolved trap
+locations through the `FileId` and ignored `span.source`, so serving it under the new contract would
+present a location computed by the authority this amendment removes. `MIR_RUNTIME_SURFACE` stays at
+`0.1-A14` — no runtime operation is added, removed or altered.
+
+### The sweep is deleted, not weakened
+
+ii-e's `every_mir_source_info_agrees_with_the_span_it_carries` existed because two identities could
+disagree. There is now one, so the comparison has no second term. What remains is
+`every_mir_source_info_resolves_in_the_programs_own_registry` — the V-SRC-1 claim, asked from
+outside the verifier — plus the four behavioural tests, which are the ones that pin the answer a
+user is given.
+
+V-SRC-1's negative test changed shape too, and the change is worth noting: producing an
+unresolvable id used to mean writing `FileId(42)`. It now requires a `SourceId` minted by a
+*different registry*, which is precisely the residual risk `RegisteredSource`'s doc comment records
+— the type proves a source was registered, not that it was registered *here*. For MIR, the verifier
+is what closes that gap.
+
+### Loading is now a phase that ends
+
+`Hir.sources` and `MirProgram.sources` are a `SourceTable`: it resolves ids and has no `intern`, and
+the only way to build one is `SourceRegistry::freeze`, which consumes the registry. The freeze was
+previously a doc comment on a type with a public `&mut intern`. `only_the_loading_phase_interns`
+pins the remaining case the type system cannot: a new `intern` added to a pass that runs during
+loading but has no business minting identity — which is exactly how `build_source_map` became a
+second allocator in the first place.
+
+### What it found: DEV-183
+
+Recorded in full in `KNOWN-DEVIATIONS.md`. **TRAIT-COHERENCE-001's cross-package clause had never
+been enforced.** The orphan rule compared packages by walking file paths on disk during type
+checking; after AS1a's logical names, that probe returned `None` for every file, so every type
+looked local. One first-party violation existed —
+`impl HttpResponse` in `stark-http-client` for a type defined in `stark-http-core` — and is repaired
+as a locally declared `JsonBody` trait, which is what the rule is designed to permit.

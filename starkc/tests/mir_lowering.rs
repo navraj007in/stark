@@ -3,7 +3,7 @@
 //! Verifies against real programs (including frozen exec_snapshots corpus cases,
 //! `corpus_version = 1.0.0`): that the scalar subset lowers, that the dump is deterministic,
 //! that structural contract invariants hold on every produced body (single sealed terminator
-//! per block, `SourceInfo` present with a valid `FileId` on every statement and terminator —
+//! per block, `SourceInfo` naming a resolvable source on every statement and terminator —
 //! V-SRC-1's data prerequisite), and that out-of-subset constructs are reported as clean
 //! `Unsupported` errors naming C4.5 rather than mislowered (charter: nothing unsupported
 //! reaches a backend silently). Execution-level differential validation is WP-C4.4 (the MIR
@@ -57,7 +57,10 @@ fn front_end_corpus(name: &str) -> Front {
 /// Contract structural invariants every lowered program must satisfy (pre-verifier, WP-C4.3
 /// builds the real verifier on top of these).
 fn assert_structural_invariants(program: &mir::MirProgram) {
-    assert!(!program.files.is_empty(), "file table must not be empty");
+    assert!(
+        !program.sources.is_empty(),
+        "the program's source registry must not be empty"
+    );
     for body in &program.bodies {
         assert!(
             !body.blocks.is_empty(),
@@ -70,18 +73,20 @@ fn assert_structural_invariants(program: &mir::MirProgram) {
             body.instance.symbol
         );
         for (bi, block) in body.blocks.iter().enumerate() {
-            // Every statement and the terminator carry SourceInfo with a valid FileId.
+            // AS1b-iii: every statement and the terminator name a source the program resolves.
+            // This checked that a MIR-local `FileId` was in range, which said nothing about the
+            // `SourceId` the span carried and everything downstream would use.
             for (_, info) in &block.statements {
                 assert!(
-                    (info.file.0 as usize) < program.files.len(),
-                    "{} bb{bi}: statement SourceInfo has invalid FileId",
+                    program.sources.get(info.span.source).is_some(),
+                    "{} bb{bi}: statement SourceInfo names an unregistered source",
                     body.instance.symbol
                 );
             }
             let (_, term_info) = &block.terminator;
             assert!(
-                (term_info.file.0 as usize) < program.files.len(),
-                "{} bb{bi}: terminator SourceInfo has invalid FileId",
+                program.sources.get(term_info.span.source).is_some(),
+                "{} bb{bi}: terminator SourceInfo names an unregistered source",
                 body.instance.symbol
             );
             // Terminator targets are in bounds.

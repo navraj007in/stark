@@ -197,7 +197,7 @@ pub fn resolve_with_options(
     resolver.hir.synthetic_names = synthetic_names;
     // Frozen after parsing: the registry is complete once every file has been loaded, and nothing
     // downstream registers a source.
-    resolver.hir.sources = resolver.ast.sources.clone();
+    resolver.hir.sources = resolver.ast.sources.clone().freeze();
     // DEV-173: literal values travel with the HIR; nothing downstream re-decodes from a span.
     resolver.hir.str_lits = resolver.ast.str_lits.clone();
 

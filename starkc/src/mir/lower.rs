@@ -25,10 +25,9 @@ use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
 use crate::mir::provider_lower::ProviderLowering;
-use crate::source::{RegisteredSource, SourceFile};
+use crate::source::{RegisteredSource, Span};
 use crate::typecheck::{Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
 
 pub struct LowerError {
     pub what: String,
@@ -239,10 +238,12 @@ fn zero_of(ty: &MirTy, span: Span) -> Result<Operand, LowerError> {
 /// its defining file (so spans and name reads land in the right source) and its module path
 /// (so canonical symbols are package/module-qualified: `⟨package⟩::⟨module⟩::name@[args]`).
 struct ProgramMeta {
-    /// Interned files; index = `FileId`. The entry file is `FileId(0)`.
-    files: Vec<Arc<SourceFile>>,
-    /// `item.0` → (defining file, module path from the root, outermost first).
-    items: HashMap<u32, (FileId, Vec<String>)>,
+    /// AS1b-iii: the program's sources, taken from the HIR's registry rather than re-interned into
+    /// a MIR-local `FileId` space. Re-interning by name was how MIR acquired a second source
+    /// identity that could disagree with the one every span already carried.
+    sources: crate::source::SourceTable,
+    /// `item.0` → (defining source, module path from the root, outermost first).
+    items: HashMap<u32, (crate::source::SourceId, Vec<String>)>,
     /// Every item reachable from the root, modules included (deterministic walk order).
     all_items: Vec<ItemId>,
     /// WP-C6.1g-a (OWN-COPY-001, amended): items that are `Copy` when their type arguments are —
@@ -262,33 +263,23 @@ struct ProgramMeta {
 impl ProgramMeta {
     fn build(hir: &Hir, entry: &RegisteredSource) -> Result<Self, LowerError> {
         let entry_source = entry.id();
-        let mut files: Vec<Arc<SourceFile>> = vec![entry.file().clone()];
-        let mut by_name: HashMap<String, FileId> = HashMap::new();
-        by_name.insert(entry.name.clone(), FileId(0));
-        let mut intern = |file: &Arc<SourceFile>, files: &mut Vec<Arc<SourceFile>>| -> FileId {
-            if let Some(&id) = by_name.get(&file.name) {
-                return id;
-            }
-            let id = FileId(files.len() as u32);
-            files.push(file.clone());
-            by_name.insert(file.name.clone(), id);
-            id
-        };
+        let sources = hir.sources.clone();
 
         let root_items = match &hir.root {
             hir::Root::Program(items) => items.clone(),
             _ => return unsupported("non-program root", entry.synthetic_span()),
         };
-        let mut items: HashMap<u32, (FileId, Vec<String>)> = HashMap::new();
+        let mut items: HashMap<u32, (crate::source::SourceId, Vec<String>)> = HashMap::new();
         let mut all_items: Vec<ItemId> = Vec::new();
         let mut stack: Vec<(ItemId, Vec<String>)> =
             root_items.iter().rev().map(|&i| (i, Vec::new())).collect();
         while let Some((item_id, path)) = stack.pop() {
-            let file_id = match hir.item_file(item_id) {
-                Some(f) => intern(f, &mut files),
-                None => FileId(0),
-            };
-            items.insert(item_id.0, (file_id, path.clone()));
+            let item_source = hir
+                .item_sources
+                .get(&item_id)
+                .copied()
+                .unwrap_or(entry_source);
+            items.insert(item_id.0, (item_source, path.clone()));
             all_items.push(item_id);
             if let ItemKind::Mod {
                 name,
@@ -300,8 +291,12 @@ impl ProgramMeta {
                 let mod_name = if let Some(s) = hir.synthetic_names.get(&item_id) {
                     s.clone()
                 } else {
-                    let src = &files[file_id.0 as usize].src;
-                    src.get(name.lo as usize..name.hi as usize)
+                    // AS1b-iii: read against the source the NAME's span points at, not against the
+                    // item's file looked up separately. They were the same file; only one of them
+                    // was guaranteed to be.
+                    sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string()
                 };
@@ -346,15 +341,11 @@ impl ProgramMeta {
             let Some(nominal) = impl_self_item(hir, item_id) else {
                 continue;
             };
-            let file_id = match hir.item_file(item_id) {
-                Some(f) => *by_name.get(&f.name).unwrap_or(&FileId(0)),
-                None => FileId(0),
-            };
-            let src = &files[file_id.0 as usize].src;
             for impl_item in impl_items {
                 if let hir::ImplItem::AssocType { name, ty } = impl_item {
-                    let assoc_name = src
-                        .get(name.lo as usize..name.hi as usize)
+                    let assoc_name = sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string();
                     assoc_projections.insert((nominal.0, assoc_name), *ty);
@@ -362,7 +353,7 @@ impl ProgramMeta {
             }
         }
         Ok(ProgramMeta {
-            files,
+            sources,
             items,
             all_items,
             copy_eligible,
@@ -371,22 +362,21 @@ impl ProgramMeta {
         })
     }
 
-    fn item_file(&self, item: ItemId) -> FileId {
-        self.items
-            .get(&item.0)
-            .map(|(f, _)| *f)
-            .unwrap_or(FileId(0))
-    }
-
-    fn item_src(&self, item: ItemId) -> &str {
-        &self.files[self.item_file(item).0 as usize].src
-    }
-
-    /// Read a span belonging to `item`'s file.
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        self.item_src(item)
-            .get(span.lo as usize..span.hi as usize)
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-iii: `item_text(item, span)` looked the item's file up in a MIR-local table and sliced
+    /// that. The item is no longer consulted — it never disagreed with the span, but nothing said
+    /// it could not.
+    fn text(&self, span: Span) -> &str {
+        self.sources
+            .get(span.source)
+            .and_then(|source| source.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
+    }
+
+    /// AS1b-iii: kept for call sites that read a name off a declaration; `item` is redundant.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
     /// `"dep::inner::"` for a nested item; empty for root items.
@@ -473,7 +463,7 @@ pub fn lower_program_with_providers(
     let entry_source = file.id();
     let mut program = MirProgram {
         entry_source,
-        files: meta.files.clone(),
+        sources: meta.sources.clone(),
         bodies: Vec::new(),
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
@@ -1154,11 +1144,8 @@ struct FnLowerer<'a> {
     /// WP-C7.8.8 step 6: the provider calls this program may lower. Empty for every program that
     /// binds no provider, which is almost all of them.
     providers: &'a ProviderLowering,
-    /// f-3c: program-wide file/module metadata (per-item files and paths).
+    /// f-3c: program-wide file/module metadata (per-item sources and module paths).
     meta: &'a ProgramMeta,
-    /// The source of the file DEFINING this body's item — body spans read here.
-    src: &'a str,
-    file: FileId,
     key: FnKey,
     /// Concrete `Self` type for method/trait-default bodies (C4.5a).
     self_subst: Option<MirTy>,
@@ -1196,21 +1183,14 @@ impl<'a> FnLowerer<'a> {
         key: FnKey,
         providers: &'a ProviderLowering,
     ) -> Self {
-        // f-3c: the body's spans and text reads belong to the DEFINING item's file.
-        let owner = match &key {
-            FnKey::Top(item, _) => *item,
-            FnKey::ImplFn { impl_item, .. } => *impl_item,
-            FnKey::TraitDefault { trait_item, .. } => *trait_item,
-        };
-        let file = meta.item_file(owner);
-        let src: &'a str = &meta.files[file.0 as usize].src;
+        // f-3c pointed `src`/`file` at the DEFINING item's file so body spans read and were
+        // attributed correctly. AS1b-iii: every span names its own source, so the body needs no
+        // ambient file at all.
         FnLowerer {
             hir,
             tables,
             providers,
             meta,
-            src,
-            file,
             key,
             self_subst: None,
             param_subst: HashMap::new(),
@@ -1229,13 +1209,17 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// This sliced `self.src` — the defining file of the body being lowered — with a bare index, so
+    /// a span from another file was either garbage or a panic. Now it resolves, and an unresolvable
+    /// span reads `"?"` rather than aborting the compiler.
     fn text(&self, span: Span) -> &'a str {
-        &self.src[span.lo as usize..span.hi as usize]
+        self.meta.text(span)
     }
 
     fn info(&self, span: Span) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::UserCode,
         }
@@ -1243,7 +1227,6 @@ impl<'a> FnLowerer<'a> {
 
     fn synthetic(&self, span: Span, kind: SyntheticKind) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::Synthetic(kind),
         }

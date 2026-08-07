@@ -237,7 +237,9 @@ pub struct Hir {
     /// Carried here so that every phase holding a `&Hir` — type checking, borrow checking, MIR
     /// lowering, execution — can resolve a `SourceId` without being handed a separate lookup. It
     /// is the read-only authority the interpreter's ambient `self.file` used to stand in for.
-    pub sources: crate::source::SourceRegistry,
+    /// AS1b-iii: a frozen table, not a registry. This was described as "frozen after parsing"
+    /// while being a `SourceRegistry` with a public `&mut intern` — a freeze held by convention.
+    pub sources: crate::source::SourceTable,
     /// WP-C6.2b-F1: the defining module id of each item, so the type checker can enforce member
     /// and field visibility (private is exact-module, matching `resolve::item_is_visible_from`).
     pub item_modules: std::collections::HashMap<ItemId, u32>,
