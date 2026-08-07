@@ -4,25 +4,14 @@
 **Programme:** `WP-ARCHITECTURE-STABILIZATION.md`
 **Branch:** `wp-arch-stability/sprint-2`
 **Date:** 2026-08-07
-**Status:** **CANDIDATE-PASS — awaiting CI.** The implementation is complete and AS1b and AS5 are
-both closed; the Tier-3 gate is **not** discharged until the main CI workflow completes green on
-`1616738`/`659fa02`. At the time of writing the Native Capabilities lane is green on both and the
-main lane is still running.
+**Status:** **PASS.** Sprint 2 closes. AS1b and AS5 are complete, and the Tier-3 gate is discharged
+on green CI — `59bd1ca`, both workflows, **24/24 jobs** across linux-x64, macos-arm64 and
+windows-x64 (runs `31154505344` and `31154505453`).
 
-The truthful state:
-
-```text
-Sprint 2 implementation       COMPLETE
-AS1b                          COMPLETE
-AS5                           COMPLETE
-Tier-3 closeout               CANDIDATE-PASS / awaiting CI
-Sprint 3 implementation       RESERVED until that CI turns green
-```
-
-This header said "PASS. Sprint 2 closes." while §7 and §8 said closure was conditional — the
-document contradicted itself in the direction of claiming more than the evidence supported. It is
-corrected here rather than left for a reviewer to catch, and it will be changed to an unconditional
-PASS by an evidence-only commit recording the green run.
+This header briefly read "PASS. Sprint 2 closes." while §7 and §8 said closure was conditional — the
+document contradicted itself in the direction of claiming more than the evidence supported. It was
+corrected to CANDIDATE-PASS, and is now unconditional because the evidence exists, which is the
+order those two states are supposed to occur in.
 
 Every criterion below is classified **PASS**, **FAIL**, **PARTIAL**, **DEFERRED-BY-DECISION** or
 **NOT-APPLICABLE**, with the command or artefact that supports it. A criterion with no evidence is
@@ -149,19 +138,26 @@ Recorded because the commits are history and cannot be amended.
 | `577add3` (AS1b closeout) | **success** | success |
 | `81c46cc` (AS5-a) | failure — Windows test defect | success |
 | `d97fb75` (AS5-b..f) | failure — same defect, inherited | success |
-| `96b5cbb` (AS5-g) | *(superseded by `1616738`)* | — |
-| `1616738` (fix + records) | *pending at time of writing* | — |
+| `96b5cbb` (AS5-g) | *(superseded by `1616738`)* | success |
+| `1616738` (Windows fix + CE9 record + DEV-186) | **success** | success |
+| `659fa02` (Sprint 2 closeout) | **success** | success |
+| `5cc6208` (owner decisions; status correction) | **success** — 24/24 jobs | success |
+| `59bd1ca` (AS0 item 6 inventory) | **success** | success |
 
-The two failures are one defect, described in §4. Sprint 2 does not close until `1616738` is green
-on all three platforms; that is the only outstanding item.
+The two failures are one defect, described in §4. It is fixed, and every commit after it is green on
+all three platforms. **The Tier-3 gate is discharged.**
 
 ---
 
 ## 8. Verdict
 
-**CANDIDATE-PASS.** Every packet criterion in §2 is met and every defect in §4 is closed or
-registered. The Tier-3 gate discharges when the main CI workflow is green on `1616738`/`659fa02`,
-and not before — see §7.
+**PASS.** Every packet criterion in §2 is met, every defect in §4 is closed or registered, and CI is
+green on all three platforms — see §7.
+
+Two things closed alongside the sprint and are recorded in their own documents rather than here:
+**AS0 exits** (items 6 and 7 delivered as `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md` and
+`AS0-RB0-PREDICATE-INVENTORY.md`, item 10 deferred by decision), and the **Campaign A gate is now
+binding** in `ROADMAP.md` §6.0. Campaign A's exit therefore needs only AS3 and AS4.
 
 AS1b eliminated a defect class rather than guarding it. Nine separate mechanisms for answering
 "which file is this?" — the parser's, the checker's, the item table's, the callable's, the

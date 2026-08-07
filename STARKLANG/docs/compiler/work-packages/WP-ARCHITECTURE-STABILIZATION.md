@@ -1,6 +1,6 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprint 1 CLOSED; Sprint 2 implementation complete, Tier-3 gate awaiting CI.** The Sprint 1 opening items, AS0 (partial), AS1a and
+**Status:** **IN EXECUTION — Sprints 1 and 2 CLOSED, AS0 CLOSED. Sprint 3 (AS3 → AS4) open.** The Sprint 1 opening items, AS0 (partial), AS1a and
 AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
 Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
 second owner decision, which the AS0 report now enables — see §1.
@@ -107,7 +107,7 @@ pipeline.
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
-| Sprint 2 Tier-3 closeout | **CANDIDATE-PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 both closed, awaiting green CI on `1616738`/`659fa02` | **not yet discharged**; Sprint 3 implementation is RESERVED until it is |
+| Sprint 2 Tier-3 closeout | **PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 closed, CI green 24/24 on `59bd1ca` | discharged; **Sprint 3 may open** |
 | AS1b | **CLOSED 2026-08-07** — i, ii(a–e) and iii; owner-accepted at `a6107fb`. See `AS1B-OPENING-ANALYSIS.md` §9 | none |
 | remainder of Campaign A (AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
 | AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |
