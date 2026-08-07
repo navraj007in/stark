@@ -73,4 +73,14 @@ fn main() {
     );
     probe("8 tuple of same nominal", &format!("{D}fn main() {{\n    let a: A = A {{ v: 1 }};\n    let b: A = A {{ v: 2 }};\n    println((a, b));\n}}\n"));
     probe("6 GATE generic pair", &format!("{D}fn show2<P: Display, Q: Display>(x: P, y: Q) {{\n    println((x, y));\n}}\nfn main() {{\n    show2(A {{ v: 1 }}, B {{ v: 2 }});\n}}\n"));
+
+    // AS3 Boundary 4: characterize before assuming.
+    probe(
+        "G1 trait default via bound",
+        "trait Describe {\n    fn text(&self) -> String {\n        String::from(\"default\")\n    }\n}\nstruct A2 { v: Int32 }\nimpl Describe for A2 {}\nfn f<T: Describe>(x: T) -> String {\n    x.text()\n}\nfn main() {\n    println(f(A2 { v: 1 }));\n}\n",
+    );
+    probe(
+        "G2 method generics via bound",
+        "trait Conv {\n    fn to<U>(&self) -> Int32;\n}\nstruct A3 { v: Int32 }\nimpl Conv for A3 {\n    fn to<U>(&self) -> Int32 {\n        1\n    }\n}\nfn g<T: Conv>(x: T) -> Int32 {\n    x.to::<Int32>()\n}\nfn main() {\n    println(g(A3 { v: 1 }));\n}\n",
+    );
 }

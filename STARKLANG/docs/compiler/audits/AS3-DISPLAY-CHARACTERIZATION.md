@@ -99,20 +99,14 @@ It is the general shape of **bound dispatch**, which AS3 already has a name for:
 record of "this call resolved through a generic parameter's bound". Display is simply the first
 place `CalleeSelection` is forced to admit it.
 
-### Options, not resolved here
+### RESOLVED (2026-08-07): extend `CalleeSelection` with a real `Bound` variant
 
-1. **Extend `CalleeSelection` with a bound variant** — e.g. `Bound { trait_item, member }`, meaning
-   *the body is determined by the instantiated `Self` at this use's environment*. The engines then
-   resolve it through the instantiation they already carry, not by scanning.
-2. **Reuse whatever AS3 establishes for bound method calls generally.** Boundary 2 published
-   `Bound` provenance for method calls but always with a `Static` selection, because a method call
-   through a bound *is* monomorphised before execution. Whether the same holds for Display inside a
-   generic body needs the same treatment or an explicit difference.
+Owner ruling. Recorded in `WP-CALLABLE-USE-TOTAL.md` §8 and implemented at `6a1d4d3`/`0c99000`.
 
-**Deliberately not chosen here.** `WP-CALLABLE-USE-TOTAL.md` §7 exit criterion 5 requires
-disagreements to be recorded rather than normalised, and this is the model being insufficient rather
-than an engine disagreeing — a design decision, not an implementation detail. Inventing a
-Display-specific runtime scan to avoid it would be the packet's own defect class.
+Option 2 above rested on a **false premise**, corrected on review: Boundary 2 does *not* publish a
+`CallableUse` for bound dispatch at all. `resolve_method`'s bound branch records `bound_trait_calls`
+and returns before the publication. So this is not Display finding an unusual corner — AS3 found a
+**missing third binding time**, and `fn f<T: Speak>(x: T) { x.speak(); }` had the same hole.
 
 ---
 
@@ -131,3 +125,66 @@ generic arguments added to `Value`.
 
 MIR is easier: `emit_display_value` already carries the full `MirTy` through its recursion, so the
 same path index applies directly.
+
+
+---
+
+## 5. Two further characterizations (2026-08-07)
+
+Run before wiring the bound specialiser, on the principle that a data structure is not evidence
+about what the language accepts.
+
+| # | Case | Accepted | Output | `callable_uses` |
+| ---: | --- | :---: | --- | ---: |
+| G1 | trait **default** reached through a bound — `impl Describe for A2 {}` with no override, `x.text()` in `f<T: Describe>` | **yes** | `default` | 3 |
+| G2 | **method generics** through a bound — `x.to::<Int32>()` in `g<T: Conv>` | **yes** | `1` | 3 |
+
+### G1 — the index must carry effective targets, not written members
+
+There is no impl member body. The executable target is the **trait default**, which A3b already
+treats as executable and gives a `callable_types` entry. A `TraitImplIndex` recording only members
+physically written inside an impl would find nothing here and the specialisation would fail on a
+program that compiles and runs today.
+
+So the index must record, per member name, the **effective** target:
+
+```text
+impl override exists   -> ImplMember
+otherwise trait default -> TraitMember
+otherwise               -> impossible for a checked impl
+```
+
+### G2 — `Bound` needs `method_args`, and this is a real gap
+
+`CalleeSelection::Bound` carries `trait_args` but **no method arguments**, and this form is
+accepted. A trait method may declare its own generics, and the turbofish at a bound call site
+supplies them:
+
+```stark
+fn g<T: Conv>(x: T) -> Int32 { x.to::<Int32>() }
+```
+
+Without `method_args` the specialiser cannot produce the complete environment — it would bind the
+impl's parameters and silently drop the method's. That is the same class as the Iterator hardening's
+empty environment, found before it was built rather than after.
+
+**Recorded, not inferred.** The alternative reading — "`Display::fmt` has no method generics, so this
+need not enlarge the packet" — is only true of Display; the `Bound` machinery is general, and step 2
+already published it for arbitrary user-trait bounds.
+
+### Consequence for step 4
+
+Both findings land on the same structure, so they are one change rather than two:
+
+```text
+IndexedImpl
+    trait identity
+    trait arguments          <- match with the SAME substitution map as Self
+    parametric Self
+    impl generic names
+    effective members         <- impl override OR trait default
+        declaration + body
+    NO signature              <- callable_types[body] is the sole signature authority
+```
+
+and `CalleeSelection::Bound` gains `method_args` alongside `trait_args`.
