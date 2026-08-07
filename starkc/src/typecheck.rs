@@ -191,6 +191,9 @@ pub struct TypeChecker<'a> {
     callable_sigs: HashMap<BlockId, CallableSigTy>,
     /// A3c-S: raw (pre-grounding) callable environments, keyed by the call expression.
     callable_envs: HashMap<ExprId, CallableInstantiation>,
+    /// AS3: the published uses, in publication order. `CallableUseId` is the index.
+    callable_uses: Vec<CallableUse>,
+    callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
     /// WP-C4.5c / A3c-S: ordered generic-argument types for every use of a *generic* fn item, keyed
@@ -721,11 +724,126 @@ impl CallableInstantiation {
 ///
 /// Bodyless trait declarations are excluded structurally rather than by a filter — they have no
 /// `BlockId` to key on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CallableSigTy {
     pub receiver: Option<Ty>,
     pub params: Vec<Ty>,
     pub ret: Ty,
+}
+
+// ------------------------------------------------------- AS3 / WP-CALLABLE-USE-TOTAL --
+
+/// A published callable use. Indexes [`TypeTables::callable_uses`].
+///
+/// **A use is a STATIC SEMANTIC USE SITE, not an expression and not a runtime invocation.** One
+/// expression may give rise to zero, one or many: `println((a, b))` is one argument expression and
+/// two `Display::fmt` use sites, and `println(vec)` is one use site executed once per element. A
+/// map keyed by `ExprId` cannot represent either, which is why this id exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableUseId(pub u32);
+
+/// WHICH declaration the checker selected, expressed in ids the HIR actually possesses.
+///
+/// Methods, associated functions and trait defaults have **no `ItemId`**: `ImplItem::Fn` embeds a
+/// `FnDef` and `TraitItem::Method` embeds a signature, both positional inside their owner's `Vec`.
+/// That is why A3b chose `BlockId` for executable identity. This is the *declaration* identity,
+/// which provenance and diagnostics need and which a `BlockId` cannot express — and it is built
+/// from real ids rather than from fabricated ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableDeclId {
+    /// A free function: it has its own item.
+    Item(ItemId),
+    /// A member of an impl, by position in that impl's `items`.
+    ImplMember { impl_item: ItemId, member: u32 },
+    /// A member of a trait — the declaration site of a default body.
+    TraitMember { trait_item: ItemId, member: u32 },
+}
+
+/// What runs. Static for an ordinary call; deferred to the value for a function value.
+///
+/// DEV-178: a function value carries the item and the bindings it was created with, because the
+/// call site's `Ty::Fn` cannot reconstruct which instantiation produced it. Pretending every use
+/// has a statically known body would erase that.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalleeSelection {
+    Static {
+        declaration: CallableDeclId,
+        body: BlockId,
+    },
+    FunctionValue,
+}
+
+/// The generic environment, on the same footing as the selection.
+///
+/// A non-generic static call is `Static(vec![])` — an empty environment, never an absent one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericEnvironment {
+    Static(Vec<(GenericBinder, Ty)>),
+    /// Fixed at coercion and carried by the value (DEV-178).
+    FromFunctionValue,
+}
+
+/// What the CALL SITE did to the receiver (TYPE-METHOD-002 auto-borrow / auto-deref).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverAdjustment {
+    None,
+    ByValue,
+    Shared { derefs: u8 },
+    Exclusive { derefs: u8 },
+}
+
+/// What the SELECTED CALLABLE binds.
+///
+/// Deliberately separate from [`ReceiverAdjustment`]. They correlate in ordinary code, but they are
+/// different questions with different authorities — the call site's adjustment versus the
+/// declaration's `self` form — and AS4 asks about the binding side specifically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverBinding {
+    None,
+    ByValue,
+    Shared,
+    Exclusive,
+}
+
+/// Why this callable and not another.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DispatchProvenance {
+    /// `f(x)` — a path resolved to an item.
+    Direct,
+    /// `x.m()` — inherent method resolution.
+    Inherent,
+    /// `x.m()` where `m` came from a trait impl.
+    TraitImpl { trait_item: ItemId },
+    /// `T::m()` / `<T as Tr>::m()`.
+    Qualified { trait_item: Option<ItemId> },
+    /// A generic parameter's BOUND supplied the signature — what `bound_trait_calls` carries today.
+    Bound { trait_item: ItemId },
+    /// A compiler-known trait operation: `==`, `<`, `for`, `{}` formatting. The four families both
+    /// engines currently re-select with no filter at all.
+    CoreTrait { core: hir::CoreTrait },
+    /// Calling a function value.
+    FunctionValue,
+}
+
+/// Everything the checker decided about one callable use.
+///
+/// The rule this exists to serve: **the checker publishes, execution consumes, neither engine
+/// reconstructs selection.** An engine may CHOOSE among published records using runtime or static
+/// structure; it may not scan the HIR and re-run method selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallableUse {
+    pub selection: CalleeSelection,
+    pub environment: GenericEnvironment,
+    pub receiver_adjustment: ReceiverAdjustment,
+    pub receiver_binding: ReceiverBinding,
+    /// This use's signature.
+    ///
+    /// **Inference-grounded, not fully concrete**: no surviving `Ty::Infer` or `Ty::Error`. A
+    /// caller's own `Ty::Param` may remain and is concretised against the active caller
+    /// environment — the same rule `CallableInstantiation` documents, and why `callable_types` is
+    /// body-parametric.
+    pub signature: CallableSigTy,
+    pub provenance: DispatchProvenance,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -753,6 +871,17 @@ pub struct TypeTables {
     /// parameters positionally and therefore could not express impl generics, trait generics or
     /// `Self` — the reason DEV-176 exists.
     pub callable_instantiations: HashMap<ExprId, CallableInstantiation>,
+    /// **AS3 / WP-CALLABLE-USE-TOTAL: every published callable use, indexed by `CallableUseId`.**
+    ///
+    /// One record per STATIC SEMANTIC USE SITE. See `callable_uses_by_expr` for why this is not a
+    /// map keyed by expression.
+    pub callable_uses: Vec<CallableUse>,
+    /// The uses an expression gives rise to — **zero, one or many**.
+    ///
+    /// Many is not hypothetical: `display_deep` recurses through tuples, arrays, `Option`, `Result`
+    /// and slots, reaching a nominal's `Display::fmt` at any depth, so `println((a, b))` is one
+    /// argument expression and two use sites. Zero is ordinary — most expressions call nothing.
+    pub callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
     /// WP-C4.5c / A3c-S: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
@@ -816,6 +945,8 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         fn_sigs: HashMap::new(),
         callable_sigs: HashMap::new(),
         callable_envs: HashMap::new(),
+        callable_uses: Vec::new(),
+        callable_uses_by_expr: HashMap::new(),
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         layout_queries: HashMap::new(),
@@ -852,6 +983,40 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         .iter()
         .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
+    let callable_uses: Vec<CallableUse> = checker
+        .callable_uses
+        .iter()
+        .map(|use_| CallableUse {
+            selection: use_.selection.clone(),
+            environment: match &use_.environment {
+                GenericEnvironment::Static(bindings) => GenericEnvironment::Static(
+                    bindings
+                        .iter()
+                        .map(|(binder, ty)| (binder.clone(), checker.ground(ty)))
+                        .collect(),
+                ),
+                GenericEnvironment::FromFunctionValue => GenericEnvironment::FromFunctionValue,
+            },
+            receiver_adjustment: use_.receiver_adjustment,
+            receiver_binding: use_.receiver_binding,
+            signature: CallableSigTy {
+                receiver: use_
+                    .signature
+                    .receiver
+                    .as_ref()
+                    .map(|ty| checker.ground(ty)),
+                params: use_
+                    .signature
+                    .params
+                    .iter()
+                    .map(|ty| checker.ground(ty))
+                    .collect(),
+                ret: checker.ground(&use_.signature.ret),
+            },
+            provenance: use_.provenance.clone(),
+        })
+        .collect();
+    let callable_uses_by_expr = checker.callable_uses_by_expr.clone();
     let callable_instantiations = checker
         .callable_envs
         .iter()
@@ -948,6 +1113,8 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         fn_types,
         callable_types,
         callable_instantiations,
+        callable_uses,
+        callable_uses_by_expr,
         layout_queries,
         layout,
         bound_trait_calls: checker.bound_trait_calls,
@@ -4487,6 +4654,19 @@ impl<'a> TypeChecker<'a> {
     /// caller's `decl_text` yields a different string, every `map` lookup misses, and the
     /// environment silently publishes as empty. Resolving names inside this helper is exactly how
     /// that regression happened, so the caller supplies them.
+    /// **AS3: publish one callable use.** The single point at which the checker's selection becomes
+    /// something an engine may consume.
+    ///
+    /// Returns the id so a caller that needs to refer to the use later can. Ungrounded types are
+    /// fine here — `analyze` grounds every published use once, at the end, the same way it grounds
+    /// `callable_instantiations`.
+    fn publish_callable_use(&mut self, expr: ExprId, use_: CallableUse) -> CallableUseId {
+        let id = CallableUseId(self.callable_uses.len() as u32);
+        self.callable_uses.push(use_);
+        self.callable_uses_by_expr.entry(expr).or_default().push(id);
+        id
+    }
+
     fn publish_callable_env(&mut self, published: PublishedEnv<'_>) {
         let PublishedEnv {
             call_expr,
@@ -4497,6 +4677,24 @@ impl<'a> TypeChecker<'a> {
             own_is_method,
             map,
         } = published;
+        let bindings = Self::env_bindings(&self_ty, impl_names, own_names, own_is_method, map);
+        self.callable_envs
+            .insert(call_expr, CallableInstantiation { body, bindings });
+    }
+
+    /// Build the ordered binder list for one callable use.
+    ///
+    /// AS3 extracted this from `publish_callable_env` so the instantiation table and the
+    /// `CallableUse` record are built by the SAME code. Two constructions of "what generic
+    /// environment did this use select" is the shape of defect this packet exists to remove, and
+    /// duplicating it here to publish a second table would have been an immediate instance.
+    fn env_bindings(
+        self_ty: &Option<Ty>,
+        impl_names: &[String],
+        own_names: &[String],
+        own_is_method: bool,
+        map: &HashMap<String, Ty>,
+    ) -> Vec<(GenericBinder, Ty)> {
         let mut bindings: Vec<(GenericBinder, Ty)> = Vec::new();
         if let Some(self_ty) = self_ty {
             // **`Self` is substituted through the WHOLE map here, not only through the binders
@@ -4506,7 +4704,7 @@ impl<'a> TypeChecker<'a> {
             // install would refuse a correct program. `map` holds every binding the checker
             // selected, including the impl's, so resolving here uses all of them regardless of
             // which are individually named as binders.
-            bindings.push((GenericBinder::SelfType, substitute_ty(&self_ty, map)));
+            bindings.push((GenericBinder::SelfType, substitute_ty(self_ty, map)));
         }
         for (index, name) in impl_names.iter().enumerate() {
             if let Some(ty) = map.get(name) {
@@ -4535,8 +4733,7 @@ impl<'a> TypeChecker<'a> {
                 bindings.push((binder, ty.clone()));
             }
         }
-        self.callable_envs
-            .insert(call_expr, CallableInstantiation { body, bindings });
+        bindings
     }
 
     /// **NAME-SHADOW-001 (DEV-177): a generic parameter may not duplicate another one in scope.**
@@ -5670,6 +5867,7 @@ impl<'a> TypeChecker<'a> {
                     let arg_tys: Vec<Ty> = args.iter().map(|&a| self.check_expr(a)).collect();
                     match self.resolve(&callee_ty) {
                         Ty::Fn { params, ret } => {
+                            let param_snapshot = params.clone();
                             if params.len() != arg_tys.len() {
                                 self.diags.push(
                                     Diagnostic::error(
@@ -5691,6 +5889,27 @@ impl<'a> TypeChecker<'a> {
                             // WP-C6.2c: resolve any deferred return projection now the arguments
                             // have fixed the base type parameters.
                             self.discharge_ready_projections();
+                            // AS3 Boundary 1: the DYNAMIC half of the model, published at the same
+                            // time as the static half so it is exercised from the start.
+                            //
+                            // The checker knows this is a call and knows its signature. It does NOT
+                            // know the body: DEV-178 established that the value carries the item and
+                            // the bindings it was created with, because `Ty::Fn` cannot say which
+                            // instantiation produced it. `FunctionValue` states that rather than
+                            // pretending a `BlockId` exists here.
+                            let use_ = CallableUse {
+                                selection: CalleeSelection::FunctionValue,
+                                environment: GenericEnvironment::FromFunctionValue,
+                                receiver_adjustment: ReceiverAdjustment::None,
+                                receiver_binding: ReceiverBinding::None,
+                                signature: CallableSigTy {
+                                    receiver: None,
+                                    params: param_snapshot,
+                                    ret: (*ret).clone(),
+                                },
+                                provenance: DispatchProvenance::FunctionValue,
+                            };
+                            self.publish_callable_use(expr_id, use_);
                             *ret
                         }
                         Ty::Error => Ty::Error,
@@ -6916,7 +7135,37 @@ impl<'a> TypeChecker<'a> {
                         .with_code("E0101"),
                 );
             }
-            return self.freshen_call_sig(sig, span);
+            let fresh = self.freshen_call_sig(sig, span);
+            // **AS3: a non-generic call is published too.**
+            //
+            // `callable_instantiations` records nothing here — there is no environment to record —
+            // which is why `push_callable_env` reports "not pushed" and the interpreter falls
+            // through. Under totality that absence is indistinguishable from "no record exists",
+            // and the whole point is that an execution site finding no record is an internal
+            // compiler error rather than a licence to scan. So the environment is an explicitly
+            // EMPTY `Static(vec![])`.
+            if let (Some(expr_id), hir::ItemKind::Fn(def)) =
+                (use_expr, &self.hir.item(item_id).kind)
+            {
+                let body = def.body;
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::Item(item_id),
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(Vec::new()),
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: ReceiverBinding::None,
+                    signature: CallableSigTy {
+                        receiver: None,
+                        params: fresh.params.clone(),
+                        ret: fresh.ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Direct,
+                };
+                self.publish_callable_use(expr_id, use_);
+            }
+            return fresh;
         }
 
         let mut map = HashMap::new();
@@ -7029,6 +7278,27 @@ impl<'a> TypeChecker<'a> {
                     own_is_method: false,
                     map: &env_map,
                 });
+                // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
+                // rather than verify. `callable_instantiations` carries the body but not the
+                // declaration, which is why two of twenty-one entry points use it and the rest
+                // re-select.
+                let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::Item(item_id),
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(bindings),
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: ReceiverBinding::None,
+                    signature: CallableSigTy {
+                        receiver: None,
+                        params: sig.params.clone(),
+                        ret: sig.ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Direct,
+                };
+                self.publish_callable_use(expr_id, use_);
             }
         }
 
