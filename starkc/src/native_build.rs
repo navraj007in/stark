@@ -394,8 +394,7 @@ fn resolve_resource_items(
                 crate::hir::ItemKind::Enum { name, .. }
                 | crate::hir::ItemKind::Struct { name, .. }
                     if span_text(
-                        hir.item_files
-                            .get(&crate::hir::ItemId(idx as u32))
+                        hir.item_file(crate::hir::ItemId(idx as u32))
                             .map(|f| f.as_ref())
                             .unwrap_or(file),
                         *name,

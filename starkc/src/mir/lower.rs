@@ -280,7 +280,7 @@ impl ProgramMeta {
         let mut stack: Vec<(ItemId, Vec<String>)> =
             root_items.iter().rev().map(|&i| (i, Vec::new())).collect();
         while let Some((item_id, path)) = stack.pop() {
-            let file_id = match hir.item_files.get(&item_id) {
+            let file_id = match hir.item_file(item_id) {
                 Some(f) => intern(f, &mut files),
                 None => FileId(0),
             };
@@ -340,7 +340,7 @@ impl ProgramMeta {
             let Some(nominal) = impl_self_item(hir, item_id) else {
                 continue;
             };
-            let file_id = match hir.item_files.get(&item_id) {
+            let file_id = match hir.item_file(item_id) {
                 Some(f) => *by_name.get(&f.name).unwrap_or(&FileId(0)),
                 None => FileId(0),
             };

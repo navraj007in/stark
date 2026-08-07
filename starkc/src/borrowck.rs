@@ -167,7 +167,7 @@ impl<'a> BorrowChecker<'a> {
     /// parse each file separately, so spans are only meaningful against their own file
     /// (DEV-069).
     fn item_text(&self, item: hir::ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
+        let src = match self.hir.item_file(item) {
             Some(file) => &file.src,
             None => &self.file.src,
         };
@@ -398,8 +398,7 @@ impl<'a> BorrowChecker<'a> {
             let item_id = ItemId(index as u32);
             self.file = self
                 .hir
-                .item_files
-                .get(&item_id)
+                .item_file(item_id)
                 .cloned()
                 .unwrap_or_else(|| root_file.clone());
             match &item.kind {

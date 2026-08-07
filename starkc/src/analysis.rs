@@ -659,8 +659,7 @@ fn build_symbols(analysis: u64, hir: &Hir, ast: &Ast, sources: &SourceMap) -> Sy
         };
         let item_id = crate::hir::ItemId(slot as u32);
         let file = hir
-            .item_files
-            .get(&item_id)
+            .item_file(item_id)
             .map(Arc::as_ref)
             .unwrap_or_else(|| sources.files[0].file.as_ref());
         let name = ast.synthetic_spans.get(&span).cloned().or_else(|| {

@@ -185,3 +185,77 @@ fn a_package_source_map_is_a_view_over_the_registry() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------------------------
+// AS1b-ii-b — item source identity, and one authority
+// ---------------------------------------------------------------------------------------------
+
+/// `item_sources` names ids; the registry answers. Neither may disagree with the other, and there
+/// must be no id in the map that the registry cannot resolve.
+///
+/// This replaced `item_files: ItemId -> Arc<SourceFile>`, which was a rival source *authority*:
+/// consumers pulled a file object out of it and indexed spans against that, rather than against
+/// whatever the registry said. An id cannot be a rival authority — it can only name.
+#[test]
+fn every_item_source_resolves_in_the_registry() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let root = std::env::temp_dir().join(format!("as1bii_{}_{nanos}", std::process::id()));
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        root.join("starkpkg.json"),
+        r#"{"name":"probe","version":"0.1.0","entry":"src/main.stark"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("main.stark"),
+        "mod helper;\n\nfn main() {\n    let v: Int32 = helper::seven();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("helper.stark"),
+        "pub fn seven() -> Int32 {\n    7\n}\n",
+    )
+    .unwrap();
+
+    let graph =
+        PackageGraph::load_from_root_with_modes(&root.join("starkpkg.json"), false, true).unwrap();
+    let analysis = analyze_project(ProjectInput::package(graph), LanguageOptions::CORE);
+    assert!(!analysis.has_errors(), "fixture must analyse cleanly");
+    let hir = analysis.hir.as_ref().expect("hir");
+
+    assert!(
+        !hir.item_sources.is_empty(),
+        "an empty item-source map would make this check vacuous"
+    );
+    for (item, id) in &hir.item_sources {
+        assert!(
+            hir.sources.get(*id).is_some(),
+            "item {item:?} names source {id:?}, which the registry cannot resolve"
+        );
+        // And the accessor agrees with the raw map.
+        assert_eq!(
+            hir.item_file(*item).map(|f| f.name.as_str()),
+            hir.sources.get(*id).map(|f| f.name.as_str()),
+        );
+    }
+
+    // Items really do span both files — otherwise this proves nothing about cross-file identity.
+    let mut names: Vec<&str> = hir
+        .item_sources
+        .values()
+        .filter_map(|id| hir.sources.get(*id))
+        .map(|f| f.name.as_str())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(
+        names,
+        vec!["probe/src/helper.stark", "probe/src/main.stark"]
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

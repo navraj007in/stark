@@ -143,8 +143,7 @@ fn item_text<'a>(
     span: crate::source::Span,
 ) -> Option<&'a str> {
     let src = hir
-        .item_files
-        .get(&item)
+        .item_file(item)
         .map(|f| f.src.as_str())
         .unwrap_or(&root_file.src);
     src.get(span.lo as usize..span.hi as usize)

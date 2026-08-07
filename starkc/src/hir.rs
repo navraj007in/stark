@@ -230,7 +230,14 @@ pub struct Hir {
     pub pats: Vec<PatNode>,
     pub blocks: Vec<BlockNode>,
     pub root: Root,
-    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    /// AS1b-ii-b: the source each item was parsed from, by identity (see `Ast::item_sources`).
+    pub item_sources: std::collections::HashMap<ItemId, crate::source::SourceId>,
+    /// Every source this program was parsed from, frozen after parsing.
+    ///
+    /// Carried here so that every phase holding a `&Hir` — type checking, borrow checking, MIR
+    /// lowering, execution — can resolve a `SourceId` without being handed a separate lookup. It
+    /// is the read-only authority the interpreter's ambient `self.file` used to stand in for.
+    pub sources: crate::source::SourceRegistry,
     /// WP-C6.2b-F1: the defining module id of each item, so the type checker can enforce member
     /// and field visibility (private is exact-module, matching `resolve::item_is_visible_from`).
     pub item_modules: std::collections::HashMap<ItemId, u32>,
@@ -742,6 +749,18 @@ pub enum UseTree {
 // --------------------------------------------------------------- arena --
 
 impl Hir {
+    /// The source an item was parsed from.
+    ///
+    /// AS1b-ii-b: the one way from an item to its file. Callers used to hold an `Arc<SourceFile>`
+    /// taken straight out of `item_files` and index spans against it, which made that map a rival
+    /// source *authority*. Now the map names an id and the registry answers — one authority, and
+    /// the id cannot disagree with it.
+    pub fn item_file(&self, item: ItemId) -> Option<&std::sync::Arc<crate::source::SourceFile>> {
+        self.item_sources
+            .get(&item)
+            .and_then(|id| self.sources.get(*id))
+    }
+
     pub fn alloc_type(&mut self, kind: TypeKind, span: Span) -> TypeId {
         self.types.push(TypeNode { kind, span });
         TypeId(self.types.len() as u32 - 1)

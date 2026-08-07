@@ -1000,7 +1000,7 @@ impl<'a> TypeChecker<'a> {
     /// The file that DECLARES `item`. Multi-file programs (`mod helper;`) parse each file
     /// separately, so spans are file-relative and only meaningful against their own file's text.
     fn item_src(&self, item: ItemId) -> &str {
-        match self.hir.item_files.get(&item) {
+        match self.hir.item_file(item) {
             Some(file) => &file.src,
             None => &self.file.src,
         }
@@ -1010,8 +1010,7 @@ impl<'a> TypeChecker<'a> {
     /// `self.file` no longer points at the declaring file. Falls back to the current file.
     fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
         self.hir
-            .item_files
-            .get(&item)
+            .item_file(item)
             .cloned()
             .unwrap_or_else(|| self.file.clone())
     }
@@ -3103,7 +3102,7 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+            if let Some(item_file) = self.hir.item_file(item_id) {
                 self.file = item_file.clone();
             } else {
                 self.file = root_file.clone();
@@ -3275,7 +3274,7 @@ impl<'a> TypeChecker<'a> {
             );
             // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
             self.current_module = self.hir.item_modules.get(&item_id).copied();
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+            if let Some(item_file) = self.hir.item_file(item_id) {
                 self.file = item_file.clone();
             } else {
                 self.file = root_file.clone();
@@ -3505,7 +3504,7 @@ impl<'a> TypeChecker<'a> {
             )
             .with_code("E0209")
             .with_note("make the type publicly nameable or remove it from the public signature");
-            if let Some(file) = self.hir.item_files.get(&public_item) {
+            if let Some(file) = self.hir.item_file(public_item) {
                 diagnostic.file = Some(file.clone());
             }
             self.diags.push(diagnostic);
@@ -3650,7 +3649,7 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+            if let Some(item_file) = self.hir.item_file(item_id) {
                 self.file = item_file.clone();
             } else {
                 self.file = root_file.clone();
@@ -3679,7 +3678,7 @@ impl<'a> TypeChecker<'a> {
             let impl_pkg = self.find_package_root(&self.file.name);
 
             let trait_is_local = if let Some(Res::Item(trait_item_id)) = trait_res {
-                if let Some(trait_file) = self.hir.item_files.get(&trait_item_id) {
+                if let Some(trait_file) = self.hir.item_file(trait_item_id) {
                     self.find_package_root(&trait_file.name) == impl_pkg
                 } else {
                     false
@@ -3690,7 +3689,7 @@ impl<'a> TypeChecker<'a> {
 
             let self_type_is_local = match &self_ty {
                 Ty::Struct(struct_item_id, _) | Ty::Enum(struct_item_id, _) => {
-                    if let Some(type_file) = self.hir.item_files.get(struct_item_id) {
+                    if let Some(type_file) = self.hir.item_file(*struct_item_id) {
                         self.find_package_root(&type_file.name) == impl_pkg
                     } else {
                         false
@@ -3952,8 +3951,7 @@ impl<'a> TypeChecker<'a> {
         for item_id in copy_types.intersection(&drop_types) {
             let file = self
                 .hir
-                .item_files
-                .get(item_id)
+                .item_file(*item_id)
                 .cloned()
                 .unwrap_or(root_file.clone());
             self.diags.push(
@@ -3969,8 +3967,7 @@ impl<'a> TypeChecker<'a> {
         for item_id in copy_types.iter().copied() {
             let file = self
                 .hir
-                .item_files
-                .get(&item_id)
+                .item_file(item_id)
                 .cloned()
                 .unwrap_or(root_file.clone());
             let fields: Vec<Ty> = match &self.hir.item(item_id).kind {
@@ -5388,7 +5385,7 @@ impl<'a> TypeChecker<'a> {
                         // unaffected. Ownership-transferring cross-file constant use is deferred to
                         // the front-end/multi-file completion package (recorded in
                         // KNOWN-DEVIATIONS.md alongside DEV-083).
-                        let const_file = self.hir.item_files.get(item_id);
+                        let const_file = self.hir.item_file(*item_id);
                         let cross_file =
                             const_file.is_some_and(|declaring| declaring.name != self.file.name);
                         if cross_file {
@@ -8077,8 +8074,7 @@ impl<'a> TypeChecker<'a> {
             }
             self.file = self
                 .hir
-                .item_files
-                .get(&item_id)
+                .item_file(item_id)
                 .cloned()
                 .unwrap_or_else(|| root_file.clone());
             let nominal = match self.convert_hir_type(self_ty) {

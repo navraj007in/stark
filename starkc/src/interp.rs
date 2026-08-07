@@ -229,8 +229,7 @@ pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) ->
             continue;
         };
         let item_file = hir
-            .item_files
-            .get(&item_id)
+            .item_file(item_id)
             .cloned()
             .unwrap_or_else(|| file.clone());
         if let Err((span, message)) = constant_expr_allowed(hir, *value) {
@@ -1596,7 +1595,7 @@ impl<'a> Interpreter<'a> {
 
     /// The file that declares `item`.
     fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
-        match self.hir.item_files.get(&item) {
+        match self.hir.item_file(item) {
             Some(file) => file.clone(),
             None => self.file.clone(),
         }
@@ -1606,7 +1605,7 @@ impl<'a> Interpreter<'a> {
     /// every cross-item read: another struct's field names, another impl's method names, a
     /// trait's method names.
     fn item_text(&self, item: ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
+        let src = match self.hir.item_file(item) {
             Some(file) => &file.src,
             None => &self.file.src,
         };

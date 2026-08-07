@@ -587,8 +587,7 @@ impl<'a, 'q> AstIndexer<'a, 'q> {
     ) {
         let source = self
             .ast
-            .item_files
-            .get(&id)
+            .item_file(id)
             .and_then(|file| self.sources.id_for_name(&file.name))
             .unwrap_or(fallback_source);
         let handle = query_handle(self.analysis, QueryDomain::Syntax, QueryKind::Item, id.0);
@@ -961,8 +960,7 @@ impl<'a, 'q> HirIndexer<'a, 'q> {
     ) {
         let source = self
             .hir
-            .item_files
-            .get(&id)
+            .item_file(id)
             .and_then(|file| self.sources.id_for_name(&file.name))
             .unwrap_or(fallback_source);
         let handle = query_handle(self.analysis, QueryDomain::Hir, QueryKind::Item, id.0);

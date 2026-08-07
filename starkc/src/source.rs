@@ -62,7 +62,7 @@ impl SourceId {
 ///
 /// `SourceMap` is now a *view* over this: it adds provenance and answers lookups, and no longer
 /// decides what an id is.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct SourceRegistry {
     files: Vec<std::sync::Arc<SourceFile>>,
     by_name: std::collections::HashMap<String, SourceId>,

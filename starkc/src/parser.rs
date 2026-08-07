@@ -265,8 +265,8 @@ fn parse_package_rec(
             name_span,
         );
 
-        ast.sources.intern(entry_file.clone());
-        ast.item_files.insert(mod_item_id, entry_file.clone());
+        let entry_source = ast.sources.intern(entry_file.clone());
+        ast.item_sources.insert(mod_item_id, entry_source);
         root_items.push(mod_item_id);
     }
 
@@ -475,10 +475,15 @@ pub fn parse_with_options_into(
 ) -> (Root, Vec<Diagnostic>) {
     // AS1b-i: intern first, so the registry is populated before the parser takes `&mut ast`.
     let file_arc = ast.interned_source(file);
+    let source = ast
+        .sources
+        .id_for_name(&file.name)
+        .expect("interned_source just registered this file");
     let (tokens, lex_diags) = tokenize(file);
     let mut p = Parser {
         file,
         file_arc: file_arc.clone(),
+        source,
         tokens,
         pos: 0,
         diags: lex_diags,
@@ -539,6 +544,8 @@ struct Parser<'a> {
     /// The interned `Arc` for `file` (AS1b-i). Held so an item can record its source with an `Arc`
     /// clone instead of rebuilding the whole `SourceFile` per item.
     file_arc: std::sync::Arc<SourceFile>,
+    /// AS1b-ii-b: the registry's id for `file_arc`. Items record identity, not a file object.
+    source: crate::source::SourceId,
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
@@ -595,6 +602,7 @@ impl Parser<'_> {
             // same logical name. It inherits the outer file's identity rather than interning a
             // second one with the same name and different bytes.
             file_arc: self.file_arc.clone(),
+            source: self.source,
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -698,6 +706,7 @@ impl Parser<'_> {
         let mut inner = Parser {
             file: self.file,
             file_arc: self.file_arc.clone(),
+            source: self.source,
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -2836,11 +2845,9 @@ impl Parser<'_> {
             }
         };
         let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
-        // AS1b-i: one interned `Arc` per file, shared by every item in it. This used to rebuild the
-        // entire `SourceFile` -- name AND full source text -- once per item, so a file with K items
-        // allocated K copies of itself.
-        let file_arc = self.file_arc.clone();
-        self.ast.item_files.insert(item_id, file_arc);
+        // AS1b-i removed a per-item rebuild of the whole `SourceFile`; AS1b-ii-b removes the file
+        // object entirely. An item records WHICH source it came from, and the registry answers.
+        self.ast.item_sources.insert(item_id, self.source);
         Some(item_id)
     }
 

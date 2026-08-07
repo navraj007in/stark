@@ -179,6 +179,9 @@ pub fn resolve_with_options(
     // C4.5f-3c: carry the synthetic-span names (dependency-package mod wrappers) into HIR
     // so MIR lowering's module-path walk can read them.
     resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
+    // Frozen after parsing: the registry is complete once every file has been loaded, and nothing
+    // downstream registers a source.
+    resolver.hir.sources = resolver.ast.sources.clone();
     // DEV-173: literal values travel with the HIR; nothing downstream re-decodes from a span.
     resolver.hir.str_lits = resolver.ast.str_lits.clone();
 
@@ -351,7 +354,7 @@ impl<'a> Resolver<'a> {
 
                 let file = if let Some(ref sub_items_vec) = sub_items {
                     if !sub_items_vec.is_empty() {
-                        if let Some(file_arc) = self.ast.item_files.get(&sub_items_vec[0]) {
+                        if let Some(file_arc) = self.ast.item_file(sub_items_vec[0]) {
                             file_arc.clone()
                         } else {
                             self.modules[current_mod_id.0 as usize].file.clone()
@@ -1944,8 +1947,8 @@ impl<'a> Resolver<'a> {
         };
 
         let hir_id = self.hir.alloc_item(kind, node.vis, node.span);
-        if let Some(file) = self.ast.item_files.get(&ast_id) {
-            self.hir.item_files.insert(hir_id, file.clone());
+        if let Some(source) = self.ast.item_sources.get(&ast_id) {
+            self.hir.item_sources.insert(hir_id, *source);
         }
         self.item_map.insert(ast_id, hir_id);
         self.scopes = saved_scopes;

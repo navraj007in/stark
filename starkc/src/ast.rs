@@ -53,7 +53,12 @@ pub struct Ast {
     /// extension, D2/D5). Empty for Core-only programs.
     pub dims: Vec<DimExprNode>,
     pub root: Root,
-    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    /// AS1b-ii-b: the source each item was parsed from, by IDENTITY.
+    ///
+    /// This was `ItemId -> Arc<SourceFile>`, which made it a second source *authority* alongside
+    /// the registry: consumers selected a file from here and indexed spans against it. An id
+    /// cannot be a rival authority — it can only name what the registry already decided.
+    pub item_sources: std::collections::HashMap<ItemId, crate::source::SourceId>,
     /// Every source this AST was parsed from, interned in load order (AS1b-i).
     ///
     /// This is where `SourceId`s come from. Allocation used to happen in `build_source_map`, after
@@ -774,6 +779,14 @@ impl Ast {
     ///
     /// Callers hold a `&SourceFile` (the parser borrows one), so this copies it exactly once, on
     /// first sight, and returns the same `Arc` on every later call for that name.
+    /// The source an item was parsed from. Mirrors `Hir::item_file`: the map names an id, the
+    /// registry answers, and there is no second authority to disagree with it.
+    pub fn item_file(&self, item: ItemId) -> Option<&std::sync::Arc<crate::source::SourceFile>> {
+        self.item_sources
+            .get(&item)
+            .and_then(|id| self.sources.get(*id))
+    }
+
     pub fn interned_source(
         &mut self,
         file: &crate::source::SourceFile,

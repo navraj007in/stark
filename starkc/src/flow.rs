@@ -76,8 +76,7 @@ impl FlowChecker<'_> {
             let item_id = hir::ItemId(index as u32);
             self.file = self
                 .hir
-                .item_files
-                .get(&item_id)
+                .item_file(item_id)
                 .cloned()
                 .unwrap_or_else(|| root_file.clone());
             match &item.kind {
