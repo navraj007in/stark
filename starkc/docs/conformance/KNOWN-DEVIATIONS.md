@@ -5516,3 +5516,40 @@ silent exemption from this one.
   — two implementors, one accepting the default and one overriding it, so a resolution that ignored
   `Self` and picked "the first impl declaring the name" prints the same text twice. Plus
   `native_c6_2_generics_traits` 20/20 and the external sample suite 39/39.
+
+## DEV-195 — `Vec<CharsIter>::clear()` is accepted, runs, and is then refused by the MIR verifier (OPEN, characterized)
+
+- **Rule:** a program the checker accepts and the reference engine executes must be compilable. An
+  engine refusing it later is a divergence, not a language boundary.
+- **Behaviour, measured end to end:**
+
+  | Stage | Verdict |
+  | --- | --- |
+  | checker | accepts |
+  | HIR interpreter | runs it, prints `0` |
+  | MIR lowering | lowers it, emitting the fast `VecClear` |
+  | MIR verifier | **rejects — MIR-0016** |
+
+- **Cause: the two precise drop rules disagree.** `lower::ty_requires_drop_glue` answers `false` for
+  `MirTy::Core(CharsIter)`; `verify::requires_drop_glue` answers `true`, because it opens with
+  `MirTy::String | MirTy::Core(..) => true`. Lowering therefore takes the fast `VecClear` path, and
+  MIR-0016 is precisely the guard on that path.
+- **The mechanism, and why `String` is unaffected:** lowering emits `VecClear` **only** when it
+  believes the element needs no glue. `Vec<String>::clear()` and `Vec<Vec<Int32>>::clear()` emit no
+  `VecClear` at all and pass. So the disagreement puts lowering on one side of the guard and the
+  verifier on the other, for exactly the element types they answer differently about.
+- **Scope:** of the 14 measured disagreements, only `CharsIter` and `File` are `MirTy::Core` shapes
+  anything constructs. `Vec<CharsIter>` is confirmed constructible. `Vec<File>` is not tested here.
+- **User impact:** a valid program cannot be compiled natively. Not unsoundness — the refusal is
+  conservative — but a user-visible engine divergence with no diagnostic explaining why the
+  interpreter ran what the compiler refused.
+- **Why it stays OPEN:** the repair is behavioural. Making the two agree changes the accepted
+  program set, so it owes its own decision record under AS4 work item 5, and the decision — which
+  side is right — belongs to the owner, not to a refactor. The evidence supports the verifier's
+  `Core(..) => true` being an old conservative shortcut, but that reading is recorded, not adopted.
+- **Evidence:** `tests/as4_vecclear_divergence.rs`, 3 tests. Pinned as a **characterization**: it
+  asserts the current refusal, and is written so that accepting the program in future fails this
+  test by name, forcing the decision record to be written rather than the behaviour to drift.
+- **Found by:** AS4's lower-vs-verifier matrix, then driving the actual compiler rather than
+  reasoning from the matrix. The matrix said "over-rejection is possible"; running it established
+  that a real, constructible program is refused today.

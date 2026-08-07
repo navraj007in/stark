@@ -254,3 +254,36 @@ about fourteen disagreements across the type system.
 | drop near-neighbour naming | DONE |
 | precise-drop equivalence | **MEASURED** — 14 disagreements, 2 reachable, all one-directional |
 | precise-drop authority merge | **BLOCKED ON A DECISION**, no longer on evidence |
+
+
+---
+
+## 7. The disagreement is reachable, and it refuses a real program (DEV-195)
+
+§6 established the reachable disagreement is `Core(CharsIter)` and `Core(File)`, and left open
+whether such a `Vec` is constructible. **It is**, and the consequence is user-visible:
+
+```stark
+let mut v: Vec<CharsIter> = Vec::new();
+v.push(s.chars());
+v.clear();
+```
+
+checker accepts → interpreter prints `0` → lowering emits the fast `VecClear` → **verifier rejects,
+MIR-0016**.
+
+I had also suspected an inversion, because `Vec<String>::clear()` passes while `Vec<CharsIter>`
+does not. Checking rather than asserting showed there is none: lowering emits `VecClear` **only**
+when it believes the element needs no glue, so a droppable element takes a different path and never
+reaches the guard. `Vec<String>` and `Vec<Vec<Int32>>` emit no `VecClear` at all.
+
+That makes the mechanism exact: MIR-0016 guards the fast path, and the two rules put lowering on
+one side of it and the verifier on the other, for precisely the types they answer differently
+about.
+
+Registered as **DEV-195 (OPEN, characterized)** with `tests/as4_vecclear_divergence.rs` pinning the
+current refusal. The repair is behavioural and owes a decision record under work item 5.
+
+**Method note.** The matrix said over-rejection was *possible*. Only running the compiler
+established that a real, constructible program is refused today. AS3's lesson applied to AS4: a
+measurement of predicates is not a measurement of programs.
