@@ -1077,6 +1077,10 @@ pub(crate) fn mir_ty_is_copy(ty: &MirTy, nominal_is_copy_eligible: &dyn Fn(u32) 
 pub struct MirProgram {
     /// Interned source files; `FileId` indexes here.
     pub files: Vec<Arc<SourceFile>>,
+    /// AS1b-ii: the registered id of the entry source (`FileId(0)`). Carried so a trap with no
+    /// expression to blame — PROC-EXIT-001's invalid exit status — can name a real source rather
+    /// than a fabricated one.
+    pub entry_source: crate::source::SourceId,
     /// Bodies sorted by canonical symbol (dump determinism).
     pub bodies: Vec<MirBody>,
     /// Nominal layout info for projection typing (verifier/backends).

@@ -193,7 +193,7 @@ fn run_program_here(
         drop_plans: std::collections::BTreeMap::new(),
     };
     match cx.call(main_index, Vec::new()) {
-        Ok(value) => match entry_termination(value) {
+        Ok(value) => match entry_termination(value, program.entry_source) {
             // Program stderr first, then the entrypoint's `Err` bytes — the same order the HIR
             // oracle produces, because the program wrote its own output while running and the
             // completion message is by definition produced at the end.
@@ -232,8 +232,14 @@ fn run_program_here(
 /// `Builtin::Ok`/`Builtin::Err` constructors). `MirValue::Enum` does not carry its `EnumRef`, but it
 /// does not need to: PROC-MAIN-001 admits exactly `Unit`, `Int32`, `Result<Unit, String>` and
 /// `Result<Int32, String>` as entry types, and the checker rejects everything else before lowering.
-fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
-    fn status_of(value: MirValue) -> Result<u8, MirRunError> {
+fn entry_termination(
+    value: MirValue,
+    entry_source: crate::source::SourceId,
+) -> Result<(u8, String), MirRunError> {
+    fn status_of(
+        value: MirValue,
+        entry_source: crate::source::SourceId,
+    ) -> Result<u8, MirRunError> {
         match value {
             MirValue::Unit => Ok(0),
             MirValue::Int(status) => u8::try_from(status).map_err(|_| {
@@ -245,7 +251,7 @@ fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
                     category: TrapCategory::InvalidExitStatus,
                     source: SourceInfo {
                         file: FileId(0),
-                        span: crate::source::Span::point(0),
+                        span: crate::source::Span::synthetic(entry_source),
                         origin: Origin::UserCode,
                     },
                     message: None,
@@ -259,7 +265,10 @@ fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
 
     match value {
         MirValue::Enum { variant: 0, fields } => Ok((
-            status_of(fields.into_iter().next().unwrap_or(MirValue::Unit))?,
+            status_of(
+                fields.into_iter().next().unwrap_or(MirValue::Unit),
+                entry_source,
+            )?,
             String::new(),
         )),
         MirValue::Enum { variant: 1, fields } => match fields.into_iter().next() {
@@ -269,7 +278,7 @@ fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
                 "entry error payload is {other:?}, not the String PROC-MAIN-001 requires"
             ))),
         },
-        other => Ok((status_of(other)?, String::new())),
+        other => Ok((status_of(other, entry_source)?, String::new())),
     }
 }
 

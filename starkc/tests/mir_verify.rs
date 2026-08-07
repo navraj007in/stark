@@ -35,7 +35,11 @@ fn lower_source(name: &str, source: String) -> mir::MirProgram {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
-    match lower_program(&hir, &checked.tables, file) {
+    match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => program,
         Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
     }
@@ -100,12 +104,20 @@ use mir::{
     LocalKind, MirBody, MirProgram, MirTy, Operand, Origin, Place, Projection, RuntimeFn, Rvalue,
     SourceInfo, Statement, Terminator, TypeContext,
 };
-use starkc::source::Span;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 fn info() -> SourceInfo {
     SourceInfo {
         file: FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: Origin::UserCode,
     }
 }
@@ -127,6 +139,7 @@ fn body(locals: Vec<LocalDecl>, blocks: Vec<BasicBlock>) -> MirBody {
 
 fn program_with(bodies: Vec<MirBody>) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("hand.stark", ""))],
         bodies,
         types: TypeContext::default(),
@@ -456,7 +469,7 @@ fn rejects_comparison_on_fn_values() {
 fn rejects_invalid_file_id() {
     let bad_info = SourceInfo {
         file: FileId(42),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: Origin::UserCode,
     };
     let b = MirBody {

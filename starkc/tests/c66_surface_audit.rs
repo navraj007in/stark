@@ -179,7 +179,11 @@ fn audit() {
             front_rejected.push(format!("{block}::{method} — {}", &why[..why.len().min(70)]));
             continue;
         }
-        match starkc::mir::lower::lower_program(&hir, &checked.tables, file.clone()) {
+        match starkc::mir::lower::lower_program(
+            &hir,
+            &checked.tables,
+            hir.source_named(&file.name).expect("registered"),
+        ) {
             Ok(p) => match starkc::mir::verify::verify_program(&p) {
                 Ok(_) => lowers.push(format!("{block}::{method}")),
                 Err(e) => refused.push(format!(

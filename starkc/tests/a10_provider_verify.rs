@@ -17,8 +17,17 @@ use starkc::mir::{
     ValidatedProviderCall,
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ScalarTy};
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::sync::Arc;
+
+/// AS1b-ii: a hand-built MIR program still needs a real registered source for its spans.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
@@ -54,7 +63,7 @@ fn valid_call() -> ValidatedProviderCall {
 fn info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -140,6 +149,7 @@ fn body_with(slot_ty: MirTy, dest_ty: MirTy, args: Vec<Operand>) -> MirBody {
 
 fn program(call: ValidatedProviderCall, body: MirBody) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("a10.stark", ""))],
         bodies: vec![body],
         types: TypeContext::default(),

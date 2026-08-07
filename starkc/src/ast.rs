@@ -785,12 +785,13 @@ impl Ast {
         self.item_sources
             .get(&item)
             .and_then(|id| self.sources.get(*id))
+            .map(|source| source.file())
     }
 
     pub fn interned_source(
         &mut self,
         file: &crate::source::SourceFile,
-    ) -> std::sync::Arc<crate::source::SourceFile> {
+    ) -> crate::source::RegisteredSource {
         if let Some(id) = self.sources.id_for_name(&file.name) {
             return self.sources.get(id).expect("just looked it up").clone();
         }
@@ -798,9 +799,7 @@ impl Ast {
         if let Some(path) = &file.disk_path {
             owned = owned.with_disk_path(path.clone());
         }
-        let arc = std::sync::Arc::new(owned);
-        self.sources.intern(arc.clone());
-        arc
+        self.sources.intern(std::sync::Arc::new(owned))
     }
 
     /// WP-FMT-001: the current arena sizes, for [`Ast::remap_spans_since`].
@@ -830,7 +829,7 @@ impl Ast {
             let lo = map.get(span.lo as usize).copied();
             let hi = map.get(span.hi as usize).copied();
             if let (Some(lo), Some(hi)) = (lo, hi) {
-                *span = Span::new(lo, hi);
+                *span = Span::in_source(span.source, lo, hi);
             }
         };
         for node in &mut self.types[marks.types..] {

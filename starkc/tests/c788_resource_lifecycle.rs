@@ -20,10 +20,19 @@ use starkc::provider_derive::derive;
 use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
 use starkc::provider_synth::synthesize_with_resources;
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +64,7 @@ fn host_triple() -> String {
 fn source_info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -297,9 +306,13 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
         "the driver records resource -> close id; lowering completes it once the nominal resolves"
     );
 
-    let program =
-        starkc::mir::lower::lower_program_with_providers(&hir, &checked.tables, file, &providers)
-            .unwrap_or_else(|e| panic!("lowering with injected close arena succeeds: {}", e.what));
+    let program = starkc::mir::lower::lower_program_with_providers(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+        &providers,
+    )
+    .unwrap_or_else(|e| panic!("lowering with injected close arena succeeds: {}", e.what));
     assert_eq!(program.provider_closes.len(), 1);
     assert_eq!(program.provider_calls.len(), 2);
     assert!(
@@ -325,6 +338,7 @@ fn host_resource_drop_emission_calls_the_selected_provider_close() {
         .host_resource_closes
         .insert(resource.clone(), mir::ProviderCallId(0));
     let program = MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("drop_resource.stark", ""))],
         bodies: vec![MirBody {
             instance: mir::Instance {
@@ -433,6 +447,7 @@ fn handle_out_emission_writes_the_slot_only_on_success() {
         .host_resource_closes
         .insert(tcp_stream_ty(), mir::ProviderCallId(1));
     let program = MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("handle_out.stark", ""))],
         bodies: vec![MirBody {
             instance: mir::Instance {

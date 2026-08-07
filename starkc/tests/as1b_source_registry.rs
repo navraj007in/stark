@@ -27,22 +27,26 @@ fn interning_is_idempotent_by_logical_name() {
         "pkg/src/main.stark",
         "fn main() {}",
     )));
-    assert_eq!(first, again, "one logical name, one id");
+    assert_eq!(first.id(), again.id(), "one logical name, one id");
     assert_eq!(registry.len(), 1);
 
     let other = registry.intern(Arc::new(SourceFile::new("pkg/src/helper.stark", "")));
-    assert_ne!(first, other);
+    assert_ne!(first.id(), other.id());
     assert_eq!(registry.len(), 2);
 }
 
 #[test]
 fn the_first_registration_wins_and_an_id_never_changes_meaning() {
     let mut registry = SourceRegistry::default();
-    let id = registry.intern(Arc::new(SourceFile::new("a.stark", "original")));
+    let id = registry
+        .intern(Arc::new(SourceFile::new("a.stark", "original")))
+        .id();
     // Re-interning the same name with DIFFERENT bytes must not repoint the id. The parser does
     // exactly this: an interpolation sub-parse builds a decoded scratch buffer carrying the
     // enclosing file's name.
-    let again = registry.intern(Arc::new(SourceFile::new("a.stark", "decoded scratch")));
+    let again = registry
+        .intern(Arc::new(SourceFile::new("a.stark", "decoded scratch")))
+        .id();
     assert_eq!(id, again);
     assert_eq!(
         registry.get(id).expect("registered").src,
@@ -55,10 +59,12 @@ fn the_first_registration_wins_and_an_id_never_changes_meaning() {
 fn ids_are_dense_and_in_load_order() {
     let mut registry = SourceRegistry::default();
     for i in 0..5 {
-        let id = registry.intern(Arc::new(SourceFile::new(format!("f{i}.stark"), "")));
+        let id = registry
+            .intern(Arc::new(SourceFile::new(format!("f{i}.stark"), "")))
+            .id();
         assert_eq!(id.as_u32(), i, "ids are dense and follow load order");
     }
-    let seen: Vec<u32> = registry.iter().map(|(id, _)| id.as_u32()).collect();
+    let seen: Vec<u32> = registry.iter().map(|s| s.id().as_u32()).collect();
     assert_eq!(seen, vec![0, 1, 2, 3, 4], "iteration is in id order");
 }
 

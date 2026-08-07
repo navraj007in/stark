@@ -5,27 +5,69 @@
 //! `04-Semantic-Analysis.md`. Columns count bytes within the line, which is
 //! sufficient until the diagnostics renderer grows Unicode-width awareness.
 
-/// A half-open byte range `[lo, hi)` within one source file.
+/// A half-open byte range `[lo, hi)` **within a named source** (AS1b-ii).
+///
+/// The source is part of the span because a byte range without it is meaningless, and
+/// `SourceFile::line_col` clamps rather than fails — so a span measured against the wrong file
+/// yields a well-formed, plausible, wrong location. DEV-122 is that defect, twice.
+///
+/// There is deliberately **no** two-argument constructor. Every construction names a source, so a
+/// site cannot acquire one by whatever happened to be in scope. `WP-SPAN-SOURCEID.md` §6 names that
+/// as the failure mode this change is most likely to introduce.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Span {
+    pub source: SourceId,
     pub lo: u32,
     pub hi: u32,
 }
 
 impl Span {
-    pub fn new(lo: u32, hi: u32) -> Self {
+    pub fn in_source(source: SourceId, lo: u32, hi: u32) -> Self {
         debug_assert!(lo <= hi, "span lo {lo} > hi {hi}");
-        Span { lo, hi }
+        Span { source, lo, hi }
     }
 
-    /// A zero-width span at a single offset.
-    pub fn point(at: u32) -> Self {
-        Span { lo: at, hi: at }
+    /// A zero-width span at a single offset in `source`.
+    pub fn point_in(source: SourceId, at: u32) -> Self {
+        Span {
+            source,
+            lo: at,
+            hi: at,
+        }
+    }
+
+    /// A span for something with **no meaningful location** in `source` — a synthesised item, an
+    /// interpreter invariant failure, a lowering rejection with nothing to point at.
+    ///
+    /// It resolves to the start of `source`, which is exactly what the `Span { lo: 0, hi: 0 }`
+    /// sentinel this replaces already rendered as. **The name is the point:** these sites are
+    /// asserting "no location", and the renderer still shows one. Making absence representable means
+    /// `Option<Span>` through `Diagnostic` and `RuntimeError`, which is a separate change — see
+    /// `AS1B-OPENING-ANALYSIS.md`. Until then this at least says so out loud instead of looking
+    /// like a real position.
+    pub fn synthetic(source: SourceId) -> Self {
+        Span {
+            source,
+            lo: 0,
+            hi: 0,
+        }
     }
 
     /// The smallest span covering both `self` and `other`.
+    ///
+    /// Both must belong to the same source: a range spanning two files denotes nothing. In debug
+    /// builds a mismatch is a bug and says so; in release the left source wins, because a
+    /// diagnostic is not worth aborting a compilation over.
     pub fn to(self, other: Span) -> Span {
-        Span::new(self.lo.min(other.lo), self.hi.max(other.hi))
+        debug_assert_eq!(
+            self.source, other.source,
+            "cannot join spans from different sources"
+        );
+        Span {
+            source: self.source,
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
     }
 }
 
@@ -45,11 +87,63 @@ impl SourceId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+}
 
-    /// Only for the one case a registry cannot cover: a root whose parse failed before anything
-    /// interned it. Not a general constructor — ids come from [`SourceRegistry::intern`].
-    pub(crate) fn from_u32(raw: u32) -> Self {
-        SourceId(raw)
+/// A source together with the identity a **particular compilation** gave it.
+///
+/// Deliberately not a field on [`SourceFile`]. A `SourceFile` is just bytes with a name and can be
+/// reused across sessions; a `SourceId` is registry-local and means nothing outside the compilation
+/// that minted it. Storing one inside the other would make a reusable value carry a
+/// session-scoped fact.
+///
+/// **Only [`SourceRegistry::intern`] can build one.** The fields are private and there is no public
+/// constructor, so a component that holds a `RegisteredSource` is holding proof that this
+/// compilation registered it — which is what makes threading a fabricated or foreign id
+/// unrepresentable rather than merely discouraged. `WP-SPAN-SOURCEID.md` §6 names that as the
+/// failure mode this change is most likely to introduce.
+///
+/// Derefs to the file, so existing `.name`, `.src` and `.line_col()` uses read unchanged.
+#[derive(Clone, Debug)]
+pub struct RegisteredSource {
+    id: SourceId,
+    file: std::sync::Arc<SourceFile>,
+}
+
+impl RegisteredSource {
+    pub fn id(&self) -> SourceId {
+        self.id
+    }
+
+    pub fn file(&self) -> &std::sync::Arc<SourceFile> {
+        &self.file
+    }
+
+    /// A span in *this* source. The only way to mint one without naming an id by hand.
+    pub fn span(&self, lo: u32, hi: u32) -> Span {
+        Span::in_source(self.id, lo, hi)
+    }
+
+    /// A span for something with no meaningful position in this source.
+    pub fn synthetic_span(&self) -> Span {
+        Span::synthetic(self.id)
+    }
+}
+
+/// Two handles are equal when they name the same source. The id is the identity; the `Arc` is
+/// what it resolves to, and within one compilation the registry guarantees those agree.
+impl PartialEq for RegisteredSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for RegisteredSource {}
+
+impl std::ops::Deref for RegisteredSource {
+    type Target = SourceFile;
+
+    fn deref(&self) -> &SourceFile {
+        &self.file
     }
 }
 
@@ -64,7 +158,7 @@ impl SourceId {
 /// decides what an id is.
 #[derive(Default, Debug, Clone)]
 pub struct SourceRegistry {
-    files: Vec<std::sync::Arc<SourceFile>>,
+    files: Vec<RegisteredSource>,
     by_name: std::collections::HashMap<String, SourceId>,
 }
 
@@ -73,17 +167,18 @@ impl SourceRegistry {
     ///
     /// The first registration wins: a later `Arc` with the same name is dropped rather than
     /// replacing the first, so an id never silently changes what it denotes mid-compilation.
-    pub fn intern(&mut self, file: std::sync::Arc<SourceFile>) -> SourceId {
+    pub fn intern(&mut self, file: std::sync::Arc<SourceFile>) -> RegisteredSource {
         if let Some(&id) = self.by_name.get(&file.name) {
-            return id;
+            return self.files[id.0 as usize].clone();
         }
         let id = SourceId(self.files.len() as u32);
         self.by_name.insert(file.name.clone(), id);
-        self.files.push(file);
-        id
+        // The only construction of a `RegisteredSource` in the crate.
+        self.files.push(RegisteredSource { id, file });
+        self.files[id.0 as usize].clone()
     }
 
-    pub fn get(&self, id: SourceId) -> Option<&std::sync::Arc<SourceFile>> {
+    pub fn get(&self, id: SourceId) -> Option<&RegisteredSource> {
         self.files.get(id.0 as usize)
     }
 
@@ -100,12 +195,20 @@ impl SourceRegistry {
     }
 
     /// Every registered source, in id order.
-    pub fn iter(&self) -> impl Iterator<Item = (SourceId, &std::sync::Arc<SourceFile>)> {
-        self.files
-            .iter()
-            .enumerate()
-            .map(|(index, file)| (SourceId(index as u32), file))
+    pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
+        self.files.iter()
     }
+}
+
+/// A registered source for the crate's own unit tests.
+///
+/// Tests need a real `SourceId`, and the rule is that ids come from a registry — so this builds
+/// one rather than fabricating a value. The registry is dropped; the handle keeps the `Arc` and
+/// the id, which is all a test needs.
+#[cfg(test)]
+pub(crate) fn registered_for_test(name: &str, src: &str) -> RegisteredSource {
+    let mut registry = SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(SourceFile::new(name, src)))
 }
 
 /// A loaded source file with precomputed line starts for position mapping.
@@ -239,9 +342,15 @@ mod tests {
 
     #[test]
     fn span_join() {
-        let a = Span::new(4, 7);
-        let b = Span::new(10, 12);
-        assert_eq!(a.to(b), Span::new(4, 12));
-        assert_eq!(b.to(a), Span::new(4, 12));
+        // AS1b-ii: a span names a source, so even a unit test registers one rather than
+        // conjuring an id.
+        let mut registry = SourceRegistry::default();
+        let s = registry
+            .intern(std::sync::Arc::new(SourceFile::new("t.stark", "")))
+            .id();
+        let a = Span::in_source(s, 4, 7);
+        let b = Span::in_source(s, 10, 12);
+        assert_eq!(a.to(b), Span::in_source(s, 4, 12));
+        assert_eq!(b.to(a), Span::in_source(s, 4, 12));
     }
 }

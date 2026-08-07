@@ -49,6 +49,15 @@ use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
+
 /// A producer of a reference-typed value, and the STARK expression that produces one.
 struct Producer {
     /// Identifier used in failure messages and in the recorded results table.
@@ -160,7 +169,11 @@ fn check_and_lower(src: &str, tag: &str) -> Result<String, String> {
             first.message
         ));
     }
-    match lower_program(&hir, &checked.tables, file) {
+    match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => Ok(program.dump()),
         Err(e) => Err(format!("LOWER: {}", e.what)),
     }
@@ -403,13 +416,13 @@ mod inv_move_001 {
         self, BasicBlock, Constant, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Operand,
         Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
     };
-    use starkc::source::{SourceFile, Span};
+    use starkc::source::SourceFile;
     use std::sync::Arc;
 
     fn info() -> SourceInfo {
         SourceInfo {
             file: mir::FileId(0),
-            span: Span { lo: 0, hi: 0 },
+            span: super::test_source().synthetic_span(),
             origin: mir::Origin::UserCode,
         }
     }
@@ -465,6 +478,7 @@ mod inv_move_001 {
             entry: mir::BlockId(0),
         };
         MirProgram {
+            entry_source: super::test_source().id(),
             files: vec![Arc::new(SourceFile::new("inv_move_001.stark", ""))],
             bodies: vec![body],
             types: TypeContext::default(),

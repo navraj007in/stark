@@ -39,7 +39,7 @@ fn write_program(tag: &str, helper_src: &str, main_src: &str) -> PathBuf {
 
 struct Checked {
     hir: starkc::hir::Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: typecheck::TypeTables,
 }
 
@@ -62,8 +62,8 @@ fn front_end(main_path: &PathBuf) -> Checked {
         "a multi-file program must check clean; got: {errors:?}"
     );
     Checked {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }

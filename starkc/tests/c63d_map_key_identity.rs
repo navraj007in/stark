@@ -183,10 +183,14 @@ fn hir_only(tag: &str, src: &str) {
         errs.is_empty(),
         "{tag}: expected it to type-check, got {errs:?}"
     );
-    interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag}: HIR should run it: {}", e.message));
+    interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap_or_else(|(e, _)| panic!("{tag}: HIR should run it: {}", e.message));
     assert!(
-        lower_program(&hir, &checked.tables, file).is_err(),
+        lower_program(&hir, &checked.tables, hir.source_named(&file.name).expect("registered")).is_err(),
         "{tag}: lowering is expected to refuse this; if it now lowers, promote it to a three-engine case"
     );
 }
@@ -374,8 +378,12 @@ fn an_eq_that_panics_aborts_with_the_users_provenance() {
         .collect();
     assert!(errs.is_empty(), "typecheck: {errs:?}");
 
-    let (hir_err, hir_out) = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .expect_err("HIR: the comparator must abort the program");
+    let (hir_err, hir_out) = interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .expect_err("HIR: the comparator must abort the program");
     assert!(
         hir_err.message.contains("eq exploded"),
         "HIR: the user's panic message must survive: {}",
@@ -383,8 +391,12 @@ fn an_eq_that_panics_aborts_with_the_users_provenance() {
     );
     assert_eq!(hir_out, "before\n", "HIR: output before the panic");
 
-    let program =
-        lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("lower: {}", e.what));
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("verify: {e:?}"));
     let mir_fail = match run_program(verified) {
         Err(f) => f,
@@ -448,7 +460,12 @@ fn lower_only(tag: &str, src: &str) -> starkc::mir::MirProgram {
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
     let checked = typecheck::analyze(&hir, file.clone());
-    lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("{tag} lower: {}", e.what))
+    lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what))
 }
 
 /// Two key types, each USED as a map key so lowering records both `Eq` instances. `J`'s comparator

@@ -22,13 +22,23 @@ use starkc::mir::{
 };
 use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[path = "support/paths.rs"]
 mod paths;
 use paths::repo_provider_root;
+
+/// AS1b-ii: a hand-built MIR program still needs a real registered source for its spans. The
+/// registry is local to the test; the id it mints is genuine rather than fabricated.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 fn host_triple() -> String {
     starkc::native_toolchain::discover(None)
@@ -39,7 +49,7 @@ fn host_triple() -> String {
 fn info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -225,6 +235,7 @@ fn run_clock(function: &str, scalar: MirTy, printer: RuntimeFn, extra: Option<Mi
     .unwrap_or_else(|e| panic!("{function} must resolve: {e:#?}"));
 
     let program = MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("clock.stark", ""))],
         bodies: vec![entry_body(scalar, printer, extra)],
         types: TypeContext::default(),

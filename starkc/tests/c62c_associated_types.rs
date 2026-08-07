@@ -202,8 +202,16 @@ fn cross_package_projection() {
         .collect();
     assert!(errs.is_empty(), "xpkg typecheck: {errs:?}");
 
-    let program = lower_program(&hir, &checked.tables, root_file)
-        .unwrap_or_else(|e| panic!("xpkg lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        // AS1b-ii: the package entry is registered under its LOGICAL name, not the
+
+        // checkout path `root_file` carries.
+        hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+            .expect("the parse registered the package entry"),
+    )
+    .unwrap_or_else(|e| panic!("xpkg lower: {}", e.what));
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("xpkg verify: {e:?}"));
     let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("xpkg MIR: {:?}", f.error));
     assert_eq!(mir_exec.status, 0, "xpkg: MIR must exit 0");

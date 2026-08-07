@@ -24,7 +24,7 @@ fn corpus_dir() -> PathBuf {
 
 struct Front {
     hir: starkc::hir::Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: starkc::typecheck::TypeTables,
 }
 
@@ -42,8 +42,8 @@ fn front_end_src(name: &str, source: String) -> Front {
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
     Front {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }

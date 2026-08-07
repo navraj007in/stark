@@ -111,7 +111,11 @@ fn probe(src: &str) -> Outcome {
             first.message
         ));
     }
-    match lower_program(&hir, &checked.tables, file) {
+    match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(_) => Outcome::Lowers,
         Err(e) => Outcome::LayerDefect(e.what),
     }

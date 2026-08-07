@@ -158,7 +158,23 @@ pub fn parse_package_graph_with_overlays(
             ast.root = Root::Program(items);
         }
         Err(err_msg) => {
-            diags.push(Diagnostic::error(err_msg, Span { lo: 0, hi: 0 }).with_code("E0208"));
+            // The graph itself failed to load, so there may be no source at all. Register the root
+            // package's entry by name -- with empty content when it could not be read -- so the
+            // diagnostic has a real source to belong to rather than a fabricated one.
+            let source = match graph.packages.get(&graph.root_package_name) {
+                Some(package) => ast
+                    .sources
+                    .intern(package.entry_source_file(String::new()))
+                    .id(),
+                None => ast
+                    .sources
+                    .intern(std::sync::Arc::new(SourceFile::new(
+                        graph.root_package_name.clone(),
+                        String::new(),
+                    )))
+                    .id(),
+            };
+            diags.push(Diagnostic::error(err_msg, Span::synthetic(source)).with_code("E0208"));
             ast.root = Root::Program(Vec::new());
         }
     }
@@ -202,6 +218,9 @@ fn parse_package_rec(
     // other caller produce the SAME identity for this file. They did not, and the divergence was
     // the defect.
     let entry_file = pkg.entry_source_file(entry_src);
+    // Registered before parsing so the dependency `mod` spans below can name this entry as their
+    // source. `parse_with_options_into` interns the same name and gets the same handle back.
+    let entry_registered = ast.sources.intern(entry_file.clone());
 
     let (root, mut entry_diags) =
         parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
@@ -250,10 +269,7 @@ fn parse_package_rec(
 
         let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
         let synthetic_hi = synthetic_lo + dep_name.len() as u32;
-        let name_span = Span {
-            lo: synthetic_lo,
-            hi: synthetic_hi,
-        };
+        let name_span = Span::in_source(entry_registered.id(), synthetic_lo, synthetic_hi);
         ast.synthetic_spans.insert(name_span, dep_name.clone());
 
         let mod_item_id = ast.alloc_item(
@@ -265,8 +281,8 @@ fn parse_package_rec(
             name_span,
         );
 
-        let entry_source = ast.sources.intern(entry_file.clone());
-        ast.item_sources.insert(mod_item_id, entry_source);
+        let entry_registered = ast.sources.intern(entry_file.clone());
+        ast.item_sources.insert(mod_item_id, entry_registered.id());
         root_items.push(mod_item_id);
     }
 
@@ -474,16 +490,12 @@ pub fn parse_with_options_into(
     ast: &mut Ast,
 ) -> (Root, Vec<Diagnostic>) {
     // AS1b-i: intern first, so the registry is populated before the parser takes `&mut ast`.
-    let file_arc = ast.interned_source(file);
-    let source = ast
-        .sources
-        .id_for_name(&file.name)
-        .expect("interned_source just registered this file");
-    let (tokens, lex_diags) = tokenize(file);
+    let registered = ast.interned_source(file);
+    let file_arc = registered.file().clone();
+    let (tokens, lex_diags) = tokenize(file, registered.id());
     let mut p = Parser {
         file,
-        file_arc: file_arc.clone(),
-        source,
+        registered: registered.clone(),
         tokens,
         pos: 0,
         diags: lex_diags,
@@ -541,11 +553,11 @@ enum ShapeGroupKind {
 
 struct Parser<'a> {
     file: &'a SourceFile,
-    /// The interned `Arc` for `file` (AS1b-i). Held so an item can record its source with an `Arc`
-    /// clone instead of rebuilding the whole `SourceFile` per item.
-    file_arc: std::sync::Arc<SourceFile>,
-    /// AS1b-ii-b: the registry's id for `file_arc`. Items record identity, not a file object.
-    source: crate::source::SourceId,
+    /// AS1b-ii: the REGISTERED source — file and identity in one value, obtainable only from the
+    /// registry. Every span this parser mints takes its id from here, and an item records that id.
+    /// This replaces AS1b-i's separate `Arc` and AS1b-ii-b's separate `SourceId`: holding them
+    /// apart is what let a file object and an identity disagree.
+    registered: crate::source::RegisteredSource,
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
@@ -594,15 +606,15 @@ impl Parser<'_> {
             return self.ast.alloc_expr(ExprKind::Error, range);
         };
         let scratch = crate::source::SourceFile::new(self.file.name.clone(), scratch_src);
-        let (tokens, lex_diags) = crate::lexer::tokenize_range(&scratch, range.lo, range.hi);
+        let (tokens, lex_diags) =
+            crate::lexer::tokenize_range(&scratch, self.registered.id(), range.lo, range.hi);
         self.diags.extend(lex_diags);
         let mut inner = Parser {
             file: &scratch,
             // AS1b-i: the scratch buffer is a DECODED view of a range of `self.file`, carrying the
             // same logical name. It inherits the outer file's identity rather than interning a
             // second one with the same name and different bytes.
-            file_arc: self.file_arc.clone(),
-            source: self.source,
+            registered: self.registered.clone(),
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -632,7 +644,7 @@ impl Parser<'_> {
 
     fn format_string(&mut self, span: Span) -> ExprId {
         // `f"` opens and `"` closes.
-        let body = Span::new(span.lo + 2, span.hi.saturating_sub(1));
+        let body = Span::in_source(span.source, span.lo + 2, span.hi.saturating_sub(1));
         let raw_segments = match crate::format_syntax::scan_format_literal(self.file, body) {
             Ok(segments) => segments,
             Err(diags) => {
@@ -701,12 +713,12 @@ impl Parser<'_> {
         if source.contains('\\') {
             return self.subparse_decoded_expr(range);
         }
-        let (tokens, lex_diags) = crate::lexer::tokenize_range(self.file, range.lo, range.hi);
+        let (tokens, lex_diags) =
+            crate::lexer::tokenize_range(self.file, self.registered.id(), range.lo, range.hi);
         self.diags.extend(lex_diags);
         let mut inner = Parser {
             file: self.file,
-            file_arc: self.file_arc.clone(),
-            source: self.source,
+            registered: self.registered.clone(),
             tokens,
             pos: 0,
             diags: Vec::new(),
@@ -858,30 +870,21 @@ impl Parser<'_> {
             TokenKind::Shr => {
                 self.tokens[self.pos] = Token {
                     kind: TokenKind::Gt,
-                    span: Span {
-                        lo: t.span.lo + 1,
-                        hi: t.span.hi,
-                    },
+                    span: Span::in_source(t.span.source, t.span.lo + 1, t.span.hi),
                 };
                 true
             }
             TokenKind::ShrEq => {
                 self.tokens[self.pos] = Token {
                     kind: TokenKind::GtEq,
-                    span: Span {
-                        lo: t.span.lo + 1,
-                        hi: t.span.hi,
-                    },
+                    span: Span::in_source(t.span.source, t.span.lo + 1, t.span.hi),
                 };
                 true
             }
             TokenKind::GtEq => {
                 self.tokens[self.pos] = Token {
                     kind: TokenKind::Eq,
-                    span: Span {
-                        lo: t.span.lo + 1,
-                        hi: t.span.hi,
-                    },
+                    span: Span::in_source(t.span.source, t.span.lo + 1, t.span.hi),
                 };
                 true
             }
@@ -895,7 +898,7 @@ impl Parser<'_> {
         } else {
             lo
         };
-        Span { lo, hi: hi.max(lo) }
+        self.registered.span(lo, hi.max(lo))
     }
 
     // ----------------------------------------------------------- recovery --
@@ -1977,16 +1980,10 @@ impl Parser<'_> {
                             });
                             if let (Some(i), true) = (dot, splittable) {
                                 let mid = t.span.lo + i as u32;
-                                let first = Span {
-                                    lo: t.span.lo,
-                                    hi: mid,
-                                };
+                                let first = Span::in_source(t.span.source, t.span.lo, mid);
                                 self.tokens[self.pos] = Token {
                                     kind: TokenKind::Dot,
-                                    span: Span {
-                                        lo: mid,
-                                        hi: mid + 1,
-                                    },
+                                    span: Span::in_source(t.span.source, mid, mid + 1),
                                 };
                                 self.tokens.insert(
                                     self.pos + 1,
@@ -1995,10 +1992,7 @@ impl Parser<'_> {
                                             base: crate::lexer::Base::Dec,
                                             suffix: None,
                                         },
-                                        span: Span {
-                                            lo: mid + 1,
-                                            hi: t.span.hi,
-                                        },
+                                        span: Span::in_source(t.span.source, mid + 1, t.span.hi),
                                     },
                                 );
                                 e = self.ast.alloc_expr(
@@ -2845,9 +2839,9 @@ impl Parser<'_> {
             }
         };
         let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
-        // AS1b-i removed a per-item rebuild of the whole `SourceFile`; AS1b-ii-b removes the file
+        // AS1b-i removed a per-item rebuild of the whole `SourceFile`; AS1b-ii-b removed the file
         // object entirely. An item records WHICH source it came from, and the registry answers.
-        self.ast.item_sources.insert(item_id, self.source);
+        self.ast.item_sources.insert(item_id, self.registered.id());
         Some(item_id)
     }
 

@@ -33,7 +33,11 @@ fn run(source: &str) -> interp::ExecutionOutcome {
         .filter(|d| d.severity == starkc::diag::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "the program must type-check: {errors:?}");
-    interp::run_capturing(&hir, file, &checked.tables)
+    interp::run_capturing(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
 }
 
 /// **The control, and it carries most of the weight.** An ordinary non-generic `Drop` must still

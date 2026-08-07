@@ -32,7 +32,7 @@ use starkc::mir::{
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ProviderMetadata, ScalarTy};
 use starkc::provider_resolve::{DeclaredProvider, ProviderSet};
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,6 +40,15 @@ use std::sync::Arc;
 #[path = "support/paths.rs"]
 mod paths;
 use paths::repo_provider;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 /// Seeded into the clock's output slot so "was it written?" is testable without depending on clock
 /// resolution. `u64::MAX` nanoseconds is ~584 years of uptime, so no reading can collide with it.
@@ -114,7 +123,7 @@ fn host_triple() -> String {
 fn info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -241,6 +250,7 @@ fn resolve_monotonic() -> starkc::mir::ValidatedProviderCall {
 
 fn program() -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("clock.stark", ""))],
         bodies: vec![entry_body()],
         types: TypeContext::default(),

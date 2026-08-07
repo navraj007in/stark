@@ -665,8 +665,8 @@ mod tests {
 
     #[test]
     fn renders_normative_format() {
-        let file = SourceFile::new("example.stark", "let x: String = 42;\n");
-        let diag = Diagnostic::error("Type mismatch", Span::new(16, 18))
+        let file = crate::source::registered_for_test("example.stark", "let x: String = 42;\n");
+        let diag = Diagnostic::error("Type mismatch", file.span(16, 18))
             .with_code("E0001")
             .with_label("expected String, found Int32")
             .with_help("change the annotation or the initializer")
@@ -687,8 +687,8 @@ Error: [E0001] Type mismatch
 
     #[test]
     fn renders_without_code_or_extras() {
-        let file = SourceFile::new("f.stark", "fn main() {}\n");
-        let diag = Diagnostic::error("something went wrong", Span::point(0));
+        let file = crate::source::registered_for_test("f.stark", "fn main() {}\n");
+        let diag = Diagnostic::error("something went wrong", Span::point_in(file.id(), 0));
         let rendered = diag.render(&file);
         let expected = "\
 Error: something went wrong
@@ -703,8 +703,8 @@ Error: something went wrong
     #[test]
     fn gutter_widens_for_multidigit_lines() {
         let src = "//\n".repeat(11) + "oops\n";
-        let file = SourceFile::new("f.stark", src);
-        let diag = Diagnostic::error("bad", Span::new(33, 37)).with_code("E0002");
+        let file = crate::source::registered_for_test("f.stark", &src);
+        let diag = Diagnostic::error("bad", file.span(33, 37)).with_code("E0002");
         let rendered = diag.render(&file);
         assert!(rendered.contains("12 | oops"), "got:\n{rendered}");
         assert!(rendered.contains("   | ^^^^"), "got:\n{rendered}");

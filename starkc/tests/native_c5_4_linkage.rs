@@ -27,23 +27,33 @@ use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
 use starkc::parser::parse_package_graph;
 use starkc::resolve::resolve;
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::path::Path;
 use std::sync::Arc;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 // ------------------------------------------------------------- hand-built MIR --
 
 fn info() -> SourceInfo {
     SourceInfo {
         file: FileId(0),
-        span: Span::new(0, 0),
+        span: test_source().synthetic_span(),
         origin: Origin::UserCode,
     }
 }
 
 fn program(bodies: Vec<MirBody>) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: Vec::new(),
         bodies,
         types: TypeContext::default(),
@@ -313,8 +323,16 @@ fn lower_workspace(root: &Path) -> MirProgram {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "typecheck: {errors:?}");
-    lower_program(&hir, &checked.tables, root_file)
-        .unwrap_or_else(|e| panic!("workspace must lower to MIR: {}", e.what))
+    lower_program(
+        &hir,
+        &checked.tables,
+        // AS1b-ii: the package entry is registered under its LOGICAL name, not the
+
+        // checkout path `root_file` carries.
+        hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+            .expect("the parse registered the package entry"),
+    )
+    .unwrap_or_else(|e| panic!("workspace must lower to MIR: {}", e.what))
 }
 
 fn temp(name: &str) -> std::path::PathBuf {

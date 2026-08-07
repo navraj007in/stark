@@ -40,8 +40,12 @@ fn compile(source: &str, tag: &str) -> (MirProgram, String) {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     // Verify for well-formedness (and to keep the structural test on the same precondition as a
     // real build), then emit source directly — no cargo/rustc needed for a structural claim.
     let _verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));

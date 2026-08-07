@@ -972,7 +972,15 @@ pub fn analyze_with_options(
         layout,
         bound_trait_calls: checker.bound_trait_calls,
     };
-    diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
+    // AS1b-ii: the registered root comes from the HIR's own registry.
+    if let Some(root) = hir
+        .sources
+        .id_for_name(&file.name)
+        .and_then(|id| hir.sources.get(id))
+        .cloned()
+    {
+        diagnostics.extend(crate::interp::check_constants(hir, root, &tables));
+    }
     TypeCheckResult {
         diagnostics,
         tables,
@@ -6941,7 +6949,10 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Ty::Extension(ext) => match &*ext {
                 ExtensionTy::Tensor(kind) => {
-                    match self.tensor_ctx.freshen_tensor(kind, dims, dtypes, devices) {
+                    match self
+                        .tensor_ctx
+                        .freshen_tensor(kind, dims, dtypes, devices, span)
+                    {
                         Ok(kind) => Ty::Extension(Box::new(ExtensionTy::Tensor(kind))),
                         Err(error) => {
                             self.emit_tensor_unify_error(&error, span);

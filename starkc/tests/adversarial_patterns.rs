@@ -144,7 +144,11 @@ fn a_borrowed_match_over_a_drop_type_is_refused_before_mir() {
             .any(|d| d.severity == starkc::diag::Severity::Error),
         "the front end still accepts this program"
     );
-    let lowered = starkc::mir::lower::lower_program(&hir, &checked.tables, file);
+    let lowered = starkc::mir::lower::lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    );
     assert!(
         lowered.is_err(),
         "lowering now accepts a borrowed match over a user-Drop type. If that is intended, this \

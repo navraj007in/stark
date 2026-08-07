@@ -127,7 +127,15 @@ pub fn lower_pipeline(
 
     // 3. Lower the reachable call graph (also validates the entry ABI
     //    and selects the single model declaration).
-    let graph = match lower::lower_reachable(&hir, &tables, &file, entry) {
+    // AS1b-ii: the registered source, from the analysis that parsed it — not a bare file.
+    let registered = analysis
+        .ast
+        .sources
+        .id_for_name(&file.name)
+        .and_then(|id| analysis.ast.sources.get(id))
+        .expect("the analysis registered its own entry")
+        .clone();
+    let graph = match lower::lower_reachable(&hir, &tables, &registered, entry) {
         Ok(graph) => graph,
         Err(diags) => {
             diagnostics.extend(diags);

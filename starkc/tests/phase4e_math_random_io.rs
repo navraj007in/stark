@@ -35,7 +35,13 @@ fn execute_snippet(source: &str) -> String {
         .collect();
     assert!(errors.is_empty(), "typecheck failed: {:?}", errors);
 
-    interp::run(&hir, file, &checked.tables).unwrap().output
+    interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap()
+    .output
 }
 
 #[test]

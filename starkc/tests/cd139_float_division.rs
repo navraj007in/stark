@@ -47,8 +47,12 @@ fn front_end(tag: &str, src: &str) -> Compiled {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     Compiled { program }
 }
 

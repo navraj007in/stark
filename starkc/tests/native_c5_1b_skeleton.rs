@@ -53,7 +53,11 @@ fn empty_main_compiles_and_runs_natively() {
         .collect();
     assert!(type_errors.is_empty(), "typecheck: {type_errors:?}");
 
-    let mir_program = match lower_program(&hir, &checked.tables, file.clone()) {
+    let mir_program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => program,
         Err(e) => panic!("empty main must lower: {} @ {:?}", e.what, e.span),
     };

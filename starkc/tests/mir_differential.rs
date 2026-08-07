@@ -31,7 +31,7 @@ fn corpus_dir() -> PathBuf {
 
 struct Front {
     hir: starkc::hir::Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: starkc::typecheck::TypeTables,
 }
 
@@ -49,8 +49,8 @@ fn front_end(name: &str, source: String) -> Front {
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
     Front {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }
@@ -1289,10 +1289,18 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
     assert!(errors.is_empty(), "typecheck: {errors:?}");
 
     // Oracle vs MIR.
-    let oracle =
-        interp::run_with_partial_output(&hir, file.clone(), &checked.tables).expect("oracle runs");
-    let program = lower_program(&hir, &checked.tables, file.clone())
-        .unwrap_or_else(|e| panic!("lowering failed: {} @ {:?}", e.what, e.span));
+    let oracle = interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .expect("oracle runs");
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("lowering failed: {} @ {:?}", e.what, e.span));
     // Module-qualified symbols + a second interned file.
     let symbols: Vec<&str> = program
         .bodies

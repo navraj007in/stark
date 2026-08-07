@@ -39,8 +39,17 @@ use starkc::mir::{
     SourceInfo, Terminator, TypeContext, ValidatedProviderCall,
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity};
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::sync::Arc;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 fn host_triple() -> String {
     starkc::native_toolchain::discover(None)
@@ -51,7 +60,7 @@ fn host_triple() -> String {
 fn source_info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -154,6 +163,7 @@ fn transfer_program() -> MirProgram {
         .insert(dest_ty(), mir::ProviderCallId(2));
 
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("transfer.stark", ""))],
         bodies: vec![MirBody {
             instance: mir::Instance {

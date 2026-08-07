@@ -28,6 +28,15 @@ use starkc::provider_bind::{
 use starkc::source::SourceFile;
 use std::sync::Arc;
 
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
+
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 /// A test-only resource type. Deliberately not `file`: nothing here should read as `File` support.
 const SYNTH: &str = "synthetic-session";
@@ -78,6 +87,7 @@ fn planned(params: Vec<AbiParam>) -> (ValidatedProviderCall, ProviderBindingPlan
 
 fn program_for(call: &ValidatedProviderCall) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("a10.stark", ""))],
         bodies: Vec::new(),
         types: TypeContext::default(),

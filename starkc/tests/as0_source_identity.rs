@@ -253,11 +253,15 @@ fn the_mir_file_table_is_logical_and_relocation_stable() {
         );
         let hir = analysis.hir.as_ref().expect("hir");
         let tables = analysis.type_tables.as_ref().expect("tables");
-        let program =
-            match starkc::mir::lower::lower_program(hir, tables, analysis.root_file.clone()) {
-                Ok(program) => program,
-                Err(error) => panic!("lowering must succeed: {}", error.what),
-            };
+        let program = match starkc::mir::lower::lower_program(
+            hir,
+            tables,
+            hir.source_named(&analysis.root_file.name)
+                .expect("the analysis registered its root"),
+        ) {
+            Ok(program) => program,
+            Err(error) => panic!("lowering must succeed: {}", error.what),
+        };
         let mut names: Vec<String> = program.files.iter().map(|f| f.name.clone()).collect();
         names.sort();
         names

@@ -40,8 +40,12 @@ fn build(src: &str, tag: &str) -> Result<String, String> {
             first.message
         ));
     }
-    let program =
-        lower_program(&hir, &checked.tables, file).map_err(|e| format!("LOWER: {}", e.what))?;
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .map_err(|e| format!("LOWER: {}", e.what))?;
     match starkc::mir::verify::verify_program(&program) {
         Ok(_) => Ok(program.dump()),
         Err(errors) => Err(format!(

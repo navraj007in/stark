@@ -171,7 +171,12 @@ fn lower_only(tag: &str, src: &str) -> starkc::mir::MirProgram {
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
     let checked = typecheck::analyze(&hir, file.clone());
-    lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("{tag} lower: {}", e.what))
+    lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what))
 }
 
 /// **The mutation DEV-105 is defined by.** Rewriting `PrintlnFloat32` back to `PrintlnFloat64` —

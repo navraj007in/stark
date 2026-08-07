@@ -745,7 +745,13 @@ pub fn build_current_package(
     let mut mir = lower_program_with_providers(
         hir,
         tables,
-        analysis.root_file.clone(),
+        analysis
+            .ast
+            .sources
+            .id_for_name(&analysis.root_file.name)
+            .and_then(|id| analysis.ast.sources.get(id))
+            .expect("the analysis registered its own root")
+            .clone(),
         &provider_layer.lowering,
     )
     .map_err(|error| BuildCommandError::Lowering(error.what))?;

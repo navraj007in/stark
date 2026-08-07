@@ -104,7 +104,13 @@ fn check(tag: &str, src: &str) -> Checked {
         .collect::<Vec<_>>();
     // Only meaningful when the program was accepted; lowering a rejected program is not a
     // supported operation and its result says nothing.
-    let lowers = accepted && lower_program(&hir, &checked.tables, file).is_ok();
+    let lowers = accepted
+        && lower_program(
+            &hir,
+            &checked.tables,
+            hir.source_named(&file.name).expect("registered"),
+        )
+        .is_ok();
     Checked {
         accepted,
         codes,

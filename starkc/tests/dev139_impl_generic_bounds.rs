@@ -76,7 +76,11 @@ fn run(src: &str, tag: &str) -> String {
         "{tag}: check: {:?}",
         checked.diagnostics
     );
-    match starkc::interp::run(&hir, file, &checked.tables) {
+    match starkc::interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    ) {
         Ok(execution) => execution.output,
         Err(error) => panic!("{tag}: runtime error: {}", error.message),
     }

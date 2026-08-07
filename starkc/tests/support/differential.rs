@@ -290,7 +290,9 @@ fn probe_wrapper(type_tag: &str) -> String {
 
 pub struct Front {
     pub hir: starkc::hir::Hir,
-    pub file: Arc<SourceFile>,
+    /// AS1b-ii: the REGISTERED source. Consumers pass this straight to `run`/`lower_program`,
+    /// which now require identity rather than a bare file.
+    pub file: starkc::source::RegisteredSource,
     pub tables: starkc::typecheck::TypeTables,
 }
 
@@ -307,9 +309,12 @@ pub fn front_end(name: &str, source: &str) -> Front {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
+    let registered = hir
+        .source_named(&file.name)
+        .expect("the parse registered this file");
     Front {
         hir,
-        file,
+        file: registered,
         tables: checked.tables,
     }
 }
@@ -488,9 +493,16 @@ pub fn front_end_package(root_package: &Path) -> (Front, starkc::mir::MirProgram
         "{}: typecheck: {errors:?}",
         root_package.display()
     );
+    // AS1b-ii: `root_file` above is named by its REAL path on purpose (see the comment there),
+    // but the parser registers the package entry under its LOGICAL name. The registered identity
+    // is the logical one — that difference is exactly what DEV-113 is about.
+    let root_pkg = &graph.packages[&graph.root_package_name];
+    let registered = hir
+        .source_named(&root_pkg.entry_logical_name())
+        .expect("the parse registered the package entry");
     let front = Front {
         hir,
-        file: root_file,
+        file: registered,
         tables: checked.tables,
     };
     let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
@@ -583,7 +595,10 @@ pub fn run_hir(name: &str, front: &Front) -> Observation {
             // DEV-113-B: the trap's OWN file when the oracle supplies one — for a multi-file or
             // package program the raising file is not the entry file, and using the entry file made
             // the oracle disagree with MIR about which file trapped.
-            let raised_in = err.file.clone().unwrap_or_else(|| front.file.clone());
+            let raised_in = err
+                .file
+                .clone()
+                .unwrap_or_else(|| front.file.file().clone());
             let (line, column) = raised_in.line_col(err.span.lo);
             // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`
             // raises arbitrary USER text, so prose matching cannot classify it — that is the

@@ -279,7 +279,11 @@ fn render(name: &str) -> String {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{name}: type diagnostics: {errors:?}");
-    render_execution(interp::run(&hir, file, &checked.tables))
+    render_execution(interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    ))
 }
 
 fn render_execution(result: Result<interp::Execution, interp::RuntimeError>) -> String {
@@ -426,7 +430,15 @@ fn build_and_run_relocatable_workspace(root: &Path) -> String {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "typecheck: {:?}", errors);
-    render_execution(interp::run(&hir, root_file, &checked.tables))
+    // AS1b-ii: the entry is registered under its LOGICAL name, not the absolute path this test
+    // used to construct — which is the relocation-stability property this case exists to measure.
+    let root_pkg = &graph.packages[&graph.root_package_name];
+    render_execution(interp::run(
+        &hir,
+        hir.source_named(&root_pkg.entry_logical_name())
+            .expect("the parse registered the package entry"),
+        &checked.tables,
+    ))
 }
 
 /// Metamorphic case: relocation of an entire workspace without changing manifests, lock data, or
@@ -467,7 +479,13 @@ fn workspace_relocation_produces_identical_execution_output() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "typecheck: {:?}", errors);
-    let relocated_output = render_execution(interp::run(&hir, root_file, &checked.tables));
+    let root_pkg = &graph.packages[&graph.root_package_name];
+    let relocated_output = render_execution(interp::run(
+        &hir,
+        hir.source_named(&root_pkg.entry_logical_name())
+            .expect("the parse registered the package entry"),
+        &checked.tables,
+    ));
 
     assert_eq!(
         original_output, relocated_output,

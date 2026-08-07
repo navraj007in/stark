@@ -515,7 +515,11 @@ fn cmd_lex(path: &str) -> ExitCode {
         Ok(f) => f,
         Err(code) => return code,
     };
-    let (tokens, diags) = tokenize(&file);
+    // AS1b-ii: a standalone lex is a one-file operation; it registers that file and lexes it.
+    let mut registry = starkc::source::SourceRegistry::default();
+    let registered = registry.intern(std::sync::Arc::new(file));
+    let (tokens, diags) = tokenize(&registered, registered.id());
+    let file = registered.file().clone();
     for token in &tokens {
         let (line, col) = file.line_col(token.span.lo);
         let text = &file.src[token.span.lo as usize..token.span.hi as usize];

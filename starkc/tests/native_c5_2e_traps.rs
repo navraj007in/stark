@@ -36,7 +36,11 @@ fn compile_and_run(source: &str, tag: &str) -> (std::process::Output, String) {
         .collect();
     assert!(type_errors.is_empty(), "{tag} typecheck: {type_errors:?}");
 
-    let mir_program = match lower_program(&hir, &checked.tables, file.clone()) {
+    let mir_program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => program,
         Err(e) => panic!("{tag} must lower: {} @ {:?}", e.what, e.span),
     };

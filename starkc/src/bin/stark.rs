@@ -1632,7 +1632,11 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             had_errors = true;
             continue;
         }
-        let (_, comments, _) = starkc::lexer::tokenize_with_comments(&source);
+        let doc_source = ast
+            .sources
+            .id_for_name(&source.name)
+            .expect("the parse registered this file");
+        let (_, comments, _) = starkc::lexer::tokenize_with_comments(&source, doc_source);
         let items = starkc::doc_gen::extract::extract(&ast, &source, &comments);
         // Validate this file's examples with its own source in scope: an
         // example commonly calls the very item it documents (the plan's

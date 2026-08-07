@@ -435,7 +435,7 @@ impl ProjectAnalysis {
 /// Run the canonical parse → resolve → typecheck pipeline.
 pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> ProjectAnalysis {
     let id = NEXT_ANALYSIS_ID.fetch_add(1, Ordering::Relaxed);
-    let (root_file, package_graph, ast, mut diagnostics) = match input {
+    let (root_file, package_graph, mut ast, mut diagnostics) = match input {
         ProjectInput::Source { file, mode } => {
             let (ast, diagnostics) = parse_with_options(&file, mode, options);
             (file, None, ast, diagnostics)
@@ -452,13 +452,18 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
                     (file, Some(graph), ast, diagnostics)
                 }
                 Err(error) => {
+                    // The entry could not be read, so there is no parse and no AST. Register the
+                    // empty entry anyway: the diagnostic has to belong to a real source, and this
+                    // is the source it is about.
                     let file = package.entry_source_file("");
+                    let mut ast = Ast::default();
+                    let registered = ast.sources.intern(file.clone());
                     let diagnostic = Diagnostic::error(
                         format!("failed to read entry file: {error}"),
-                        Span { lo: 0, hi: 0 },
+                        registered.synthetic_span(),
                     )
                     .with_file(file.clone());
-                    (file, Some(graph), Ast::default(), vec![diagnostic])
+                    (file, Some(graph), ast, vec![diagnostic])
                 }
             }
         }
@@ -480,16 +485,14 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
                 }
                 None => {
                     let file = package.entry_source_file(String::new());
-                    (
-                        file,
-                        Some(graph),
-                        Ast::default(),
-                        vec![Diagnostic::error(
-                            format!("cannot read package entry '{}'", entry.display()),
-                            Span { lo: 0, hi: 0 },
-                        )
-                        .with_code("E0208")],
+                    let mut ast = Ast::default();
+                    let registered = ast.sources.intern(file.clone());
+                    let diagnostic = Diagnostic::error(
+                        format!("cannot read package entry '{}'", entry.display()),
+                        registered.synthetic_span(),
                     )
+                    .with_code("E0208");
+                    (file, Some(graph), ast, vec![diagnostic])
                 }
             }
         }
@@ -509,6 +512,10 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         hir = Some(resolved);
     }
 
+    // AS1b-ii: the root is registered here, not special-cased inside `build_source_map`. A parse
+    // that failed before reaching the entry would otherwise leave the map without the one file its
+    // diagnostics resolve against.
+    ast.sources.intern(root_file.clone());
     let source_map = build_source_map(&root_file, &ast, hir.as_ref(), package_graph.as_deref());
     let resolutions = hir
         .as_ref()
@@ -568,21 +575,15 @@ fn build_source_map(
     _hir: Option<&Hir>,
     graph: Option<&PackageGraph>,
 ) -> SourceMap {
-    let mut registry_files: Vec<(SourceId, Arc<SourceFile>)> = ast
-        .sources
-        .iter()
-        .map(|(id, file)| (id, file.clone()))
-        .collect();
-    if ast.sources.id_for_name(&root.name).is_none() {
-        // Nothing interned this root — an early parse failure. Give it the next id rather than
-        // dropping it, because diagnostics resolve against it.
-        let next = SourceId::from_u32(registry_files.len() as u32);
-        registry_files.push((next, root.clone()));
-    }
+    // Every source, with the identity the registry gave it. `analyze_project` registers the root
+    // before calling here, so there is no case left that would need an id this function invented.
+    let registered: Vec<crate::source::RegisteredSource> = ast.sources.iter().cloned().collect();
 
     let root_package = graph.map(|graph| graph.root_package_name.clone());
     let mut map = SourceMap::default();
-    for (id, file) in registry_files {
+    for entry in registered {
+        let id = entry.id();
+        let file = entry.file().clone();
         // AS1a: attribute by the logical name's OWNING PACKAGE SEGMENT, matched against the graph.
         //
         // This used to ask whether the source *name* started with the package entry's absolute
@@ -849,10 +850,11 @@ mod tests {
             analysis.references(symbol),
             vec![SourceLocation {
                 source: root_id,
-                span: Span {
-                    lo: root_source.find("child::answer").unwrap() as u32,
-                    hi: (root_source.find("child::answer").unwrap() + "child::answer".len()) as u32,
-                },
+                span: Span::in_source(
+                    root_id,
+                    root_source.find("child::answer").unwrap() as u32,
+                    (root_source.find("child::answer").unwrap() + "child::answer".len()) as u32,
+                ),
             }]
         );
         assert!(analysis.enclosing(symbol).unwrap().module.is_some());
@@ -861,15 +863,22 @@ mod tests {
         let root_file = analysis.source_map.get(root_id).unwrap().file.clone();
         let child_file = analysis.source_map.get(child_id).unwrap().file.clone();
         analysis.diagnostics.push(
-            Diagnostic::error("cross-file contract violation", Span::new(0, 3))
-                .with_file(root_file)
-                .with_code("E0999")
-                .with_label("primary")
-                .with_related(child_file, Span::new(7, 13), "declared here")
-                .with_note("transport note")
-                .with_help("transport help")
-                .with_rule_id("TEST-RULE-001")
-                .with_deviation_id("DEV-TEST"),
+            Diagnostic::error(
+                "cross-file contract violation",
+                Span::in_source(root_id, 0, 3),
+            )
+            .with_file(root_file)
+            .with_code("E0999")
+            .with_label("primary")
+            .with_related(
+                child_file,
+                Span::in_source(child_id, 7, 13),
+                "declared here",
+            )
+            .with_note("transport note")
+            .with_help("transport help")
+            .with_rule_id("TEST-RULE-001")
+            .with_deviation_id("DEV-TEST"),
         );
         let versions = HashMap::from([(root_id, 17)]);
         let batch = analysis.diagnostic_batch(&versions);

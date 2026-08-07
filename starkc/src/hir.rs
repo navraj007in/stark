@@ -749,6 +749,17 @@ pub enum UseTree {
 // --------------------------------------------------------------- arena --
 
 impl Hir {
+    /// The registered source with this logical name, if this program was parsed from it.
+    ///
+    /// The one supported way to recover a `RegisteredSource` from a compiled program — for callers
+    /// that hold a `SourceFile` and need the identity this compilation gave it.
+    pub fn source_named(&self, name: &str) -> Option<crate::source::RegisteredSource> {
+        self.sources
+            .id_for_name(name)
+            .and_then(|id| self.sources.get(id))
+            .cloned()
+    }
+
     /// The source an item was parsed from.
     ///
     /// AS1b-ii-b: the one way from an item to its file. Callers used to hold an `Arc<SourceFile>`
@@ -759,6 +770,7 @@ impl Hir {
         self.item_sources
             .get(&item)
             .and_then(|id| self.sources.get(*id))
+            .map(|source| source.file())
     }
 
     pub fn alloc_type(&mut self, kind: TypeKind, span: Span) -> TypeId {

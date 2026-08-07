@@ -136,6 +136,20 @@ impl CheckedProgram {
         &self.analysis.root_file
     }
 
+    /// The root as a REGISTERED source — identity and file together.
+    ///
+    /// AS1b-ii: execution and lowering take this rather than a bare `Arc`, so neither can be
+    /// handed a file this compilation never registered.
+    pub fn root_source(&self) -> crate::source::RegisteredSource {
+        self.analysis
+            .ast
+            .sources
+            .id_for_name(&self.analysis.root_file.name)
+            .and_then(|id| self.analysis.ast.sources.get(id))
+            .expect("a checked program's root is registered")
+            .clone()
+    }
+
     /// Non-error diagnostics that survived a successful check — warnings a caller may still print.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.analysis.diagnostics
@@ -143,12 +157,12 @@ impl CheckedProgram {
 
     /// Execute on the typed-HIR reference interpreter.
     pub fn execute_hir(&self) -> Result<Execution, RuntimeError> {
-        crate::interp::run(self.hir(), self.root_file().clone(), self.tables())
+        crate::interp::run(self.hir(), self.root_source(), self.tables())
     }
 
     /// Lower to monomorphised MIR.
     pub fn lower_mir(&self) -> Result<crate::mir::MirProgram, crate::mir::lower::LowerError> {
-        crate::mir::lower::lower_program(self.hir(), self.tables(), self.root_file().clone())
+        crate::mir::lower::lower_program(self.hir(), self.tables(), self.root_source())
     }
 }
 
@@ -226,6 +240,20 @@ impl CompileFailure {
 
     pub fn root_file(&self) -> &Arc<SourceFile> {
         &self.analysis.root_file
+    }
+
+    /// The root as a REGISTERED source — identity and file together.
+    ///
+    /// AS1b-ii: execution and lowering take this rather than a bare `Arc`, so neither can be
+    /// handed a file this compilation never registered.
+    pub fn root_source(&self) -> crate::source::RegisteredSource {
+        self.analysis
+            .ast
+            .sources
+            .id_for_name(&self.analysis.root_file.name)
+            .and_then(|id| self.analysis.ast.sources.get(id))
+            .expect("a checked program's root is registered")
+            .clone()
     }
 
     /// Every diagnostic, rendered in pipeline order — parse, then resolve, then typecheck.

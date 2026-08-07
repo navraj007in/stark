@@ -23,7 +23,7 @@ use starkc::mir::{
     self, AggKind, BasicBlock, Callee, Constant, EnumRef, LocalDecl, LocalKind, MirBody,
     MirProgram, MirTy, Operand, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
 };
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::sync::Arc;
 
 fn resource_ty() -> MirTy {
@@ -37,7 +37,7 @@ fn resource_ty() -> MirTy {
 fn info() -> SourceInfo {
     SourceInfo {
         file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -57,6 +57,7 @@ fn body_assigning(rvalue: Rvalue) -> MirProgram {
 /// `body_assigning`, with the local's type chosen — so the CD-235 Core-nominal case can be built.
 fn body_assigning_ty(rvalue: Rvalue, ty: MirTy) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("r.stark", ""))],
         bodies: vec![MirBody {
             instance: mir::Instance {
@@ -390,6 +391,15 @@ fn a_package_nominal_uses_host_resource_immediately() {
 use starkc::mir::{ValidatedProviderCall, ValidatedProviderClose};
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity};
 
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
+
 fn close_decl(name: &str, is_close_for: Option<&str>, params: Vec<AbiParam>) -> FunctionDecl {
     FunctionDecl {
         name: name.to_string(),
@@ -425,6 +435,7 @@ fn program_with_closes(
     closes: Vec<ValidatedProviderClose>,
 ) -> MirProgram {
     MirProgram {
+        entry_source: test_source().id(),
         files: vec![Arc::new(SourceFile::new("c.stark", ""))],
         bodies: Vec::new(),
         types: TypeContext::default(),

@@ -493,7 +493,12 @@ fn refused_by_lowering(tag: &str, src: &str) {
         "{tag}: expected it to type-check, got {errs:?}"
     );
     assert!(
-        lower_program(&hir, &checked.tables, file).is_err(),
+        lower_program(
+            &hir,
+            &checked.tables,
+            hir.source_named(&file.name).expect("registered")
+        )
+        .is_err(),
         "{tag}: lowering must refuse this shape"
     );
 }

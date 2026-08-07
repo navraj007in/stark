@@ -82,8 +82,15 @@ fn compile_workspace(root: &Path) -> Front {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "typecheck: {errors:?}");
-    let program = lower_program(&hir, &checked.tables, root_file.clone())
-        .unwrap_or_else(|e| panic!("workspace must lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        // AS1b-ii: the package entry is registered logically, not by its checkout path — which is
+        // the relocation invariant this file exists to measure.
+        hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+            .expect("the parse registered the package entry"),
+    )
+    .unwrap_or_else(|e| panic!("workspace must lower: {}", e.what));
     Front { program }
 }
 

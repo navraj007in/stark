@@ -898,7 +898,11 @@ mod tests {
         let (hir, rd) = resolve(&ast, file.clone());
         assert!(rd.is_empty(), "resolve: {rd:?}");
         let checked = typecheck::analyze(&hir, file.clone());
-        match crate::mir::lower::lower_program(&hir, &checked.tables, file) {
+        match crate::mir::lower::lower_program(
+            &hir,
+            &checked.tables,
+            hir.source_named(&file.name).expect("registered"),
+        ) {
             Ok(program) => program,
             Err(e) => panic!("must lower: {} @ {:?}", e.what, e.span),
         }

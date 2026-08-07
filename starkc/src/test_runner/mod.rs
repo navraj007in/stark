@@ -167,7 +167,22 @@ pub fn run_test(
         };
     }
     let start = Instant::now();
-    let result = interp::run_item(hir, root_file, tables, test.item);
+    let Some(root) = hir
+        .sources
+        .id_for_name(&root_file.name)
+        .and_then(|id| hir.sources.get(id))
+        .cloned()
+    else {
+        return TestResult {
+            name: test.name.clone(),
+            outcome: Outcome::Failed {
+                message: "the test's root source is not registered".to_string(),
+            },
+            duration: Duration::ZERO,
+            output: String::new(),
+        };
+    };
+    let result = interp::run_item(hir, root, tables, test.item);
     let duration = start.elapsed();
     match result {
         Ok(execution) => TestResult {

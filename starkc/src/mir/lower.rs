@@ -25,7 +25,7 @@ use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
 use crate::mir::provider_lower::ProviderLowering;
-use crate::source::SourceFile;
+use crate::source::{RegisteredSource, SourceFile};
 use crate::typecheck::{Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -254,11 +254,15 @@ struct ProgramMeta {
     /// the impl's bound HIR type. Lets the monomorphiser resolve a projection `T::Item` once `T`'s
     /// concrete nominal is known, mirroring the front end's `assoc_projections`.
     assoc_projections: HashMap<(u32, String), hir::TypeId>,
+    /// AS1b-ii: the entry's registered id. Lowering rejections with nothing to point at belong to
+    /// the program's entry rather than to a fabricated source.
+    entry_source: crate::source::SourceId,
 }
 
 impl ProgramMeta {
-    fn build(hir: &Hir, entry: &Arc<SourceFile>) -> Result<Self, LowerError> {
-        let mut files: Vec<Arc<SourceFile>> = vec![entry.clone()];
+    fn build(hir: &Hir, entry: &RegisteredSource) -> Result<Self, LowerError> {
+        let entry_source = entry.id();
+        let mut files: Vec<Arc<SourceFile>> = vec![entry.file().clone()];
         let mut by_name: HashMap<String, FileId> = HashMap::new();
         by_name.insert(entry.name.clone(), FileId(0));
         let mut intern = |file: &Arc<SourceFile>, files: &mut Vec<Arc<SourceFile>>| -> FileId {
@@ -273,7 +277,7 @@ impl ProgramMeta {
 
         let root_items = match &hir.root {
             hir::Root::Program(items) => items.clone(),
-            _ => return unsupported("non-program root", Span { lo: 0, hi: 0 }),
+            _ => return unsupported("non-program root", entry.synthetic_span()),
         };
         let mut items: HashMap<u32, (FileId, Vec<String>)> = HashMap::new();
         let mut all_items: Vec<ItemId> = Vec::new();
@@ -361,6 +365,7 @@ impl ProgramMeta {
             all_items,
             copy_eligible,
             assoc_projections,
+            entry_source,
         })
     }
 
@@ -395,7 +400,7 @@ impl ProgramMeta {
 pub fn lower_program(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
 ) -> Result<MirProgram, LowerError> {
     lower_program_with_providers(hir, tables, file, ProviderLowering::none())
 }
@@ -409,7 +414,7 @@ pub fn lower_program(
 pub fn lower_program_with_providers(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
     providers: &ProviderLowering,
 ) -> Result<MirProgram, LowerError> {
     // C4.5f-3c: multi-file/multi-package metadata — per-item files, module paths, and the
@@ -429,7 +434,7 @@ pub fn lower_program_with_providers(
         }
     }
     let Some(main) = main else {
-        return unsupported("program without a `main` function", Span { lo: 0, hi: 0 });
+        return unsupported("program without a `main` function", file.synthetic_span());
     };
 
     // A11: resolve the synthesized nominal NAMES to item ids, now that `meta` can map an item to its
@@ -458,12 +463,14 @@ pub fn lower_program_with_providers(
             })
             .map_err(|what| LowerError {
                 what,
-                span: Span { lo: 0, hi: 0 },
+                span: file.synthetic_span(),
             })?
     };
     let providers = &providers;
 
+    let entry_source = file.id();
     let mut program = MirProgram {
+        entry_source,
         files: meta.files.clone(),
         bodies: Vec::new(),
         types: TypeContext::default(),
@@ -617,7 +624,7 @@ pub fn lower_program_with_providers(
                          ({LIMIT_MIR_TYPE_DEPTH} nested type constructors); recursive generic \
                          instantiation cannot be compiled"
                     ),
-                    span: Span { lo: 0, hi: 0 },
+                    span: file.synthetic_span(),
                 });
             }
             let symbol = key_symbol(hir, &meta, &callee)?;
@@ -632,7 +639,7 @@ pub fn lower_program_with_providers(
                              function instances); recursive generic instantiation cannot be \
                              compiled"
                         ),
-                        span: Span { lo: 0, hi: 0 },
+                        span: file.synthetic_span(),
                     });
                 }
                 worklist.push_back(callee);
@@ -662,7 +669,7 @@ fn nominal_instance_fields(
     args: &[MirTy],
     providers: &ProviderLowering,
 ) -> Result<NominalFields, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     // The probe is keyed to the nominal itself, so field-type spans read in ITS file (f-3c).
     //
     // **Provider-aware (CD-234).** This probe builds the variant-payload table, and a provider-blind
@@ -861,7 +868,7 @@ fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
 /// in its declaring item's own file, and module-nested items carry their path, so equal
 /// names in different modules/packages stay distinct.
 fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     match key {
         FnKey::Top(item, type_args) => {
             let name = item_name_text(hir, meta, *item).ok_or_else(|| LowerError {
@@ -2884,7 +2891,7 @@ impl<'a> FnLowerer<'a> {
 
     /// Resolve this lowerer's `FnKey` to (signature, body block, receiver self-type).
     fn fn_parts(&self) -> Result<(&'a hir::FnSig, hir::BlockId, Option<MirTy>), LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         match &self.key {
             FnKey::Top(item, _) => match &self.hir.item(*item).kind {
                 ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
@@ -3067,7 +3074,7 @@ impl<'a> FnLowerer<'a> {
         impl_item: ItemId,
         type_args: &[MirTy],
     ) -> Result<Vec<(String, MirTy)>, LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         let ItemKind::Impl {
             generics, self_ty, ..
         } = &self.hir.item(impl_item).kind

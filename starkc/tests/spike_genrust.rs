@@ -761,7 +761,7 @@ const CORPUS_CASES: &[&str] = &[
 
 struct Front {
     hir: Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: TypeTables,
 }
 
@@ -781,8 +781,8 @@ fn front_end(name: &str) -> Front {
         .collect();
     assert!(errs.is_empty(), "{name}: typecheck: {errs:?}");
     Front {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }

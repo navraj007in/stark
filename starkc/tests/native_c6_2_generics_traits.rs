@@ -25,10 +25,20 @@ use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
 use starkc::parser::{parse, parse_package_graph, ParseMode};
 use starkc::resolve::resolve;
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::path::Path;
 use std::sync::Arc;
+
+/// AS1b-ii: a hand-built MIR program still needs a real registered source for its spans. The
+/// registry is local to the test; the id it mints is genuine rather than fabricated.
+fn test_source() -> starkc::source::RegisteredSource {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )))
+}
 
 /// Delegates to the shared comparator (R-02).
 fn agree(tag: &str, source: &str) {
@@ -217,8 +227,16 @@ fn c62a_cross_package_trait_method_call() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, root_file)
-        .unwrap_or_else(|e| panic!("lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        // AS1b-ii: the package entry is registered under its LOGICAL name, not the
+
+        // checkout path `root_file` carries.
+        hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+            .expect("the parse registered the package entry"),
+    )
+    .unwrap_or_else(|e| panic!("lower: {}", e.what));
 
     assert_reference_identity_matches_bodies("xpkg", &program);
     linkage::build(&program).expect("cross-package trait call must link");
@@ -252,7 +270,7 @@ fn a_mismatched_item_is_still_rejected() {
     fn info() -> SourceInfo {
         SourceInfo {
             file: FileId(0),
-            span: Span::new(0, 0),
+            span: test_source().synthetic_span(),
             origin: Origin::UserCode,
         }
     }
@@ -307,6 +325,7 @@ fn a_mismatched_item_is_still_rejected() {
         }],
     );
     let program = MirProgram {
+        entry_source: test_source().id(),
         files: Vec::new(),
         bodies: vec![main, callee],
         types: TypeContext::default(),

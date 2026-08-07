@@ -33,7 +33,13 @@ fn execute(name: &str) -> String {
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{name}: {errors:?}");
-    interp::run(&hir, file, &checked.tables).unwrap().output
+    interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap()
+    .output
 }
 
 #[test]
@@ -73,7 +79,12 @@ fn file_io_returns_results_instead_of_silently_failing() {
         "{:?}",
         checked.diagnostics
     );
-    let execution = interp::run(&hir, file, &checked.tables).unwrap();
+    let execution = interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap();
     assert_eq!(execution.output, "saved\n");
     let _ = std::fs::remove_file(path);
 }

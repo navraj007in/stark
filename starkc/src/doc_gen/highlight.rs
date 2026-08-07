@@ -9,8 +9,15 @@ use crate::source::SourceFile;
 /// wrappers around each token; whitespace and text the lexer couldn't
 /// tokenize are passed through HTML-escaped but unstyled.
 pub fn highlight(code: &str) -> String {
-    let file = SourceFile::new("example.stark", code.to_string());
-    let (tokens, comments, _diags) = tokenize_with_comments(&file);
+    // AS1b-ii: highlighting is a one-file operation with no surrounding compilation, so it owns a
+    // registry for that file. The id is real and registered; nothing here fabricates one.
+    let mut registry = crate::source::SourceRegistry::default();
+    let registered = registry.intern(std::sync::Arc::new(SourceFile::new(
+        "example.stark",
+        code.to_string(),
+    )));
+    let file = registered.file().clone();
+    let (tokens, comments, _diags) = tokenize_with_comments(&file, registered.id());
 
     // Merge tokens and comments into one position-ordered stream so gaps
     // between them (whitespace) render as plain escaped text.

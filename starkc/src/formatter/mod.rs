@@ -33,7 +33,13 @@ pub fn format_file(file: &SourceFile, options: LanguageOptions) -> Result<String
         return Err(diags);
     }
     ast.root = root;
-    let (_, comments, _) = tokenize_with_comments(file);
+    // AS1b-ii: identity comes from the AST the parse just filled, not from a second id threaded in
+    // beside the file. `parse_with_options_into` interned this exact source a few lines above.
+    let source = ast
+        .sources
+        .id_for_name(&file.name)
+        .expect("the parse registered this file");
+    let (_, comments, _) = tokenize_with_comments(file, source);
     Ok(printer::format(&ast, file, &comments))
 }
 

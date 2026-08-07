@@ -37,7 +37,11 @@ fn main() {
         );
         return;
     }
-    let program = match lower_program(&hir, &checked.tables, file.clone()) {
+    let program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(p) => p,
         Err(e) => {
             println!("LOWER-UNSUPPORTED: {}", e.what);
