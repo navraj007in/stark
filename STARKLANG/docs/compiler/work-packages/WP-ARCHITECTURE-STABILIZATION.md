@@ -103,7 +103,7 @@ pipeline.
 | Scope | Status | Integration gate |
 | --- | --- | --- |
 | Cranelift retirement, manifest strictness audit | **APPROVED, DELIVERED** (2026-08-06) | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
-| AS0 | **APPROVED, PARTIAL** — item 6 (callable execution sites) closed 2026-08-07, `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md`; item 10 deferred to AS8/C10 by decision; **item 7 is the sole remaining blocker** and is AS4's opening inventory | Campaign A's exit needs it closed |
+| AS0 | **CLOSED 2026-08-07** — item 6 `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md`, item 7 `AS0-RB0-PREDICATE-INVENTORY.md`, item 10 deferred to AS8/C10 by owner decision. All items done or explicitly deferred, which is AS0 §7's exit condition | discharged; Campaign A now needs only AS3 and AS4 |
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |

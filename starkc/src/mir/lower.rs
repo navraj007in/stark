@@ -12037,3 +12037,155 @@ fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
         hir::ExprKind::Error => "Error",
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// AS0 item 7 / RB0 — the reference-rule equivalence matrix. MEASUREMENT ONLY.
+//
+// `WP-C7.8-RB0-MIR-Type-Property-Authority.md` records three implementations of "carries a
+// reference" and requires an audit BEFORE consolidation: "each duplicate is removed only after a
+// test demonstrates the survivor agrees with it across the full `MirTy` variant set. A predicate
+// that turns out to differ is kept, renamed, and documented."
+//
+// This is that test. It asserts nothing about which answer is correct — it records where the three
+// disagree, so RB0/AS4 consolidates from evidence rather than from the assumption that a shared
+// name means a shared rule. The expected disagreements are PINNED, so a silent change to any of the
+// three fails here.
+#[cfg(test)]
+mod as0_reference_predicate_inventory {
+    use crate::backend::generated_rust::emit_types;
+    use crate::hir::{CoreType, ItemId};
+    use crate::mir::{EnumRef, HostResourceNominal, HostResourceTy, MirTy};
+
+    /// One sample per `MirTy` variant, and — for the composite variants — a second sample carrying
+    /// a reference inside, because that is the only place the three predicates can differ.
+    fn samples() -> Vec<(&'static str, MirTy)> {
+        let r = || MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Int32),
+        };
+        vec![
+            ("Int8", MirTy::Int8),
+            ("Int16", MirTy::Int16),
+            ("Int32", MirTy::Int32),
+            ("Int64", MirTy::Int64),
+            ("UInt8", MirTy::UInt8),
+            ("UInt16", MirTy::UInt16),
+            ("UInt32", MirTy::UInt32),
+            ("UInt64", MirTy::UInt64),
+            ("Float32", MirTy::Float32),
+            ("Float64", MirTy::Float64),
+            ("Bool", MirTy::Bool),
+            ("Char", MirTy::Char),
+            ("Unit", MirTy::Unit),
+            ("Never", MirTy::Never),
+            ("Str", MirTy::Str),
+            ("String", MirTy::String),
+            ("Struct(plain)", MirTy::Struct(ItemId(0), Vec::new())),
+            ("Struct(<&T>)", MirTy::Struct(ItemId(0), vec![r()])),
+            (
+                "Enum::User(plain)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), Vec::new()),
+            ),
+            (
+                "Enum::User(<&T>)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), vec![r()]),
+            ),
+            (
+                "Enum::CoreOption(<&T>)",
+                MirTy::Enum(EnumRef::CoreOption, vec![r()]),
+            ),
+            ("Tuple(plain)", MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(&T)", MirTy::Tuple(vec![r()])),
+            ("Array(plain)", MirTy::Array(Box::new(MirTy::Int32), 4)),
+            ("Array(&T)", MirTy::Array(Box::new(r()), 4)),
+            ("Slice(plain)", MirTy::Slice(Box::new(MirTy::Int32))),
+            ("Slice(&T)", MirTy::Slice(Box::new(r()))),
+            ("Ref", r()),
+            (
+                "FnPtr(ret &T)",
+                MirTy::FnPtr {
+                    params: Vec::new(),
+                    ret: Box::new(r()),
+                },
+            ),
+            (
+                "FnPtr(param &T)",
+                MirTy::FnPtr {
+                    params: vec![r()],
+                    ret: Box::new(MirTy::Unit),
+                },
+            ),
+            (
+                "Core(plain)",
+                MirTy::Core(CoreType::Vec, vec![MirTy::Int32]),
+            ),
+            ("Core(<&T>)", MirTy::Core(CoreType::Vec, vec![r()])),
+            (
+                "HostResource",
+                MirTy::HostResource(Box::new(HostResourceTy {
+                    nominal: HostResourceNominal::Core(CoreType::Vec),
+                    provider: "probe".to_string(),
+                    resource: "probe_resource".to_string(),
+                })),
+            ),
+        ]
+    }
+
+    /// The three answers, per sample, with every disagreement pinned.
+    #[test]
+    fn the_three_reference_predicates_are_measured_against_each_other() {
+        // (sample, lower::ty_carries_ref, emit::ty_carries_reference, emit::ty_contains_ref)
+        let mut disagreements = Vec::new();
+        let mut checked = 0usize;
+        for (name, ty) in samples() {
+            let a = super::ty_carries_ref(&ty);
+            let b = emit_types::ty_carries_reference(&ty);
+            let c = emit_types::contains_ref_for_inventory(&ty);
+            checked += 1;
+            if !(a == b && b == c) {
+                disagreements.push(format!(
+                    "{name}: lower::ty_carries_ref={a}, emit::ty_carries_reference={b}, emit::ty_contains_ref={c}"
+                ));
+            }
+        }
+        assert!(
+            checked >= 30,
+            "only {checked} samples; the matrix is too thin"
+        );
+
+        // PINNED. Not an approval of any answer — a record of where the three differ today, so
+        // RB0/AS4 consolidates from evidence and a silent change to any of them fails here.
+        let expected: Vec<String> = EXPECTED_DISAGREEMENTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            disagreements, expected,
+            "\n\nThe reference-rule predicates now disagree differently than recorded.\n\
+             This test measures; it does not judge. If a predicate changed on purpose, update the \
+             pinned list and say why in the RB0/AS4 record. If it changed by accident, that is the \
+             divergence hazard RB0 exists for.\n"
+        );
+    }
+
+    /// **The measured disagreement, which is RB0's Q2 reproduced from evidence rather than from
+    /// reading.** Two of the three say a function pointer carries no reference; one descends into
+    /// its parameters and return type and says it does.
+    ///
+    /// RB0 states the question to answer before touching any of them: *"Determine first whether the
+    /// two ask the same question. A plain function pointer does not borrow the values it will later
+    /// receive, and a Rust `fn(&T)` is higher-ranked and needs no lifetime parameter — which is the
+    /// only thing the lowering predicate guards (E0106). But a function value representation could
+    /// carry an environment, lifetime-bearing metadata, or a bound receiver."*
+    ///
+    /// So this is pinned, not fixed. Forcing agreement here would be a behavioural change without a
+    /// CD, which RB0 exit criterion 5 forbids.
+    ///
+    /// Note what the matrix also shows: the three agree on **every other variant**, including every
+    /// composite carrying a reference inside. The reference rule is one rule with one exception,
+    /// which is a much smaller consolidation than "three implementations" suggested.
+    const EXPECTED_DISAGREEMENTS: &[&str] = &[
+        "FnPtr(ret &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
+        "FnPtr(param &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
+    ];
+}
