@@ -1724,6 +1724,8 @@ impl<'a> Interpreter<'a> {
             frame.insert(local, Some(value));
         }
         for (local, value) in callable.params.iter().copied().zip(args) {
+            // INV-VALUE-REP-001 at a CALL PARAMETER — the second uncovered site DEV-121 named.
+            self.check_value_representation(local, &value, span)?;
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
@@ -2091,6 +2093,23 @@ impl<'a> Interpreter<'a> {
     /// The type tables are already on the interpreter (`self.tables`); the claim in DEV-121 that
     /// the oracle is "untyped at runtime" was only half right. It has the types at every `let`, and
     /// simply never consulted them.
+    ///
+    /// # Coverage (AS3 item 6, 2026-08-07)
+    ///
+    /// It checked **`let` bindings only**, and DEV-121 UPDATE 2 named that as the reason both known
+    /// instances — `String::bytes()` (CD-305) and `String::split()`'s item (CD-340) — were found by
+    /// user-facing programs rather than by tooling: *both were reachable through a `for`-loop item,
+    /// and a loop binding is not a `let`.* It now runs at all three places a local receives a value:
+    ///
+    /// | Site | Covered |
+    /// | --- | --- |
+    /// | `let` binding | since CD-3xx |
+    /// | `for`-loop item binding | **now** — the shape both known instances took |
+    /// | call parameter and method receiver | **now** |
+    ///
+    /// Still uncovered, stated rather than implied: struct fields, indexed slots, and values that
+    /// never bind to a local at all (an argument consumed inline by a builtin). Those need a
+    /// place-oriented check, not a binding-oriented one, and that is a different change.
     ///
     /// A firing is a COMPILER defect, not a user error, so the message says so and names the DEV.
     fn check_value_representation(
@@ -2631,6 +2650,9 @@ impl<'a> Interpreter<'a> {
                     Value::Range { .. } | Value::Array(_) | Value::Vec(_) | Value::Slice(..) => {
                         let mut remaining = self.iter_values(iterable, expr.span)?.into_iter();
                         while let Some(value) = remaining.next() {
+                            // INV-VALUE-REP-001 at the LOOP ITEM — the blind spot DEV-121
+                            // UPDATE 2 named. Both known instances of the class arrived here.
+                            self.check_value_representation(*local, &value, expr.span)?;
                             self.frame_mut().insert(*local, Some(value));
                             let flow = self.eval_block(*body)?;
                             self.cleanup_locals(&[*local])?;
@@ -4572,8 +4594,10 @@ impl<'a> Interpreter<'a> {
             hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
         };
         let mut frame = Frame::default();
+        self.check_value_representation(receiver_local, &receiver, span)?;
         frame.insert(receiver_local, Some(receiver));
         for (local, value) in callable.params.iter().copied().zip(args) {
+            self.check_value_representation(local, &value, span)?;
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);

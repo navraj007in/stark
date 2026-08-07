@@ -5413,3 +5413,69 @@ conclusions, one of which reached a permanent record before being retracted.
   post-match bookkeeping that records `expr_types` — 2 lib tests and 35 `mir_differential` cases
   failed at once. An early return out of a function whose value is recorded by its *caller-side*
   epilogue is never a local edit.
+
+## DEV-121 — CLASS CLOSED (AS3 work item 6 / exit criterion 5, 2026-08-07)
+
+Exit criterion 5 required *"a class-level evidence statement, not one regression case."* This is it.
+
+### 1. The blind spot is closed
+
+DEV-121 UPDATE 2 named why both instances — `String::bytes()` (CD-305) and `String::split()`'s item
+(CD-340) — were found by user-facing packages rather than by tooling: `INV-VALUE-REP-001` checked
+**`let` bindings**, and *both were reachable through a `for`-loop item, which is not a `let`*.
+
+The invariant now runs at every position a local receives a value:
+
+| Site | Before | Now |
+| --- | --- | --- |
+| `let` binding | checked | checked |
+| `for`-loop item | **unchecked** — the shape both instances took | checked |
+| call parameter | **unchecked** | checked |
+| method receiver | **unchecked** | checked |
+
+### 2. The extension is load-bearing, and that is measured rather than asserted
+
+With `String::bytes()` mutated back to its DEV-121 behaviour (returning an owned `Value::Vec`), on a
+program where the view reaches a parameter and never binds to a `let`:
+
+```text
+invariant wired at parameters   TRAP  "...holds an owned Vec... (DEV-121)"
+invariant NOT wired (let-only)  OK    "3\n3\n"      <- defect completely invisible
+```
+
+The second row is the finding. Under the old coverage a broken producer yields a program that runs
+and prints the right answer — no test and no user would ever see it. That is precisely how both
+known instances reached packages.
+
+**A first mutation pass wrongly suggested the extension was inert:** removing the new call sites left
+the audit suite green. It did, because the audit exercises *correct* producers, and removing a
+detector does not change correct behaviour. The control that means something pairs a **broken
+producer** with a binding position the old check could not see. Recorded because "the mutation did
+not bite" is a question, not a verdict — the same error made three times earlier in this packet.
+
+### 3. The inventory cannot go stale
+
+`tests/dev121_view_producer_audit.rs::every_view_returning_intrinsic_is_classified` scans
+`core_method_signature` and requires **every** method arm mentioning a view type to be classified —
+either exercised as a producer or explicitly listed as taking a view only / returning owned storage
+deliberately. Adding a new `&[T]`/`&str` intrinsic without a decision fails the test.
+
+The scan deliberately over-approximates (it flags parameter-position mentions too): an extra entry
+costs a line in a table, a missed one is an unaudited producer, which is the defect class itself.
+
+Audited producers: `as_str`, `trim`, `bytes`, `as_slice`, `substring` — each exercised bound by
+`let`, passed as an argument, and (for `&str` items) as a loop item.
+
+### 4. One language fact recorded, not a gap
+
+`for b in view` where `view: &[UInt8]` is **rejected** — Core v1 does not make a slice iterable. So
+there is no loop position for a slice view, and the loop coverage rests on `&str` items from
+`split()`. Written down so this file is not later "completed" with a fixture that cannot compile.
+
+### Status
+
+**CLASS CLOSED.** The instances remain fixed (CD-305, CD-340); the detector now covers every binding
+position; the inventory is enforced by a test rather than by a date. What remains uncovered is
+stated rather than implied: struct fields, indexed slots, and values that never bind to a local at
+all. Those need a place-oriented check, which is a different change with its own evidence — not a
+silent exemption from this one.
