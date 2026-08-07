@@ -5126,10 +5126,26 @@ as_i64     Some(9007199254740992)
   what the document said and let each consumer state the numeric type it requires.
 - **Owning gate:** compiler track, AS5-b/c (WP-ARCHITECTURE-STABILIZATION).
 
-### Adjacent, NOT repaired here — LSP string request ids
+### Adjacent, NOT repaired here — the LSP request-id surface
 
-JSON-RPC 2.0 and the LSP specification both permit a request `id` to be a **string** or a number.
-`Request { id: i64 }` and `Response { id: i64 }` admit only numbers, so a conforming client using
-string ids cannot be served. That is a protocol-surface gap, not a JSON-authority defect, and
-expanding AS5 to cover it would turn a parser consolidation into an LSP redesign. Recorded here so
-it is not lost; it needs its own packet.
+The JSON layer is right to make `JsonNumber::as_i64` accept only what was *written* as an integer
+literal: `1e3` returning `None` is a deliberate consumer decision, not a limitation. But
+`lsp/protocol.rs` converts every id through `as_i64()` and models both halves as `id: i64`, so the
+protocol layer accepts only that subset:
+
+| Request id form | Today |
+| --- | --- |
+| plain JSON integer that fits `i64` | accepted |
+| string id (JSON-RPC 2.0 §4, LSP both permit it) | **rejected** |
+| other exact spellings of the same number (`1e3`, `1.0`, `+`-free variants) | **rejected** |
+| integer outside `i64` | **rejected** |
+
+Not a JSON-authority defect, and not AS5's to fix — covering it would turn a parser consolidation
+into an LSP redesign. The eventual shape is almost certainly
+
+```rust
+enum RequestId { Number(JsonNumber), String(String) }
+```
+
+**echoing the id exactly as received** rather than interpreting it, which is what JSON-RPC requires
+of a server. Recorded here so it is not lost; it needs its own packet.
