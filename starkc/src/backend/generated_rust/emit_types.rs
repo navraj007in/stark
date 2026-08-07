@@ -627,6 +627,14 @@ fn derives_for(ty: &MirTy, types: &TypeContext) -> Option<&'static str> {
     }
 }
 
+/// AS0 item 7 / RB0: a test-only window onto `ty_contains_ref`, so the reference-rule equivalence
+/// matrix in `mir::lower` can measure all three implementations without widening production
+/// visibility. Measurement only — it adds no caller and changes no behaviour.
+#[cfg(test)]
+pub(crate) fn contains_ref_for_inventory(ty: &MirTy) -> bool {
+    ty_contains_ref(ty)
+}
+
 fn ty_contains_ref(ty: &MirTy) -> bool {
     match ty {
         MirTy::Ref { .. } => true,

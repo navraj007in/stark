@@ -201,7 +201,7 @@ fn test_full_reproducible_resolution_pipeline() {
     diags.append(&mut resolution);
     assert!(diags.is_empty(), "resolution failed: {:?}", diags);
 
-    let mut tc_diags = typecheck::check(&hir, root_file);
+    let mut tc_diags = typecheck::check(&hir);
     diags.append(&mut tc_diags);
     assert!(diags.is_empty(), "typecheck failed: {:?}", diags);
 

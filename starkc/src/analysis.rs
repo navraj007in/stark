@@ -64,14 +64,11 @@ impl ProjectInput {
 }
 
 /// Stable source identity within one analysis result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SourceId(u32);
-
-impl SourceId {
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-}
+///
+/// AS1b-i moved the type and its allocator to `source`, next to `Span`. Re-exported here because
+/// `SourceId` is half of this module's published vocabulary and every consumer names it as
+/// `analysis::SourceId`.
+pub use crate::source::{SourceId, SourceRegistry};
 
 /// How a source file entered an analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,13 +91,19 @@ pub struct SourceMap {
     by_name: HashMap<String, SourceId>,
 }
 
+impl crate::source::SourceLookup for SourceMap {
+    fn source(&self, id: SourceId) -> Option<&crate::source::SourceFile> {
+        self.get(id).map(|record| record.file.as_ref())
+    }
+}
+
 impl SourceMap {
     pub fn files(&self) -> &[SourceRecord] {
         &self.files
     }
 
     pub fn get(&self, id: SourceId) -> Option<&SourceRecord> {
-        self.files.get(id.0 as usize)
+        self.files.get(id.as_u32() as usize)
     }
 
     pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
@@ -417,14 +420,11 @@ impl ProjectAnalysis {
     }
 
     pub fn diagnostic_batch(&self, source_versions: &HashMap<SourceId, i64>) -> DiagnosticBatch {
-        let root = self
-            .source_map
-            .id_for_name(&self.root_file.name)
-            .expect("analysis root source must exist in its source map");
+        // AS1b-ii-d: no default source. Every diagnostic's span names the source it belongs to,
+        // so there is nothing left for the root to stand in for.
         DiagnosticBatch::from_compiler_diagnostics(
             &self.diagnostics,
             &self.source_map,
-            root,
             source_versions,
             if self.options.tensor() {
                 vec!["tensor".to_string()]
@@ -438,7 +438,7 @@ impl ProjectAnalysis {
 /// Run the canonical parse → resolve → typecheck pipeline.
 pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> ProjectAnalysis {
     let id = NEXT_ANALYSIS_ID.fetch_add(1, Ordering::Relaxed);
-    let (root_file, package_graph, ast, mut diagnostics) = match input {
+    let (root_file, package_graph, mut ast, mut diagnostics) = match input {
         ProjectInput::Source { file, mode } => {
             let (ast, diagnostics) = parse_with_options(&file, mode, options);
             (file, None, ast, diagnostics)
@@ -447,58 +447,54 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
             let package = &graph.packages[&graph.root_package_name];
             match std::fs::read_to_string(&package.entry) {
                 Ok(source) => {
-                    let file = Arc::new(SourceFile::new(
-                        package.entry.to_string_lossy().into_owned(),
-                        source,
-                    ));
+                    // AS1a: the SAME construction the parser uses, so one physical file gets one
+                    // identity. This arm used to name the entry by its absolute path, which made
+                    // `build_source_map` intern a second, phantom record for it.
+                    let file = package.entry_source_file(source);
                     let (ast, diagnostics) = parse_package_graph(&graph, options);
                     (file, Some(graph), ast, diagnostics)
                 }
                 Err(error) => {
-                    let file = Arc::new(SourceFile::new(
-                        package.entry.to_string_lossy().into_owned(),
-                        "",
-                    ));
+                    // The entry could not be read, so there is no parse and no AST. Register the
+                    // empty entry anyway: the diagnostic has to belong to a real source, and this
+                    // is the source it is about.
+                    let file = package.entry_source_file("");
+                    let mut ast = Ast::default();
+                    let registered = ast.sources.intern(file.clone());
                     let diagnostic = Diagnostic::error(
                         format!("failed to read entry file: {error}"),
-                        Span { lo: 0, hi: 0 },
-                    )
-                    .with_file(file.clone());
-                    (file, Some(graph), Ast::default(), vec![diagnostic])
+                        registered.synthetic_span(),
+                    );
+                    (file, Some(graph), ast, vec![diagnostic])
                 }
             }
         }
         ProjectInput::PackageWithOverlays { graph, overlays } => {
-            let entry = graph.packages[&graph.root_package_name].entry.clone();
+            let package = &graph.packages[&graph.root_package_name];
+            let entry = package.entry.clone();
             let source = overlays
                 .get(&entry)
                 .cloned()
                 .or_else(|| std::fs::read_to_string(&entry).ok());
             match source {
+                // AS1a: same helper as the plain-package arm. The overlay decides the CONTENT of
+                // the entry file; it never changes its identity.
                 Some(source) => {
-                    let file = Arc::new(SourceFile::new(
-                        entry.to_string_lossy().into_owned(),
-                        source,
-                    ));
+                    let file = package.entry_source_file(source);
                     let (ast, diagnostics) =
                         parse_package_graph_with_overlays(&graph, options, &overlays);
                     (file, Some(graph), ast, diagnostics)
                 }
                 None => {
-                    let file = Arc::new(SourceFile::new(
-                        entry.to_string_lossy().into_owned(),
-                        String::new(),
-                    ));
-                    (
-                        file,
-                        Some(graph),
-                        Ast::default(),
-                        vec![Diagnostic::error(
-                            format!("cannot read package entry '{}'", entry.display()),
-                            Span { lo: 0, hi: 0 },
-                        )
-                        .with_code("E0208")],
+                    let file = package.entry_source_file(String::new());
+                    let mut ast = Ast::default();
+                    let registered = ast.sources.intern(file.clone());
+                    let diagnostic = Diagnostic::error(
+                        format!("cannot read package entry '{}'", entry.display()),
+                        registered.synthetic_span(),
                     )
+                    .with_code("E0208");
+                    (file, Some(graph), ast, vec![diagnostic])
                 }
             }
         }
@@ -511,13 +507,17 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
             crate::resolve::resolve_with_options(&ast, root_file.clone(), options);
         diagnostics.extend(resolve_diagnostics);
         if !has_errors(&diagnostics) {
-            let checked = analyze_with_options(&resolved, root_file.clone(), options);
+            let checked = analyze_with_options(&resolved, options);
             diagnostics.extend(checked.diagnostics);
             type_tables = Some(checked.tables);
         }
         hir = Some(resolved);
     }
 
+    // AS1b-ii: the root is registered here, not special-cased inside `build_source_map`. A parse
+    // that failed before reaching the entry would otherwise leave the map without the one file its
+    // diagnostics resolve against.
+    ast.sources.intern(root_file.clone());
     let source_map = build_source_map(&root_file, &ast, hir.as_ref(), package_graph.as_deref());
     let resolutions = hir
         .as_ref()
@@ -525,7 +525,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         .unwrap_or_default();
     let symbols = hir
         .as_ref()
-        .map(|hir| build_symbols(id, hir, &ast, &source_map))
+        .map(|hir| build_symbols(id, hir, &source_map))
         .unwrap_or_default();
     let queries = query::QueryIndex::build(id, &ast, hir.as_ref(), &source_map, &symbols);
 
@@ -561,42 +561,49 @@ fn is_identifier(value: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+/// A **view** over the AST's source registry: provenance and lookup, no allocation.
+///
+/// AS1b-i took id assignment out of here. This used to gather files from the root, `ast.item_files`
+/// and `hir.item_files`, dedup by name, sort, and hand out `SourceId`s — after the whole front end
+/// had run. Ids now come from `ast.sources`, where files are interned as they load, so a `SourceId`
+/// exists from the moment its source does. That is the precondition for a span carrying one.
+///
+/// `hir.item_files` is no longer consulted: it holds the same `Arc`s the parser put in
+/// `ast.item_files`, so it can contribute no file the registry has not already seen. The root is
+/// interned defensively because a parse that failed early may not have reached it.
 fn build_source_map(
     root: &Arc<SourceFile>,
     ast: &Ast,
-    hir: Option<&Hir>,
+    _hir: Option<&Hir>,
     graph: Option<&PackageGraph>,
 ) -> SourceMap {
-    let mut files = vec![root.clone()];
-    files.extend(ast.item_files.values().cloned());
-    if let Some(hir) = hir {
-        files.extend(hir.item_files.values().cloned());
-    }
-    let mut seen = HashSet::new();
-    files.retain(|file| seen.insert(file.name.clone()));
-    let mut non_root = files.split_off(1);
-    non_root.sort_by(|left, right| left.name.cmp(&right.name));
-    files.extend(non_root);
+    // Every source, with the identity the registry gave it. `analyze_project` registers the root
+    // before calling here, so there is no case left that would need an id this function invented.
+    let registered: Vec<crate::source::RegisteredSource> = ast.sources.iter().cloned().collect();
 
     let root_package = graph.map(|graph| graph.root_package_name.clone());
     let mut map = SourceMap::default();
-    for file in files {
-        let id = SourceId(map.files.len() as u32);
+    for entry in registered {
+        let id = entry.id();
+        let file = entry.file().clone();
+        // AS1a: attribute by the logical name's OWNING PACKAGE SEGMENT, matched against the graph.
+        //
+        // This used to ask whether the source *name* started with the package entry's absolute
+        // parent directory. Once DEV-113 made package files logically named (`<package>/<path>`),
+        // that predicate could never match, so every package file fell through to
+        // `Module { package: None }` and the branch was dead code on the package path. A logical
+        // name carries its package in the first segment, so the attribution is exact rather than
+        // inferred from a path prefix.
         let package = graph.and_then(|graph| {
+            let owner = file.name.split('/').next()?;
             graph
                 .packages
-                .iter()
-                .find(|(_, package)| {
-                    package
-                        .entry
-                        .parent()
-                        .is_some_and(|parent| file.name.starts_with(&*parent.to_string_lossy()))
-                })
-                .map(|(name, _)| name.clone())
+                .contains_key(owner)
+                .then(|| owner.to_string())
         });
         let provenance = if file.name == root.name {
             SourceProvenance::Root {
-                package: root_package.clone(),
+                package: package.clone().or_else(|| root_package.clone()),
             }
         } else {
             SourceProvenance::Module { package }
@@ -639,7 +646,10 @@ fn build_resolutions(analysis: u64, hir: &Hir) -> ResolutionTables {
     tables
 }
 
-fn build_symbols(analysis: u64, hir: &Hir, ast: &Ast, sources: &SourceMap) -> SymbolIndex {
+/// AS1b-ii-d: the AST parameter is gone. It was here only so a synthesised item's name could be
+/// looked up by SPAN in `ast.synthetic_spans`; names are keyed by item on the HIR now, so the
+/// symbol builder needs one tree instead of two.
+fn build_symbols(analysis: u64, hir: &Hir, sources: &SourceMap) -> SymbolIndex {
     let mut index = SymbolIndex::default();
     for (slot, item) in hir.items.iter().enumerate() {
         let (kind, span) = match &item.kind {
@@ -655,11 +665,12 @@ fn build_symbols(analysis: u64, hir: &Hir, ast: &Ast, sources: &SourceMap) -> Sy
         };
         let item_id = crate::hir::ItemId(slot as u32);
         let file = hir
-            .item_files
-            .get(&item_id)
+            .item_file(item_id)
             .map(Arc::as_ref)
             .unwrap_or_else(|| sources.files[0].file.as_ref());
-        let name = ast.synthetic_spans.get(&span).cloned().or_else(|| {
+        // AS1b-ii-d: a synthesised item's name comes from the item table; a real one from its
+        // own source text.
+        let name = hir.synthetic_names.get(&item_id).cloned().or_else(|| {
             file.src
                 .get(span.lo as usize..span.hi as usize)
                 .map(str::to_owned)
@@ -846,27 +857,31 @@ mod tests {
             analysis.references(symbol),
             vec![SourceLocation {
                 source: root_id,
-                span: Span {
-                    lo: root_source.find("child::answer").unwrap() as u32,
-                    hi: (root_source.find("child::answer").unwrap() + "child::answer".len()) as u32,
-                },
+                span: Span::in_source(
+                    root_id,
+                    root_source.find("child::answer").unwrap() as u32,
+                    (root_source.find("child::answer").unwrap() + "child::answer".len()) as u32,
+                ),
             }]
         );
         assert!(analysis.enclosing(symbol).unwrap().module.is_some());
         assert_eq!(analysis.document_symbols(child_id).len(), 1);
 
-        let root_file = analysis.source_map.get(root_id).unwrap().file.clone();
-        let child_file = analysis.source_map.get(child_id).unwrap().file.clone();
+        // AS1b-ii-d: source identity travels in the spans. The primary belongs to the root and
+        // the related note to the child, and the transport below must preserve exactly that —
+        // previously it was told twice, once by a file and once by a span.
         analysis.diagnostics.push(
-            Diagnostic::error("cross-file contract violation", Span::new(0, 3))
-                .with_file(root_file)
-                .with_code("E0999")
-                .with_label("primary")
-                .with_related(child_file, Span::new(7, 13), "declared here")
-                .with_note("transport note")
-                .with_help("transport help")
-                .with_rule_id("TEST-RULE-001")
-                .with_deviation_id("DEV-TEST"),
+            Diagnostic::error(
+                "cross-file contract violation",
+                Span::in_source(root_id, 0, 3),
+            )
+            .with_code("E0999")
+            .with_label("primary")
+            .with_related(Span::in_source(child_id, 7, 13), "declared here")
+            .with_note("transport note")
+            .with_help("transport help")
+            .with_rule_id("TEST-RULE-001")
+            .with_deviation_id("DEV-TEST"),
         );
         let versions = HashMap::from([(root_id, 17)]);
         let batch = analysis.diagnostic_batch(&versions);

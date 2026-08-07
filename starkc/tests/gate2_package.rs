@@ -120,7 +120,7 @@ fn test_three_package_workspace_compiles() {
     diags.append(&mut resolution);
     assert!(diags.is_empty(), "resolution failed: {:?}", diags);
 
-    let mut tc_diags = typecheck::check(&hir, root_file);
+    let mut tc_diags = typecheck::check(&hir);
     diags.append(&mut tc_diags);
     assert!(diags.is_empty(), "typecheck failed: {:?}", diags);
 
@@ -182,7 +182,7 @@ fn test_dependency_alias_is_distinct_from_canonical_package_name() {
     ));
     let (hir, mut resolution) = resolve(&ast, root_file.clone());
     diagnostics.append(&mut resolution);
-    diagnostics.append(&mut typecheck::check(&hir, root_file));
+    diagnostics.append(&mut typecheck::check(&hir));
     assert!(
         diagnostics.is_empty(),
         "alias-based package import failed: {diagnostics:?}"
@@ -313,7 +313,7 @@ fn test_distinct_aliases_allow_incompatible_major_lines_to_coexist() {
     ));
     let (hir, mut resolution) = resolve(&ast, root_file.clone());
     diagnostics.append(&mut resolution);
-    diagnostics.append(&mut typecheck::check(&hir, root_file));
+    diagnostics.append(&mut typecheck::check(&hir));
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let _ = std::fs::remove_dir_all(workspace);
 }
@@ -687,10 +687,12 @@ fn test_cross_package_diagnostic_reports_dependency_file_not_root_file() {
         .iter()
         .find(|d| d.code.as_deref() == Some("E0204"))
         .unwrap_or_else(|| panic!("expected E0204 for the duplicate 'broken' fn, got {diags:?}"));
-    let dup_file = dup
-        .file
-        .as_ref()
-        .expect("diagnostic should carry a file identity");
+    // AS1b-ii-d: the diagnostic's source is the one its span names, resolved through the parse's
+    // own registry — not a file identity stamped alongside it that could disagree.
+    let dup_file = ast
+        .sources
+        .get(dup.span.source)
+        .expect("the diagnostic's span must name a registered source");
     assert!(
         dup_file.name.contains("dep") && dup_file.name.ends_with("main.stark"),
         "expected the diagnostic's file to be the dependency's src/main.stark, got {:?}",
@@ -773,7 +775,7 @@ fn test_cross_package_coherence_orphan_rule_with_real_packages() {
     let (hir, mut resolution) = resolve(&ast, root_file.clone());
     diags.append(&mut resolution);
     assert!(diags.is_empty(), "resolution failed: {:?}", diags);
-    let mut tc_diags = typecheck::check(&hir, root_file);
+    let mut tc_diags = typecheck::check(&hir);
     diags.append(&mut tc_diags);
 
     // Report, don't assume: this is exactly the untested case the WP-C1.2 research flagged.

@@ -41,7 +41,7 @@ fn errors(source: &str) -> Vec<String> {
             .map(|d| format!("{}: {}", d.code.clone().unwrap_or_default(), d.message)),
     );
     out.extend(
-        typecheck::analyze(&hir, file)
+        typecheck::analyze(&hir)
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == Severity::Error)

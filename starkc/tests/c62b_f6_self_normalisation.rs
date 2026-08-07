@@ -31,7 +31,7 @@ fn rejected(tag: &str, src: &str) {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

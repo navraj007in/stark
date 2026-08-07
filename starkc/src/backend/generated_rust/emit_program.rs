@@ -96,7 +96,8 @@ pub fn emit(
             main_rs.push_str(&emit_entry_fn(
                 body,
                 versions,
-                &program.files,
+                &program.sources,
+                program.entry_source,
                 &program.types,
                 layout,
                 &program.provider_calls,
@@ -108,7 +109,7 @@ pub fn emit(
             main_rs.push_str(&emit_bodies::emit_function(
                 body,
                 &name,
-                &program.files,
+                &program.sources,
                 &program.types,
                 layout,
                 &program.provider_calls,
@@ -126,7 +127,8 @@ pub fn emit(
 fn emit_entry_fn(
     entry: &MirBody,
     versions: &BuildVersions,
-    files: &[std::sync::Arc<crate::source::SourceFile>],
+    sources: &crate::source::SourceTable,
+    entry_source: crate::source::SourceId,
     types: &crate::mir::TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
@@ -149,7 +151,7 @@ fn emit_entry_fn(
         // The common case is unchanged: a `Unit` entry IS Rust's `fn main()`.
         let block = emit_bodies::emit_block_body(
             entry,
-            files,
+            sources,
             types,
             layout,
             provider_calls,
@@ -171,16 +173,18 @@ fn emit_entry_fn(
     out.push_str(&emit_bodies::emit_function(
         entry,
         "__stark_entry",
-        files,
+        sources,
         types,
         layout,
         provider_calls,
         program_resources,
         thunks,
     )?);
-    let entry_file = files
-        .first()
-        .map(|f| f.name.clone())
+    // AS1b-iii: the entry is named by `MirProgram::entry_source`, not by "whatever `files[0]` is".
+    // Those agreed, but only one of them said so.
+    let entry_file = sources
+        .get(entry_source)
+        .map(|source| source.name.clone())
         .unwrap_or_else(|| "<entry>".to_string());
     // Provenance for the range trap is the ENTRY FILE at 1:1 (MIR amendment A7): the contract is
     // violated by the entry's result, not by an expression, and all three engines report this same

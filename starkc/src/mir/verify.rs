@@ -20,7 +20,7 @@
 //! V-IDX-1/2  MIR-0010 (index-proof discipline violation)
 //! V-FN-1     MIR-0011 (arithmetic/comparison on a FnPtr operand)
 //! V-RT-1     MIR-0012 (runtime callee signature mismatch)
-//! V-SRC-1    MIR-0013 (SourceInfo missing a valid FileId)
+//! V-SRC-1    MIR-0013 (SourceInfo names a source the program cannot resolve)
 //! V-REF-1    MIR-0014 (write crossing a Deref of a shared reference — C4.5e-0)
 //! V-STR-1/2  MIR-0015 (invalid Str constant / String|str in a structural op / bad Trap msg — A1)
 //! V-COPY-1   MIR-0016 (Copy-only runtime op on a non-Copy element type — A1; Vec ops land e-2)
@@ -491,9 +491,20 @@ impl<'a> BodyCx<'a> {
         self.verify_terminator(term, bi);
     }
 
+    /// V-SRC-1: every `SourceInfo` names a source this program can resolve.
+    ///
+    /// AS1b-iii changed what this proves. It used to check that a MIR-local `FileId` was in range
+    /// for `MirProgram::files` — validating a secondary identity the lowerer had minted for itself,
+    /// while saying nothing about the `SourceId` the span carried and everything downstream would
+    /// eventually need. Now there is one identity, and the verifier resolves it against the
+    /// program's registry, which is a claim lowering cannot satisfy by construction.
     fn verify_source(&mut self, info: &SourceInfo, bi: u32) {
-        if (info.file.0 as usize) >= self.program.files.len() {
-            self.err("MIR-0013", bi, "SourceInfo carries an invalid FileId");
+        if self.program.sources.get(info.span.source).is_none() {
+            self.err(
+                "MIR-0013",
+                bi,
+                "SourceInfo names a source absent from the program's source registry",
+            );
         }
     }
 

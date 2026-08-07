@@ -12,7 +12,11 @@ fn extract_from(source: &str) -> Vec<starkc::doc_gen::extract::DocItem> {
     let file = SourceFile::new("t.stark", source.to_string());
     let (ast, diags) = parse(&file, ParseMode::Program);
     assert!(diags.is_empty(), "parse failed: {diags:?}");
-    let (_, comments, _) = tokenize_with_comments(&file);
+    let doc_source = ast
+        .sources
+        .id_for_name(&file.name)
+        .expect("the parse registered this file");
+    let (_, comments, _) = tokenize_with_comments(&file, doc_source);
     extract(&ast, &file, &comments)
 }
 

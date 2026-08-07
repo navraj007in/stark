@@ -25,10 +25,9 @@ use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
 use crate::mir::provider_lower::ProviderLowering;
-use crate::source::SourceFile;
+use crate::source::{RegisteredSource, Span};
 use crate::typecheck::{Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
 
 pub struct LowerError {
     pub what: String,
@@ -239,10 +238,12 @@ fn zero_of(ty: &MirTy, span: Span) -> Result<Operand, LowerError> {
 /// its defining file (so spans and name reads land in the right source) and its module path
 /// (so canonical symbols are package/module-qualified: `⟨package⟩::⟨module⟩::name@[args]`).
 struct ProgramMeta {
-    /// Interned files; index = `FileId`. The entry file is `FileId(0)`.
-    files: Vec<Arc<SourceFile>>,
-    /// `item.0` → (defining file, module path from the root, outermost first).
-    items: HashMap<u32, (FileId, Vec<String>)>,
+    /// AS1b-iii: the program's sources, taken from the HIR's registry rather than re-interned into
+    /// a MIR-local `FileId` space. Re-interning by name was how MIR acquired a second source
+    /// identity that could disagree with the one every span already carried.
+    sources: crate::source::SourceTable,
+    /// `item.0` → (defining source, module path from the root, outermost first).
+    items: HashMap<u32, (crate::source::SourceId, Vec<String>)>,
     /// Every item reachable from the root, modules included (deterministic walk order).
     all_items: Vec<ItemId>,
     /// WP-C6.1g-a (OWN-COPY-001, amended): items that are `Copy` when their type arguments are —
@@ -254,37 +255,31 @@ struct ProgramMeta {
     /// the impl's bound HIR type. Lets the monomorphiser resolve a projection `T::Item` once `T`'s
     /// concrete nominal is known, mirroring the front end's `assoc_projections`.
     assoc_projections: HashMap<(u32, String), hir::TypeId>,
+    /// AS1b-ii: the entry's registered id. Lowering rejections with nothing to point at belong to
+    /// the program's entry rather than to a fabricated source.
+    entry_source: crate::source::SourceId,
 }
 
 impl ProgramMeta {
-    fn build(hir: &Hir, entry: &Arc<SourceFile>) -> Result<Self, LowerError> {
-        let mut files: Vec<Arc<SourceFile>> = vec![entry.clone()];
-        let mut by_name: HashMap<String, FileId> = HashMap::new();
-        by_name.insert(entry.name.clone(), FileId(0));
-        let mut intern = |file: &Arc<SourceFile>, files: &mut Vec<Arc<SourceFile>>| -> FileId {
-            if let Some(&id) = by_name.get(&file.name) {
-                return id;
-            }
-            let id = FileId(files.len() as u32);
-            files.push(file.clone());
-            by_name.insert(file.name.clone(), id);
-            id
-        };
+    fn build(hir: &Hir, entry: &RegisteredSource) -> Result<Self, LowerError> {
+        let entry_source = entry.id();
+        let sources = hir.sources.clone();
 
         let root_items = match &hir.root {
             hir::Root::Program(items) => items.clone(),
-            _ => return unsupported("non-program root", Span { lo: 0, hi: 0 }),
+            _ => return unsupported("non-program root", entry.synthetic_span()),
         };
-        let mut items: HashMap<u32, (FileId, Vec<String>)> = HashMap::new();
+        let mut items: HashMap<u32, (crate::source::SourceId, Vec<String>)> = HashMap::new();
         let mut all_items: Vec<ItemId> = Vec::new();
         let mut stack: Vec<(ItemId, Vec<String>)> =
             root_items.iter().rev().map(|&i| (i, Vec::new())).collect();
         while let Some((item_id, path)) = stack.pop() {
-            let file_id = match hir.item_files.get(&item_id) {
-                Some(f) => intern(f, &mut files),
-                None => FileId(0),
-            };
-            items.insert(item_id.0, (file_id, path.clone()));
+            let item_source = hir
+                .item_sources
+                .get(&item_id)
+                .copied()
+                .unwrap_or(entry_source);
+            items.insert(item_id.0, (item_source, path.clone()));
             all_items.push(item_id);
             if let ItemKind::Mod {
                 name,
@@ -293,11 +288,15 @@ impl ProgramMeta {
             {
                 // The mod's name span reads in the file DECLARING the mod (this item's own
                 // file); dependency-package wrappers use synthetic spans resolved by name.
-                let mod_name = if let Some(s) = hir.synthetic_spans.get(name) {
+                let mod_name = if let Some(s) = hir.synthetic_names.get(&item_id) {
                     s.clone()
                 } else {
-                    let src = &files[file_id.0 as usize].src;
-                    src.get(name.lo as usize..name.hi as usize)
+                    // AS1b-iii: read against the source the NAME's span points at, not against the
+                    // item's file looked up separately. They were the same file; only one of them
+                    // was guaranteed to be.
+                    sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string()
                 };
@@ -312,7 +311,9 @@ impl ProgramMeta {
                 //
                 // A synthetic span marks a dependency-package wrapper; a plain `mod` has a real span
                 // in its declaring file. So the reset is exact rather than heuristic.
-                let crosses_package_boundary = hir.synthetic_spans.contains_key(name);
+                // A synthesised NAME marks a dependency-package wrapper; a plain `mod` is named by
+                // real source text. AS1b-ii-d: this asks about the item, not about its span.
+                let crosses_package_boundary = hir.synthetic_names.contains_key(&item_id);
                 let mut child_path = if crosses_package_boundary {
                     Vec::new()
                 } else {
@@ -340,15 +341,11 @@ impl ProgramMeta {
             let Some(nominal) = impl_self_item(hir, item_id) else {
                 continue;
             };
-            let file_id = match hir.item_files.get(&item_id) {
-                Some(f) => *by_name.get(&f.name).unwrap_or(&FileId(0)),
-                None => FileId(0),
-            };
-            let src = &files[file_id.0 as usize].src;
             for impl_item in impl_items {
                 if let hir::ImplItem::AssocType { name, ty } = impl_item {
-                    let assoc_name = src
-                        .get(name.lo as usize..name.hi as usize)
+                    let assoc_name = sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string();
                     assoc_projections.insert((nominal.0, assoc_name), *ty);
@@ -356,30 +353,30 @@ impl ProgramMeta {
             }
         }
         Ok(ProgramMeta {
-            files,
+            sources,
             items,
             all_items,
             copy_eligible,
             assoc_projections,
+            entry_source,
         })
     }
 
-    fn item_file(&self, item: ItemId) -> FileId {
-        self.items
-            .get(&item.0)
-            .map(|(f, _)| *f)
-            .unwrap_or(FileId(0))
-    }
-
-    fn item_src(&self, item: ItemId) -> &str {
-        &self.files[self.item_file(item).0 as usize].src
-    }
-
-    /// Read a span belonging to `item`'s file.
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        self.item_src(item)
-            .get(span.lo as usize..span.hi as usize)
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-iii: `item_text(item, span)` looked the item's file up in a MIR-local table and sliced
+    /// that. The item is no longer consulted — it never disagreed with the span, but nothing said
+    /// it could not.
+    fn text(&self, span: Span) -> &str {
+        self.sources
+            .get(span.source)
+            .and_then(|source| source.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
+    }
+
+    /// AS1b-iii: kept for call sites that read a name off a declaration; `item` is redundant.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
     /// `"dep::inner::"` for a nested item; empty for root items.
@@ -395,7 +392,7 @@ impl ProgramMeta {
 pub fn lower_program(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
 ) -> Result<MirProgram, LowerError> {
     lower_program_with_providers(hir, tables, file, ProviderLowering::none())
 }
@@ -409,7 +406,7 @@ pub fn lower_program(
 pub fn lower_program_with_providers(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
     providers: &ProviderLowering,
 ) -> Result<MirProgram, LowerError> {
     // C4.5f-3c: multi-file/multi-package metadata — per-item files, module paths, and the
@@ -429,7 +426,7 @@ pub fn lower_program_with_providers(
         }
     }
     let Some(main) = main else {
-        return unsupported("program without a `main` function", Span { lo: 0, hi: 0 });
+        return unsupported("program without a `main` function", file.synthetic_span());
     };
 
     // A11: resolve the synthesized nominal NAMES to item ids, now that `meta` can map an item to its
@@ -458,13 +455,15 @@ pub fn lower_program_with_providers(
             })
             .map_err(|what| LowerError {
                 what,
-                span: Span { lo: 0, hi: 0 },
+                span: file.synthetic_span(),
             })?
     };
     let providers = &providers;
 
+    let entry_source = file.id();
     let mut program = MirProgram {
-        files: meta.files.clone(),
+        entry_source,
+        sources: meta.sources.clone(),
         bodies: Vec::new(),
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
@@ -617,7 +616,7 @@ pub fn lower_program_with_providers(
                          ({LIMIT_MIR_TYPE_DEPTH} nested type constructors); recursive generic \
                          instantiation cannot be compiled"
                     ),
-                    span: Span { lo: 0, hi: 0 },
+                    span: file.synthetic_span(),
                 });
             }
             let symbol = key_symbol(hir, &meta, &callee)?;
@@ -632,7 +631,7 @@ pub fn lower_program_with_providers(
                              function instances); recursive generic instantiation cannot be \
                              compiled"
                         ),
-                        span: Span { lo: 0, hi: 0 },
+                        span: file.synthetic_span(),
                     });
                 }
                 worklist.push_back(callee);
@@ -662,7 +661,7 @@ fn nominal_instance_fields(
     args: &[MirTy],
     providers: &ProviderLowering,
 ) -> Result<NominalFields, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     // The probe is keyed to the nominal itself, so field-type spans read in ITS file (f-3c).
     //
     // **Provider-aware (CD-234).** This probe builds the variant-payload table, and a provider-blind
@@ -861,7 +860,7 @@ fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
 /// in its declaring item's own file, and module-nested items carry their path, so equal
 /// names in different modules/packages stay distinct.
 fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     match key {
         FnKey::Top(item, type_args) => {
             let name = item_name_text(hir, meta, *item).ok_or_else(|| LowerError {
@@ -1145,11 +1144,8 @@ struct FnLowerer<'a> {
     /// WP-C7.8.8 step 6: the provider calls this program may lower. Empty for every program that
     /// binds no provider, which is almost all of them.
     providers: &'a ProviderLowering,
-    /// f-3c: program-wide file/module metadata (per-item files and paths).
+    /// f-3c: program-wide file/module metadata (per-item sources and module paths).
     meta: &'a ProgramMeta,
-    /// The source of the file DEFINING this body's item — body spans read here.
-    src: &'a str,
-    file: FileId,
     key: FnKey,
     /// Concrete `Self` type for method/trait-default bodies (C4.5a).
     self_subst: Option<MirTy>,
@@ -1187,21 +1183,14 @@ impl<'a> FnLowerer<'a> {
         key: FnKey,
         providers: &'a ProviderLowering,
     ) -> Self {
-        // f-3c: the body's spans and text reads belong to the DEFINING item's file.
-        let owner = match &key {
-            FnKey::Top(item, _) => *item,
-            FnKey::ImplFn { impl_item, .. } => *impl_item,
-            FnKey::TraitDefault { trait_item, .. } => *trait_item,
-        };
-        let file = meta.item_file(owner);
-        let src: &'a str = &meta.files[file.0 as usize].src;
+        // f-3c pointed `src`/`file` at the DEFINING item's file so body spans read and were
+        // attributed correctly. AS1b-iii: every span names its own source, so the body needs no
+        // ambient file at all.
         FnLowerer {
             hir,
             tables,
             providers,
             meta,
-            src,
-            file,
             key,
             self_subst: None,
             param_subst: HashMap::new(),
@@ -1220,13 +1209,17 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// This sliced `self.src` — the defining file of the body being lowered — with a bare index, so
+    /// a span from another file was either garbage or a panic. Now it resolves, and an unresolvable
+    /// span reads `"?"` rather than aborting the compiler.
     fn text(&self, span: Span) -> &'a str {
-        &self.src[span.lo as usize..span.hi as usize]
+        self.meta.text(span)
     }
 
     fn info(&self, span: Span) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::UserCode,
         }
@@ -1234,7 +1227,6 @@ impl<'a> FnLowerer<'a> {
 
     fn synthetic(&self, span: Span, kind: SyntheticKind) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::Synthetic(kind),
         }
@@ -2884,7 +2876,7 @@ impl<'a> FnLowerer<'a> {
 
     /// Resolve this lowerer's `FnKey` to (signature, body block, receiver self-type).
     fn fn_parts(&self) -> Result<(&'a hir::FnSig, hir::BlockId, Option<MirTy>), LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         match &self.key {
             FnKey::Top(item, _) => match &self.hir.item(*item).kind {
                 ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
@@ -3067,7 +3059,7 @@ impl<'a> FnLowerer<'a> {
         impl_item: ItemId,
         type_args: &[MirTy],
     ) -> Result<Vec<(String, MirTy)>, LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         let ItemKind::Impl {
             generics, self_ty, ..
         } = &self.hir.item(impl_item).kind
@@ -12044,4 +12036,156 @@ fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
         hir::ExprKind::Repeat { .. } => "Repeat",
         hir::ExprKind::Error => "Error",
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AS0 item 7 / RB0 — the reference-rule equivalence matrix. MEASUREMENT ONLY.
+//
+// `WP-C7.8-RB0-MIR-Type-Property-Authority.md` records three implementations of "carries a
+// reference" and requires an audit BEFORE consolidation: "each duplicate is removed only after a
+// test demonstrates the survivor agrees with it across the full `MirTy` variant set. A predicate
+// that turns out to differ is kept, renamed, and documented."
+//
+// This is that test. It asserts nothing about which answer is correct — it records where the three
+// disagree, so RB0/AS4 consolidates from evidence rather than from the assumption that a shared
+// name means a shared rule. The expected disagreements are PINNED, so a silent change to any of the
+// three fails here.
+#[cfg(test)]
+mod as0_reference_predicate_inventory {
+    use crate::backend::generated_rust::emit_types;
+    use crate::hir::{CoreType, ItemId};
+    use crate::mir::{EnumRef, HostResourceNominal, HostResourceTy, MirTy};
+
+    /// One sample per `MirTy` variant, and — for the composite variants — a second sample carrying
+    /// a reference inside, because that is the only place the three predicates can differ.
+    fn samples() -> Vec<(&'static str, MirTy)> {
+        let r = || MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Int32),
+        };
+        vec![
+            ("Int8", MirTy::Int8),
+            ("Int16", MirTy::Int16),
+            ("Int32", MirTy::Int32),
+            ("Int64", MirTy::Int64),
+            ("UInt8", MirTy::UInt8),
+            ("UInt16", MirTy::UInt16),
+            ("UInt32", MirTy::UInt32),
+            ("UInt64", MirTy::UInt64),
+            ("Float32", MirTy::Float32),
+            ("Float64", MirTy::Float64),
+            ("Bool", MirTy::Bool),
+            ("Char", MirTy::Char),
+            ("Unit", MirTy::Unit),
+            ("Never", MirTy::Never),
+            ("Str", MirTy::Str),
+            ("String", MirTy::String),
+            ("Struct(plain)", MirTy::Struct(ItemId(0), Vec::new())),
+            ("Struct(<&T>)", MirTy::Struct(ItemId(0), vec![r()])),
+            (
+                "Enum::User(plain)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), Vec::new()),
+            ),
+            (
+                "Enum::User(<&T>)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), vec![r()]),
+            ),
+            (
+                "Enum::CoreOption(<&T>)",
+                MirTy::Enum(EnumRef::CoreOption, vec![r()]),
+            ),
+            ("Tuple(plain)", MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(&T)", MirTy::Tuple(vec![r()])),
+            ("Array(plain)", MirTy::Array(Box::new(MirTy::Int32), 4)),
+            ("Array(&T)", MirTy::Array(Box::new(r()), 4)),
+            ("Slice(plain)", MirTy::Slice(Box::new(MirTy::Int32))),
+            ("Slice(&T)", MirTy::Slice(Box::new(r()))),
+            ("Ref", r()),
+            (
+                "FnPtr(ret &T)",
+                MirTy::FnPtr {
+                    params: Vec::new(),
+                    ret: Box::new(r()),
+                },
+            ),
+            (
+                "FnPtr(param &T)",
+                MirTy::FnPtr {
+                    params: vec![r()],
+                    ret: Box::new(MirTy::Unit),
+                },
+            ),
+            (
+                "Core(plain)",
+                MirTy::Core(CoreType::Vec, vec![MirTy::Int32]),
+            ),
+            ("Core(<&T>)", MirTy::Core(CoreType::Vec, vec![r()])),
+            (
+                "HostResource",
+                MirTy::HostResource(Box::new(HostResourceTy {
+                    nominal: HostResourceNominal::Core(CoreType::Vec),
+                    provider: "probe".to_string(),
+                    resource: "probe_resource".to_string(),
+                })),
+            ),
+        ]
+    }
+
+    /// The three answers, per sample, with every disagreement pinned.
+    #[test]
+    fn the_three_reference_predicates_are_measured_against_each_other() {
+        // (sample, lower::ty_carries_ref, emit::ty_carries_reference, emit::ty_contains_ref)
+        let mut disagreements = Vec::new();
+        let mut checked = 0usize;
+        for (name, ty) in samples() {
+            let a = super::ty_carries_ref(&ty);
+            let b = emit_types::ty_carries_reference(&ty);
+            let c = emit_types::contains_ref_for_inventory(&ty);
+            checked += 1;
+            if !(a == b && b == c) {
+                disagreements.push(format!(
+                    "{name}: lower::ty_carries_ref={a}, emit::ty_carries_reference={b}, emit::ty_contains_ref={c}"
+                ));
+            }
+        }
+        assert!(
+            checked >= 30,
+            "only {checked} samples; the matrix is too thin"
+        );
+
+        // PINNED. Not an approval of any answer — a record of where the three differ today, so
+        // RB0/AS4 consolidates from evidence and a silent change to any of them fails here.
+        let expected: Vec<String> = EXPECTED_DISAGREEMENTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            disagreements, expected,
+            "\n\nThe reference-rule predicates now disagree differently than recorded.\n\
+             This test measures; it does not judge. If a predicate changed on purpose, update the \
+             pinned list and say why in the RB0/AS4 record. If it changed by accident, that is the \
+             divergence hazard RB0 exists for.\n"
+        );
+    }
+
+    /// **The measured disagreement, which is RB0's Q2 reproduced from evidence rather than from
+    /// reading.** Two of the three say a function pointer carries no reference; one descends into
+    /// its parameters and return type and says it does.
+    ///
+    /// RB0 states the question to answer before touching any of them: *"Determine first whether the
+    /// two ask the same question. A plain function pointer does not borrow the values it will later
+    /// receive, and a Rust `fn(&T)` is higher-ranked and needs no lifetime parameter — which is the
+    /// only thing the lowering predicate guards (E0106). But a function value representation could
+    /// carry an environment, lifetime-bearing metadata, or a bound receiver."*
+    ///
+    /// So this is pinned, not fixed. Forcing agreement here would be a behavioural change without a
+    /// CD, which RB0 exit criterion 5 forbids.
+    ///
+    /// Note what the matrix also shows: the three agree on **every other variant**, including every
+    /// composite carrying a reference inside. The reference rule is one rule with one exception,
+    /// which is a much smaller consolidation than "three implementations" suggested.
+    const EXPECTED_DISAGREEMENTS: &[&str] = &[
+        "FnPtr(ret &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
+        "FnPtr(param &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
+    ];
 }

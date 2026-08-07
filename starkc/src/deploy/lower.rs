@@ -46,14 +46,14 @@ pub(crate) struct LoweredGraph {
 pub(crate) fn lower_reachable(
     hir: &Hir,
     tables: &TypeTables,
-    file: &SourceFile,
+    file: &crate::source::RegisteredSource,
     entry: &str,
 ) -> Result<LoweredGraph, Vec<Diagnostic>> {
     // Locate the entry function item.
     let Some(entry_id) = find_fn(hir, file, entry) else {
         return Err(vec![Diagnostic::error(
             format!("deployment entry function `{entry}` was not found"),
-            Span::new(0, 0),
+            file.synthetic_span(),
         )
         .with_code(code::ENTRY_NOT_FOUND)]);
     };

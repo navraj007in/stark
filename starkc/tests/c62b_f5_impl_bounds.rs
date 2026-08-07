@@ -75,7 +75,7 @@ fn c62b_f5_an_unbounded_impl_param_still_rejects_the_method() {
     let file = Arc::new(SourceFile::new("f5_neg.stark".to_string(), src));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

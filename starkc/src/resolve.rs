@@ -176,9 +176,28 @@ pub fn resolve_with_options(
     // Pass 3: Lower AST to HIR & perform lexical/local name resolution
     resolver.lower_crate();
 
-    // C4.5f-3c: carry the synthetic-span names (dependency-package mod wrappers) into HIR
-    // so MIR lowering's module-path walk can read them.
-    resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
+    // C4.5f-3c: carry the synthesised names (dependency-package `mod` wrappers) into HIR so MIR
+    // lowering's module-path walk can read them.
+    //
+    // AS1b-ii-d: these are keyed by ITEM now, and AST and HIR item ids are DIFFERENT SPACES, so
+    // this remaps through `item_map` rather than cloning. The old span-keyed map needed no
+    // remapping — a span means the same thing in both trees — which is exactly the kind of
+    // assumption that survives a refactor silently if it is not stated.
+    let synthetic_names: std::collections::HashMap<hir::ItemId, String> = resolver
+        .ast
+        .synthetic_names
+        .iter()
+        .filter_map(|(ast_id, name)| {
+            resolver
+                .item_map
+                .get(ast_id)
+                .map(|hir_id| (*hir_id, name.clone()))
+        })
+        .collect();
+    resolver.hir.synthetic_names = synthetic_names;
+    // Frozen after parsing: the registry is complete once every file has been loaded, and nothing
+    // downstream registers a source.
+    resolver.hir.sources = resolver.ast.sources.clone().freeze();
     // DEV-173: literal values travel with the HIR; nothing downstream re-decodes from a span.
     resolver.hir.str_lits = resolver.ast.str_lits.clone();
 
@@ -196,33 +215,35 @@ impl<'a> Resolver<'a> {
         &self.modules[self.current_module.0 as usize].file
     }
 
-    fn current_file_arc(&self) -> Arc<SourceFile> {
-        self.modules[self.current_module.0 as usize].file.clone()
-    }
-
-    /// WP-C1.2 (2026-07-17): `self.current_module` accurately tracks which module (and
-    /// therefore which file) is being processed at every diagnostic-construction site (it is
-    /// saved/restored around every submodule descent in declare_items/resolve_imports/
-    /// lower_crate), but resolve.rs never attached that file to its own diagnostics -- every
-    /// resolve-stage diagnostic for a non-root file in a multi-file package rendered against
-    /// the wrong file. This mirrors typecheck.rs's own if-none backfill pattern
-    /// (typecheck.rs:2041-2044 etc.) rather than requiring every call site to remember to call
-    /// `.with_file(...)` itself. See COMPILER-STATE.md DEV-006.
+    /// WP-C1.2 (2026-07-17) attached the current module's file to every resolve diagnostic:
+    /// without it, a diagnostic for a non-root file in a multi-file package rendered against the
+    /// wrong file (DEV-006).
+    ///
+    /// AS1b-ii-d deleted the attachment. `current_module` still tracks where resolution is, but a
+    /// diagnostic's span already carries the source it was lexed from, so the file no longer has
+    /// to be re-derived from the resolver's position and cannot disagree with it.
     fn push_diag(&mut self, diag: Diagnostic) {
-        let diag = if diag.file.is_none() {
-            diag.with_file(self.current_file_arc())
-        } else {
-            diag
-        };
         self.diags.push(diag);
     }
 
-    fn text(&self, span: Span) -> &str {
-        if span.lo >= 0x8000_0000 {
-            if let Some(s) = self.ast.synthetic_spans.get(&span) {
-                return s;
-            }
+    /// AS1b-ii-d: every span this sees indexes a real file. The `lo >= 0x8000_0000` branch that
+    /// returned a synthesised NAME from a side table is gone — names are keyed by item now, so a
+    /// span reader no longer has to know that some spans are not locations.
+    /// The declared name of an item.
+    ///
+    /// AS1b-ii-d: a compiler-synthesised item (a dependency-package `mod` wrapper) has no source
+    /// text, so its name comes from the item table. Everything else reads its own span. Both
+    /// name-deriving sites go through here — the first version of this change patched only the
+    /// submodule walk and left `declare_items` reading a zero-width span, which registered every
+    /// dependency wrapper under the empty name and collided them.
+    fn item_name(&self, ast_id: ast::ItemId, name_span: Span) -> String {
+        match self.ast.synthetic_names.get(&ast_id) {
+            Some(name) => name.clone(),
+            None => self.text(name_span).to_string(),
         }
+    }
+
+    fn text(&self, span: Span) -> &str {
         let file = self.current_file();
         &file.src[span.lo as usize..span.hi as usize]
     }
@@ -269,7 +290,7 @@ impl<'a> Resolver<'a> {
             };
 
             if let Some(span) = name_span {
-                let name_str = self.text(span).to_string();
+                let name_str = self.item_name(ast_id, span);
                 match self.modules[current_mod_id.0 as usize]
                     .items
                     .entry(name_str.clone())
@@ -346,12 +367,12 @@ impl<'a> Resolver<'a> {
                 items: ref sub_items,
             } = item.kind
             {
-                let name_str = self.text(name).to_string();
+                let name_str = self.item_name(ast_id, name);
                 let sub_mod_id = ModuleId(self.modules.len() as u32);
 
                 let file = if let Some(ref sub_items_vec) = sub_items {
                     if !sub_items_vec.is_empty() {
-                        if let Some(file_arc) = self.ast.item_files.get(&sub_items_vec[0]) {
+                        if let Some(file_arc) = self.ast.item_file(sub_items_vec[0]) {
                             file_arc.clone()
                         } else {
                             self.modules[current_mod_id.0 as usize].file.clone()
@@ -363,7 +384,9 @@ impl<'a> Resolver<'a> {
                     self.modules[current_mod_id.0 as usize].file.clone()
                 };
 
-                let is_dep_package = name.lo >= 0x8000_0000;
+                // A synthesised name marks a dependency-package wrapper, exactly as the fake
+                // span range used to — but as a fact about the item rather than about its span.
+                let is_dep_package = self.ast.synthetic_names.contains_key(&ast_id);
                 let owner_package_root = self.modules[current_mod_id.0 as usize].package_root;
                 if is_dep_package {
                     // DEV-175: record the alias against the package that DECLARED the dependency,
@@ -1944,8 +1967,8 @@ impl<'a> Resolver<'a> {
         };
 
         let hir_id = self.hir.alloc_item(kind, node.vis, node.span);
-        if let Some(file) = self.ast.item_files.get(&ast_id) {
-            self.hir.item_files.insert(hir_id, file.clone());
+        if let Some(source) = self.ast.item_sources.get(&ast_id) {
+            self.hir.item_sources.insert(hir_id, *source);
         }
         self.item_map.insert(ast_id, hir_id);
         self.scopes = saved_scopes;
@@ -2476,8 +2499,10 @@ mod tests {
     /// non-root file in a multi-file program used to render against the root file (the only
     /// file resolve.rs's callers ever backfilled), since resolve.rs never attached `.with_file`
     /// itself despite `current_module`/`current_file()` tracking the right file throughout.
-    /// Confirms a duplicate-definition error inside an inline submodule now carries that
-    /// submodule's own file identity, not silently the caller-supplied default.
+    ///
+    /// AS1b-ii-d rewrote what "carries its own file identity" means: there is no `Diagnostic.file`
+    /// to inspect, so the assertion is on the span's `SourceId` — which is the identity, rather
+    /// than a copy of it that could disagree.
     #[test]
     fn resolve_diagnostics_carry_their_own_file_not_the_caller_default() {
         let src = "mod inner {\n    fn dup() -> Unit {}\n    fn dup() -> Unit {}\n}\nfn main() -> Unit {}";
@@ -2489,10 +2514,14 @@ mod tests {
             .iter()
             .find(|d| d.code.as_deref() == Some("E0204"))
             .expect("expected an E0204 duplicate-definition diagnostic");
-        assert!(
-            dup.file.is_some(),
-            "resolve-stage diagnostic should carry its own file identity, not rely solely on \
-             the caller's default-file fallback at render time"
+        let registered = tree
+            .sources
+            .id_for_name("outer.stark")
+            .expect("the parse registered this file");
+        assert_eq!(
+            dup.span.source, registered,
+            "resolve-stage diagnostic should name the source it belongs to, not rely on a \
+             caller-supplied default at render time"
         );
     }
 

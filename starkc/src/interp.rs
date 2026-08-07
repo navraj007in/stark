@@ -6,14 +6,13 @@ use crate::hir::{
     self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
 };
 use crate::literal::{self, LitValue};
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use crate::typecheck::{Ty, TypeTables};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::rc::Rc;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -40,17 +39,6 @@ pub struct RuntimeError {
     /// than risk defaulting it to whatever category the other engines reported. Every other trap
     /// leaves this `None` and keeps its existing prose-matched classification.
     pub trap_category: Option<crate::mir::TrapCategory>,
-    /// DEV-113-B: the file the error was raised in.
-    ///
-    /// The span alone is not enough for a multi-file program: `call_callable` swaps `self.file` so a
-    /// body executes against its OWN file (DEV-069), and without carrying that here every trap was
-    /// attributed to the ENTRY file — so a trap inside a dependency was reported at the caller, and
-    /// the oracle disagreed with MIR about which file trapped. The interpreter always knew; it threw
-    /// the answer away at the raise site.
-    ///
-    /// `None` only for errors constructed before execution begins (entrypoint selection), where
-    /// there is no executing file yet.
-    pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
 /// This implementation's call-depth capacity (WP-C7.9 Packet F, `LIMIT-RESOURCE-001`).
@@ -119,7 +107,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -132,7 +119,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -144,7 +130,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: Some(limitation),
             trap_category: None,
-            file: None,
         }
     }
 
@@ -158,7 +143,6 @@ impl RuntimeError {
             class: FailureClass::HostResource,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -174,7 +158,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: Some(category),
-            file: None,
         }
     }
 
@@ -185,7 +168,6 @@ impl RuntimeError {
             class: FailureClass::Entry,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 }
@@ -219,8 +201,13 @@ pub struct ExecutionOutcome {
 /// Evaluate every declared constant before execution. This uses the same
 /// abstract-machine operations as the interpreter, but only after a closed
 /// syntactic-subset check has excluded runtime state and side effects.
-pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> Vec<Diagnostic> {
-    let mut interpreter = Interpreter::new(hir, file.clone(), tables);
+pub fn check_constants(hir: &Hir, tables: &TypeTables) -> Vec<Diagnostic> {
+    // AS1b-ii-d: the entry source comes from the program's own registry rather than being threaded
+    // in beside it. An empty registry means nothing was parsed, so there are no constants either.
+    let Some(entry) = hir.sources.entry().cloned() else {
+        return Vec::new();
+    };
+    let mut interpreter = Interpreter::new(hir, entry, tables);
     interpreter.frames.push(Frame::default());
     let mut diagnostics = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
@@ -228,36 +215,22 @@ pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) ->
         let hir::ItemKind::Const { value, .. } = &item.kind else {
             continue;
         };
-        let item_file = hir
-            .item_files
-            .get(&item_id)
-            .cloned()
-            .unwrap_or_else(|| file.clone());
         if let Err((span, message)) = constant_expr_allowed(hir, *value) {
-            diagnostics.push(
-                Diagnostic::error(message, span)
-                    .with_code("E0215")
-                    .with_file(item_file),
-            );
+            diagnostics.push(Diagnostic::error(message, span).with_code("E0215"));
             continue;
         }
-        // DEV-088 (WP-C4.7 corpus): evaluate the initializer against the file that DECLARES the
-        // constant. The diagnostic already carried `item_file`, but evaluation ran with the
-        // interpreter still pointed at the ENTRY file, so a cross-file `const`'s literal was
-        // read from the wrong text — `pub const N: Int32 = 31415;` in a dependency failed
-        // "invalid literal". Same per-item file discipline as DEV-069's three body funnels;
-        // constants were a fourth site that closure missed because no corpus case had one.
-        let restore = std::mem::replace(&mut interpreter.file, item_file.clone());
+        // AS1b-ii: DEV-088's swap is gone with DEV-069's three. It existed because a cross-file
+        // `const`'s literal was read against the ENTRY file's text — `pub const N: Int32 = 31415;`
+        // in a dependency failed "invalid literal". A literal's span now names the file it came
+        // from, so the read is right without pointing the interpreter at anything.
         let outcome = interpreter.eval_const_item(item_id);
-        interpreter.file = restore;
         if let Err(error) = outcome {
             diagnostics.push(
                 Diagnostic::error(
                     format!("constant evaluation failed: {}", error.message),
                     error.span,
                 )
-                .with_code("E0215")
-                .with_file(item_file),
+                .with_code("E0215"),
             );
         }
     }
@@ -1172,10 +1145,6 @@ struct Callable {
     receiver: Option<(hir::Receiver, LocalId)>,
     params: Vec<LocalId>,
     body: BlockId,
-    /// DEV-069: the file that DECLARES this body. Spans are file-relative, so every span read
-    /// while executing the body (literals, field names, path segments) must resolve against
-    /// this file — not the entry file, and not the caller's file.
-    file: Arc<SourceFile>,
 }
 
 fn is_valid_main_return(ty: &Ty) -> bool {
@@ -1205,7 +1174,7 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
                 u8::try_from(value).map_err(|_| {
                     RuntimeError::with_category(
                         "invalid-exit-status",
-                        Span::point(0),
+                        Span::synthetic(span.source),
                         crate::mir::TrapCategory::InvalidExitStatus,
                     )
                 })
@@ -1258,7 +1227,7 @@ pub fn on_interpreter_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
 
 pub fn run(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
     on_interpreter_stack(move || run_here(hir, file, tables))
@@ -1267,7 +1236,7 @@ pub fn run(
 /// [`run`] without the stack switch, for a caller that is already on a suitable stack.
 fn run_here(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
     let mut interpreter = Interpreter::new(hir, file, tables);
@@ -1298,11 +1267,19 @@ impl ExecutionOutcome {
 }
 
 /// Run `main`, keeping both streams whatever the outcome. See [`ExecutionOutcome`].
-pub fn run_capturing(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+pub fn run_capturing(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+) -> ExecutionOutcome {
     on_interpreter_stack(move || run_capturing_here(hir, file, tables))
 }
 
-fn run_capturing_here(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+fn run_capturing_here(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+) -> ExecutionOutcome {
     let mut interpreter = Interpreter::new(hir, file, tables);
     match interpreter.run_main() {
         Ok((status, exit_stderr)) => ExecutionOutcome {
@@ -1323,7 +1300,7 @@ fn run_capturing_here(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> 
 /// printing different prefixes before the same trap are observably different.
 pub fn run_with_partial_output(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, (RuntimeError, String)> {
     match run_capturing(hir, file, tables) {
@@ -1349,7 +1326,7 @@ pub fn run_with_partial_output(
 /// (`test_runner::run_test`) to invoke each discovered `test_*` function.
 pub fn run_item(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
     item: ItemId,
 ) -> Result<Execution, RuntimeError> {
@@ -1358,7 +1335,7 @@ pub fn run_item(
 
 fn run_item_here(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
     item: ItemId,
 ) -> Result<Execution, RuntimeError> {
@@ -1378,7 +1355,10 @@ fn run_item_here(
 
 struct Interpreter<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
+    /// AS1b-ii: the ENTRY source, registered. Frames still record the file that declares each body
+    /// (DEV-069) because MIR and diagnostics read it; once every span carries its own source that
+    /// per-frame tracking has nothing left to decide.
+    file: crate::source::RegisteredSource,
     tables: &'a TypeTables,
     frames: Vec<Frame>,
     output: String,
@@ -1422,6 +1402,13 @@ impl Drop for GenericFrame {
 }
 
 impl<'a> Interpreter<'a> {
+    /// The registered id of the entry source. Used where a failure has no position of its own —
+    /// an interpreter invariant, a missing entrypoint — so it names a real source instead of a
+    /// fabricated one.
+    fn entry_source(&self) -> crate::source::SourceId {
+        self.file.id()
+    }
+
     fn default_value_for(&self, value: &Value) -> Value {
         match value {
             Value::Unit => Value::Unit,
@@ -1521,7 +1508,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn new(hir: &'a Hir, file: Arc<SourceFile>, tables: &'a TypeTables) -> Self {
+    fn new(hir: &'a Hir, file: crate::source::RegisteredSource, tables: &'a TypeTables) -> Self {
         // WP-C6.1g-a: the interpreter's Copy set is the same structural+impl eligibility the
         // checker and MIR use (OWN-COPY-001, amended), so all three engines agree.
         let copy_items = crate::typecheck::copy_eligible_types(hir);
@@ -1580,37 +1567,32 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Read a span belonging to the body currently EXECUTING. `call_callable` keeps `self.file`
-    /// on the executing body's declaring file, so this is correct for literals, path segments,
-    /// and other spans inside that body — and wrong for spans of any other item, which must go
-    /// through `item_text` (DEV-069).
+    /// Read a span, against the source the span itself names.
     ///
-    /// Non-panicking since WP-C4.7-4: reading a foreign span used to abort the interpreter with
-    /// "byte index N out of bounds" whenever the other file was longer (DEV-069 shape (a)).
+    /// **AS1b-ii: this is the whole point of the packet.** There used to be two readers —
+    /// `text`, which indexed the ambient `self.file` and was correct only for the body currently
+    /// executing, and `item_text`, which took an `ItemId` to find the right file for a
+    /// cross-item read (DEV-069). Choosing between them was a judgement every call site had to
+    /// make, and getting it wrong produced a plausible wrong answer rather than an error.
+    ///
+    /// A span now names its source, so there is nothing to choose. `item_text` delegates here and
+    /// its `ItemId` is redundant; the ambient `self.file` no longer participates in reading at all.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
-            .unwrap_or("?")
-    }
-
-    /// The file that declares `item`.
-    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
-        match self.hir.item_files.get(&item) {
-            Some(file) => file.clone(),
-            None => self.file.clone(),
+        match self.hir.sources.get(span.source) {
+            Some(file) => file
+                .src
+                .get(span.lo as usize..span.hi as usize)
+                .unwrap_or("?"),
+            None => "?",
         }
     }
 
-    /// Read a span belonging to `item`, against the file that declares it (DEV-069). Used for
-    /// every cross-item read: another struct's field names, another impl's method names, a
-    /// trait's method names.
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        };
-        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
+    /// Read a span belonging to `item`.
+    ///
+    /// Retained only so DEV-069's call sites keep reading as they did; the `item` argument no
+    /// longer decides anything, because the span carries its own source.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
     fn run_main(&mut self) -> Result<(u8, String), RuntimeError> {
@@ -1641,7 +1623,7 @@ impl<'a> Interpreter<'a> {
         let Some(&main) = mains.first() else {
             return Err(RuntimeError::entry(
                 "program has no 'main' function",
-                Span::point(0),
+                Span::synthetic(self.entry_source()),
             ));
         };
         if mains.len() != 1 {
@@ -1690,7 +1672,6 @@ impl<'a> Interpreter<'a> {
             receiver: None,
             params: def.sig.params.iter().map(|param| param.local).collect(),
             body: def.body,
-            file: self.item_file(item),
         })
     }
 
@@ -1746,23 +1727,15 @@ impl<'a> Interpreter<'a> {
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
-        // DEV-069: a body executes against ITS OWN file. Saved and restored around the call so a
-        // cross-file call returns the caller's file — this is the interpreter's analogue of
-        // typecheck's per-item file swap, and it must be restored on the error path too.
-        let caller_file = std::mem::replace(&mut self.file, callable.file);
-        let mut result = self.eval_block(callable.body);
-        if let Err(error) = &mut result {
-            // DEV-113-B: stamp the file the error was raised in, at the innermost frame that has not
-            // already been stamped. One choke point rather than sixty raise sites, and it is the
-            // right one: `self.file` is still the callee's here — the line below restores the
-            // caller's — and the `is_none` guard means the innermost stamp survives as the error
-            // propagates outward.
-            if error.file.is_none() {
-                error.file = Some(self.file.clone());
-            }
-        }
+        // AS1b-ii: DEV-069's per-call file swap is GONE. It existed so `self.file` named the
+        // executing body's file while `text()` sliced against it; `text()` now slices against the
+        // source the span itself names, so there is nothing for the swap to keep correct.
+        // DEV-113-B stamped the raising file onto the error here, because a trap inside a
+        // dependency was otherwise attributed to the entry file. AS1b-ii-d deleted the stamp: it
+        // was derived from `error.span.source`, so it was a copy of something the error already
+        // carried, and a copy is a thing that can disagree.
+        let result = self.eval_block(callable.body);
         if result.is_err() {
-            self.file = caller_file;
             self.frames.pop();
             return result.map(|_| Value::Unit);
         }
@@ -1778,7 +1751,6 @@ impl<'a> Interpreter<'a> {
             ));
         }
         self.cleanup_current_frame()?;
-        self.file = caller_file;
         self.frames.pop();
         match flow {
             Flow::Value(value) | Flow::Return(value) => Ok(value),
@@ -4283,7 +4255,6 @@ impl<'a> Interpreter<'a> {
                         receiver: def.sig.receiver.zip(def.sig.receiver_local),
                         params: def.sig.params.iter().map(|param| param.local).collect(),
                         body: def.body,
-                        file: self.item_file(impl_id),
                     })
                 }
                 _ => None,
@@ -4314,7 +4285,6 @@ impl<'a> Interpreter<'a> {
                         params: sig.params.iter().map(|param| param.local).collect(),
                         body: *body,
                         // The default body lives in the TRAIT's file, not the impl's.
-                        file: self.item_file(trait_id),
                     }),
                     _ => None,
                 })
@@ -4351,7 +4321,6 @@ impl<'a> Interpreter<'a> {
                         receiver: None,
                         params: def.sig.params.iter().map(|param| param.local).collect(),
                         body: def.body,
-                        file: self.item_file(impl_id),
                     })
                 }
                 _ => None,
@@ -4423,10 +4392,8 @@ impl<'a> Interpreter<'a> {
         // DEV-069: a method body executes against the file that declares its impl (or, for an
         // un-overridden trait default, the trait's file) — this is the second body-execution
         // funnel alongside `call_callable`, and it needs the same swap. Restored on BOTH exits.
-        let caller_file = std::mem::replace(&mut self.file, callable.file);
         let result = self.eval_block(callable.body);
         if let Err(error) = result {
-            self.file = caller_file;
             let restored = self
                 .frame_mut()
                 .values
@@ -4454,7 +4421,6 @@ impl<'a> Interpreter<'a> {
         // Destructors for the method's own locals still belong to the method's file, so the
         // restore happens after cleanup (matching `call_callable`).
         self.cleanup_current_frame()?;
-        self.file = caller_file;
         self.frames.pop();
 
         let mut value = match flow {
@@ -4918,7 +4884,9 @@ impl<'a> Interpreter<'a> {
         }
         if name == "hash" {
             let receiver = self.place_value(&receiver_place, span)?;
-            return Ok(Value::Int(standard_hash(receiver, &receiver_ty)? as i128));
+            return Ok(Value::Int(
+                standard_hash(receiver, &receiver_ty, self.entry_source())? as i128,
+            ));
         }
         // WP-C4.7-6.2: `Ord::cmp` on a primitive receiver (06's `impl Ord for Int32` and
         // "similar for other types"). The checker admits this only for totally-ordered
@@ -6745,7 +6713,7 @@ impl<'a> Interpreter<'a> {
         let Some(target) = self.frames.get_mut(frame) else {
             return Err(RuntimeError::new(
                 "internal: promotion into a frame that does not exist",
-                Span { lo: 0, hi: 0 },
+                Span::synthetic(self.entry_source()),
             ));
         };
         let local_id = LocalId(1000000 + target.values.len() as u32);
@@ -7458,9 +7426,7 @@ impl<'a> Interpreter<'a> {
                 // DEV-069: the THIRD body-execution funnel (alongside `call_callable` and
                 // `call_user_method`) — a destructor body belongs to the file declaring its
                 // `Drop` impl, which need not be the file of the code going out of scope.
-                let caller_file = std::mem::replace(&mut self.file, callable.file);
                 let result = self.eval_block(callable.body);
-                self.file = caller_file;
                 if let Some(local) = receiver_local {
                     if let Some(restored) = self
                         .frame_mut()
@@ -7606,7 +7572,7 @@ impl<'a> Interpreter<'a> {
             let hir::ItemKind::Impl { trait_: Some(reference), self_ty, items, .. } = &candidate.kind else { return None; };
             if reference.res != Res::CoreTrait(hir::CoreTrait::Drop) || !matches!(&self.hir.ty(*self_ty).kind, hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item) { return None; }
             items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body, file: self.item_file(impl_id) }),
+                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body }),
                 _ => None,
             })
         })
@@ -7897,7 +7863,11 @@ fn canonicalize_float_result(result: Result<Value, RuntimeError>) -> Result<Valu
     })
 }
 
-fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
+fn standard_hash(
+    value: &Value,
+    ty: &Ty,
+    entry_source: crate::source::SourceId,
+) -> Result<u64, RuntimeError> {
     fn push_u64(bytes: &mut Vec<u8>, value: u64) {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -7973,7 +7943,10 @@ fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
     }
 
     let bytes = encode(value, ty).ok_or_else(|| {
-        RuntimeError::new("type has no standard Hash implementation", Span::new(0, 0))
+        RuntimeError::new(
+            "type has no standard Hash implementation",
+            Span::synthetic(entry_source),
+        )
     })?;
     let mut hash = 14_695_981_039_346_656_037u64;
     for byte in bytes {
@@ -8163,7 +8136,9 @@ mod tests {
     use super::*;
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
+    use crate::source::SourceFile;
     use crate::typecheck;
+    use std::sync::Arc;
 
     /// Type-check only, returning the diagnostics — for tests that assert a REJECTION rather
     /// than an execution result.
@@ -8171,7 +8146,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        typecheck::analyze(&hir, file).diagnostics
+        typecheck::analyze(&hir).diagnostics
     }
 
     fn stark_string_literal_contents(value: &str) -> String {
@@ -8234,7 +8209,7 @@ mod tests {
 
         interp.pending_propagation = Some(Value::Int(7));
         let error = interp
-            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .call_callable(callable, None, Vec::new(), interp.file.synthetic_span())
             .err()
             .expect("a parked propagation must not cross into a call");
 
@@ -8260,7 +8235,7 @@ mod tests {
 
         assert!(interp.pending_propagation.is_none());
         assert!(interp
-            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .call_callable(callable, None, Vec::new(), interp.file.synthetic_span())
             .is_ok());
         assert!(
             interp.pending_propagation.is_none(),
@@ -8275,12 +8250,16 @@ mod tests {
     /// The relation is a pure function of a type and a value, so it does not need a running
     /// program — but it DOES need the `Copy` set, which is computed from the HIR, so a real
     /// interpreter is cheaper than faking one.
-    fn relation_probe(source: &str) -> (Hir, Arc<SourceFile>, TypeTables) {
+    fn relation_probe(source: &str) -> (Hir, crate::source::RegisteredSource, TypeTables) {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let tables = typecheck::analyze(&hir, file.clone()).tables;
-        (hir, file, tables)
+        let tables = typecheck::analyze(&hir).tables;
+        // AS1b-ii: the identity the parse registered, not a fresh one.
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        (hir, registered, tables)
     }
 
     /// A place standing for "somewhere in the frame". The relation only ever asks a value's SHAPE,
@@ -8317,7 +8296,9 @@ mod tests {
     #[test]
     fn a_borrowed_text_type_permits_a_view_and_refuses_owned_storage() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         assert!(interp.value_matches_ty(&str_ref(), &Value::Str(String::from("x"))));
         assert!(interp.value_matches_ty(&str_ref(), &Value::Ref(probe_place())));
@@ -8331,7 +8312,9 @@ mod tests {
     #[test]
     fn a_borrowed_slice_permits_a_view_and_refuses_owned_storage() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         assert!(interp.value_matches_ty(&byte_slice_ref(), &Value::Slice(probe_place(), 0, 0)));
         assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Vec(Vec::new())));
@@ -8347,7 +8330,9 @@ mod tests {
     #[test]
     fn a_shared_reference_flattens_only_when_the_pointee_is_copy() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let int_ref = Ty::Ref {
             mutable: false,
@@ -8372,7 +8357,9 @@ mod tests {
     #[test]
     fn a_mutable_reference_is_never_flattened_even_for_a_copy_pointee() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let mut_int = Ty::Ref {
             mutable: true,
@@ -8388,7 +8375,9 @@ mod tests {
     #[test]
     fn both_spellings_of_owned_string_permit_the_same_representation() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let primitive = Ty::Primitive(crate::ast::Primitive::String);
         let core = Ty::Core(hir::CoreType::String, Vec::new());
@@ -8407,7 +8396,9 @@ mod tests {
     #[test]
     fn nominals_are_matched_by_identity_and_aggregates_by_arity() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let one = Ty::Struct(ItemId(1), Vec::new());
         assert!(interp.value_matches_ty(
@@ -8446,7 +8437,9 @@ mod tests {
     #[test]
     fn unsized_and_non_runtime_types_permit_nothing() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let standalone_slice = Ty::Slice(Box::new(Ty::Primitive(crate::ast::Primitive::UInt8)));
         assert!(!interp.value_matches_ty(&standalone_slice, &Value::Slice(probe_place(), 0, 0)));
@@ -8467,13 +8460,15 @@ mod tests {
     #[test]
     fn an_unsubstituted_parameter_is_refused_before_the_relation_sees_it() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let error = interp
             .check_value_for_ty(
                 &Ty::Param(String::from("T")),
                 &Value::Int(1),
-                Span { lo: 0, hi: 0 },
+                interp.file.synthetic_span(),
                 RepBoundary::Parameter,
             )
             .expect_err("an unsubstituted parameter cannot be validated against");
@@ -8491,13 +8486,15 @@ mod tests {
     #[test]
     fn the_diagnostic_names_the_boundary_and_the_shapes_but_not_the_contents() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let error = interp
             .check_value_for_ty(
                 &byte_slice_ref(),
                 &Value::Vec(Vec::new()),
-                Span { lo: 0, hi: 0 },
+                interp.file.synthetic_span(),
                 RepBoundary::Parameter,
             )
             .expect_err("an owned Vec behind `&[UInt8]` is a mismatch");
@@ -8519,7 +8516,9 @@ mod tests {
     #[test]
     fn a_matching_value_is_accepted_at_every_boundary() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         for boundary in [
             RepBoundary::LetBinding,
@@ -8539,7 +8538,7 @@ mod tests {
                     .check_value_for_ty(
                         &str_ref(),
                         &Value::Str(String::from("x")),
-                        Span { lo: 0, hi: 0 },
+                        interp.file.synthetic_span(),
                         boundary,
                     )
                     .is_ok(),
@@ -8634,7 +8633,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", "fn main() {}"));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let mut tables = typecheck::analyze(&hir, file.clone()).tables;
+        let mut tables = typecheck::analyze(&hir).tables;
 
         // A local the tables declare as `&[UInt8]` — a borrowed view.
         let local = LocalId(0);
@@ -8648,9 +8647,13 @@ mod tests {
             },
         );
 
-        let interpreter = Interpreter::new(&hir, file, &tables);
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        let probe_span = registered.synthetic_span();
+        let interpreter = Interpreter::new(&hir, registered, &tables);
         let error = interpreter
-            .check_value_representation(local, &Value::Vec(Vec::new()), Span { lo: 0, hi: 0 })
+            .check_value_representation(local, &Value::Vec(Vec::new()), probe_span)
             .expect_err("an owned Vec behind a `&[UInt8]` binding is a representation mismatch");
 
         assert_eq!(
@@ -8693,7 +8696,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        typecheck::analyze(&hir, file)
+        typecheck::analyze(&hir)
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diag::Severity::Error)
@@ -8709,7 +8712,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics
@@ -8718,7 +8721,10 @@ mod tests {
             "type diagnostics: {:?}",
             checked.diagnostics
         );
-        run(&hir, file, &checked.tables)
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        run(&hir, registered, &checked.tables)
     }
 
     #[test]
@@ -10114,7 +10120,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics
@@ -10123,7 +10129,10 @@ mod tests {
             "type diagnostics: {:?}",
             checked.diagnostics
         );
-        let mut interpreter = Interpreter::new(&hir, file.clone(), &checked.tables);
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        let mut interpreter = Interpreter::new(&hir, registered, &checked.tables);
         let item_id = (0..hir.items.len())
             .map(|index| ItemId(index as u32))
             .find(|item| {

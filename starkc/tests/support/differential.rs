@@ -290,7 +290,9 @@ fn probe_wrapper(type_tag: &str) -> String {
 
 pub struct Front {
     pub hir: starkc::hir::Hir,
-    pub file: Arc<SourceFile>,
+    /// AS1b-ii: the REGISTERED source. Consumers pass this straight to `run`/`lower_program`,
+    /// which now require identity rather than a bare file.
+    pub file: starkc::source::RegisteredSource,
     pub tables: starkc::typecheck::TypeTables,
 }
 
@@ -300,16 +302,19 @@ pub fn front_end(name: &str, source: &str) -> Front {
     assert!(pd.is_empty(), "{name}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
+    let registered = hir
+        .source_named(&file.name)
+        .expect("the parse registered this file");
     Front {
         hir,
-        file,
+        file: registered,
         tables: checked.tables,
     }
 }
@@ -333,7 +338,7 @@ pub fn rejects_at_typecheck(name: &str, source: &str, expected_code: &str) -> Ve
         rd.is_empty(),
         "{name}: expected a clean resolve, got {rd:?}"
     );
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<&starkc::diag::Diagnostic> = checked
         .diagnostics
         .iter()
@@ -477,7 +482,7 @@ pub fn front_end_package(root_package: &Path) -> (Front, starkc::mir::MirProgram
         "{}: resolve: {resolve_diags:?}",
         root_package.display()
     );
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -488,9 +493,16 @@ pub fn front_end_package(root_package: &Path) -> (Front, starkc::mir::MirProgram
         "{}: typecheck: {errors:?}",
         root_package.display()
     );
+    // AS1b-ii: `root_file` above is named by its REAL path on purpose (see the comment there),
+    // but the parser registers the package entry under its LOGICAL name. The registered identity
+    // is the logical one — that difference is exactly what DEV-113 is about.
+    let root_pkg = &graph.packages[&graph.root_package_name];
+    let registered = hir
+        .source_named(&root_pkg.entry_logical_name())
+        .expect("the parse registered the package entry");
     let front = Front {
         hir,
-        file: root_file,
+        file: registered,
         tables: checked.tables,
     };
     let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
@@ -580,10 +592,16 @@ pub fn run_hir(name: &str, front: &Front) -> Observation {
                  is a compiler error, not a language outcome the other engines can match",
                 err.message
             );
-            // DEV-113-B: the trap's OWN file when the oracle supplies one — for a multi-file or
-            // package program the raising file is not the entry file, and using the entry file made
-            // the oracle disagree with MIR about which file trapped.
-            let raised_in = err.file.clone().unwrap_or_else(|| front.file.clone());
+            // DEV-113-B: the trap's OWN file, not the entry file — for a multi-file or package
+            // program the raising file is not the entry, and using the entry made the oracle
+            // disagree with MIR about which file trapped. AS1b-ii-d: the span names it, so this
+            // resolves through the program's registry instead of a copy carried on the error.
+            let raised_in = front
+                .hir
+                .sources
+                .get(err.span.source)
+                .map(|source| source.file().clone())
+                .unwrap_or_else(|| front.file.file().clone());
             let (line, column) = raised_in.line_col(err.span.lo);
             // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`
             // raises arbitrary USER text, so prose matching cannot classify it — that is the
@@ -648,16 +666,19 @@ pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Observation {
             stderr,
         }) => {
             assert!(
-                (source.file.0 as usize) < program.files.len(),
-                "{name}: MIR trap carries an invalid FileId"
-            );
-            assert!(
                 matches!(source.origin, Origin::UserCode),
                 "{name}: trap origin is {:?}; the harness compares exact user-source locations, \
                  so a synthetic-origin trap needs its own documented correspondence rule",
                 source.origin
             );
-            let file = &program.files[source.file.0 as usize];
+            // AS1b-iii: resolved through the span's own source. This used to index
+            // `program.files` by the trap's `FileId` and measure `span.lo` against whatever it
+            // found — the harness chose the rival authority, so it could not have detected the two
+            // disagreeing. V-SRC-1 guarantees the lookup succeeds for verified MIR.
+            let file = program
+                .sources
+                .get(source.span.source)
+                .unwrap_or_else(|| panic!("{name}: MIR trap names an unregistered source"));
             let (line, column) = file.line_col(source.span.lo);
             let (line, column) = (line as u32, column as u32);
             let scan =

@@ -15,7 +15,7 @@ fn compile_program(source: &str) -> Vec<starkc::diag::Diagnostic> {
     if !resolve_diags.is_empty() {
         return resolve_diags;
     }
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     checked.diagnostics
 }
 

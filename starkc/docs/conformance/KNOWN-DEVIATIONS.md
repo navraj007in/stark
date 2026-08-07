@@ -5005,3 +5005,187 @@ Two defects, recorded together because the first concealed the second.
   worked; this was the only rejection.
 - **Owning gate:** compiler track.
 
+
+---
+
+## DEV-183 — TRAIT-COHERENCE-001's cross-package clause was never enforced (CLOSED, AS1b-iii)
+
+- **Rule:** 03-Type-System, TRAIT-COHERENCE-001: *"Inherent implementations are permitted only for a
+  nominal type defined by the current package."*
+- **Status:** CLOSED. The check now works; the one first-party violation it found is repaired.
+- **Symptom:** none, which is the problem. The compiler accepted every cross-package inherent impl
+  in every package build, silently.
+- **Cause:** `typecheck::validate_impl_rules` decided "same package" by calling `find_package_root`,
+  which walked a file's PATH upward looking for a `starkpkg.json` **on disk, during type checking**.
+  After AS1a gave package sources logical `<package>/<path>` names, that path does not exist
+  relative to any working directory, so the probe returned `None` for the impl's file *and* for the
+  type's file. `None == None` made every type look local, and the rule could not fire.
+
+  It fired before AS1a only by an asymmetry: the root file carried an absolute disk path while every
+  other item's file carried a logical name, so the root probe found a manifest and the dependency
+  probe found nothing. "Different package" fell out of the difference, not out of a comparison.
+- **How it surfaced:** AS1b-ii-d removed the ambient `self.file` the probe read, replacing it with
+  the source the impl's span names. That made all three reads consistent, all three answered `None`,
+  and `test_cross_package_coherence_orphan_rule_with_real_packages` — a test written specifically to
+  pin this behaviour, and passing until then — failed. Replacing the disk probe with `source_package`
+  (the leading segment of the logical name) turned the rule on for the first time.
+- **What it found:** exactly one violation across the 28 first-party packages.
+  `stark-http-client/src/lib.stark:1468` wrote `impl HttpResponse { ... }` for `HttpResponse`, which
+  is defined in `stark-http-core`. Three packages failed to check as a result: `stark-http-client`,
+  `stark-http-client-consumer` and `stark-get`, all through that one impl.
+- **Repair:** the two methods became a locally declared `JsonBody` trait implemented for
+  `HttpResponse`. That is what TRAIT-COHERENCE-001 is designed to permit — coherence holds when the
+  current package owns *either* the trait or the head type, and `stark-http-client` owns the trait.
+  Behaviour and method names are unchanged; call sites still write `response.json()`.
+- **User impact:** a package could extend a dependency's type with inherent methods, which the
+  language does not permit. Nothing miscompiled — the accepted programs were well-typed — but two
+  packages could have added conflicting inherent `json()` methods to the same foreign type with no
+  diagnostic, and the ambiguity would have surfaced as a method-resolution failure far from either.
+- **Security/soundness impact:** none.
+- **Owning gate:** compiler track, AS1b-iii (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-184 — three of the four JSON escapers emitted invalid JSON (CLOSED, AS5-a)
+
+- **Rule:** RFC 8259 §7 — the characters that MUST be escaped inside a JSON string are the quotation
+  mark, the reverse solidus, and **the control characters U+0000 through U+001F**.
+- **Status:** CLOSED. All three repaired; AS5-c replaces them with one shared authority.
+- **Found by:** AS5's opening inventory. `AS0-MANIFEST-STRICTNESS-AUDIT.md` compared the two JSON
+  *parsers*; this is the emit side, which that audit did not cover.
+
+| Authority | Escaped | Left raw |
+| --- | --- | --- |
+| `diag.rs::escape_json` | `"` `\` `\b` `\f` `\n` `\r` `\t`, all C0 as `\u00xx` | — (correct) |
+| `lsp/protocol.rs::escape_json_string` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `onnx/verifier.rs::escape_json` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `bin/stark.rs::json_escape` | `"` `\` `\n` | 31 C0 controls, **including TAB** |
+
+- **Demonstrated instance.** `stark doctor --json --root "<path containing a TAB>"` — a legal POSIX
+  path — emits a raw U+0009 inside the `install_root` string. A standard parser refuses the
+  document: `Invalid control character at: line 3 column 134`. The command advertises
+  machine-readable output and produces something no conforming parser accepts.
+- **User impact:** any tool consuming `stark doctor --json` fails on such a path, with a parse error
+  that points at the compiler's output rather than at the path. On the LSP surface the raw control
+  goes onto the wire inside a JSON-RPC message; a lenient client tolerates it and a strict one drops
+  the message or the connection.
+- **Why it survived:** `GATE-C8-CLOSURE.md` §4 records that C8's protocol validation compared
+  **verdicts, not values**. DEV-182 — the LSP parser decoding every escaped non-BMP character to the
+  empty string — passed that same evidence. "The LSP protocol suite is green" does not establish
+  that what goes on the wire is valid JSON, and this packet's dependencies section says so.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, an unescaped control
+  character in an attacker-influenced string is a message-framing hazard for a lenient client, which
+  is why AS5 exit criterion 5 routes parsing decisions through CE9 review.
+- **Repair:** each escaper now escapes every C0 control as `\u00xx`, matching `diag.rs`'s already
+  correct implementation. `tests/as5_json_escaping.rs` fails against the previous code — it names
+  the exact code points each one leaked — and passes after.
+- **Owning gate:** compiler track, AS5-a (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-185 — the JSON layer decoded every number to `f64`, losing the value the input denotes (CLOSED, AS5-b/c)
+
+- **Rule:** RFC 8259 §6 constrains a number's *grammar* and explicitly sets no range or precision
+  limit. The governing lesson is DEV-182's, recorded in `GATE-C8-CLOSURE.md` §4: **parsing
+  successfully is insufficient; the returned value has to be the value the input denotes.**
+- **Status:** CLOSED. `JsonValue::Number` carries a `JsonNumber` preserving the exact lexical value;
+  conversion to `i64`/`f64` is an explicit consumer decision that can refuse.
+- **Found by:** AS5's review of the shared data model. The two `JsonValue` enums being textually
+  identical established that no reconciliation was needed — it did **not** establish that the
+  representation was adequate, and it was not.
+
+**Measured on the code before the repair** (`examples/as5_number_probe.rs`):
+
+```text
+input      9007199254740993          ← 2^53 + 1, an ordinary 64-bit request id
+re-emitted 9007199254740992          ← CHANGED
+as_i64     Some(9007199254740992)
+1.5 as_i64 Some(1)                   ← truncated, not refused
+      01 parses: true                ← leading zero is not JSON
+      1. parses: true                ← naked decimal point is not JSON
+   1e400 parses: true                ← decodes to infinity
+```
+
+- **User impact, in severity order:**
+  1. **A JSON-RPC request identifier can change value between arriving and being answered.** `id` is
+     correlation identity; a response carrying `…992` answers a request that was never sent. This is
+     more serious than DEV-184, because a client cannot detect it — both documents are well-formed.
+  2. `as_i64()` performed `n as i64`, so `1.5` became `1`. An integer-typed protocol field accepted
+     a fractional number silently instead of refusing it.
+  3. `JsonValue::Number(f64)` could hold NaN or an infinity, neither of which has a JSON textual
+     form — the type could represent a document that cannot be serialized, with the failure
+     surfacing at emit time far from whatever constructed it.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, id confusion is a
+  correlation hazard rather than a memory-safety one.
+- **Repair:** `JsonNumber` keeps the input's exact lexical form. The parser validates the RFC
+  grammar — ASCII digits only, no leading zero, no bare `+`, no naked decimal point, and only the
+  four JSON whitespace characters around it — and preserves the text. `as_i64` succeeds only for a
+  raw integer literal; `as_f64` refuses a value it cannot represent finitely; `from_f64` refuses
+  NaN and the infinities, so a non-JSON number is unrepresentable rather than caught late.
+- **Deliberately not done:** arbitrary-precision arithmetic. The shared layer's job is to preserve
+  what the document said and let each consumer state the numeric type it requires.
+- **Owning gate:** compiler track, AS5-b/c (WP-ARCHITECTURE-STABILIZATION).
+
+### Adjacent, NOT repaired here — the LSP request-id surface
+
+The JSON layer is right to make `JsonNumber::as_i64` accept only what was *written* as an integer
+literal: `1e3` returning `None` is a deliberate consumer decision, not a limitation. But
+`lsp/protocol.rs` converts every id through `as_i64()` and models both halves as `id: i64`, so the
+protocol layer accepts only that subset:
+
+| Request id form | Today |
+| --- | --- |
+| plain JSON integer that fits `i64` | accepted |
+| string id (JSON-RPC 2.0 §4, LSP both permit it) | **rejected** |
+| other exact spellings of the same number (`1e3`, `1.0`, `+`-free variants) | **rejected** |
+| integer outside `i64` | **rejected** |
+
+Not a JSON-authority defect, and not AS5's to fix — covering it would turn a parser consolidation
+into an LSP redesign. The eventual shape is almost certainly
+
+```rust
+enum RequestId { Number(JsonNumber), String(String) }
+```
+
+**echoing the id exactly as received** rather than interpreting it, which is what JSON-RPC requires
+of a server. Recorded here so it is not lost; it needs its own packet.
+
+---
+
+## DEV-186 — the LSP transport allocates an unbounded `Content-Length` before parsing (OPEN)
+
+- **Status:** OPEN, registered rather than repaired. Found during AS5's CE9 review of the JSON
+  nesting limit; **not AS5's to fix** — see "Why this is not AS5" below.
+- **Where:** `src/lsp/server.rs:60-63`.
+
+```rust
+if let Some(content_length_str) = headers.get("Content-Length") {
+    if let Ok(content_length) = content_length_str.parse::<usize>() {
+        let mut content = vec![0u8; content_length];   // ← no bound
+        reader.read_exact(&mut content)?;
+```
+
+- **Symptom:** a peer that advertises `Content-Length: 9999999999999` causes an allocation of that
+  size **before any byte of the body is read and before the JSON parser is reached**. On a 64-bit
+  host the request either aborts the process on allocation failure or drives it into swap.
+- **Cause:** the framing layer trusts a header field. `usize` parsing bounds the *number*, not the
+  *allocation*, and `read_exact` into a pre-sized buffer commits the memory first.
+- **Why AS5's `MAX_DEPTH` does not cover it:** the two limits protect different things and belong to
+  different authorities.
+
+  | Limit | Protects | Owner |
+  | --- | --- | --- |
+  | `json::MAX_DEPTH` (128) | the stack, against recursive descent | the shared JSON parser |
+  | `Content-Length` cap | total allocation, before parsing | the LSP transport/framing layer |
+
+  A depth limit cannot help here: the parser never runs.
+- **Why this is not AS5:** AS5 consolidates JSON *parsing and escaping* authority. Message framing
+  is the transport's contract, and widening the packet to cover it would repeat the mistake the
+  string-request-id note already refuses — turning a parser consolidation into an LSP redesign.
+- **Repair shape, when taken:** a maximum message size checked at the framing layer **before**
+  allocating, with a deterministic protocol error for anything larger, and incremental reads rather
+  than one pre-sized buffer. It belongs with the request-id work in an LSP hardening packet.
+- **Security/soundness impact:** availability only, on a surface that reads from a socket or a pipe.
+  No memory-safety consequence — the allocation is safe Rust — and no compiler consequence: nothing
+  outside the language server reaches this path.
+- **Owning gate:** compiler track; awaiting an LSP hardening packet.

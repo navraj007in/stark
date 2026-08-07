@@ -28,8 +28,6 @@ use crate::mir::{
     AggKind, Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand,
     Rvalue, SourceInfo, Statement, Terminator, TrapCategory, TrapInfo, TypeContext,
 };
-use crate::source::SourceFile;
-use std::sync::Arc;
 
 /// A complete `fn name(params) -> ret { ... }` for an ordinary (non-entry) function. The entry
 /// instance is emitted separately, by `emit_program.rs`, as Rust's literal `fn main()` with the
@@ -40,7 +38,7 @@ use std::sync::Arc;
 pub fn emit_function(
     body: &MirBody,
     name: &str,
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
@@ -76,7 +74,7 @@ pub fn emit_function(
     };
     let block = emit_block_body(
         body,
-        files,
+        sources,
         types,
         layout,
         provider_calls,
@@ -161,7 +159,7 @@ fn incoming_param_name(local: u32) -> String {
 
 pub fn emit_block_body(
     body: &MirBody,
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
@@ -295,7 +293,7 @@ pub fn emit_block_body(
                     plan: &plan,
                     from: i,
                 };
-                emit_one_block(body, files, &mut out, env, plan.rpo[i], mode)?;
+                emit_one_block(body, sources, &mut out, env, plan.rpo[i], mode)?;
             }
             for _ in 0..plan.closes[plan.rpo.len()] {
                 out.push_str("    }\n");
@@ -311,7 +309,7 @@ pub fn emit_block_body(
             out.push_str("        match __bb {\n");
             for bi in 0..body.blocks.len() as u32 {
                 out.push_str(&format!("            {bi} => {{\n"));
-                emit_one_block(body, files, &mut out, env, bi, EmitMode::Dispatch)?;
+                emit_one_block(body, sources, &mut out, env, bi, EmitMode::Dispatch)?;
                 out.push_str("            }\n");
             }
             out.push_str("            _ => unreachable!(\"invalid block index\"),\n");
@@ -327,7 +325,7 @@ pub fn emit_block_body(
 /// Emit one basic block's statements followed by its terminator.
 fn emit_one_block(
     body: &MirBody,
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     out: &mut String,
     env: &TyEnv,
     block: u32,
@@ -373,7 +371,7 @@ fn emit_one_block(
     }
     emit_terminator(
         body,
-        files,
+        sources,
         out,
         &block.terminator.0,
         &block.terminator.1,
@@ -908,7 +906,7 @@ impl EmitMode<'_> {
 #[allow(clippy::too_many_arguments)]
 fn emit_terminator(
     body: &MirBody,
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     out: &mut String,
     terminator: &Terminator,
     // WP-C6.3b (DEV-107): every terminator already carries its own `SourceInfo` — including `Call`.
@@ -952,7 +950,7 @@ fn emit_terminator(
             trap,
         } => {
             let dest_ty = &body.locals[dest.0 as usize].ty;
-            let expr = emit_checked_expr(files, *op, args, dest_ty, trap, env)?;
+            let expr = emit_checked_expr(sources, *op, args, dest_ty, trap, env)?;
             out.push_str(&format!(
                 "                {}\n",
                 emit_assignment(&crate::mir::Place::local(*dest), &expr, env)?
@@ -1008,7 +1006,7 @@ fn emit_terminator(
                 return Ok(());
             }
             let dest_ty = &body.locals[dest.local.0 as usize].ty;
-            let (file, line, col) = resolve_source_location(files, info);
+            let (file, line, col) = resolve_source_location(sources, info);
             let call_expr = emit_call(
                 callee,
                 args,
@@ -1059,9 +1057,9 @@ fn emit_terminator(
             let abort = match message {
                 Some(msg) => {
                     let msg_expr = emit_operand(msg, env)?;
-                    emit_abort_with_message_call(files, info.category, &info.source, &msg_expr)
+                    emit_abort_with_message_call(sources, info.category, &info.source, &msg_expr)
                 }
-                None => emit_abort_call(files, info.category, &info.source),
+                None => emit_abort_call(sources, info.category, &info.source),
             };
             out.push_str(&format!("                {abort};\n"));
         }
@@ -2010,8 +2008,21 @@ fn trap_category_token(category: TrapCategory) -> String {
 /// WP-C5.2e: resolves a `SourceInfo` to (file path, 1-based line, 1-based column) at COMPILE
 /// TIME, using the same `SourceFile::line_col` the rest of the compiler's diagnostics already
 /// use (`04-Semantic-Analysis.md`'s 1-based convention) -- not a new position-mapping scheme.
-fn resolve_source_location(files: &[Arc<SourceFile>], info: &SourceInfo) -> (String, u32, u32) {
-    let file = &files[info.file.0 as usize];
+///
+/// **AS1b-iii: through the span's own source.** This took `files[info.file]` — the MIR-local file
+/// id — and measured `info.span.lo` against it, so the one place a wrong location becomes a string
+/// a user reads chose the rival authority over the span. `line_col` clamps, so the result would
+/// have been a plausible wrong filename and line rather than an error.
+///
+/// The `expect` is discharged by V-SRC-1: verified MIR resolves every `SourceInfo` against this
+/// registry, and only verified MIR reaches the backend.
+fn resolve_source_location(
+    sources: &impl crate::source::SourceLookup,
+    info: &SourceInfo,
+) -> (String, u32, u32) {
+    let file = sources
+        .source(info.span.source)
+        .expect("verified MIR resolves every SourceInfo against the program's registry (V-SRC-1)");
     let (line, col) = file.line_col(info.span.lo);
     (file.name.clone(), line as u32, col as u32)
 }
@@ -2027,11 +2038,11 @@ fn rust_str_lit(s: &str) -> String {
 /// terminator's own default category, and the `Shl`/`Shr` `InvalidShift` override) goes through
 /// the same construction.
 fn emit_abort_call(
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     category: TrapCategory,
     source: &SourceInfo,
 ) -> String {
-    let (file, line, col) = resolve_source_location(files, source);
+    let (file, line, col) = resolve_source_location(sources, source);
     format!(
         "stark_runtime::trap::abort({}, {}, {line}, {col})",
         trap_category_token(category),
@@ -2042,12 +2053,12 @@ fn emit_abort_call(
 /// WP-C6.3e: the abort call for a `panic(msg)` trap. `message` is the already-emitted `&str`
 /// expression (a Rust `&'static str` literal for `panic("...")`).
 fn emit_abort_with_message_call(
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     category: TrapCategory,
     source: &SourceInfo,
     message: &str,
 ) -> String {
-    let (file, line, col) = resolve_source_location(files, source);
+    let (file, line, col) = resolve_source_location(sources, source);
     format!(
         "stark_runtime::trap::abort_with_message({}, {}, {}, {line}, {col})",
         trap_category_token(category),
@@ -2139,7 +2150,7 @@ fn int_width_tokens(ty: &MirTy) -> Result<&'static str, BackendDiagnostic> {
 /// NUM-INT-DIV-001 gives them two — a zero divisor (`DivideByZero`, the terminator's default) and
 /// the signed `MIN op -1` pair (`IntegerOverflow`). The guard order here matches the oracle's.
 fn emit_checked_expr(
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     op: CheckedOp,
     args: &[Operand],
     dest_ty: &MirTy,
@@ -2147,7 +2158,7 @@ fn emit_checked_expr(
     env: &TyEnv,
 ) -> Result<String, BackendDiagnostic> {
     use CheckedOp::*;
-    let default_abort = emit_abort_call(files, trap.category, &trap.source);
+    let default_abort = emit_abort_call(sources, trap.category, &trap.source);
     match op {
         Add | Sub | Mul | Div | Rem | Neg | Pow => {
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
@@ -2162,7 +2173,7 @@ fn emit_checked_expr(
             if matches!(op, Div | Rem) {
                 let b = emit_operand(&args[1], env)?;
                 let overflow_abort =
-                    emit_abort_call(files, TrapCategory::IntegerOverflow, &trap.source);
+                    emit_abort_call(sources, TrapCategory::IntegerOverflow, &trap.source);
                 let checked_call = if matches!(op, Div) {
                     "checked_div"
                 } else {
@@ -2224,7 +2235,7 @@ fn emit_checked_expr(
                 "checked_shr"
             };
             let invalid_shift_abort =
-                emit_abort_call(files, TrapCategory::InvalidShift, &trap.source);
+                emit_abort_call(sources, TrapCategory::InvalidShift, &trap.source);
             Ok(format!(
                 "{{ let __count = ({count}) as i128; if __count < 0 || __count >= {width} {{ \
                  {invalid_shift_abort} }} else {{ match (({l}) as \
@@ -2244,7 +2255,7 @@ fn emit_checked_expr(
                  __r }} }}"
             ))
         }
-        Cast => emit_cast_expr(files, &args[0], dest_ty, trap, env),
+        Cast => emit_cast_expr(sources, &args[0], dest_ty, trap, env),
         // WP-C5.3a: the bounds check that DEFINES an index proof for `Projection::Index`. The
         // proof value is the validated index itself, so the projection can then index without a
         // second check. Compared at `i128` for the same reason the arithmetic ops are: the index
@@ -2264,7 +2275,7 @@ fn emit_checked_expr(
 }
 
 fn emit_cast_expr(
-    files: &[Arc<SourceFile>],
+    sources: &crate::source::SourceTable,
     source: &Operand,
     dest_ty: &MirTy,
     trap: &TrapInfo,
@@ -2277,7 +2288,7 @@ fn emit_cast_expr(
     let dest_is_int = int_bounds_tokens(dest_ty).is_ok();
     let src_is_float = matches!(src_ty, MirTy::Float32 | MirTy::Float64);
     let dest_is_float = matches!(dest_ty, MirTy::Float32 | MirTy::Float64);
-    let default_abort = emit_abort_call(files, trap.category, &trap.source);
+    let default_abort = emit_abort_call(sources, trap.category, &trap.source);
 
     if src_is_int && dest_is_int {
         let (min, max) = int_bounds_tokens(dest_ty)?;

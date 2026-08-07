@@ -31,7 +31,7 @@ fn accept(name: &str, source: &str) {
     assert!(pd.is_empty(), "{name}: parse: {pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

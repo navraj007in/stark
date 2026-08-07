@@ -3,10 +3,9 @@
 use crate::ast::UnOp;
 use crate::diag::Diagnostic;
 use crate::hir::{self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, Res, StmtId};
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use crate::typecheck::Ty;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Borrow {
@@ -50,7 +49,6 @@ struct Place {
 
 pub struct BorrowChecker<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
     diags: Vec<Diagnostic>,
     expr_types: &'a HashMap<ExprId, Ty>,
     local_types: &'a HashMap<LocalId, Ty>,
@@ -75,13 +73,11 @@ pub struct BorrowChecker<'a> {
 
 pub fn check(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
@@ -99,14 +95,12 @@ pub fn check(
 
 pub fn check_fn(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
     def: &hir::FnDef,
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
@@ -123,7 +117,6 @@ pub fn check_fn(
 
 pub fn check_snippet(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
     stmts: &[StmtId],
@@ -131,7 +124,6 @@ pub fn check_snippet(
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
@@ -153,37 +145,31 @@ pub fn check_snippet(
 }
 
 impl<'a> BorrowChecker<'a> {
-    /// Read a span belonging to the item being checked (`check_crate` keeps `self.file` on the
-    /// current item's file). Cross-item reads must use `item_text` instead (DEV-069).
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-ii-d: this used to slice `self.file`, "the file of the item being checked", which
+    /// `check_crate` re-aimed per item (WP-C1.4, DEV-069) — right for that item's spans and wrong
+    /// for every other item's, hence the separate `item_text`. Both are one read now.
     /// Non-panicking since WP-C4.7-4: an out-of-range span was a compiler crash before.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
+        self.hir
+            .sources
+            .get(span.source)
+            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
     }
 
-    /// Read a span belonging to `item`, against the file that DECLARES it — multi-file programs
-    /// parse each file separately, so spans are only meaningful against their own file
-    /// (DEV-069).
-    fn item_text(&self, item: hir::ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        };
-        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
+    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
+    fn item_text(&self, _item: hir::ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
-    /// WP-C1.4 (2026-07-17): backfill `.with_file()` when a diagnostic doesn't already carry one,
-    /// mirroring resolve.rs's `push_diag` (WP-C1.2, DEV-006's resolve half) and typecheck.rs's
-    /// per-item backfill. Every raw `self.diags.push(...)` call site in this file was converted
-    /// to go through this method instead. See COMPILER-STATE.md DEV-006.
+    /// WP-C1.4 (2026-07-17) routed every `self.diags.push(...)` in this file through here so a
+    /// diagnostic could be stamped with the file being checked (DEV-006).
+    ///
+    /// AS1b-ii-d removed the stamp: a span names its own source, so attribution is no longer a
+    /// second thing that can be right or wrong. The funnel stays.
     fn push_diag(&mut self, diag: Diagnostic) {
-        let diag = if diag.file.is_none() {
-            diag.with_file(self.file.clone())
-        } else {
-            diag
-        };
         self.diags.push(diag);
     }
 
@@ -387,21 +373,10 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn check_crate(&mut self) {
-        // WP-C1.4 (2026-07-17): swap `self.file` to each item's own file (from
-        // `hir.item_files`, the same side table resolve.rs/typecheck.rs already use) before
-        // checking it, so `push_diag`'s backfill attributes diagnostics to the file the item
-        // actually came from rather than always the crate's top-level file -- for multi-file
-        // packages, every borrow-check diagnostic for a non-root-file item was previously
-        // misattributed to the root file. See COMPILER-STATE.md DEV-006.
-        let root_file = self.file.clone();
-        for (index, item) in self.hir.items.iter().enumerate() {
-            let item_id = ItemId(index as u32);
-            self.file = self
-                .hir
-                .item_files
-                .get(&item_id)
-                .cloned()
-                .unwrap_or_else(|| root_file.clone());
+        // WP-C1.4 (2026-07-17) pointed `self.file` at each item's own file before checking it, so
+        // that a borrow-check diagnostic for a non-root-file item was not misattributed to the root
+        // (DEV-006). AS1b-ii-d: spans carry their source, so there is no file to aim.
+        for item in self.hir.items.iter() {
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(def);
@@ -424,7 +399,6 @@ impl<'a> BorrowChecker<'a> {
                 _ => {}
             }
         }
-        self.file = root_file;
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
