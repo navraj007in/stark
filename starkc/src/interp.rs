@@ -2916,6 +2916,88 @@ impl<'a> Interpreter<'a> {
     /// place expression (see `resolve_comparison_operand`) -- grouped into one tuple parameter
     /// per side to keep the parameter count under clippy's `too_many_arguments` threshold rather
     /// than passing four related values separately.
+    /// The runnable form of a body the checker already selected.
+    ///
+    /// **AS3 Boundary 3: this is a LOOKUP keyed on the checker's answer, not a selection.**
+    /// `find_method` searches by NAME across every impl on a nominal and decides which body wins;
+    /// this takes the body the checker published and finds the locals needed to run it. The
+    /// difference is the whole packet: one asks "which body does `a == b` mean", the other asks
+    /// "how do I enter this body".
+    fn callable_for_body(&self, body: BlockId) -> Option<Callable> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let owner = ItemId(idx as u32);
+            let _ = owner;
+            match &item.kind {
+                hir::ItemKind::Fn(def) if def.body == body => {
+                    return Some(Callable {
+                        receiver: def.sig.receiver.zip(def.sig.receiver_local),
+                        params: def.sig.params.iter().map(|param| param.local).collect(),
+                        body: def.body,
+                    })
+                }
+                hir::ItemKind::Impl { items, .. } => {
+                    for impl_item in items {
+                        if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            if def.body == body {
+                                return Some(Callable {
+                                    receiver: def.sig.receiver.zip(def.sig.receiver_local),
+                                    params: def
+                                        .sig
+                                        .params
+                                        .iter()
+                                        .map(|param| param.local)
+                                        .collect(),
+                                    body: def.body,
+                                });
+                            }
+                        }
+                    }
+                }
+                hir::ItemKind::Trait { items, .. } => {
+                    for trait_item in items {
+                        if let hir::TraitItem::Method { sig, body: Some(b) } = trait_item {
+                            if *b == body {
+                                return Some(Callable {
+                                    receiver: sig.receiver.zip(sig.receiver_local),
+                                    params: sig.params.iter().map(|param| param.local).collect(),
+                                    body: *b,
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The callable the checker selected for a compiler-known trait operation at `expr`.
+    ///
+    /// **AS3 Boundary 3: consumption.** This replaces `find_method(nominal, "eq", Some(CoreTrait))`
+    /// at the operator sites — a scan of every impl on the nominal, run again at execution time
+    /// after the checker had already decided. Choosing among published records is consumption;
+    /// scanning the HIR and re-running selection is what this removes.
+    ///
+    /// `None` means the checker published nothing for this expression, which for an operator means
+    /// it reaches no user body — a primitive comparison. The caller keeps its built-in path.
+    fn selected_core_trait_callable(
+        &self,
+        expr: ExprId,
+        core: CoreTrait,
+    ) -> Option<crate::typecheck::CallableUse> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        ids.iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|use_| {
+                matches!(
+                    use_.provenance,
+                    crate::typecheck::DispatchProvenance::CoreTrait { core: c } if c == core
+                )
+            })
+            .cloned()
+    }
+
     fn eval_binary(
         &mut self,
         op: BinOp,
@@ -2941,11 +3023,20 @@ impl<'a> Interpreter<'a> {
             // structural comparison remains exactly correct for them -- only struct/enum values
             // are looked up here. See COMPILER-STATE.md DEV-008.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(
-                    Some(nominal),
-                    "eq",
-                    Some(Res::CoreTrait(hir::CoreTrait::Eq)),
-                ) {
+                // AS3 Boundary 3: CONSUME the checker's selection instead of scanning for a
+                // method named "eq". `nominal` is retained only to decide whether a user body is
+                // involved at all — the choice of body is the checker's, published at this
+                // expression.
+                let _ = nominal;
+                if let Some(method) = self
+                    .selected_core_trait_callable(expr, hir::CoreTrait::Eq)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                {
                     // Correction-brief Issue 2: `Eq::eq(&self, &other)` borrows both operands --
                     // it never takes ownership. Passing owned clones here (the pre-fix
                     // behavior) is observably wrong two different ways: the receiver's clone
@@ -2991,11 +3082,17 @@ impl<'a> Interpreter<'a> {
             // `Ord::cmp`, just as equality above dispatches through `Eq::eq`. The type checker
             // has already required a matching `Ord` implementation.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(
-                    Some(nominal),
-                    "cmp",
-                    Some(Res::CoreTrait(hir::CoreTrait::Ord)),
-                ) {
+                // AS3 Boundary 3: as above, for ordering.
+                let _ = nominal;
+                if let Some(method) = self
+                    .selected_core_trait_callable(expr, hir::CoreTrait::Ord)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                {
                     // Same fix as the `Eq::eq` dispatch above: `Ord::cmp(&self, &other)` borrows
                     // both operands.
                     let receiver_place = match left_place {
@@ -4636,6 +4733,16 @@ impl<'a> Interpreter<'a> {
         let left = self.deref_value(left, span)?;
         let right = self.deref_value(right, span)?;
         if let Some(nominal) = nominal_item(&left) {
+            // **AS3 Boundary 3: this site still SCANS, and the reason is structural.**
+            //
+            // `language_equal` is reached from `language_position` — a collection lookup — with
+            // runtime values and a span, and **no expression id**. `WP-CALLABLE-USE-TOTAL.md` §3.2
+            // named this case when it rejected `ExprId` as the key; this is that case in the code.
+            //
+            // Consuming here needs the ORIGINATING expression (the `contains`/`position` call)
+            // threaded down so the checker can publish the `Eq::eq` use against it. That is a
+            // bounded follow-up, not a redesign — recorded rather than forced, because inventing an
+            // expression id to look up would be a fabricated correspondence.
             if let Some(method) = self.find_method(
                 Some(nominal),
                 "eq",

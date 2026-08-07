@@ -589,3 +589,29 @@ fn operators_on_primitives_publish_no_use() {
         "primitive operators reach no user body and must publish no core-trait use"
     );
 }
+
+/// Boundary 3 consumption: the interpreter runs the body the CHECKER selected for `==` and `<`.
+///
+/// Behavioural, not structural — it exercises a user `Eq`/`Ord` through the HIR engine and checks
+/// the answer. The value is that this is the first AS3 commit where a wrong consumption would
+/// change a result rather than merely publish something unread.
+#[test]
+fn operator_dispatch_runs_the_selected_body() {
+    let program = analyse(
+        "struct Even { v: Int32 }\n\
+         impl Eq for Even {\n\
+         \x20   fn eq(&self, other: &Even) -> Bool {\n\
+         \x20       (self.v % 2) == (other.v % 2)\n    }\n}\n\
+         fn main() {\n\
+         \x20   let a: Even = Even { v: 2 };\n\
+         \x20   let b: Even = Even { v: 4 };\n\
+         \x20   let c: Even = Even { v: 3 };\n\
+         \x20   println(a == b);\n\
+         \x20   println(a == c);\n}\n",
+    );
+    let execution = program.execute_hir().expect("the fixture must run");
+    assert_eq!(
+        execution.output, "true\nfalse\n",
+        "the user's `Eq::eq` decides equality — 2 and 4 are equal by parity, 2 and 3 are not"
+    );
+}
