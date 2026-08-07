@@ -498,3 +498,94 @@ fn the_receiver_adjustment_publishes_the_deref_count() {
         "every adjustment was None; the field is publishing nothing"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Boundary 3 — operator dispatch: equality and ordering
+// ---------------------------------------------------------------------------------------------
+
+use starkc::typecheck::DispatchProvenance as DP;
+
+/// `==` and `<` on a user nominal publish a `CoreTrait` use.
+///
+/// These are dispatched by the LANGUAGE, not by a written call, and both engines currently
+/// re-select them with no trait filter in MIR at all. This is the checker stating which body runs.
+#[test]
+fn operators_on_a_user_nominal_publish_core_trait_uses() {
+    let program = analyse(
+        "struct Id { v: Int32 }\n\
+         impl Eq for Id {\n\
+         \x20   fn eq(&self, other: &Id) -> Bool {\n        self.v == other.v\n    }\n}\n\
+         impl Ord for Id {\n\
+         \x20   fn cmp(&self, other: &Id) -> Ordering {\n        self.v.cmp(&other.v)\n    }\n}\n\
+         fn main() {\n\
+         \x20   let a: Id = Id { v: 1 };\n\
+         \x20   let b: Id = Id { v: 2 };\n\
+         \x20   let same: Bool = a == b;\n\
+         \x20   let less: Bool = a < b;\n}\n",
+    );
+    let tables = program.tables();
+
+    let cores: Vec<_> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| matches!(u.provenance, DP::CoreTrait { .. }))
+        .collect();
+    assert_eq!(
+        cores.len(),
+        2,
+        "one `==` and one `<` on a user nominal are two core-trait uses, got {cores:?}"
+    );
+
+    for use_ in &cores {
+        assert!(
+            matches!(
+                use_.selection,
+                CalleeSelection::Static {
+                    declaration: CallableDeclId::ImplMember { .. },
+                    ..
+                }
+            ),
+            "an operator use must name the impl member that runs: {use_:?}"
+        );
+        assert_eq!(
+            use_.receiver_binding,
+            ReceiverBinding::Shared,
+            "`Eq::eq` and `Ord::cmp` both borrow their receiver"
+        );
+        assert!(
+            use_.signature.receiver.is_some(),
+            "the published signature must carry the receiver it read from the declaration"
+        );
+    }
+
+    // The two must name DIFFERENT bodies — otherwise the publication is not distinguishing the
+    // traits, which is the defect DEV-BOUND-TRAIT-IDENTITY was.
+    let bodies: Vec<String> = cores.iter().map(|u| format!("{:?}", u.selection)).collect();
+    assert_ne!(
+        bodies[0], bodies[1],
+        "`==` and `<` must select different bodies"
+    );
+}
+
+/// Operators on primitives publish nothing: they have built-in meaning (DEV-075) and reach no user
+/// body, so they are not callable uses. Publishing one would make totality claim something false.
+#[test]
+fn operators_on_primitives_publish_no_use() {
+    let program = analyse(
+        "fn main() {\n\
+         \x20   let a: Int32 = 1;\n\
+         \x20   let b: Int32 = 2;\n\
+         \x20   let same: Bool = a == b;\n\
+         \x20   let less: Bool = a < b;\n}\n",
+    );
+    let tables = program.tables();
+    let cores = tables
+        .callable_uses
+        .iter()
+        .filter(|u| matches!(u.provenance, DP::CoreTrait { .. }))
+        .count();
+    assert_eq!(
+        cores, 0,
+        "primitive operators reach no user body and must publish no core-trait use"
+    );
+}

@@ -5853,6 +5853,7 @@ impl<'a> TypeChecker<'a> {
                             let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
                         }
                         self.require_operator_bound(&lhs_ty, "Eq", expr.span);
+                        self.publish_operator_use(expr_id, &lhs_ty, "Eq", "eq", hir::CoreTrait::Eq);
                         Ty::Primitive(Primitive::Bool)
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -5860,6 +5861,13 @@ impl<'a> TypeChecker<'a> {
                             let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
                         }
                         self.require_operator_bound(&lhs_ty, "Ord", expr.span);
+                        self.publish_operator_use(
+                            expr_id,
+                            &lhs_ty,
+                            "Ord",
+                            "cmp",
+                            hir::CoreTrait::Ord,
+                        );
                         Ty::Primitive(Primitive::Bool)
                     }
                     BinOp::And | BinOp::Or => {
@@ -10413,6 +10421,146 @@ impl<'a> TypeChecker<'a> {
     /// unconditionally rejected. `HashMap`/`HashSet`/iterator/`Random`/`IOError` CoreTypes are
     /// deliberately excluded: they are not normatively specified as Eq/Ord-comparable, and
     /// giving them one now would be new semantics, not a bug fix (Charter rule 4).
+    /// Publish the `CallableUse` for an operator that dispatches to a user body (AS3 Boundary 3).
+    ///
+    /// Only user nominals reach a user body: primitives have built-in operator meaning (DEV-075),
+    /// and a `Ty::Core` composite compares element-wise through the runtime rather than through one
+    /// selected callable. Publishing nothing for those is correct — they are not callable uses.
+    fn publish_operator_use(
+        &mut self,
+        expr_id: ExprId,
+        operand: &Ty,
+        trait_name: &str,
+        method: &str,
+        core: hir::CoreTrait,
+    ) {
+        let operand = self.resolve(operand);
+        if !matches!(operand, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some((impl_item, member, body)) =
+            self.operator_impl_member(&operand, trait_name, method)
+        else {
+            return;
+        };
+        // **The signature is READ from the declaration, not assumed.** `Eq::eq` returns `Bool` and
+        // `Ord::cmp` returns `Ordering`, but writing those in would be this packet's own defect —
+        // a second answer to what the callable's signature is, which §3.4's invariant then has to
+        // reconcile against the body's.
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(Vec::new()),
+            // `Eq::eq(&self, &other)` and `Ord::cmp(&self, &other)` both borrow: the receiver binds
+            // shared, and the call site takes a shared borrow of an owned operand — zero derefs.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait { core },
+        };
+        self.publish_callable_use(expr_id, use_);
+    }
+
+    /// The declared signature of an impl member, converted — receiver, parameters and result.
+    ///
+    /// AS3 Boundary 3: the operator publication reads the signature it publishes rather than
+    /// asserting one, so `callable_uses` and `callable_types` describe the same declaration.
+    #[allow(clippy::type_complexity)]
+    fn declared_member_signature(
+        &mut self,
+        impl_item: ItemId,
+        member: u32,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Impl { items, self_ty, .. } = &self.hir.item(impl_item).kind else {
+            return None;
+        };
+        let hir::ImplItem::Fn { def, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        // Take the ids out of the borrow before converting: `convert_hir_type` needs `&mut self`,
+        // and `FnDef` is not `Clone`, so the borrow has to end rather than be copied.
+        let receiver_form = def.sig.receiver;
+        let param_ids: Vec<hir::TypeId> = def.sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = def.sig.ret;
+        let self_ty_id = *self_ty;
+
+        let self_ty = self.convert_hir_type(self_ty_id);
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty);
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => self.convert_hir_type(id),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+
+    /// The impl that supplies operator trait `required` for a user nominal, and the member index
+    /// and body of the method that implements it.
+    ///
+    /// **AS3 Boundary 3.** `ty_satisfies_operator_bound` already performs this scan — it walks every
+    /// impl looking for one whose trait path reads `"Eq"`/`"Ord"` and whose self type matches — and
+    /// then returns a `bool`, discarding the impl it just found. So the checker *does* select for
+    /// `==` and `<`; it throws the selection away and both engines find it again.
+    ///
+    /// That makes this a **fourth** scan of the same shape, after `Interpreter::find_method` and
+    /// `FnLowerer::find_impl_fn`. `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md` counted three because
+    /// it looked for algorithms that *return* a callable; this one answers a narrower question and
+    /// drops the answer, which is how it escaped the count.
+    fn operator_impl_member(
+        &self,
+        ty: &Ty,
+        required: &str,
+        method: &str,
+    ) -> Option<(ItemId, u32, BlockId)> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_id = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                generics,
+                items,
+            } = &item.kind
+            else {
+                continue;
+            };
+            if self.item_text(impl_id, trait_ref.path.span) != required {
+                continue;
+            }
+            if self
+                .match_impl_type(
+                    &self.impl_self_ty_with_args(impl_id, *self_ty),
+                    ty,
+                    generics,
+                )
+                .is_none()
+            {
+                continue;
+            }
+            for (member, impl_item) in items.iter().enumerate() {
+                if let hir::ImplItem::Fn { def, .. } = impl_item {
+                    if self.item_text(impl_id, def.sig.name) == method {
+                        return Some((impl_id, member as u32, def.body));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn ty_satisfies_operator_bound(&self, ty: &Ty, required: &str) -> bool {
         match ty {
             // DEV-075 (owner specification decision, 2026-07-20). This gate is about the
