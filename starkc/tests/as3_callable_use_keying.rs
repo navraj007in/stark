@@ -178,40 +178,89 @@ fn a_function_value_call_defers_both_selection_and_environment() {
     );
 }
 
-/// §3.4's invariant: a use's instantiated signature must agree with the body's parametric one, so
-/// `callable_uses` and `callable_types` cannot become competing signature authorities.
+/// §3.4's invariant, enforced on the COMPLETE signature.
+///
+/// The first version compared only arity and whether a receiver was present. That is weaker than
+/// the WP claims, and it hid a real gap: method publications passed `receiver: None` while the A3b
+/// body signature for a real method carries one, so the two would have disagreed on every method
+/// had anything checked. The fixture used only free functions, so nothing did.
+///
+/// This substitutes the use's environment into `callable_types[body]` and compares receiver, every
+/// parameter and the result.
 #[test]
-fn a_static_uses_signature_agrees_with_its_bodys_arity() {
+fn a_static_uses_signature_equals_its_substituted_body_signature() {
     let program = analyse(
-        "fn add(a: Int32, b: Int32) -> Int32 {\n    a + b\n}\n\
-         fn none() {}\n\
-         fn main() {\n    let v: Int32 = add(1, 2);\n    none();\n}\n",
+        "struct Box2 { v: Int32 }\n\
+         impl Box2 {\n\
+         \x20   pub fn peek(&self) -> Int32 {\n        self.v\n    }\n\
+         \x20   pub fn take(self) -> Int32 {\n        self.v\n    }\n\
+         \x20   pub fn combine(&self, other: Int32) -> Int32 {\n        self.v + other\n    }\n}\n\
+         fn add(a: Int32, b: Int32) -> Int32 {\n    a + b\n}\n\
+         fn main() {\n\
+         \x20   let b: Box2 = Box2 { v: 1 };\n\
+         \x20   let p: Int32 = b.peek();\n\
+         \x20   let c: Int32 = b.combine(2);\n\
+         \x20   let s: Int32 = add(1, 2);\n\
+         \x20   let t: Int32 = b.take();\n}\n",
     );
     let tables = program.tables();
 
     let mut checked = 0usize;
+    let mut with_receiver = 0usize;
     for use_ in &tables.callable_uses {
         let CalleeSelection::Static { body, .. } = &use_.selection else {
             continue;
         };
         let Some(body_sig) = tables.callable_types.get(body) else {
-            panic!("a static use names body {body:?}, which callable_types does not carry");
+            panic!("static use names body {body:?}, which callable_types does not carry");
         };
         assert_eq!(
             use_.signature.params.len(),
             body_sig.params.len(),
-            "the use's signature and the body's disagree about arity — two signature authorities"
+            "arity disagreement between the use and its body"
         );
         assert_eq!(
             use_.signature.receiver.is_some(),
             body_sig.receiver.is_some(),
-            "the use's signature and the body's disagree about a receiver"
+            "the use and its body disagree about whether there IS a receiver: {use_:?}"
         );
+        if use_.signature.receiver.is_some() {
+            with_receiver += 1;
+        }
+        // For a non-generic body the substituted signature IS the body signature, so the types
+        // must match exactly. Generic bodies are excluded here: their parametric form is
+        // deliberately not concrete, which §3.3 records.
+        let generic = match &use_.environment {
+            GenericEnvironment::Static(bindings) => !bindings.is_empty(),
+            GenericEnvironment::FromFunctionValue => true,
+        };
+        if !generic {
+            assert_eq!(
+                format!("{:?}", use_.signature.params),
+                format!("{:?}", body_sig.params),
+                "parameter types differ between a non-generic use and its body"
+            );
+            assert_eq!(
+                format!("{:?}", use_.signature.ret),
+                format!("{:?}", body_sig.ret),
+                "result type differs between a non-generic use and its body"
+            );
+            assert_eq!(
+                format!("{:?}", use_.signature.receiver),
+                format!("{:?}", body_sig.receiver),
+                "receiver type differs between a non-generic use and its body"
+            );
+        }
         checked += 1;
     }
     assert!(
-        checked >= 2,
-        "only {checked} static uses cross-checked; the invariant is not being exercised"
+        checked >= 4,
+        "only {checked} static uses cross-checked; the invariant is barely exercised"
+    );
+    assert!(
+        with_receiver >= 3,
+        "only {with_receiver} uses carried a receiver — the method half of the invariant is not \
+         being tested, which is how the receiver gap survived"
     );
 }
 
@@ -337,5 +386,99 @@ fn every_static_use_names_a_real_declaration() {
     assert!(
         kinds.contains("Item") && kinds.contains("ImplMember"),
         "the fixture must exercise more than one declaration kind, got {kinds:?}"
+    );
+}
+
+/// TYPE-METHOD-002's auto-dereference, published rather than discarded.
+///
+/// Method resolution repeatedly removes leading `&`/`&mut` before matching a receiver form. That
+/// peel count is a decision the CALL SITE made, and every named-dispatch publication originally
+/// passed `ReceiverAdjustment::None` — so a consumer would have received `binding = Shared,
+/// adjustment = None` and still had to reconstruct the receiver semantics itself, which is exactly
+/// what AS3 removes.
+///
+/// The six cases the hardening review named.
+#[test]
+fn the_receiver_adjustment_publishes_the_deref_count() {
+    let program = analyse(
+        "struct T2 { v: Int32 }\n\
+         impl T2 {\n\
+         \x20   pub fn shared(&self) -> Int32 {\n        self.v\n    }\n\
+         \x20   pub fn exclusive(&mut self) {\n        self.v = self.v + 1;\n    }\n\
+         \x20   pub fn owned(self) -> Int32 {\n        self.v\n    }\n}\n\
+         fn via_ref(t: &T2) -> Int32 {\n    t.shared()\n}\n\
+         fn via_ref_ref(t: &&T2) -> Int32 {\n    t.shared()\n}\n\
+         fn main() {\n\
+         \x20   let mut a: T2 = T2 { v: 1 };\n\
+         \x20   let direct: Int32 = a.shared();\n\
+         \x20   a.exclusive();\n\
+         \x20   let r: Int32 = via_ref(&a);\n\
+         \x20   let b: T2 = T2 { v: 2 };\n\
+         \x20   let rr: Int32 = via_ref_ref(&&b);\n\
+         \x20   let o: Int32 = b.owned();\n}\n",
+    );
+    let tables = program.tables();
+
+    let mut observed: Vec<(ReceiverBinding, ReceiverAdjustment)> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| {
+            matches!(
+                u.selection,
+                CalleeSelection::Static {
+                    declaration: CallableDeclId::ImplMember { .. },
+                    ..
+                }
+            )
+        })
+        .map(|u| (u.receiver_binding, u.receiver_adjustment))
+        .collect();
+    observed.sort_by_key(|pair| format!("{pair:?}"));
+    observed.dedup();
+
+    // `T -> self` is by value, with no peeling to record.
+    assert!(
+        observed.contains(&(ReceiverBinding::ByValue, ReceiverAdjustment::ByValue)),
+        "an owned receiver must publish a by-value adjustment: {observed:?}"
+    );
+    // `T -> &self` and `T -> &mut self` peel nothing; the adjustment is the borrow form.
+    assert!(
+        observed.contains(&(
+            ReceiverBinding::Shared,
+            ReceiverAdjustment::Shared { derefs: 0 }
+        )),
+        "a direct shared call must publish zero derefs: {observed:?}"
+    );
+    assert!(
+        observed.contains(&(
+            ReceiverBinding::Exclusive,
+            ReceiverAdjustment::Exclusive { derefs: 0 }
+        )),
+        "a direct exclusive call must publish zero derefs: {observed:?}"
+    );
+    // `&T -> &self` peels one, `&&T -> &self` peels two. The count is the information that was
+    // being thrown away.
+    assert!(
+        observed.contains(&(
+            ReceiverBinding::Shared,
+            ReceiverAdjustment::Shared { derefs: 1 }
+        )),
+        "a call through `&T` must publish one deref: {observed:?}"
+    );
+    assert!(
+        observed.contains(&(
+            ReceiverBinding::Shared,
+            ReceiverAdjustment::Shared { derefs: 2 }
+        )),
+        "a call through `&&T` must publish two derefs — the case that proves the count is real \
+         rather than a constant: {observed:?}"
+    );
+
+    // Non-vacuity: the adjustment must not be uniformly `None`, which is the defect this repairs.
+    assert!(
+        !observed
+            .iter()
+            .all(|(_, adj)| *adj == ReceiverAdjustment::None),
+        "every adjustment was None; the field is publishing nothing"
     );
 }

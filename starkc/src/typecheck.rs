@@ -828,6 +828,35 @@ pub enum DispatchProvenance {
     FunctionValue,
 }
 
+/// What the CALL SITE did to the receiver, from TYPE-METHOD-002's peel count and the form the
+/// selected declaration binds.
+///
+/// AS3 Boundary 2 hardening. Every named-dispatch publication passed `ReceiverAdjustment::None`,
+/// so the field existed and published nothing — a consumer would have received
+/// `binding = Shared, adjustment = None` and still had to work out the receiver semantics itself.
+///
+/// `derefs` is how many leading `&`/`&mut` method resolution removed before matching. A receiver
+/// of `&&mut T` calling a `&self` method is two derefs and a shared adjustment; `T` calling `self`
+/// is zero derefs by value.
+fn receiver_adjustment_for(
+    derefs: u8,
+    outermost_ref_is_mut: bool,
+    binding: ReceiverBinding,
+) -> ReceiverAdjustment {
+    match binding {
+        ReceiverBinding::None => ReceiverAdjustment::None,
+        ReceiverBinding::ByValue => ReceiverAdjustment::ByValue,
+        ReceiverBinding::Shared => ReceiverAdjustment::Shared { derefs },
+        ReceiverBinding::Exclusive => {
+            // An exclusive binding reached through a shared reference would be a borrow error the
+            // checker has already rejected; recording the outermost form keeps the two answers
+            // consistent rather than asserting one from the other.
+            let _ = outermost_ref_is_mut;
+            ReceiverAdjustment::Exclusive { derefs }
+        }
+    }
+}
+
 /// Everything the checker decided about one callable use.
 ///
 /// The rule this exists to serve: **the checker publishes, execution consumes, neither engine
@@ -4729,8 +4758,21 @@ impl<'a> TypeChecker<'a> {
         provenance: DispatchProvenance,
     ) {
         let Some(declaration) = self.decl_for_body(body) else {
-            // A body with no declaration is an internal inconsistency, not a case to tolerate:
-            // every body in the HIR belongs to an item, an impl member or a trait member.
+            // **A body with no declaration is an internal inconsistency, and is reported as one.**
+            //
+            // This used to `return`, which turned the inconsistency into MISSING METADATA — the
+            // precise thing AS3's rule forbids, since an execution site finding no record must be
+            // an internal compiler error rather than a licence to fall through and scan. Silently
+            // omitting a use would have made the totality invariant unenforceable by construction.
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "internal compiler error: callable body {body:?} belongs to no item, impl                          member or trait member, so no CallableUse can be published for it"
+                    ),
+                    self.hir.expr(call_expr).span,
+                )
+                .with_code("E9001"),
+            );
             return;
         };
         let use_ = CallableUse {
@@ -8547,9 +8589,19 @@ impl<'a> TypeChecker<'a> {
             return self.check_tensor_refine(resolved_base, turbofish, args, name_span, call_span);
         }
 
+        // AS3 Boundary 2 hardening: TYPE-METHOD-002's auto-dereference is a decision the CALL SITE
+        // makes, and it was being discarded. Counting the peels here is what lets
+        // `ReceiverAdjustment` publish it instead of every consumer re-deriving it from the
+        // receiver's type — which is precisely the reconstruction this packet exists to remove.
         let mut receiver_ty = resolved_base.clone();
+        let mut receiver_derefs: u8 = 0;
+        let mut outermost_ref_is_mut = false;
+        if let Ty::Ref { mutable, .. } = &receiver_ty {
+            outermost_ref_is_mut = *mutable;
+        }
         while let Ty::Ref { inner, .. } = receiver_ty {
             receiver_ty = self.resolve(&inner);
+            receiver_derefs = receiver_derefs.saturating_add(1);
         }
 
         // DEV-067(b) (WP-C4.7-7): a method call on a BOUNDED generic parameter resolves through
@@ -8823,6 +8875,12 @@ impl<'a> TypeChecker<'a> {
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
             let use_self_ty = Some(impl_self_ty.clone());
+            // The receiver this use binds, instantiated. `None` when the declaration takes no
+            // receiver, which keeps the published signature comparable with A3b's body signature.
+            let receiver_self_ty = sig
+                .receiver
+                .as_ref()
+                .map(|_| self.instantiate_ty(&impl_self_ty, &map));
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: trait_body,
@@ -8878,10 +8936,14 @@ impl<'a> TypeChecker<'a> {
                 call_expr,
                 trait_body,
                 use_bindings,
-                ReceiverAdjustment::None,
+                receiver_adjustment_for(receiver_derefs, outermost_ref_is_mut, receiver_binding),
                 receiver_binding,
                 CallableSigTy {
-                    receiver: None,
+                    // AS3 Boundary 2 hardening: a real method's A3b body signature carries its
+                    // receiver, so publishing `None` here made the §3.4 invariant unenforceable —
+                    // the two signatures would disagree on every method. The instantiated `Self`
+                    // is the receiver this use binds.
+                    receiver: receiver_self_ty.clone(),
                     params: params_ty.clone(),
                     ret: ret_ty.clone(),
                 },
@@ -8956,6 +9018,11 @@ impl<'a> TypeChecker<'a> {
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
             let use_self_ty = Some(env_self.clone());
+            let receiver_self_ty = def
+                .sig
+                .receiver
+                .as_ref()
+                .map(|_| self.instantiate_ty(&env_self, &map));
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: def.body,
@@ -9012,10 +9079,14 @@ impl<'a> TypeChecker<'a> {
                 call_expr,
                 def.body,
                 use_bindings,
-                ReceiverAdjustment::None,
+                receiver_adjustment_for(receiver_derefs, outermost_ref_is_mut, receiver_binding),
                 receiver_binding,
                 CallableSigTy {
-                    receiver: None,
+                    // AS3 Boundary 2 hardening: a real method's A3b body signature carries its
+                    // receiver, so publishing `None` here made the §3.4 invariant unenforceable —
+                    // the two signatures would disagree on every method. The instantiated `Self`
+                    // is the receiver this use binds.
+                    receiver: receiver_self_ty.clone(),
                     params: params_ty.clone(),
                     ret: ret_ty.clone(),
                 },
