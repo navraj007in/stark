@@ -2653,7 +2653,7 @@ impl<'a> Interpreter<'a> {
                         let iterator_place = self.promote_to_temp_place(iterator, expr.span)?;
                         let mut escaped = None;
                         while let Some(value) =
-                            self.next_for_iterator(&iterator_place, expr.span)?
+                            self.next_for_iterator(&iterator_place, expr_id, expr.span)?
                         {
                             self.frame_mut().insert(*local, Some(value));
                             let flow = self.eval_block(*body)?;
@@ -6596,16 +6596,28 @@ impl<'a> Interpreter<'a> {
     fn next_for_iterator(
         &mut self,
         iterator_place: &Place,
+        for_expr: ExprId,
         span: Span,
     ) -> Result<Option<Value>, RuntimeError> {
         let current = self.clone_place_value(iterator_place, span)?;
         let next = if nominal_item(&current).is_some() {
+            // AS3 Boundary 4: CONSUME the checker's `Iterator::next` selection. The scan below
+            // is transitional and goes when `find_method` does.
             let method = self
-                .find_method(
-                    nominal_item(&current),
-                    "next",
-                    Some(Res::CoreTrait(hir::CoreTrait::Iterator)),
-                )
+                .selected_core_trait_callable(for_expr, hir::CoreTrait::Iterator)
+                .and_then(|use_| match use_.selection {
+                    crate::typecheck::CalleeSelection::Static { body, .. } => {
+                        self.callable_for_body(body)
+                    }
+                    crate::typecheck::CalleeSelection::FunctionValue => None,
+                })
+                .or_else(|| {
+                    self.find_method(
+                        nominal_item(&current),
+                        "next",
+                        Some(Res::CoreTrait(hir::CoreTrait::Iterator)),
+                    )
+                })
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
             self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
         } else {

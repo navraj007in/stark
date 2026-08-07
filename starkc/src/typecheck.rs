@@ -6806,6 +6806,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 };
 
+                // AS3 Boundary 4: publish the `Iterator::next` this loop selected. Placed after
+                // the element type is resolved, because that resolution is what proves an
+                // `Iterator` impl matched.
+                self.publish_iterator_use(expr_id, &resolved_iter_ty);
                 self.local_types.insert(*local, elem_ty);
                 self.local_mutability.insert(*local, false);
 
@@ -10506,6 +10510,83 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Never(_) => Ty::Never,
         };
         Some((receiver, params, ret))
+    }
+
+    /// The `Iterator::next` member a user iterator selects (AS3 Boundary 4).
+    ///
+    /// **The fifth scan of this shape.** `user_iterator_item_type` already walks every impl to find
+    /// the `Iterator` one for this type — and returns only the associated `Item`, discarding the
+    /// impl. So the checker selects for `for` loops too, and throws the selection away for both
+    /// engines to find again.
+    fn iterator_impl_member(&self, iter_ty: &Ty) -> Option<(ItemId, u32, BlockId)> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_id = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            if self.item_text(impl_id, trait_ref.path.span) != "Iterator" {
+                continue;
+            }
+            if self
+                .match_impl_type(
+                    &self.impl_self_ty_with_args(impl_id, *self_ty),
+                    iter_ty,
+                    generics,
+                )
+                .is_none()
+            {
+                continue;
+            }
+            for (member, impl_item) in items.iter().enumerate() {
+                if let hir::ImplItem::Fn { def, .. } = impl_item {
+                    if self.item_text(impl_id, def.sig.name) == "next" {
+                        return Some((impl_id, member as u32, def.body));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Publish the `Iterator::next` use a `for` loop selects.
+    fn publish_iterator_use(&mut self, for_expr: ExprId, iter_ty: &Ty) {
+        let iter_ty = self.resolve(iter_ty);
+        if !matches!(iter_ty, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some((impl_item, member, body)) = self.iterator_impl_member(&iter_ty) else {
+            return;
+        };
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(Vec::new()),
+            // `Iterator::next(&mut self)` advances the iterator, so the loop takes an exclusive
+            // borrow of the iterator place — no dereferencing.
+            receiver_adjustment: ReceiverAdjustment::Exclusive { derefs: 0 },
+            receiver_binding: ReceiverBinding::Exclusive,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Iterator,
+            },
+        };
+        self.publish_callable_use(for_expr, use_);
     }
 
     /// The impl that supplies operator trait `required` for a user nominal, and the member index
