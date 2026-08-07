@@ -214,10 +214,17 @@ pub fn specialize_bound_callable(
         {
             continue;
         }
-        let target = candidate
+        // `continue`, not `?`. A `?` here abandoned the whole search when the FIRST impl whose
+        // head unified did not declare the member — so a later impl that does would never be
+        // reached. Wrong control flow independently of DEV-187, and the kind that only shows up
+        // once a program has two impls of one trait.
+        let Some(target) = candidate
             .effective_members
             .iter()
-            .find(|t| t.member == member)?;
+            .find(|t| t.member == member)
+        else {
+            continue;
+        };
 
         // The environment is read off the TARGET's binder schema, so an impl override and a trait
         // default are built by the same code from different declarations. Branching on target kind
@@ -240,7 +247,9 @@ pub fn specialize_bound_callable(
         // A3b's exact-set test guarantees every executable body has a signature, trait defaults
         // included. A missing one is an internal inconsistency, not a case to tolerate — the same
         // rule `publish_named_use` learned.
-        let parametric = callable_types.get(&target.body)?;
+        let Some(parametric) = callable_types.get(&target.body) else {
+            continue;
+        };
         let substitutions: HashMap<String, Ty> = environment
             .iter()
             .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
