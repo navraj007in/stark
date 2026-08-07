@@ -5279,3 +5279,40 @@ inference.
 
 A control that misreports its own inputs is worse than no control: it produced two confident wrong
 conclusions, one of which reached a permanent record before being retracted.
+
+
+## DEV-188 — a trait method's own generics were dropped at a bound call site [CLOSED at creation, AS3 Boundary 4, CD-386, 2026-08-07]
+
+- **Rule:** 02-Syntax-Grammar.md permits a trait method to declare its own generic parameters, and
+  03-Type-System.md's turbofish rule applies to a method's generics at the call site. Nothing
+  restricts either to concrete receivers.
+- **Defect:** `check_trait_member_call` converted the declared signature and never read
+  `sig.generics`. At a call through a generic parameter's bound, the method's own generics were
+  therefore never bound: the turbofish was discarded, no inference variable was created, and the
+  argument check compared the caller's types against the type *parameter*.
+- **Effect: every trait method mentioning its own generic parameter was uncallable through a
+  bound.** Not mis-typed — uncallable. `fn g<T: Conv>(t: T) { t.to::<Int32>(1) }` on
+  `fn to<U>(&self, x: U) -> U` reported `type mismatch: expected 'U', found an integer literal`,
+  and no call site could satisfy it. The same function serves the `Self`-receiver path, so a trait
+  default calling a generic sibling on `self` failed identically.
+- **Scope, measured rather than assumed** (`examples/as3_method_args_probe.rs`): the only accepted
+  shape was one where the method's generic appears **nowhere in its signature**. `U` in a
+  parameter, `U` in the return type, and `U` in both were all rejected.
+- **The concrete-receiver path was already correct.** WP-C4.7-8.4 binds these generics, validates
+  the turbofish arity, and substitutes. This is the bound path being brought into line with a rule
+  the language already had — not a new rule, which is why it closes at creation rather than opening
+  a semantic question.
+- **Repair:** `check_trait_member_call` binds `sig.generics` from the turbofish when present and
+  from fresh inference variables otherwise, validates arity, substitutes into parameters and return
+  type, and returns the resolved bindings. `CalleeSelection::Bound::method_args` — carried but
+  always empty since Boundary 4 step 2 — is now populated from them. A core trait's contract
+  (`ContractTy`) cannot declare method generics, so its empty list is an answer, not a gap.
+- **Evidence:** `tests/dev188_bound_method_generics.rs`, 8 tests. Both halves of the repair
+  mutation-tested independently: removing the binding fails 6 of 8; removing the arity validation
+  fails the other 2.
+- **How it was found, and the correction it forces.** AS3-DISPLAY-CHARACTERIZATION.md §5 recorded
+  G2 as *accepted* — "method generics through a bound … yes". That measurement was **vacuous**: its
+  fixture's `U` appeared nowhere in the signature, the one shape that happened to work. The
+  characterization was written to justify *adding a field*, and it stopped measuring as soon as the
+  program compiled. Probing the field's actual inputs before populating it is what exposed the
+  defect underneath. §5 is corrected in the same change.

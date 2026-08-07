@@ -8390,16 +8390,18 @@ impl<'a> TypeChecker<'a> {
     /// Both arms end in the same argument-checking loop; they differ only in where the declared
     /// parameter and return types come from — an HIR signature for a user trait, the Core trait's
     /// implementation contract for a compiler-known one.
+    /// Returns the return type and the method's own generic arguments at this call site.
     fn check_bound_method_call(
         &mut self,
         candidate: &BoundMethod,
         p_name: &str,
+        turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
-    ) -> Ty {
+    ) -> (Ty, Vec<Ty>) {
         match candidate {
             BoundMethod::User { trait_id, sig } => {
-                self.check_trait_member_call(*trait_id, sig, args, call_span)
+                self.check_trait_member_call(*trait_id, sig, turbofish, args, call_span)
             }
             BoundMethod::Core {
                 method, trait_args, ..
@@ -8419,7 +8421,9 @@ impl<'a> TypeChecker<'a> {
                     Some(term) => self.contract_ty_to_ty(term, &self_ty, &trait_arg_tys),
                 };
                 self.check_call_arguments(params_ty, args, call_span);
-                ret_ty
+                // A core trait's contract is fixed (`ContractTy`) and declares no method-level
+                // generics, so this list is empty as a FACT about core traits, not as a gap.
+                (ret_ty, Vec::new())
             }
         }
     }
@@ -8675,28 +8679,66 @@ impl<'a> TypeChecker<'a> {
     /// file, which differs from the caller's for a cross-package trait. AS1b-ii-d: those spans
     /// name the trait's file themselves. The parameter is kept so the call sites still say which
     /// trait they resolved.
+    /// Returns the method's return type **and** this call site's binding of the method's own
+    /// generic parameters, in declaration order — the `method_args` a `CalleeSelection::Bound`
+    /// publishes.
     fn check_trait_member_call(
         &mut self,
         _trait_id: ItemId,
         sig: &hir::FnSig,
+        turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
-    ) -> Ty {
+    ) -> (Ty, Vec<Ty>) {
+        // **AS3 Boundary 4 (DEV-188): bind the method's OWN generic parameters.**
+        //
+        // This ignored `sig.generics` entirely, so `U` stayed rigid and *any* trait method that
+        // mentioned its own generic parameter was uncallable through a bound — the turbofish was
+        // dropped on the floor. The concrete-receiver path (WP-C4.7-8.4) and the trait-default
+        // path already do exactly this; only the bound and `Self`-receiver paths did not.
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        let mut method_args: Vec<Ty> = Vec::new();
+        if let Some(generic_args) = turbofish {
+            self.validate_generic_arity(sig.generics.len(), generic_args.args.len(), call_span);
+        }
+        for (index, param) in sig.generics.iter().enumerate() {
+            let ty = match turbofish.and_then(|g| g.args.get(index)) {
+                Some(hir::GenericArg::Type(t)) => self.convert_hir_type(*t),
+                Some(_) => Ty::Error,
+                // No turbofish (or too few): infer it from the arguments, as an ordinary generic
+                // call does. `t.to(1)` must work without a turbofish for the same reason `f(1)`
+                // does.
+                None => self.new_type_var(),
+            };
+            map.insert(self.decl_text(param.name).to_string(), ty.clone());
+            method_args.push(ty);
+        }
+
         // AS1b-ii-d: this used to swap `self.file` to the trait's file to convert the signature
         // and swap back for the arguments. The signature's spans name the trait's file and the
         // arguments' name the caller's, so both convert correctly with no swap at all.
         let params_ty: Vec<Ty> = sig
             .params
             .iter()
-            .map(|p| self.convert_hir_type(p.ty))
+            .map(|p| {
+                let ty = self.convert_hir_type(p.ty);
+                self.instantiate_ty(&ty, &map)
+            })
             .collect();
         let ret_ty = match sig.ret {
             hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
-            hir::RetTy::Ty(t) => self.convert_hir_type(t),
+            hir::RetTy::Ty(t) => {
+                let ty = self.convert_hir_type(t);
+                self.instantiate_ty(&ty, &map)
+            }
             hir::RetTy::Never(_) => Ty::Never,
         };
         self.check_call_arguments(params_ty, args, call_span);
-        ret_ty
+        // Resolve after the arguments have constrained any inference variable introduced above, so
+        // an omitted turbofish still publishes the type the call site actually settled on rather
+        // than an unresolved `_infer_N`.
+        let method_args = method_args.iter().map(|ty| self.resolve(ty)).collect();
+        (self.resolve(&ret_ty), method_args)
     }
 
     fn resolve_method(
@@ -8787,7 +8829,8 @@ impl<'a> TypeChecker<'a> {
                 // WP-C6.2c: a trait method returning `Self::Item` yields the receiver's
                 // projection (`T::Item`), which is then pinned by any explicit
                 // `T: Trait<Item = ..>` binding in scope.
-                let ret = self.check_bound_method_call(&candidate, &p_name, args, call_span);
+                let (ret, method_args) =
+                    self.check_bound_method_call(&candidate, &p_name, turbofish, args, call_span);
                 let ret = Self::subst_self(&ret, &p_name);
                 let binding_map = self.assoc_binding_map();
                 let ret = self.normalize_projections(&ret, &binding_map);
@@ -8798,7 +8841,14 @@ impl<'a> TypeChecker<'a> {
                 // be named: `Self` is `Ty::Param(p_name)` and stays parametric until the enclosing
                 // function is instantiated. What IS fixed is the obligation, and that is what a
                 // `Bound` selection records.
-                self.publish_bound_use(call_expr, &candidate, &p_name, &name_str, &ret);
+                self.publish_bound_use(
+                    call_expr,
+                    &candidate,
+                    &p_name,
+                    &name_str,
+                    &ret,
+                    method_args,
+                );
                 return ret;
             }
         }
@@ -8818,7 +8868,11 @@ impl<'a> TypeChecker<'a> {
             if p_name == "Self" {
                 if let Some(trait_id) = self.current_trait_id {
                     if let Some(sig) = self.find_trait_method_sig(trait_id, &name_str) {
-                        return self.check_trait_member_call(trait_id, &sig, args, call_span);
+                        // Same DEV-188 repair: a sibling default body calling another generic
+                        // trait method through `self` had `U` rigid for the same reason.
+                        return self
+                            .check_trait_member_call(trait_id, &sig, turbofish, args, call_span)
+                            .0;
                     }
                 }
             }
@@ -10754,6 +10808,7 @@ impl<'a> TypeChecker<'a> {
         param_name: &str,
         method: &str,
         ret: &Ty,
+        method_args: Vec<Ty>,
     ) {
         let (trait_, receiver_form, params) = match candidate {
             BoundMethod::User { trait_id, sig } => (
@@ -10774,11 +10829,9 @@ impl<'a> TypeChecker<'a> {
                         member: method.name.to_string(),
                         self_ty: receiver_self.clone(),
                         trait_args: Vec::new(),
-                        // 4a: not yet populated. The turbofish is available at the call site and
-                        // 4b threads it; publishing a fabricated empty list as if it were the
-                        // answer is what this packet keeps refusing to do, so the gap is stated
-                        // in `WP-CALLABLE-USE-TOTAL.md` rather than hidden here.
-                        method_args: Vec::new(),
+                        // Always empty, and that is the answer rather than a gap: a core trait's
+                        // contract is `ContractTy`, which cannot declare method-level generics.
+                        method_args,
                     },
                     environment: GenericEnvironment::FromBoundSelection,
                     receiver_adjustment: ReceiverAdjustment::None,
@@ -10812,7 +10865,9 @@ impl<'a> TypeChecker<'a> {
                 member: method.to_string(),
                 self_ty: receiver_self.clone(),
                 trait_args: Vec::new(),
-                method_args: Vec::new(), // 4a: see the note on the core-trait branch.
+                // DEV-188: this call site's binding of the METHOD's own generics, from the
+                // turbofish or inferred from the arguments.
+                method_args,
             },
             environment: GenericEnvironment::FromBoundSelection,
             receiver_adjustment: ReceiverAdjustment::None,

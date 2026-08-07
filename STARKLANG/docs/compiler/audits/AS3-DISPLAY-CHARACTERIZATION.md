@@ -137,7 +137,7 @@ about what the language accepts.
 | # | Case | Accepted | Output | `callable_uses` |
 | ---: | --- | :---: | --- | ---: |
 | G1 | trait **default** reached through a bound — `impl Describe for A2 {}` with no override, `x.text()` in `f<T: Describe>` | **yes** | `default` | 3 |
-| G2 | **method generics** through a bound — `x.to::<Int32>()` in `g<T: Conv>` | **yes** | `1` | 3 |
+| G2 | **method generics** through a bound — `x.to::<Int32>()` in `g<T: Conv>` | **yes**, but see the correction below | `1` | 3 |
 
 ### G1 — the index must carry effective targets, not written members
 
@@ -172,6 +172,23 @@ empty environment, found before it was built rather than after.
 need not enlarge the packet" — is only true of Display; the `Bound` machinery is general, and step 2
 already published it for arbitrary user-trait bounds.
 
+#### CORRECTION (2026-08-07): the G2 row above is vacuous, and the real finding is worse
+
+Before populating `method_args`, its inputs were probed (`examples/as3_method_args_probe.rs`). The
+G2 fixture's `U` appears **nowhere in the method's signature** — and that is the *only* shape the
+compiler accepted. `U` in a parameter, `U` in the return type, or both: all rejected, with
+`type mismatch: expected 'U'`. The turbofish was discarded entirely.
+
+So G2 measured the one case that worked and read it as the general case. The gap was not "`Bound`
+lacks a field"; it was **DEV-188 — a trait method that uses its own generic parameter was
+uncallable through a bound at all.** Populating the field required fixing that first, and the two
+landed as one change (CD-386).
+
+The methodological point is the one this packet keeps re-learning: a characterization written to
+motivate a design decision will stop measuring the moment it has motivated it. G2's fixture was
+built to show "method generics reach a bound call site", it compiled, and the row was written. One
+probe that varied where the generic appeared would have found the defect on the same day.
+
 ### Consequence for step 4
 
 Both findings land on the same structure, so they are one change rather than two:
@@ -188,3 +205,6 @@ IndexedImpl
 ```
 
 and `CalleeSelection::Bound` gains `method_args` alongside `trait_args`.
+
+**Both are now implemented.** `method_args` is populated per DEV-188/CD-386; `effective_members`
+per G1.
