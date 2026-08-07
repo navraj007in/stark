@@ -3034,7 +3034,11 @@ impl<'a> Interpreter<'a> {
                         crate::typecheck::CalleeSelection::Static { body, .. } => {
                             self.callable_for_body(body)
                         }
-                        crate::typecheck::CalleeSelection::FunctionValue => None,
+                        // AS3 Boundary 4: a `Bound` use is not resolvable here. Its body comes
+                        // from the shared bound specialiser once `Self` is concrete, which this
+                        // path does not yet call — so it falls through rather than guessing.
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
                     })
                 {
                     // Correction-brief Issue 2: `Eq::eq(&self, &other)` borrows both operands --
@@ -3090,7 +3094,11 @@ impl<'a> Interpreter<'a> {
                         crate::typecheck::CalleeSelection::Static { body, .. } => {
                             self.callable_for_body(body)
                         }
-                        crate::typecheck::CalleeSelection::FunctionValue => None,
+                        // AS3 Boundary 4: a `Bound` use is not resolvable here. Its body comes
+                        // from the shared bound specialiser once `Self` is concrete, which this
+                        // path does not yet call — so it falls through rather than guessing.
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
                     })
                 {
                     // Same fix as the `Eq::eq` dispatch above: `Ord::cmp(&self, &other)` borrows
@@ -6609,7 +6617,9 @@ impl<'a> Interpreter<'a> {
                     crate::typecheck::CalleeSelection::Static { body, .. } => {
                         self.callable_for_body(body)
                     }
-                    crate::typecheck::CalleeSelection::FunctionValue => None,
+                    // AS3 Boundary 4: `Bound` needs the shared specialiser, not this path.
+                    crate::typecheck::CalleeSelection::Bound { .. }
+                    | crate::typecheck::CalleeSelection::FunctionValue => None,
                 })
                 .or_else(|| {
                     self.find_method(

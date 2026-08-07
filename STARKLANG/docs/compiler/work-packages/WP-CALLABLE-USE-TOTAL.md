@@ -303,3 +303,134 @@ invariant is a convention.
 5. The frozen corpus and all engine comparisons remain green.
 6. Any checker/engine disagreement found on the way is recorded as its own DEV entry with a
    fails-first test, and not silently normalised.
+
+
+---
+
+## 8. Three binding times — the model corrected again (2026-08-07)
+
+Boundary 4's Display characterization (`AS3-DISPLAY-CHARACTERIZATION.md`) found a category
+`CalleeSelection` could not represent, and owner review established it is **not a Display corner**.
+
+### The premise correction
+
+The first reading was that Boundary 2 already handled bound dispatch and Display was an exception.
+It does not. `resolve_method`'s bound branch records `bound_trait_calls`, calls
+`check_bound_method_call`, and **returns** — before Boundary 2's publication is reached. Verified in
+the source. So
+
+```stark
+fn f<T: Speak>(x: T) { x.speak(); }
+```
+
+publishes no `CallableUse` at all, and never did. AS3 found a **missing third category of callable
+selection**, not an unusual formatting case.
+
+### The three binding times
+
+```text
+Static          body known during typecheck
+Bound           trait/member known during typecheck;
+                body known when `Self` becomes concrete
+FunctionValue   body and environment carried by the runtime value
+```
+
+Forcing the middle case into either end hides something true. Calling it `Static` because MIR
+eventually monomorphises would assert the checker knew the body at the semantic use site; it did
+not. Calling it `FunctionValue` would assert a value carries the target; none does.
+
+### What `Bound` means, precisely
+
+> **A checker-published dispatch obligation whose declaration identity is fixed, but whose
+> executable target is resolved by the compiler's single bound-specialisation authority when its
+> `Self` type becomes concrete.**
+
+Not *"the engines may now find whichever impl matches"*. That reading would give the existing scans
+a respectable name and leave the architecture where it was:
+
+```text
+                     Typecheck
+                        │
+                        ▼
+               CallableUse::Bound
+        trait + member + parametric Self
+                        │
+            ┌───────────┴───────────┐
+      HIR generic frame       MIR monomorphisation
+            └───────────┬───────────┘
+                        ▼
+             ONE bound specialiser
+                        ▼
+          concrete declaration / body / environment
+```
+
+Both engines consume that authority's result at different *times*; neither implements matching.
+
+### Identity: `hir::BoundTrait`
+
+`DispatchProvenance::Bound { trait_item: ItemId }` could not represent `T: Display`, because
+`Display` is a `CoreTrait` with no trait `ItemId`. Both selection and provenance now use
+`hir::BoundTrait { User(ItemId), Core(CoreTrait) }` — which **already existed**, because
+`BoundMethod::{User, Core}` needed exactly this distinction. Selection, provenance and the rest of
+the compiler now speak one identity language.
+
+### `GenericEnvironment::FromBoundSelection`
+
+A bound use's callee environment does not exist yet, because the callee is not selected yet. The
+specialiser produces body and environment **atomically**; choosing the body in one place and
+reconstructing the environment in another is how DEV-176 happened, and would happen again.
+
+### §3.4's invariant is postponed, not weakened
+
+For `Static` it stands unchanged. For `Bound`:
+
+```text
+specialize(use, caller_environment) → body + environment + signature
+then  substitute(environment, callable_types[body]) == specialized(signature)
+```
+
+Worked example. At the declaration of `fn show<T: Display>(x: T)`:
+
+```text
+selection = Bound { trait_: Core(Display), member: "fmt", self_ty: T }
+signature = (&T) -> String
+```
+
+At `show::<A>`: `T → A`, `Display + A → impl Display for A`, body `→ A::fmt`,
+environment `→ Self = A`, signature `→ (&A) -> String`. `show::<W<Int32>>` specialises
+independently.
+
+### Boundary 2's status, narrowed
+
+```text
+Boundary 2 — concrete named dispatch    COMPLETE
+Boundary 2 — generic bound dispatch     MOVED TO BOUNDARY 4
+```
+
+Not a reason to unwind Boundary 2. Bound dispatch is its own binding-time family and grouping it
+under ordinary named dispatch was the error. The boundaries read better for it:
+
+```text
+Boundary 1  direct / value
+Boundary 2  early-bound named
+Boundary 3  operator
+Boundary 4  protocol + LATE-BOUND trait dispatch
+```
+
+### Implementation order
+
+1. **This commit** — model and record; no behaviour change.
+2. `CalleeSelection::Bound` published for an ordinary explicit bound call
+   (`fn f<T: Speak>(x: T) { x.speak(); }`), **before Display**, so the general mechanism is proved
+   independently of recursive formatting.
+3. The one bound-specialisation authority: user trait, core trait, generic impl, same-named methods
+   on different traits, concrete core receiver.
+4. Both engines onto it — HIR's bound path stops calling `find_method`, MIR's stops calling
+   `find_impl_fn`.
+5. `DisplayPath` publication: static nominal → `Static`, parametric `T: Display` → `Bound`, recurse
+   composites, STOP at a nominal whose `fmt` owns rendering.
+6. HIR and MIR Display, plus the remaining MIR Iterator site.
+7. Delete `find_method` and `find_impl_fn`.
+
+The crucial negative control at step 4: **HIR and MIR must obtain the same resolved
+`body + environment` from the shared specialiser.**

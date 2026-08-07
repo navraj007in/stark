@@ -762,6 +762,14 @@ struct UserIteratorSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallableUseId(pub u32);
 
+// AS3 Boundary 4 uses `hir::BoundTrait` — `User(ItemId)` or `Core(CoreTrait)` — which the compiler
+// already carries because user traits and compiler-known traits both occur as bounds.
+//
+// This resolves a model bug found by the Display characterization: `DispatchProvenance::Bound
+// { trait_item: ItemId }` could not represent `T: Display`, since `Display` is a `CoreTrait` with
+// no trait `ItemId`. Selection and provenance now speak the same identity language, and it is the
+// language the rest of the compiler already speaks.
+
 /// WHICH declaration the checker selected, expressed in ids the HIR actually possesses.
 ///
 /// Methods, associated functions and trait defaults have **no `ItemId`**: `ImplItem::Fn` embeds a
@@ -784,11 +792,42 @@ pub enum CallableDeclId {
 /// DEV-178: a function value carries the item and the bindings it was created with, because the
 /// call site's `Ty::Fn` cannot reconstruct which instantiation produced it. Pretending every use
 /// has a statically known body would erase that.
+/// **Three binding times, not two.**
+///
+/// AS3 Boundary 4's Display characterization found a category the two-variant model could not
+/// represent, and it is not a Display corner: a call on a bounded generic parameter
+/// (`fn f<T: Speak>(x: T) { x.speak(); }`) has the same shape. `resolve_method`'s bound branch
+/// records `bound_trait_calls` and returns before Boundary 2's publication, so nothing was ever
+/// published for it.
+///
+/// ```text
+/// Static          body known during typecheck
+/// Bound           trait/member known during typecheck;
+///                 body known when `Self` becomes concrete
+/// FunctionValue   body and environment carried by the runtime value
+/// ```
+///
+/// **`Bound` is not a licence for an engine to select later.** It is a checker-published dispatch
+/// obligation whose *declaration identity* is fixed now, and whose *executable target* is resolved
+/// by one shared bound-specialisation authority when `Self` becomes concrete. Both engines consume
+/// that authority's result; neither implements matching. Defining it the other way would simply
+/// give the old scans a respectable name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CalleeSelection {
     Static {
         declaration: CallableDeclId,
         body: BlockId,
+    },
+    /// Late-bound: the obligation is fixed, the body is not.
+    Bound {
+        trait_: hir::BoundTrait,
+        /// The trait member invoked, by name — traits declare members positionally like impls, and
+        /// the specialiser resolves the position against whichever impl `Self` selects.
+        member: String,
+        /// The receiver type, which may still contain caller parameters (`T`, `W<T>`).
+        self_ty: Ty,
+        /// Trait arguments, for parameterised traits.
+        trait_args: Vec<Ty>,
     },
     FunctionValue,
 }
@@ -799,6 +838,10 @@ pub enum CalleeSelection {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenericEnvironment {
     Static(Vec<(GenericBinder, Ty)>),
+    /// **The callee's environment does not exist yet**, because the callee is not selected yet.
+    /// The bound specialiser produces body and environment *atomically* — reconstructing the
+    /// environment separately from the body is how DEV-176 happened, in a new place.
+    FromBoundSelection,
     /// Fixed at coercion and carried by the value (DEV-178).
     FromFunctionValue,
 }
@@ -815,7 +858,11 @@ impl GenericEnvironment {
                 .iter()
                 .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
                 .collect(),
-            GenericEnvironment::FromFunctionValue => HashMap::new(),
+            // Neither carries a callee environment HERE: the function value has it, and a bound
+            // use has none until specialisation produces body and environment together.
+            GenericEnvironment::FromBoundSelection | GenericEnvironment::FromFunctionValue => {
+                HashMap::new()
+            }
         }
     }
 }
@@ -854,7 +901,8 @@ pub enum DispatchProvenance {
     /// `T::m()` / `<T as Tr>::m()`.
     Qualified { trait_item: Option<ItemId> },
     /// A generic parameter's BOUND supplied the signature — what `bound_trait_calls` carries today.
-    Bound { trait_item: ItemId },
+    /// Uses [`BoundTrait`] because a bound may name a `CoreTrait`, which has no `ItemId`.
+    Bound { trait_: hir::BoundTrait },
     /// A compiler-known trait operation: `==`, `<`, `for`, `{}` formatting. The four families both
     /// engines currently re-select with no filter at all.
     CoreTrait { core: hir::CoreTrait },
@@ -1085,6 +1133,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
                         .map(|(binder, ty)| (binder.clone(), checker.ground(ty)))
                         .collect(),
                 ),
+                GenericEnvironment::FromBoundSelection => GenericEnvironment::FromBoundSelection,
                 GenericEnvironment::FromFunctionValue => GenericEnvironment::FromFunctionValue,
             },
             receiver_adjustment: use_.receiver_adjustment,

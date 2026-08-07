@@ -6198,7 +6198,8 @@ impl<'a> FnLowerer<'a> {
             })
             .and_then(|use_| match &use_.selection {
                 crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
-                crate::typecheck::CalleeSelection::FunctionValue => None,
+                crate::typecheck::CalleeSelection::Bound { .. }
+                | crate::typecheck::CalleeSelection::FunctionValue => None,
             });
         let found = match selected {
             Some(body) => self.fn_key_for_body(body, type_args),
@@ -6287,7 +6288,8 @@ impl<'a> FnLowerer<'a> {
             })
             .and_then(|use_| match &use_.selection {
                 crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
-                crate::typecheck::CalleeSelection::FunctionValue => None,
+                crate::typecheck::CalleeSelection::Bound { .. }
+                | crate::typecheck::CalleeSelection::FunctionValue => None,
             });
         let found = match selected {
             Some(body) => self.fn_key_for_body(body, type_args),
