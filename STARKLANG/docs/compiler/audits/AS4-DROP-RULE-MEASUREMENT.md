@@ -176,3 +176,81 @@ fails: adding `MirTy::NewThing` forces both to change, and the compiler still ho
 free to choose different answers. The result worth having is one semantic drop-glue match failing to
 compile, with all consumers inheriting the decision — while `may_need_drop` and
 `has_user_destructor` fail separately because they genuinely answer different questions.
+
+
+---
+
+## 6. The lower-vs-verifier matrix, measured (2026-08-07)
+
+§5's open item is closed as a **measurement**. `mir::lower::as4_drop_predicate_inventory::`
+`the_two_precise_drop_rules_are_measured_against_each_other` compiles and lowers a real program —
+both predicates need context, lowering's a `FnLowerer` and the verifier's a `TypeContext` — and
+compares them across every `CoreType` plus the nominal shapes that exercise the recursion.
+
+### 14 disagreements, every one in the same direction
+
+```text
+lower=false   verify=true
+```
+
+for `Core(String, Option, Result, Range, RangeInclusive, CharsIter, SplitIter, ValuesIter,
+MapIter, FilterIter, Random, IOError, File, Ordering)`.
+
+**Not one case of the reverse**, which is the direction that would be unsound: lowering claiming glue
+is required where the verifier says it is not would mean lowering emits a `Drop` the verifier then
+rejects. That direction is asserted against, permanently.
+
+The measurement also **corrected the prediction in §5**, which listed 13 and missed `Core(String)`.
+
+### 13 of the 14 are on shapes nothing constructs — and that is the useful half
+
+`mir_ty`, the main typed-expression path, produces `MirTy::Core` for only:
+
+```text
+Box  CharsIter  HashMap  HashSet  Iter  KeysIter  Vec  VecIter
+```
+
+and `Ty::Core(Option/Result/Ordering)` lower to `MirTy::Enum(EnumRef::Core*)` instead, while
+`String` lowers to `MirTy::String`. A disagreement on those rows is two authorities differing about
+a shape no lowering emits. Real — two authorities free to diverge the day one becomes reachable —
+but not currently reachable.
+
+Cross-checking every `MirTy::Core(...)` construction in the tree adds `File` (built by resource
+lowering, outside `mir_ty`). So the **reachable** disagreement is:
+
+```text
+Core(CharsIter)      lower=false   verify=true
+Core(File)           lower=false   verify=true
+```
+
+### One consumer
+
+The verifier's precise rule has exactly **one** production caller:
+
+```rust
+VecClear if self.requires_drop_glue(&t) => err("MIR-0016", ...)
+```
+
+So in the measured direction the verifier is strictly more restrictive: it would reject
+`Vec<CharsIter>::clear()` / `Vec<File>::clear()` that lowering considers fine. Over-rejection, not
+unsoundness — and only if such a `Vec` is constructible, which is **not established here**.
+
+### Which reading holds
+
+§5 offered three. The evidence supports **reading 3** — `Core(..) => true` is an old conservative
+shortcut inside an otherwise-precise predicate — because the disagreement is one-directional,
+confined to `Core`, and its only consumer is a rejection rule.
+
+**It is recorded, not adopted.** Making the two agree changes which programs the verifier accepts,
+so it is a behavioural correction and needs its own decision record (AS4 work item 5). What this
+document establishes is that the decision is about **two variants and one rejection rule**, not
+about fourteen disagreements across the type system.
+
+### Status after this measurement
+
+| | |
+| --- | --- |
+| drop semantic decomposition | DONE |
+| drop near-neighbour naming | DONE |
+| precise-drop equivalence | **MEASURED** — 14 disagreements, 2 reachable, all one-directional |
+| precise-drop authority merge | **BLOCKED ON A DECISION**, no longer on evidence |

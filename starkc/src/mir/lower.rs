@@ -12658,6 +12658,207 @@ mod as4_drop_predicate_inventory {
         ]
     }
 
+    /// **THE MATRIX AS4 ACTUALLY NEEDS: `lower` precise vs `verify` precise.**
+    ///
+    /// Reviewer finding on `0257320`: this packet compared the verifier's conservative rule against
+    /// the verifier's precise one, and never compared the **two implementations of the precise
+    /// rule** to each other. That is the equivalence required before the drop property can be
+    /// called consolidated, and it is measured here.
+    ///
+    /// Both need real context — lowering's a `FnLowerer`, the verifier's a `TypeContext` — so this
+    /// compiles and lowers a real program rather than synthesising tables. The asymmetry is itself
+    /// evidence: lowering is a PRODUCER of parts of `TypeContext`, so the two cannot simply share
+    /// one table.
+    ///
+    /// **Nothing is consolidated on the strength of this test.** It records what the two answer, so
+    /// the disagreement is a pinned fact rather than a plausible reading.
+    #[test]
+    fn the_two_precise_drop_rules_are_measured_against_each_other() {
+        use crate::mir::lower::{lower_program, FnKey, FnLowerer, ProgramMeta};
+        use crate::mir::provider_lower::ProviderLowering;
+        use crate::options::LanguageOptions;
+        use crate::session::CompilerSession;
+        use crate::source::{SourceFile, Span};
+        use std::sync::Arc;
+
+        // `Owner` has a user `Drop`; `Plain` has none; `Holder` nests an owned `String`.
+        let source = "struct Owner { v: Int32 }\n                      impl Drop for Owner { fn drop(&mut self) { println(0); } }\n                      struct Plain { v: Int32 }\n                      struct Holder { s: String }\n                      fn main() {\n                      \x20   let o: Owner = Owner { v: 1 };\n                      \x20   let p: Plain = Plain { v: 2 };\n                      \x20   let h: Holder = Holder { s: String::from(\"x\") };\n                      \x20   println(p.v);\n}\n";
+        let file = Arc::new(SourceFile::new("drop_matrix.stark", source));
+        let checked = CompilerSession::for_source(file, LanguageOptions::CORE)
+            .check()
+            .unwrap_or_else(|f| panic!("fixture must compile:\n{}", f.render()));
+        let hir = checked.hir();
+        let tables = checked.tables();
+        let registered = checked.root_source();
+        let mir = match lower_program(hir, tables, registered.clone()) {
+            Ok(m) => m,
+            Err(e) => panic!("fixture must lower: {}", e.what),
+        };
+        let meta = match ProgramMeta::build(hir, &registered) {
+            Ok(m) => m,
+            Err(e) => panic!("meta: {}", e.what),
+        };
+
+        // Any fn item will do: the drop predicate reads program-level facts, not the body.
+        let main_item = meta
+            .all_items
+            .iter()
+            .copied()
+            .find(|i| matches!(hir.item(*i).kind, crate::hir::ItemKind::Fn(_)))
+            .expect("a fn item");
+        let providers = ProviderLowering::none();
+        let lowerer = FnLowerer::with_providers(
+            hir,
+            tables,
+            &meta,
+            FnKey::Top(main_item, Vec::new()),
+            providers,
+        );
+        let span = Span::synthetic(meta.entry_source);
+
+        // Every `CoreType`, because that is where the suspected disagreement family lives, plus the
+        // nominal shapes that exercise the recursion.
+        let core = |c: CoreType| MirTy::Core(c, vec![MirTy::Int32]);
+        let mut samples: Vec<(String, MirTy)> = vec![
+            ("Int32".into(), MirTy::Int32),
+            ("String".into(), MirTy::String),
+            ("Str".into(), MirTy::Str),
+            (
+                "Ref".into(),
+                MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Int32),
+                },
+            ),
+            ("Tuple(Int32)".into(), MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(String)".into(), MirTy::Tuple(vec![MirTy::String])),
+            (
+                "Array(Int32)".into(),
+                MirTy::Array(Box::new(MirTy::Int32), 2),
+            ),
+        ];
+        for c in [
+            CoreType::String,
+            CoreType::Vec,
+            CoreType::Box,
+            CoreType::Option,
+            CoreType::Result,
+            CoreType::Range,
+            CoreType::RangeInclusive,
+            CoreType::CharsIter,
+            CoreType::SplitIter,
+            CoreType::VecIter,
+            CoreType::HashMap,
+            CoreType::HashSet,
+            CoreType::KeysIter,
+            CoreType::ValuesIter,
+            CoreType::Iter,
+            CoreType::MapIter,
+            CoreType::FilterIter,
+            CoreType::Random,
+            CoreType::IOError,
+            CoreType::File,
+            CoreType::Ordering,
+        ] {
+            samples.push((format!("Core({c:?})"), core(c)));
+        }
+
+        let mut agree = 0usize;
+        let mut disagree: Vec<(String, bool, bool)> = Vec::new();
+        for (name, ty) in &samples {
+            let Ok(lowering) = lowerer.ty_requires_drop_glue(ty, span) else {
+                continue; // a shape lowering refuses to classify is not a disagreement
+            };
+            let verifier = crate::mir::verify::requires_drop_glue(&mir.types, ty);
+            if lowering == verifier {
+                agree += 1;
+            } else {
+                disagree.push((name.clone(), lowering, verifier));
+            }
+        }
+
+        // **Pinned, not asserted away.** The list is the finding; changing it must be deliberate.
+        let rendered: Vec<String> = disagree
+            .iter()
+            .map(|(n, l, v)| format!("{n}: lower={l} verify={v}"))
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                // Measured, and it corrected my own prediction: I expected the iterator/Core
+                // family and `Range`/`Ordering`. `Core(String)` disagrees too — probably
+                // unreachable in practice, since `String` lowers to `MirTy::String`, but the two
+                // predicates still answer it differently, and an unreachable disagreement is still
+                // two authorities free to diverge the day it becomes reachable.
+                "Core(String): lower=false verify=true",
+                "Core(Option): lower=false verify=true",
+                "Core(Result): lower=false verify=true",
+                "Core(Range): lower=false verify=true",
+                "Core(RangeInclusive): lower=false verify=true",
+                "Core(CharsIter): lower=false verify=true",
+                "Core(SplitIter): lower=false verify=true",
+                "Core(ValuesIter): lower=false verify=true",
+                "Core(MapIter): lower=false verify=true",
+                "Core(FilterIter): lower=false verify=true",
+                "Core(Random): lower=false verify=true",
+                "Core(IOError): lower=false verify=true",
+                "Core(File): lower=false verify=true",
+                "Core(Ordering): lower=false verify=true",
+            ],
+            "the two PRECISE drop rules disagree on this exact set. They claim to answer the same \
+             question, so this list is a defect inventory, not a design. It is pinned so that \
+             consolidating them — or changing either side — is a deliberate act with its own \
+             evidence, per AS4 exit criterion 5."
+        );
+        assert!(agree > 0, "they must still agree somewhere");
+
+        // **The disagreement list is mostly DEAD, and that is the useful half of the finding.**
+        //
+        // `mir_ty` — the main typed-expression path — produces `MirTy::Core` for only these, and
+        // `Ty::Core(Option/Result/Ordering)` lower to `MirTy::Enum(EnumRef::Core*)` instead, so a
+        // disagreement on those rows is about a shape no lowering emits.
+        const MIR_TY_PRODUCES_CORE: &[&str] = &[
+            "Box",
+            "CharsIter",
+            "HashMap",
+            "HashSet",
+            "Iter",
+            "KeysIter",
+            "Vec",
+            "VecIter",
+        ];
+        // Constructed as `MirTy::Core` outside `mir_ty` (resource lowering).
+        const OTHER_PRODUCERS: &[&str] = &["File"];
+        let reachable: Vec<&str> = disagree
+            .iter()
+            .map(|(n, ..)| n.as_str())
+            .filter(|n| {
+                let inner = n.trim_start_matches("Core(").trim_end_matches(')');
+                MIR_TY_PRODUCES_CORE.contains(&inner) || OTHER_PRODUCERS.contains(&inner)
+            })
+            .collect();
+        assert_eq!(
+            reachable,
+            vec!["Core(CharsIter)", "Core(File)"],
+            "**This is the finding that matters.** Of the disagreements above, only these are on \
+             `MirTy::Core` shapes anything actually constructs. The rest are two authorities \
+             differing about types no lowering emits — real, but not reachable. AS4's consolidation \
+             decision is therefore about TWO variants and one consumer (`VecClear`/MIR-0016), not \
+             about fourteen."
+        );
+
+        // The one direction that would be unsound if it ever appeared: lowering claiming glue is
+        // required where the verifier says it is not. Lowering emits the `Drop`; a verifier that
+        // then rejected it would refuse a valid program.
+        for (name, lowering, verifier) in &disagree {
+            assert!(
+                !*lowering || *verifier,
+                "{name}: lowering requires glue but the verifier does not — lowering would emit a \
+                 Drop the verifier rejects"
+            );
+        }
+    }
+
     /// **The finding, pinned.** `may_need_drop` (conservative) and `requires_drop_glue` (precise)
     /// disagree wherever a nominal or container has no actual glue — and they are SUPPOSED to.
     /// Pinning the disagreement is what stops a later "cleanup" from substituting one for the
