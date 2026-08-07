@@ -55,11 +55,17 @@ impl Span {
 
     /// The smallest span covering both `self` and `other`.
     ///
-    /// Both must belong to the same source: a range spanning two files denotes nothing. In debug
-    /// builds a mismatch is a bug and says so; in release the left source wins, because a
-    /// diagnostic is not worth aborting a compilation over.
+    /// Both must belong to the same source: a range spanning two files denotes nothing.
+    ///
+    /// **The check is unconditional, deliberately.** It was a `debug_assert_eq!` with a comment
+    /// saying "in release the left source wins" — which meant a release compiler would silently
+    /// produce `source A, 100..130` from `A 100..110` joined with `B 120..130`. That is a
+    /// plausible, well-formed, wrong location: DEV-122's exact failure class, moved from rendering
+    /// to span *composition*, and reachable only in the builds users run. Joining spans across
+    /// files is an internal compiler defect with no meaningful recovery, so it fails loudly
+    /// everywhere.
     pub fn to(self, other: Span) -> Span {
-        debug_assert_eq!(
+        assert_eq!(
             self.source, other.source,
             "cannot join spans from different sources"
         );
@@ -97,10 +103,14 @@ impl SourceId {
 /// session-scoped fact.
 ///
 /// **Only [`SourceRegistry::intern`] can build one.** The fields are private and there is no public
-/// constructor, so a component that holds a `RegisteredSource` is holding proof that this
-/// compilation registered it — which is what makes threading a fabricated or foreign id
-/// unrepresentable rather than merely discouraged. `WP-SPAN-SOURCEID.md` §6 names that as the
-/// failure mode this change is most likely to introduce.
+/// constructor, so holding a `RegisteredSource` is proof the source was **registered rather than
+/// fabricated** — which is what `WP-SPAN-SOURCEID.md` §6 warns about.
+///
+/// It is *not* proof that the registering registry is the same one a given `Hir` carries. `SourceId`
+/// is registry-local, but Rust's type system does not encode registry identity here, and
+/// [`Span::in_source`] accepts a raw `SourceId`. Encoding that would need generative lifetimes and
+/// is disproportionate to the risk; agreement between a program and its registry is held by
+/// behavioural tests instead (`as1b_source_registry`).
 ///
 /// Derefs to the file, so existing `.name`, `.src` and `.line_col()` uses read unchanged.
 #[derive(Clone, Debug)]
@@ -352,5 +362,26 @@ mod tests {
         let b = Span::in_source(s, 10, 12);
         assert_eq!(a.to(b), Span::in_source(s, 4, 12));
         assert_eq!(b.to(a), Span::in_source(s, 4, 12));
+    }
+
+    /// Joining across sources must fail in EVERY build, not only in debug.
+    ///
+    /// With a `debug_assert`, a release compiler produced `A 100..130` from `A 100..110` joined
+    /// with `B 120..130` — a well-formed, plausible, wrong location, which is DEV-122's failure
+    /// class at composition time. `cargo test` runs in debug, so this test cannot observe the
+    /// release build directly; what it pins is that the check is a real `assert` that panics,
+    /// rather than an equality the function is free to paper over.
+    #[test]
+    #[should_panic(expected = "cannot join spans from different sources")]
+    fn joining_spans_from_different_sources_panics() {
+        let mut registry = SourceRegistry::default();
+        let a = registry
+            .intern(std::sync::Arc::new(SourceFile::new("a.stark", "")))
+            .id();
+        let b = registry
+            .intern(std::sync::Arc::new(SourceFile::new("b.stark", "")))
+            .id();
+        assert_ne!(a, b, "the two sources must actually differ");
+        let _ = Span::in_source(a, 100, 110).to(Span::in_source(b, 120, 130));
     }
 }

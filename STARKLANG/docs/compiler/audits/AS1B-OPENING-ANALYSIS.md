@@ -169,3 +169,51 @@ ii-d until synthetic spans are handled. The packet assumes deletion is free.
 that DECLARES this body" per frame (DEV-069) and swaps it per constant (DEV-088), because spans
 cannot say which file they index. Once they can, that machinery has nothing left to decide — which
 is the clearest statement of why the invariant is worth finishing.
+
+
+---
+
+## 5. Corrections to the ii-a/c record (2026-08-07)
+
+Owner review of `8dfc449` found one real defect and two claims of mine that were stronger than the
+code supports. Recorded here because the commit message is history and cannot be amended.
+
+### C1 — `Span::to` could manufacture a wrong-source span in release (DEFECT, fixed)
+
+The cross-source check was a `debug_assert_eq!`, with a comment saying the left source wins in
+release. So a release compiler — the one users run — would silently turn `A 100..110` joined with
+`B 120..130` into `A 100..130`: a well-formed, plausible, wrong location. **That is DEV-122's
+failure class relocated from rendering to span composition**, and it would have shipped inside the
+packet whose entire purpose is to eliminate that class.
+
+Now an unconditional `assert_eq!`. Joining across files is an internal compiler defect with no
+meaningful recovery. `joining_spans_from_different_sources_panics` pins it; the previous
+`span_join` test only ever used one source, which is why it did not catch this.
+
+### C2 — "no `Arc<SourceFile>` anywhere in production `interp`" was too strong
+
+`RuntimeError.file` is still `Option<Arc<SourceFile>>`, and that is production interpreter state.
+`Interpreter` also still holds a `RegisteredSource`, which owns an `Arc` internally.
+
+The accurate claim, and the architecturally load-bearing one:
+
+> **No production interpreter source-text lookup uses an ambient `SourceFile` any more.**
+
+The distinction matters because ii-d removes the remaining diagnostic/trap file objects, and
+conflating the two would make ii-d look like a no-op.
+
+### C3 — "proof this compilation registered it" was too strong
+
+Holding a `RegisteredSource` proves the source was **registered rather than fabricated**. It does
+*not* prove the registering registry is the one a given `Hir` carries: `SourceId` is registry-local,
+but Rust does not encode registry identity here, and `Span::in_source` takes a raw `SourceId`.
+
+Encoding that would need generative lifetimes and is disproportionate. The doc comment on
+`RegisteredSource` now says the narrower thing, and agreement between a program and its registry is
+held by behavioural tests instead.
+
+### Carried, not fixed here
+
+`Hir.sources` is described as frozen after parsing but is a public `SourceRegistry` whose `intern`
+is public and `&mut`. Downstream holders have `&Hir`, so it is effectively frozen — but not
+mechanically. Tighten at AS1b closeout rather than delaying ii-d.
