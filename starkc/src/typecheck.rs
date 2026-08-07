@@ -8870,9 +8870,25 @@ impl<'a> TypeChecker<'a> {
                     if let Some(sig) = self.find_trait_method_sig(trait_id, &name_str) {
                         // Same DEV-188 repair: a sibling default body calling another generic
                         // trait method through `self` had `U` rigid for the same reason.
-                        return self
-                            .check_trait_member_call(trait_id, &sig, turbofish, args, call_span)
-                            .0;
+                        let (ret, method_args) = self
+                            .check_trait_member_call(trait_id, &sig, turbofish, args, call_span);
+                        // **AS3 Boundary 4 (DEV-190): publish this call too.**
+                        //
+                        // Like the bounded-parameter branch before step 2, this returned without
+                        // publishing anything — so `self.id()` inside `fn twice(&self)` had no
+                        // `CallableUse`, and both engines had to fall back to a name scan. It is a
+                        // `Bound` selection by the same argument: `Self` is a parameter, the trait
+                        // is known, and the body is fixed only once an implementor is chosen.
+                        let candidate = BoundMethod::User { trait_id, sig };
+                        self.publish_bound_use(
+                            call_expr,
+                            &candidate,
+                            "Self",
+                            &name_str,
+                            &ret,
+                            method_args,
+                        );
+                        return ret;
                     }
                 }
             }
@@ -10574,6 +10590,70 @@ impl<'a> TypeChecker<'a> {
     /// Only user nominals reach a user body: primitives have built-in operator meaning (DEV-075),
     /// and a `Ty::Core` composite compares element-wise through the runtime rather than through one
     /// selected callable. Publishing nothing for those is correct — they are not callable uses.
+    /// The `Bound` half of [`Self::publish_operator_use`]: `a == b` where `a: T` and `T: Eq`.
+    ///
+    /// The signature comes from the Core trait's own contract — the same `CoreTraitMethod` table a
+    /// user `impl` is checked against — rather than from `Eq::eq -> Bool` written in by hand. There
+    /// is deliberately no second statement of what these operators mean.
+    fn publish_bound_operator_use(
+        &mut self,
+        expr_id: ExprId,
+        param_name: &str,
+        method: &str,
+        core: hir::CoreTrait,
+    ) {
+        let candidates = self.bound_method_candidates(param_name, method);
+        let Some(BoundMethod::Core {
+            core_trait,
+            method: contract,
+            trait_args,
+        }) = candidates
+            .into_iter()
+            .find(|c| matches!(c, BoundMethod::Core { core_trait, .. } if *core_trait == core))
+        else {
+            // No such bound in scope. Arithmetic on a `T: Num` reaches here and correctly
+            // publishes nothing: `Num` is compiler-known and primitives-only, so there is no
+            // user body for a call site to name.
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let trait_arg_tys: Vec<Ty> = trait_args
+            .iter()
+            .map(|ty| self.convert_hir_type(*ty))
+            .collect();
+        let params: Vec<Ty> = contract
+            .params
+            .iter()
+            .map(|term| self.contract_ty_to_ty(*term, &self_ty, &trait_arg_tys))
+            .collect();
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &trait_arg_tys),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core_trait),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: trait_arg_tys,
+                // A core trait's contract cannot declare method-level generics (DEV-188).
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core_trait),
+            },
+        };
+        self.publish_callable_use(expr_id, use_);
+    }
+
     fn publish_operator_use(
         &mut self,
         expr_id: ExprId,
@@ -10583,6 +10663,18 @@ impl<'a> TypeChecker<'a> {
         core: hir::CoreTrait,
     ) {
         let operand = self.resolve(operand);
+        // **AS3 Boundary 4 (DEV-191): an operator on a BOUNDED GENERIC PARAMETER.**
+        //
+        // `a == b` inside `fn same<T: Eq>(a: T, b: T)` published nothing at all — this guard
+        // returned on `Ty::Param`. So MIR, which sees the monomorphised `P` and lowers a user
+        // `Eq::eq` call, had no published record to consume and fell back to scanning impls by
+        // name. It is the same missing binding time step 2 found for method calls, on the operator
+        // path: the trait is fixed here, the body only once `T` is instantiated.
+        if let Ty::Param(param_name) = &operand {
+            let param_name = param_name.clone();
+            self.publish_bound_operator_use(expr_id, &param_name, method, core);
+            return;
+        }
         if !matches!(operand, Ty::Struct(..) | Ty::Enum(..)) {
             return;
         }

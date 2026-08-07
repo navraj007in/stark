@@ -6164,6 +6164,9 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_user_eq(
         &mut self,
+        // AS3 Boundary 4: retained after `find_impl_fn` went, because the BOUND path needs it —
+        // `a == b` inside `fn same<T: Eq>` selects its body from the concrete `Self`, which is
+        // this nominal and its arguments.
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
@@ -6181,37 +6184,8 @@ impl<'a> FnLowerer<'a> {
         // shape on a path that never received its fix: a type implementing two same-named trait
         // methods would run "the first impl declaring eq" while the checker had distinguished
         // them. Consuming the published record removes the question rather than filtering it.
-        let selected = self
-            .tables
-            .callable_uses_by_expr
-            .get(&operator_expr)
-            .and_then(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
-                    .find(|use_| {
-                        matches!(
-                            use_.provenance,
-                            crate::typecheck::DispatchProvenance::CoreTrait { core }
-                                if core == hir::CoreTrait::Eq
-                        )
-                    })
-            })
-            .and_then(|use_| match &use_.selection {
-                crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
-                crate::typecheck::CalleeSelection::Bound { .. }
-                | crate::typecheck::CalleeSelection::FunctionValue => None,
-            });
-        let found = match selected {
-            Some(body) => self.fn_key_for_body(body, type_args),
-            // TRANSITIONAL. Verified unreached for every user `eq` in the suites that
-            // exercise this path: with this arm mutated to panic, `c62d_operator_coretrait` and
-            // `mir_differential` still pass, while panicking on ENTRY fails two tests in each — so
-            // the function is reached and the published record is what answers.
-            //
-            // It survives only until Boundary 4 deletes `find_impl_fn`, which is where the "no
-            // second algorithm" rule becomes structural instead of observed.
-            None => self.find_impl_fn(nominal, "eq", false, type_args, None),
-        };
+        let found =
+            self.operator_callable_key(operator_expr, hir::CoreTrait::Eq, nominal, type_args);
         let Some((key, _receiver)) = found else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
@@ -6254,6 +6228,9 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_user_ord(
         &mut self,
+        // AS3 Boundary 4: retained after `find_impl_fn` went, because the BOUND path needs it —
+        // `a == b` inside `fn same<T: Eq>` selects its body from the concrete `Self`, which is
+        // this nominal and its arguments.
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
@@ -6271,37 +6248,8 @@ impl<'a> FnLowerer<'a> {
         // shape on a path that never received its fix: a type implementing two same-named trait
         // methods would run "the first impl declaring cmp" while the checker had distinguished
         // them. Consuming the published record removes the question rather than filtering it.
-        let selected = self
-            .tables
-            .callable_uses_by_expr
-            .get(&operator_expr)
-            .and_then(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
-                    .find(|use_| {
-                        matches!(
-                            use_.provenance,
-                            crate::typecheck::DispatchProvenance::CoreTrait { core }
-                                if core == hir::CoreTrait::Ord
-                        )
-                    })
-            })
-            .and_then(|use_| match &use_.selection {
-                crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
-                crate::typecheck::CalleeSelection::Bound { .. }
-                | crate::typecheck::CalleeSelection::FunctionValue => None,
-            });
-        let found = match selected {
-            Some(body) => self.fn_key_for_body(body, type_args),
-            // TRANSITIONAL. Verified unreached for every user `cmp` in the suites that
-            // exercise this path: with this arm mutated to panic, `c62d_operator_coretrait` and
-            // `mir_differential` still pass, while panicking on ENTRY fails two tests in each — so
-            // the function is reached and the published record is what answers.
-            //
-            // It survives only until Boundary 4 deletes `find_impl_fn`, which is where the "no
-            // second algorithm" rule becomes structural instead of observed.
-            None => self.find_impl_fn(nominal, "cmp", false, type_args, None),
-        };
+        let found =
+            self.operator_callable_key(operator_expr, hir::CoreTrait::Ord, nominal, type_args);
         let Some((key, _receiver)) = found else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
@@ -6361,6 +6309,120 @@ impl<'a> FnLowerer<'a> {
     ///
     /// `Self` is concrete here — monomorphisation has fixed it — so the specialiser answers, and
     /// MIR asks the same authority the interpreter does.
+    /// **AS3 Boundary 4: consume the checker's `Static` selection for a method call.**
+    ///
+    /// A `x.m()` whose receiver type is concrete at check time has its body already chosen and
+    /// published. `find_impl_fn` re-derives that choice by scanning every impl on the nominal for
+    /// the NAME — a second selection algorithm answering a question the checker already answered.
+    /// This reads the answer.
+    ///
+    /// Only `Inherent`, `TraitImpl` and `Qualified` provenances are eligible: an operator's
+    /// `CoreTrait` use may be published against the same expression, and it names a different
+    /// callable.
+    /// **AS3 Boundary 4: the body behind an operator, from the checker's published selection.**
+    ///
+    /// Both binding times reach here. `p == q` on a concrete nominal is `Static` — the body was
+    /// chosen at check time. `a == b` inside `fn same<T: Eq>(a: T, b: T)` is `Bound` — the trait
+    /// was known then, the body only now, from the monomorphised receiver. The second case is why
+    /// deleting `find_impl_fn` from this path needed more than the existing mutation evidence:
+    /// that evidence covered two suites, and neither contained an operator on a bounded parameter.
+    fn operator_callable_key(
+        &self,
+        operator_expr: ExprId,
+        core: hir::CoreTrait,
+        nominal: ItemId,
+        type_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&operator_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|use_| match use_.provenance {
+                crate::typecheck::DispatchProvenance::CoreTrait { core: c } => c == core,
+                crate::typecheck::DispatchProvenance::Bound {
+                    trait_: hir::BoundTrait::Core(c),
+                } => c == core,
+                _ => false,
+            })?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, type_args)
+            }
+            crate::typecheck::CalleeSelection::Bound { .. } => {
+                self.specialised_bound_key(operator_expr, nominal, type_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
+    fn static_selected_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let ids = self.tables.callable_uses_by_expr.get(&call_expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Inherent
+                        | crate::typecheck::DispatchProvenance::TraitImpl { .. }
+                        | crate::typecheck::DispatchProvenance::Qualified { .. }
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.key_for_selected_body(*body, nominal, nominal_args)
+    }
+
+    /// The `FnKey` for a body the checker selected. An impl member and an un-overridden trait
+    /// default are both reachable this way, and the second is why `fn_key_for_body` alone is not
+    /// enough: a default's body lives on the TRAIT, so no impl item mentions it.
+    fn key_for_selected_body(
+        &self,
+        body: hir::BlockId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        if let Some(found) = self.fn_key_for_body(body, nominal_args) {
+            return Some(found);
+        }
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let ItemKind::Trait { items, .. } = &item.kind else {
+                continue;
+            };
+            for (member, trait_item) in items.iter().enumerate() {
+                let hir::TraitItem::Method {
+                    sig,
+                    body: Some(default_body),
+                } = trait_item
+                else {
+                    continue;
+                };
+                if *default_body != body {
+                    continue;
+                }
+                return Some((
+                    FnKey::TraitDefault {
+                        trait_item: ItemId(idx as u32),
+                        member: member as u32,
+                        self_item: nominal,
+                        self_args: nominal_args.to_vec(),
+                        method_args: Vec::new(),
+                    },
+                    sig.receiver,
+                ));
+            }
+        }
+        None
+    }
+
     fn specialised_bound_key(
         &self,
         call_expr: ExprId,
@@ -6382,10 +6444,16 @@ impl<'a> FnLowerer<'a> {
         else {
             return None;
         };
-        // The concrete `Self`, as a checker `Ty`. Argument types are dropped here for the same
-        // reason the interpreter drops them: the index matches on the impl head. Restoring them is
-        // what the 4d negative control exists to force, if it proves necessary.
-        let self_ty = crate::typecheck::Ty::Struct(nominal, Vec::new());
+        // **The concrete `Self`, arguments INCLUDED (DEV-189).**
+        //
+        // This passed `Ty::Struct(nominal, Vec::new())` — the bare nominal head — on the reasoning
+        // that "the index matches on the impl head". It does not: `impl<T> Describe for W2<T>` is
+        // indexed as `Struct(W2, [Param("T")])`, so a head with no arguments fails to unify on
+        // length and the specialiser returns `None` for EVERY generic impl. MIR then fell back to
+        // `find_impl_fn` while the interpreter used the shared authority — the exact divergence
+        // Boundary 4 exists to remove. Same defect as DEV-187, on the engine that was repaired
+        // second.
+        let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
         let resolved = crate::bound_dispatch::specialize_bound_callable(
             &self.tables.trait_impls,
             &self.tables.callable_types,
@@ -6765,9 +6833,20 @@ impl<'a> FnLowerer<'a> {
         // Unlike the interpreter, MIR carries the receiver's full `MirTy` including its arguments —
         // which is why the negative control compares ResolvedCallable ENVIRONMENTS across the two
         // engines and not merely their bodies.
+        // **AS3 Boundary 4: no fallback.** This ended in
+        // `.or_else(|| self.find_impl_fn(nominal, &name_text, ...))` — a scan of every impl on the
+        // nominal for the METHOD NAME, i.e. a second selection algorithm re-deciding what the
+        // checker had already decided and published.
+        //
+        // It is gone rather than merely unreached. Instrumenting it and running the differential,
+        // operator, iterator, bound-identity and Display suites recorded which names still took it:
+        // ~60 before `Static` was consumed, 2 after (`self.id()` inside a trait default), 0 after
+        // DEV-190 published those too. Deleting it is what makes "one authority" structural instead
+        // of observed — a fallback that never fires still permits divergence the day it does.
+        let _ = bound_trait;
         let specialised = self
-            .specialised_bound_key(call_expr, nominal, &nominal_args)
-            .or_else(|| self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait));
+            .static_selected_key(call_expr, nominal, &nominal_args)
+            .or_else(|| self.specialised_bound_key(call_expr, nominal, &nominal_args));
         let Some((key, receiver)) = specialised else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
@@ -12213,6 +12292,64 @@ fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
 // disagree, so RB0/AS4 consolidates from evidence rather than from the assumption that a shared
 // name means a shared rule. The expected disagreements are PINNED, so a silent change to any of the
 // three fails here.
+/// A `MirTy` back as a checker `Ty`, for the one purpose of asking `bound_dispatch` which impl a
+/// receiver selects.
+///
+/// Lowering substitutes in `MirTy`, so a receiver's type arguments are only available in that
+/// language, while the impl index and `unify_impl_ty_with` speak checker `Ty`. This is the narrow
+/// bridge between them.
+///
+/// **Partial on purpose.** `HostResource` and `FnPtr` have no faithful checker counterpart here —
+/// a host resource's source nominal is a synthesized zero-variant enum, and reconstructing one
+/// would assert an identity this function cannot establish. Returning `None` means "do not
+/// specialise", which is the honest answer; fabricating a shape to make unification succeed would
+/// select a body on evidence that does not exist.
+fn checker_ty(ty: &MirTy) -> Option<crate::typecheck::Ty> {
+    use crate::typecheck::Ty as T;
+    Some(match ty {
+        MirTy::Int8 => T::Primitive(Primitive::Int8),
+        MirTy::Int16 => T::Primitive(Primitive::Int16),
+        MirTy::Int32 => T::Primitive(Primitive::Int32),
+        MirTy::Int64 => T::Primitive(Primitive::Int64),
+        MirTy::UInt8 => T::Primitive(Primitive::UInt8),
+        MirTy::UInt16 => T::Primitive(Primitive::UInt16),
+        MirTy::UInt32 => T::Primitive(Primitive::UInt32),
+        MirTy::UInt64 => T::Primitive(Primitive::UInt64),
+        MirTy::Float32 => T::Primitive(Primitive::Float32),
+        MirTy::Float64 => T::Primitive(Primitive::Float64),
+        MirTy::Bool => T::Primitive(Primitive::Bool),
+        MirTy::Char => T::Primitive(Primitive::Char),
+        MirTy::Unit => T::Primitive(Primitive::Unit),
+        MirTy::Str => T::Primitive(Primitive::Str),
+        MirTy::String => T::Primitive(Primitive::String),
+        MirTy::Never => T::Never,
+        MirTy::Struct(item, args) => T::Struct(*item, checker_tys(args)?),
+        MirTy::Enum(EnumRef::User(item), args) => T::Enum(*item, checker_tys(args)?),
+        MirTy::Enum(EnumRef::CoreOption, args) => {
+            T::Core(crate::hir::CoreType::Option, checker_tys(args)?)
+        }
+        MirTy::Enum(EnumRef::CoreResult, args) => {
+            T::Core(crate::hir::CoreType::Result, checker_tys(args)?)
+        }
+        MirTy::Enum(EnumRef::CoreOrdering, _) => {
+            T::Core(crate::hir::CoreType::Ordering, Vec::new())
+        }
+        MirTy::Core(core, args) => T::Core(*core, checker_tys(args)?),
+        MirTy::Tuple(items) => T::Tuple(checker_tys(items)?),
+        MirTy::Array(inner, len) => T::Array(Box::new(checker_ty(inner)?), *len),
+        MirTy::Slice(inner) => T::Slice(Box::new(checker_ty(inner)?)),
+        MirTy::Ref { mutable, inner } => T::Ref {
+            mutable: *mutable,
+            inner: Box::new(checker_ty(inner)?),
+        },
+        MirTy::FnPtr { .. } | MirTy::HostResource(_) => return None,
+    })
+}
+
+fn checker_tys(tys: &[MirTy]) -> Option<Vec<crate::typecheck::Ty>> {
+    tys.iter().map(checker_ty).collect()
+}
+
 #[cfg(test)]
 mod as0_reference_predicate_inventory {
     use crate::backend::generated_rust::emit_types;

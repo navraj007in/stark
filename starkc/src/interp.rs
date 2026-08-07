@@ -2921,6 +2921,60 @@ impl<'a> Interpreter<'a> {
     /// AS3 Boundary 4c. `Self` is concrete here — it is the receiver's own type — so the
     /// specialiser has what it needs. Returns `None` when the checker published no bound use for
     /// this expression, which is every ordinary concrete method call.
+    /// **AS3 Boundary 4 (DEV-192): the body behind an operator whose operand is a bounded
+    /// generic parameter.**
+    ///
+    /// `a == b` / `a < b` inside `fn f<T: Eq>` / `fn f<T: Ord>` publishes a `Bound` use whose
+    /// `self_ty` is the parameter itself. Substituting it through the active generic frame gives
+    /// the concrete `Self` — arguments included, which is what a generic impl needs to unify.
+    ///
+    /// The operator path cannot use [`Self::specialised_bound_callable`]: `eval_binary` receives
+    /// evaluated operand VALUES, not their expressions, and a runtime `Value` carries no type
+    /// arguments. The published `self_ty` does.
+    fn specialised_operator_callable(
+        &self,
+        expr: ExprId,
+        core: CoreTrait,
+        span: Span,
+    ) -> Option<Callable> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Bound {
+                        trait_: hir::BoundTrait::Core(c)
+                    } if c == core
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            self_ty,
+            trait_args,
+            method_args,
+        } = &use_.selection
+        else {
+            return None;
+        };
+        let mut self_ty = self.concrete_runtime_ty(self_ty, span).ok()?;
+        while let Ty::Ref { inner, .. } = self_ty {
+            self_ty = *inner;
+        }
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        self.callable_for_body(resolved.body)
+    }
+
     fn specialised_bound_callable(&self, expr: ExprId, base: ExprId) -> Option<Callable> {
         let ids = self.tables.callable_uses_by_expr.get(&expr)?;
         let use_ = ids
@@ -3083,12 +3137,15 @@ impl<'a> Interpreter<'a> {
                         crate::typecheck::CalleeSelection::Static { body, .. } => {
                             self.callable_for_body(body)
                         }
-                        // AS3 Boundary 4: a `Bound` use is not resolvable here. Its body comes
-                        // from the shared bound specialiser once `Self` is concrete, which this
-                        // path does not yet call — so it falls through rather than guessing.
                         crate::typecheck::CalleeSelection::Bound { .. }
                         | crate::typecheck::CalleeSelection::FunctionValue => None,
                     })
+                    // **AS3 Boundary 4 (DEV-192): the late-bound equality case.** When the operand
+                    // is a bounded generic parameter the selection is `Bound`, and this fell
+                    // through to the primitive path — which for `==` meant STRUCTURAL comparison
+                    // silently replacing the user's `impl Eq`, and for `<` meant the trap "invalid
+                    // binary operation". Now the shared specialiser answers it.
+                    .or_else(|| self.specialised_operator_callable(expr, hir::CoreTrait::Eq, span))
                 {
                     // Correction-brief Issue 2: `Eq::eq(&self, &other)` borrows both operands --
                     // it never takes ownership. Passing owned clones here (the pre-fix
@@ -3143,12 +3200,15 @@ impl<'a> Interpreter<'a> {
                         crate::typecheck::CalleeSelection::Static { body, .. } => {
                             self.callable_for_body(body)
                         }
-                        // AS3 Boundary 4: a `Bound` use is not resolvable here. Its body comes
-                        // from the shared bound specialiser once `Self` is concrete, which this
-                        // path does not yet call — so it falls through rather than guessing.
                         crate::typecheck::CalleeSelection::Bound { .. }
                         | crate::typecheck::CalleeSelection::FunctionValue => None,
                     })
+                    // **AS3 Boundary 4 (DEV-192): the late-bound ordering case.** When the operand
+                    // is a bounded generic parameter the selection is `Bound`, and this fell
+                    // through to the primitive path — which for `==` meant STRUCTURAL comparison
+                    // silently replacing the user's `impl Eq`, and for `<` meant the trap "invalid
+                    // binary operation". Now the shared specialiser answers it.
+                    .or_else(|| self.specialised_operator_callable(expr, hir::CoreTrait::Ord, span))
                 {
                     // Same fix as the `Eq::eq` dispatch above: `Ord::cmp(&self, &other)` borrows
                     // both operands.

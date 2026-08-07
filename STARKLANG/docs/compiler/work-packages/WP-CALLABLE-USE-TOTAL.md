@@ -434,3 +434,55 @@ Boundary 4  protocol + LATE-BOUND trait dispatch
 
 The crucial negative control at step 4: **HIR and MIR must obtain the same resolved
 `body + environment` from the shared specialiser.**
+
+---
+
+## 9. Boundary 4 outcome (2026-08-07): the fallbacks are deleted, and what that cost
+
+The exit condition for this packet is not "the checker publishes selections" — it is "no consumer
+re-derives one". Those are different, and the gap between them is where the work turned out to be.
+
+### The census
+
+The MIR method fallback was instrumented rather than reasoned about, and the differential,
+operator, iterator, bound-identity and Display suites run:
+
+| Stage | `find_impl_fn` fires |
+| --- | ---: |
+| before consuming any selection | ~60 |
+| after consuming `Static` (`static_selected_key`) | 2 |
+| after DEV-190 published `self.m()` in trait defaults | 0 |
+
+Only then was the arm deleted. Deleting it — rather than annotating it as unreached — immediately
+failed `over_acceptance_audit`, which exercises an operator on a bounded parameter (DEV-191). That
+suite was outside the two the earlier mutation evidence covered.
+
+### Five defects the fallbacks were hiding
+
+| | Defect | Effect |
+| --- | --- | --- |
+| DEV-188 | trait-method generics dropped at bound call sites | such methods **uncallable** through a bound |
+| DEV-189 | MIR passed the bare nominal head | generic impls never used the shared authority |
+| DEV-190 | `self.m()` in a trait default published nothing | both engines scanned by name |
+| DEV-191 | operators on a bounded parameter published nothing | same |
+| DEV-192 | `==` through an `Eq` bound fell through to structural equality | **wrong answers** from the reference engine |
+
+DEV-192 is the one that justifies the whole approach. It is not a missing feature; it is the HIR
+oracle printing `false` where the program means `true`, for any type whose `Eq` disagrees with
+field-wise comparison. Every fixture in the suite had an `eq` that agreed with structural equality,
+so a differential suite could not see it — two algorithms that coincide on all available inputs are
+indistinguishable by differential testing, however many engines it compares.
+
+### What a fallback actually costs
+
+Each of these was live for as long as a fallback made it invisible. A fallback converts a missing
+publication from a build failure into a silent second algorithm, and a second algorithm is exactly
+what this packet exists to remove. "Verified unreached" is a statement about the suites that were
+run, not about the program space — and it is the annotation that let DEV-191 sit behind a comment
+claiming the opposite.
+
+### Still open
+
+`find_method` (interpreter) and `find_impl_fn` (MIR) survive on the **Display** and **Iterator**
+paths, which select by name and need `DisplayPath` publication first. Those are Boundary 4's
+remaining work; the method and operator paths are done.

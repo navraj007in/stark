@@ -1110,6 +1110,14 @@ fn both_engines_resolve_a_bound_call_identically() {
             }
         }
     }
+    // **What this control does NOT establish, stated because its name overpromises.**
+    //
+    // It calls the specialiser twice with a self type the TEST constructs, so it proves the shared
+    // authority is deterministic given identical inputs. It does not check that the two engines
+    // SUPPLY identical inputs — and they did not: MIR went on passing the bare nominal head for
+    // another two commits (DEV-189) with this test green throughout. What found that was
+    // instrumenting the MIR fallback and counting how often it fired (see `as3_fallback_removal`).
+    //
     // **DEV-187 CLOSED.** Every impl x member pair resolves through the shared specialiser:
     // both members on the concrete impl, and both on the generic `impl<T> Describe for W2<T>`.
     //

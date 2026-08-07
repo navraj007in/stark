@@ -5316,3 +5316,77 @@ conclusions, one of which reached a permanent record before being retracted.
   characterization was written to justify *adding a field*, and it stopped measuring as soon as the
   program compiled. Probing the field's actual inputs before populating it is what exposed the
   defect underneath. §5 is corrected in the same change.
+
+
+## DEV-189 — MIR's bound specialiser passed the bare nominal head [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** `specialised_bound_key` built `Self` as `Ty::Struct(nominal, Vec::new())`, dropping
+  the receiver's type arguments, with a comment asserting "the index matches on the impl head".
+  It does not: `impl<T> Describe for W2<T>` is indexed as `Struct(W2, [Param("T")])`, so a head with
+  no arguments fails to unify on length and the specialiser returned `None` for **every generic
+  impl**. MIR then fell back to `find_impl_fn` while the interpreter used the shared authority.
+- **This is DEV-187 on the second engine.** The interpreter was repaired; MIR was not, and the
+  control did not notice — see the note on the 4d control below.
+- **Repair:** a partial `MirTy -> Ty` bridge (`mir::lower::checker_ty`), because lowering
+  substitutes in `MirTy` while the impl index speaks checker `Ty`. Partial on purpose: `FnPtr` and
+  `HostResource` return `None`, which means "do not specialise" rather than a fabricated shape.
+- **The 4d control did not catch this, and that is its own finding.**
+  `both_engines_resolve_a_bound_call_identically` calls `specialize_bound_callable` twice with a
+  self type the TEST constructs. It proves the shared authority is deterministic given identical
+  inputs — a real property — but it never checks that the two engines *supply* identical inputs,
+  which is the divergence its name promises. The census in DEV-190 is what actually found this.
+
+## DEV-190 — `self.m()` inside a trait default body published no callable use [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** the `Self`-receiver branch of `resolve_method` returned without publishing anything,
+  so `self.id()` inside `fn twice(&self) -> Int32 { self.id() * 2 }` had no `CallableUse` and both
+  engines fell back to a name scan.
+- **Same class as AS3's missing third binding time.** `Self` is a parameter, the trait is known,
+  the body is fixed only once an implementor is chosen — a `Bound` selection by the same argument
+  that produced the variant.
+- **Found by census, not by reading.** The MIR fallback was instrumented and the differential,
+  operator, iterator, bound-identity and Display suites run. It fired ~60 times; consuming the
+  `Static` selection reduced that to 2, both `self.id()` in a trait default. Publishing them took
+  it to 0, which is what licensed deleting the fallback at all.
+
+## DEV-191 — operators on a bounded generic parameter published no callable use [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** `publish_operator_use` returned early unless the operand was `Ty::Struct`/`Ty::Enum`,
+  so `a == b` inside `fn same<T: Eq>(a: T, b: T)` published nothing.
+- **Repair:** publish a `Bound` use against the Core trait when the parameter carries that bound.
+  The signature comes from the `CoreTraitMethod` contract — the same table a user `impl` is checked
+  against — not from `Eq::eq -> Bool` written in by hand.
+- **Deliberately not published for `T: Num`:** arithmetic through a `Num` bound is compiler-known
+  and primitives-only, so there is no user body for a call site to name. Pinned by
+  `arithmetic_on_a_num_bounded_parameter_still_publishes_nothing`.
+- **Surfaced only by deleting the fallback.** The `eq` fallback carried a comment stating it was
+  "verified unreached ... by mutation". That evidence was real but covered two suites, and neither
+  contained an operator on a bounded parameter; `over_acceptance_audit` did. **Unreached in the
+  suites you ran is not unreachable** — which is the argument for deleting a dead fallback rather
+  than annotating it.
+
+## DEV-192 — `==` through an `Eq` bound silently used structural equality [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Rule:** 03-Type-System.md "Operators and Traits" — `==`/`!=` desugar to `Eq::eq`, `<` and
+  friends to `Ord::cmp`. A type with its own impl must run that impl.
+- **Defect:** in the HIR oracle both operator paths fell through when the selection was `Bound`,
+  and the fall-through for `==` on a struct value is **structural `Value` comparison** (DEV-008).
+  So inside `fn same<T: Eq>` a user's `impl Eq` was silently replaced by field-wise equality.
+  `<` had no fallback at all and trapped with "invalid binary operation".
+- **Measured at HEAD before the repair**, on a `Rec` whose `eq` compares `id` and ignores `tag`:
+
+  ```text
+  HIR-at-HEAD "false\nfalse\n"   (correct is "true\nfalse\n")
+  ```
+
+  The first answer is **wrong** — not a missing feature, a wrong result from the reference engine.
+- **Why it stayed hidden:** every existing fixture had a user `eq` that AGREED with structural
+  comparison, so the substitution produced the right answer everywhere it was exercised. A
+  differential suite cannot catch two algorithms that coincide on all its inputs. The regression
+  tests now use an `eq` that ignores a field and a `cmp` that reverses the order, so the two
+  algorithms must disagree.
+- **Repair:** `Interpreter::specialised_operator_callable` resolves the `Bound` use through the
+  shared specialiser, taking `Self` from the published `self_ty` substituted through the active
+  generic frame — the operand VALUES cannot supply it, since a runtime value carries no type
+  arguments. Depends on DEV-191 having published the use.
+- **Evidence:** `tests/as3_fallback_removal.rs`, 8 tests, all through the full differential harness.
