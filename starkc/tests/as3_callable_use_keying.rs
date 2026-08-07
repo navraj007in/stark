@@ -284,7 +284,7 @@ fn a_static_uses_signature_equals_its_substituted_body_signature() {
 // Boundary 2 — named dispatch: methods, associated functions, qualified calls, trait defaults
 // ---------------------------------------------------------------------------------------------
 
-use starkc::typecheck::CallableDeclId;
+use starkc::typecheck::{CallableDeclId, GenericBinder};
 
 /// A method call publishes an `ImplMember` declaration — built from ids the HIR possesses.
 ///
@@ -821,4 +821,72 @@ fn a_call_through_a_core_trait_bound_publishes_a_core_bound_use() {
 
     let execution = program.execute_hir().expect("the fixture must run");
     assert_eq!(execution.output, "A!\n");
+}
+
+/// AS3 Boundary 4a: the dispatch index is built and carries **effective** targets.
+///
+/// G1's finding, structurally: `impl Describe for A2 {}` overrides nothing, so the executable
+/// target for `text` is the trait's default body — and that body owns the TRAIT's binder namespace,
+/// not the impl's. An index recording only written members would have no entry at all.
+#[test]
+fn the_trait_impl_index_records_effective_targets() {
+    let program = analyse(
+        "trait Describe {\n\
+         \x20   fn text(&self) -> String {\n        String::from(\"default\")\n    }\n\
+         \x20   fn shout(&self) -> String;\n}\n\
+         struct A2 { v: Int32 }\n\
+         impl Describe for A2 {\n\
+         \x20   fn shout(&self) -> String {\n        String::from(\"HI\")\n    }\n}\n\
+         fn main() {\n    let a: A2 = A2 { v: 1 };\n    println(a.shout());\n}\n",
+    );
+    let index = &program.tables().trait_impls;
+    assert!(!index.is_empty(), "the index must be built");
+
+    let describe = index
+        .impls()
+        .iter()
+        .find(|i| matches!(i.trait_, Some(starkc::hir::BoundTrait::User(_))))
+        .expect("the `Describe` impl must be indexed");
+
+    let mut members: Vec<&str> = describe
+        .effective_members
+        .iter()
+        .map(|t| t.member.as_str())
+        .collect();
+    members.sort();
+    assert_eq!(
+        members,
+        vec!["shout", "text"],
+        "both members are executable: `shout` from the impl, `text` from the trait default"
+    );
+
+    let text = describe
+        .effective_members
+        .iter()
+        .find(|t| t.member == "text")
+        .unwrap();
+    assert!(
+        matches!(text.declaration, CallableDeclId::TraitMember { .. }),
+        "an un-overridden default's target is the TRAIT member, got {:?}",
+        text.declaration
+    );
+
+    let shout = describe
+        .effective_members
+        .iter()
+        .find(|t| t.member == "shout")
+        .unwrap();
+    assert!(
+        matches!(shout.declaration, CallableDeclId::ImplMember { .. }),
+        "an override's target is the IMPL member, got {:?}",
+        shout.declaration
+    );
+
+    // Every target names its own binder namespace, starting with `Self`.
+    for target in &describe.effective_members {
+        assert!(
+            matches!(target.binders.first(), Some(GenericBinder::SelfType)),
+            "every executable body binds `Self`: {target:?}"
+        );
+    }
 }

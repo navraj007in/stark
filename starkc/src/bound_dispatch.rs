@@ -25,7 +25,7 @@
 //! reconstructing its environment in another is how DEV-176 happened; a specialiser that returned
 //! only a body would invite exactly that.
 
-use crate::hir::{self, BlockId, Hir, ItemId};
+use crate::hir::{self, BlockId, ItemId};
 use crate::typecheck::{CallableDeclId, CallableSigTy, GenericBinder, Ty};
 use std::collections::HashMap;
 
@@ -88,18 +88,45 @@ pub fn unify_impl_ty_with(
     }
 }
 
-/// One impl, reduced to what specialisation needs.
+/// Where an effective callable target lives, and which binder namespace owns its body.
+///
+/// G1 (`AS3-DISPLAY-CHARACTERIZATION.md` §5): `impl Describe for A2 {}` with no override runs the
+/// **trait default**. So the index records the *effective* target, not members physically written
+/// inside an impl — and the two targets own **different binder namespaces**: an impl override's
+/// body owns `ImplParam`, a trait default's owns `TraitParam`. Deciding that in the specialiser
+/// would mean bespoke per-kind environment building, one edit away from populating a default body's
+/// environment with impl binders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexedTarget {
+    pub member: String,
+    pub declaration: CallableDeclId,
+    pub body: BlockId,
+    /// The binders **this executable body** owns, named by the checker, which is the only party
+    /// that knows the declaration. The specialiser supplies their values and branches on nothing.
+    ///
+    /// Method generics are positional, not nominal: `trait_method_signature_matches` builds
+    /// separate trait-side and impl-side name→index maps, so `fn to<U>` may be implemented as
+    /// `fn to<V>`. The binder carries the index the body actually uses.
+    pub binders: Vec<GenericBinder>,
+}
+
+/// One impl head, reduced to what specialisation needs. **No signature** — `callable_types[body]`
+/// is the sole signature authority (A3b), and a copy here would be a second one.
 #[derive(Debug, Clone)]
 pub struct IndexedImpl {
     pub impl_item: ItemId,
     /// Which trait this impl provides — `None` for an inherent impl.
     pub trait_: Option<hir::BoundTrait>,
+    /// The trait's arguments, still parametric. Matched against the obligation's concrete arguments
+    /// through the **same** substitution map as `self_ty`, so `impl<T> Convert<T> for W<T>` binds
+    /// `T` once from both sides rather than twice inconsistently.
+    pub trait_args: Vec<Ty>,
     /// The impl's `Self` type, still parametric.
     pub self_ty: Ty,
     /// The impl's own generic parameter names, in declaration order.
     pub generic_names: Vec<String>,
-    /// `method name -> (member index, body)`.
-    pub members: Vec<(String, u32, BlockId)>,
+    /// Effective targets, one per member name.
+    pub effective_members: Vec<IndexedTarget>,
 }
 
 /// The program's coherent impl set, built **once** by the analysis phase.
@@ -114,6 +141,11 @@ pub struct TraitImplIndex {
 impl TraitImplIndex {
     pub fn from_parts(impls: Vec<IndexedImpl>) -> Self {
         TraitImplIndex { impls }
+    }
+
+    /// Every indexed impl, in declaration order.
+    pub fn impls(&self) -> &[IndexedImpl] {
+        &self.impls
     }
 
     pub fn len(&self) -> usize {
@@ -136,100 +168,14 @@ pub struct ResolvedCallable {
 
 /// Resolve a `Bound` obligation against a concrete `Self`.
 ///
-/// `self_ty` is the obligation's `Self` **already substituted** through the caller's environment —
-/// the caller knows its own instantiation, and asking it to pass the result keeps this function
-/// free of any notion of a caller frame.
-///
-/// **Trait identity is matched, never spelling.** DEV-BOUND-TRAIT-IDENTITY is the reason, and the
-/// Iterator hardening is the reason it is worth repeating.
+/// **4b builds this.** 4a lands the frozen index shape only; wiring the specialiser to
+/// `callable_types[body]` and the binder schema is the next sub-packet, kept separate so a failure
+/// is attributable to construction or to resolution but not to both.
 pub fn specialize_bound_callable(
-    index: &TraitImplIndex,
-    hir: &Hir,
-    trait_: hir::BoundTrait,
-    member: &str,
-    self_ty: &Ty,
+    _index: &TraitImplIndex,
+    _trait_: hir::BoundTrait,
+    _member: &str,
+    _self_ty: &Ty,
 ) -> Option<ResolvedCallable> {
-    for candidate in &index.impls {
-        if candidate.trait_ != Some(trait_) {
-            continue;
-        }
-        let mut map: HashMap<String, Ty> = HashMap::new();
-        if !unify_impl_ty_with(&candidate.self_ty, self_ty, &mut map, &|ty| ty.clone()) {
-            continue;
-        }
-        let Some((_, index_in_impl, body)) = candidate
-            .members
-            .iter()
-            .find(|(name, _, _)| name == member)
-            .cloned()
-        else {
-            continue;
-        };
-        // The impl's own parameters, bound to what the match resolved — so `impl<T> Display for
-        // W<T>` specialised at `W<Int32>` carries `T = Int32` rather than an empty environment.
-        let mut environment: Vec<(GenericBinder, Ty)> = Vec::new();
-        environment.push((GenericBinder::SelfType, self_ty.clone()));
-        for (position, name) in candidate.generic_names.iter().enumerate() {
-            if let Some(ty) = map.get(name) {
-                environment.push((
-                    GenericBinder::ImplParam {
-                        index: position,
-                        name: name.clone(),
-                    },
-                    ty.clone(),
-                ));
-            }
-        }
-        let signature = declared_signature(hir, candidate.impl_item, index_in_impl, self_ty)?;
-        return Some(ResolvedCallable {
-            declaration: CallableDeclId::ImplMember {
-                impl_item: candidate.impl_item,
-                member: index_in_impl,
-            },
-            body,
-            environment,
-            signature,
-        });
-    }
     None
-}
-
-/// The selected member's signature, with the receiver formed as the declaration binds it.
-///
-/// **INCOMPLETE, and stated as such.** Parameter and result types require the checker's
-/// `convert_hir_type`, which is not reachable from here — so they are left empty and `Ty::Error`
-/// rather than guessed. Step 4 either threads the conversion in or has the checker precompute each
-/// member's parametric signature into `IndexedImpl`, at which point §3.4's invariant applies to a
-/// specialised use exactly as it does to a static one.
-///
-/// Publishing a fabricated signature here would be the packet's own defect class: a second answer
-/// to what a callable's signature is.
-fn declared_signature(
-    hir: &Hir,
-    impl_item: ItemId,
-    member: u32,
-    self_ty: &Ty,
-) -> Option<CallableSigTy> {
-    let hir::ItemKind::Impl { items, .. } = &hir.item(impl_item).kind else {
-        return None;
-    };
-    let hir::ImplItem::Fn { def, .. } = items.get(member as usize)? else {
-        return None;
-    };
-    let receiver = match def.sig.receiver? {
-        hir::Receiver::Value => self_ty.clone(),
-        hir::Receiver::Ref => Ty::Ref {
-            mutable: false,
-            inner: Box::new(self_ty.clone()),
-        },
-        hir::Receiver::RefMut => Ty::Ref {
-            mutable: true,
-            inner: Box::new(self_ty.clone()),
-        },
-    };
-    Some(CallableSigTy {
-        receiver: Some(receiver),
-        params: Vec::new(),
-        ret: Ty::Error,
-    })
 }

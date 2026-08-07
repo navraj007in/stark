@@ -828,6 +828,10 @@ pub enum CalleeSelection {
         self_ty: Ty,
         /// Trait arguments, for parameterised traits.
         trait_args: Vec<Ty>,
+        /// The METHOD's own generic arguments. G2 characterization: `x.to::<Int32>()` through a
+        /// bound is accepted, so without these the specialiser would bind the impl's parameters
+        /// and silently drop the method's — the Iterator empty-environment class again.
+        method_args: Vec<Ty>,
     },
     FunctionValue,
 }
@@ -1019,6 +1023,13 @@ pub struct TypeTables {
     /// and slots, reaching a nominal's `Display::fmt` at any depth, so `println((a, b))` is one
     /// argument expression and two use sites. Zero is ordinary — most expressions call nothing.
     pub callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+    /// **AS3 Boundary 4a: the program's coherent dispatch index**, frozen for execution.
+    ///
+    /// Answers "given trait identity, trait arguments, concrete `Self` and a member, which
+    /// executable body does the checked program mean" — the authority `find_method` and
+    /// `find_impl_fn` currently duplicate. Carries no signatures: `callable_types[body]` is the
+    /// sole signature authority (A3b).
+    pub trait_impls: crate::bound_dispatch::TraitImplIndex,
     /// WP-C4.5c / A3c-S: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
@@ -1156,6 +1167,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         })
         .collect();
     let callable_uses_by_expr = checker.callable_uses_by_expr.clone();
+    let trait_impls = checker.build_trait_impl_index();
     let callable_instantiations = checker
         .callable_envs
         .iter()
@@ -1254,6 +1266,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         callable_instantiations,
         callable_uses,
         callable_uses_by_expr,
+        trait_impls,
         layout_queries,
         layout,
         bound_trait_calls: checker.bound_trait_calls,
@@ -10589,6 +10602,146 @@ impl<'a> TypeChecker<'a> {
         Some((receiver, params, ret))
     }
 
+    /// Build the program's coherent dispatch index (AS3 Boundary 4a).
+    ///
+    /// Built in the CHECKER, which already has converted self-types and knows every declaration,
+    /// and frozen into `TypeTables`. Building it in each engine would be two indexes of one fact —
+    /// which is the shape of `find_method` and `find_impl_fn`.
+    ///
+    /// Records the **effective** target per member: the impl's override where one exists, otherwise
+    /// the trait's default body (G1), together with the binder namespace that body owns.
+    fn build_trait_impl_index(&mut self) -> crate::bound_dispatch::TraitImplIndex {
+        let mut impls = Vec::new();
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_item = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_,
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            let trait_ref = trait_.clone();
+            let self_ty_id = *self_ty;
+            let generic_names: Vec<String> = generics
+                .iter()
+                .map(|param| self.item_text(impl_item, param.name).to_string())
+                .collect();
+            // Members written in the impl.
+            let mut effective_members: Vec<crate::bound_dispatch::IndexedTarget> = Vec::new();
+            let mut written: Vec<String> = Vec::new();
+            for (member, impl_item_node) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_item_node else {
+                    continue;
+                };
+                let name = self.item_text(impl_item, def.sig.name).to_string();
+                written.push(name.clone());
+                let mut binders = vec![GenericBinder::SelfType];
+                for (position, impl_name) in generic_names.iter().enumerate() {
+                    binders.push(GenericBinder::ImplParam {
+                        index: position,
+                        name: impl_name.clone(),
+                    });
+                }
+                for (position, param) in def.sig.generics.iter().enumerate() {
+                    binders.push(GenericBinder::MethodParam {
+                        index: position,
+                        name: self.item_text(impl_item, param.name).to_string(),
+                    });
+                }
+                effective_members.push(crate::bound_dispatch::IndexedTarget {
+                    member: name,
+                    declaration: CallableDeclId::ImplMember {
+                        impl_item,
+                        member: member as u32,
+                    },
+                    body: def.body,
+                    binders,
+                });
+            }
+            // G1: trait defaults the impl did NOT override are still executable targets, and their
+            // bodies own the TRAIT's binder namespace rather than the impl's.
+            let bound_trait = trait_ref.as_ref().map(|reference| match reference.res {
+                Res::Item(trait_id) => hir::BoundTrait::User(trait_id),
+                Res::CoreTrait(core) => hir::BoundTrait::Core(core),
+                _ => hir::BoundTrait::User(impl_item),
+            });
+            if let Some(hir::BoundTrait::User(trait_id)) = bound_trait {
+                if let hir::ItemKind::Trait {
+                    items: trait_items,
+                    generics: trait_generics,
+                    ..
+                } = &self.hir.item(trait_id).kind
+                {
+                    let trait_generics = trait_generics.to_vec();
+                    for (member, trait_item) in trait_items.iter().enumerate() {
+                        let hir::TraitItem::Method {
+                            sig,
+                            body: Some(body),
+                        } = trait_item
+                        else {
+                            continue;
+                        };
+                        let name = self.item_text(trait_id, sig.name).to_string();
+                        if written.contains(&name) {
+                            continue;
+                        }
+                        let mut binders = vec![GenericBinder::SelfType];
+                        for (position, param) in trait_generics.iter().enumerate() {
+                            binders.push(GenericBinder::TraitParam {
+                                index: position,
+                                name: self.item_text(trait_id, param.name).to_string(),
+                            });
+                        }
+                        for (position, param) in sig.generics.iter().enumerate() {
+                            binders.push(GenericBinder::MethodParam {
+                                index: position,
+                                name: self.item_text(trait_id, param.name).to_string(),
+                            });
+                        }
+                        effective_members.push(crate::bound_dispatch::IndexedTarget {
+                            member: name,
+                            declaration: CallableDeclId::TraitMember {
+                                trait_item: trait_id,
+                                member: member as u32,
+                            },
+                            body: *body,
+                            binders,
+                        });
+                    }
+                }
+            }
+            let converted_self = self.convert_hir_type(self_ty_id);
+            let trait_args: Vec<Ty> = trait_ref
+                .as_ref()
+                .and_then(|reference| reference.args.as_ref())
+                .map(|args| {
+                    args.args
+                        .iter()
+                        .filter_map(|arg| match arg {
+                            hir::GenericArg::Type(id) => Some(*id),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| self.convert_hir_type(id))
+                .collect();
+            impls.push(crate::bound_dispatch::IndexedImpl {
+                impl_item,
+                trait_: bound_trait,
+                trait_args,
+                self_ty: converted_self,
+                generic_names,
+                effective_members,
+            });
+        }
+        crate::bound_dispatch::TraitImplIndex::from_parts(impls)
+    }
+
     /// Publish a `CallableUse::Bound` for a call resolved through a generic parameter's bound.
     ///
     /// AS3 Boundary 4 step 2, deliberately landed **before** Display so the late-bound mechanism is
@@ -10621,6 +10774,11 @@ impl<'a> TypeChecker<'a> {
                         member: method.name.to_string(),
                         self_ty: receiver_self.clone(),
                         trait_args: Vec::new(),
+                        // 4a: not yet populated. The turbofish is available at the call site and
+                        // 4b threads it; publishing a fabricated empty list as if it were the
+                        // answer is what this packet keeps refusing to do, so the gap is stated
+                        // in `WP-CALLABLE-USE-TOTAL.md` rather than hidden here.
+                        method_args: Vec::new(),
                     },
                     environment: GenericEnvironment::FromBoundSelection,
                     receiver_adjustment: ReceiverAdjustment::None,
@@ -10654,6 +10812,7 @@ impl<'a> TypeChecker<'a> {
                 member: method.to_string(),
                 self_ty: receiver_self.clone(),
                 trait_args: Vec::new(),
+                method_args: Vec::new(), // 4a: see the note on the core-trait branch.
             },
             environment: GenericEnvironment::FromBoundSelection,
             receiver_adjustment: ReceiverAdjustment::None,
