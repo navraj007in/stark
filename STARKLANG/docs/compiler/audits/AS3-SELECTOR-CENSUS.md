@@ -182,3 +182,56 @@ what let DEV-191 hide behind a comment claiming it had been verified.
 | HIR | `Iterator` fallback | — |
 | MIR | associated-function lookup | — |
 | MIR | `Iterator::next` | — |
+
+---
+
+## 8. CLOSED (2026-08-07) — the structural criterion is met
+
+```text
+fn find_method       DOES NOT EXIST
+fn find_impl_fn      DOES NOT EXIST
+fn find_method_pass  DOES NOT EXIST
+```
+
+All 12 callers are gone. Both engines answer every callable question from the checker's published
+selection.
+
+| Site | How it closed |
+| --- | --- |
+| HIR ordinary `call_method` | `static_selected_callable`, then the bound specialiser; fallback deleted on a zero-hit census across nine suites |
+| HIR qualified user-trait | consumes the `Qualified` selection |
+| HIR qualified Core-trait | as above |
+| HIR nested/container `Eq` | **needed a new publication** — see below |
+| HIR `Iterator` | `Static`, then the bound specialiser |
+| HIR top-level + recursive Display | `display_uses[(root, path)]` |
+| MIR associated function | `qualified_selected_key`, keyed on the **callee path** |
+| MIR `Iterator::next` | `iterator_fn_key` |
+| MIR top-level / interpolation / nested Display | `display_fn_key` |
+
+### The nested `Eq` site, which was the only one that needed new semantics
+
+It scanned because `language_equal` is reached from a collection lookup with runtime values, a span,
+and **no expression id** — the case `WP-CALLABLE-USE-TOTAL.md` §3.2 named when it rejected `ExprId`
+as the sole key. The site's own comment said consuming it needed the originating call threaded down.
+
+That is exactly what closed it, in two halves:
+
+- **Checker:** `publish_core_element_eq_use` publishes the ELEMENT's `Eq::eq` against the container
+  call — `vec.contains(&x)`, `set.insert(v)`, `map.get(k)`. The method list is explicit rather than
+  "anything that might compare", for the same reason the Display walk has a STOP rule: publishing a
+  use no engine executes would make the totality claim false.
+- **Interpreter:** `Option<ExprId>` threaded through `call_collection_ownership_method` and
+  `language_position` into `language_equal`.
+
+No invented key. The published id is the real one.
+
+### One defect this closure produced and fixed
+
+MIR's associated-function lookup initially read the **call** expression while `associated_fn_type`
+publishes from the `ExprKind::Path` arm — so the use lives on the **callee path**, and
+`Point::fresh()` was refused outright. Two sides of one table disagreeing about which expression is
+the key is precisely the failure a published plan exists to remove. Caught by `mir_differential`
+immediately, because the fallback that would have hidden it was already gone.
+
+That is the argument for deletion over annotation, stated once more: with the scan still in place
+this would have been a silent second answer.

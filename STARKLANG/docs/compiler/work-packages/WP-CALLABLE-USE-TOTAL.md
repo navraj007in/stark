@@ -486,3 +486,57 @@ claiming the opposite.
 `find_method` (interpreter) and `find_impl_fn` (MIR) survive on the **Display** and **Iterator**
 paths, which select by name and need `DisplayPath` publication first. Those are Boundary 4's
 remaining work; the method and operator paths are done.
+
+---
+
+## 10. Boundary 4 EXIT (2026-08-07): both selectors deleted
+
+```text
+fn find_method       DOES NOT EXIST
+fn find_impl_fn      DOES NOT EXIST
+fn find_method_pass  DOES NOT EXIST
+```
+
+Twelve callers, all closed. Every callable question in both engines is answered from the checker's
+published selection. Full detail in `AS3-SELECTOR-CENSUS.md`; the parts worth reading here are the
+two that changed how the packet works.
+
+### The census was the instrument, and it corrected me twice
+
+I claimed after the MIR fallback deletion that Display consumption plus interpolation would finish
+this. Wrong — there were 12 callers and Display was 5 of them. Worse, my first census used
+`grep "self\.find_method("`, which **misses every multi-line call chain**, and both qualified-trait
+callers are written that way. The under-count reinforced the wrong conclusion.
+
+The census now records both grep forms so it can be re-run rather than re-derived.
+
+### Deletion beats annotation, demonstrated three times
+
+Each deletion in this packet immediately exposed something an annotation had been hiding:
+
+| Deleted | Exposed |
+| --- | --- |
+| MIR method/operator fallbacks | DEV-188…DEV-192, including a **wrong answer** from the reference engine |
+| HIR `display_deep` fallback | its twin one frame up in `display_text`, found only by mutation |
+| MIR associated-fn scan | checker and MIR keying the same table on **different expressions** |
+
+That last one is the cleanest illustration. `associated_fn_type` publishes from the `ExprKind::Path`
+arm, so the use lives on the callee path; MIR looked up the call expression and refused
+`Point::fresh()` outright. With the scan still present that would have been a silent second answer.
+
+### One publication had to be added, and one enumeration was wrong
+
+The nested/container `Eq` site was the only one needing new semantics: `language_equal` is reached
+with runtime values and no expression id — §3.2's case, in the code. It closed by threading the
+originating container call down and publishing the element's `Eq::eq` against it. No invented key.
+
+The first version of that publisher listed the methods believed to compare elements and **omitted
+`get_mut`**, so `map.get_mut(&k)` silently fell back to structural comparison and retrieved the
+wrong entry. Caught by `hash_collections_use_language_eq_for_keys`, a test written for exactly that
+class of defect.
+
+The fix reverses the bias: publish for every container method. The asymmetry decides it — an unused
+entry costs a table slot, a missing one is a wrong answer. That is deliberately the **opposite** of
+the Display walk's STOP rule, because the claims differ: over-publishing a Display position would
+falsify a statement about what the renderer executes, whereas "if this call compares elements, this
+is the body" stays true whether or not it does. Same packet, opposite defaults, for a stated reason.

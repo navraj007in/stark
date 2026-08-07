@@ -4458,9 +4458,19 @@ impl<'a> Interpreter<'a> {
         };
         let receiver_place = self.core_receiver_place(*first, span)?;
         let receiver = self.clone_place_value(&receiver_place, span)?;
+        // A qualified core-trait call publishes through `publish_operator_use`, so it carries
+        // `CoreTrait` provenance — the same record `a == b` produces, because it is the same
+        // dispatch spelled explicitly.
         let method = self
-            .static_selected_callable(call_expr)
-            .or_else(|| self.specialised_bound_callable(call_expr, *first))
+            .selected_core_trait_callable(call_expr, core_trait)
+            .and_then(|use_| match use_.selection {
+                crate::typecheck::CalleeSelection::Static { body, .. } => {
+                    self.callable_for_body(body)
+                }
+                crate::typecheck::CalleeSelection::Bound { .. }
+                | crate::typecheck::CalleeSelection::FunctionValue => None,
+            })
+            .or_else(|| self.specialised_operator_callable(call_expr, core_trait, span))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
         let _ = method_name;
         match self.eval_call_arguments(rest)? {
@@ -4469,105 +4479,6 @@ impl<'a> Interpreter<'a> {
                 .map(Flow::Value),
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
-    }
-
-    fn find_method(
-        &self,
-        nominal: Option<ItemId>,
-        name: &str,
-        trait_filter: Option<Res>,
-    ) -> Option<Callable> {
-        // WP-C2.2 (DEV-026): inherent methods shadow trait methods of the same name
-        // unconditionally (03-Type-System.md "Method Calls and Auto-Borrowing", rule 1).
-        // Previously a single source-order scan returned whichever matching impl block
-        // appeared first in the file — a trait impl declared above an inherent impl won,
-        // observably flipping which body ran based on item order alone. Two passes: inherent
-        // impls first, then trait impls. A trait-qualified call (`trait_filter` set) skips the
-        // inherent pass entirely, since it names the trait explicitly.
-        if trait_filter.is_none() {
-            if let Some(callable) = self.find_method_pass(nominal, name, None, true) {
-                return Some(callable);
-            }
-        }
-        self.find_method_pass(nominal, name, trait_filter, false)
-    }
-
-    fn find_method_pass(
-        &self,
-        nominal: Option<ItemId>,
-        name: &str,
-        trait_filter: Option<Res>,
-        inherent_only: bool,
-    ) -> Option<Callable> {
-        let nominal = nominal?;
-        // DEV-069: this scans EVERY impl in the program, including impls from other files, so
-        // both the method names and the resulting body's file come from the impl's own item.
-        self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-            let impl_id = ItemId(idx as u32);
-            let hir::ItemKind::Impl {
-                trait_,
-                self_ty,
-                items,
-                ..
-            } = &item.kind
-            else {
-                return None;
-            };
-            if inherent_only != trait_.is_none() {
-                return None;
-            }
-            if trait_filter.is_some_and(
-                |expected| !matches!(trait_, Some(reference) if reference.res == expected),
-            ) {
-                return None;
-            }
-            if !matches!(
-                &self.hir.ty(*self_ty).kind,
-                hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
-            ) {
-                return None;
-            }
-            let overridden = items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == name => {
-                    Some(Callable {
-                        receiver: def.sig.receiver.zip(def.sig.receiver_local),
-                        params: def.sig.params.iter().map(|param| param.local).collect(),
-                        body: def.body,
-                    })
-                }
-                _ => None,
-            });
-            // WP-C1.3 (2026-07-17): fall back to the trait's own default method body
-            // (`TraitItem::Method { body: Some(_), .. }`, 03-Type-System.md trait defaults) when
-            // this impl block doesn't override the method. The HIR already carries default
-            // bodies (they were simply never consulted here) -- confirmed empirically that a
-            // trait method with a real body, left un-overridden by an implementing struct,
-            // failed with "method not found" before this fix. See COMPILER-STATE.md DEV-013.
-            overridden.or_else(|| {
-                let trait_id = match trait_.as_ref()?.res {
-                    Res::Item(id) => id,
-                    _ => return None,
-                };
-                let hir::ItemKind::Trait {
-                    items: trait_items, ..
-                } = &self.hir.item(trait_id).kind
-                else {
-                    return None;
-                };
-                trait_items.iter().find_map(|item| match item {
-                    hir::TraitItem::Method {
-                        sig,
-                        body: Some(body),
-                    } if self.item_text(trait_id, sig.name) == name => Some(Callable {
-                        receiver: sig.receiver.zip(sig.receiver_local),
-                        params: sig.params.iter().map(|param| param.local).collect(),
-                        body: *body,
-                        // The default body lives in the TRAIT's file, not the impl's.
-                    }),
-                    _ => None,
-                })
-            })
-        })
     }
 
     fn find_associated_fn(&self, nominal: ItemId, name: &str) -> Option<Callable> {
@@ -4749,6 +4660,8 @@ impl<'a> Interpreter<'a> {
     /// target` match so discarded values can be routed through `drop_value`.
     fn call_collection_ownership_method(
         &mut self,
+        // AS3 Boundary 4: the originating call, for the element `Eq::eq` lookup.
+        call_expr: Option<ExprId>,
         receiver_place: &Place,
         name: &str,
         arguments: &mut Vec<Value>,
@@ -4770,7 +4683,7 @@ impl<'a> Interpreter<'a> {
                 let key = arguments.first().cloned();
                 let position = if let Some(key) = key.as_ref() {
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    self.language_position(&keys, key, span)?
+                    self.language_position(call_expr, &keys, key, span)?
                 } else {
                     None
                 };
@@ -4841,7 +4754,7 @@ impl<'a> Interpreter<'a> {
             Value::HashSet(set) => {
                 let value = arguments.first().cloned();
                 let position = if let Some(value) = value.as_ref() {
-                    self.language_position(&set.0, value, span)?
+                    self.language_position(call_expr, &set.0, value, span)?
                 } else {
                     None
                 };
@@ -4893,12 +4806,16 @@ impl<'a> Interpreter<'a> {
 
     fn language_position(
         &mut self,
+        // AS3 Boundary 4: the container call this comparison serves. `Vec::contains`,
+        // `HashSet::insert`, `HashMap::get` — the checker publishes the element's `Eq::eq` against
+        // exactly this expression, which is what let this path stop scanning.
+        call_expr: Option<ExprId>,
         values: &[Value],
         needle: &Value,
         span: Span,
     ) -> Result<Option<usize>, RuntimeError> {
         for (index, value) in values.iter().enumerate() {
-            if self.language_equal(value.clone(), needle.clone(), span)? {
+            if self.language_equal(call_expr, value.clone(), needle.clone(), span)? {
                 return Ok(Some(index));
             }
         }
@@ -4907,28 +4824,34 @@ impl<'a> Interpreter<'a> {
 
     fn language_equal(
         &mut self,
+        call_expr: Option<ExprId>,
         left: Value,
         right: Value,
         span: Span,
     ) -> Result<bool, RuntimeError> {
         let left = self.deref_value(left, span)?;
         let right = self.deref_value(right, span)?;
-        if let Some(nominal) = nominal_item(&left) {
-            // **AS3 Boundary 3: this site still SCANS, and the reason is structural.**
+        if nominal_item(&left).is_some() {
+            // **AS3 Boundary 4: the follow-up this site recorded is done.**
             //
-            // `language_equal` is reached from `language_position` — a collection lookup — with
-            // runtime values and a span, and **no expression id**. `WP-CALLABLE-USE-TOTAL.md` §3.2
-            // named this case when it rejected `ExprId` as the key; this is that case in the code.
-            //
-            // Consuming here needs the ORIGINATING expression (the `contains`/`position` call)
-            // threaded down so the checker can publish the `Eq::eq` use against it. That is a
-            // bounded follow-up, not a redesign — recorded rather than forced, because inventing an
-            // expression id to look up would be a fabricated correspondence.
-            if let Some(method) = self.find_method(
-                Some(nominal),
-                "eq",
-                Some(Res::CoreTrait(hir::CoreTrait::Eq)),
-            ) {
+            // It used to scan for a member named `eq`, because `language_equal` is reached from a
+            // collection lookup with runtime values and no expression id — the case
+            // `WP-CALLABLE-USE-TOTAL.md` §3.2 named when it rejected `ExprId` as the sole key.
+            // The answer was not a new key: it was to thread the ORIGINATING call down and have
+            // the checker publish the element's `Eq::eq` against it
+            // (`publish_core_element_eq_use`). Inventing an id to look up would have been a
+            // fabricated correspondence; threading the real one is not.
+            if let Some(method) = call_expr.and_then(|expr| {
+                self.selected_core_trait_callable(expr, hir::CoreTrait::Eq)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                    .or_else(|| self.specialised_operator_callable(expr, CoreTrait::Eq, span))
+            }) {
                 let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
                 let argument_place = self.promote_to_temp_place(right, span)?;
                 return match self.call_user_method(
@@ -5008,9 +4931,13 @@ impl<'a> Interpreter<'a> {
             arguments[0] = self.deref_value(arguments[0].clone(), span)?;
         }
         self.flatten_string_refs(&mut arguments, span)?;
-        if let Some(result) =
-            self.call_collection_ownership_method(&receiver_place, name, &mut arguments, span)?
-        {
+        if let Some(result) = self.call_collection_ownership_method(
+            expr_id,
+            &receiver_place,
+            name,
+            &mut arguments,
+            span,
+        )? {
             return Ok(result);
         }
         let mut values = arguments.into_iter();
@@ -5284,7 +5211,7 @@ impl<'a> Interpreter<'a> {
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    let position = self.language_position(&keys, &key, span)?;
+                    let position = self.language_position(expr_id, &keys, &key, span)?;
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
@@ -5313,7 +5240,7 @@ impl<'a> Interpreter<'a> {
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    let position = self.language_position(&keys, &key, span)?;
+                    let position = self.language_position(expr_id, &keys, &key, span)?;
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
@@ -5431,6 +5358,7 @@ impl<'a> Interpreter<'a> {
                                     let mut arguments = vec![key, value];
                                     let returned = self
                                         .call_collection_ownership_method(
+                                            expr_id,
                                             &place,
                                             "insert",
                                             &mut arguments,
@@ -5444,6 +5372,7 @@ impl<'a> Interpreter<'a> {
                             Value::HashSet(_) => {
                                 let mut arguments = vec![deref_val];
                                 self.call_collection_ownership_method(
+                                    expr_id,
                                     &place,
                                     "insert",
                                     &mut arguments,
@@ -5526,7 +5455,10 @@ impl<'a> Interpreter<'a> {
                 let mut set = InsertionSet::new();
                 for x in items.into_iter().flatten() {
                     let value = self.deref_value(x, span)?;
-                    if self.language_position(&set.0, &value, span)?.is_some() {
+                    if self
+                        .language_position(expr_id, &set.0, &value, span)?
+                        .is_some()
+                    {
                         self.drop_value(value)?;
                     } else {
                         set.0.push(value);
@@ -5540,7 +5472,7 @@ impl<'a> Interpreter<'a> {
                         let k = self.deref_value(p[0].clone().unwrap_or(Value::Unit), span)?;
                         let v = self.deref_value(p[1].clone().unwrap_or(Value::Unit), span)?;
                         let keys = map.keys().cloned().collect::<Vec<_>>();
-                        if let Some(index) = self.language_position(&keys, &k, span)? {
+                        if let Some(index) = self.language_position(expr_id, &keys, &k, span)? {
                             let old = map.0[index].1.replace(v);
                             self.drop_value(k)?;
                             if let Some(old) = old {
@@ -6794,13 +6726,9 @@ impl<'a> Interpreter<'a> {
                     crate::typecheck::CalleeSelection::Bound { .. }
                     | crate::typecheck::CalleeSelection::FunctionValue => None,
                 })
-                .or_else(|| {
-                    self.find_method(
-                        nominal_item(&current),
-                        "next",
-                        Some(Res::CoreTrait(hir::CoreTrait::Iterator)),
-                    )
-                })
+                // A late-bound iterator (`for x in it` where `it: T` and `T: Iterator`) resolves
+                // through the shared specialiser, not through a name scan.
+                .or_else(|| self.specialised_bound_callable(for_expr, for_expr))
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
             self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
         } else {

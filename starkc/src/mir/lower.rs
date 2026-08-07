@@ -3781,7 +3781,7 @@ impl<'a> FnLowerer<'a> {
                         {
                             let (item, targs) = (*item, targs.clone());
                             return self.lower_for_over_user_iter(
-                                *var, *local, *iter, *body, item, targs, span,
+                                expr, *var, *local, *iter, *body, item, targs, span,
                             );
                         }
                         // A4: `for i in r` where `r` is a range VALUE (`Ty::Range`) — the
@@ -5792,14 +5792,21 @@ impl<'a> FnLowerer<'a> {
                 Res::AssociatedFn(nominal, name_span) => {
                     let nominal = *nominal;
                     let name_text = self.text(*name_span).to_string();
-                    // Locate first (empty args), then infer and rebuild the key.
-                    let Some((located, _receiver)) = self.find_impl_fn(
-                        nominal,
-                        &name_text,
-                        /*receiverless=*/ true,
-                        &[],
-                        None,
-                    ) else {
+                    // **AS3 Boundary 4: read the checker's selection.** This scanned the
+                    // nominal's impls for a receiverless member named `name_text`;
+                    // `associated_fn_type` already published the body as a `Qualified` use. The
+                    // instantiation is still inferred below — the checker names the BODY, and the
+                    // type arguments at this call site are a separate question.
+                    //
+                    // **Keyed on the CALLEE path, not the call.** `associated_fn_type` publishes
+                    // from the `ExprKind::Path` arm, so the use lives on the path expression;
+                    // looking up the call expression found nothing and refused `Point::fresh()`
+                    // outright. Two sides of one table disagreeing about which expression is the
+                    // key is exactly the failure a published plan is supposed to remove, so the
+                    // lookup names the same expression the publisher did.
+                    let Some((located, _receiver)) =
+                        self.qualified_selected_key(callee, nominal, &[])
+                    else {
                         return unsupported(
                             format!("associated function {name_text} not found"),
                             span,
@@ -6363,6 +6370,82 @@ impl<'a> FnLowerer<'a> {
     /// name a body at check time — and resolves through the shared specialiser with the concrete
     /// `Self` MIR already holds. Replaces `find_impl_fn(nominal, "fmt", ..)` at all three MIR
     /// Display sites: top-level print, interpolation, and nested composite elements.
+    /// **AS3 Boundary 4: the body behind `for x in it` — the checker's `Iterator::next` selection.**
+    /// A `Direct`/`Qualified` selection published against a call expression — an associated
+    /// function (`Point::new(3, 4)`) rather than a method. Separate from
+    /// [`Self::static_selected_key`] only in which provenances it accepts.
+    fn qualified_selected_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&call_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Qualified { .. }
+                        | crate::typecheck::DispatchProvenance::Direct
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.key_for_selected_body(*body, nominal, nominal_args)
+    }
+
+    fn iterator_fn_key(
+        &self,
+        for_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&for_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::CoreTrait {
+                        core: hir::CoreTrait::Iterator
+                    }
+                )
+            })?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                trait_args,
+                method_args,
+                ..
+            } => {
+                let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
+                let resolved = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                )?;
+                self.key_for_selected_body(resolved.body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
     fn display_fn_key(
         &self,
         root: ExprId,
@@ -6546,122 +6629,6 @@ impl<'a> FnLowerer<'a> {
         None
     }
 
-    /// `trait_filter` narrows the search to one trait's implementation.
-    ///
-    /// DEV-BOUND-TRAIT-IDENTITY: a call resolved through a generic parameter's BOUND already knows
-    /// which trait supplied its signature, and lowering must select that trait's impl. Without the
-    /// filter this answered "the first impl on this nominal declaring a method with that name",
-    /// so a type implementing two same-named traits ran the same body for both bounds — while the
-    /// type checker had correctly distinguished them. `None` keeps the ordinary
-    /// "what does `recv.m()` mean here" behaviour, inherent methods first.
-    fn find_impl_fn(
-        &self,
-        nominal: ItemId,
-        name: &str,
-        receiverless: bool,
-        type_args: &[MirTy],
-        trait_filter: Option<Res>,
-    ) -> Option<(FnKey, Option<hir::Receiver>)> {
-        let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
-        let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
-        let mut via_default: Option<(FnKey, Option<hir::Receiver>)> = None;
-        for (idx, item) in self.hir.items.iter().enumerate() {
-            let ItemKind::Impl { trait_, items, .. } = &item.kind else {
-                continue;
-            };
-            let impl_item = ItemId(idx as u32);
-            if impl_self_item(self.hir, impl_item) != Some(nominal) {
-                continue;
-            }
-            // A filtered lookup considers ONLY that trait's impl — never an inherent method, and
-            // never another trait's, exactly as a qualified call does.
-            if let Some(wanted) = trait_filter {
-                match trait_ {
-                    Some(trait_ref) if trait_ref.res == wanted => {}
-                    Some(_) | None => continue,
-                }
-            }
-            for (member, impl_member) in items.iter().enumerate() {
-                let hir::ImplItem::Fn { def, .. } = impl_member else {
-                    continue;
-                };
-                if self.meta.item_text(impl_item, def.sig.name) != name {
-                    continue;
-                }
-                if receiverless != def.sig.receiver.is_none() {
-                    continue;
-                }
-                let hit = (
-                    FnKey::ImplFn {
-                        impl_item,
-                        member: member as u32,
-                        type_args: type_args.to_vec(),
-                        // `find_impl_fn` locates the member; the CALL SITE supplies any
-                        // method-level arguments, since they vary per call.
-                        method_args: Vec::new(),
-                    },
-                    def.sig.receiver,
-                );
-                if trait_.is_none() {
-                    inherent.get_or_insert(hit);
-                } else {
-                    via_trait.get_or_insert(hit);
-                }
-            }
-            // Trait defaults: only when this impl does NOT override the method.
-            if let Some(trait_ref) = trait_ {
-                if let Res::Item(trait_item) = trait_ref.res {
-                    let overridden = items.iter().any(|m| {
-                        matches!(m, hir::ImplItem::Fn { def, .. }
-                            if self.meta.item_text(impl_item, def.sig.name) == name)
-                    });
-                    if !overridden {
-                        if let ItemKind::Trait {
-                            items: trait_items, ..
-                        } = &self.hir.item(trait_item).kind
-                        {
-                            for (member, trait_member) in trait_items.iter().enumerate() {
-                                let hir::TraitItem::Method { sig, body: Some(_) } = trait_member
-                                else {
-                                    continue;
-                                };
-                                if self.meta.item_text(trait_item, sig.name) != name {
-                                    continue;
-                                }
-                                if receiverless != sig.receiver.is_none() {
-                                    continue;
-                                }
-                                via_default.get_or_insert((
-                                    FnKey::TraitDefault {
-                                        trait_item,
-                                        member: member as u32,
-                                        self_item: nominal,
-                                        self_args: type_args.to_vec(),
-                                        // Filled by the CALL SITE, like `ImplFn::method_args`.
-                                        method_args: Vec::new(),
-                                    },
-                                    sig.receiver,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        inherent.or(via_trait).or(via_default)
-    }
-
-    /// WP-C6.2b: locate the implementation of a **specific** trait's method for `nominal`.
-    ///
-    /// `find_impl_fn` answers "what does `recv.m()` mean here", so it prefers inherent methods and
-    /// accepts any in-scope trait supplying the name. A fully qualified `Trait::m(&recv)` asks a
-    /// different question — TYPE-METHOD-001's "bypasses trait-name lookup but still requires a
-    /// unique coherent impl" — and must ignore both inherent methods and other traits. Keeping the
-    /// two lookups separate is what lets `A::go(&s)` and `B::go(&s)` disambiguate the §18 ambiguity
-    /// case instead of both resolving to whichever impl is found first.
-    ///
-    /// Coherence (one impl of a trait per type) is enforced upstream, so the first match is the
-    /// unique one; an overriding `impl` member wins over the trait's default body, as elsewhere.
     fn find_trait_impl_fn(
         &self,
         nominal: ItemId,
@@ -8312,6 +8279,9 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_for_over_user_iter(
         &mut self,
+        // AS3 Boundary 4: the `for` expression — what the checker keyed its `Iterator::next`
+        // selection on (`publish_iterator_use`).
+        for_expr: ExprId,
         var: Span,
         var_local: crate::hir::LocalId,
         iter: ExprId,
@@ -8320,7 +8290,10 @@ impl<'a> FnLowerer<'a> {
         targs: Vec<MirTy>,
         span: Span,
     ) -> Result<(), LowerError> {
-        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs, None) else {
+        // Consume the published selection rather than scanning the nominal for a member named
+        // `next`. `resolve_user_iterator` already decided which impl is the Iterator one, by the
+        // resolver's trait identity and not by spelling.
+        let Some((key, receiver)) = self.iterator_fn_key(for_expr, item, &targs) else {
             return unsupported(
                 "for over a non-range, non-Vec iterator without an Iterator impl",
                 span,

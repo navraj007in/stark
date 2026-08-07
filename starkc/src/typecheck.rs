@@ -6160,13 +6160,19 @@ impl<'a> TypeChecker<'a> {
                     ..
                 } = &self.hir.expr(*callee).kind
                 {
-                    self.check_qualified_trait_call(*trait_id, *member, args, expr.span)
+                    self.check_qualified_trait_call(expr_id, *trait_id, *member, args, expr.span)
                 } else if let hir::ExprKind::Path {
                     res: Res::CoreTraitMember(core_trait, method_span),
                     ..
                 } = &self.hir.expr(*callee).kind
                 {
-                    self.check_qualified_core_trait_call(*core_trait, *method_span, args, expr.span)
+                    self.check_qualified_core_trait_call(
+                        expr_id,
+                        *core_trait,
+                        *method_span,
+                        args,
+                        expr.span,
+                    )
                 } else if let hir::ExprKind::Path {
                     res: Res::Builtin(builtin),
                     turbofish,
@@ -7854,6 +7860,8 @@ impl<'a> TypeChecker<'a> {
     /// `ty_satisfies_operator_bound`'s existing approach for the same compiler-known traits.
     fn check_qualified_core_trait_call(
         &mut self,
+        // AS3 Boundary 4: the call expression, so the selected impl member can be published.
+        call_expr: ExprId,
         core_trait: hir::CoreTrait,
         method_span: Span,
         args: &[ExprId],
@@ -7874,6 +7882,17 @@ impl<'a> TypeChecker<'a> {
         while let Ty::Ref { inner, .. } = receiver_type {
             receiver_type = self.resolve(&inner);
         }
+        // **AS3 Boundary 4: publish the selection.** `Eq::eq(&a, &b)` is the explicit spelling of
+        // the same dispatch `a == b` performs, so it publishes through the same publisher — one
+        // statement of what a qualified core-trait call means, not two.
+        let receiver_for_publication = receiver_type.clone();
+        self.publish_operator_use(
+            call_expr,
+            &receiver_for_publication,
+            core_trait_name,
+            &method_name,
+            core_trait,
+        );
 
         let mut selected: Option<hir::FnSig> = None;
         for item in &self.hir.items {
@@ -7967,6 +7986,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_qualified_trait_call(
         &mut self,
+        call_expr: ExprId,
         trait_id: ItemId,
         member: u32,
         args: &[ExprId],
@@ -7996,6 +8016,50 @@ impl<'a> TypeChecker<'a> {
         let mut receiver_type = self.resolve(first_actual);
         while let Ty::Ref { inner, .. } = receiver_type {
             receiver_type = self.resolve(&inner);
+        }
+        // AS3 Boundary 4: publish the selection, so the interpreter reads the body instead of
+        // scanning the receiver's nominal for the member name.
+        let trait_name = match &self.hir.item(trait_id).kind {
+            hir::ItemKind::Trait { name, .. } => self.item_text(trait_id, *name).to_string(),
+            _ => String::new(),
+        };
+        let member_name = match &self.hir.item(trait_id).kind {
+            hir::ItemKind::Trait { items, .. } => match items.get(member as usize) {
+                Some(hir::TraitItem::Method { sig, .. }) => {
+                    self.item_text(trait_id, sig.name).to_string()
+                }
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        if let Some((impl_item, impl_member, body)) =
+            self.operator_impl_member(&receiver_type, &trait_name, &member_name)
+        {
+            if let Some((receiver, params, ret)) =
+                self.declared_member_signature(impl_item, impl_member)
+            {
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::ImplMember {
+                            impl_item,
+                            member: impl_member,
+                        },
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(Vec::new()),
+                    receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+                    receiver_binding: ReceiverBinding::Shared,
+                    signature: CallableSigTy {
+                        receiver,
+                        params,
+                        ret,
+                    },
+                    provenance: DispatchProvenance::Qualified {
+                        trait_item: Some(trait_id),
+                    },
+                };
+                self.publish_callable_use(call_expr, use_);
+            }
         }
 
         let impl_infos: Vec<_> = self
@@ -9448,6 +9512,13 @@ impl<'a> TypeChecker<'a> {
         } else if let Some((params_ty, ret_ty, needs_mut)) =
             self.core_method_signature(&receiver_ty, &name_str, name_span)
         {
+            // **AS3 Boundary 4: a core container that compares its elements.**
+            //
+            // `vec.contains(&x)`, `set.insert(v)`, `map.get(k)` and friends run `Eq::eq` on the
+            // ELEMENT when it is a user nominal — the interpreter's `language_equal`. That site had
+            // no expression id and so scanned for a member named `eq`; publishing here gives it
+            // one, keyed on the container call itself.
+            self.publish_core_element_eq_use(call_expr, &receiver_ty, &name_str);
             if needs_mut && !self.is_mutable_place(base_expr) {
                 self.diags.push(
                     Diagnostic::error(
@@ -10917,6 +10988,42 @@ impl<'a> TypeChecker<'a> {
         // `env_bindings`, not a second construction of the same list: `Display::fmt` declares no
         // generics of its own, so the method half is empty and `Self` is the rendered type.
         Self::env_bindings(&Some(ty.clone()), &impl_names, &[], true, &map)
+    }
+
+    /// The `Eq::eq` a core container method runs on its elements, published against the container
+    /// call.
+    ///
+    /// The method list is explicit rather than "anything that might compare": publishing a use the
+    /// renderer never executes would make the totality claim false, which is the same discipline
+    /// the `Display` walk's STOP rule follows.
+    fn publish_core_element_eq_use(&mut self, call_expr: ExprId, receiver: &Ty, method: &str) {
+        // **Publish for every container method, not a hand-listed subset.**
+        //
+        // The first version listed the methods believed to compare elements and omitted `get_mut`,
+        // so `map.get_mut(&k)` fell back to STRUCTURAL comparison and silently retrieved the wrong
+        // entry — caught by `hash_collections_use_language_eq_for_keys`, whose whole purpose is a
+        // user `Eq` that disagrees with structural equality.
+        //
+        // The asymmetry decides it: an unused entry costs a table slot, while a missing one is a
+        // wrong answer. That is the opposite of the Display walk's STOP rule, and deliberately so —
+        // there, over-publishing would falsify a claim about what the renderer executes; here the
+        // claim is only "if this call compares elements, this is the body", which stays true
+        // whether or not it does.
+        let _ = method;
+        let mut receiver = self.resolve(receiver);
+        while let Ty::Ref { inner, .. } = receiver {
+            receiver = self.resolve(&inner);
+        }
+        // The compared type: a map compares KEYS, a set and a Vec compare elements.
+        let element = match &receiver {
+            Ty::Core(CoreType::HashMap, args) => args.first().cloned(),
+            Ty::Core(CoreType::HashSet | CoreType::Vec, args) => args.first().cloned(),
+            _ => None,
+        };
+        let Some(element) = element else { return };
+        // `publish_operator_use` already handles "not a user nominal" and "no `Eq` impl" by
+        // publishing nothing, and handles a bounded parameter through DEV-191's branch.
+        self.publish_operator_use(call_expr, &element, "Eq", "eq", hir::CoreTrait::Eq);
     }
 
     fn publish_bound_operator_use(
