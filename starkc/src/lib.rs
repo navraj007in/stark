@@ -24,6 +24,7 @@ pub mod format_syntax;
 pub mod formatter;
 pub mod hir;
 pub mod interp;
+pub mod json;
 pub mod layout;
 pub mod lexer;
 pub mod literal;

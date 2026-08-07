@@ -50,31 +50,9 @@ impl Difference {
     }
 }
 
-/// DEV-184: left every C0 control other than `\n`, `\r`, `\t` raw.
+/// AS5-f: delegates to the compiler's one escaping authority (DEV-184).
 pub fn escape_json(s: &str) -> String {
-    let mut out = String::new();
-    for character in s.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            // DEV-184: every remaining C0 control. RFC 8259 §7 requires U+0000-U+001F to be
-            // escaped; leaving them raw produced documents no conforming parser accepts.
-            character if character <= '\u{1f}' => {
-                out.push_str("\\u");
-                for shift in [12, 8, 4, 0] {
-                    let nibble = (character as u32 >> shift) & 0xf;
-                    out.push(char::from_digit(nibble, 16).expect("nibble is < 16"));
-                }
-            }
-            character => out.push(character),
-        }
-    }
-    out
+    crate::json::escape(s)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

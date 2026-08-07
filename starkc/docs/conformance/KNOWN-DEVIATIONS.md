@@ -5080,3 +5080,56 @@ Two defects, recorded together because the first concealed the second.
   correct implementation. `tests/as5_json_escaping.rs` fails against the previous code — it names
   the exact code points each one leaked — and passes after.
 - **Owning gate:** compiler track, AS5-a (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-185 — the JSON layer decoded every number to `f64`, losing the value the input denotes (CLOSED, AS5-b/c)
+
+- **Rule:** RFC 8259 §6 constrains a number's *grammar* and explicitly sets no range or precision
+  limit. The governing lesson is DEV-182's, recorded in `GATE-C8-CLOSURE.md` §4: **parsing
+  successfully is insufficient; the returned value has to be the value the input denotes.**
+- **Status:** CLOSED. `JsonValue::Number` carries a `JsonNumber` preserving the exact lexical value;
+  conversion to `i64`/`f64` is an explicit consumer decision that can refuse.
+- **Found by:** AS5's review of the shared data model. The two `JsonValue` enums being textually
+  identical established that no reconciliation was needed — it did **not** establish that the
+  representation was adequate, and it was not.
+
+**Measured on the code before the repair** (`examples/as5_number_probe.rs`):
+
+```text
+input      9007199254740993          ← 2^53 + 1, an ordinary 64-bit request id
+re-emitted 9007199254740992          ← CHANGED
+as_i64     Some(9007199254740992)
+1.5 as_i64 Some(1)                   ← truncated, not refused
+      01 parses: true                ← leading zero is not JSON
+      1. parses: true                ← naked decimal point is not JSON
+   1e400 parses: true                ← decodes to infinity
+```
+
+- **User impact, in severity order:**
+  1. **A JSON-RPC request identifier can change value between arriving and being answered.** `id` is
+     correlation identity; a response carrying `…992` answers a request that was never sent. This is
+     more serious than DEV-184, because a client cannot detect it — both documents are well-formed.
+  2. `as_i64()` performed `n as i64`, so `1.5` became `1`. An integer-typed protocol field accepted
+     a fractional number silently instead of refusing it.
+  3. `JsonValue::Number(f64)` could hold NaN or an infinity, neither of which has a JSON textual
+     form — the type could represent a document that cannot be serialized, with the failure
+     surfacing at emit time far from whatever constructed it.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, id confusion is a
+  correlation hazard rather than a memory-safety one.
+- **Repair:** `JsonNumber` keeps the input's exact lexical form. The parser validates the RFC
+  grammar — ASCII digits only, no leading zero, no bare `+`, no naked decimal point, and only the
+  four JSON whitespace characters around it — and preserves the text. `as_i64` succeeds only for a
+  raw integer literal; `as_f64` refuses a value it cannot represent finitely; `from_f64` refuses
+  NaN and the infinities, so a non-JSON number is unrepresentable rather than caught late.
+- **Deliberately not done:** arbitrary-precision arithmetic. The shared layer's job is to preserve
+  what the document said and let each consumer state the numeric type it requires.
+- **Owning gate:** compiler track, AS5-b/c (WP-ARCHITECTURE-STABILIZATION).
+
+### Adjacent, NOT repaired here — LSP string request ids
+
+JSON-RPC 2.0 and the LSP specification both permit a request `id` to be a **string** or a number.
+`Request { id: i64 }` and `Response { id: i64 }` admit only numbers, so a conforming client using
+string ids cannot be served. That is a protocol-surface gap, not a JSON-authority defect, and
+expanding AS5 to cover it would turn a parser consolidation into an LSP redesign. Recorded here so
+it is not lost; it needs its own packet.

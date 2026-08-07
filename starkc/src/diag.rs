@@ -534,24 +534,10 @@ fn string_array_json(values: &[String]) -> String {
     )
 }
 
+/// AS5-f: this was the only correct escaper of the four, and is what `crate::json::escape` was
+/// built from. Kept as a name so the JSON emitters below read unchanged.
 pub(crate) fn escape_json(value: &str) -> String {
-    let mut escaped = String::new();
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character <= '\u{1f}' => {
-                let _ = write!(escaped, "\\u{:04x}", character as u32);
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
+    crate::json::escape(value)
 }
 
 #[cfg(test)]

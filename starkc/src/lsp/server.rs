@@ -176,7 +176,10 @@ impl Server {
         }
 
         let mut capabilities = HashMap::new();
-        capabilities.insert("textDocumentSync".to_string(), JsonValue::Number(1.0)); // Full
+        capabilities.insert(
+            "textDocumentSync".to_string(),
+            JsonValue::number_from_i64(1),
+        ); // Full
         capabilities.insert("hoverProvider".to_string(), JsonValue::Bool(true));
         capabilities.insert("definitionProvider".to_string(), JsonValue::Bool(true));
         capabilities.insert("referencesProvider".to_string(), JsonValue::Bool(true));
@@ -425,7 +428,9 @@ impl Server {
             params.insert("uri".to_string(), JsonValue::String(uri));
             params.insert(
                 "version".to_string(),
-                version.map_or(JsonValue::Null, |value| JsonValue::Number(f64::from(value))),
+                version.map_or(JsonValue::Null, |value| {
+                    JsonValue::number_from_i64(i64::from(value))
+                }),
             );
             params.insert("diagnostics".to_string(), JsonValue::Array(values));
             self.send_notification(
@@ -885,11 +890,14 @@ impl Server {
     fn send_response<W: Write>(&self, response: &Response, writer: &mut W) -> std::io::Result<()> {
         let mut obj = HashMap::new();
         obj.insert("jsonrpc".to_string(), JsonValue::String("2.0".to_string()));
-        obj.insert("id".to_string(), JsonValue::Number(response.id as f64));
+        obj.insert("id".to_string(), JsonValue::number_from_i64(response.id));
 
         if let Some(error) = &response.error {
             let mut err_obj = HashMap::new();
-            err_obj.insert("code".to_string(), JsonValue::Number(error.code as f64));
+            err_obj.insert(
+                "code".to_string(),
+                JsonValue::number_from_i64(i64::from(error.code)),
+            );
             err_obj.insert(
                 "message".to_string(),
                 JsonValue::String(error.message.clone()),
@@ -950,10 +958,13 @@ impl Default for Server {
 
 fn lsp_position(line: u32, character: u32) -> JsonValue {
     let mut pos = HashMap::new();
-    pos.insert("line".to_string(), JsonValue::Number(f64::from(line)));
+    pos.insert(
+        "line".to_string(),
+        JsonValue::number_from_i64(i64::from(line)),
+    );
     pos.insert(
         "character".to_string(),
-        JsonValue::Number(f64::from(character)),
+        JsonValue::number_from_i64(i64::from(character)),
     );
     JsonValue::Object(pos)
 }
@@ -973,9 +984,9 @@ fn lsp_diagnostic(
     );
     value.insert(
         "severity".to_string(),
-        JsonValue::Number(match diagnostic.severity {
-            crate::diag::Severity::Error => 1.0,
-            crate::diag::Severity::Warning => 2.0,
+        JsonValue::number_from_i64(match diagnostic.severity {
+            crate::diag::Severity::Error => 1,
+            crate::diag::Severity::Warning => 2,
         }),
     );
     value.insert(
@@ -1027,11 +1038,13 @@ fn lsp_diagnostic(
         "sourceVersion".to_string(),
         diagnostic
             .source_version
-            .map_or(JsonValue::Null, |version| JsonValue::Number(version as f64)),
+            .map_or(JsonValue::Null, |version| {
+                JsonValue::number_from_i64(version)
+            }),
     );
     data.insert(
         "sourceId".to_string(),
-        JsonValue::Number(diagnostic.primary.source.as_u32() as f64),
+        JsonValue::number_from_i64(i64::from(diagnostic.primary.source.as_u32())),
     );
     let (source_kind, package) = match &primary.provenance {
         crate::analysis::SourceProvenance::Root { package } => ("root", package),
@@ -1127,7 +1140,7 @@ fn completion_item(candidate: &crate::analysis::CompletionCandidate) -> JsonValu
     );
     item.insert(
         "kind".to_string(),
-        JsonValue::Number(completion_kind(candidate.kind) as f64),
+        JsonValue::number_from_i64(i64::from(completion_kind(candidate.kind))),
     );
     if let Some(signature) = &candidate.signature {
         item.insert("detail".to_string(), JsonValue::String(signature.clone()));
@@ -1161,10 +1174,10 @@ fn signature_help_result(help: &crate::analysis::SignatureHelp) -> JsonValue {
         "signatures".to_string(),
         JsonValue::Array(vec![JsonValue::Object(signature)]),
     );
-    result.insert("activeSignature".to_string(), JsonValue::Number(0.0));
+    result.insert("activeSignature".to_string(), JsonValue::number_from_i64(0));
     result.insert(
         "activeParameter".to_string(),
-        JsonValue::Number(help.active_parameter as f64),
+        JsonValue::number_from_i64(help.active_parameter as i64),
     );
     JsonValue::Object(result)
 }
@@ -1184,7 +1197,7 @@ fn symbol_information(
     item.insert("name".to_string(), JsonValue::String(symbol.name.clone()));
     item.insert(
         "kind".to_string(),
-        JsonValue::Number(symbol_kind(symbol.kind) as f64),
+        JsonValue::number_from_i64(i64::from(symbol_kind(symbol.kind))),
     );
     item.insert("location".to_string(), location);
     Some(JsonValue::Object(item))
@@ -1263,13 +1276,17 @@ fn encode_semantic_tokens(
         if length == 0 {
             continue;
         }
-        encoded.push(JsonValue::Number(f64::from(delta_line)));
-        encoded.push(JsonValue::Number(f64::from(delta_start)));
-        encoded.push(JsonValue::Number(f64::from(length)));
-        encoded.push(JsonValue::Number(f64::from(semantic_token_type(
+        encoded.push(JsonValue::number_from_i64(i64::from(delta_line)));
+        encoded.push(JsonValue::number_from_i64(i64::from(delta_start)));
+        encoded.push(JsonValue::number_from_i64(i64::from(length)));
+        encoded.push(JsonValue::number_from_i64(i64::from(semantic_token_type(
             token.kind,
         ))));
-        encoded.push(JsonValue::Number(if token.declaration { 1.0 } else { 0.0 }));
+        encoded.push(JsonValue::number_from_i64(if token.declaration {
+            1
+        } else {
+            0
+        }));
         previous_line = range.start.line;
         previous_start = range.start.character;
     }
@@ -1792,8 +1809,8 @@ mod tests {
             (
                 "position".to_string(),
                 JsonValue::Object(HashMap::from([
-                    ("line".to_string(), JsonValue::Number(1.0)),
-                    ("character".to_string(), JsonValue::Number(12.0)),
+                    ("line".to_string(), JsonValue::number_from_i64(1)),
+                    ("character".to_string(), JsonValue::number_from_i64(12)),
                 ])),
             ),
         ]));
@@ -2022,7 +2039,10 @@ mod tests {
         let result = response
             .result
             .expect("signature help must return a result");
-        assert_eq!(result.get("activeParameter"), Some(&JsonValue::Number(1.0)));
+        assert_eq!(
+            result.get("activeParameter"),
+            Some(&JsonValue::number_from_i64(1))
+        );
         let JsonValue::Array(signatures) = result
             .get("signatures")
             .expect("signature help must include signatures")
@@ -2052,7 +2072,10 @@ mod tests {
 
         let nested = server.handle_signature_help(7, &text_position_params(uri, 2, 28));
         let nested = nested.result.expect("nested signature help must return");
-        assert_eq!(nested.get("activeParameter"), Some(&JsonValue::Number(1.0)));
+        assert_eq!(
+            nested.get("activeParameter"),
+            Some(&JsonValue::number_from_i64(1))
+        );
         let JsonValue::Array(signatures) = nested
             .get("signatures")
             .expect("nested signature help must include signatures")
@@ -2457,8 +2480,11 @@ mod tests {
         let mut document = HashMap::new();
         document.insert("uri".to_string(), JsonValue::String(uri.to_string()));
         let mut position = HashMap::new();
-        position.insert("line".to_string(), JsonValue::Number(line as f64));
-        position.insert("character".to_string(), JsonValue::Number(character as f64));
+        position.insert("line".to_string(), JsonValue::number_from_i64(line));
+        position.insert(
+            "character".to_string(),
+            JsonValue::number_from_i64(character),
+        );
         let mut params = HashMap::new();
         params.insert("textDocument".to_string(), JsonValue::Object(document));
         params.insert("position".to_string(), JsonValue::Object(position));
@@ -2575,19 +2601,19 @@ mod tests {
         let end = range.get("end").expect("range must include end");
         assert_eq!(
             start.get("line"),
-            Some(&JsonValue::Number(f64::from(start_line)))
+            Some(&JsonValue::number_from_i64(i64::from(start_line)))
         );
         assert_eq!(
             start.get("character"),
-            Some(&JsonValue::Number(f64::from(start_character)))
+            Some(&JsonValue::number_from_i64(i64::from(start_character)))
         );
         assert_eq!(
             end.get("line"),
-            Some(&JsonValue::Number(f64::from(end_line)))
+            Some(&JsonValue::number_from_i64(i64::from(end_line)))
         );
         assert_eq!(
             end.get("character"),
-            Some(&JsonValue::Number(f64::from(end_character)))
+            Some(&JsonValue::number_from_i64(i64::from(end_character)))
         );
     }
 

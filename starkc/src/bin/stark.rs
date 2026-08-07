@@ -849,33 +849,9 @@ fn print_doctor_json(
     println!("}}");
 }
 
-/// DEV-184: escaped only `\`, `"` and newline, so a TAB in an install path — legal on every POSIX
-/// filesystem — put a raw control character inside a JSON string and `stark doctor --json` emitted
-/// a document a conforming parser rejects.
+/// AS5-f: delegates to the compiler's one escaping authority (DEV-184).
 fn json_escape(input: &str) -> String {
-    let mut out = String::new();
-    for character in input.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            // DEV-184: every remaining C0 control. RFC 8259 §7 requires U+0000-U+001F to be
-            // escaped; leaving them raw produced documents no conforming parser accepts.
-            character if character <= '\u{1f}' => {
-                out.push_str("\\u");
-                for shift in [12, 8, 4, 0] {
-                    let nibble = (character as u32 >> shift) & 0xf;
-                    out.push(char::from_digit(nibble, 16).expect("nibble is < 16"));
-                }
-            }
-            character => out.push(character),
-        }
-    }
-    out
+    starkc::json::escape(input)
 }
 
 /// WP-C7.3. One `cache` command with two verbs rather than two top-level commands — the smallest
