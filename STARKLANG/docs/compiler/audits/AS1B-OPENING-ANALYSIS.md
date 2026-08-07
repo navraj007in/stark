@@ -3,7 +3,9 @@
 **Packet:** AS1b, executing `WP-SPAN-SOURCEID.md` through AS2's single pipeline.
 **Sprint:** 2 of 4. **Branch:** `wp-arch-stability/sprint-2`, built on Sprint 1.
 **Date:** 2026-08-06.
-**Status:** analysis complete; **implementation not started, and a decision is requested first.**
+**Status:** AS1b-i **complete** (`470d5ff`). AS1b-ii **in progress** — the decision was taken
+(option 2, split; `RegisteredSource` handle), and §4 below records the scope correction the work
+produced.
 
 `WP-SPAN-SOURCEID.md` §6 names the risk precisely: "the change is easy to make *compile* while
 threading a plausible-but-wrong `SourceId` at some sites, reproducing DEV-122 with better types." So
@@ -111,3 +113,59 @@ Acceptance criterion 3 — "a diagnostic whose span belongs to a dependency rend
 dependency, in both compile-time and runtime paths" — should be committed as a test **before** any
 of it, in whichever option is chosen. The probes in F2 are that test's content; they currently pass,
 which makes them a regression guard for the refactor rather than a reproduction.
+
+
+---
+
+## 4. Scope correction (2026-08-07)
+
+**AS1b is larger than `WP-SPAN-SOURCEID.md` estimated, and larger than this analysis estimated.**
+Recorded here as a correction, not as an argument to abandon the invariant.
+
+### What the packet said, and what is true
+
+| Claim | Reality |
+| --- | --- |
+| `SourceId` "already exists … a substantial part of the groundwork" | true of the type; its **allocation ran after the front end**. AS1b-i, a whole packet |
+| "`Span` gains a `SourceId`; construction sites supply it" | 61 sites by my first count. **75** — the first grep missed multi-line `Span {` literals |
+| Risk is "threading a plausible-but-wrong `SourceId`" | real, and the `RegisteredSource` handle now makes it unrepresentable rather than discouraged |
+| — not mentioned at all — | **~20 sites are a `Span { lo: 0, hi: 0 }` "no location" sentinel.** Making spans carry a source forces a modelling decision the packet never raised |
+| — not mentioned at all — | **`item_files` must migrate from `Arc<SourceFile>` to `SourceId`** (38 references), because the interpreter re-points at a declaring file per item (DEV-069, DEV-088) and needs registered identity to do it |
+| — not mentioned at all — | **64 test files** call `interp::run` or `lower_program` with an `Arc<SourceFile>` |
+
+### The `RegisteredSource` decision
+
+`SourceId` is **not** stored on `SourceFile`: a file is bytes with a name and is reusable across
+sessions, while an id is registry-local and means nothing outside the compilation that minted it.
+Identity is carried by `RegisteredSource { id, file }` — private fields, no public constructor, only
+`SourceRegistry::intern` builds one. Holding one is proof this compilation registered it. There is
+no sentinel and no fabricated id anywhere in the change.
+
+Components that scan rather than compile — format-literal scanning, documentation extraction —
+derive identity from the source-bearing span or AST they are handed, not from a separately threaded
+parameter. The standalone syntax highlighter owns a one-file registry, so its id is real and
+registered rather than invented.
+
+### AS1b-ii, split into local checkpoints
+
+Each is independently reviewable and leaves a compiling tree.
+
+| # | Checkpoint | State |
+| ---: | --- | --- |
+| ii-a | `Span` carries `SourceId`; `RegisteredSource`; lexer, parser, analysis, formatter, doc-gen, format-scanning, tensor, deploy, MIR lowering threaded | **in progress** — 21 lib errors remain, all in the interpreter and its callers |
+| ii-b | `item_files: ItemId -> SourceId`; the interpreter takes the registry and drops per-frame `Arc` swapping | not started — **this is what ii-a is currently blocked on** |
+| ii-c | Test-call migration (64 files) | not started |
+| ii-d | `resolve_span` total; delete `SpanResolutionError`; remove DEV-122's interim guard (acceptance 2 and 4) | not started |
+| ii-e | Dependency-file behavioural tests at each AST/HIR/MIR/runtime boundary | `as1b_span_provenance.rs` covers compile-time and HIR runtime; MIR and native boundaries outstanding |
+
+### Two findings the work produced
+
+**Synthetic spans block acceptance criterion 4.** Dependency `mod` items get spans at
+`0x8000_0000+`, deliberately outside any real file, keyed in `ast.synthetic_spans`. Those are
+precisely the out-of-range case CD-309's guard catches — so the guard cannot simply be deleted in
+ii-d until synthetic spans are handled. The packet assumes deletion is free.
+
+**The per-frame file swap is the duplication this change removes.** `interp.rs` records "the file
+that DECLARES this body" per frame (DEV-069) and swaps it per constant (DEV-088), because spans
+cannot say which file they index. Once they can, that machinery has nothing left to decide — which
+is the clearest statement of why the invariant is worth finishing.
