@@ -5149,3 +5149,43 @@ enum RequestId { Number(JsonNumber), String(String) }
 
 **echoing the id exactly as received** rather than interpreting it, which is what JSON-RPC requires
 of a server. Recorded here so it is not lost; it needs its own packet.
+
+---
+
+## DEV-186 — the LSP transport allocates an unbounded `Content-Length` before parsing (OPEN)
+
+- **Status:** OPEN, registered rather than repaired. Found during AS5's CE9 review of the JSON
+  nesting limit; **not AS5's to fix** — see "Why this is not AS5" below.
+- **Where:** `src/lsp/server.rs:60-63`.
+
+```rust
+if let Some(content_length_str) = headers.get("Content-Length") {
+    if let Ok(content_length) = content_length_str.parse::<usize>() {
+        let mut content = vec![0u8; content_length];   // ← no bound
+        reader.read_exact(&mut content)?;
+```
+
+- **Symptom:** a peer that advertises `Content-Length: 9999999999999` causes an allocation of that
+  size **before any byte of the body is read and before the JSON parser is reached**. On a 64-bit
+  host the request either aborts the process on allocation failure or drives it into swap.
+- **Cause:** the framing layer trusts a header field. `usize` parsing bounds the *number*, not the
+  *allocation*, and `read_exact` into a pre-sized buffer commits the memory first.
+- **Why AS5's `MAX_DEPTH` does not cover it:** the two limits protect different things and belong to
+  different authorities.
+
+  | Limit | Protects | Owner |
+  | --- | --- | --- |
+  | `json::MAX_DEPTH` (128) | the stack, against recursive descent | the shared JSON parser |
+  | `Content-Length` cap | total allocation, before parsing | the LSP transport/framing layer |
+
+  A depth limit cannot help here: the parser never runs.
+- **Why this is not AS5:** AS5 consolidates JSON *parsing and escaping* authority. Message framing
+  is the transport's contract, and widening the packet to cover it would repeat the mistake the
+  string-request-id note already refuses — turning a parser consolidation into an LSP redesign.
+- **Repair shape, when taken:** a maximum message size checked at the framing layer **before**
+  allocating, with a deterministic protocol error for anything larger, and incremental reads rather
+  than one pre-sized buffer. It belongs with the request-id work in an LSP hardening packet.
+- **Security/soundness impact:** availability only, on a surface that reads from a socket or a pipe.
+  No memory-safety consequence — the allocation is safe Rust — and no compiler consequence: nothing
+  outside the language server reaches this path.
+- **Owning gate:** compiler track; awaiting an LSP hardening packet.

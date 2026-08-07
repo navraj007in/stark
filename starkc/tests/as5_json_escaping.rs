@@ -55,18 +55,34 @@ fn the_onnx_report_escapes_every_control_character() {
     );
 }
 
-/// `stark doctor --json` on an install root whose path contains a TAB — legal on every POSIX
-/// filesystem. The command advertises machine-readable output; before the repair it produced a
-/// document a conforming parser rejects.
+/// `stark doctor --json` must emit a document a conforming parser accepts, even when a string it
+/// reports carries a control character.
+///
+/// **The control character arrives through the manifest, not through the path.** The first version
+/// of this test put a TAB in a directory name — legal on POSIX, and `InvalidFilename` on Windows,
+/// where it failed the CI lane and proved nothing. Carrying it in the manifest's `version` field is
+/// portable and tests more: the escape is decoded on the way in by the strict parser and must be
+/// re-escaped on the way out, so this exercises the round trip through the real binary.
 #[test]
-fn doctor_json_is_parseable_when_the_install_path_contains_a_control_character() {
+fn doctor_json_is_parseable_when_a_reported_string_contains_a_control_character() {
     let exe = env!("CARGO_BIN_EXE_stark");
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let root = std::env::temp_dir().join(format!("as5\tdoctor_{}_{nanos}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("as5_doctor_{}_{nanos}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
+
+    // `\u0001` is a legal JSON escape; the value it denotes is a raw control character, which the
+    // emitter must escape again rather than copy through.
+    let backslash = char::from(92u8);
+    std::fs::write(
+        root.join("manifest.json"),
+        format!(
+            r#"{{"stark_version":"1.2.3{backslash}u0001dev","host_target":"x86_64-unknown-linux-gnu","files":[]}}"#
+        ),
+    )
+    .unwrap();
 
     let output = std::process::Command::new(exe)
         .args(["doctor", "--json", "--root"])
@@ -77,11 +93,9 @@ fn doctor_json_is_parseable_when_the_install_path_contains_a_control_character()
     let _ = std::fs::remove_dir_all(&root);
 
     assert!(
-        stdout.contains("install_root"),
-        "the probe must actually reach the JSON writer; got:\n{stdout}"
+        stdout.contains("\"version\""),
+        "the probe must reach the JSON writer with a manifest in hand; got:\n{stdout}"
     );
-    // The document is a sequence of JSON strings among structure; a raw control character anywhere
-    // outside the newlines this writer emits between fields is the defect.
     let offending: Vec<u32> = stdout
         .lines()
         .flat_map(|line| line.chars())

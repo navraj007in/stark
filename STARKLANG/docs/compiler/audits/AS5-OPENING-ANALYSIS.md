@@ -126,6 +126,88 @@ it should, and `a11_host_resource::the_mir_version_records_every_shape_amendment
 but not the *shape it describes*. The A14 history in that constant's own doc comment records two
 surface additions that shipped without advancing it.
 
-The packet permits either a deterministic schema fingerprint or an exact-set test. An exact-set test
-over the `RuntimeFn` members and the `Statement`/`Terminator`/`MirTy` variant names is the smaller
-change and fails for the right reason: adding a variant without touching the identity breaks it.
+The packet permits either a deterministic schema fingerprint or an exact-set test.
+
+**This section originally recommended the exact-set test for both constants, over the `RuntimeFn`
+members and the `Statement`/`Terminator`/`MirTy` variant names. That recommendation was wrong and is
+superseded** — owner review caught it before implementation. An exact set of variant names **would
+not have moved for AS1b-iii**, the change that caused the most recent `MIR_VERSION` increment:
+removing `SourceInfo.file` and `MirProgram.files`, introducing `MirProgram.sources` and eliminating
+`FileId` touches no variant name at all. A guard that cannot see its own most recent trigger is
+theatre.
+
+What was built instead gives the two constants two mechanisms, matching what each one means:
+
+| Constant | Identifies | Mechanism |
+| --- | --- | --- |
+| `MIR_RUNTIME_SURFACE` | the set of runtime **operations** | exact canonical set of `RuntimeFn` members |
+| `MIR_VERSION` | the structural **shape** of the model | schema fingerprint over every public type's variant names, payload shapes, field names and field types |
+
+The fingerprint is computed over extracted *declarations*, not source text: hashing `mir/mod.rs`
+would make a comment edit or a `rustfmt` run read as a compatibility change, and those types carry
+doc comments that are edited constantly.
+
+`tests/as5_compatibility_identity.rs` mutation-tests the guard against its own source **in memory**,
+because mutating `mir/mod.rs` on disk stops the crate compiling — the test binary never runs, and a
+broken guard would look identical to a working one. Six shape changes move the fingerprint
+(including AS1b-iii in both directions, a field rename with no variant touched, and a field type
+change); three non-shape edits do not.
+
+
+---
+
+## 6. CE9 record — the three parsing decisions taken (2026-08-07)
+
+Exit criterion 5 asks that security-sensitive parsing decisions receive CE9 review. Three were
+taken. All three narrow what the toolchain accepts, and all three are recorded here as decisions
+rather than as consequences of replacing a parser.
+
+### CE9-1 — `starkpkg.json` rejects trailing commas and leading-zero numbers
+
+**Decision:** ACCEPT the tightening. **Authority:** the shared JSON parser, applied to manifests.
+
+A manifest is a durable configuration contract; accepting non-JSON syntax creates compatibility debt
+for no benefit. `AS0-MANIFEST-STRICTNESS-AUDIT.md` §5 established that every first-party manifest is
+already strict-clean, so this narrows what *third-party* manifests may contain rather than requiring
+a repository migration. Verified by checking all 41 first-party packages under the new parser: all
+pass.
+
+### CE9-2 — the LSP transport rejects trailing input after the JSON value
+
+**Decision:** ACCEPT the tightening. **Authority:** the shared JSON parser, applied to JSON-RPC.
+
+A JSON-RPC frame contains exactly one JSON value. Accepting `{"jsonrpc":"2.0",...} garbage` weakens
+framing and hides malformed clients — the remainder simply vanished. C8's protocol baseline already
+expected the rejection, so this makes the implementation match the contract it was written against.
+
+### CE9-3 — JSON nesting is bounded at 128
+
+**Decision:** ACCEPT `MAX_DEPTH = 128`, unconfigurable. **Authority:** the shared JSON parser.
+
+| | |
+| --- | --- |
+| **Reason** | A resource/safety property of recursive descent, not consumer-specific document semantics. The recursion happens inside the shared authority, so the authority that owns the recursion must guarantee that adversarial input produces a `JsonError` rather than stack exhaustion. |
+| **Behaviour** | depth ≤ 128 — accepted subject to normal JSON validity; depth > 128 — deterministic `JsonError`; **no stack-overflow or abort path**. Only arrays and objects consume depth. |
+| **Value** | The measured maximum in a first-party manifest is 3. An LSP structure approaching 128 levels would already be pathological. |
+| **Compatibility** | Implementation-defined under RFC 8259 §9. JSONTestSuite's `i_structure_500_nested_arrays` is an externally sourced boundary case and its rejection is pinned. |
+| **Not configurable** | A `parse_with_limits()` API would create policy surface with no demonstrated consumer needing deeper JSON. If one appears, that is when configuration is justified. |
+
+### Registered, not decided here
+
+- **DEV-186 — the LSP transport allocates an unbounded `Content-Length` before parsing.** Found
+  during this review. `MAX_DEPTH` cannot help: the allocation happens before the parser runs. A
+  framing-layer cap belongs to an LSP hardening packet, with the request-id work.
+- **The LSP request-id model** (DEV-185's adjacent note): string ids and non-`i64` numeric ids are
+  refused. Also transport, also not AS5.
+
+---
+
+## 7. Forward note for AS7
+
+`tests/as5_compatibility_identity.rs` derives the MIR schema fingerprint by reading declarations
+from **`src/mir/mod.rs`**, which is correct today because that file is the MIR data-model authority.
+
+**AS7 modularises passes and files.** If a schema-bearing MIR type moves into a submodule without the
+fingerprint's canonical input set being widened to follow it, the guard silently stops covering that
+type — it would keep passing, over a smaller model. That is not a defect in `96b5cbb`; it is a
+migration invariant, and it belongs on the AS7 checklist.
