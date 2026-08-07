@@ -5192,9 +5192,13 @@ if let Some(content_length_str) = headers.get("Content-Length") {
 
 ---
 
-## DEV-187 — bound specialisation does not reach generic impls (OPEN)
+## DEV-187 — bound specialisation did not reach generic impls (CLOSED, AS3 Boundary 4)
 
-- **Status:** OPEN. Found by AS3 Boundary 4d's negative control, on its first run.
+- **Status:** **CLOSED.** Found by AS3 Boundary 4d's negative control on its first run; closed by
+  passing the concrete `Self` from both engines. All four impl×member pairs now resolve through the
+  shared specialiser.
+- **The compiler defect was real and is fixed.** The *residual* after the fix was a defect in the
+  control itself — see "How this was mis-diagnosed twice" below, which is the part worth reading.
 - **Not a wrong-answer defect.** Programs still produce correct output; both engines fall back to
   their pre-existing scans, which is what they did before AS3. The defect is that the shared
   authority is bypassed exactly where it is most needed.
@@ -5251,3 +5255,27 @@ That inference was unsound and produced a confident wrong answer in a permanent 
   resolutions succeed; when the repair lands, that count rises and the test demands this record be
   updated.
 - **Owning gate:** compiler track, AS3 Boundary 4 (`WP-CALLABLE-USE-TOTAL.md`).
+
+### How this was mis-diagnosed twice
+
+Worth recording, because the failure was in reasoning rather than in code.
+
+1. **Fix applied** — both engines pass the concrete `Self` with arguments (`5fb8811`). Correct, and
+   it *was* the whole compiler-side defect.
+2. **Control still showed 2/4.** Concluded the cause was index-side: `convert_hir_type` called
+   outside the impl's generic scope. **Wrong** — a probe showed the index stores
+   `Struct(W2, [Param("T")])` correctly. Retracted in `d749612`.
+3. **Fixed a real latent bug anyway** — the specialiser's member lookup used `?`, abandoning the
+   whole search when the first head-matching impl lacked the member, instead of `continue`. Correct
+   in itself, but not this cause.
+4. **Probed the actual inputs.** The *test* was passing `Struct(W2, [])` — the bare head — because
+   its self-type mapping had been reverted when I restored an earlier pinned state. The control was
+   lying about its own inputs.
+
+**The lesson is step 2.** "The fix had no effect" is evidence that *something else* is wrong; it is
+not evidence of *what*. Both wrong diagnoses came from inferring a cause instead of measuring one,
+and the measurement that settled it — printing the values actually passed — was cheaper than either
+inference.
+
+A control that misreports its own inputs is worse than no control: it produced two confident wrong
+conclusions, one of which reached a permanent record before being retracted.

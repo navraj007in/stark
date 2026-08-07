@@ -1049,8 +1049,16 @@ fn both_engines_resolve_a_bound_call_identically() {
         .iter()
         .filter(|i| i.trait_ == Some(bound))
         .map(|i| match &i.self_ty {
-            // The form BOTH engines pass: the bare nominal head.
-            starkc::typecheck::Ty::Struct(id, _) => starkc::typecheck::Ty::Struct(*id, Vec::new()),
+            // The form both engines pass after DEV-187's call-site repair: the CONCRETE self
+            // type, arguments included. `impl<T> Describe for W2<T>` is exercised at `W2<Int32>`.
+            starkc::typecheck::Ty::Struct(id, args) if !args.is_empty() => {
+                starkc::typecheck::Ty::Struct(
+                    *id,
+                    vec![starkc::typecheck::Ty::Primitive(
+                        starkc::ast::Primitive::Int32,
+                    )],
+                )
+            }
             other => other.clone(),
         })
         .collect();
@@ -1102,35 +1110,17 @@ fn both_engines_resolve_a_bound_call_identically() {
             }
         }
     }
-    // **FINDING (2026-08-07): the generic impl does not resolve at all.**
+    // **DEV-187 CLOSED.** Every impl x member pair resolves through the shared specialiser:
+    // both members on the concrete impl, and both on the generic `impl<T> Describe for W2<T>`.
     //
-    // `impl<T> Describe for W2<T>` has `self_ty = Struct(W2, [Param("T")])`, and both engines pass
-    // the bare nominal head `Struct(W2, [])`. The argument lists differ in length, so
-    // `unify_impl_ty_with` refuses and the specialiser returns `None` — after which BOTH engines
-    // silently fall back to their old scans.
-    //
-    // So for generic impls, 4c and 4d are not in force. The interpreter cannot fix this alone —
-    // `Value` carries no type arguments — which is precisely why this control compares resolutions
-    // rather than observable output: the program still prints the right thing.
-    //
-    // Recorded as DEV-187 rather than absorbed. Weakening the threshold to make this pass would
-    // hide the gap the control exists to expose.
-    // **DEV-187 remains OPEN. Two diagnoses have been tried and both were wrong.**
-    //
-    // Both engines now pass the CONCRETE `Self` including arguments — `W2<Int32>`, not `W2` — and
-    // the generic impl still does not resolve. A probe inside `build_trait_impl_index` then showed
-    // the index DOES store `Struct(W2, [Param("T")])`, so the second diagnosis (a degenerate stored
-    // head) was wrong too.
-    //
-    // What remains unexamined: the specialiser's candidate loop, and how this test constructs the
-    // concrete `Self` it passes. Note the `?` on the member lookup exits the whole function rather
-    // than continuing to the next candidate — worth checking before anything else.
-    //
-    // Pinned at 2 rather than weakened to pass: this is the count that is TRUE.
+    // The compiler half was the call-site repair — passing the concrete `Self` including its type
+    // arguments. The residual was THIS TEST: it kept passing the bare nominal head `W2`, so the
+    // generic impl could never unify, and two subsequent diagnoses of a compiler cause were both
+    // wrong. A control that lies about its own inputs is worse than no control.
     assert_eq!(
-        compared, 2,
-        "expected exactly the two NON-generic resolutions; DEV-187 is open — see the note above \
-         for the refined diagnosis"
+        compared, 4,
+        "every impl x member pair must resolve — a generic impl silently failing, with both \
+         engines falling back to their old scans, was DEV-187"
     );
 
     // And the program still produces the right answers through the HIR engine.
