@@ -6357,6 +6357,47 @@ impl<'a> FnLowerer<'a> {
         Ok(Operand::Copy(Place::local(result)))
     }
 
+    /// Resolve a published `Bound` obligation to a `FnKey` (AS3 Boundary 4d).
+    ///
+    /// `Self` is concrete here — monomorphisation has fixed it — so the specialiser answers, and
+    /// MIR asks the same authority the interpreter does.
+    fn specialised_bound_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let ids = self.tables.callable_uses_by_expr.get(&call_expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| matches!(u.selection, crate::typecheck::CalleeSelection::Bound { .. }))?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            trait_args,
+            method_args,
+            ..
+        } = &use_.selection
+        else {
+            return None;
+        };
+        // The concrete `Self`, as a checker `Ty`. Argument types are dropped here for the same
+        // reason the interpreter drops them: the index matches on the impl head. Restoring them is
+        // what the 4d negative control exists to force, if it proves necessary.
+        let self_ty = crate::typecheck::Ty::Struct(nominal, Vec::new());
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        self.fn_key_for_body(resolved.body, nominal_args)
+    }
+
     /// The `FnKey` for a body the checker already selected, plus the receiver form.
     ///
     /// **AS3 Boundary 3: a lookup keyed on the checker's answer, not a selection.** `find_impl_fn`
@@ -6719,9 +6760,15 @@ impl<'a> FnLowerer<'a> {
         // DEV-BOUND-TRAIT-IDENTITY: if the checker resolved this call through a generic
         // parameter's bound, it recorded the trait; select that trait's impl and no other.
         let bound_trait = self.tables.bound_trait_calls.get(&call_expr).copied();
-        let Some((key, receiver)) =
-            self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait)
-        else {
+        // **AS3 Boundary 4d: consume the shared bound specialiser.**
+        //
+        // Unlike the interpreter, MIR carries the receiver's full `MirTy` including its arguments —
+        // which is why the negative control compares ResolvedCallable ENVIRONMENTS across the two
+        // engines and not merely their bodies.
+        let specialised = self
+            .specialised_bound_key(call_expr, nominal, &nominal_args)
+            .or_else(|| self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait));
+        let Some((key, receiver)) = specialised else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
         // WP-C4.7-8.4: attach this call site's METHOD-level generic arguments. `find_impl_fn`

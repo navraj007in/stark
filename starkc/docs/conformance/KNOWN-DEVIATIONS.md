@@ -5189,3 +5189,41 @@ if let Some(content_length_str) = headers.get("Content-Length") {
   No memory-safety consequence — the allocation is safe Rust — and no compiler consequence: nothing
   outside the language server reaches this path.
 - **Owning gate:** compiler track; awaiting an LSP hardening packet.
+
+---
+
+## DEV-187 — bound specialisation does not reach generic impls (OPEN)
+
+- **Status:** OPEN. Found by AS3 Boundary 4d's negative control, on its first run.
+- **Not a wrong-answer defect.** Programs still produce correct output; both engines fall back to
+  their pre-existing scans, which is what they did before AS3. The defect is that the shared
+  authority is bypassed exactly where it is most needed.
+
+`impl<T> Describe for W2<T>` has `self_ty = Struct(W2, [Param("T")])`. Both engines pass the **bare
+nominal head** `Struct(W2, [])` to `specialize_bound_callable`, the argument lists differ in length,
+`unify_impl_ty_with` refuses, and the specialiser returns `None` — after which each engine silently
+falls back:
+
+| Engine | Falls back to |
+| --- | --- |
+| HIR interpreter | `find_method(nominal, name, trait_filter)` |
+| MIR lowering | `find_impl_fn(nominal, name, …, bound_trait)` |
+
+So for generic impls, Boundary 4c and 4d are **not in force**, and `find_method`/`find_impl_fn`
+cannot be deleted while that is true.
+
+- **Why the interpreter cannot fix this alone:** `Value::Struct { item, fields }` carries **no type
+  arguments** (established by `AS3-DISPLAY-CHARACTERIZATION.md` §2.2). It has no concrete `W2<Int32>`
+  to pass. The type is recoverable from the caller's generic frame via `concrete_runtime_ty`, which
+  already substitutes through `typecheck::substitute_ty` — so the repair is threading that, not
+  changing the runtime representation.
+- **MIR does not have the limitation:** it carries the receiver's full `MirTy` with arguments and
+  currently discards them at this call. Its repair is smaller.
+- **Why this was invisible until now:** the program prints the right answers, so no behavioural test
+  could see it. The negative control compares **resolutions**, not output, which is the only reason
+  it surfaced — and it surfaced on the first run.
+- **Repair:** pass the concrete `Self` including arguments from both engines. Pinned meanwhile by
+  `both_engines_resolve_a_bound_call_identically`, which asserts exactly the two non-generic
+  resolutions succeed; when the repair lands, that count rises and the test demands this record be
+  updated.
+- **Owning gate:** compiler track, AS3 Boundary 4 (`WP-CALLABLE-USE-TOTAL.md`).

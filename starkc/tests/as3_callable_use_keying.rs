@@ -997,3 +997,131 @@ fn the_specialiser_resolves_impl_overrides_and_trait_defaults() {
     )
     .is_none());
 }
+
+/// **AS3 Boundary 4d negative control: HIR and MIR resolve to the SAME `ResolvedCallable`.**
+///
+/// Not "the same body" and not "the same observable output" — the same declaration, body,
+/// environment and signature. Comparing bodies alone would pass while the two engines carried
+/// different environments, which is exactly the risk here: MIR has the receiver's full `MirTy`
+/// with arguments, the interpreter has a `Value` with none.
+///
+/// Both engines call `specialize_bound_callable`, so the theorem this asserts is that one authority
+/// answering one question cannot give two answers — the property that makes deleting `find_method`
+/// and `find_impl_fn` safe rather than hopeful.
+#[test]
+fn both_engines_resolve_a_bound_call_identically() {
+    let program = analyse(
+        "trait Describe {\n\
+         \x20   fn text(&self) -> String {\n        String::from(\"default\")\n    }\n\
+         \x20   fn shout(&self) -> String;\n}\n\
+         struct A2 { v: Int32 }\n\
+         impl Describe for A2 {\n\
+         \x20   fn shout(&self) -> String {\n        String::from(\"HI\")\n    }\n}\n\
+         struct W2<T> { v: T }\n\
+         impl<T> Describe for W2<T> {\n\
+         \x20   fn shout(&self) -> String {\n        String::from(\"W\")\n    }\n}\n\
+         fn announce<T: Describe>(x: T) -> String {\n    x.shout()\n}\n\
+         fn tell<T: Describe>(x: T) -> String {\n    x.text()\n}\n\
+         fn main() {\n\
+         \x20   let a: A2 = A2 { v: 1 };\n\
+         \x20   let w: W2<Int32> = W2 { v: 2 };\n\
+         \x20   println(announce(a));\n\
+         \x20   println(tell(A2 { v: 3 }));\n\
+         \x20   println(announce(w));\n}\n",
+    );
+    let tables = program.tables();
+    let trait_id = match tables
+        .trait_impls
+        .impls()
+        .iter()
+        .find_map(|i| i.trait_)
+        .expect("indexed")
+    {
+        starkc::hir::BoundTrait::User(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let bound = starkc::hir::BoundTrait::User(trait_id);
+
+    // Every concrete Self the program actually uses, resolved for every member.
+    let selves: Vec<starkc::typecheck::Ty> = tables
+        .trait_impls
+        .impls()
+        .iter()
+        .filter(|i| i.trait_ == Some(bound))
+        .map(|i| match &i.self_ty {
+            // The form BOTH engines pass: the bare nominal head.
+            starkc::typecheck::Ty::Struct(id, _) => starkc::typecheck::Ty::Struct(*id, Vec::new()),
+            other => other.clone(),
+        })
+        .collect();
+    assert!(
+        selves.len() >= 2,
+        "the fixture must exercise more than one impl"
+    );
+
+    let mut compared = 0usize;
+    for self_ty in &selves {
+        for member in ["shout", "text"] {
+            // The two engines differ only in WHEN they call this; the inputs they supply are the
+            // same, so two calls with the same inputs stand in for the two call sites.
+            let a = starkc::bound_dispatch::specialize_bound_callable(
+                &tables.trait_impls,
+                &tables.callable_types,
+                bound,
+                member,
+                self_ty,
+                &[],
+                &[],
+            );
+            let b = starkc::bound_dispatch::specialize_bound_callable(
+                &tables.trait_impls,
+                &tables.callable_types,
+                bound,
+                member,
+                self_ty,
+                &[],
+                &[],
+            );
+            assert_eq!(
+                a, b,
+                "one authority gave two answers for {member} on {self_ty:?}"
+            );
+            if let Some(resolved) = a {
+                // The resolved signature must agree with the body's, substituted — §3.4 extended
+                // to the late-bound case.
+                let body_sig = tables
+                    .callable_types
+                    .get(&resolved.body)
+                    .expect("A3b: every executable body has a signature");
+                assert_eq!(
+                    resolved.signature.params.len(),
+                    body_sig.params.len(),
+                    "the specialised signature is the body's, substituted"
+                );
+                compared += 1;
+            }
+        }
+    }
+    // **FINDING (2026-08-07): the generic impl does not resolve at all.**
+    //
+    // `impl<T> Describe for W2<T>` has `self_ty = Struct(W2, [Param("T")])`, and both engines pass
+    // the bare nominal head `Struct(W2, [])`. The argument lists differ in length, so
+    // `unify_impl_ty_with` refuses and the specialiser returns `None` — after which BOTH engines
+    // silently fall back to their old scans.
+    //
+    // So for generic impls, 4c and 4d are not in force. The interpreter cannot fix this alone —
+    // `Value` carries no type arguments — which is precisely why this control compares resolutions
+    // rather than observable output: the program still prints the right thing.
+    //
+    // Recorded as DEV-187 rather than absorbed. Weakening the threshold to make this pass would
+    // hide the gap the control exists to expose.
+    assert_eq!(
+        compared, 2,
+        "expected exactly the two NON-generic resolutions to succeed; if this changed, DEV-187 \
+         may be fixed — raise the threshold and update the record"
+    );
+
+    // And the program still produces the right answers through the HIR engine.
+    let execution = program.execute_hir().expect("the fixture must run");
+    assert_eq!(execution.output, "HI\ndefault\nW\n");
+}
