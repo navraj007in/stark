@@ -267,10 +267,15 @@ fn parse_package_rec(
             overlays,
         )?;
 
-        let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
-        let synthetic_hi = synthetic_lo + dep_name.len() as u32;
-        let name_span = Span::in_source(entry_registered.id(), synthetic_lo, synthetic_hi);
-        ast.synthetic_spans.insert(name_span, dep_name.clone());
+        // AS1b-ii-d: a dependency-package `mod` wrapper has no source text — the compiler
+        // synthesises it. Its NAME used to be encoded as a fake span at `lo >= 0x8000_0000`, keyed
+        // into a side table, which made a name pretend to be a location: every consumer of a span
+        // then had to know that some spans index no file. That is the one thing standing between
+        // span→location resolution and totality.
+        //
+        // The name is now recorded against the ITEM, and the span is a real, zero-width position at
+        // the start of the entry that declares the dependency. Nothing has to special-case it.
+        let name_span = Span::point_in(entry_registered.id(), 0);
 
         let mod_item_id = ast.alloc_item(
             ItemKind::Mod {
@@ -280,6 +285,7 @@ fn parse_package_rec(
             Some(Vis::Pub),
             name_span,
         );
+        ast.synthetic_names.insert(mod_item_id, dep_name.clone());
 
         let entry_registered = ast.sources.intern(entry_file.clone());
         ast.item_sources.insert(mod_item_id, entry_registered.id());

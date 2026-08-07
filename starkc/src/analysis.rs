@@ -523,7 +523,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         .unwrap_or_default();
     let symbols = hir
         .as_ref()
-        .map(|hir| build_symbols(id, hir, &ast, &source_map))
+        .map(|hir| build_symbols(id, hir, &source_map))
         .unwrap_or_default();
     let queries = query::QueryIndex::build(id, &ast, hir.as_ref(), &source_map, &symbols);
 
@@ -644,7 +644,10 @@ fn build_resolutions(analysis: u64, hir: &Hir) -> ResolutionTables {
     tables
 }
 
-fn build_symbols(analysis: u64, hir: &Hir, ast: &Ast, sources: &SourceMap) -> SymbolIndex {
+/// AS1b-ii-d: the AST parameter is gone. It was here only so a synthesised item's name could be
+/// looked up by SPAN in `ast.synthetic_spans`; names are keyed by item on the HIR now, so the
+/// symbol builder needs one tree instead of two.
+fn build_symbols(analysis: u64, hir: &Hir, sources: &SourceMap) -> SymbolIndex {
     let mut index = SymbolIndex::default();
     for (slot, item) in hir.items.iter().enumerate() {
         let (kind, span) = match &item.kind {
@@ -663,7 +666,9 @@ fn build_symbols(analysis: u64, hir: &Hir, ast: &Ast, sources: &SourceMap) -> Sy
             .item_file(item_id)
             .map(Arc::as_ref)
             .unwrap_or_else(|| sources.files[0].file.as_ref());
-        let name = ast.synthetic_spans.get(&span).cloned().or_else(|| {
+        // AS1b-ii-d: a synthesised item's name comes from the item table; a real one from its
+        // own source text.
+        let name = hir.synthetic_names.get(&item_id).cloned().or_else(|| {
             file.src
                 .get(span.lo as usize..span.hi as usize)
                 .map(str::to_owned)

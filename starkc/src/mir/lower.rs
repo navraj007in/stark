@@ -297,7 +297,7 @@ impl ProgramMeta {
             {
                 // The mod's name span reads in the file DECLARING the mod (this item's own
                 // file); dependency-package wrappers use synthetic spans resolved by name.
-                let mod_name = if let Some(s) = hir.synthetic_spans.get(name) {
+                let mod_name = if let Some(s) = hir.synthetic_names.get(&item_id) {
                     s.clone()
                 } else {
                     let src = &files[file_id.0 as usize].src;
@@ -316,7 +316,9 @@ impl ProgramMeta {
                 //
                 // A synthetic span marks a dependency-package wrapper; a plain `mod` has a real span
                 // in its declaring file. So the reset is exact rather than heuristic.
-                let crosses_package_boundary = hir.synthetic_spans.contains_key(name);
+                // A synthesised NAME marks a dependency-package wrapper; a plain `mod` is named by
+                // real source text. AS1b-ii-d: this asks about the item, not about its span.
+                let crosses_package_boundary = hir.synthetic_names.contains_key(&item_id);
                 let mut child_path = if crosses_package_boundary {
                     Vec::new()
                 } else {

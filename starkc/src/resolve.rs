@@ -176,9 +176,25 @@ pub fn resolve_with_options(
     // Pass 3: Lower AST to HIR & perform lexical/local name resolution
     resolver.lower_crate();
 
-    // C4.5f-3c: carry the synthetic-span names (dependency-package mod wrappers) into HIR
-    // so MIR lowering's module-path walk can read them.
-    resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
+    // C4.5f-3c: carry the synthesised names (dependency-package `mod` wrappers) into HIR so MIR
+    // lowering's module-path walk can read them.
+    //
+    // AS1b-ii-d: these are keyed by ITEM now, and AST and HIR item ids are DIFFERENT SPACES, so
+    // this remaps through `item_map` rather than cloning. The old span-keyed map needed no
+    // remapping — a span means the same thing in both trees — which is exactly the kind of
+    // assumption that survives a refactor silently if it is not stated.
+    let synthetic_names: std::collections::HashMap<hir::ItemId, String> = resolver
+        .ast
+        .synthetic_names
+        .iter()
+        .filter_map(|(ast_id, name)| {
+            resolver
+                .item_map
+                .get(ast_id)
+                .map(|hir_id| (*hir_id, name.clone()))
+        })
+        .collect();
+    resolver.hir.synthetic_names = synthetic_names;
     // Frozen after parsing: the registry is complete once every file has been loaded, and nothing
     // downstream registers a source.
     resolver.hir.sources = resolver.ast.sources.clone();
@@ -220,12 +236,24 @@ impl<'a> Resolver<'a> {
         self.diags.push(diag);
     }
 
-    fn text(&self, span: Span) -> &str {
-        if span.lo >= 0x8000_0000 {
-            if let Some(s) = self.ast.synthetic_spans.get(&span) {
-                return s;
-            }
+    /// AS1b-ii-d: every span this sees indexes a real file. The `lo >= 0x8000_0000` branch that
+    /// returned a synthesised NAME from a side table is gone — names are keyed by item now, so a
+    /// span reader no longer has to know that some spans are not locations.
+    /// The declared name of an item.
+    ///
+    /// AS1b-ii-d: a compiler-synthesised item (a dependency-package `mod` wrapper) has no source
+    /// text, so its name comes from the item table. Everything else reads its own span. Both
+    /// name-deriving sites go through here — the first version of this change patched only the
+    /// submodule walk and left `declare_items` reading a zero-width span, which registered every
+    /// dependency wrapper under the empty name and collided them.
+    fn item_name(&self, ast_id: ast::ItemId, name_span: Span) -> String {
+        match self.ast.synthetic_names.get(&ast_id) {
+            Some(name) => name.clone(),
+            None => self.text(name_span).to_string(),
         }
+    }
+
+    fn text(&self, span: Span) -> &str {
         let file = self.current_file();
         &file.src[span.lo as usize..span.hi as usize]
     }
@@ -272,7 +300,7 @@ impl<'a> Resolver<'a> {
             };
 
             if let Some(span) = name_span {
-                let name_str = self.text(span).to_string();
+                let name_str = self.item_name(ast_id, span);
                 match self.modules[current_mod_id.0 as usize]
                     .items
                     .entry(name_str.clone())
@@ -349,7 +377,7 @@ impl<'a> Resolver<'a> {
                 items: ref sub_items,
             } = item.kind
             {
-                let name_str = self.text(name).to_string();
+                let name_str = self.item_name(ast_id, name);
                 let sub_mod_id = ModuleId(self.modules.len() as u32);
 
                 let file = if let Some(ref sub_items_vec) = sub_items {
@@ -366,7 +394,9 @@ impl<'a> Resolver<'a> {
                     self.modules[current_mod_id.0 as usize].file.clone()
                 };
 
-                let is_dep_package = name.lo >= 0x8000_0000;
+                // A synthesised name marks a dependency-package wrapper, exactly as the fake
+                // span range used to — but as a fact about the item rather than about its span.
+                let is_dep_package = self.ast.synthetic_names.contains_key(&ast_id);
                 let owner_package_root = self.modules[current_mod_id.0 as usize].package_root;
                 if is_dep_package {
                     // DEV-175: record the alias against the package that DECLARED the dependency,

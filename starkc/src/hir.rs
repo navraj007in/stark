@@ -242,10 +242,16 @@ pub struct Hir {
     /// and field visibility (private is exact-module, matching `resolve::item_is_visible_from`).
     pub item_modules: std::collections::HashMap<ItemId, u32>,
     pub publicly_nameable_items: std::collections::HashSet<ItemId>,
-    /// C4.5f-3c: names for synthetic spans (dependency-package `mod` wrappers use spans at
-    /// `lo >= 0x8000_0000` that index no real file). Copied from the AST so consumers past
-    /// resolution (MIR lowering's module-path walk) can read them.
-    pub synthetic_spans: std::collections::HashMap<crate::source::Span, String>,
+    /// AS1b-ii-d (was C4.5f-3c): names of items the compiler synthesised, keyed by ITEM.
+    ///
+    /// Remapped from the AST through `item_map` at resolution, not cloned: AST and HIR item ids are
+    /// different spaces. Consumers past resolution — MIR lowering's module-path walk — read it here.
+    ///
+    /// Dependency-package `mod` wrappers have no source text. Their names used to be encoded as
+    /// spans at `lo >= 0x8000_0000` — a name wearing a location's clothes, which forced every span
+    /// consumer to know that some spans index no file, and blocked span→location resolution from
+    /// ever being total. A name is not a location, so it is no longer stored as one.
+    pub synthetic_names: std::collections::HashMap<ItemId, String>,
     /// DEV-173: every string literal's decoded value, copied from the AST. A `Lit::Str` names its
     /// entry, so no pass re-decodes a literal from its span.
     pub str_lits: Vec<String>,

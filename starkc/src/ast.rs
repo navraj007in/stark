@@ -66,7 +66,13 @@ pub struct Ast {
     /// indexes. Files are registered here as the parser loads them, so identity exists from the
     /// moment source does.
     pub sources: crate::source::SourceRegistry,
-    pub synthetic_spans: std::collections::HashMap<Span, String>,
+    /// AS1b-ii-d: names of items the compiler synthesised, keyed by ITEM.
+    ///
+    /// Dependency-package `mod` wrappers have no source text. Their names used to be encoded as
+    /// spans at `lo >= 0x8000_0000` — a name wearing a location's clothes, which forced every span
+    /// consumer to know that some spans index no file, and blocked span→location resolution from
+    /// ever being total. A name is not a location, so it is no longer stored as one.
+    pub synthetic_names: std::collections::HashMap<ItemId, String>,
     /// DEV-173: every string literal's DECODED value, in allocation order.
     ///
     /// A literal used to be re-decoded from its own source span on demand. That works only while
