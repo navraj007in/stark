@@ -3,9 +3,9 @@
 **Packet:** AS1b, executing `WP-SPAN-SOURCEID.md` through AS2's single pipeline.
 **Sprint:** 2 of 4. **Branch:** `wp-arch-stability/sprint-2`, built on Sprint 1.
 **Date:** 2026-08-06.
-**Status:** AS1b-i **complete** (`470d5ff`). AS1b-ii **in progress** — the decision was taken
-(option 2, split; `RegisteredSource` handle), and §4 below records the scope correction the work
-produced.
+**Status:** **CLOSED 2026-08-07** — i, ii(a–e) and iii. §9 carries the closure, the
+acceptance-criteria evidence and the DEV-183 ruling. What follows is the record as it was built,
+section by section, including the two scope corrections the work forced.
 
 `WP-SPAN-SOURCEID.md` §6 names the risk precisely: "the change is easy to make *compile* while
 threading a plausible-but-wrong `SourceId` at some sites, reproducing DEV-122 with better types." So

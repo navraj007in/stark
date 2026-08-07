@@ -1,6 +1,6 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprint 1 CLOSED.** The Sprint 1 opening items, AS0 (partial), AS1a and
+**Status:** **IN EXECUTION — Sprints 1 and 2 CLOSED.** The Sprint 1 opening items, AS0 (partial), AS1a and
 AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
 Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
 second owner decision, which the AS0 report now enables — see §1.
@@ -73,9 +73,11 @@ pipeline.
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
+| Sprint 2 Tier-3 closeout | **PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 both closed | discharged; Sprint 3 may open |
 | AS1b | **CLOSED 2026-08-07** — i, ii(a–e) and iii; owner-accepted at `a6107fb`. See `AS1B-OPENING-ANALYSIS.md` §9 | none |
 | remainder of Campaign A (AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
-| Campaign B (AS5–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS5/AS8 are unblocked on that axis | before C10 release qualification |
+| AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |
+| Campaign B remainder (AS6–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS8 is unblocked on that axis | before C10 release qualification |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
@@ -477,6 +479,11 @@ commands.
 
 ### AS1b — SourceId-bearing spans
 
+**Status: CLOSED 2026-08-07** (i, ii a–e, iii). The packet as written under-estimated the work —
+`SourceId` was allocated *after* the front end, so the identity a span needs did not exist when
+spans are created — and it did not anticipate MIR's parallel `FileId` namespace. Both are recorded
+in `AS1B-OPENING-ANALYSIS.md`; §9 carries the closure and the acceptance-criteria evidence.
+
 #### Dependencies
 
 - AS2 shared compiler session/driver.
@@ -640,6 +647,11 @@ semantics may continue under `ROADMAP.md`'s WIP limits.
 ## 6. Campaign B — maintainability and release readiness
 
 ### AS5 — Protocol, manifest and version-surface contracts
+
+**Status: CLOSED 2026-08-07** (a–g). Sprint 1's classification held — tightening plus compatibility
+correction plus correctness defect, no repository migration — but the packet counted *parsers*, and
+the emit side carried three more defects (DEV-184) and the value model a fourth (DEV-185).
+`AS5-OPENING-ANALYSIS.md` records the inventory, the CE9 decisions and the AS7 forward note.
 
 #### Dependencies
 

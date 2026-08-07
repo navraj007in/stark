@@ -2,8 +2,9 @@
 
 **Packet:** AS5, protocol/manifest/version-surface contracts. Campaign B, executing in Sprint 2.
 **Branch:** `wp-arch-stability/sprint-2`. **Date:** 2026-08-07.
-**Status:** OPEN. This records what the packet is starting from, including three defects the Sprint 1
-audit did not cover because it looked at parsing and these are on the **emit** side.
+**Status:** **CLOSED 2026-08-07** (a–g). Opened as this analysis; §6 carries the CE9 record and §7
+the AS7 forward note. What follows records what the packet started from, including three defects the
+Sprint 1 audit did not cover because it looked at parsing and these are on the **emit** side.
 
 ---
 
