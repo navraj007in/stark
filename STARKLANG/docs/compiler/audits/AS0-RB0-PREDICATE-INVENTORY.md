@@ -18,7 +18,7 @@ method demands before any consolidation. It creates no new authority and propose
 | Rule | RB0 recorded | Verified 2026-08-07 |
 | --- | --- | --- |
 | is Copy | `TypeContext::is_copy` (`mir/mod.rs`), `FnLowerer::is_copy` (`mir/lower.rs`) | **STALE — not a duplication.** Both are three-line wrappers over one shared `mir::mir_ty_is_copy(ty, &eligibility)`; they differ only in which eligibility set they pass. The rule is already single |
-| needs drop | `lower::ty_needs_drop`, `lower::ty_has_user_drop_guarded`, `verify::may_need_drop`, `verify::mir_needs_drop` | confirmed, all four present |
+| needs drop | `lower::ty_requires_drop_glue`, `lower::ty_has_user_destructor_guarded`, `verify::may_need_drop`, `verify::requires_drop_glue` | confirmed, all four present |
 | carries a reference | `lower::ty_carries_ref`, `emit_types::ty_carries_reference`, `emit_types::ty_contains_ref` | confirmed, all three present |
 | mentions a user nominal | `lower::ty_mentions_user_nominal` | confirmed, single implementation |
 
@@ -80,19 +80,19 @@ differ, and two need program context:
 
 | Implementation | Signature | Needs |
 | --- | --- | --- |
-| `lower::ty_needs_drop` | `(&self, &MirTy, Span) -> Result<bool, LowerError>` | a `FnLowerer` |
-| `lower::ty_has_user_drop_guarded` | `(&self, &MirTy, &mut BTreeSet<MirTy>) -> bool` | a `FnLowerer` + cycle set |
-| `verify::mir_needs_drop` | `(&self, &MirTy) -> bool` | a verifier holding a program |
+| `lower::ty_requires_drop_glue` | `(&self, &MirTy, Span) -> Result<bool, LowerError>` | a `FnLowerer` |
+| `lower::ty_has_user_destructor_guarded` | `(&self, &MirTy, &mut BTreeSet<MirTy>) -> bool` | a `FnLowerer` + cycle set |
+| `verify::requires_drop_glue` | `(&self, &MirTy) -> bool` | a verifier holding a program |
 | `verify::may_need_drop` | `(&MirTy) -> bool` | free function |
 
 **RB0 already records that they diverge, with the worked example**, so an equivalence harness is not
 what unblocks this — a decision is:
 
-- CD-287: `verify::mir_needs_drop` classified `HostResource` as needing no drop while
+- CD-287: `verify::requires_drop_glue` classified `HostResource` as needing no drop while
   `may_need_drop`, *in the same file answering the same question*, said the opposite.
 - `HostResource` is the case that shows two of these are not duplicates at all: it **requires drop
   glue** (its provider close) while having **no user-defined destructor**, which is why
-  `ty_has_user_drop_guarded` answers `false` correctly and three others answer `true`.
+  `ty_has_user_destructor_guarded` answers `false` correctly and three others answer `true`.
 
 So the drop rule splits into at least two genuinely different questions, exactly as RB0 anticipated:
 
@@ -143,7 +143,7 @@ place for it.
 ```bash
 # the predicate set, re-derived
 grep -rn 'fn is_copy' starkc/src/mir/
-grep -rn 'fn ty_needs_drop\|fn ty_has_user_drop_guarded\|fn may_need_drop\|fn mir_needs_drop' starkc/src/
+grep -rn 'fn ty_requires_drop_glue\|fn ty_has_user_destructor_guarded\|fn may_need_drop\|fn requires_drop_glue' starkc/src/
 grep -rn 'fn ty_carries_ref\|fn ty_carries_reference\|fn ty_contains_ref' starkc/src/
 grep -rn 'fn ty_mentions_user_nominal' starkc/src/
 

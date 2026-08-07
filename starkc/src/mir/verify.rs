@@ -1954,7 +1954,7 @@ impl<'a> BodyCx<'a> {
                 );
             }
             // A6: Vec iteration is a borrowed cursor (no snapshot), so `T` need NOT be Copy.
-            VecClear if self.mir_needs_drop(&t) => {
+            VecClear if self.requires_drop_glue(&t) => {
                 self.err(
                     "MIR-0016",
                     bi,
@@ -2346,67 +2346,12 @@ impl<'a> BodyCx<'a> {
         }
     }
 
-    /// A1: precise droppability, mirroring lowering's `ty_needs_drop` so the verifier never
-    /// rejects a valid lowering (String/Vec always; a nominal with an own `Drop` impl or a
-    /// droppable field; recursion through aggregates). Distinct from the conservative
-    /// `may_need_drop` used by the Drop-terminator sanity check.
-    fn mir_needs_drop(&self, ty: &MirTy) -> bool {
-        match ty {
-            MirTy::String | MirTy::Core(..) => true,
-            MirTy::Struct(item, args) => {
-                let key = (item.0, args.clone());
-                self.program.types.drop_impls.contains_key(&key)
-                    || self
-                        .program
-                        .types
-                        .struct_fields
-                        .get(&key)
-                        .is_some_and(|fs| fs.iter().any(|f| self.mir_needs_drop(f)))
-            }
-            MirTy::Enum(EnumRef::User(item), args) => {
-                let key = (item.0, args.clone());
-                self.program.types.drop_impls.contains_key(&key)
-                    || self
-                        .program
-                        .types
-                        .enum_variants
-                        .get(&key)
-                        .is_some_and(|vs| {
-                            vs.iter().any(|v| v.iter().any(|f| self.mir_needs_drop(f)))
-                        })
-            }
-            MirTy::Enum(_, args) => args.iter().any(|a| self.mir_needs_drop(a)),
-            MirTy::Tuple(elems) => elems.iter().any(|e| self.mir_needs_drop(e)),
-            MirTy::Array(elem, _) => self.mir_needs_drop(elem),
-
-            // **A11 §5: a host resource's drop IS its provider close.** This arm is not
-            // documentation of an old fix — exhaustiveness FOUND it. `HostResource` was falling
-            // into `_ => false` here, so this predicate and `may_need_drop` (the verifier's other
-            // copy of "does this need dropping") disagreed about resources, and this one was the
-            // wrong way round. The SEVENTH catch-all to swallow the variant, and the first found by
-            // the compiler rather than by a leak.
-            MirTy::HostResource(_) => true,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.** See `may_need_drop`.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::Slice(_)
-            | MirTy::Ref { .. }
-            | MirTy::FnPtr { .. } => false,
-        }
+    /// A1: precise droppability. **AS4: the rule itself lives in
+    /// [`requires_drop_glue`]** — this is a delegate, so the verifier and any measurement of the
+    /// rule cannot drift. It was a method reading only `self.program.types`, which made it
+    /// unmeasurable without constructing a per-body context.
+    fn requires_drop_glue(&self, ty: &MirTy) -> bool {
+        requires_drop_glue(&self.program.types, ty)
     }
 
     /// A1: is `ty` `Copy` at the MIR level? Primitives/refs/fn-values/all-Copy aggregates are
@@ -2896,11 +2841,89 @@ fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {
     a[..n] == b[..n]
 }
 
+/// **AS4 — `requires_drop_glue`: does destroying a value of this type run anything?**
+///
+/// One of THREE near-neighbour drop questions, named so they cannot be substituted for one
+/// another (AS4 work item 2):
+///
+/// | Question | Authority | Answer for `HostResource` |
+/// | --- | --- | --- |
+/// | requires drop glue (precise) | this function | **true** — its close is provider-driven |
+/// | MAY require drop glue (conservative) | [`may_need_drop`] | true |
+/// | has a USER-written destructor | `lower::ty_has_user_destructor_guarded` | **false** — no `impl Drop` |
+///
+/// The `HostResource` column is why these are three questions and not one wording of one: CD-287
+/// recorded this predicate and `may_need_drop` contradicting each other about resources *inside
+/// this file*, and `ty_has_user_destructor_guarded` disagrees with both by design.
+///
+/// Extracted from `BodyCx::requires_drop_glue`, which read only `self.program.types` and so could
+/// not be measured without building a per-body context. Same rule, one caller, now measurable.
+/// AS4: test-only windows onto the two verifier drop predicates, so the equivalence matrix in
+/// `mir::lower` can measure all four implementations of the drop rule without widening production
+/// visibility. Measurement only — they add no caller and change no behaviour.
+#[cfg(test)]
+pub(crate) fn may_need_drop_for_inventory(ty: &MirTy) -> bool {
+    may_need_drop(ty)
+}
+
+pub(crate) fn requires_drop_glue(types: &crate::mir::TypeContext, ty: &MirTy) -> bool {
+    match ty {
+        MirTy::String | MirTy::Core(..) => true,
+        MirTy::Struct(item, args) => {
+            let key = (item.0, args.clone());
+            types.drop_impls.contains_key(&key)
+                || types
+                    .struct_fields
+                    .get(&key)
+                    .is_some_and(|fs| fs.iter().any(|f| requires_drop_glue(types, f)))
+        }
+        MirTy::Enum(EnumRef::User(item), args) => {
+            let key = (item.0, args.clone());
+            types.drop_impls.contains_key(&key)
+                || types.enum_variants.get(&key).is_some_and(|vs| {
+                    vs.iter()
+                        .any(|v| v.iter().any(|f| requires_drop_glue(types, f)))
+                })
+        }
+        MirTy::Enum(_, args) => args.iter().any(|a| requires_drop_glue(types, a)),
+        MirTy::Tuple(elems) => elems.iter().any(|e| requires_drop_glue(types, e)),
+        MirTy::Array(elem, _) => requires_drop_glue(types, elem),
+
+        // **A11 §5: a host resource's drop IS its provider close.** This arm is not
+        // documentation of an old fix — exhaustiveness FOUND it. `HostResource` was falling
+        // into `_ => false` here, so this predicate and `may_need_drop` (the verifier's other
+        // copy of "does this need dropping") disagreed about resources, and this one was the
+        // wrong way round. The SEVENTH catch-all to swallow the variant, and the first found by
+        // the compiler rather than by a leak.
+        MirTy::HostResource(_) => true,
+
+        // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.** See `may_need_drop`.
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Never
+        | MirTy::Str
+        | MirTy::Slice(_)
+        | MirTy::Ref { .. }
+        | MirTy::FnPtr { .. } => false,
+    }
+}
+
 fn may_need_drop(ty: &MirTy) -> bool {
     match ty {
         // A11 §5: a host resource's drop IS its provider close, so it always may need one. The SIXTH
         // `MirTy` catch-all to swallow this variant -- and the second copy of "does this need
-        // dropping", after `lower::ty_needs_drop`. Two implementations of one rule, each corrected
+        // dropping", after `lower::ty_requires_drop_glue`. Two implementations of one rule, each corrected
         // separately: lowering stopped emitting the `Drop`, and when that was fixed the verifier
         // rejected the `Drop` it now emitted.
         MirTy::HostResource(_) => true,

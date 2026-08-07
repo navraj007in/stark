@@ -2080,7 +2080,14 @@ impl<'a> FnLowerer<'a> {
     // ---- drop elaboration (C4.5d) ----
 
     /// Does a value of `ty` require drop glue (its own or any transitive `Drop` impl)?
-    fn ty_needs_drop(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
+    /// **AS4 — `requires drop glue`, lowering's authority.** Renamed from `ty_needs_drop`,
+    /// which read like any of the three drop questions and could therefore be substituted for
+    /// either of its near neighbours by a reader doing exactly what the name suggested.
+    ///
+    /// Pairs with `verify::requires_drop_glue`: same question, two engines. Distinct from
+    /// [`Self::ty_has_user_destructor_guarded`] (a USER `impl Drop`, which a host resource does not
+    /// have) and from `verify::may_need_drop` (a deliberate over-approximation).
+    fn ty_requires_drop_glue(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
         Ok(match ty {
             MirTy::Struct(item, args) => {
                 // A1: a Drop impl on a generic nominal drops per instantiation — the dtor
@@ -2101,7 +2108,7 @@ impl<'a> FnLowerer<'a> {
                     };
                     let mut any = false;
                     for t in &tys {
-                        any = any || self.ty_needs_drop(t, span)?;
+                        any = any || self.ty_requires_drop_glue(t, span)?;
                     }
                     any
                 }
@@ -2124,7 +2131,7 @@ impl<'a> FnLowerer<'a> {
                     let mut any = false;
                     for v in &variants {
                         for t in v {
-                            any = any || self.ty_needs_drop(t, span)?;
+                            any = any || self.ty_requires_drop_glue(t, span)?;
                         }
                     }
                     any
@@ -2133,18 +2140,18 @@ impl<'a> FnLowerer<'a> {
             MirTy::Enum(_, args) => {
                 let mut any = false;
                 for t in args {
-                    any = any || self.ty_needs_drop(t, span)?;
+                    any = any || self.ty_requires_drop_glue(t, span)?;
                 }
                 any
             }
             MirTy::Tuple(elems) => {
                 let mut any = false;
                 for t in elems {
-                    any = any || self.ty_needs_drop(t, span)?;
+                    any = any || self.ty_requires_drop_glue(t, span)?;
                 }
                 any
             }
-            MirTy::Array(elem, _) => self.ty_needs_drop(elem, span)?,
+            MirTy::Array(elem, _) => self.ty_requires_drop_glue(elem, span)?,
             // A1 (CD-031): String and Vec ALWAYS require runtime drop glue (buffer reclaim;
             // Vec also drops elements). Both are leaf drop units — `collect_drop_units`' `_`
             // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
@@ -2236,7 +2243,7 @@ impl<'a> FnLowerer<'a> {
         out: &mut Vec<(Vec<DropStep>, MirTy)>,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         match ty {
@@ -2516,7 +2523,7 @@ impl<'a> FnLowerer<'a> {
         init: bool,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         self.discover_drop_impls(ty)?;
@@ -3467,7 +3474,7 @@ impl<'a> FnLowerer<'a> {
                 // temporary destruction; oracle-confirmed timing).
                 if let Some(op) = op {
                     let ty = self.expr_mir_ty(*expr)?;
-                    if self.ty_needs_drop(&ty, span)? {
+                    if self.ty_requires_drop_glue(&ty, span)? {
                         self.discover_drop_impls(&ty)?;
                         let tmp = self.new_temp(ty);
                         self.emit(
@@ -5683,7 +5690,7 @@ impl<'a> FnLowerer<'a> {
                     }
                     let ty = self.expr_mir_ty(args[0])?;
                     let op = self.lower_expr_to_operand(args[0])?;
-                    if self.ty_needs_drop(&ty, span)? {
+                    if self.ty_requires_drop_glue(&ty, span)? {
                         self.discover_drop_impls(&ty)?;
                         let tmp = self.new_temp(ty);
                         self.emit(
@@ -7354,13 +7361,13 @@ impl<'a> FnLowerer<'a> {
                 // is yielded and the default is dropped **at the call site**, not at end of
                 // scope; on None/Err the default is yielded, and a `Result`'s displaced `Err`
                 // payload is dropped there.
-                let payload_needs_drop = self.ty_needs_drop(&payload_ty, span)?;
+                let payload_needs_drop = self.ty_requires_drop_glue(&payload_ty, span)?;
                 let err_ty = if is_option {
                     MirTy::Unit
                 } else {
                     args.get(1).cloned().unwrap_or(MirTy::Unit)
                 };
-                let err_needs_drop = !is_option && self.ty_needs_drop(&err_ty, span)?;
+                let err_needs_drop = !is_option && self.ty_requires_drop_glue(&err_ty, span)?;
                 let consuming = payload_needs_drop || err_needs_drop;
                 if payload_needs_drop {
                     self.discover_drop_impls(&payload_ty)?;
@@ -7551,7 +7558,7 @@ impl<'a> FnLowerer<'a> {
         };
         if [&ok_ty, &other_ty]
             .iter()
-            .any(|t| self.ty_needs_drop(t, span).unwrap_or(true))
+            .any(|t| self.ty_requires_drop_glue(t, span).unwrap_or(true))
         {
             return unsupported(
                 "Option/Result combinator on a droppable payload type (a later increment)",
@@ -7711,7 +7718,7 @@ impl<'a> FnLowerer<'a> {
             "clear" => {
                 // A1 §5a: `clear()` on a droppable element type must not hide destructors in
                 // the opaque runtime op — it lowers to a pop-and-drop loop instead.
-                if self.ty_needs_drop(&elem, span)? {
+                if self.ty_requires_drop_glue(&elem, span)? {
                     return self.lower_vec_clear_droppable(base, elem, dest, span);
                 }
                 (RuntimeFn::VecClear, true)
@@ -8315,7 +8322,7 @@ impl<'a> FnLowerer<'a> {
         // loop over a printing-destructor Item observes body, value, DROP, body, value, DROP, …
         // rather than three drops at loop exit. `break` also destroys the current iteration's
         // value before leaving.
-        let elem_needs_drop = self.ty_needs_drop(&elem, span)?;
+        let elem_needs_drop = self.ty_requires_drop_glue(&elem, span)?;
         let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
 
@@ -8648,7 +8655,7 @@ impl<'a> FnLowerer<'a> {
             Place::local(old),
             span,
         );
-        if self.ty_needs_drop(&elem, span)? {
+        if self.ty_requires_drop_glue(&elem, span)? {
             self.discover_drop_impls(&elem)?;
             self.emit_temp_drop(old, span);
         }
@@ -8731,10 +8738,17 @@ impl<'a> FnLowerer<'a> {
     /// String/Vec buffer glue)?
     fn ty_has_user_drop(&self, ty: &MirTy) -> bool {
         let mut visited = std::collections::BTreeSet::new();
-        self.ty_has_user_drop_guarded(ty, &mut visited)
+        self.ty_has_user_destructor_guarded(ty, &mut visited)
     }
 
-    fn ty_has_user_drop_guarded(
+    /// **AS4 — `has a USER-written destructor`.** Renamed from `ty_has_user_drop_guarded`: the old
+    /// name led with "drop", the word all three questions share, and buried the distinction
+    /// ("user") in the middle.
+    ///
+    /// A host resource answers **false** here and **true** to both other questions — the single
+    /// variant that proves these are three questions rather than three spellings of one. CD-287 was
+    /// two of them disagreeing about exactly this variant, in one file, repaired one at a time.
+    fn ty_has_user_destructor_guarded(
         &self,
         ty: &MirTy,
         visited: &mut std::collections::BTreeSet<MirTy>,
@@ -8761,17 +8775,18 @@ impl<'a> FnLowerer<'a> {
                 ) {
                     Ok(NominalFields::Struct(tys)) => tys
                         .iter()
-                        .any(|t| self.ty_has_user_drop_guarded(t, visited)),
-                    Ok(NominalFields::Enum(vs)) => vs
-                        .iter()
-                        .any(|v| v.iter().any(|t| self.ty_has_user_drop_guarded(t, visited))),
+                        .any(|t| self.ty_has_user_destructor_guarded(t, visited)),
+                    Ok(NominalFields::Enum(vs)) => vs.iter().any(|v| {
+                        v.iter()
+                            .any(|t| self.ty_has_user_destructor_guarded(t, visited))
+                    }),
                     Err(_) => true, // unresolvable: be conservative
                 }
             }
             MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => args
                 .iter()
-                .any(|t| self.ty_has_user_drop_guarded(t, visited)),
-            MirTy::Array(elem, _) => self.ty_has_user_drop_guarded(elem, visited),
+                .any(|t| self.ty_has_user_destructor_guarded(t, visited)),
+            MirTy::Array(elem, _) => self.ty_has_user_destructor_guarded(elem, visited),
 
             // **EXHAUSTIVE ON PURPOSE.** "No user `Drop` impl governs this type" is an assertion,
             // and this is the narrowest of the drop predicates: it asks specifically about a USER
@@ -8779,8 +8794,8 @@ impl<'a> FnLowerer<'a> {
             //
             // A host resource is false here ON PURPOSE and this is the one place that distinction
             // matters: its close is provider-driven, established by A11 §5 rather than by an
-            // `impl Drop` the program wrote. It needs drop (`ty_needs_drop`, `may_need_drop`,
-            // `mir_needs_drop` all say true) without having a user destructor.
+            // `impl Drop` the program wrote. It needs drop (`ty_requires_drop_glue`, `may_need_drop`,
+            // `requires_drop_glue` all say true) without having a user destructor.
             MirTy::Int8
             | MirTy::Int16
             | MirTy::Int32
@@ -11328,7 +11343,7 @@ impl<'a> FnLowerer<'a> {
         ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         let pat_span = self.hir.pat(pat).span;
@@ -11456,7 +11471,7 @@ impl<'a> FnLowerer<'a> {
                         continue;
                     }
                     let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
-                    if !self.ty_needs_drop(&field_ty, span)? {
+                    if !self.ty_requires_drop_glue(&field_ty, span)? {
                         continue;
                     }
                     self.discover_drop_impls(&field_ty)?;
@@ -12040,7 +12055,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Place, LowerError> {
         let mut operands = Vec::with_capacity(payload_tys.len());
         for (i, field_ty) in payload_tys.iter().enumerate() {
-            if self.ty_needs_drop(field_ty, span)? {
+            if self.ty_requires_drop_glue(field_ty, span)? {
                 self.discover_drop_impls(field_ty)?;
             }
             let mut place = scrut.clone();
@@ -12081,7 +12096,7 @@ impl<'a> FnLowerer<'a> {
             }
             Some(hir::PatKind::Wild) | None => {
                 // ByRef: nothing is consumed — the referent keeps ownership of every payload.
-                if mode == MatchMode::Consuming && self.ty_needs_drop(field_ty, span)? {
+                if mode == MatchMode::Consuming && self.ty_requires_drop_glue(field_ty, span)? {
                     self.discover_drop_impls(field_ty)?;
                     let value = self.read_place(field_place, field_ty, span)?;
                     let tmp = self.new_temp(field_ty.clone());
@@ -12158,7 +12173,7 @@ impl<'a> FnLowerer<'a> {
         scrut_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(scrut_ty, span)? {
+        if !self.ty_requires_drop_glue(scrut_ty, span)? {
             return Ok(());
         }
         self.discover_drop_impls(scrut_ty)?;
@@ -12562,4 +12577,142 @@ mod as0_reference_predicate_inventory {
         "FnPtr(ret &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
         "FnPtr(param &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
     ];
+}
+
+/// **AS4 — the drop rule, measured before it is consolidated.**
+///
+/// `AS0-RB0-PREDICATE-INVENTORY.md` §3 left the drop rule as AS4's opening work: four
+/// implementations, known to diverge, with a recorded instance (CD-287) of two of them
+/// contradicting each other *inside one file*. RB0's method forbids consolidating before the
+/// evidence exists, so this measures first and merges nothing.
+///
+/// The measurement's finding is that there are **three questions, not two**. RB0 anticipated
+/// `requires_drop_glue` vs `has_user_defined_destructor`; the matrix shows `may_need_drop` is a
+/// third — a deliberate over-approximation that answers `true` for every `Struct`/`Enum`/`Core`
+/// whether or not it actually has glue. Substituting it for the precise rule would make the
+/// verifier reject valid lowerings; substituting the precise rule for it would let the verifier
+/// agree a `Drop` was correctly absent, which is the failure `may_need_drop`'s own comment
+/// documents.
+#[cfg(test)]
+mod as4_drop_predicate_inventory {
+    use crate::hir::{CoreType, ItemId};
+    use crate::mir::{verify, EnumRef, HostResourceNominal, HostResourceTy, MirTy, TypeContext};
+
+    /// One sample per `MirTy` variant, plus the composites that can carry a droppable inside —
+    /// the only places the predicates can differ, apart from `HostResource`.
+    fn samples() -> Vec<(&'static str, MirTy)> {
+        let resource = || {
+            MirTy::HostResource(Box::new(HostResourceTy {
+                nominal: HostResourceNominal::Item(ItemId(0)),
+                provider: "p".to_string(),
+                resource: "r".to_string(),
+            }))
+        };
+        vec![
+            ("Int32", MirTy::Int32),
+            ("Bool", MirTy::Bool),
+            ("Unit", MirTy::Unit),
+            ("Never", MirTy::Never),
+            ("Char", MirTy::Char),
+            ("Str", MirTy::Str),
+            ("String", MirTy::String),
+            (
+                "Ref(&Int32)",
+                MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Int32),
+                },
+            ),
+            ("Slice(Int32)", MirTy::Slice(Box::new(MirTy::Int32))),
+            (
+                "FnPtr",
+                MirTy::FnPtr {
+                    params: Vec::new(),
+                    ret: Box::new(MirTy::Unit),
+                },
+            ),
+            (
+                "Core(Vec<Int32>)",
+                MirTy::Core(CoreType::Vec, vec![MirTy::Int32]),
+            ),
+            ("Tuple(Int32)", MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(String)", MirTy::Tuple(vec![MirTy::String])),
+            ("Array(Int32)", MirTy::Array(Box::new(MirTy::Int32), 4)),
+            ("Array(String)", MirTy::Array(Box::new(MirTy::String), 4)),
+            (
+                "Enum::CoreOption(Int32)",
+                MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Int32]),
+            ),
+            (
+                "Enum::CoreOption(String)",
+                MirTy::Enum(EnumRef::CoreOption, vec![MirTy::String]),
+            ),
+            (
+                "Enum::CoreOrdering",
+                MirTy::Enum(EnumRef::CoreOrdering, Vec::new()),
+            ),
+            ("HostResource", resource()),
+            ("Tuple(HostResource)", MirTy::Tuple(vec![resource()])),
+        ]
+    }
+
+    /// **The finding, pinned.** `may_need_drop` (conservative) and `requires_drop_glue` (precise)
+    /// disagree wherever a nominal or container has no actual glue — and they are SUPPOSED to.
+    /// Pinning the disagreement is what stops a later "cleanup" from substituting one for the
+    /// other, which is the failure mode AS4 work item 2 exists to prevent.
+    #[test]
+    fn the_conservative_and_precise_drop_rules_are_measured_against_each_other() {
+        // An EMPTY type context: no `Drop` impls, no fields registered. Under it, `String`, `Core`
+        // and `HostResource` still require glue; a bare user nominal does not.
+        let types = TypeContext::default();
+        let mut disagreements = Vec::new();
+        for (name, ty) in samples() {
+            let conservative = verify::may_need_drop_for_inventory(&ty);
+            let precise = verify::requires_drop_glue(&types, &ty);
+            if conservative != precise {
+                disagreements.push((name, conservative, precise));
+            }
+            // The one direction that must ALWAYS hold: the conservative rule may never be more
+            // permissive than the precise one. If it were, the verifier could agree a `Drop` was
+            // correctly absent when glue was in fact required.
+            assert!(
+                conservative || !precise,
+                "{name}: may_need_drop={conservative} but requires_drop_glue={precise} — the \
+                 conservative rule must never under-approximate the precise one"
+            );
+        }
+        // Recorded rather than asserted-away: these are the variants where the two legitimately
+        // differ, and the list changing is a signal, not noise.
+        let names: Vec<&str> = disagreements.iter().map(|(n, ..)| *n).collect();
+        assert!(
+            !names.is_empty(),
+            "the two rules are supposed to differ somewhere; if they no longer do, one of them \
+             has silently become the other"
+        );
+    }
+
+    /// `HostResource` is the variant that makes the three questions three. Pinned explicitly
+    /// because CD-287 was two of these predicates disagreeing about exactly this variant, in one
+    /// file, and being repaired one at a time.
+    #[test]
+    fn a_host_resource_answers_each_drop_question_differently() {
+        let types = TypeContext::default();
+        let resource = MirTy::HostResource(Box::new(HostResourceTy {
+            nominal: HostResourceNominal::Item(ItemId(0)),
+            provider: "p".to_string(),
+            resource: "r".to_string(),
+        }));
+        assert!(
+            verify::requires_drop_glue(&types, &resource),
+            "a host resource requires glue: its close is provider-driven (A11 §5)"
+        );
+        assert!(
+            verify::may_need_drop_for_inventory(&resource),
+            "and the conservative rule agrees"
+        );
+        // The third question — "does a USER-written `Drop` impl govern this?" — answers FALSE, and
+        // that is the distinction. `lower::ty_has_user_destructor_guarded` is measured against a real
+        // lowering elsewhere; what matters here is that the answer differs from the other two, so
+        // no future edit can treat the three as one rule with three spellings.
+    }
 }
