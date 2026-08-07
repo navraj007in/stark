@@ -298,3 +298,59 @@ adjusted to fit.
 from the span alone — there is no longer a file on the error or the diagnostic to fall back to, so a
 wrong `SourceId` now fails the test rather than being masked by a correct side-channel. That makes
 them stronger than when they were written as regression guards in §4.
+
+
+---
+
+## 7. AS1b-ii-e — the MIR and native boundaries (2026-08-07)
+
+ii-e was the outstanding half of acceptance criterion 3: `as1b_span_provenance.rs` covered the
+compile-time and HIR-runtime paths, and the MIR and native boundaries had no evidence.
+
+**Both hold.** A fault inside a dependency reports `lib/src/lib.stark:10` — the dependency's own
+line, past the end of the 3-line consumer, so a span resolved against the consumer would have had
+to clamp — through the MIR engine and through a built native binary. The native case runs the
+generated executable and matches its abort text:
+
+```text
+error: runtime trap: division by zero
+  --> lib/src/lib.stark:10:5
+```
+
+That assertion was mutation-checked (pointed at a wrong filename, confirmed failing) so it is not
+passing vacuously.
+
+### The finding: MIR keeps its own file identity
+
+`SourceInfo { file: FileId, span: Span }` names a source **twice**. `FileId` indexes
+`MirProgram::files`, a table `ProgramMeta::build` interns by name and the lowerer sets per lowered
+function; `span` carries the `SourceId`. Nothing makes them agree, and **everything downstream reads
+the `FileId`** — `resolve_source_location` bakes `files[info.file]` resolved at `info.span.lo` into
+every generated abort call at compile time, and the differential harness resolves a MIR trap the
+same way. A disagreement is therefore not a detectable error: `line_col` clamps, so it is a
+plausible, wrong location. That is DEV-122's shape, surviving one layer below where ii-b removed it.
+
+This is the same *rival authority* pattern as `item_files`, which ii-b removed. It is **not** closed
+here, and ii-e does not claim it is. What ii-e adds is a check that would catch it:
+`every_mir_source_info_agrees_with_the_span_it_carries` sweeps every `SourceInfo` a real
+cross-package program produces and asserts the two identities name the same file. They do, today.
+
+Three places hide a `SourceInfo`, and the third is the one users see: on a statement, on a
+terminator, and **inside a terminator's `TrapInfo`**. The first version of the sweep walked only the
+first two and reported agreement while checking nothing that reaches a trap message — it passed for
+the wrong reason, and the non-vacuity guard (`the sweep must include at least one trap site`) is
+there because of it.
+
+### Recommended follow-on, not taken here
+
+Collapsing `SourceInfo.file` into `span.source` — deleting `MirProgram::files` and `FileId` in
+favour of the registry, as `item_files` was deleted — is the same change one layer down, and would
+make the sweep unnecessary rather than necessary. It is a MIR/backend change with a native-emission
+surface, so it belongs to its own checkpoint under owner approval, not to ii-e. Until then the sweep
+is the compensating control and the disagreement is a live risk, correctly stated.
+
+### Evidence
+
+`as1b_mir_native_provenance.rs`, 4 tests: the whole-program `SourceInfo` sweep, a narrower
+trap-site sweep, a MIR-engine dependency trap, and a native dependency trap that builds and runs the
+binary.
