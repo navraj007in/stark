@@ -239,7 +239,7 @@ pub fn emit_block_body(
             ));
             continue;
         }
-        if !slotted && emit_types::ty_carries_reference(&decl.ty) {
+        if !slotted && emit_types::mentions_a_reference(&decl.ty) {
             // Any OTHER borrow-carrying local keeps the bare, uninitialised form: it is same-block
             // by construction, so rustc's definite-assignment analysis still serves as a second
             // check on it exactly as the C5.3d-1a lane intended. It must not be default-initialised

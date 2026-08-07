@@ -23,6 +23,7 @@ pub mod lower;
 pub mod opt;
 pub mod provider_lower;
 pub mod provider_sig;
+pub(crate) mod reference_rule;
 pub mod verify;
 
 use crate::source::Span;

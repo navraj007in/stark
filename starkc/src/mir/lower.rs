@@ -141,48 +141,6 @@ fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
     }
 }
 
-/// Does `ty` carry a reference (borrow) anywhere below the top level? A slot-backed (droppable)
-/// composite whose field read returns a borrow needs a generated lifetime the backend does not emit
-/// yet (E0106) — so Display of such a composite (`(String, &str, i32)`) is refused for now.
-fn ty_carries_ref(ty: &MirTy) -> bool {
-    match ty {
-        MirTy::Ref { .. } => true,
-        MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Struct(_, args) => {
-            args.iter().any(ty_carries_ref)
-        }
-        MirTy::Tuple(elems) => elems.iter().any(ty_carries_ref),
-        MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_carries_ref(elem),
-        // **EXHAUSTIVE ON PURPOSE.** "Carries no borrow" is a claim about a type, not a decision to
-        // skip one, so it must be stated per variant.
-        //
-        // **This is the third copy of one rule**, after `emit_types::ty_carries_reference` and
-        // `emit_types::ty_contains_ref`, and it does not agree with the first: that one descends
-        // into a `FnPtr`'s parameters and return, this one calls every fn value borrow-free. The
-        // difference is defensible — a Rust `fn(&T)` is higher-ranked and needs no lifetime
-        // parameter, which is the only thing this predicate guards (E0106) — but it is an
-        // agreement the three copies have never been checked against each other for. Recorded
-        // rather than silently harmonised; unifying them is its own change.
-        MirTy::Int8
-        | MirTy::Int16
-        | MirTy::Int32
-        | MirTy::Int64
-        | MirTy::UInt8
-        | MirTy::UInt16
-        | MirTy::UInt32
-        | MirTy::UInt64
-        | MirTy::Float32
-        | MirTy::Float64
-        | MirTy::Bool
-        | MirTy::Char
-        | MirTy::Unit
-        | MirTy::Never
-        | MirTy::Str
-        | MirTy::String
-        | MirTy::FnPtr { .. }
-        | MirTy::HostResource(_) => false,
-    }
-}
-
 fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> {
     Err(LowerError {
         what: what.into(),
@@ -9762,7 +9720,7 @@ impl<'a> FnLowerer<'a> {
         // reads its fields through a generated projection wrapper whose return borrows the slot; the
         // backend does not emit the lifetime that ties them (E0106). Refuse until generated lifetimes
         // land. A COPY borrow-carrying composite (`(&str, i32)`) is fine: no slot, no wrapper.
-        if droppable && ty_carries_ref(&peeled) {
+        if droppable && crate::mir::reference_rule::stores_a_reference(&peeled) {
             return unsupported(
                 "Display of a droppable composite that also carries a borrowed element (e.g. \
                  `&str` beside an owned field) needs generated lifetimes — a later C6.3e slice",
@@ -12458,17 +12416,30 @@ mod as0_reference_predicate_inventory {
     /// The three answers, per sample, with every disagreement pinned.
     #[test]
     fn the_three_reference_predicates_are_measured_against_each_other() {
-        // (sample, lower::ty_carries_ref, emit::ty_carries_reference, emit::ty_contains_ref)
+        // (sample, lower::ty_carries_ref, emit::mentions_a_reference, emit::ty_contains_ref)
         let mut disagreements = Vec::new();
         let mut checked = 0usize;
         for (name, ty) in samples() {
-            let a = super::ty_carries_ref(&ty);
-            let b = emit_types::ty_carries_reference(&ty);
+            let a = crate::mir::reference_rule::stores_a_reference(&ty);
+            let b = emit_types::mentions_a_reference(&ty);
+            // AS4: `emit::ty_contains_ref` is GONE — it and `lower::ty_carries_ref` were one rule
+            // and are now `reference_rule::stores_a_reference`. The window reads the same authority,
+            // so `a == c` holds by construction; kept so the matrix still spans what RB0 recorded.
             let c = emit_types::contains_ref_for_inventory(&ty);
             checked += 1;
+            // **AS4: the PAIRWISE fact AS0's three-way summary hid.** `lower::ty_carries_ref` and
+            // `emit::ty_contains_ref` agree on EVERY sample, `FnPtr` included — so they are one
+            // rule with two implementations. Only `emit::mentions_a_reference` differs, and it is a
+            // different question (see `tests/as4_reference_rule.rs`). Asserted per sample so the
+            // claim cannot quietly stop holding.
+            assert_eq!(
+                a, c,
+                "{name}: lower::ty_carries_ref and emit::ty_contains_ref must agree — they are one \
+                 rule, and AS4 merges them on that basis"
+            );
             if !(a == b && b == c) {
                 disagreements.push(format!(
-                    "{name}: lower::ty_carries_ref={a}, emit::ty_carries_reference={b}, emit::ty_contains_ref={c}"
+                    "{name}: lower::ty_carries_ref={a}, emit::mentions_a_reference={b}, emit::ty_contains_ref={c}"
                 ));
             }
         }
@@ -12509,8 +12480,8 @@ mod as0_reference_predicate_inventory {
     /// composite carrying a reference inside. The reference rule is one rule with one exception,
     /// which is a much smaller consolidation than "three implementations" suggested.
     const EXPECTED_DISAGREEMENTS: &[&str] = &[
-        "FnPtr(ret &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
-        "FnPtr(param &T): lower::ty_carries_ref=false, emit::ty_carries_reference=true, emit::ty_contains_ref=false",
+        "FnPtr(ret &T): lower::ty_carries_ref=false, emit::mentions_a_reference=true, emit::ty_contains_ref=false",
+        "FnPtr(param &T): lower::ty_carries_ref=false, emit::mentions_a_reference=true, emit::ty_contains_ref=false",
     ];
 }
 
