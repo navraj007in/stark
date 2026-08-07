@@ -1,6 +1,8 @@
 # WP-CALLABLE-USE-TOTAL — one record per callable use
 
-**Status:** DRAFT for approval. AS3 work item 1 requires this document *before* implementation.
+**Status:** **CORRECTED 2026-08-07** after owner review returned the first draft (`f8c7e3e`) NO-GO.
+AS3 work item 1 requires this document *before* implementation; §3 records what the first draft got
+wrong and why the compiler contradicts it.
 **Owning packet:** AS3, Sprint 3, `WP-ARCHITECTURE-STABILIZATION.md`.
 **Opened:** 2026-08-07.
 **Scope discipline:** this changes *where an answer comes from*, not *what the answer is*. Any
@@ -61,34 +63,110 @@ Recorded at **four** points in the checker: `instantiate_sig` (free calls and fn
 
 ## 3. The record
 
+**Corrected 2026-08-07 after owner review of the first draft.** That draft assumed three things the
+compiler contradicts, each verified below. They are recorded rather than quietly fixed, because two
+of them are the kind of assumption that would have been encoded into production tables during
+Boundary 1 and only surfaced at Boundary 4.
+
+| Draft assumed | The compiler says |
+| --- | --- |
+| methods and associated functions have their own `ItemId` | they do not. `ImplItem::Fn { vis, def: FnDef }` and `TraitItem::Method { sig, body }` carry no id; members are positional inside the impl's or trait's `Vec`. This is exactly why A3b chose `BlockId` as executable identity |
+| one `ExprId` ↔ one callable use | false for `Display`. `display_deep` recurses through tuples, arrays, `Option`, `Result` and slots, invoking a nominal's `Display::fmt` at any depth — `println((a, b))` is one argument expression and two `fmt` bodies, and a vector is one expression and *n* |
+| every use has a statically known body and environment | false for function values. DEV-178 established that the value carries the item and the bindings it was created with, because the call site's `Ty::Fn` cannot reconstruct which instantiation produced it |
+
+### 3.1 Declaration identity — what the HIR actually has
+
 ```rust
-/// Everything the checker decided about one callable use. One per accepted invocation, keyed by
-/// the expression that invokes it.
+/// WHICH declaration was selected, expressed in ids the HIR possesses.
+pub enum CallableDeclId {
+    /// A free function or a `const`-position item: it has its own `ItemId`.
+    Item(ItemId),
+    /// A member of an impl, by position in that impl's `items`.
+    ImplMember { impl_item: ItemId, member: u32 },
+    /// A member of a trait, by position — the declaration site of a default body.
+    TraitMember { trait_item: ItemId, member: u32 },
+}
+```
+
+`body: BlockId` remains the **executable** identity, as A3b established. `CallableDeclId` is the
+*declaration* identity, which is what provenance and diagnostics need and what `BlockId` alone
+cannot express. For a trait default reached through an impl, the trait member identifies the
+declaration and the impl travels as provenance — not as a second identity.
+
+No method `ItemId` is fabricated to make the model fit.
+
+### 3.2 Keying — one record per static use site, not per expression
+
+> **A `CallableUse` is one *static semantic callable-use site*. It is not one per runtime invocation,
+> and not necessarily one per `ExprId`.**
+
+A static use may execute zero, one, or thousands of times. `println(vec)` is one use site and *n*
+invocations; `println((a, b))` is one expression with two distinct use sites.
+
+```rust
+pub struct CallableUseId(u32);
+
+pub struct TypeTables {
+    /// Every published use, indexed by `CallableUseId`.
+    pub callable_uses: Vec<CallableUse>,
+    /// The uses an expression gives rise to — zero, one, or many.
+    pub callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+    // …
+}
+```
+
+Equality has the same shape for a weaker reason: `language_equal` can dispatch `Eq::eq` from
+collection lookup, reached with runtime values and a span rather than a unique invoking expression.
+
+**The rule that keeps this honest**, since a recursive renderer must still pick *which* published use
+applies at a nested static type:
+
+> An engine may choose among checker-published records using runtime or static structure. It may not
+> scan the HIR and re-run method selection.
+
+Choosing from a published set is consumption. Deciding what the set contains is selection, and that
+belongs to the checker alone.
+
+**This keying model is Boundary 1's first deliverable**, proven before any consumer migrates —
+because if it is wrong, every later boundary inherits it.
+
+### 3.3 The record
+
+```rust
 pub struct CallableUse {
-    /// WHICH callable runs. Not a name to look up — the selection itself.
-    pub callee: CalleeIdentity,
-    /// The body, so a consumer can pair this with `callable_types`' signature (A3b).
-    pub body: BlockId,
-    /// The generic environment, explicitly EMPTY rather than absent for a non-generic use.
-    pub environment: Vec<(GenericBinder, Ty)>,
-    /// How the receiver was adjusted to make the call type-check (TYPE-METHOD-002).
-    pub receiver: ReceiverAdjustment,
-    /// Argument and result types, grounded.
+    /// WHAT runs. Static for an ordinary call; deferred to the value for a function value.
+    pub selection: CalleeSelection,
+    /// The generic environment, on the same footing.
+    pub environment: GenericEnvironment,
+    /// What the CALL SITE did to the receiver (TYPE-METHOD-002 auto-borrow/auto-deref).
+    pub receiver_adjustment: ReceiverAdjustment,
+    /// What the SELECTED CALLABLE binds. Normally correlated with the adjustment, but a different
+    /// question and a different authority — AS3's contract names both, and AS4/concurrency will ask
+    /// about the binding side specifically.
+    pub receiver_binding: ReceiverBinding,
+    /// This use's signature.
+    ///
+    /// **Inference-grounded, not fully concrete**: no surviving `Ty::Infer` or `Ty::Error`. A
+    /// caller's own `Ty::Param` may remain and is concretised against the active caller
+    /// environment — the same rule `CallableInstantiation` already documents, and the reason
+    /// `callable_types` is body-parametric.
     pub signature: CallableSigTy,
-    /// Why this callable and not another — the audit trail, and what makes a wrong selection a
-    /// diagnosable defect rather than a silent one.
+    /// Why this callable and not another.
     pub provenance: DispatchProvenance,
 }
 
-pub enum CalleeIdentity {
-    /// A free function or associated function: the item runs directly.
-    Item(ItemId),
-    /// A method resolved to a specific impl's specific function item.
-    ImplMethod { impl_item: ItemId, fn_item: ItemId },
-    /// A trait default body, with the impl it was reached through.
-    TraitDefault { trait_item: ItemId, fn_item: ItemId, impl_item: Option<ItemId> },
-    /// A function value; the identity is in the value, not the call site.
+pub enum CalleeSelection {
+    /// The checker selected a specific declaration and body.
+    Static { declaration: CallableDeclId, body: BlockId },
+    /// A function value. The body comes from the value, not from this site (DEV-178).
     FunctionValue,
+}
+
+pub enum GenericEnvironment {
+    /// Explicitly empty for a non-generic static call — an empty environment, never an absent one.
+    Static(Vec<(GenericBinder, Ty)>),
+    /// Fixed at coercion and carried by the value (DEV-178).
+    FromFunctionValue,
 }
 
 pub enum ReceiverAdjustment {
@@ -98,43 +176,55 @@ pub enum ReceiverAdjustment {
     Exclusive { derefs: u8 },
 }
 
+pub enum ReceiverBinding {
+    None,
+    ByValue,
+    Shared,
+    Exclusive,
+}
+
 pub enum DispatchProvenance {
-    /// `f(x)` — a path resolved to an item.
     Direct,
-    /// `x.m()` — inherent method resolution.
     Inherent,
-    /// `x.m()` where `m` came from a trait impl.
     TraitImpl { trait_item: ItemId },
-    /// `T::m()` / `<T as Tr>::m()`.
     Qualified { trait_item: Option<ItemId> },
-    /// A generic parameter's bound supplied the signature. This is what `bound_trait_calls`
-    /// carries today, and why it exists.
+    /// A generic parameter's bound supplied the signature — what `bound_trait_calls` carries today.
     Bound { trait_item: ItemId },
     /// A compiler-known trait operation: `==`, `<`, `for`, `{}` formatting.
     CoreTrait { core: CoreTrait },
-    /// Calling a function value.
     FunctionValue,
 }
 ```
 
 `CoreTrait` provenance is the load-bearing addition. Equality, ordering, iteration and display are
-dispatched by the *language*, not by a written call, and are precisely the four families where both
-engines currently re-select with no filter at all.
+dispatched by the *language* rather than by a written call, and they are exactly the four families
+where both engines currently re-select with no filter at all.
+
+### 3.4 The two tables must not become competing signature authorities
+
+`callable_types[body]` is the body's *parametric* signature (A3b). `CallableUse::signature` is this
+use's *instantiated* one. They are different views and must stay consistent:
+
+> **Invariant.** For a `Static` selection, substituting `environment` into `callable_types[body]`
+> yields `signature`. Enforced by an invariant test, not by convention.
+
+Without it, two tables answer "what is this callable's signature" and the divergence hazard is back
+in a new place — which is the entire pattern this programme exists to remove.
 
 ---
 
 ## 4. The rule
 
-> **The checker publishes exactly one `CallableUse` per accepted invocation. Execution consumes it.
-> Neither engine reconstructs selection.**
+> **The checker publishes exactly one `CallableUse` per accepted static use site. Execution consumes
+> it. Neither engine reconstructs selection.**
 
-Stated as three obligations:
+Three obligations:
 
-1. **Totality.** Every accepted invocation has a record. An execution site that finds none is an
+1. **Totality.** Every accepted static use site has a record. An execution site that finds none is an
    internal compiler error, not a fallback to scanning.
-2. **Uniqueness.** No invocation has two. Duplicates fail an invariant test.
-3. **No second algorithm.** `Interpreter::find_method` and `FnLowerer::find_impl_fn` are deleted,
-   not filtered. While either exists, the hint-threading pattern remains available and will be used
+2. **Uniqueness.** No use site has two. Duplicates fail an invariant test.
+3. **No second algorithm.** `Interpreter::find_method` and `FnLowerer::find_impl_fn` are deleted, not
+   filtered. While either exists, the hint-threading pattern remains available and will be used
    again.
 
 ---
@@ -144,11 +234,21 @@ Stated as three obligations:
 The ten families group by what they share, and each group is a semantic boundary with its own
 evidence. Within a group the work is the same shape; across groups it is not.
 
-### Boundary 1 — the families that already consume selection
+### Boundary 1 — the keying model, and the families that already consume selection
 **free calls, function values.**
-These are the proof the mechanism works. Work: widen `CallableInstantiation` to `CallableUse` and
-have these two consume the new fields. Nothing changes about which body runs.
-*Evidence: `cargo test --lib`, the totality/uniqueness invariant test, `three_engine_differential`.*
+
+**First deliverable is the keying model itself**, not a migration: `CallableUseId`,
+`callable_uses`, `callable_uses_by_expr`, and a test proving one expression can carry zero, one or
+many uses. If that is wrong every later boundary inherits it, which is exactly the failure this
+document was sent back to avoid.
+
+Then the two families that already consume selection — the proof the mechanism works. Function values
+are here deliberately rather than in a later group: they are the only case of
+`CalleeSelection::FunctionValue` + `GenericEnvironment::FromFunctionValue`, so the dynamic half of the
+model is exercised at the start rather than discovered at the end.
+
+*Evidence: `cargo test --lib`, the totality/uniqueness invariant test, the signature-consistency
+invariant of §3.4, and `three_engine_differential`.*
 
 ### Boundary 2 — named dispatch
 **methods, associated functions, qualified calls, trait defaults.**
@@ -191,11 +291,15 @@ invariant is a convention.
 
 ## 7. Exit criteria
 
-1. Every executable user-callable use has exactly one `CallableUse`; duplicates and omissions fail an
-   invariant test over a real multi-package program.
-2. `Interpreter::find_method` and `FnLowerer::find_impl_fn` no longer exist.
-3. Both engines install the checker-selected generic environment at every entry point that has one —
+1. Every executable user-callable **static use site** has exactly one `CallableUse`; duplicates and
+   omissions fail an invariant test over a real multi-package program. A recursive `Display` over a
+   composite is many use sites and one expression, and the test asserts that shape rather than
+   assuming `ExprId` is the key.
+2. Substituting a use's `environment` into `callable_types[body]` yields its `signature`, so the two
+   tables cannot become competing signature authorities (§3.4).
+3. `Interpreter::find_method` and `FnLowerer::find_impl_fn` no longer exist.
+4. Both engines install the checker-selected generic environment at every entry point that has one —
    measured against `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md`'s 21, not asserted.
-4. The frozen corpus and all engine comparisons remain green.
-5. Any checker/engine disagreement found on the way is recorded as its own DEV entry with a
+5. The frozen corpus and all engine comparisons remain green.
+6. Any checker/engine disagreement found on the way is recorded as its own DEV entry with a
    fails-first test, and not silently normalised.
