@@ -5229,13 +5229,21 @@ Both engines now pass the concrete `Self` **including arguments** (`W2<Int32>`, 
 shared `substitute_ty`. That change is correct on its own terms and is kept.
 
 **The generic impl still does not resolve.** So the bare-nominal-head account was only half the
-cause. The remainder is on the **index** side: `build_trait_impl_index` calls `convert_hir_type` on
-an impl's self type *outside that impl's generic scope*, so `impl<T> Describe for W2<T>` very likely
-does not store `Struct(W2, [Param("T")])`. No caller-side change can make a match succeed against a
-head that was never recorded.
+cause. **That diagnosis was WRONG and is retracted.** I predicted the index stored a degenerate head; a
+probe inside `build_trait_impl_index` shows it stores the correct one:
 
-Recorded before confirming the exact stored form, because the *conclusion* — that the remaining
-cause is index-side, not call-site — follows from the repair having no effect.
+```text
+IDX self_ty=Struct(ItemId(1), [])            generics=[]        // impl Describe for A2
+IDX self_ty=Struct(ItemId(3), [Param("T")])  generics=["T"]     // impl<T> Describe for W2<T>
+```
+
+So the parametric head is recorded correctly, `convert_hir_type` does resolve `T` to a `Param`, and
+the remaining cause is **neither the call sites nor the index shape**. It is somewhere in the
+specialiser's candidate loop or in how the test supplies the concrete `Self` — both still unexamined.
+
+Recording the retraction rather than quietly replacing it: the previous entry asserted a cause from
+"the repair had no effect", which is evidence that *something else* is wrong, not evidence of *what*.
+That inference was unsound and produced a confident wrong answer in a permanent record.
 
 - **Repair:** convert each impl's self type within its own generic scope when building the index,
   then re-check the caller side. Pinned meanwhile by
