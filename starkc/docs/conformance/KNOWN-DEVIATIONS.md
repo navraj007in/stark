@@ -5043,3 +5043,40 @@ Two defects, recorded together because the first concealed the second.
   diagnostic, and the ambiguity would have surfaced as a method-resolution failure far from either.
 - **Security/soundness impact:** none.
 - **Owning gate:** compiler track, AS1b-iii (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-184 — three of the four JSON escapers emitted invalid JSON (CLOSED, AS5-a)
+
+- **Rule:** RFC 8259 §7 — the characters that MUST be escaped inside a JSON string are the quotation
+  mark, the reverse solidus, and **the control characters U+0000 through U+001F**.
+- **Status:** CLOSED. All three repaired; AS5-c replaces them with one shared authority.
+- **Found by:** AS5's opening inventory. `AS0-MANIFEST-STRICTNESS-AUDIT.md` compared the two JSON
+  *parsers*; this is the emit side, which that audit did not cover.
+
+| Authority | Escaped | Left raw |
+| --- | --- | --- |
+| `diag.rs::escape_json` | `"` `\` `\b` `\f` `\n` `\r` `\t`, all C0 as `\u00xx` | — (correct) |
+| `lsp/protocol.rs::escape_json_string` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `onnx/verifier.rs::escape_json` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `bin/stark.rs::json_escape` | `"` `\` `\n` | 31 C0 controls, **including TAB** |
+
+- **Demonstrated instance.** `stark doctor --json --root "<path containing a TAB>"` — a legal POSIX
+  path — emits a raw U+0009 inside the `install_root` string. A standard parser refuses the
+  document: `Invalid control character at: line 3 column 134`. The command advertises
+  machine-readable output and produces something no conforming parser accepts.
+- **User impact:** any tool consuming `stark doctor --json` fails on such a path, with a parse error
+  that points at the compiler's output rather than at the path. On the LSP surface the raw control
+  goes onto the wire inside a JSON-RPC message; a lenient client tolerates it and a strict one drops
+  the message or the connection.
+- **Why it survived:** `GATE-C8-CLOSURE.md` §4 records that C8's protocol validation compared
+  **verdicts, not values**. DEV-182 — the LSP parser decoding every escaped non-BMP character to the
+  empty string — passed that same evidence. "The LSP protocol suite is green" does not establish
+  that what goes on the wire is valid JSON, and this packet's dependencies section says so.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, an unescaped control
+  character in an attacker-influenced string is a message-framing hazard for a lenient client, which
+  is why AS5 exit criterion 5 routes parsing decisions through CE9 review.
+- **Repair:** each escaper now escapes every C0 control as `\u00xx`, matching `diag.rs`'s already
+  correct implementation. `tests/as5_json_escaping.rs` fails against the previous code — it names
+  the exact code points each one leaked — and passes after.
+- **Owning gate:** compiler track, AS5-a (WP-ARCHITECTURE-STABILIZATION).

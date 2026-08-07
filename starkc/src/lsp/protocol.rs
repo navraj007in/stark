@@ -85,19 +85,34 @@ impl std::fmt::Display for JsonValue {
     }
 }
 
+/// DEV-184: this escaped only `" \ \n \r \t`, so every other C0 control went onto the LSP wire
+/// raw — invalid per RFC 8259 §7. C8's protocol validation compared verdicts rather than values,
+/// which is why a lenient client reported success and the defect survived (`GATE-C8-CLOSURE.md`
+/// §4). AS5-c replaces this with the shared authority; this is the repair.
 fn escape_json_string(s: &str) -> String {
-    let mut result = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => result.push_str("\\\""),
-            '\\' => result.push_str("\\\\"),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            _ => result.push(c),
+    let mut out = String::new();
+    for character in s.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // DEV-184: every remaining C0 control. RFC 8259 §7 requires U+0000-U+001F to be
+            // escaped; leaving them raw produced documents no conforming parser accepts.
+            character if character <= '\u{1f}' => {
+                out.push_str("\\u");
+                for shift in [12, 8, 4, 0] {
+                    let nibble = (character as u32 >> shift) & 0xf;
+                    out.push(char::from_digit(nibble, 16).expect("nibble is < 16"));
+                }
+            }
+            character => out.push(character),
         }
     }
-    result
+    out
 }
 
 /// Parse minimal JSON (enough for LSP messages)
