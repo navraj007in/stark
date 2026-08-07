@@ -26,7 +26,7 @@ use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
 use crate::mir::provider_lower::ProviderLowering;
 use crate::source::{RegisteredSource, Span};
-use crate::typecheck::{Ty, TypeTables};
+use crate::typecheck::{DisplayPath, DisplayStep, Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub struct LowerError {
@@ -6357,6 +6357,50 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// **AS3 Boundary 4: the body that renders one `Display` position.**
+    ///
+    /// `Static` names it. `Bound` is late-bound — `println(x)` inside `fn show<T: Display>` cannot
+    /// name a body at check time — and resolves through the shared specialiser with the concrete
+    /// `Self` MIR already holds. Replaces `find_impl_fn(nominal, "fmt", ..)` at all three MIR
+    /// Display sites: top-level print, interpolation, and nested composite elements.
+    fn display_fn_key(
+        &self,
+        root: ExprId,
+        path: &DisplayPath,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let id = self.tables.display_uses.get(&(root, path.clone()))?;
+        let use_ = self.tables.callable_uses.get(id.0 as usize)?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                trait_args,
+                method_args,
+                ..
+            } => {
+                // DEV-189's rule: the concrete `Self` with its arguments, or a generic impl never
+                // unifies. MIR has both to hand.
+                let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
+                let resolved = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                )?;
+                self.key_for_selected_body(resolved.body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
     fn static_selected_key(
         &self,
         call_expr: ExprId,
@@ -9279,8 +9323,13 @@ impl<'a> FnLowerer<'a> {
     /// `str`/`String` elements, and nested user-`Display` land in follow-on slices.
     fn emit_display_value(
         &mut self,
+        // **AS3 Boundary 4: the checker's dispatch plan, threaded through the recursion.**
+        // `root` is the rendered expression; `path` is the structural position within it. Together
+        // they key `display_uses`, so a nested nominal's `fmt` is READ rather than re-selected.
+        root: ExprId,
         place: Place,
         ty: &MirTy,
+        path: DisplayPath,
         span: Span,
     ) -> Result<(), LowerError> {
         let (peeled, layers) = Self::peel_refs(ty.clone());
@@ -9401,7 +9450,13 @@ impl<'a> FnLowerer<'a> {
                     }
                     let mut field = place.clone();
                     field.projection.push(Projection::Field(i as u32));
-                    self.emit_display_value(field, elem_ty, span)?;
+                    self.emit_display_value(
+                        root,
+                        field,
+                        elem_ty,
+                        path.child(DisplayStep::TupleField(i as u32)),
+                        span,
+                    )?;
                 }
                 self.print_str_lit(")", span);
                 Ok(())
@@ -9429,7 +9484,13 @@ impl<'a> FnLowerer<'a> {
                     }
                     let mut element = place.clone();
                     element.projection.push(Projection::ConstIndex(i));
-                    self.emit_display_value(element, elem, span)?;
+                    self.emit_display_value(
+                        root,
+                        element,
+                        elem,
+                        path.child(DisplayStep::ArrayElement),
+                        span,
+                    )?;
                 }
                 self.print_str_lit("]", span);
                 Ok(())
@@ -9466,7 +9527,13 @@ impl<'a> FnLowerer<'a> {
                 self.print_str_lit("Some(", span);
                 let mut payload = place.clone();
                 payload.projection.push(Projection::VariantField(1, 0));
-                self.emit_display_value(payload, &inner, span)?;
+                self.emit_display_value(
+                    root,
+                    payload,
+                    &inner,
+                    path.child(DisplayStep::OptionSome),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
@@ -9499,13 +9566,25 @@ impl<'a> FnLowerer<'a> {
                 self.print_str_lit("Ok(", span);
                 let mut ok_payload = place.clone();
                 ok_payload.projection.push(Projection::VariantField(0, 0));
-                self.emit_display_value(ok_payload, &ok_ty, span)?;
+                self.emit_display_value(
+                    root,
+                    ok_payload,
+                    &ok_ty,
+                    path.child(DisplayStep::ResultOk),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), err_blk);
                 self.print_str_lit("Err(", span);
                 let mut err_payload = place.clone();
                 err_payload.projection.push(Projection::VariantField(1, 0));
-                self.emit_display_value(err_payload, &err_ty, span)?;
+                self.emit_display_value(
+                    root,
+                    err_payload,
+                    &err_ty,
+                    path.child(DisplayStep::ResultErr),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
@@ -9613,7 +9692,13 @@ impl<'a> FnLowerer<'a> {
                             Place::local(elem_tmp),
                             span,
                         );
-                        self.emit_display_value(Place::local(elem_tmp), &elem, span)?;
+                        self.emit_display_value(
+                            root,
+                            Place::local(elem_tmp),
+                            &elem,
+                            path.child(DisplayStep::VecElement),
+                            span,
+                        )?;
                     } else {
                         // `VecGetRef` yields `Option<&T>` and never traps — `idx < len` holds here,
                         // so the `None` arm is unreachable, but it is still a real discriminant
@@ -9652,7 +9737,13 @@ impl<'a> FnLowerer<'a> {
                         );
                         let mut payload = Place::local(opt);
                         payload.projection.push(Projection::VariantField(1, 0));
-                        self.emit_display_value(payload, &elem_ref_ty, span)?;
+                        self.emit_display_value(
+                            root,
+                            payload,
+                            &elem_ref_ty,
+                            path.child(DisplayStep::VecElement),
+                            span,
+                        )?;
                         self.terminate(Terminator::Goto { target: after }, self.info(span), after);
                     }
                 }
@@ -9686,8 +9777,10 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let nominal = *item;
                 let nominal_args = args.clone();
+                // Consume the published position. This scanned the nominal's impls for a member
+                // named `fmt`; the checker already decided which body renders here.
                 let Some((key, receiver)) =
-                    self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+                    self.display_fn_key(root, &path, nominal, &nominal_args)
                 else {
                     return unsupported(
                         "Display::fmt not found for a composite element (only standard-library and \
@@ -9821,7 +9914,13 @@ impl<'a> FnLowerer<'a> {
             Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
             self.info(span),
         );
-        self.emit_display_value(Place::local(tmp), &peeled, span)?;
+        self.emit_display_value(
+            arg,
+            Place::local(tmp),
+            &peeled,
+            DisplayPath::default(),
+            span,
+        )?;
         if is_println {
             let d = Place::local(self.new_temp(MirTy::Unit));
             self.emit_runtime_call(
@@ -10311,7 +10410,8 @@ impl<'a> FnLowerer<'a> {
                 )
             }
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        let Some((key, receiver)) =
+            self.display_fn_key(field, &DisplayPath::default(), nominal, &nominal_args)
         else {
             return unsupported("Display::fmt not found for an interpolated value", span);
         };
@@ -10397,7 +10497,8 @@ impl<'a> FnLowerer<'a> {
             }
             other => return unsupported(format!("Display print on non-nominal {other:?}"), span),
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        let Some((key, receiver)) =
+            self.display_fn_key(arg, &DisplayPath::default(), nominal, &nominal_args)
         else {
             return unsupported("Display::fmt not found for printed type", span);
         };

@@ -147,3 +147,38 @@ and `c63e_formatting` (10/51).
 explicitly and print a `String`, so they exercise bound method dispatch and never reach the
 renderer. Verified by reading the fixtures rather than by assuming either way — a surviving mutation
 is a question, not a verdict.
+
+---
+
+## 7. Progress — MIR Display, HIR `Static`, and the qualified paths (2026-08-07)
+
+| Engine | Callers | Closed in this pass |
+| --- | ---: | --- |
+| HIR interpreter | 7 → **2** | ordinary `call_method`, both qualified paths, both Display sites |
+| MIR lowering | 5 → **2** | all three Display sites |
+
+**MIR Display.** `emit_display_value` now carries `(root, path)` alongside its `MirTy`, and the
+recursion builds the path mechanically — `TupleField(i)`, `ArrayElement`, `VecElement`,
+`OptionSome`, `ResultOk`, `ResultErr`. `display_fn_key` resolves `Static` directly and `Bound`
+through the shared specialiser with the concrete `Self` MIR already holds (DEV-189's rule). The
+repeated-container semantics stay clean: one published position, executed once per runtime element,
+no record per element.
+
+**The engine asymmetry is closed.** `static_selected_callable` is the interpreter's counterpart to
+MIR's `static_selected_key`, so both engines now answer an ordinary method call from the same
+published body.
+
+Before deleting the `call_method` fallback it was instrumented and run across nine suites — both
+differentials, iterators, bound identity, adversarial trait impls, cross-package generics,
+associated types and Display dispatch. It fired **zero** times. Deleted rather than annotated:
+"unreached in the suites you ran" is not "unreachable", and an annotation saying exactly that is
+what let DEV-191 hide behind a comment claiming it had been verified.
+
+### Remaining — 4 callers
+
+| Engine | Site | Blocker |
+| --- | --- | --- |
+| HIR | nested/container `Eq` helper | needs a publication: the originating `contains`/`position` expression must be threaded down so the checker can publish against it |
+| HIR | `Iterator` fallback | — |
+| MIR | associated-function lookup | — |
+| MIR | `Iterator::next` | — |

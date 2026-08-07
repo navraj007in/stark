@@ -2978,6 +2978,33 @@ impl<'a> Interpreter<'a> {
         self.callable_for_body(resolved.body)
     }
 
+    /// **AS3 Boundary 4: consume the checker's `Static` selection for a method call.**
+    ///
+    /// The census found this as an engine asymmetry: MIR added `static_selected_key` and the
+    /// interpreter kept scanning by name, so the two engines answered an ordinary method call by
+    /// different means. They agreed — which is the state DEV-192 was hiding in.
+    ///
+    /// Only `Inherent`, `TraitImpl` and `Qualified` provenances are eligible; an operator's
+    /// `CoreTrait` use can be published against the same expression and names a different callable.
+    fn static_selected_callable(&self, expr: ExprId) -> Option<Callable> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Inherent
+                        | crate::typecheck::DispatchProvenance::TraitImpl { .. }
+                        | crate::typecheck::DispatchProvenance::Qualified { .. }
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.callable_for_body(*body)
+    }
+
     fn specialised_bound_callable(&self, expr: ExprId, base: ExprId) -> Option<Callable> {
         let ids = self.tables.callable_uses_by_expr.get(&expr)?;
         let use_ = ids
@@ -3563,10 +3590,10 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 Res::TraitMember(trait_id, member) => {
-                    self.call_qualified_trait(*trait_id, *member, args, span)
+                    self.call_qualified_trait(expr_id, *trait_id, *member, args, span)
                 }
                 Res::CoreTraitMember(core_trait, _) => {
-                    self.call_qualified_core_trait(*core_trait, args, span)
+                    self.call_qualified_core_trait(expr_id, *core_trait, args, span)
                 }
                 Res::AssociatedFn(item, name) => match self.eval_call_arguments(args)? {
                     Ok(values) => {
@@ -4319,8 +4346,17 @@ impl<'a> Interpreter<'a> {
         // the interpreter and MIR ask ONE authority the same question — and it is the only path
         // that reaches a trait DEFAULT body by construction rather than by the scan happening to
         // fall through to one.
-        let specialised = self.specialised_bound_callable(expr_id, base);
-        let method = match specialised.or_else(|| self.find_method(nominal, &name, trait_filter)) {
+        let specialised = self
+            .static_selected_callable(expr_id)
+            .or_else(|| self.specialised_bound_callable(expr_id, base));
+        // **AS3 Boundary 4: no name-scan fallback.** This ended in
+        // `.or_else(|| self.find_method(nominal, &name, trait_filter))`. Instrumented across nine
+        // suites — both differentials, iterators, bound identity, adversarial trait impls,
+        // cross-package generics, associated types and Display dispatch — it fired **zero** times
+        // once the `Static` selection was consumed. Deleted rather than annotated: unreached in the
+        // suites you ran is not unreachable, and an annotation is what let DEV-191 hide.
+        let _ = (&name, trait_filter);
+        let method = match specialised {
             Some(method) => method,
             // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
             // `is_core_value` above could not classify it — `Ty::Param` names no shape. The
@@ -4365,6 +4401,8 @@ impl<'a> Interpreter<'a> {
 
     fn call_qualified_trait(
         &mut self,
+        // AS3 Boundary 4: the call expression, so the checker's `Qualified` selection can be read.
+        call_expr: ExprId,
         trait_id: ItemId,
         member: u32,
         args: &[ExprId],
@@ -4383,13 +4421,13 @@ impl<'a> Interpreter<'a> {
         // WP-C2.2 (DEV-034/DEV-035): same single-resolution receiver handling as `call_method`.
         let receiver_place = self.core_receiver_place(*first, span)?;
         let receiver = self.clone_place_value(&receiver_place, span)?;
+        // `<T as Tr>::m()` is a `Qualified` dispatch the checker already resolved; scanning the
+        // receiver's nominal for the member name re-decided it.
         let method = self
-            .find_method(
-                nominal_item(&receiver),
-                &method_name,
-                Some(Res::Item(trait_id)),
-            )
+            .static_selected_callable(call_expr)
+            .or_else(|| self.specialised_bound_callable(call_expr, *first))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        let _ = (&method_name, trait_id);
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
                 .call_user_method(method, receiver_place, receiver, values, span)
@@ -4408,6 +4446,7 @@ impl<'a> Interpreter<'a> {
     /// spelling of the same dispatch, not a separate mechanism.
     fn call_qualified_core_trait(
         &mut self,
+        call_expr: ExprId,
         core_trait: CoreTrait,
         args: &[ExprId],
         span: Span,
@@ -4420,12 +4459,10 @@ impl<'a> Interpreter<'a> {
         let receiver_place = self.core_receiver_place(*first, span)?;
         let receiver = self.clone_place_value(&receiver_place, span)?;
         let method = self
-            .find_method(
-                nominal_item(&receiver),
-                method_name,
-                Some(Res::CoreTrait(core_trait)),
-            )
+            .static_selected_callable(call_expr)
+            .or_else(|| self.specialised_bound_callable(call_expr, *first))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        let _ = method_name;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
                 .call_user_method(method, receiver_place, receiver, values, span)
