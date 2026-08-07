@@ -736,6 +736,10 @@ pub struct CallableSigTy {
 
 // ------------------------------------------------------- AS3 / WP-CALLABLE-USE-TOTAL --
 
+/// A deferred callable-use publication: the call expression, the body it selected, and the generic
+/// environment — held until the instantiated signature exists (AS3 Boundary 2).
+type PendingUse = (ExprId, BlockId, Vec<(GenericBinder, Ty)>);
+
 /// A published callable use. Indexes [`TypeTables::callable_uses`].
 ///
 /// **A use is a STATIC SEMANTIC USE SITE, not an expression and not a runtime invocation.** One
@@ -7340,7 +7344,7 @@ impl<'a> TypeChecker<'a> {
             return fresh;
         }
 
-        let mut pending_use: Option<(ExprId, BlockId, Vec<(GenericBinder, Ty)>)> = None;
+        let mut pending_use: Option<PendingUse> = None;
         let mut map = HashMap::new();
         if let Some(args) = turbofish {
             let has_tensor_kind = generics.iter().any(|param| {
