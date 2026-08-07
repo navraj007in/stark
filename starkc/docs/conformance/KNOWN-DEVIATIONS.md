@@ -5592,7 +5592,7 @@ to an acceptance regression, which is the transition it was written for. The low
 matrix independently dropped from 14 disagreements to 13, and its reachable list from
 `[CharsIter, File]` to `[File]`.
 
-## DEV-196 — legacy Core `File` has no drop plan, and its verifier classification may be the only barrier (OPEN)
+## DEV-196 — legacy Core `File` has no drop plan; the feared barrier turns out to guard nothing (NARROWED, not a live defect)
 
 - **The shape:** `lower::ty_requires_drop_glue(Core(File)) = false`, so lowering would take the fast
   `VecClear` path for `Vec<File>`; `drop_plan::plan_for(Core(File))` is `Noop`; only
@@ -5616,3 +5616,41 @@ matrix independently dropped from 14 disagreements to 13, and its reachable list
 - **Blocks:** merging the two precise drop authorities (AS4 item 1 for the drop rule).
 - **Pinned by:** `as4_vecclear_divergence::core_file_is_not_reachable_through_ordinary_lowering`,
   which fails if `Core(File)` starts lowering through the ordinary path before this is resolved.
+
+### DEV-196 — ANSWERED by measurement (2026-08-07)
+
+The experiment the entry asked for was run: a **capability-declared package** (`filesystem`,
+`stark build` — not `starkc run`), a real `File::create`, moved into a `Vec<File>`, then `clear()`.
+
+```text
+Vec<File> push + clear                          refused: type Core(File, []) (C4.5)
+bare File bound by let                          refused: same
+File matched but never bound                    refused: same
+no File at all (control)                        BUILT
+```
+
+**`Core(File)` is unlowerable from source**, capability or not. `mir_ty` refuses the type, so the
+`Ok(f)` binding alone is enough — `File::create`'s `Result<File, IOError>` payload cannot be
+lowered. No source program constructs a `Vec<File>`, let alone clears one.
+
+**Where `Core(File)` is used, destruction is explicit.** The WP-C7.8.4 provider path builds its MIR
+by hand and closes the handle with `stark_file_close` (`HandleConsumed`), never through drop
+planning. So `drop_plan::plan_for(Core(File)) = Noop` is **consistent with how `File` is actually
+used**, not a hole — nothing relies on drop glue for it.
+
+**Consequences, and they change AS4's plan:**
+
+1. The feared resource-lifecycle defect is **not live**. The verifier's `File => true` guards a path
+   nothing can reach, so it is neither load-bearing nor harmful.
+2. The equivalence `fast_clear_safe(T) == !requires_drop_glue(T)` is **not tested by `File` either**,
+   because `File` never reaches a `Vec`. So the hypothesised fourth predicate
+   (`is_trivially_discardable`) has **no motivating case** and is not introduced.
+3. Merging the two precise drop authorities is **no longer blocked by a safety risk**. What remains
+   is that `Core(File)`'s classification is untested by any program — an argument for resolving it
+   through the HostResource migration, not for keeping two authorities.
+
+**`File => true` stays** in the verifier: it costs nothing, and removing it would be a change with
+no evidence behind it in either direction.
+
+**Pinned by** `as4_vecclear_divergence::dev196_a_vec_of_core_file_cannot_be_lowered_at_all`, which
+fails loudly — naming the safety question — the day `Core(File)` starts lowering.

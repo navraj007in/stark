@@ -347,3 +347,54 @@ precise authority merge           BLOCKED ON File
 item 3 exhaustiveness             AFTER shared authority
 item 4 adversaries                AFTER property decisions
 ```
+
+
+---
+
+## 9. The `Vec<File>` experiment (2026-08-07): the blocker dissolves
+
+Run as §8 specified — capability-declared package, `stark build`, real `File::create`, moved into a
+`Vec<File>`, cleared.
+
+```text
+Vec<File> push + clear        refused: type Core(File, []) (C4.5)
+bare File bound by let        refused: same
+File matched, never bound     refused: same
+no File at all (control)      BUILT
+```
+
+**`Core(File)` is unlowerable from source**, with or without the capability. The `Ok(f)` binding
+alone triggers it. So the second reachable row of the disagreement matrix is reachable only in the
+sense that `MirTy::Core(File)` can be *constructed* — by the provider path's hand-built MIR — not in
+the sense that any program produces it.
+
+And there, destruction is **explicit**: WP-C7.8.4 closes the handle with `stark_file_close`
+(`HandleConsumed`), never through drop planning. `drop_plan::plan_for(Core(File)) = Noop` is
+therefore consistent with actual use rather than a gap.
+
+### What this changes
+
+| §8 said | §9 measured |
+| --- | --- |
+| `File => true` may be an accidental safety barrier | it guards a path nothing reaches — neither load-bearing nor harmful |
+| a fourth predicate may be needed | no motivating case exists; **not introduced** |
+| authority merge BLOCKED ON File | **not blocked by safety**; blocked only on `File` being untested |
+
+The suspicion in §8 was the right one to hold — an owning handle with a `Noop` drop plan is exactly
+the shape that should stop a consolidation — and measuring it is what showed the danger is not
+currently reachable. Recorded that way round deliberately: the hypothesis was sound and the
+measurement resolved it, which is different from the hypothesis having been wrong.
+
+### Status
+
+```text
+drop semantic decomposition       DONE
+near-neighbour naming             DONE
+precise-drop disagreement         MEASURED + REACHABLE
+DEV-195 / CharsIter               DECIDED (CD-387): lowering wins
+DEV-196 / Core File               ANSWERED: unreachable from source, explicit close where used
+fourth predicate                  NOT NEEDED — no motivating case
+precise authority merge           UNBLOCKED on safety; needs a decision on File's classification
+item 3 exhaustiveness             AFTER shared authority
+item 4 adversaries                AFTER property decisions
+```

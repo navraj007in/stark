@@ -188,3 +188,58 @@ fn a_non_droppable_element_takes_the_fast_path_and_passes() {
         _ => panic!("`Vec<Int32>::clear()` must pass the whole pipeline"),
     }
 }
+
+/// **DEV-196, answered: `Vec<File>` is unreachable, so `File`'s classification guards nothing.**
+///
+/// Measured three ways in a **capability-declared** package build (`stark build`, `filesystem`
+/// declared), not just through `starkc run`:
+///
+/// ```text
+/// let mut v: Vec<File> = Vec::new(); ... v.clear();   refused: type Core(File, []) (C4.5)
+/// match File::create(..) { Ok(f) => { let g: File = f; ... } }  refused: same
+/// match File::create(..) { Ok(f) => { println(1); } }           refused: same
+/// no File at all                                                 BUILT
+/// ```
+///
+/// `mir_ty` refuses `Core(File)` outright, so the `Ok(f)` binding alone is enough — `File::create`'s
+/// `Result<File, IOError>` payload is unlowerable. No source program can construct a `Vec<File>`,
+/// let alone clear one.
+///
+/// Where `Core(File)` IS used — the WP-C7.8.4 provider path — the MIR is built by hand and the
+/// handle is closed **explicitly** (`stark_file_close`, `HandleConsumed`), never through drop
+/// planning. So `drop_plan::plan_for(Core(File)) = Noop` is consistent with actual use rather than
+/// a hole, and the verifier's `File => true` guards a path nothing reaches.
+///
+/// **Consequence for AS4:** the feared resource-lifecycle defect is not live, and the equivalence
+/// `fast_clear_safe(T) == !requires_drop_glue(T)` is not currently *tested* by `File` either — so
+/// the fourth predicate (`is_trivially_discardable`) is not needed yet. `File => true` stays
+/// because it costs nothing and its real resolution is the HostResource migration.
+#[test]
+fn dev196_a_vec_of_core_file_cannot_be_lowered_at_all() {
+    match pipeline(
+        "fn main() {\n\
+         \x20   let mut v: Vec<File> = Vec::new();\n\
+         \x20   match File::create(\"/tmp/dev196_unit.txt\") {\n\
+         \x20       Ok(f) => { v.push(f); }\n\
+         \x20       Err(e) => { println(0); }\n\
+         \x20   }\n\
+         \x20   v.clear();\n\
+         \x20   println(v.len());\n}\n",
+    ) {
+        Outcome::LoweringRefused(what) => assert!(
+            what.contains("Core(File"),
+            "the refusal must be the File type itself, got: {what}"
+        ),
+        Outcome::Ok { .. } => panic!(
+            "`Vec<File>::clear()` now lowers. DEV-196's safety question becomes LIVE: lowering \
+             says `Core(File)` needs no glue, `drop_plan::plan_for` is Noop, and only the \
+             verifier's `File => true` stands between this and discarded handles. Characterize \
+             the destruction path before allowing it."
+        ),
+        Outcome::VerifierRejected(e) => panic!(
+            "expected a LOWERING refusal, got a verifier one: {e}. If `Core(File)` now lowers and \
+             only the verifier refuses, DEV-196 is live — see above."
+        ),
+        Outcome::CheckerRejected => panic!("the checker must still accept the program"),
+    }
+}
