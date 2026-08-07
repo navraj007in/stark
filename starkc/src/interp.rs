@@ -2921,7 +2921,7 @@ impl<'a> Interpreter<'a> {
     /// AS3 Boundary 4c. `Self` is concrete here — it is the receiver's own type — so the
     /// specialiser has what it needs. Returns `None` when the checker published no bound use for
     /// this expression, which is every ordinary concrete method call.
-    fn specialised_bound_callable(&self, expr: ExprId, receiver: &Value) -> Option<Callable> {
+    fn specialised_bound_callable(&self, expr: ExprId, base: ExprId) -> Option<Callable> {
         let ids = self.tables.callable_uses_by_expr.get(&expr)?;
         let use_ = ids
             .iter()
@@ -2937,8 +2937,22 @@ impl<'a> Interpreter<'a> {
         else {
             return None;
         };
-        // The concrete `Self` is the receiver's nominal at its runtime type.
-        let self_ty = self.runtime_nominal_ty(receiver)?;
+        // **DEV-187's repair: the concrete `Self` INCLUDING its type arguments.**
+        //
+        // This passed the bare nominal head, taken from the runtime `Value` — which carries no type
+        // arguments, so `impl<T> Describe for W2<T>` never matched and both engines silently fell
+        // back to their old scans. The checker knows the receiver's type at this expression, and
+        // `concrete_runtime_ty` substitutes it through the active generic frame using the shared
+        // `substitute_ty`. No new machinery, and no change to the runtime representation.
+        let declared = self.tables.expr_types.get(&base)?;
+        let self_ty = self
+            .concrete_runtime_ty(declared, self.hir.expr(base).span)
+            .ok()?;
+        // Auto-deref: a receiver of `&T` selects on `T`.
+        let mut self_ty = self_ty;
+        while let Ty::Ref { inner, .. } = self_ty {
+            self_ty = *inner;
+        }
         let resolved = crate::bound_dispatch::specialize_bound_callable(
             &self.tables.trait_impls,
             &self.tables.callable_types,
@@ -2949,20 +2963,6 @@ impl<'a> Interpreter<'a> {
             method_args,
         )?;
         self.callable_for_body(resolved.body)
-    }
-
-    /// The nominal type of a runtime value, for bound specialisation.
-    ///
-    /// `Value` carries no type arguments (the Display characterization established this), so a
-    /// generic nominal resolves to its bare head. That is sufficient for selecting an impl whose
-    /// head matches; it is NOT sufficient for a generic impl's environment, which is why 4d's
-    /// negative control compares environments rather than only bodies.
-    fn runtime_nominal_ty(&self, value: &Value) -> Option<Ty> {
-        match value {
-            Value::Struct { item, .. } => Some(Ty::Struct(*item, Vec::new())),
-            Value::Enum { item, .. } => Some(Ty::Enum(*item, Vec::new())),
-            _ => None,
-        }
     }
 
     /// The runnable form of a body the checker already selected.
@@ -4240,7 +4240,7 @@ impl<'a> Interpreter<'a> {
         // the interpreter and MIR ask ONE authority the same question — and it is the only path
         // that reaches a trait DEFAULT body by construction rather than by the scan happening to
         // fall through to one.
-        let specialised = self.specialised_bound_callable(expr_id, &receiver_value);
+        let specialised = self.specialised_bound_callable(expr_id, base);
         let method = match specialised.or_else(|| self.find_method(nominal, &name, trait_filter)) {
             Some(method) => method,
             // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so

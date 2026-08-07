@@ -1115,10 +1115,21 @@ fn both_engines_resolve_a_bound_call_identically() {
     //
     // Recorded as DEV-187 rather than absorbed. Weakening the threshold to make this pass would
     // hide the gap the control exists to expose.
+    // **DEV-187 remains OPEN, and the call-site repair was not sufficient.**
+    //
+    // Both engines now pass the CONCRETE `Self` including arguments — `W2<Int32>`, not `W2` — and
+    // the generic impl still does not resolve. So the bare-nominal-head diagnosis was only half of
+    // it: the remaining cause is on the INDEX side, in how `build_trait_impl_index` converts an
+    // impl's self type. `convert_hir_type` is called outside the impl's generic scope, so
+    // `impl<T> Describe for W2<T>` very likely does not store `Struct(W2, [Param("T")])`, and no
+    // caller-side change can make a match succeed against a head that was never recorded.
+    //
+    // Pinned at 2 rather than weakened to pass: this is the count that is TRUE, and when the index
+    // is repaired it becomes 4 and this test demands the record be updated.
     assert_eq!(
         compared, 2,
-        "expected exactly the two NON-generic resolutions to succeed; if this changed, DEV-187 \
-         may be fixed — raise the threshold and update the record"
+        "expected exactly the two NON-generic resolutions; DEV-187 is open — see the note above \
+         for the refined diagnosis"
     );
 
     // And the program still produces the right answers through the HIR engine.

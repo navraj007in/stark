@@ -5222,7 +5222,23 @@ cannot be deleted while that is true.
 - **Why this was invisible until now:** the program prints the right answers, so no behavioural test
   could see it. The negative control compares **resolutions**, not output, which is the only reason
   it surfaced — and it surfaced on the first run.
-- **Repair:** pass the concrete `Self` including arguments from both engines. Pinned meanwhile by
+### Refined diagnosis (2026-08-07) — the call-site repair was necessary but NOT sufficient
+
+Both engines now pass the concrete `Self` **including arguments** (`W2<Int32>`, not `W2`), using
+`expr_types` plus `concrete_runtime_ty`, which substitutes through the active generic frame via the
+shared `substitute_ty`. That change is correct on its own terms and is kept.
+
+**The generic impl still does not resolve.** So the bare-nominal-head account was only half the
+cause. The remainder is on the **index** side: `build_trait_impl_index` calls `convert_hir_type` on
+an impl's self type *outside that impl's generic scope*, so `impl<T> Describe for W2<T>` very likely
+does not store `Struct(W2, [Param("T")])`. No caller-side change can make a match succeed against a
+head that was never recorded.
+
+Recorded before confirming the exact stored form, because the *conclusion* — that the remaining
+cause is index-side, not call-site — follows from the repair having no effect.
+
+- **Repair:** convert each impl's self type within its own generic scope when building the index,
+  then re-check the caller side. Pinned meanwhile by
   `both_engines_resolve_a_bound_call_identically`, which asserts exactly the two non-generic
   resolutions succeed; when the repair lands, that count rises and the test demands this record be
   updated.
