@@ -21,6 +21,7 @@ Two governance tracks remain **live alongside** it and are **not** superseded:
 | Track | Document | Why it is still live |
 | --- | --- | --- |
 | Compiler gates C0–C10 | `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` (+ `COMPILER-CHARTER.md`, `COMPILER-STATE.md`) | Gate C9 is OPEN. This roadmap does not define C9/C10 exit criteria, and §11 below assumes a functioning compiler-correctness lane. |
+| Architecture stabilization | `STARKLANG/docs/compiler/work-packages/WP-ARCHITECTURE-STABILIZATION.md` | **Campaign A is a binding entry gate on §6 (Phase 4, structured concurrency)** as of 2026-08-07 — see §6.0. Sprints 1 and 2 are complete; AS3 and AS4 remain. It governs no package or application work, and blocks nothing in this roadmap except the concurrency campaign. |
 | ~~HTTP client HC0–HC13~~ | `STARKLANG/docs/compiler/work-packages/WP-HTTP-CLIENT-ROADMAP.md` | **CLOSED 2026-08-03 (CD-375, corrected CD-376).** HC13 delivered the Tier-1 qualification this row was waiting on, so §1's "completed platform capability" claim is now paid for. The track is no longer live. What it did NOT settle is release readiness — DEV-165 (`connect_timeout` accepted and ignored) still blocks a public release, and does not belong to this track. The installer blocker has narrowed rather than cleared — see §1. |
 
 Current compiler position always comes from `COMPILER-STATE.md` (repo root), never from
@@ -108,7 +109,7 @@ STARK into a usable application platform with:
 * command-line tooling;
 * secure identity and artifact packages;
 * a REST API server;
-* structured concurrency;
+* structured concurrency — **gated on Campaign A, see §6.0**;
 * persistent storage;
 * distribution and documentation.
 
@@ -691,6 +692,87 @@ STARK can host a bounded, useful REST API with deterministic ownership and clean
 # 6. Phase 4 — Structured Concurrency
 
 ## December 2026
+
+## 6.0 Entry gate — Campaign A must be green (BINDING, 2026-08-07)
+
+> **Structured-concurrency compiler/runtime work may not begin until Campaign A exits green:
+> AS0, AS1a, AS2, AS1b, AS3 and AS4 closed and owner-reviewed.**
+
+This is a **binding platform gate**, not a proposal. It was approved on 2026-08-07 after two sprints
+of `WP-ARCHITECTURE-STABILIZATION.md` produced the evidence for it.
+
+### Why the evidence justifies a gate
+
+AS0 inventoried **six** pipeline assemblies bypassing the shared driver, several parallel provenance
+authorities, and semantic authorities still uninventoried. Sprint 2 then found **four** defects while
+consolidating just two authorities — including `TRAIT-COHERENCE-001`'s cross-package clause, a
+normative language rule that had **effectively never worked as specified** (DEV-183). The recurrent
+architectural risk this programme names is demonstrated, not theoretical.
+
+### Why AS3 and AS4 specifically
+
+They are the two foundations concurrency would amplify.
+
+- **AS3** closes the callable-use / generic-instantiation gap that currently prevents total
+  value-representation enforcement. That work is *already paused* because implicit callable dispatch
+  does not publish enough semantic information.
+- **AS4** establishes one authority for `Copy`, drop, borrow/reference containment and related type
+  properties.
+
+Structured concurrency depends immediately on exactly those facts:
+
+```text
+Can this value cross into a task?
+Is it moved or borrowed?
+Does a generic callable capture the instantiated type correctly?
+Who owns an affine resource after spawn?
+When does its Drop run?
+What survives cancellation?
+What must join restore?
+Can a reference outlive the spawning scope?
+```
+
+Building task semantics while those answers still have several authorities would make concurrency
+another **producer** of compensating mechanisms — the opposite of what the stabilization programme
+is for.
+
+### What the gate does NOT block
+
+Ordinary package and platform work continues. This roadmap already places a **synchronous** REST
+server before concurrency (§5), deliberately. The gate blocks the compiler/runtime concurrency
+campaign and nothing else: packages, tooling, documentation and the synchronous server are
+unaffected.
+
+### Sequencing
+
+```text
+Sprint 2 green
+    ↓
+Sprint 3  ── AS3 callable authority
+              ↓ semantic-complete checkpoint
+           ── AS4 type-property authority
+              ↓
+           ── remaining Campaign-A AS0 inventories
+    ↓
+CAMPAIGN A GREEN
+    ↓
+structured-concurrency compiler/runtime work permitted
+```
+
+### Where Campaign A's status lives
+
+`WP-ARCHITECTURE-STABILIZATION.md`'s approval-and-status table, together with the per-sprint
+closeout reports under `STARKLANG/docs/compiler/audits/`. **On `develop` those documents lag the
+execution**: the programme runs on `wp-arch-stability/sprint-N` branches which are deliberately not
+merged, so `develop`'s copy of the work package is the original proposal. Read the status from the
+branch carrying the current sprint, the same way current compiler position always comes from
+`COMPILER-STATE.md` rather than from this file.
+
+This gate is discharged by that table recording AS0, AS1a, AS2, AS1b, AS3 **and** AS4 all closed and
+owner-reviewed — not by any single sprint closing, and not by Campaign A's implementation being
+finished without the review.
+
+---
 
 ## Objective
 
