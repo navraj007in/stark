@@ -958,7 +958,9 @@ pub enum DisplayStep {
 pub struct DisplayPath(pub Vec<DisplayStep>);
 
 impl DisplayPath {
-    fn extend(&self, step: DisplayStep) -> Self {
+    /// This path with one more step. Used by the checker to BUILD the plan and by both engines to
+    /// walk it, so the two constructions cannot drift.
+    pub fn child(&self, step: DisplayStep) -> Self {
         let mut steps = self.0.clone();
         steps.push(step);
         DisplayPath(steps)
@@ -10764,39 +10766,39 @@ impl<'a> TypeChecker<'a> {
             Ty::Tuple(elems) => {
                 for (index, elem) in elems.clone().into_iter().enumerate() {
                     let step = DisplayStep::TupleField(index as u32);
-                    self.walk_display_ty(root, &elem, path.extend(step), span, depth + 1);
+                    self.walk_display_ty(root, &elem, path.child(step), span, depth + 1);
                 }
             }
             Ty::Array(elem, _) => {
                 let elem = (**elem).clone();
-                let next = path.extend(DisplayStep::ArrayElement);
+                let next = path.child(DisplayStep::ArrayElement);
                 self.walk_display_ty(root, &elem, next, span, depth + 1);
             }
             Ty::Slice(elem) => {
                 let elem = (**elem).clone();
-                let next = path.extend(DisplayStep::SliceElement);
+                let next = path.child(DisplayStep::SliceElement);
                 self.walk_display_ty(root, &elem, next, span, depth + 1);
             }
             Ty::Core(CoreType::Vec, args) => {
                 if let Some(elem) = args.first().cloned() {
-                    let next = path.extend(DisplayStep::VecElement);
+                    let next = path.child(DisplayStep::VecElement);
                     self.walk_display_ty(root, &elem, next, span, depth + 1);
                 }
             }
             Ty::Core(CoreType::Option, args) => {
                 if let Some(inner) = args.first().cloned() {
-                    let next = path.extend(DisplayStep::OptionSome);
+                    let next = path.child(DisplayStep::OptionSome);
                     self.walk_display_ty(root, &inner, next, span, depth + 1);
                 }
             }
             Ty::Core(CoreType::Result, args) => {
                 let args = args.clone();
                 if let Some(ok) = args.first().cloned() {
-                    let next = path.extend(DisplayStep::ResultOk);
+                    let next = path.child(DisplayStep::ResultOk);
                     self.walk_display_ty(root, &ok, next, span, depth + 1);
                 }
                 if let Some(err) = args.get(1).cloned() {
-                    let next = path.extend(DisplayStep::ResultErr);
+                    let next = path.child(DisplayStep::ResultErr);
                     self.walk_display_ty(root, &err, next, span, depth + 1);
                 }
             }

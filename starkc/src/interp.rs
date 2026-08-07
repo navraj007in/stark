@@ -7,7 +7,7 @@ use crate::hir::{
 };
 use crate::literal::{self, LitValue};
 use crate::source::Span;
-use crate::typecheck::{Ty, TypeTables};
+use crate::typecheck::{DisplayPath, DisplayStep, Ty, TypeTables};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -2206,6 +2206,9 @@ impl<'a> Interpreter<'a> {
     /// agree by construction rather than by coincidence.
     fn render_format_field(
         &mut self,
+        // AS3 Boundary 4: the field expression is its own Display root — the checker keyed the
+        // plan on exactly this id, from `check_format_field`.
+        field: ExprId,
         value: Value,
         spec: &crate::ast::FormatSpec,
         span: Span,
@@ -2242,7 +2245,7 @@ impl<'a> Interpreter<'a> {
                 _ => {}
             }
         }
-        let (text, arg_place) = self.display_text(value, span)?;
+        let (text, arg_place) = self.display_text(field, value, span)?;
         // A BORROWED field must not run the value's destructor: `display_text` promoted a copy of
         // a place's contents, and the place still owns the original.
         if owned {
@@ -2289,7 +2292,7 @@ impl<'a> Interpreter<'a> {
                                 }
                             };
                             let rendered =
-                                self.render_format_field(value, spec, *expr_span, owned)?;
+                                self.render_format_field(*expr, value, spec, *expr_span, owned)?;
                             out.push_str(&rendered);
                         }
                     }
@@ -3520,7 +3523,9 @@ impl<'a> Interpreter<'a> {
                     self.layout_query(*b, callee, span).map(Flow::Value)
                 }
                 Res::Builtin(builtin) => match self.eval_call_arguments(args)? {
-                    Ok(values) => self.call_builtin(*builtin, values, span).map(Flow::Value),
+                    Ok(values) => self
+                        .call_builtin(*builtin, values, args, span)
+                        .map(Flow::Value),
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
                 Res::Item(item) => match self.eval_call_arguments(args)? {
@@ -3854,13 +3859,22 @@ impl<'a> Interpreter<'a> {
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
+        // AS3 Boundary 4: the ARGUMENT expressions, so the print family can key the Display plan
+        // on the same root the checker used. `call_builtin` receives evaluated values, which carry
+        // no identity of their own.
+        arg_exprs: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                let (text, arg_place) = self.display_text(deref, span)?;
+                let root = arg_exprs.first().copied();
+                let (text, arg_place) = match root {
+                    Some(root) => self.display_text(root, deref, span)?,
+                    // No argument expression: `print()` with nothing to render.
+                    None => (self.format_runtime_value(&deref, span)?, None),
+                };
                 self.output.push_str(&text);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
@@ -4198,7 +4212,12 @@ impl<'a> Interpreter<'a> {
             Builtin::Eprint | Builtin::Eprintln => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                let (text, arg_place) = self.display_text(deref, span)?;
+                let root = arg_exprs.first().copied();
+                let (text, arg_place) = match root {
+                    Some(root) => self.display_text(root, deref, span)?,
+                    // No argument expression: `print()` with nothing to render.
+                    None => (self.format_runtime_value(&deref, span)?, None),
+                };
                 self.stderr.push_str(&text);
                 if builtin == Builtin::Eprintln {
                     self.stderr.push('\n');
@@ -7325,15 +7344,127 @@ impl<'a> Interpreter<'a> {
     /// `finish_display` to run the argument's destructor (ordinary by-value call ownership). If
     /// `fmt` traps, the `?` propagates and the argument is not dropped (traps abort; destructors
     /// do not run).
+    /// The rendered root's concrete static type, substituted through the active generic frame.
+    ///
+    /// `None` when the checker recorded no type for the expression, which the walk below treats as
+    /// "cannot decide the step" rather than as a licence to guess.
+    fn display_root_ty(&self, root: ExprId, span: Span) -> Result<Option<Ty>, RuntimeError> {
+        let Some(declared) = self.tables.expr_types.get(&root) else {
+            return Ok(None);
+        };
+        Ok(Some(self.concrete_runtime_ty(declared, span)?))
+    }
+
+    /// The static type one step down, mirroring the checker's own walk.
+    fn display_child_ty(ty: Option<&Ty>, step: DisplayStep) -> Option<Ty> {
+        let mut ty = ty?;
+        // A reference renders as its referent, exactly as the checker's walk peels it.
+        while let Ty::Ref { inner, .. } = ty {
+            ty = inner;
+        }
+        match (step, ty) {
+            (DisplayStep::TupleField(index), Ty::Tuple(elems)) => {
+                elems.get(index as usize).cloned()
+            }
+            (DisplayStep::ArrayElement, Ty::Array(elem, _))
+            | (DisplayStep::SliceElement, Ty::Slice(elem)) => Some((**elem).clone()),
+            (DisplayStep::VecElement, Ty::Core(crate::hir::CoreType::Vec, args))
+            | (DisplayStep::OptionSome, Ty::Core(crate::hir::CoreType::Option, args))
+            | (DisplayStep::ResultOk, Ty::Core(crate::hir::CoreType::Result, args)) => {
+                args.first().cloned()
+            }
+            (DisplayStep::ResultErr, Ty::Core(crate::hir::CoreType::Result, args)) => {
+                args.get(1).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// Which element step a sequence value's STATIC type calls for. `Value::Array` and `Value::Vec`
+    /// are one runtime shape but three static ones, and the checker keyed them apart.
+    fn display_element_step(ty: Option<&Ty>) -> DisplayStep {
+        let mut ty = ty;
+        while let Some(Ty::Ref { inner, .. }) = ty {
+            ty = Some(inner);
+        }
+        match ty {
+            Some(Ty::Array(..)) => DisplayStep::ArrayElement,
+            Some(Ty::Slice(..)) => DisplayStep::SliceElement,
+            _ => DisplayStep::VecElement,
+        }
+    }
+
+    /// **The published body for one render position.**
+    ///
+    /// `Static` names it outright. `Bound` is late-bound — `println(x)` inside
+    /// `fn show<T: Display>` cannot name a body at check time — so it goes through the shared
+    /// specialiser with `Self` taken from the published parametric type, substituted through the
+    /// active generic frame. Same resolution the operator path uses; no second algorithm.
+    fn display_callable(
+        &self,
+        root: ExprId,
+        path: &DisplayPath,
+        span: Span,
+    ) -> Result<Option<Callable>, RuntimeError> {
+        let Some(id) = self.tables.display_uses.get(&(root, path.clone())) else {
+            return Ok(None);
+        };
+        let Some(use_) = self.tables.callable_uses.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                Ok(self.callable_for_body(*body))
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                self_ty,
+                trait_args,
+                method_args,
+            } => {
+                let mut self_ty = self.concrete_runtime_ty(self_ty, span)?;
+                while let Ty::Ref { inner, .. } = self_ty {
+                    self_ty = *inner;
+                }
+                let Some(resolved) = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(self.callable_for_body(resolved.body))
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => Ok(None),
+        }
+    }
+
     fn display_text(
         &mut self,
+        // **AS3 Boundary 4: the root the checker keyed its dispatch plan on.** A `println`
+        // argument or an interpolation field; both are roots in their own right.
+        root: ExprId,
         value: Value,
         span: Span,
     ) -> Result<(String, Option<Place>), RuntimeError> {
-        if let Value::Struct { item, .. } | Value::Enum { item, .. } = &value {
-            let item = *item;
-            if let Some(callable) =
-                self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
+        if let Value::Struct { .. } | Value::Enum { .. } = &value {
+            // **No improvisation here either.** This branch used to fall through to
+            // `format_runtime_value` — the aggregate debug form — whenever the lookup missed, which
+            // is the same defect as `display_deep`'s old `value.to_string()`, one level up. It
+            // survived the first mutation pass because the top-level path was still silently
+            // answering for itself; the mutation is what exposed it. A user nominal that reached
+            // here passed E0500, so a missing publication is an internal invariant violation.
+            let Some(callable) = self.display_callable(root, &DisplayPath::default(), span)? else {
+                return Err(RuntimeError::new(
+                    "internal invariant: no Display use published for a checked user nominal",
+                    span,
+                ));
+            };
             {
                 // Give the by-value argument its own storage so `&self` can borrow it.
                 let place = self.promote_to_owned_temp_place(value, span)?;
@@ -7369,7 +7500,9 @@ impl<'a> Interpreter<'a> {
         {
             let place = self.promote_to_owned_temp_place(value, span)?;
             let snapshot = self.clone_place_value(&place, span)?;
-            let text = self.display_deep(&snapshot, span)?;
+            let ty = self.display_root_ty(root, span)?;
+            let text =
+                self.display_deep(root, &snapshot, ty.as_ref(), DisplayPath::default(), span)?;
             return Ok((text, Some(place)));
         }
         Ok((self.format_runtime_value(&value, span)?, None))
@@ -7384,16 +7517,32 @@ impl<'a> Interpreter<'a> {
     /// A nested nominal is CLONED to give `fmt` a `&self` place; a Rust clone runs no STARK
     /// destructor, and the clone is discarded WITHOUT `drop_value`, so the real element is still
     /// dropped exactly once by its owning composite (Contract C) — never a double destructor.
-    fn display_deep(&mut self, value: &Value, span: Span) -> Result<String, RuntimeError> {
+    fn display_deep(
+        &mut self,
+        root: ExprId,
+        value: &Value,
+        ty: Option<&Ty>,
+        path: DisplayPath,
+        span: Span,
+    ) -> Result<String, RuntimeError> {
         match value {
-            Value::Struct { item, .. } | Value::Enum { item, .. } => {
-                let item = *item;
-                let Some(callable) =
-                    self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
-                else {
-                    // No `Display` impl — under E0500 this cannot reach a displayable composite;
-                    // fall back to the aggregate rendering defensively.
-                    return Ok(value.to_string());
+            Value::Struct { .. } | Value::Enum { .. } => {
+                // **AS3 Boundary 4: consume, and do not improvise on absence.**
+                //
+                // This scanned the nominal's impls for a member named `fmt`, and on failure
+                // returned `value.to_string()` — the aggregate debug form. That defensive arm is
+                // gone. The checker published a body for every position it will render (E0500
+                // rejects the rest), so a missing entry HERE is an internal invariant violation,
+                // not permission to substitute a different rendering. Silently answering with a
+                // second algorithm when the published one is missing is exactly what DEV-192 cost.
+                let Some(callable) = self.display_callable(root, &path, span)? else {
+                    return Err(RuntimeError::new(
+                        format!(
+                            "internal invariant: no Display use published at {path:?} for a \
+                             checked user nominal"
+                        ),
+                        span,
+                    ));
                 };
                 let place = self.promote_to_owned_temp_place(value.clone(), span)?;
                 let receiver_value = self.clone_place_value(&place, span)?;
@@ -7416,32 +7565,82 @@ impl<'a> Interpreter<'a> {
                 let _ = self.take_place(&place, span);
                 Ok(text)
             }
-            Value::Tuple(elems) => Ok(format!("({})", self.display_deep_slots(elems, span)?)),
-            Value::Array(elems) | Value::Vec(elems) => {
-                Ok(format!("[{}]", self.display_deep_slots(elems, span)?))
+            Value::Tuple(elems) => {
+                let mut parts = Vec::with_capacity(elems.len());
+                for (index, slot) in elems.iter().enumerate() {
+                    let step = DisplayStep::TupleField(index as u32);
+                    let elem_ty = Self::display_child_ty(ty, step);
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("({})", parts.join(", ")))
             }
-            Value::Option(Some(inner)) => Ok(format!("Some({})", self.display_deep(inner, span)?)),
+            // **The static type decides the step, not the value.** `Value::Array` and `Value::Vec`
+            // share this arm — the runtime representation does not distinguish them — while the
+            // checker keyed `ArrayElement` and `VecElement` separately. Reading the step off the
+            // type is what keeps the two walks in step; guessing here, or trying both keys, would
+            // let a mismatch pass as a hit.
+            Value::Array(elems) | Value::Vec(elems) => {
+                let step = Self::display_element_step(ty);
+                let elem_ty = Self::display_child_ty(ty, step);
+                let mut parts = Vec::with_capacity(elems.len());
+                for slot in elems.iter() {
+                    // One published position, executed once per element: the plan is static, the
+                    // loop is the renderer's. No record per runtime element.
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            Value::Option(Some(inner)) => {
+                let step = DisplayStep::OptionSome;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Some({text})"))
+            }
             Value::Option(None) => Ok("None".to_string()),
-            Value::Result(Ok(inner)) => Ok(format!("Ok({})", self.display_deep(inner, span)?)),
-            Value::Result(Err(inner)) => Ok(format!("Err({})", self.display_deep(inner, span)?)),
+            Value::Result(Ok(inner)) => {
+                let step = DisplayStep::ResultOk;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Ok({text})"))
+            }
+            Value::Result(Err(inner)) => {
+                let step = DisplayStep::ResultErr;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Err({text})"))
+            }
             other => Ok(other.to_string()),
         }
     }
 
-    /// The `", "`-joined rendering of a tuple/array/Vec's slots, each through [`display_deep`].
-    fn display_deep_slots(
+    /// One tuple/array/Vec slot, or `<moved>` for an emptied one.
+    fn display_slot(
         &mut self,
-        slots: &[Option<Value>],
+        root: ExprId,
+        slot: &Option<Value>,
+        ty: Option<&Ty>,
+        path: DisplayPath,
         span: Span,
     ) -> Result<String, RuntimeError> {
-        let mut parts = Vec::with_capacity(slots.len());
-        for slot in slots {
-            match slot {
-                Some(value) => parts.push(self.display_deep(value, span)?),
-                None => parts.push("<moved>".to_string()),
-            }
+        match slot {
+            Some(value) => self.display_deep(root, value, ty, path, span),
+            None => Ok("<moved>".to_string()),
         }
-        Ok(parts.join(", "))
     }
 
     /// DEV-089: destroy a `print`/`println` by-value argument AFTER its formatted bytes have been

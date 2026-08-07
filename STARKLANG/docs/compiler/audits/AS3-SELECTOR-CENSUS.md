@@ -103,3 +103,47 @@ that quietly substitutes its own answer when the published one is missing is a f
 different name — and DEV-192 is exactly what that costs: `==` through an `Eq` bound silently used
 structural comparison and printed a wrong answer, undetected, because every fixture's `eq` happened
 to agree with it.
+
+---
+
+## 6. Progress — HIR Display consumption (2026-08-07)
+
+HIR sites 6 and 7 are closed. `display_text` and `display_deep` consume
+`display_uses[(root, path)]`; neither calls `find_method`. **HIR: 7 → 5 live callers.**
+
+The renderer's contract is now:
+
+```rust
+display_deep(root: ExprId, value, ty: Option<&Ty>, path: DisplayPath, span)
+```
+
+The static type is threaded because the value alone cannot decide the step: `Value::Array` and
+`Value::Vec` are **one runtime shape and three static ones** (`ArrayElement`, `SliceElement`,
+`VecElement`), and the checker keyed them apart. Guessing, or trying each key until one hits, would
+let a genuine mismatch read as a hit.
+
+`DisplayPath::child` is now the single constructor both the checker's walk and both engines' walks
+use, so the two cannot drift.
+
+### §5's rule, applied and then tested
+
+Both defensive fall-throughs are gone:
+
+| Site | Was | Now |
+| --- | --- | --- |
+| `display_deep` nominal arm | `return Ok(value.to_string())` | internal-invariant error |
+| `display_text` nominal arm | fell through to `format_runtime_value` | internal-invariant error |
+
+**The second one was only found by mutation.** Forcing the lookup to always miss, the first pass
+showed `as3_display_plan` failing 14 of 17 — and `dev_display_dispatch` passing 21 of 21. The
+survivor was not noise: `display_text`'s top-level nominal branch was still quietly answering for
+itself, one level above the arm I had just fixed. Removing a fallback in the obvious place and
+leaving its twin one frame up is exactly the shape of DEV-192.
+
+With both removed, the mutation fails `as3_display_plan` (14/17), `wp_fmt_001_interpolation` (5/40)
+and `c63e_formatting` (10/51).
+
+`dev_display_dispatch` still survives it, and that is **correct**: its fixtures call `x.fmt()`
+explicitly and print a `String`, so they exercise bound method dispatch and never reach the
+renderer. Verified by reading the fixtures rather than by assuming either way — a surviving mutation
+is a question, not a verdict.
