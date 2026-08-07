@@ -2080,158 +2080,29 @@ impl<'a> FnLowerer<'a> {
     // ---- drop elaboration (C4.5d) ----
 
     /// Does a value of `ty` require drop glue (its own or any transitive `Drop` impl)?
-    /// **AS4 — `requires drop glue`, lowering's authority.** Renamed from `ty_needs_drop`,
-    /// which read like any of the three drop questions and could therefore be substituted for
-    /// either of its near neighbours by a reader doing exactly what the name suggested.
+    /// **AS4 — lowering's view of `requires drop glue`.** The rule itself lives in
+    /// [`crate::mir::drop_rule`]; this supplies the facts from HIR, because lowering is still
+    /// BUILDING the `TypeContext` the verifier later reads. That temporal split is why the
+    /// authority takes facts rather than a table.
     ///
-    /// Pairs with `verify::requires_drop_glue`: same question, two engines. Distinct from
-    /// [`Self::ty_has_user_destructor_guarded`] (a USER `impl Drop`, which a host resource does not
-    /// have) and from `verify::may_need_drop` (a deliberate over-approximation).
+    /// The structural recursion and the `CoreType` classification are no longer duplicated here.
+    /// Adopting the shared table changes lowering's answer only for `MirTy::Core` variants
+    /// `mir_ty` cannot construct: for every one it can — `Box`, `CharsIter`, `HashMap`, `HashSet`,
+    /// `Iter`, `KeysIter`, `Vec`, `VecIter` — the two already agreed after CD-387.
+    ///
+    /// `Result` is preserved: `nominal_instance_fields` can fail, and swallowing that as "no
+    /// fields" would answer `false` for a nominal whose shape could not be resolved — the one
+    /// answer this predicate must never give by accident.
     fn ty_requires_drop_glue(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
-        Ok(match ty {
-            MirTy::Struct(item, args) => {
-                // A1: a Drop impl on a generic nominal drops per instantiation — the dtor
-                // instance is monomorphised at the same type arguments.
-                if self.type_has_drop_impl(*item) {
-                    true
-                } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.meta,
-                        *item,
-                        args,
-                        self.providers,
-                    )?;
-                    let NominalFields::Struct(tys) = fields else {
-                        return unsupported("struct item with enum fields shape", span);
-                    };
-                    let mut any = false;
-                    for t in &tys {
-                        any = any || self.ty_requires_drop_glue(t, span)?;
-                    }
-                    any
-                }
-            }
-            MirTy::Enum(EnumRef::User(item), args) => {
-                if self.type_has_drop_impl(*item) {
-                    true
-                } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.meta,
-                        *item,
-                        args,
-                        self.providers,
-                    )?;
-                    let NominalFields::Enum(variants) = fields else {
-                        return unsupported("enum item with struct fields shape", span);
-                    };
-                    let mut any = false;
-                    for v in &variants {
-                        for t in v {
-                            any = any || self.ty_requires_drop_glue(t, span)?;
-                        }
-                    }
-                    any
-                }
-            }
-            MirTy::Enum(_, args) => {
-                let mut any = false;
-                for t in args {
-                    any = any || self.ty_requires_drop_glue(t, span)?;
-                }
-                any
-            }
-            MirTy::Tuple(elems) => {
-                let mut any = false;
-                for t in elems {
-                    any = any || self.ty_requires_drop_glue(t, span)?;
-                }
-                any
-            }
-            MirTy::Array(elem, _) => self.ty_requires_drop_glue(elem, span)?,
-            // A1 (CD-031): String and Vec ALWAYS require runtime drop glue (buffer reclaim;
-            // Vec also drops elements). Both are leaf drop units — `collect_drop_units`' `_`
-            // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
-            // 0.1-A2: the iterator likewise (cursor/borrow release; T: Copy means no element
-            // destructors — glue is observably a no-op).
-            // 0.1-A7: a `Box<T>` always needs glue — it owns a heap allocation to release, and
-            // drops the contained `T` exactly once first.
-            MirTy::String
-            | MirTy::Core(crate::hir::CoreType::Box, _)
-            | MirTy::Core(crate::hir::CoreType::Vec, _)
-            | MirTy::Core(crate::hir::CoreType::VecIter, _)
-            | MirTy::Core(crate::hir::CoreType::HashMap, _)
-            | MirTy::Core(crate::hir::CoreType::HashSet, _)
-            | MirTy::Core(crate::hir::CoreType::KeysIter, _)
-            | MirTy::Core(crate::hir::CoreType::Iter, _) => true,
-            // **A11 §5: a host resource ALWAYS needs drop — its drop IS its provider close.**
-            //
-            // The FIFTH `MirTy` catch-all to swallow this variant, after `dump_ty`, `emit_ty`,
-            // `default_value_expr`, `TypeContext::is_copy` and `FnLowerer::is_copy` -- and the most
-            // consequential, because it silently disabled the whole close mechanism: no drop unit,
-            // so no drop flag, so no `Drop` terminator, so no close. Every resource leaked, and
-            // nothing complained. `c788_lifecycle_e2e` found it by observing the generated code
-            // rather than trusting that the parts were wired together.
-            //
-            // Note that `Core(File, _)` is deliberately absent from this list too: SELECT-C keeps
-            // `File` on the legacy path, where `c784_file_e2e` closes it through explicit MIR rather
-            // than through drop elaboration.
-            MirTy::HostResource(_) => true,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
-            //
-            // "Needs no drop glue" is indistinguishable from a leak, and this is the predicate the
-            // wildcard cost the most: it is what silently disabled the close mechanism above.
-            // `verify::may_need_drop` is the second copy of this rule and is hardened the same way.
-            //
-            // The `Core` arms are spelled out individually because the wildcard was hiding a real
-            // asymmetry inside them: `VecIter`/`KeysIter`/`Iter` need glue while `CharsIter`,
-            // `SplitIter`, `ValuesIter`, `MapIter` and `FilterIter` do not. That is preserved
-            // exactly as it stood rather than harmonised here — whether the second group is right
-            // is a question for whoever owns iterator lowering, and it is now written down instead
-            // of being a side effect of arm ordering. `Core(File, _)` is false for the reason
-            // given above (SELECT-C's legacy path), not by omission.
-            MirTy::Core(
-                crate::hir::CoreType::String
-                | crate::hir::CoreType::Option
-                | crate::hir::CoreType::Result
-                | crate::hir::CoreType::Range
-                | crate::hir::CoreType::RangeInclusive
-                | crate::hir::CoreType::CharsIter
-                | crate::hir::CoreType::SplitIter
-                | crate::hir::CoreType::ValuesIter
-                | crate::hir::CoreType::MapIter
-                | crate::hir::CoreType::FilterIter
-                | crate::hir::CoreType::Random
-                | crate::hir::CoreType::IOError
-                | crate::hir::CoreType::File
-                | crate::hir::CoreType::Ordering,
-                _,
-            ) => false,
-            // Scalars own nothing; `Str`/`Slice` are unsized and appear only behind a `Ref`, which
-            // borrows rather than owns; a fn value is a bare pointer.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::Slice(_)
-            | MirTy::Ref { .. }
-            | MirTy::FnPtr { .. } => false,
-        })
+        let facts = LoweringDropFacts {
+            lowerer: self,
+            failure: std::cell::RefCell::new(None),
+        };
+        let answer = crate::mir::drop_rule::requires_drop_glue_with(ty, &facts);
+        match facts.failure.into_inner() {
+            Some(what) => unsupported(what, span),
+            None => Ok(answer),
+        }
     }
 
     /// Decompose a droppable type into drop units: descend through dtor-less structs and
@@ -12383,6 +12254,68 @@ fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
 // disagree, so RB0/AS4 consolidates from evidence rather than from the assumption that a shared
 // name means a shared rule. The expected disagreements are PINNED, so a silent change to any of the
 // three fails here.
+/// **AS4: lowering's answers to the phase-dependent drop questions.**
+///
+/// Reads HIR through `nominal_instance_fields` rather than the MIR type table, because lowering is
+/// the producer of that table. A resolution failure is stashed rather than swallowed: the shared
+/// authority is infallible by design, so the adapter records the first failure and
+/// `ty_requires_drop_glue` turns it back into the `LowerError` the old implementation returned.
+struct LoweringDropFacts<'a, 'b> {
+    lowerer: &'a FnLowerer<'b>,
+    failure: std::cell::RefCell<Option<String>>,
+}
+
+impl LoweringDropFacts<'_, '_> {
+    fn fields(&self, item: ItemId, args: &[MirTy]) -> Option<NominalFields> {
+        match nominal_instance_fields(
+            self.lowerer.hir,
+            self.lowerer.tables,
+            self.lowerer.meta,
+            item,
+            args,
+            self.lowerer.providers,
+        ) {
+            Ok(fields) => Some(fields),
+            Err(error) => {
+                self.failure.borrow_mut().get_or_insert(error.what);
+                None
+            }
+        }
+    }
+}
+
+impl crate::mir::drop_rule::DropFacts for LoweringDropFacts<'_, '_> {
+    fn has_user_destructor(&self, item: ItemId, _args: &[MirTy]) -> bool {
+        // A1: a `Drop` impl on a generic nominal drops per instantiation — the dtor instance is
+        // monomorphised at the same type arguments, so the impl's presence is argument-independent.
+        self.lowerer.type_has_drop_impl(item)
+    }
+
+    fn struct_fields(&self, item: ItemId, args: &[MirTy]) -> Option<Vec<MirTy>> {
+        match self.fields(item, args)? {
+            NominalFields::Struct(tys) => Some(tys),
+            NominalFields::Enum(_) => {
+                self.failure
+                    .borrow_mut()
+                    .get_or_insert_with(|| "struct item with enum fields shape".to_string());
+                None
+            }
+        }
+    }
+
+    fn enum_variants(&self, item: ItemId, args: &[MirTy]) -> Option<Vec<Vec<MirTy>>> {
+        match self.fields(item, args)? {
+            NominalFields::Enum(variants) => Some(variants),
+            NominalFields::Struct(_) => {
+                self.failure
+                    .borrow_mut()
+                    .get_or_insert_with(|| "enum item with struct fields shape".to_string());
+                None
+            }
+        }
+    }
+}
+
 /// A `MirTy` back as a checker `Ty`, for the one purpose of asking `bound_dispatch` which impl a
 /// receiver selects.
 ///
@@ -12777,79 +12710,23 @@ mod as4_drop_predicate_inventory {
             }
         }
 
-        // **Pinned, not asserted away.** The list is the finding; changing it must be deliberate.
+        // **AS4-DROP-AUTHORITY: this list is now EMPTY, and that is the exit criterion.**
+        //
+        // Both predicates delegate to `mir::drop_rule::requires_drop_glue_with`, supplying only the
+        // phase-dependent nominal facts. There is one structural recursion and one `CoreType`
+        // classification, so a disagreement here is no longer possible by construction — it would
+        // mean an adapter answered a nominal question differently, which is a real defect and
+        // exactly what this test would catch.
         let rendered: Vec<String> = disagree
             .iter()
             .map(|(n, l, v)| format!("{n}: lower={l} verify={v}"))
             .collect();
-        assert_eq!(
-            rendered,
-            vec![
-                // Measured, and it corrected my own prediction: I expected the iterator/Core
-                // family and `Range`/`Ordering`. `Core(String)` disagrees too — probably
-                // unreachable in practice, since `String` lowers to `MirTy::String`, but the two
-                // predicates still answer it differently, and an unreachable disagreement is still
-                // two authorities free to diverge the day it becomes reachable.
-                "Core(String): lower=false verify=true",
-                "Core(Option): lower=false verify=true",
-                "Core(Result): lower=false verify=true",
-                "Core(Range): lower=false verify=true",
-                "Core(RangeInclusive): lower=false verify=true",
-                // `Core(CharsIter)` left this list under the DEV-195 ruling: a borrowed cursor
-                // requires no drop glue, and the verifier now agrees.
-                "Core(SplitIter): lower=false verify=true",
-                "Core(ValuesIter): lower=false verify=true",
-                "Core(MapIter): lower=false verify=true",
-                "Core(FilterIter): lower=false verify=true",
-                "Core(Random): lower=false verify=true",
-                "Core(IOError): lower=false verify=true",
-                "Core(File): lower=false verify=true",
-                "Core(Ordering): lower=false verify=true",
-            ],
-            "the two PRECISE drop rules disagree on this exact set. They claim to answer the same \
-             question, so this list is a defect inventory, not a design. It is pinned so that \
-             consolidating them — or changing either side — is a deliberate act with its own \
-             evidence, per AS4 exit criterion 5."
+        assert!(
+            rendered.is_empty(),
+            "the two precise drop rules must agree at every sample now that both delegate to one \
+             authority; still disagreeing on: {rendered:?}"
         );
-        assert!(agree > 0, "they must still agree somewhere");
-
-        // **The disagreement list is mostly DEAD, and that is the useful half of the finding.**
-        //
-        // `mir_ty` — the main typed-expression path — produces `MirTy::Core` for only these, and
-        // `Ty::Core(Option/Result/Ordering)` lower to `MirTy::Enum(EnumRef::Core*)` instead, so a
-        // disagreement on those rows is about a shape no lowering emits.
-        const MIR_TY_PRODUCES_CORE: &[&str] = &[
-            "Box",
-            "CharsIter",
-            "HashMap",
-            "HashSet",
-            "Iter",
-            "KeysIter",
-            "Vec",
-            "VecIter",
-        ];
-        // Constructed as `MirTy::Core` outside `mir_ty` (resource lowering).
-        const OTHER_PRODUCERS: &[&str] = &["File"];
-        let reachable: Vec<&str> = disagree
-            .iter()
-            .map(|(n, ..)| n.as_str())
-            .filter(|n| {
-                let inner = n.trim_start_matches("Core(").trim_end_matches(')');
-                MIR_TY_PRODUCES_CORE.contains(&inner) || OTHER_PRODUCERS.contains(&inner)
-            })
-            .collect();
-        assert_eq!(
-            reachable,
-            // `CharsIter` left under the DEV-195 ruling. `File` is the remaining reachable
-            // disagreement and is deliberately NOT ruled on: opposite ownership, safety-critical,
-            // and its classification is the blocker for merging the two precise authorities.
-            vec!["Core(File)"],
-            "**This is the finding that matters.** Of the disagreements above, only these are on \
-             `MirTy::Core` shapes anything actually constructs. The rest are two authorities \
-             differing about types no lowering emits — real, but not reachable. AS4's consolidation \
-             decision is therefore about TWO variants and one consumer (`VecClear`/MIR-0016), not \
-             about fourteen."
-        );
+        assert!(agree > 0, "the samples must actually be exercised");
 
         // The one direction that would be unsound if it ever appeared: lowering claiming glue is
         // required where the verifier says it is not. Lowering emits the `Drop`; a verifier that

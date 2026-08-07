@@ -2841,122 +2841,43 @@ fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {
     a[..n] == b[..n]
 }
 
-/// **AS4 — `requires_drop_glue`: does destroying a value of this type run anything?**
-///
-/// One of THREE near-neighbour drop questions, named so they cannot be substituted for one
-/// another (AS4 work item 2):
-///
-/// | Question | Authority | Answer for `HostResource` |
-/// | --- | --- | --- |
-/// | requires drop glue (precise) | this function | **true** — its close is provider-driven |
-/// | MAY require drop glue (conservative) | [`may_need_drop`] | true |
-/// | has a USER-written destructor | `lower::ty_has_user_destructor_guarded` | **false** — no `impl Drop` |
-///
-/// The `HostResource` column is why these are three questions and not one wording of one: CD-287
-/// recorded this predicate and `may_need_drop` contradicting each other about resources *inside
-/// this file*, and `ty_has_user_destructor_guarded` disagrees with both by design.
-///
-/// Extracted from `BodyCx::requires_drop_glue`, which read only `self.program.types` and so could
-/// not be measured without building a per-body context. Same rule, one caller, now measurable.
-/// AS4: test-only windows onto the two verifier drop predicates, so the equivalence matrix in
-/// `mir::lower` can measure all four implementations of the drop rule without widening production
-/// visibility. Measurement only — they add no caller and change no behaviour.
+/// AS4: a test-only window onto `may_need_drop`, so the drop-rule matrix in `mir::lower` can
+/// measure the conservative rule alongside the precise one without widening production visibility.
+/// Measurement only — it adds no caller and changes no behaviour.
 #[cfg(test)]
 pub(crate) fn may_need_drop_for_inventory(ty: &MirTy) -> bool {
     may_need_drop(ty)
 }
 
+/// **AS4 — the verifier's view of `requires_drop_glue`.** The rule itself lives in
+/// [`crate::mir::drop_rule`]; this supplies the facts from the FINISHED `TypeContext`. The
+/// structural recursion and the `CoreType` classification are no longer duplicated here.
 pub(crate) fn requires_drop_glue(types: &crate::mir::TypeContext, ty: &MirTy) -> bool {
-    match ty {
-        MirTy::String => true,
-        // **AS4 / DEV-195 ruling: classify each `CoreType`, do not blanket them.**
-        //
-        // This was `MirTy::Core(..) => true`, which disagreed with lowering's precise rule on 14
-        // variants and refused `Vec<CharsIter>::clear()` — a program the checker accepts and the
-        // oracle runs. Owner ruling: **lowering is right about `CharsIter`.** It is a borrowed
-        // `&str` cursor yielding `Char` by value (the native runtime is a wrapper around
-        // `std::str::Chars<'a>`); destroying one has no STARK-visible destruction action and
-        // releases no owned language or provider resource.
-        //
-        // **`File` deliberately stays `true`, and is NOT part of this ruling.** Legacy Core `File`
-        // is an owning `OwnedResourceHandle` whose release must go through the MIR/provider close
-        // path, and `drop_plan::plan_for(Core(File))` is currently `Noop` — only a true
-        // `HostResource` gets `HostResourceClose`. So this arm may be an accidental safety barrier
-        // for `File` even though the blanket it came from was architecturally wrong. Removing it
-        // before `Vec<File>` is characterized end to end could silently discard open handles.
-        //
-        // **Exhaustive on purpose.** A new `CoreType` must be classified here rather than
-        // inheriting a default, which is the property a producer census cannot give.
-        MirTy::Core(core, _) => match core {
-            crate::hir::CoreType::CharsIter => false,
-            crate::hir::CoreType::String
-            | crate::hir::CoreType::Vec
-            | crate::hir::CoreType::Box
-            | crate::hir::CoreType::Option
-            | crate::hir::CoreType::Result
-            | crate::hir::CoreType::Range
-            | crate::hir::CoreType::RangeInclusive
-            | crate::hir::CoreType::SplitIter
-            | crate::hir::CoreType::VecIter
-            | crate::hir::CoreType::HashMap
-            | crate::hir::CoreType::HashSet
-            | crate::hir::CoreType::KeysIter
-            | crate::hir::CoreType::ValuesIter
-            | crate::hir::CoreType::Iter
-            | crate::hir::CoreType::MapIter
-            | crate::hir::CoreType::FilterIter
-            | crate::hir::CoreType::Random
-            | crate::hir::CoreType::IOError
-            | crate::hir::CoreType::File
-            | crate::hir::CoreType::Ordering => true,
-        },
-        MirTy::Struct(item, args) => {
-            let key = (item.0, args.clone());
-            types.drop_impls.contains_key(&key)
-                || types
-                    .struct_fields
-                    .get(&key)
-                    .is_some_and(|fs| fs.iter().any(|f| requires_drop_glue(types, f)))
-        }
-        MirTy::Enum(EnumRef::User(item), args) => {
-            let key = (item.0, args.clone());
-            types.drop_impls.contains_key(&key)
-                || types.enum_variants.get(&key).is_some_and(|vs| {
-                    vs.iter()
-                        .any(|v| v.iter().any(|f| requires_drop_glue(types, f)))
-                })
-        }
-        MirTy::Enum(_, args) => args.iter().any(|a| requires_drop_glue(types, a)),
-        MirTy::Tuple(elems) => elems.iter().any(|e| requires_drop_glue(types, e)),
-        MirTy::Array(elem, _) => requires_drop_glue(types, elem),
+    crate::mir::drop_rule::requires_drop_glue_with(ty, &TypeContextDropFacts { types })
+}
 
-        // **A11 §5: a host resource's drop IS its provider close.** This arm is not
-        // documentation of an old fix — exhaustiveness FOUND it. `HostResource` was falling
-        // into `_ => false` here, so this predicate and `may_need_drop` (the verifier's other
-        // copy of "does this need dropping") disagreed about resources, and this one was the
-        // wrong way round. The SEVENTH catch-all to swallow the variant, and the first found by
-        // the compiler rather than by a leak.
-        MirTy::HostResource(_) => true,
+/// The verifier answers nominal questions from the frozen MIR type table.
+struct TypeContextDropFacts<'a> {
+    types: &'a crate::mir::TypeContext,
+}
 
-        // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.** See `may_need_drop`.
-        MirTy::Int8
-        | MirTy::Int16
-        | MirTy::Int32
-        | MirTy::Int64
-        | MirTy::UInt8
-        | MirTy::UInt16
-        | MirTy::UInt32
-        | MirTy::UInt64
-        | MirTy::Float32
-        | MirTy::Float64
-        | MirTy::Bool
-        | MirTy::Char
-        | MirTy::Unit
-        | MirTy::Never
-        | MirTy::Str
-        | MirTy::Slice(_)
-        | MirTy::Ref { .. }
-        | MirTy::FnPtr { .. } => false,
+impl crate::mir::drop_rule::DropFacts for TypeContextDropFacts<'_> {
+    fn has_user_destructor(&self, item: crate::hir::ItemId, args: &[MirTy]) -> bool {
+        self.types.drop_impls.contains_key(&(item.0, args.to_vec()))
+    }
+
+    fn struct_fields(&self, item: crate::hir::ItemId, args: &[MirTy]) -> Option<Vec<MirTy>> {
+        self.types
+            .struct_fields
+            .get(&(item.0, args.to_vec()))
+            .cloned()
+    }
+
+    fn enum_variants(&self, item: crate::hir::ItemId, args: &[MirTy]) -> Option<Vec<Vec<MirTy>>> {
+        self.types
+            .enum_variants
+            .get(&(item.0, args.to_vec()))
+            .cloned()
     }
 }
 

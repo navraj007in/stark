@@ -398,3 +398,103 @@ precise authority merge           UNBLOCKED on safety; needs a decision on File'
 item 3 exhaustiveness             AFTER shared authority
 item 4 adversaries                AFTER property decisions
 ```
+
+
+---
+
+## 10. AS4-DROP-AUTHORITY: the merge (2026-08-07)
+
+Owner ruling: merge now, do not wait for the Core `File` → `HostResource` migration. Waiting would
+make AS4 depend on an unrelated representation migration and keep alive exactly the defect class AS4
+exists to remove, buying no safety now that DEV-196 has bounded the risk.
+
+### The consolidation rule, not a winner-picking
+
+> **If lowering cannot construct the representation, preserve the verifier's answer.**
+
+```text
+source-reachable cases     -> measured semantics decide      (CharsIter = false, CD-387)
+unreachable legacy shapes  -> preserve verifier behaviour    (Core File = true)
+HostResource               -> approved A11 semantics decide  (true)
+```
+
+`Core(File) = true` needs no fiat. Two independent reasons agree: it preserves current observable
+verifier behaviour on a type DEV-196 proved unreachable from source, and A11's approved destination
+sends `File` to `HostResource`, whose `Drop` invokes its validated close exactly once.
+
+### Behaviour-neutral, and checkable
+
+For every `CoreType` `mir_ty` can construct — `Box`, `CharsIter`, `HashMap`, `HashSet`, `Iter`,
+`KeysIter`, `Vec`, `VecIter` — lowering and the verifier **already agreed after CD-387**. Adopting
+the shared table changes lowering's answer only on representations it cannot produce, which have no
+behavioural constituency. Verified before writing the code, not assumed after.
+
+### Shape
+
+`mir::drop_rule` owns the parts that drift; callers supply only what genuinely differs by phase,
+because lowering is the **producer** of the table the verifier consumes:
+
+```text
+shared                      per-phase (DropFacts)
+  MirTy recursion             has a user destructor?
+  CoreType classification     instantiated struct fields
+  HostResource = true         instantiated enum variants
+  container recursion
+```
+
+The `CoreType` table is **shared, not a callback** — passing it out would have moved the
+easiest-to-drift part into two adapters and called that consolidation.
+
+`FnLowerer::ty_requires_drop_glue` keeps its `Result`: `nominal_instance_fields` can fail, and
+swallowing that as "no fields" would answer `false` for a nominal whose shape could not be resolved
+— the one answer this predicate must never give by accident. The adapter stashes the first failure
+and the delegate turns it back into a `LowerError`.
+
+Both structural copies are deleted.
+
+### Evidence
+
+| Check | Result |
+| --- | --- |
+| lower-vs-verifier matrix | **zero disagreements** — was 14 |
+| DEV-195 acceptance | green |
+| DEV-196 unlowerability | green |
+| resource lifecycle | `a11_host_resource`, `c788_resource_lifecycle`, `c788_lifecycle_e2e`, `c784_file` green |
+| engines | `mir_differential` 132, `three_engine_differential` 109 green |
+| external sample suite | 39/39 |
+| accepted/rejected source programs | unchanged |
+
+No behavioural CD is due. The behavioural decision was CD-387; this is consolidation using it plus
+DEV-196's evidence.
+
+### DEV-196's pin changes meaning, deliberately
+
+`dev196_a_vec_of_core_file_cannot_be_lowered_at_all` stays as the **migration tripwire**:
+
+```text
+today      Core(File) classified true, ordinary lowering cannot produce it
+migration  source File -> HostResource, the pin FAILS, the migration explicitly
+           replaces the legacy assumption, HostResource = true is inherited
+```
+
+Cleaner than leaving two drop algorithms around as an informal hedge.
+
+### Item 3 is now largely structural
+
+One exhaustive `MirTy` match plus one exhaustive nested `CoreType` classification, neither carrying
+a property-bearing wildcard, means a new variant **breaks compilation at the semantic authority**
+rather than at two copies that could answer differently. That is what "forces every applicable
+authority to be revisited" should mean.
+
+### Status
+
+```text
+drop semantic decomposition       DONE
+near-neighbour naming             DONE
+DEV-195 / CharsIter               DECIDED (CD-387)
+DEV-196 / Core File               ANSWERED; pin kept as migration tripwire
+fourth predicate                  NOT NEEDED
+precise authority merge           DONE - one authority, zero disagreements
+item 3 exhaustiveness             largely satisfied for the drop rule; other properties pending
+item 4 adversaries                NEXT
+```

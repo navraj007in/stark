@@ -17,6 +17,7 @@
 //! - The textual dump is deterministic and versioned (`MIR_VERSION`).
 
 pub mod drop_plan;
+pub(crate) mod drop_rule;
 pub mod interp;
 pub mod lower;
 pub mod opt;
