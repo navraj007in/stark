@@ -1,6 +1,6 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprints 1 and 2 CLOSED.** The Sprint 1 opening items, AS0 (partial), AS1a and
+**Status:** **IN EXECUTION — Sprint 1 CLOSED; Sprint 2 implementation complete, Tier-3 gate awaiting CI.** The Sprint 1 opening items, AS0 (partial), AS1a and
 AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
 Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
 second owner decision, which the AS0 report now enables — see §1.
@@ -40,10 +40,44 @@ defect found to be worse than recorded. All of it is in
 Campaigns A (remainder) and B are **not** approved. Their scope and ordering were always a proposal
 to be resized after AS0, and the AS0 report now exists to resize them against.
 
-**The second owner decision is therefore due.** In particular, the proposed Campaign A gate would
-block the project roadmap's structured-concurrency compiler/runtime work until the correctness
-foundations pass. That platform impact requires an explicit decision; it was not implied by
-approving Sprint 1.
+### The second owner decision — TAKEN 2026-08-07
+
+**The Campaign A gate is APPROVED and BINDING.** It is written into the live roadmap at
+`ROADMAP.md` §6.0 (commit `b33b3e7` on `develop`), not left as a proposal here:
+
+> Structured-concurrency compiler/runtime work may not begin until Campaign A exits green: AS0,
+> AS1a, AS2, AS1b, AS3 and AS4 closed **and owner-reviewed**.
+
+The evidence that justified making it real: AS0 inventoried six pipeline assemblies bypassing the
+shared driver and several parallel provenance authorities; Sprint 2 then found four defects while
+consolidating just two authorities, including `TRAIT-COHERENCE-001`'s cross-package clause — a
+normative rule that had effectively never worked as specified (DEV-183).
+
+AS3 and AS4 are the two foundations concurrency would amplify. AS3 closes the callable-use /
+generic-instantiation gap that already has value-representation work *paused*; AS4 establishes one
+authority for `Copy`, drop and borrow/reference containment. Concurrency asks exactly those
+questions on day one — can this value cross into a task, is it moved or borrowed, who owns an affine
+resource after spawn, when does its `Drop` run, what survives cancellation, can a reference outlive
+the spawning scope. Building task semantics against several authorities would make concurrency
+another *producer* of compensating mechanisms.
+
+**The gate blocks the concurrency campaign only.** Packages, tooling, documentation and Phase 3's
+synchronous REST server are unaffected; `ROADMAP.md` §6.0 states this so it cannot be read as a
+general freeze.
+
+### Sprint 3 — APPROVED, conditionally
+
+AS3 → AS4 is approved, and **may not begin until Sprint 2's Tier-3 gate discharges** on green CI.
+Scheduling decisions taken with it:
+
+| Decision | Ruling |
+| --- | --- |
+| AS0's callable execution-site inventory as AS3's opening checkpoint | **APPROVED** — it completes AS0 item 6, establishes AS3's real scope, and prevents repeating A3c/A4's mistake of assuming the callable surface was complete |
+| AS0's `WP-C7.8-RB0` predicate inventory as AS4's opening inventory | **APPROVED** |
+| AS0's engine-independence inventory | **DEFERRED to AS8/C10** — it does not delay Sprint 3 |
+| LSP transport hardening (DEV-186 + the request-id model) inside Sprint 3 | **NO** — DEV-186 is availability, not soundness or wrong-code, so it does not meet the live-defect pre-emption threshold, and §2.2's WIP limit argues against a second cross-cutting lane while AS3/AS4 are active |
+| LSP transport hardening after Campaign A | **SCHEDULED** — a short inter-sprint packet between Campaign A green and Sprint 4, not a fifth architecture sprint |
+| DEV-012's seven interactive validations | **Stays with AS8** — evidence work, not transport implementation |
 
 The compiler's large-scale pipeline is retained:
 
@@ -73,7 +107,7 @@ pipeline.
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
-| Sprint 2 Tier-3 closeout | **PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 both closed | discharged; Sprint 3 may open |
+| Sprint 2 Tier-3 closeout | **CANDIDATE-PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 both closed, awaiting green CI on `1616738`/`659fa02` | **not yet discharged**; Sprint 3 implementation is RESERVED until it is |
 | AS1b | **CLOSED 2026-08-07** — i, ii(a–e) and iii; owner-accepted at `a6107fb`. See `AS1B-OPENING-ANALYSIS.md` §9 | none |
 | remainder of Campaign A (AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
 | AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |

@@ -4,7 +4,25 @@
 **Programme:** `WP-ARCHITECTURE-STABILIZATION.md`
 **Branch:** `wp-arch-stability/sprint-2`
 **Date:** 2026-08-07
-**Status:** **PASS.** Sprint 2 closes. AS1b and AS5 are both complete.
+**Status:** **CANDIDATE-PASS — awaiting CI.** The implementation is complete and AS1b and AS5 are
+both closed; the Tier-3 gate is **not** discharged until the main CI workflow completes green on
+`1616738`/`659fa02`. At the time of writing the Native Capabilities lane is green on both and the
+main lane is still running.
+
+The truthful state:
+
+```text
+Sprint 2 implementation       COMPLETE
+AS1b                          COMPLETE
+AS5                           COMPLETE
+Tier-3 closeout               CANDIDATE-PASS / awaiting CI
+Sprint 3 implementation       RESERVED until that CI turns green
+```
+
+This header said "PASS. Sprint 2 closes." while §7 and §8 said closure was conditional — the
+document contradicted itself in the direction of claiming more than the evidence supported. It is
+corrected here rather than left for a reviewer to catch, and it will be changed to an unconditional
+PASS by an evidence-only commit recording the green run.
 
 Every criterion below is classified **PASS**, **FAIL**, **PARTIAL**, **DEFERRED-BY-DECISION** or
 **NOT-APPLICABLE**, with the command or artefact that supports it. A criterion with no evidence is
@@ -141,7 +159,9 @@ on all three platforms; that is the only outstanding item.
 
 ## 8. Verdict
 
-**PASS**, subject to `1616738` completing green.
+**CANDIDATE-PASS.** Every packet criterion in §2 is met and every defect in §4 is closed or
+registered. The Tier-3 gate discharges when the main CI workflow is green on `1616738`/`659fa02`,
+and not before — see §7.
 
 AS1b eliminated a defect class rather than guarding it. Nine separate mechanisms for answering
 "which file is this?" — the parser's, the checker's, the item table's, the callable's, the
