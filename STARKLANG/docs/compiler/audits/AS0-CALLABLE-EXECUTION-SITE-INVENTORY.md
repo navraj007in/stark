@@ -192,3 +192,39 @@ by pattern-matching a surface instead of enumerating it.
 
 AS0 exits when 7 and 10 are done or explicitly deferred. Item 10 **is** now explicitly deferred by
 owner decision, so AS0's remaining blocker is item 7 alone.
+
+
+---
+
+## 8. Correction — the count was three, the surface is five (2026-08-07)
+
+Amended in place during AS3. **AS0 is not reopened**; the finding belongs to the inventory it
+corrects.
+
+| | Selector | Found by |
+| --- | --- | --- |
+| recorded | `Interpreter::find_method` — 6 sites | this inventory |
+| recorded | `FnLowerer::find_impl_fn` — 8 sites | this inventory |
+| **missed** | `typecheck::ty_satisfies_operator_bound` | AS3 Boundary 3 |
+| **missed** | `typecheck::user_iterator_item_type` | AS3 Boundary 4 |
+
+Both missed selectors are in the **checker**, and both escaped for the same reason: they answer a
+*derivative* question — "does this type satisfy `Eq`?", "what `Item` does this iterator yield?" —
+and to answer it they must select an implementation, which they then **discard**. §5's method
+searched for algorithms that *return a callable*, so neither matched.
+
+### The methodology correction
+
+> An inventory of semantic selection must include functions that answer a derivative question when
+> answering it requires selecting an implementation, **even if the selected implementation is then
+> discarded**. A selector is identified by what it must decide, not by what it returns.
+
+This is the correction that matters. The same blind spot produced both misses, which makes it a
+defect in the method rather than an oversight in the sweep — and it would have recurred at Display
+had AS3 not surfaced it twice first.
+
+### What it did not change
+
+The 21 production entry points and 17 families in §3 stand: those were enumerated by walking the
+two functions that *enter a user body*, which is a different and complete question. The undercount
+is of **selection authorities**, not of execution sites.

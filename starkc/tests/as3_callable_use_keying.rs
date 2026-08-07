@@ -615,3 +615,107 @@ fn operator_dispatch_runs_the_selected_body() {
         "the user's `Eq::eq` decides equality — 2 and 4 are equal by parity, 2 and 3 are not"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Boundary 4 — iteration
+// ---------------------------------------------------------------------------------------------
+
+/// A `for` loop over a GENERIC user iterator publishes the impl's generic environment.
+///
+/// The hardening negative. The first iteration attempt added a second Iterator selector that
+/// discarded `match_impl_type`'s substitution and published `Static(vec![])`, so
+/// `impl<T> Iterator for Repeat<T>` lost its `T` binding while the element-type calculation kept
+/// it. Behaviour was unaffected, so no functional test could see it — this one asserts the
+/// environment directly, and fails if it is emptied.
+#[test]
+fn a_generic_user_iterator_publishes_its_impl_environment() {
+    let program = analyse(
+        "struct Repeat<T> { value: T, left: Int32 }\n\
+         impl<T> Iterator for Repeat<T> {\n\
+         \x20   type Item = T;\n\
+         \x20   fn next(&mut self) -> Option<T> {\n\
+         \x20       if self.left <= 0 {\n            return None;\n        }\n\
+         \x20       self.left = self.left - 1;\n\
+         \x20       Some(self.value)\n    }\n}\n\
+         fn main() {\n\
+         \x20   let mut r: Repeat<Int32> = Repeat { value: 7, left: 2 };\n\
+         \x20   let mut total: Int32 = 0;\n\
+         \x20   for v in r {\n        total = total + v;\n    }\n\
+         \x20   println(total);\n}\n",
+    );
+    let tables = program.tables();
+
+    let iterator_uses: Vec<_> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| {
+            matches!(
+                u.provenance,
+                DP::CoreTrait {
+                    core: starkc::hir::CoreTrait::Iterator
+                }
+            )
+        })
+        .collect();
+    assert_eq!(iterator_uses.len(), 1, "one `for` over a user iterator");
+
+    let use_ = iterator_uses[0];
+    match &use_.environment {
+        GenericEnvironment::Static(bindings) => {
+            assert!(
+                !bindings.is_empty(),
+                "`impl<T> Iterator for Repeat<T>` binds `T`; an empty environment is the defect \
+                 this test exists for"
+            );
+            let bound: Vec<String> = bindings.iter().map(|(_, ty)| format!("{ty:?}")).collect();
+            assert!(
+                bound.iter().any(|ty| ty.contains("Int32")),
+                "`T` must be bound to the CONCRETE argument for `Repeat<Int32>`, got {bound:?}"
+            );
+        }
+        other => panic!("a user iterator has a static environment, got {other:?}"),
+    }
+
+    assert_eq!(
+        use_.receiver_binding,
+        ReceiverBinding::Exclusive,
+        "`next(&mut self)` binds exclusively"
+    );
+
+    // And it still runs correctly: 7 twice.
+    let execution = program.execute_hir().expect("the fixture must run");
+    assert_eq!(execution.output, "14\n");
+}
+
+/// The trait is identified by RESOLVED identity, not spelling.
+///
+/// A user trait **named `Iterator`** is a different trait. The first iteration attempt matched on
+/// `item_text(..) == "Iterator"`, which is DEV-BOUND-TRAIT-IDENTITY's class.
+///
+/// The impl below is written to match *structurally* — same name, a `type Item`, a `next` — so that
+/// a spelling-based selector would accept it. Mutation-verified: switching `resolve_user_iterator`
+/// back to a text comparison makes this test fail. An earlier version used a trait named
+/// `Iterator2` and passed under that mutation, proving nothing.
+#[test]
+fn a_user_trait_named_iterator_does_not_make_a_type_iterable() {
+    let file = Arc::new(starkc::source::SourceFile::new(
+        "shadow.stark",
+        "trait Iterator {\n    fn next(&mut self) -> Option<Int32>;\n}\n\
+         struct Fake { v: Int32 }\n\
+         impl Iterator for Fake {\n\
+         \x20   type Item = Int32;\n\
+         \x20   fn next(&mut self) -> Option<Int32> {\n        None\n    }\n}\n\
+         fn main() {\n\
+         \x20   let f: Fake = Fake { v: 1 };\n\
+         \x20   for x in f {\n        println(x);\n    }\n}\n",
+    ));
+    let failure = CompilerSession::for_source(file, LanguageOptions::CORE)
+        .check()
+        .err()
+        .expect("a user trait named `Iterator` is not the core `Iterator`");
+    let rendered = failure.render();
+    assert!(
+        rendered.contains("iterable"),
+        "expected a not-iterable diagnostic, got:\n{rendered}"
+    );
+}

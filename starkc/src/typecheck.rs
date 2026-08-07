@@ -740,6 +740,19 @@ pub struct CallableSigTy {
 /// environment — held until the instantiated signature exists (AS3 Boundary 2).
 type PendingUse = (ExprId, BlockId, Vec<(GenericBinder, Ty)>);
 
+/// What one scan of the impl set establishes about a user iterator (AS3 Boundary 4).
+struct UserIteratorSelection {
+    impl_item: ItemId,
+    member: u32,
+    body: BlockId,
+    /// The `type Item = ...` declaration, still parametric.
+    associated_item: hir::TypeId,
+    /// `match_impl_type`'s result — what makes `Item` concrete.
+    substitutions: HashMap<String, Ty>,
+    /// The same substitution as ordered binders, for the published environment.
+    bindings: Vec<(GenericBinder, Ty)>,
+}
+
 /// A published callable use. Indexes [`TypeTables::callable_uses`].
 ///
 /// **A use is a STATIC SEMANTIC USE SITE, not an expression and not a runtime invocation.** One
@@ -9426,38 +9439,84 @@ impl<'a> TypeChecker<'a> {
         // resulting substitution is applied to the associated `Item` — `type Item = T` on
         // `Repeat<Int32>` must yield `Int32`, not a dangling `Ty::Param`.
         // DEV-069: impl/assoc-type names are read against the declaring impl's own file.
-        let (associated_type, map) =
-            self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-                let impl_id = ItemId(idx as u32);
-                let hir::ItemKind::Impl {
-                    trait_: Some(trait_ref),
-                    self_ty,
-                    items,
-                    generics,
-                    ..
-                } = &item.kind
-                else {
-                    return None;
-                };
-                if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator)) {
-                    return None;
-                }
-                let map = self.match_impl_type(
-                    &self.impl_self_ty_with_args(impl_id, *self_ty),
-                    iter_ty,
-                    generics,
-                )?;
-                items.iter().find_map(|item| match item {
+        let selection = self.resolve_user_iterator(iter_ty)?;
+        let item_ty = self.convert_hir_type(selection.associated_item);
+        Some(self.instantiate_ty(&item_ty, &selection.substitutions))
+    }
+
+    /// **The single Iterator selection.** One scan answers every question a `for` loop asks:
+    /// which impl, which `next` body, what the substitution is, and what `Item` becomes.
+    ///
+    /// AS3 Boundary 4 hardening. The first attempt added a *second* selector beside
+    /// `user_iterator_item_type`, which reintroduced two defects the programme exists to remove:
+    ///
+    /// * it identified the trait by **spelling** (`item_text(..) == "Iterator"`) while this one
+    ///   uses resolved identity — DEV-BOUND-TRAIT-IDENTITY's exact class;
+    /// * it discarded `match_impl_type`'s substitution and published an EMPTY generic environment,
+    ///   so `impl<T> Iterator for Repeat<T>` lost its `T` binding while the element-type
+    ///   calculation kept it.
+    ///
+    /// Both were invisible to behavioural tests, which is why there is one selector now rather than
+    /// two agreeing ones.
+    fn resolve_user_iterator(&mut self, iter_ty: &Ty) -> Option<UserIteratorSelection> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_item = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            // Resolved identity, never the spelling.
+            if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator)) {
+                continue;
+            }
+            let Some(substitutions) = self.match_impl_type(
+                &self.impl_self_ty_with_args(impl_item, *self_ty),
+                iter_ty,
+                generics,
+            ) else {
+                continue;
+            };
+            let mut associated_item = None;
+            let mut next_member = None;
+            for (member, impl_item_node) in items.iter().enumerate() {
+                match impl_item_node {
                     hir::ImplItem::AssocType { name, ty }
-                        if self.item_text(impl_id, *name) == "Item" =>
+                        if self.item_text(impl_item, *name) == "Item" =>
                     {
-                        Some((*ty, map.clone()))
+                        associated_item = Some(*ty);
                     }
-                    _ => None,
-                })
-            })?;
-        let item_ty = self.convert_hir_type(associated_type);
-        Some(self.instantiate_ty(&item_ty, &map))
+                    hir::ImplItem::Fn { def, .. }
+                        if self.item_text(impl_item, def.sig.name) == "next" =>
+                    {
+                        next_member = Some((member as u32, def.body));
+                    }
+                    _ => {}
+                }
+            }
+            let associated_item = associated_item?;
+            let (member, body) = next_member?;
+            // The impl's own generic parameters, in declaration order, bound to what
+            // `match_impl_type` resolved — so `impl<T> Iterator for Repeat<T>` publishes `T`.
+            let impl_names: Vec<String> = generics
+                .iter()
+                .map(|param| self.item_text(impl_item, param.name).to_string())
+                .collect();
+            let bindings = Self::env_bindings(&None, &impl_names, &[], true, &substitutions);
+            return Some(UserIteratorSelection {
+                impl_item,
+                member,
+                body,
+                associated_item,
+                substitutions,
+                bindings,
+            });
+        }
+        None
     }
 
     fn core_method_signature(
@@ -10512,67 +10571,39 @@ impl<'a> TypeChecker<'a> {
         Some((receiver, params, ret))
     }
 
-    /// The `Iterator::next` member a user iterator selects (AS3 Boundary 4).
-    ///
-    /// **The fifth scan of this shape.** `user_iterator_item_type` already walks every impl to find
-    /// the `Iterator` one for this type — and returns only the associated `Item`, discarding the
-    /// impl. So the checker selects for `for` loops too, and throws the selection away for both
-    /// engines to find again.
-    fn iterator_impl_member(&self, iter_ty: &Ty) -> Option<(ItemId, u32, BlockId)> {
-        for (idx, item) in self.hir.items.iter().enumerate() {
-            let impl_id = ItemId(idx as u32);
-            let hir::ItemKind::Impl {
-                trait_: Some(trait_ref),
-                self_ty,
-                items,
-                generics,
-            } = &item.kind
-            else {
-                continue;
-            };
-            if self.item_text(impl_id, trait_ref.path.span) != "Iterator" {
-                continue;
-            }
-            if self
-                .match_impl_type(
-                    &self.impl_self_ty_with_args(impl_id, *self_ty),
-                    iter_ty,
-                    generics,
-                )
-                .is_none()
-            {
-                continue;
-            }
-            for (member, impl_item) in items.iter().enumerate() {
-                if let hir::ImplItem::Fn { def, .. } = impl_item {
-                    if self.item_text(impl_id, def.sig.name) == "next" {
-                        return Some((impl_id, member as u32, def.body));
-                    }
-                }
-            }
-        }
-        None
-    }
-
     /// Publish the `Iterator::next` use a `for` loop selects.
+    ///
+    /// Uses `resolve_user_iterator` — the SAME selection the element type came from — so there is
+    /// one answer to "which `next` does this loop run", not two that must agree.
     fn publish_iterator_use(&mut self, for_expr: ExprId, iter_ty: &Ty) {
         let iter_ty = self.resolve(iter_ty);
         if !matches!(iter_ty, Ty::Struct(..) | Ty::Enum(..)) {
             return;
         }
-        let Some((impl_item, member, body)) = self.iterator_impl_member(&iter_ty) else {
+        let Some(selection) = self.resolve_user_iterator(&iter_ty) else {
             return;
         };
+        let (impl_item, member, body) = (selection.impl_item, selection.member, selection.body);
         let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
         else {
             return;
         };
+        // Instantiated against the impl's substitution: `impl<T> Iterator for Repeat<T>` publishes
+        // a `next` returning `Option<Int32>` for `Repeat<Int32>`, not `Option<T>`.
+        let receiver = receiver.map(|ty| self.instantiate_ty(&ty, &selection.substitutions));
+        let params: Vec<Ty> = params
+            .iter()
+            .map(|ty| self.instantiate_ty(ty, &selection.substitutions))
+            .collect();
+        let ret = self.instantiate_ty(&ret, &selection.substitutions);
         let use_ = CallableUse {
             selection: CalleeSelection::Static {
                 declaration: CallableDeclId::ImplMember { impl_item, member },
                 body,
             },
-            environment: GenericEnvironment::Static(Vec::new()),
+            // The impl's generic environment, RETAINED. Publishing an empty one here was the
+            // second defect the hardening review found.
+            environment: GenericEnvironment::Static(selection.bindings),
             // `Iterator::next(&mut self)` advances the iterator, so the loop takes an exclusive
             // borrow of the iterator place — no dereferencing.
             receiver_adjustment: ReceiverAdjustment::Exclusive { derefs: 0 },
