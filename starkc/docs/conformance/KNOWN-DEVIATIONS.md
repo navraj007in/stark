@@ -5517,7 +5517,7 @@ silent exemption from this one.
   `Self` and picked "the first impl declaring the name" prints the same text twice. Plus
   `native_c6_2_generics_traits` 20/20 and the external sample suite 39/39.
 
-## DEV-195 — `Vec<CharsIter>::clear()` is accepted, runs, and is then refused by the MIR verifier (OPEN, characterized)
+## DEV-195 — `Vec<CharsIter>::clear()` was refused by the MIR verifier (CLOSED by owner ruling, CD-387, 2026-08-07)
 
 - **Rule:** a program the checker accepts and the reference engine executes must be compilable. An
   engine refusing it later is a divergence, not a language boundary.
@@ -5553,3 +5553,66 @@ silent exemption from this one.
 - **Found by:** AS4's lower-vs-verifier matrix, then driving the actual compiler rather than
   reasoning from the matrix. The matrix said "over-rejection is possible"; running it established
   that a real, constructible program is refused today.
+
+### DEV-195 RULING (owner, CD-387, 2026-08-07)
+
+```text
+Core(CharsIter) requires_drop_glue = false.
+
+A CharsIter is a borrowed cursor. Destroying it has no STARK-visible destruction
+action and releases no owned language or provider resource.
+
+Therefore Vec<CharsIter>::clear() may use VecClear.
+
+The verifier's blanket MirTy::Core(..) => true classification is not authoritative
+for CharsIter and must not reject that lowering.
+```
+
+**Lowering was right.** The evidence is semantic, not "one side accepts more": `CharsIter` is a
+borrowed `&str` cursor yielding `Char` by value, the native runtime is a wrapper around
+`std::str::Chars<'a>`, and the backend emits it as intrinsically borrow-carrying. It owns nothing
+destruction could release. That also restores `VecClear`'s original contract, where the verifier's
+predicate was meant to **mirror** lowering's precise rule.
+
+**Repair:** `verify::requires_drop_glue`'s `MirTy::Core(..) => true` blanket is replaced by an
+**exhaustive** per-`CoreType` match — `CharsIter => false`, every other variant unchanged at `true`.
+Exhaustive because a new `CoreType` must then be classified rather than inherit a default, which is
+the property a producer census cannot provide.
+
+**`File` is deliberately excluded, and this is the important half.** It is the other reachable row
+of the same disagreement with the **opposite** ownership: legacy Core `File` is an owning
+`OwnedResourceHandle` released through the MIR/provider close path, and
+`drop_plan::plan_for(Core(File))` is currently `Noop` — only a true `HostResource` gets
+`HostResourceClose`. So `verify`'s `File => true` may be an accidental safety barrier, and removing
+it could let the fast `VecClear` discard open handles. **It stays until `Vec<File>` is characterized
+end to end.** See DEV-196.
+
+**Evidence:** `tests/as4_vecclear_divergence.rs`, 4 tests — flipped from a refusal characterization
+to an acceptance regression, which is the transition it was written for. The lower-vs-verifier
+matrix independently dropped from 14 disagreements to 13, and its reachable list from
+`[CharsIter, File]` to `[File]`.
+
+## DEV-196 — legacy Core `File` has no drop plan, and its verifier classification may be the only barrier (OPEN)
+
+- **The shape:** `lower::ty_requires_drop_glue(Core(File)) = false`, so lowering would take the fast
+  `VecClear` path for `Vec<File>`; `drop_plan::plan_for(Core(File))` is `Noop`; only
+  `verify::requires_drop_glue(Core(File)) = true` currently prevents that lowering from verifying.
+  A predicate disagreement is holding a resource-lifecycle invariant.
+- **Reachability, measured:** `mir_ty` **refuses** `Core(File)` outright — a bare `File` binding
+  fails to lower with `type Core(File, []) (C4.5)` — so no ordinary program reaches it. It is
+  produced only by provider binding (`ResourceBinding::LegacyCore`) in a **capability-declared**
+  build. `Vec<File>` must therefore be characterized there, not through `starkc run`.
+- **What to measure:** open or create a real `File`, move it into a `Vec<File>`, `clear()`, and
+  record checker, HIR, MIR shape, verifier, and — decisively — whether any provider close appears
+  in the MIR destruction path. If the fast `VecClear` is emitted, that is a resource-lifecycle
+  defect in its own right; **do not weaken MIR-0016 for `File` to make two predicates agree.**
+- **The conceptual question it may answer.** `VecClear`'s guard really asks *"can values of `T` be
+  discarded by the fast clear without running any language-required destruction?"* For ordinary
+  types that equals `!requires_drop_glue(T)`. Legacy Core `File` may be the counterexample: it does
+  not participate in ordinary type-driven drop glue, yet discarding it is certainly not
+  destruction-free. If the equivalence fails, AS4 has a **fourth** semantic question —
+  `is_trivially_discardable` or equivalent — which would explain why `File` keeps resisting
+  classification without either existing predicate being wrong.
+- **Blocks:** merging the two precise drop authorities (AS4 item 1 for the drop rule).
+- **Pinned by:** `as4_vecclear_divergence::core_file_is_not_reachable_through_ordinary_lowering`,
+  which fails if `Core(File)` starts lowering through the ordinary path before this is resolved.

@@ -287,3 +287,63 @@ current refusal. The repair is behavioural and owes a decision record under work
 **Method note.** The matrix said over-rejection was *possible*. Only running the compiler
 established that a real, constructible program is refused today. AS3's lesson applied to AS4: a
 measurement of predicates is not a measurement of programs.
+
+
+---
+
+## 8. DEV-195 ruled; `File` becomes the blocker (2026-08-07)
+
+**Owner ruling (CD-387): lowering is right about `CharsIter`.** A borrowed cursor requires no drop
+glue, so `Vec<CharsIter>::clear()` may use the fast path and the verifier must not refuse it.
+Implemented by replacing `verify::requires_drop_glue`'s `MirTy::Core(..) => true` blanket with an
+**exhaustive** per-`CoreType` match: `CharsIter => false`, everything else unchanged.
+
+Exhaustive rather than a producer census, per the same ruling — a future producer then cannot
+enlarge the reachable set without using a variant whose semantics were already classified.
+
+The matrix moved on its own, which is what a pinned measurement is for:
+
+```text
+disagreements   14 -> 13
+reachable       [CharsIter, File] -> [File]
+```
+
+### `File` is not the same question wearing a different name
+
+| | `CharsIter` | legacy Core `File` |
+| --- | --- | --- |
+| owns | nothing — a `&str` cursor | an `OwnedResourceHandle` |
+| release | none | provider close, through MIR |
+| `drop_plan::plan_for` | n/a | **`Noop`** |
+| classification | hygiene | **safety-critical** |
+
+So `verify`'s `File => true` may be an **accidental safety barrier**: lowering says no glue, the
+drop plan does nothing, and only the verifier's refusal stops a fast `VecClear` from discarding open
+handles. Registered as **DEV-196**.
+
+**Reachability, measured:** `mir_ty` refuses `Core(File)` outright, so no ordinary program reaches
+it; provider binding (`ResourceBinding::LegacyCore`) produces it in capability-declared builds. That
+is where `Vec<File>` must be characterized — a `starkc run` probe cannot, and I established that by
+running one rather than assuming it.
+
+### The possible fourth question
+
+`VecClear`'s guard actually asks *"can values of `T` be discarded by the fast clear without running
+any language-required destruction?"* For ordinary types that is `!requires_drop_glue(T)`. Legacy
+Core `File` may be the counterexample: outside ordinary type-driven drop glue, yet not
+destruction-free. If the equivalence fails, AS4 has a fourth semantic question
+(`is_trivially_discardable`), which would explain why `File` resists classification without either
+existing predicate being wrong. **Not introduced now** — the `Vec<File>` experiment decides it.
+
+### Status
+
+```text
+drop semantic decomposition       DONE
+near-neighbour naming             DONE
+precise-drop disagreement         MEASURED + REACHABLE
+DEV-195 / CharsIter               DECIDED (CD-387): lowering wins
+Core File classification          NEXT / SAFETY-CRITICAL (DEV-196)
+precise authority merge           BLOCKED ON File
+item 3 exhaustiveness             AFTER shared authority
+item 4 adversaries                AFTER property decisions
+```

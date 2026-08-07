@@ -12795,7 +12795,8 @@ mod as4_drop_predicate_inventory {
                 "Core(Result): lower=false verify=true",
                 "Core(Range): lower=false verify=true",
                 "Core(RangeInclusive): lower=false verify=true",
-                "Core(CharsIter): lower=false verify=true",
+                // `Core(CharsIter)` left this list under the DEV-195 ruling: a borrowed cursor
+                // requires no drop glue, and the verifier now agrees.
                 "Core(SplitIter): lower=false verify=true",
                 "Core(ValuesIter): lower=false verify=true",
                 "Core(MapIter): lower=false verify=true",
@@ -12839,7 +12840,10 @@ mod as4_drop_predicate_inventory {
             .collect();
         assert_eq!(
             reachable,
-            vec!["Core(CharsIter)", "Core(File)"],
+            // `CharsIter` left under the DEV-195 ruling. `File` is the remaining reachable
+            // disagreement and is deliberately NOT ruled on: opposite ownership, safety-critical,
+            // and its classification is the blocker for merging the two precise authorities.
+            vec!["Core(File)"],
             "**This is the finding that matters.** Of the disagreements above, only these are on \
              `MirTy::Core` shapes anything actually constructs. The rest are two authorities \
              differing about types no lowering emits — real, but not reachable. AS4's consolidation \

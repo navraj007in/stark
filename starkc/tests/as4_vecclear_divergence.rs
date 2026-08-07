@@ -1,34 +1,40 @@
-//! **AS4 — the reachable consequence of the two precise drop rules disagreeing.**
+//! **AS4 / DEV-195 — `Vec<CharsIter>::clear()` is accepted. The ruling, and its regression.**
 //!
-//! `mir::lower::as4_drop_predicate_inventory` measures that `lower::ty_requires_drop_glue` and
-//! `verify::requires_drop_glue` disagree on 14 `MirTy::Core` variants, always `lower=false
-//! verify=true`, and that only `CharsIter` and `File` are reachable shapes. This file establishes
-//! what that costs on a real program, because "two predicates disagree" and "a valid program is
-//! refused" are different claims and only the second matters to a user.
+//! This file was written as a *refusal* characterization: the checker accepted
+//! `Vec<CharsIter>::clear()`, the oracle ran it, lowering emitted the fast `VecClear`, and the
+//! verifier alone rejected it with MIR-0016. It is now the *acceptance* regression, because the
+//! owner ruled:
 //!
 //! ```text
-//! let mut v: Vec<CharsIter> = Vec::new();
-//! v.push(s.chars());
-//! v.clear();
+//! DEV-195 ruling
+//!
+//! Core(CharsIter) requires_drop_glue = false.
+//!
+//! A CharsIter is a borrowed cursor. Destroying it has no STARK-visible destruction
+//! action and releases no owned language or provider resource.
+//!
+//! Therefore Vec<CharsIter>::clear() may use VecClear.
+//!
+//! The verifier's blanket MirTy::Core(..) => true classification is not authoritative
+//! for CharsIter and must not reject that lowering.
 //! ```
 //!
-//! | Stage | Verdict |
-//! | --- | --- |
-//! | checker | accepts |
-//! | HIR interpreter | runs it, prints `0` |
-//! | MIR lowering | lowers it, emitting the fast `VecClear` |
-//! | MIR verifier | **rejects — MIR-0016** |
+//! The evidence is semantic, not merely "one side accepts more": `CharsIter` is a borrowed `&str`
+//! cursor yielding `Char` by value, and the native runtime is a wrapper around
+//! `std::str::Chars<'a>` — the backend emits it as intrinsically borrow-carrying. It owns nothing
+//! that destruction could release.
+//!
+//! **`File` is deliberately NOT covered by this ruling.** It is the other reachable row of the same
+//! disagreement and has the opposite ownership: legacy Core `File` is an owning
+//! `OwnedResourceHandle` released through the MIR/provider close path, with
+//! `drop_plan::plan_for(Core(File))` currently `Noop`. The verifier's `File => true` may therefore
+//! be an accidental safety barrier, and it stays. See `AS4-DROP-RULE-MEASUREMENT.md` §8.
 //!
 //! **Why the fast path is the whole mechanism.** Lowering emits `VecClear` only when it believes
 //! the element needs no drop glue; a droppable element takes a different path that drops each
-//! element. `Vec<String>::clear()` and `Vec<Vec<Int32>>::clear()` emit no `VecClear` at all and
-//! pass. So MIR-0016 is the guard on that fast path, and the disagreement puts lowering on one side
-//! of the guard and the verifier on the other.
-//!
-//! **This is a characterization, not a repair.** Making the two agree changes which programs the
-//! compiler accepts, so it is a behavioural correction owing its own decision record (AS4 work item
-//! 5). Pinned so the current behaviour cannot change silently while that decision is pending —
-//! and so that when it is taken, this test is the thing that flips.
+//! element. `Vec<String>::clear()` and `Vec<Vec<Int32>>::clear()` emit no `VecClear` at all. So
+//! MIR-0016 guards that fast path, and the disagreement had lowering on one side and the verifier
+//! on the other.
 
 mod support;
 
@@ -70,7 +76,7 @@ const CLEAR_CHARS_ITER: &str = "fn main() {\n\
                                 \x20   println(v.len());\n}\n";
 
 #[test]
-fn the_checker_and_interpreter_accept_what_the_verifier_refuses() {
+fn dev195_vec_of_chars_iter_can_be_cleared_through_every_stage() {
     // The front end and the reference engine agree the program is valid.
     let file = Arc::new(SourceFile::new("test.stark", CLEAR_CHARS_ITER));
     let checked = CompilerSession::for_source(file, LanguageOptions::CORE)
@@ -85,21 +91,53 @@ fn the_checker_and_interpreter_accept_what_the_verifier_refuses() {
         "cleared, so the length is zero"
     );
 
-    // And the verifier refuses it.
+    // And every later stage accepts it too. Before the ruling this asserted the opposite.
     match pipeline(CLEAR_CHARS_ITER) {
-        Outcome::VerifierRejected(error) => {
-            assert!(
-                error.contains("MIR-0016") && error.contains("CharsIter"),
-                "the refusal must be MIR-0016 on the element type, got: {error}"
-            );
-        }
-        Outcome::Ok { .. } => panic!(
-            "the verifier now ACCEPTS `Vec<CharsIter>::clear()`. If that was a deliberate \
-             correction, it needed a decision record and this test should have been the thing \
-             that flipped — update it in the same change (AS4 work item 5)."
+        Outcome::Ok { emitted_vec_clear } => assert!(
+            emitted_vec_clear,
+            "a CharsIter element needs no glue, so lowering must take the fast VecClear path"
+        ),
+        Outcome::VerifierRejected(error) => panic!(
+            "DEV-195 REGRESSED: the verifier refuses `Vec<CharsIter>::clear()` again ({error}).\n\
+             The ruling is that lowering is right — a borrowed cursor requires no drop glue. If \
+             `verify::requires_drop_glue` has been changed back to a blanket `Core(..) => true`, \
+             that reverses a decision without a decision record."
         ),
         Outcome::CheckerRejected => panic!("the checker rejected it; the fixture has drifted"),
         Outcome::LoweringRefused(what) => panic!("lowering refused it: {what}"),
+    }
+}
+
+/// **`File` is the other reachable row, and it is NOT ruled on.** Pinned at the level this test
+/// crate can see — the observable behaviour — so a future consolidation cannot quietly extend
+/// DEV-195's answer to it. The two variants have opposite ownership: `CharsIter`'s classification
+/// was hygiene, `File`'s is safety-critical.
+///
+/// `Core(File)` is refused by `mir_ty` outright, so no ordinary program reaches it; it is produced
+/// only by provider binding (`ResourceBinding::LegacyCore`) in a capability-declared build. That is
+/// where `Vec<File>` must be characterized, and until it is, the verifier's `File => true` stays.
+#[test]
+fn core_file_is_not_reachable_through_ordinary_lowering() {
+    match pipeline(
+        "fn main() {\n\
+         \x20   match File::create(\"/tmp/as4_probe_unused.txt\") {\n\
+         \x20       Ok(f) => { println(1); }\n\
+         \x20       Err(e) => { println(0); }\n\
+         \x20   }\n}\n",
+    ) {
+        Outcome::LoweringRefused(what) => assert!(
+            what.contains("Core(File"),
+            "the refusal must be about the File type itself, got: {what}"
+        ),
+        Outcome::Ok { .. } => panic!(
+            "`Core(File)` now lowers through the ordinary path. That makes `Vec<File>::clear()` \
+             reachable without a capability-declared build, and the drop classification of `File` \
+             must be characterized end to end BEFORE this is allowed — see AS4 §8."
+        ),
+        Outcome::VerifierRejected(e) => {
+            panic!("expected a lowering refusal, got a verifier one: {e}")
+        }
+        Outcome::CheckerRejected => panic!("the checker must still accept `File::create`"),
     }
 }
 

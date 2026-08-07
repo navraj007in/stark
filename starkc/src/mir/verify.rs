@@ -2868,7 +2868,48 @@ pub(crate) fn may_need_drop_for_inventory(ty: &MirTy) -> bool {
 
 pub(crate) fn requires_drop_glue(types: &crate::mir::TypeContext, ty: &MirTy) -> bool {
     match ty {
-        MirTy::String | MirTy::Core(..) => true,
+        MirTy::String => true,
+        // **AS4 / DEV-195 ruling: classify each `CoreType`, do not blanket them.**
+        //
+        // This was `MirTy::Core(..) => true`, which disagreed with lowering's precise rule on 14
+        // variants and refused `Vec<CharsIter>::clear()` — a program the checker accepts and the
+        // oracle runs. Owner ruling: **lowering is right about `CharsIter`.** It is a borrowed
+        // `&str` cursor yielding `Char` by value (the native runtime is a wrapper around
+        // `std::str::Chars<'a>`); destroying one has no STARK-visible destruction action and
+        // releases no owned language or provider resource.
+        //
+        // **`File` deliberately stays `true`, and is NOT part of this ruling.** Legacy Core `File`
+        // is an owning `OwnedResourceHandle` whose release must go through the MIR/provider close
+        // path, and `drop_plan::plan_for(Core(File))` is currently `Noop` — only a true
+        // `HostResource` gets `HostResourceClose`. So this arm may be an accidental safety barrier
+        // for `File` even though the blanket it came from was architecturally wrong. Removing it
+        // before `Vec<File>` is characterized end to end could silently discard open handles.
+        //
+        // **Exhaustive on purpose.** A new `CoreType` must be classified here rather than
+        // inheriting a default, which is the property a producer census cannot give.
+        MirTy::Core(core, _) => match core {
+            crate::hir::CoreType::CharsIter => false,
+            crate::hir::CoreType::String
+            | crate::hir::CoreType::Vec
+            | crate::hir::CoreType::Box
+            | crate::hir::CoreType::Option
+            | crate::hir::CoreType::Result
+            | crate::hir::CoreType::Range
+            | crate::hir::CoreType::RangeInclusive
+            | crate::hir::CoreType::SplitIter
+            | crate::hir::CoreType::VecIter
+            | crate::hir::CoreType::HashMap
+            | crate::hir::CoreType::HashSet
+            | crate::hir::CoreType::KeysIter
+            | crate::hir::CoreType::ValuesIter
+            | crate::hir::CoreType::Iter
+            | crate::hir::CoreType::MapIter
+            | crate::hir::CoreType::FilterIter
+            | crate::hir::CoreType::Random
+            | crate::hir::CoreType::IOError
+            | crate::hir::CoreType::File
+            | crate::hir::CoreType::Ordering => true,
+        },
         MirTy::Struct(item, args) => {
             let key = (item.0, args.clone());
             types.drop_impls.contains_key(&key)
