@@ -890,3 +890,110 @@ fn the_trait_impl_index_records_effective_targets() {
         );
     }
 }
+
+/// AS3 Boundary 4b: the specialiser resolves a bound obligation to a concrete callable.
+///
+/// Still no engine change — this exercises the shared authority directly, which is the point: if
+/// HIR and MIR both call it, they cannot disagree, and this proves the thing they will both call.
+#[test]
+fn the_specialiser_resolves_impl_overrides_and_trait_defaults() {
+    let program = analyse(
+        "trait Describe {\n\
+         \x20   fn text(&self) -> String {\n        String::from(\"default\")\n    }\n\
+         \x20   fn shout(&self) -> String;\n}\n\
+         struct A2 { v: Int32 }\n\
+         impl Describe for A2 {\n\
+         \x20   fn shout(&self) -> String {\n        String::from(\"HI\")\n    }\n}\n\
+         struct W2<T> { v: T }\n\
+         impl<T> Describe for W2<T> {\n\
+         \x20   fn shout(&self) -> String {\n        String::from(\"W\")\n    }\n}\n\
+         fn main() {\n    let a: A2 = A2 { v: 1 };\n    println(a.shout());\n}\n",
+    );
+    let tables = program.tables();
+    let trait_id = match tables
+        .trait_impls
+        .impls()
+        .iter()
+        .find_map(|i| i.trait_)
+        .expect("a user trait impl is indexed")
+    {
+        starkc::hir::BoundTrait::User(id) => id,
+        other => panic!("expected a user trait, got {other:?}"),
+    };
+    let bound = starkc::hir::BoundTrait::User(trait_id);
+
+    let a2 = tables
+        .trait_impls
+        .impls()
+        .iter()
+        .find(|i| matches!(&i.self_ty, starkc::typecheck::Ty::Struct(_, args) if args.is_empty()))
+        .map(|i| i.self_ty.clone())
+        .expect("the non-generic impl's Self type");
+
+    // An override resolves to the IMPL member.
+    let shout = starkc::bound_dispatch::specialize_bound_callable(
+        &tables.trait_impls,
+        &tables.callable_types,
+        bound,
+        "shout",
+        &a2,
+        &[],
+        &[],
+    )
+    .expect("`shout` is implemented");
+    assert!(matches!(
+        shout.declaration,
+        CallableDeclId::ImplMember { .. }
+    ));
+    assert!(
+        shout
+            .environment
+            .iter()
+            .any(|(b, _)| matches!(b, GenericBinder::SelfType)),
+        "the environment binds Self"
+    );
+
+    // An un-overridden default resolves to the TRAIT member — G1's case, through the specialiser.
+    let text = starkc::bound_dispatch::specialize_bound_callable(
+        &tables.trait_impls,
+        &tables.callable_types,
+        bound,
+        "text",
+        &a2,
+        &[],
+        &[],
+    )
+    .expect("`text` falls back to the trait default");
+    assert!(
+        matches!(text.declaration, CallableDeclId::TraitMember { .. }),
+        "an un-overridden default resolves to the trait member, got {:?}",
+        text.declaration
+    );
+    assert_ne!(
+        shout.body, text.body,
+        "the two members must resolve to different bodies"
+    );
+
+    // The signature comes from callable_types[body], substituted — not from a second derivation.
+    let body_sig = tables
+        .callable_types
+        .get(&text.body)
+        .expect("A3b gives every executable body a signature");
+    assert_eq!(
+        text.signature.params.len(),
+        body_sig.params.len(),
+        "the resolved signature is the body's, substituted"
+    );
+
+    // A member the trait does not declare resolves to nothing rather than to something plausible.
+    assert!(starkc::bound_dispatch::specialize_bound_callable(
+        &tables.trait_impls,
+        &tables.callable_types,
+        bound,
+        "no_such_member",
+        &a2,
+        &[],
+        &[],
+    )
+    .is_none());
+}

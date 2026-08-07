@@ -166,16 +166,104 @@ pub struct ResolvedCallable {
     pub signature: CallableSigTy,
 }
 
-/// Resolve a `Bound` obligation against a concrete `Self`.
+/// Resolve a `Bound` obligation against a concrete `Self` (AS3 Boundary 4b).
 ///
-/// **4b builds this.** 4a lands the frozen index shape only; wiring the specialiser to
-/// `callable_types[body]` and the binder schema is the next sub-packet, kept separate so a failure
-/// is attributable to construction or to resolution but not to both.
+/// The caller substitutes its **own** generic environment first and passes concrete types, so this
+/// function has no notion of a caller frame — the interpreter calls it when its generic frame makes
+/// `Self` concrete, MIR when monomorphisation does, and neither implements matching.
+///
+/// Four authorities, one each:
+///
+/// ```text
+/// body selection      TraitImplIndex
+/// generic matching    unify_impl_ty_with
+/// signature           callable_types[body]      (A3b)
+/// substitution        substitute_ty
+/// ```
 pub fn specialize_bound_callable(
-    _index: &TraitImplIndex,
-    _trait_: hir::BoundTrait,
-    _member: &str,
-    _self_ty: &Ty,
+    index: &TraitImplIndex,
+    callable_types: &HashMap<BlockId, CallableSigTy>,
+    trait_: hir::BoundTrait,
+    member: &str,
+    self_ty: &Ty,
+    trait_args: &[Ty],
+    method_args: &[Ty],
 ) -> Option<ResolvedCallable> {
+    for candidate in &index.impls {
+        if candidate.trait_ != Some(trait_) {
+            continue;
+        }
+        // **One substitution map across `Self` AND the trait arguments.** `impl<T> Convert<T> for
+        // W<T>` must bind `T` once from both sides; two maps could bind it inconsistently and the
+        // index would be authoritative only for non-parameterised traits.
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        let identity = |ty: &Ty| ty.clone();
+        if !unify_impl_ty_with(&candidate.self_ty, self_ty, &mut map, &identity) {
+            continue;
+        }
+        if candidate.trait_args.len() != trait_args.len() {
+            continue;
+        }
+        if !candidate
+            .trait_args
+            .iter()
+            .zip(trait_args)
+            .all(|(parametric, concrete)| {
+                unify_impl_ty_with(parametric, concrete, &mut map, &identity)
+            })
+        {
+            continue;
+        }
+        let target = candidate
+            .effective_members
+            .iter()
+            .find(|t| t.member == member)?;
+
+        // The environment is read off the TARGET's binder schema, so an impl override and a trait
+        // default are built by the same code from different declarations. Branching on target kind
+        // here is what would let a default body inherit impl binders.
+        let mut environment: Vec<(GenericBinder, Ty)> = Vec::new();
+        for binder in &target.binders {
+            let value = match binder {
+                GenericBinder::SelfType => Some(self_ty.clone()),
+                GenericBinder::ImplParam { name, .. } => map.get(name).cloned(),
+                GenericBinder::TraitParam { index, .. } => trait_args.get(*index).cloned(),
+                GenericBinder::MethodParam { index, .. } => method_args.get(*index).cloned(),
+                // A free function's own parameter cannot appear on a trait member's body.
+                GenericBinder::FunctionParam { .. } => None,
+            };
+            if let Some(value) = value {
+                environment.push((binder.clone(), value));
+            }
+        }
+
+        // A3b's exact-set test guarantees every executable body has a signature, trait defaults
+        // included. A missing one is an internal inconsistency, not a case to tolerate — the same
+        // rule `publish_named_use` learned.
+        let parametric = callable_types.get(&target.body)?;
+        let substitutions: HashMap<String, Ty> = environment
+            .iter()
+            .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
+            .collect();
+        let signature = CallableSigTy {
+            receiver: parametric
+                .receiver
+                .as_ref()
+                .map(|ty| crate::typecheck::substitute_ty(ty, &substitutions)),
+            params: parametric
+                .params
+                .iter()
+                .map(|ty| crate::typecheck::substitute_ty(ty, &substitutions))
+                .collect(),
+            ret: crate::typecheck::substitute_ty(&parametric.ret, &substitutions),
+        };
+
+        return Some(ResolvedCallable {
+            declaration: target.declaration,
+            body: target.body,
+            environment,
+            signature,
+        });
+    }
     None
 }
