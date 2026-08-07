@@ -194,6 +194,9 @@ pub struct TypeChecker<'a> {
     /// AS3: the published uses, in publication order. `CallableUseId` is the index.
     callable_uses: Vec<CallableUse>,
     callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+    /// AS3: body → declaration, built on first use.
+    #[allow(dead_code)] // read by `decl_for_body`, which Boundary 2 consumes.
+    body_decls: Option<HashMap<BlockId, CallableDeclId>>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
     /// WP-C4.5c / A3c-S: ordered generic-argument types for every use of a *generic* fn item, keyed
@@ -947,6 +950,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         callable_envs: HashMap::new(),
         callable_uses: Vec::new(),
         callable_uses_by_expr: HashMap::new(),
+        body_decls: None,
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         layout_queries: HashMap::new(),
@@ -4654,6 +4658,92 @@ impl<'a> TypeChecker<'a> {
     /// caller's `decl_text` yields a different string, every `map` lookup misses, and the
     /// environment silently publishes as empty. Resolving names inside this helper is exactly how
     /// that regression happened, so the caller supplies them.
+    /// The declaration a body belongs to, built once and cached.
+    ///
+    /// AS3: `CallableDeclId` needs the impl/trait member position, which the HIR expresses only by
+    /// index into the owner's `items`. Deriving it per publication site would mean four scans
+    /// written four ways; deriving it once means one.
+    ///
+    /// **This is a lookup, not a selection.** The body is already the checker's own answer — this
+    /// only says which declaration that answer came from.
+    #[allow(dead_code)] // consumed by Boundary 2, which is the next commit.
+    fn decl_for_body(&mut self, body: BlockId) -> Option<CallableDeclId> {
+        if self.body_decls.is_none() {
+            let mut map: HashMap<BlockId, CallableDeclId> = HashMap::new();
+            for (index, item) in self.hir.items.iter().enumerate() {
+                let owner = ItemId(index as u32);
+                match &item.kind {
+                    hir::ItemKind::Fn(def) => {
+                        map.insert(def.body, CallableDeclId::Item(owner));
+                    }
+                    hir::ItemKind::Impl { items, .. } => {
+                        for (member, impl_item) in items.iter().enumerate() {
+                            if let hir::ImplItem::Fn { def, .. } = impl_item {
+                                map.insert(
+                                    def.body,
+                                    CallableDeclId::ImplMember {
+                                        impl_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    hir::ItemKind::Trait { items, .. } => {
+                        for (member, trait_item) in items.iter().enumerate() {
+                            if let hir::TraitItem::Method { body: Some(b), .. } = trait_item {
+                                map.insert(
+                                    *b,
+                                    CallableDeclId::TraitMember {
+                                        trait_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.body_decls = Some(map);
+        }
+        self.body_decls
+            .as_ref()
+            .and_then(|map| map.get(&body))
+            .copied()
+    }
+
+    /// Publish a `CallableUse` for a named-dispatch site (AS3 Boundary 2).
+    ///
+    /// Takes the same inputs the instantiation table already receives, so the two are built from
+    /// one decision rather than two.
+    #[allow(clippy::too_many_arguments, dead_code)] // consumed by Boundary 2.
+    fn publish_named_use(
+        &mut self,
+        call_expr: ExprId,
+        body: BlockId,
+        bindings: Vec<(GenericBinder, Ty)>,
+        receiver_adjustment: ReceiverAdjustment,
+        receiver_binding: ReceiverBinding,
+        signature: CallableSigTy,
+        provenance: DispatchProvenance,
+    ) {
+        let Some(declaration) = self.decl_for_body(body) else {
+            // A body with no declaration is an internal inconsistency, not a case to tolerate:
+            // every body in the HIR belongs to an item, an impl member or a trait member.
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static { declaration, body },
+            environment: GenericEnvironment::Static(bindings),
+            receiver_adjustment,
+            receiver_binding,
+            signature,
+            provenance,
+        };
+        self.publish_callable_use(call_expr, use_);
+    }
+
     /// **AS3: publish one callable use.** The single point at which the checker's selection becomes
     /// something an engine may consume.
     ///
