@@ -10202,59 +10202,19 @@ impl<'a> TypeChecker<'a> {
     /// One-way: parameters are bound only from the IMPLEMENTATION side. A `Ty::Param` on the
     /// receiver side is an ordinary type to match against, never a hole to fill — otherwise an
     /// impl for a concrete type would spuriously match a generic receiver.
+    /// AS3 Boundary 4 step 3: delegates to the shared structural matcher so the checker and the
+    /// bound specialiser use **one** algorithm. Two matchers that must agree is the pattern this
+    /// packet removes; the only difference between the callers is how they resolve inference
+    /// variables, which is why that is a parameter rather than a fork.
     fn unify_impl_ty(
         &self,
         implementation: &Ty,
         receiver: &Ty,
         map: &mut HashMap<String, Ty>,
     ) -> bool {
-        let (imp, recv) = (self.resolve(implementation), self.resolve(receiver));
-        match (imp, recv) {
-            // A parameter absorbs whatever it is matched against, but must stay CONSISTENT: the
-            // same parameter appearing twice (`Pair<T, T>`) has to see the same type both times.
-            (Ty::Param(name), recv) => match map.get(&name) {
-                Some(bound) if !matches!(bound, Ty::Param(p) if *p == name) => {
-                    self.types_equal(bound, &recv)
-                }
-                _ => {
-                    map.insert(name, recv);
-                    true
-                }
-            },
-            (Ty::Struct(l, l_args), Ty::Struct(r, r_args))
-            | (Ty::Enum(l, l_args), Ty::Enum(r, r_args))
-                if l == r && l_args.len() == r_args.len() =>
-            {
-                l_args
-                    .iter()
-                    .zip(&r_args)
-                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (Ty::Core(l, l_args), Ty::Core(r, r_args))
-                if l == r && l_args.len() == r_args.len() =>
-            {
-                l_args
-                    .iter()
-                    .zip(&r_args)
-                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (Ty::Tuple(l), Ty::Tuple(r)) if l.len() == r.len() => {
-                l.iter().zip(&r).all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (
-                Ty::Ref {
-                    mutable: lm,
-                    inner: li,
-                },
-                Ty::Ref {
-                    mutable: rm,
-                    inner: ri,
-                },
-            ) if lm == rm => self.unify_impl_ty(&li, &ri, map),
-            (Ty::Array(l, ln), Ty::Array(r, rn)) if ln == rn => self.unify_impl_ty(&l, &r, map),
-            (Ty::Slice(l), Ty::Slice(r)) => self.unify_impl_ty(&l, &r, map),
-            (left, right) => self.types_equal(&left, &right),
-        }
+        crate::bound_dispatch::unify_impl_ty_with(implementation, receiver, map, &|ty| {
+            self.resolve(ty)
+        })
     }
 
     fn match_impl_type(

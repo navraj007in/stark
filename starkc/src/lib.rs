@@ -14,6 +14,7 @@ pub mod ast;
 pub mod ast_dump;
 pub mod backend;
 pub mod borrowck;
+pub mod bound_dispatch;
 pub mod build_cache;
 pub mod deploy;
 pub mod diag;
