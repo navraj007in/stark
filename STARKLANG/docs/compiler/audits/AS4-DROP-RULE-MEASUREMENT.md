@@ -498,3 +498,50 @@ precise authority merge           DONE - one authority, zero disagreements
 item 3 exhaustiveness             largely satisfied for the drop rule; other properties pending
 item 4 adversaries                NEXT
 ```
+
+
+---
+
+## 11. Item 4 — property adversaries (2026-08-07)
+
+`tests/as4_property_adversaries.rs`, 12 cases through the three-engine comparator with drop count
+and order pinned.
+
+**These attack the shared authority, not the language.** After §10 there is one
+`requires_drop_glue` with one structural recursion, so the way to break it is **composition**: a
+droppable reached through every container shape, through a partial move, through iteration, beside
+a reference, through a generic nominal at two instantiations. The existing suites each check one
+behaviour in isolation and would all stay green while a container arm silently skipped a
+destructor.
+
+Mutation-tested against the authority itself: removing the tuple recursion fails 2 of 12, the array
+recursion 1, the struct-field recursion 4.
+
+### Three families cannot span three engines, and each limit is structural
+
+Item 4's wording implies all five can. They cannot, and the reasons are recorded rather than the
+cases quietly omitted:
+
+| Family | Limit |
+| --- | --- |
+| generic `Drop` | the **HIR oracle refuses it** (A3c-D/DEV-176) — `drop_value` receives a `Value` whose type arguments are gone. Covered instead by a non-generic droppable inside a generic nominal, which exercises the same recursion through the same instantiation machinery |
+| host resources | a capability-declared package **cannot run under the interpreters at all** — they have no host access. Native-only by construction; covered by `c788_resource_lifecycle`, `c788_lifecycle_e2e`, `a11_host_resource` |
+| `Vec` of droppables | the **native backend defers** it (`destructor-in-runtime-collection`). Pinned by `a_vec_of_droppables_is_deferred_by_the_native_backend`, which asserts the oracle runs it and MIR lowers it, so the limit is located in the backend and fails when native gains support |
+
+### Five expectations I got wrong, and the compiler was right about all five
+
+Written down because the ratio matters: every failure on first run was my prediction, not a defect.
+
+- tuple, array and nested containers drop in **reverse** declaration order — I predicted forward.
+- partial move: `taken` is declared last so it drops **first**; I predicted the reverse.
+- the conditional-move false path prints only the destructor — the consuming function never runs,
+  so its own output does not appear. I had included it.
+
+Each expectation is now annotated with the fact that it was measured.
+
+### Status
+
+```text
+item 4 adversaries    DONE for the drop authority, with three structural limits recorded
+item 3 exhaustiveness satisfied for the drop rule; reference rule and is_copy not yet audited
+```
