@@ -4218,7 +4218,7 @@ impl<'a> FnLowerer<'a> {
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
                             let (item, targs) = (*item, targs.clone());
-                            return self.lower_user_eq(item, &targs, *op, *lhs, *rhs, span);
+                            return self.lower_user_eq(item, &targs, *op, expr, *lhs, *rhs, span);
                         }
                     }
                     // A3 Ord (A2 amendment, CE3): ordered comparison on a (non-generic) user
@@ -4230,7 +4230,7 @@ impl<'a> FnLowerer<'a> {
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
                             let (item, targs) = (*item, targs.clone());
-                            return self.lower_user_ord(item, &targs, *op, *lhs, *rhs, span);
+                            return self.lower_user_ord(item, &targs, *op, expr, *lhs, *rhs, span);
                         }
                     }
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
@@ -6167,12 +6167,51 @@ impl<'a> FnLowerer<'a> {
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
+        // AS3 Boundary 3: the operator expression, so the checker's published selection can be
+        // consumed instead of re-derived.
+        operator_expr: ExprId,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args, None)
-        else {
+        // **AS3 Boundary 3: consume the checker's selection.**
+        //
+        // This called `find_impl_fn(nominal, "eq", false, type_args, None)` — a scan of every
+        // impl on the nominal, with `trait_filter: None`. That is DEV-BOUND-TRAIT-IDENTITY's exact
+        // shape on a path that never received its fix: a type implementing two same-named trait
+        // methods would run "the first impl declaring eq" while the checker had distinguished
+        // them. Consuming the published record removes the question rather than filtering it.
+        let selected = self
+            .tables
+            .callable_uses_by_expr
+            .get(&operator_expr)
+            .and_then(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+                    .find(|use_| {
+                        matches!(
+                            use_.provenance,
+                            crate::typecheck::DispatchProvenance::CoreTrait { core }
+                                if core == hir::CoreTrait::Eq
+                        )
+                    })
+            })
+            .and_then(|use_| match &use_.selection {
+                crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
+                crate::typecheck::CalleeSelection::FunctionValue => None,
+            });
+        let found = match selected {
+            Some(body) => self.fn_key_for_body(body, type_args),
+            // TRANSITIONAL. Verified unreached for every user `eq` in the suites that
+            // exercise this path: with this arm mutated to panic, `c62d_operator_coretrait` and
+            // `mir_differential` still pass, while panicking on ENTRY fails two tests in each — so
+            // the function is reached and the published record is what answers.
+            //
+            // It survives only until Boundary 4 deletes `find_impl_fn`, which is where the "no
+            // second algorithm" rule becomes structural instead of observed.
+            None => self.find_impl_fn(nominal, "eq", false, type_args, None),
+        };
+        let Some((key, _receiver)) = found else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
@@ -6217,12 +6256,51 @@ impl<'a> FnLowerer<'a> {
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
+        // AS3 Boundary 3: the operator expression, so the checker's published selection can be
+        // consumed instead of re-derived.
+        operator_expr: ExprId,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args, None)
-        else {
+        // **AS3 Boundary 3: consume the checker's selection.**
+        //
+        // This called `find_impl_fn(nominal, "cmp", false, type_args, None)` — a scan of every
+        // impl on the nominal, with `trait_filter: None`. That is DEV-BOUND-TRAIT-IDENTITY's exact
+        // shape on a path that never received its fix: a type implementing two same-named trait
+        // methods would run "the first impl declaring cmp" while the checker had distinguished
+        // them. Consuming the published record removes the question rather than filtering it.
+        let selected = self
+            .tables
+            .callable_uses_by_expr
+            .get(&operator_expr)
+            .and_then(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+                    .find(|use_| {
+                        matches!(
+                            use_.provenance,
+                            crate::typecheck::DispatchProvenance::CoreTrait { core }
+                                if core == hir::CoreTrait::Ord
+                        )
+                    })
+            })
+            .and_then(|use_| match &use_.selection {
+                crate::typecheck::CalleeSelection::Static { body, .. } => Some(*body),
+                crate::typecheck::CalleeSelection::FunctionValue => None,
+            });
+        let found = match selected {
+            Some(body) => self.fn_key_for_body(body, type_args),
+            // TRANSITIONAL. Verified unreached for every user `cmp` in the suites that
+            // exercise this path: with this arm mutated to panic, `c62d_operator_coretrait` and
+            // `mir_differential` still pass, while panicking on ENTRY fails two tests in each — so
+            // the function is reached and the published record is what answers.
+            //
+            // It survives only until Boundary 4 deletes `find_impl_fn`, which is where the "no
+            // second algorithm" rule becomes structural instead of observed.
+            None => self.find_impl_fn(nominal, "cmp", false, type_args, None),
+        };
+        let Some((key, _receiver)) = found else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
                 span,
@@ -6275,6 +6353,42 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
         );
         Ok(Operand::Copy(Place::local(result)))
+    }
+
+    /// The `FnKey` for a body the checker already selected, plus the receiver form.
+    ///
+    /// **AS3 Boundary 3: a lookup keyed on the checker's answer, not a selection.** `find_impl_fn`
+    /// searches by NAME and decides which body wins; this takes the body the checker published and
+    /// finds where it lives. `None` only if the body belongs to no impl member, which for an
+    /// operator use cannot happen — the publication came from an impl member.
+    fn fn_key_for_body(
+        &self,
+        body: hir::BlockId,
+        type_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl { items, .. } = &item.kind else {
+                continue;
+            };
+            for (member, impl_item) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_item else {
+                    continue;
+                };
+                if def.body != body {
+                    continue;
+                }
+                return Some((
+                    FnKey::ImplFn {
+                        impl_item: ItemId(idx as u32),
+                        member: member as u32,
+                        type_args: type_args.to_vec(),
+                        method_args: Vec::new(),
+                    },
+                    def.sig.receiver,
+                ));
+            }
+        }
+        None
     }
 
     /// `trait_filter` narrows the search to one trait's implementation.
