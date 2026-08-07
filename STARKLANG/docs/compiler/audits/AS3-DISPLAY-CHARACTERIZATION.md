@@ -208,3 +208,44 @@ and `CalleeSelection::Bound` gains `method_args` alongside `trait_args`.
 
 **Both are now implemented.** `method_args` is populated per DEV-188/CD-386; `effective_members`
 per G1.
+
+---
+
+## 6. The publication, landed (2026-08-07)
+
+§4's four requirements are implemented in the checker. `TypeTables::display_uses` maps
+`(root argument expression, DisplayPath) -> CallableUseId`.
+
+| §4 requirement | How |
+| --- | --- |
+| walk the static type, stopping per §2.1 | `walk_display_ty`; `Ty::Struct`/`Ty::Enum` publish and do not recurse |
+| key by `DisplayPath` under the root | `DisplayStep::{TupleField, ArrayElement, SliceElement, VecElement, OptionSome, ResultOk, ResultErr}` |
+| handle the generic body per §3 | `Ty::Param` publishes a `Bound` selection |
+| publish the instantiated environment | `env_bindings`, the same constructor the other publishers use |
+
+Measured against §1's table: every row's plan is what the renderer visits, and case 7 publishes a
+single root entry — the STOP rule holding.
+
+### One thing the design did not anticipate
+
+The `Display` check is **deferred to Pass 3**, because it needs resolved types. But
+`bound_method_candidates` reads *live* scope (`current_fn_generics`/`current_impl_generics`), which
+is empty by then — so the walk reached `Ty::Param("T")` inside `fn show<T: Display>` and found zero
+candidates for a bound that is plainly written. It published nothing, silently, for exactly the case
+§3 was written about.
+
+The fix is to capture the generic scope alongside each deferred check and restore it for the walk.
+Recorded because it is a general hazard for anything deferred to Pass 3, not a quirk of Display: a
+deferred check may read resolved types freely, but any *scope-sensitive* query it makes is asking
+about a scope that no longer exists.
+
+### Scope
+
+Publication only. The engines still answer Display through `find_method` / `find_impl_fn` at run
+time; consumption is the next step, and `find_impl_fn` also still serves **string interpolation**,
+which is a second Display entry point this walk does not cover — `println` and friends only.
+
+### Evidence
+
+`tests/as3_display_plan.rs`, 11 tests, mutation-tested in two directions: publishing an empty
+environment fails the two-instantiations test, and removing the STOP rule fails the stop test.

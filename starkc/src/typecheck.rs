@@ -13,7 +13,7 @@ use crate::hir::{
 use crate::literal;
 use crate::options::LanguageOptions;
 use crate::source::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// WP-C6.2b-F1: a selected inherent/trait method candidate carried through visibility enforcement:
 /// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
@@ -172,7 +172,19 @@ pub struct TypeChecker<'a> {
     int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
-    display_checks: Vec<(Ty, Span)>,
+    /// The generic scope is captured alongside, because the check is DEFERRED to Pass 3 and
+    /// `bound_method_candidates` reads live scope (`current_fn_generics`/`current_impl_generics`),
+    /// which is empty by then. Without it, `println(x)` inside `fn show<T: Display>` published no
+    /// dispatch plan — the walk reached `Ty::Param("T")` and found zero candidates for a bound that
+    /// is plainly written.
+    #[allow(clippy::type_complexity)]
+    display_checks: Vec<(
+        ExprId,
+        Ty,
+        Span,
+        Option<Vec<hir::GenericParam>>,
+        Option<Vec<hir::GenericParam>>,
+    )>,
     /// DEV-134: deferred `?` propagation compatibility — (operand type, enclosing return type,
     /// span). Deferred for the same reason as `display_checks`: the operand's error type is
     /// routinely an inference variable while the body is being checked (`Err(make())?`), so
@@ -194,6 +206,7 @@ pub struct TypeChecker<'a> {
     /// AS3: the published uses, in publication order. `CallableUseId` is the index.
     callable_uses: Vec<CallableUse>,
     callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+    display_uses: BTreeMap<(ExprId, DisplayPath), CallableUseId>,
     /// AS3: body → declaration, built on first use.
     #[allow(dead_code)] // read by `decl_for_body`, which Boundary 2 consumes.
     body_decls: Option<HashMap<BlockId, CallableDeclId>>,
@@ -893,6 +906,42 @@ pub enum ReceiverBinding {
     Exclusive,
 }
 
+/// **One structural position inside a `println` argument's STATIC type.**
+///
+/// `println((a, b))` is one expression and two `Display::fmt` bodies; `println(vec)` is one body
+/// executed once per element; `println((W<Int32>, W<Bool>))` is the SAME body at two different
+/// instantiations. A nominal-keyed lookup cannot tell the last pair apart — a runtime
+/// `Value::Struct { item, fields }` carries no type arguments — so the key is the static position,
+/// which distinguishes all three. See `AS3-DISPLAY-CHARACTERIZATION.md` §2.
+///
+/// Array, slice and `Vec` elements are deliberately three steps rather than one. At any given path
+/// the static type already says which it is, so collapsing them would lose nothing for lookup — but
+/// it would also let an engine walking the wrong container shape find a use anyway, and agreeing by
+/// accident is what this packet keeps finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DisplayStep {
+    TupleField(u32),
+    ArrayElement,
+    SliceElement,
+    VecElement,
+    OptionSome,
+    ResultOk,
+    ResultErr,
+}
+
+/// A path from a `println` argument to one nominal that renders through its own `Display::fmt`.
+/// Empty means the argument itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DisplayPath(pub Vec<DisplayStep>);
+
+impl DisplayPath {
+    fn extend(&self, step: DisplayStep) -> Self {
+        let mut steps = self.0.clone();
+        steps.push(step);
+        DisplayPath(steps)
+    }
+}
+
 /// Why this callable and not another.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DispatchProvenance {
@@ -1023,6 +1072,13 @@ pub struct TypeTables {
     /// and slots, reaching a nominal's `Display::fmt` at any depth, so `println((a, b))` is one
     /// argument expression and two use sites. Zero is ordinary — most expressions call nothing.
     pub callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+
+    /// **AS3 Boundary 4: the `Display` dispatch plan, keyed by static position.**
+    ///
+    /// `(root argument expression, path) -> the use that renders there`. Both engines recurse
+    /// value-and-static-type together and look the position up, instead of scanning a nominal's
+    /// impls for a member named `fmt`.
+    pub display_uses: BTreeMap<(ExprId, DisplayPath), CallableUseId>,
     /// **AS3 Boundary 4a: the program's coherent dispatch index**, frozen for execution.
     ///
     /// Answers "given trait identity, trait arguments, concrete `Self` and a member, which
@@ -1095,6 +1151,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         callable_envs: HashMap::new(),
         callable_uses: Vec::new(),
         callable_uses_by_expr: HashMap::new(),
+        display_uses: BTreeMap::new(),
         body_decls: None,
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
@@ -1266,6 +1323,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         callable_instantiations,
         callable_uses,
         callable_uses_by_expr,
+        display_uses: checker.display_uses,
         trait_impls,
         layout_queries,
         layout,
@@ -3637,11 +3695,23 @@ impl<'a> TypeChecker<'a> {
 
         // WP-C4.7-9 audit: `print`/`println` require a `Display`-able argument.
         let display = std::mem::take(&mut self.display_checks);
-        for (ty, span) in display {
+        for (arg_expr, ty, span, fn_generics, impl_generics) in display {
             let resolved = self.resolve(&ty);
             if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
                 continue; // already failed, or undetermined — no cascade
             }
+            // Restore the scope this argument was WRITTEN in, so a `T: Display` bound is visible
+            // to the walk below exactly as it was at the call site.
+            let saved_fn = std::mem::replace(&mut self.current_fn_generics, fn_generics);
+            let saved_impl = std::mem::replace(&mut self.current_impl_generics, impl_generics);
+            if self.type_is_displayable(&resolved) {
+                // **AS3 Boundary 4: publish the dispatch plan.** Here, not at the call site: the
+                // walk needs the RESOLVED type, and that is what this deferred pass exists to
+                // have. Publishing early would key positions off inference variables.
+                self.publish_display_uses(arg_expr, &resolved, span);
+            }
+            self.current_fn_generics = saved_fn;
+            self.current_impl_generics = saved_impl;
             if !self.type_is_displayable(&resolved) {
                 self.diags.push(
                     Diagnostic::error(
@@ -6076,8 +6146,13 @@ impl<'a> TypeChecker<'a> {
                             Builtin::Print | Builtin::Println | Builtin::Eprint | Builtin::Eprintln
                         ) {
                             if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
-                                self.display_checks
-                                    .push((ty.clone(), self.hir.expr(*arg).span));
+                                self.display_checks.push((
+                                    *arg,
+                                    ty.clone(),
+                                    self.hir.expr(*arg).span,
+                                    self.current_fn_generics.clone(),
+                                    self.current_impl_generics.clone(),
+                                ));
                             }
                         }
                         match self.resolve(&callee_ty) {
@@ -10595,6 +10670,197 @@ impl<'a> TypeChecker<'a> {
     /// The signature comes from the Core trait's own contract — the same `CoreTraitMethod` table a
     /// user `impl` is checked against — rather than from `Eq::eq -> Bool` written in by hand. There
     /// is deliberately no second statement of what these operators mean.
+    /// **AS3 Boundary 4: the `Display` dispatch plan for one `println` argument.**
+    ///
+    /// Walks the argument's STATIC type in the shape `display_deep` and `emit_display_value`
+    /// already render (`AS3-DISPLAY-CHARACTERIZATION.md` §2.3), publishing one use per position
+    /// that reaches a user body.
+    ///
+    /// **The STOP rule is the load-bearing part.** `println(W<A>)` prints `W!`, not a `W!`
+    /// containing an `A!`: the outer nominal's own `fmt` runs and the renderer does not descend
+    /// into its fields. So the walk stops at the first nominal with a `Display` impl. Descending
+    /// further would publish uses no engine executes, and a totality claim over those would be
+    /// false.
+    fn publish_display_uses(&mut self, root: ExprId, ty: &Ty, span: Span) {
+        self.walk_display_ty(root, ty, DisplayPath::default(), span, 0);
+    }
+
+    fn walk_display_ty(
+        &mut self,
+        root: ExprId,
+        ty: &Ty,
+        path: DisplayPath,
+        span: Span,
+        depth: u32,
+    ) {
+        // A displayable type is a finite tree, but `Ty` is produced by inference and a defect
+        // elsewhere should not become a stack overflow here.
+        if depth > 64 {
+            return;
+        }
+        let ty = self.resolve(ty);
+        match &ty {
+            // A reference renders as its referent: `Display::fmt` borrows anyway.
+            Ty::Ref { inner, .. } => {
+                let inner = (**inner).clone();
+                self.walk_display_ty(root, &inner, path, span, depth + 1);
+            }
+            Ty::Tuple(elems) => {
+                for (index, elem) in elems.clone().into_iter().enumerate() {
+                    let step = DisplayStep::TupleField(index as u32);
+                    self.walk_display_ty(root, &elem, path.extend(step), span, depth + 1);
+                }
+            }
+            Ty::Array(elem, _) => {
+                let elem = (**elem).clone();
+                let next = path.extend(DisplayStep::ArrayElement);
+                self.walk_display_ty(root, &elem, next, span, depth + 1);
+            }
+            Ty::Slice(elem) => {
+                let elem = (**elem).clone();
+                let next = path.extend(DisplayStep::SliceElement);
+                self.walk_display_ty(root, &elem, next, span, depth + 1);
+            }
+            Ty::Core(CoreType::Vec, args) => {
+                if let Some(elem) = args.first().cloned() {
+                    let next = path.extend(DisplayStep::VecElement);
+                    self.walk_display_ty(root, &elem, next, span, depth + 1);
+                }
+            }
+            Ty::Core(CoreType::Option, args) => {
+                if let Some(inner) = args.first().cloned() {
+                    let next = path.extend(DisplayStep::OptionSome);
+                    self.walk_display_ty(root, &inner, next, span, depth + 1);
+                }
+            }
+            Ty::Core(CoreType::Result, args) => {
+                let args = args.clone();
+                if let Some(ok) = args.first().cloned() {
+                    let next = path.extend(DisplayStep::ResultOk);
+                    self.walk_display_ty(root, &ok, next, span, depth + 1);
+                }
+                if let Some(err) = args.get(1).cloned() {
+                    let next = path.extend(DisplayStep::ResultErr);
+                    self.walk_display_ty(root, &err, next, span, depth + 1);
+                }
+            }
+            // **STOP.** A user nominal with a `Display` impl renders through it and no further.
+            Ty::Struct(..) | Ty::Enum(..) => self.publish_display_static(root, &ty, path, span),
+            // A generic parameter's body is not knowable here — `show<T: Display>` is checked once
+            // with `T` unbound, and one `show` may be instantiated at several types. The obligation
+            // is fixed, and that is what `Bound` records (§3).
+            Ty::Param(name) => {
+                let name = name.clone();
+                self.publish_display_bound(root, &name, path);
+            }
+            // Primitives, `String`, `Ordering`, `IOError` — rendered by the engines themselves,
+            // with no user callable to name.
+            _ => {}
+        }
+    }
+
+    fn publish_display_static(&mut self, root: ExprId, ty: &Ty, path: DisplayPath, span: Span) {
+        let Some((impl_item, member, body)) = self.operator_impl_member(ty, "Display", "fmt")
+        else {
+            return;
+        };
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(self.display_impl_bindings(impl_item, ty)),
+            // `Display::fmt(&self)` borrows; the renderer holds the value and lends it.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Display,
+            },
+        };
+        let _ = span;
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+
+    fn publish_display_bound(&mut self, root: ExprId, param_name: &str, path: DisplayPath) {
+        let candidates = self.bound_method_candidates(param_name, "fmt");
+        let Some(BoundMethod::Core {
+            core_trait: core @ hir::CoreTrait::Display,
+            method: contract,
+            ..
+        }) = candidates.into_iter().find(|c| {
+            matches!(
+                c,
+                BoundMethod::Core {
+                    core_trait: hir::CoreTrait::Display,
+                    ..
+                }
+            )
+        })
+        else {
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &[]),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: Vec::new(),
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params: Vec::new(),
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core),
+            },
+        };
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+
+    /// The impl's generic parameters bound to the rendered type's arguments — the "instantiated
+    /// environment" requirement the Iterator hardening established after publishing an empty one.
+    fn display_impl_bindings(&mut self, impl_item: ItemId, ty: &Ty) -> Vec<(GenericBinder, Ty)> {
+        let hir::ItemKind::Impl {
+            self_ty, generics, ..
+        } = &self.hir.item(impl_item).kind
+        else {
+            return Vec::new();
+        };
+        let (self_ty, generics) = (*self_ty, generics.clone());
+        let parametric = self.impl_self_ty_with_args(impl_item, self_ty);
+        let Some(map) = self.match_impl_type(&parametric, ty, &generics) else {
+            return Vec::new();
+        };
+        let impl_names: Vec<String> = generics
+            .iter()
+            .map(|param| self.item_text(impl_item, param.name).to_string())
+            .collect();
+        // `env_bindings`, not a second construction of the same list: `Display::fmt` declares no
+        // generics of its own, so the method half is empty and `Self` is the rendered type.
+        Self::env_bindings(&Some(ty.clone()), &impl_names, &[], true, &map)
+    }
+
     fn publish_bound_operator_use(
         &mut self,
         expr_id: ExprId,
