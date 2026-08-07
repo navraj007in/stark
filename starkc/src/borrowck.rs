@@ -344,32 +344,17 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// **AS4: one Copy authority over `Ty`.** This was a second implementation of
+    /// `typecheck::is_copy_with_impls`, kept aligned by hand — its own comment said so — and it had
+    /// drifted: a `_ => false` wildcard swallowed `Ty::Never`, which 03-Type-System.md calls `Copy`
+    /// ("reference values, function values, `Unit`, and `!` are `Copy`"), and `Ty::Extension`,
+    /// where the checker consults the tensor's own answer.
+    ///
+    /// Measured before merging (`as4_copy_rule_inventory`): the two agreed on every sample except
+    /// `Never`. Delegating adopts the checker's answer, and the public entry point it needs
+    /// (`is_copy_type_with`) already existed — this duplicate never had to be written.
     fn is_copy_type(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Primitive(primitive) => !matches!(
-                primitive,
-                crate::ast::Primitive::String | crate::ast::Primitive::Str
-            ),
-            Ty::Error | Ty::Ref { mutable: false, .. } => true,
-            // WP-C6.1g-a: `Copy` per-instance — the nominal must be eligible AND every type
-            // argument `Copy` (so `H<&P>` is Copy, `H<&mut P>` / `H<String>` are Move). Recursing
-            // the arguments here is what keeps the move checker aligned with the type checker's
-            // `is_copy_with_impls`; omitting it was the DEV-072-class divergence structural Copy
-            // would otherwise open.
-            Ty::Struct(item, args) | Ty::Enum(item, args) => {
-                self.copy_types.contains(item) && args.iter().all(|arg| self.is_copy_type(arg))
-            }
-            Ty::Core(CoreType::Option | CoreType::Result, args) => {
-                args.iter().all(|arg| self.is_copy_type(arg))
-            }
-            Ty::Tuple(elements) => elements.iter().all(|element| self.is_copy_type(element)),
-            Ty::Array(element, _) => self.is_copy_type(element),
-            // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop /
-            // TYPE-FN-001 — repeated use of a fn-typed local (e.g. `f(f(x))`) must not be
-            // flagged as a move.
-            Ty::Fn { .. } => true,
-            _ => false,
-        }
+        crate::typecheck::is_copy_type_with(ty, &self.copy_types)
     }
 
     fn check_crate(&mut self) {
@@ -1729,4 +1714,123 @@ fn places_overlap(left: &Place, right: &Place) -> bool {
     left.local == right.local
         && (is_prefix(&left.projections, &right.projections)
             || is_prefix(&right.projections, &left.projections))
+}
+
+/// **AS4 — the Copy rule over `Ty`: two implementations, measured before consolidation.**
+///
+/// `borrowck::is_copy_type` and `typecheck::is_copy_with_impls` both answer "is this `Ty` `Copy`?"
+/// — the same question in the same type language, unlike the MIR/checker split, where different
+/// type languages justify separate code. `borrowck`'s own comment says it exists to stay "aligned
+/// with the type checker's `is_copy_with_impls`", which is an alignment maintained by hand.
+///
+/// RB0's method: measure before merging, and record what differs.
+#[cfg(test)]
+mod as4_copy_rule_inventory {
+    use crate::hir::{CoreType, ItemId};
+    use crate::typecheck::{is_copy_type_with, Ty};
+    use std::collections::HashSet;
+
+    /// The borrowck implementation, lifted verbatim so the matrix compares the RULES rather than
+    /// the surrounding machinery. Deleted along with the original once they are shown equivalent.
+    fn borrowck_rule(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
+        match ty {
+            Ty::Primitive(primitive) => !matches!(
+                primitive,
+                crate::ast::Primitive::String | crate::ast::Primitive::Str
+            ),
+            Ty::Error | Ty::Ref { mutable: false, .. } => true,
+            Ty::Struct(item, args) | Ty::Enum(item, args) => {
+                copy_types.contains(item) && args.iter().all(|arg| borrowck_rule(arg, copy_types))
+            }
+            Ty::Core(CoreType::Option | CoreType::Result, args) => {
+                args.iter().all(|arg| borrowck_rule(arg, copy_types))
+            }
+            Ty::Tuple(elements) => elements.iter().all(|e| borrowck_rule(e, copy_types)),
+            Ty::Array(element, _) => borrowck_rule(element, copy_types),
+            Ty::Fn { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn samples() -> Vec<(&'static str, Ty)> {
+        let i32t = || Ty::Primitive(crate::ast::Primitive::Int32);
+        let string = || Ty::Primitive(crate::ast::Primitive::String);
+        vec![
+            ("Int32", i32t()),
+            ("String", string()),
+            ("Str", Ty::Primitive(crate::ast::Primitive::Str)),
+            ("Unit", Ty::Primitive(crate::ast::Primitive::Unit)),
+            ("Error", Ty::Error),
+            ("Never", Ty::Never),
+            ("Param", Ty::Param("T".to_string())),
+            (
+                "&T",
+                Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(i32t()),
+                },
+            ),
+            (
+                "&mut T",
+                Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(i32t()),
+                },
+            ),
+            ("Slice", Ty::Slice(Box::new(i32t()))),
+            ("Range", Ty::Range(Box::new(i32t()))),
+            (
+                "Fn",
+                Ty::Fn {
+                    params: vec![i32t()],
+                    ret: Box::new(i32t()),
+                },
+            ),
+            ("Tuple(Int32)", Ty::Tuple(vec![i32t()])),
+            ("Tuple(String)", Ty::Tuple(vec![string()])),
+            ("Array(Int32)", Ty::Array(Box::new(i32t()), 2)),
+            ("Array(String)", Ty::Array(Box::new(string()), 2)),
+            ("Option(Int32)", Ty::Core(CoreType::Option, vec![i32t()])),
+            ("Option(String)", Ty::Core(CoreType::Option, vec![string()])),
+            (
+                "Result(Int32,Int32)",
+                Ty::Core(CoreType::Result, vec![i32t(), i32t()]),
+            ),
+            ("Vec(Int32)", Ty::Core(CoreType::Vec, vec![i32t()])),
+            ("HashMap", Ty::Core(CoreType::HashMap, vec![i32t(), i32t()])),
+            ("Struct(eligible)", Ty::Struct(ItemId(0), Vec::new())),
+            ("Struct(ineligible)", Ty::Struct(ItemId(1), Vec::new())),
+            (
+                "Struct(eligible,<String>)",
+                Ty::Struct(ItemId(0), vec![string()]),
+            ),
+            ("Enum(eligible)", Ty::Enum(ItemId(0), Vec::new())),
+        ]
+    }
+
+    /// **The finding, pinned.** The two disagree on exactly one sample, and it is the wildcard's
+    /// doing: `borrowck`'s `_ => false` swallows `Ty::Never`, which the checker calls `Copy` (03:
+    /// "reference values, function values, `Unit`, and `!` are `Copy`").
+    ///
+    /// `Ty::Extension` would be a second, but a tensor type cannot be built here without the
+    /// extension's machinery; it is recorded in the audit rather than sampled.
+    #[test]
+    fn the_two_copy_rules_over_ty_are_measured_against_each_other() {
+        let mut copy_types = HashSet::new();
+        copy_types.insert(ItemId(0));
+        let mut disagree = Vec::new();
+        for (name, ty) in samples() {
+            let checker = is_copy_type_with(&ty, &copy_types);
+            let borrow = borrowck_rule(&ty, &copy_types);
+            if checker != borrow {
+                disagree.push(format!("{name}: checker={checker} borrowck={borrow}"));
+            }
+        }
+        assert_eq!(
+            disagree,
+            vec!["Never: checker=true borrowck=false"],
+            "the Copy rule over `Ty` exists twice; this pins where the copies differ so \
+             consolidation is evidence-led"
+        );
+    }
 }
