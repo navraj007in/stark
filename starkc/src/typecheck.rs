@@ -8777,7 +8777,16 @@ impl<'a> TypeChecker<'a> {
                 let ret = self.check_bound_method_call(&candidate, &p_name, args, call_span);
                 let ret = Self::subst_self(&ret, &p_name);
                 let binding_map = self.assoc_binding_map();
-                return self.normalize_projections(&ret, &binding_map);
+                let ret = self.normalize_projections(&ret, &binding_map);
+                // **AS3 Boundary 4 step 2: publish the LATE-BOUND obligation.**
+                //
+                // This branch previously returned here, so a call on a bounded generic parameter
+                // published no `CallableUse` at all — the missing third category. The body cannot
+                // be named: `Self` is `Ty::Param(p_name)` and stays parametric until the enclosing
+                // function is instantiated. What IS fixed is the obligation, and that is what a
+                // `Bound` selection records.
+                self.publish_bound_use(call_expr, &candidate, &p_name, &name_str, &ret);
+                return ret;
             }
         }
 
@@ -10618,6 +10627,90 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Never(_) => Ty::Never,
         };
         Some((receiver, params, ret))
+    }
+
+    /// Publish a `CallableUse::Bound` for a call resolved through a generic parameter's bound.
+    ///
+    /// AS3 Boundary 4 step 2, deliberately landed **before** Display so the late-bound mechanism is
+    /// proved on an ordinary `fn f<T: Speak>(x: T) { x.speak(); }` rather than tangled with
+    /// recursive formatting.
+    fn publish_bound_use(
+        &mut self,
+        call_expr: ExprId,
+        candidate: &BoundMethod,
+        param_name: &str,
+        method: &str,
+        ret: &Ty,
+    ) {
+        let (trait_, receiver_form, params) = match candidate {
+            BoundMethod::User { trait_id, sig } => (
+                hir::BoundTrait::User(*trait_id),
+                sig.receiver,
+                sig.params.iter().map(|p| p.ty).collect::<Vec<_>>(),
+            ),
+            BoundMethod::Core {
+                core_trait, method, ..
+            } => {
+                // A core trait's contract is declared, not written in HIR, so its parameter types
+                // are not `TypeId`s. The signature is published with the receiver and result only;
+                // the specialiser produces the full instantiated signature from the impl it picks.
+                let receiver_self = Ty::Param(param_name.to_string());
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Bound {
+                        trait_: hir::BoundTrait::Core(*core_trait),
+                        member: method.name.to_string(),
+                        self_ty: receiver_self.clone(),
+                        trait_args: Vec::new(),
+                    },
+                    environment: GenericEnvironment::FromBoundSelection,
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: match method.receiver {
+                        Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                        Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                        Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                        None => ReceiverBinding::None,
+                    },
+                    signature: CallableSigTy {
+                        receiver: bound_receiver_ty(method.receiver.as_ref(), receiver_self),
+                        params: Vec::new(),
+                        ret: ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Bound {
+                        trait_: hir::BoundTrait::Core(*core_trait),
+                    },
+                };
+                self.publish_callable_use(call_expr, use_);
+                return;
+            }
+        };
+        let receiver_self = Ty::Param(param_name.to_string());
+        let params: Vec<Ty> = params
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_,
+                member: method.to_string(),
+                self_ty: receiver_self.clone(),
+                trait_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::None,
+            receiver_binding: match receiver_form {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            },
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(receiver_form.as_ref(), receiver_self),
+                params,
+                ret: ret.clone(),
+            },
+            provenance: DispatchProvenance::Bound { trait_ },
+        };
+        self.publish_callable_use(call_expr, use_);
     }
 
     /// Publish the `Iterator::next` use a `for` loop selects.

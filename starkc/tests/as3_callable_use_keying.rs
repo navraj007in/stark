@@ -719,3 +719,106 @@ fn a_user_trait_named_iterator_does_not_make_a_type_iterable() {
         "expected a not-iterable diagnostic, got:\n{rendered}"
     );
 }
+
+/// A call through a generic parameter's bound publishes a **late-bound** use.
+///
+/// This is the third binding time, and it lands before Display deliberately: the mechanism is
+/// proved on an ordinary bounded call rather than tangled with recursive formatting.
+///
+/// Before this, `resolve_method`'s bound branch recorded `bound_trait_calls` and returned — so
+/// `fn f<T: Speak>(x: T) { x.speak(); }` published no `CallableUse` at all.
+#[test]
+fn a_call_through_a_user_trait_bound_publishes_a_bound_use() {
+    let program = analyse(
+        "trait Speak {\n    fn speak(&self) -> String;\n}\n\
+         struct Dog { v: Int32 }\n\
+         impl Speak for Dog {\n\
+         \x20   fn speak(&self) -> String {\n        String::from(\"woof\")\n    }\n}\n\
+         fn announce<T: Speak>(x: T) -> String {\n    x.speak()\n}\n\
+         fn main() {\n    println(announce(Dog { v: 1 }));\n}\n",
+    );
+    let tables = program.tables();
+
+    let bound: Vec<_> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| matches!(u.selection, CalleeSelection::Bound { .. }))
+        .collect();
+    assert_eq!(bound.len(), 1, "one `x.speak()` through a bound: {bound:?}");
+
+    let use_ = bound[0];
+    match &use_.selection {
+        CalleeSelection::Bound {
+            trait_,
+            member,
+            self_ty,
+            ..
+        } => {
+            assert!(
+                matches!(trait_, starkc::hir::BoundTrait::User(_)),
+                "a user trait bound is `BoundTrait::User`, got {trait_:?}"
+            );
+            assert_eq!(member, "speak");
+            assert_eq!(
+                format!("{self_ty:?}"),
+                format!("{:?}", starkc::typecheck::Ty::Param("T".to_string())),
+                "`Self` stays parametric until the enclosing function is instantiated"
+            );
+        }
+        other => panic!("expected a bound selection, got {other:?}"),
+    }
+    assert_eq!(
+        use_.environment,
+        GenericEnvironment::FromBoundSelection,
+        "the callee's environment does not exist until specialisation"
+    );
+    assert_eq!(use_.receiver_binding, ReceiverBinding::Shared);
+
+    // And it still runs.
+    let execution = program.execute_hir().expect("the fixture must run");
+    assert_eq!(execution.output, "woof\n");
+}
+
+/// The same for a CORE trait bound, which has no trait `ItemId` — the case that forced
+/// `DispatchProvenance::Bound` off `ItemId` and onto `hir::BoundTrait`.
+#[test]
+fn a_call_through_a_core_trait_bound_publishes_a_core_bound_use() {
+    let program = analyse(
+        "struct A { v: Int32 }\n\
+         impl Display for A {\n\
+         \x20   fn fmt(&self) -> String {\n        String::from(\"A!\")\n    }\n}\n\
+         fn render<T: Display>(x: T) -> String {\n    x.fmt()\n}\n\
+         fn main() {\n    println(render(A { v: 1 }));\n}\n",
+    );
+    let tables = program.tables();
+
+    let bound: Vec<_> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| matches!(u.selection, CalleeSelection::Bound { .. }))
+        .collect();
+    assert_eq!(bound.len(), 1, "one `x.fmt()` through a core bound");
+
+    match &bound[0].selection {
+        CalleeSelection::Bound { trait_, member, .. } => {
+            assert!(
+                matches!(
+                    trait_,
+                    starkc::hir::BoundTrait::Core(starkc::hir::CoreTrait::Display)
+                ),
+                "`T: Display` is a CORE bound with no trait ItemId, got {trait_:?}"
+            );
+            assert_eq!(member, "fmt");
+        }
+        other => panic!("expected a bound selection, got {other:?}"),
+    }
+    assert_eq!(
+        bound[0].provenance,
+        DP::Bound {
+            trait_: starkc::hir::BoundTrait::Core(starkc::hir::CoreTrait::Display)
+        }
+    );
+
+    let execution = program.execute_hir().expect("the fixture must run");
+    assert_eq!(execution.output, "A!\n");
+}
