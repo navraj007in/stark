@@ -2916,6 +2916,55 @@ impl<'a> Interpreter<'a> {
     /// place expression (see `resolve_comparison_operand`) -- grouped into one tuple parameter
     /// per side to keep the parameter count under clippy's `too_many_arguments` threshold rather
     /// than passing four related values separately.
+    /// Resolve a published `Bound` obligation at this call, if there is one.
+    ///
+    /// AS3 Boundary 4c. `Self` is concrete here — it is the receiver's own type — so the
+    /// specialiser has what it needs. Returns `None` when the checker published no bound use for
+    /// this expression, which is every ordinary concrete method call.
+    fn specialised_bound_callable(&self, expr: ExprId, receiver: &Value) -> Option<Callable> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| matches!(u.selection, crate::typecheck::CalleeSelection::Bound { .. }))?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            trait_args,
+            method_args,
+            ..
+        } = &use_.selection
+        else {
+            return None;
+        };
+        // The concrete `Self` is the receiver's nominal at its runtime type.
+        let self_ty = self.runtime_nominal_ty(receiver)?;
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        self.callable_for_body(resolved.body)
+    }
+
+    /// The nominal type of a runtime value, for bound specialisation.
+    ///
+    /// `Value` carries no type arguments (the Display characterization established this), so a
+    /// generic nominal resolves to its bare head. That is sufficient for selecting an impl whose
+    /// head matches; it is NOT sufficient for a generic impl's environment, which is why 4d's
+    /// negative control compares environments rather than only bodies.
+    fn runtime_nominal_ty(&self, value: &Value) -> Option<Ty> {
+        match value {
+            Value::Struct { item, .. } => Some(Ty::Struct(*item, Vec::new())),
+            Value::Enum { item, .. } => Some(Ty::Enum(*item, Vec::new())),
+            _ => None,
+        }
+    }
+
     /// The runnable form of a body the checker already selected.
     ///
     /// **AS3 Boundary 3: this is a LOOKUP keyed on the checker's answer, not a selection.**
@@ -4184,7 +4233,15 @@ impl<'a> Interpreter<'a> {
         // first impl on this nominal declaring it, so two bounds naming two different same-named
         // traits both reached the same implementation.
         let trait_filter = self.tables.bound_trait_calls.get(&expr_id).copied();
-        let method = match self.find_method(nominal, &name, trait_filter) {
+        // **AS3 Boundary 4c: consume the shared bound specialiser.**
+        //
+        // A `Bound` use fixes the obligation; the body becomes knowable here, where the receiver is
+        // a concrete value. Resolving it through `bound_dispatch` rather than `find_method` means
+        // the interpreter and MIR ask ONE authority the same question — and it is the only path
+        // that reaches a trait DEFAULT body by construction rather than by the scan happening to
+        // fall through to one.
+        let specialised = self.specialised_bound_callable(expr_id, &receiver_value);
+        let method = match specialised.or_else(|| self.find_method(nominal, &name, trait_filter)) {
             Some(method) => method,
             // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
             // `is_core_value` above could not classify it — `Ty::Param` names no shape. The
