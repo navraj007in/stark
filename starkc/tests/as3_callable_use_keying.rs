@@ -178,34 +178,42 @@ fn a_function_value_call_defers_both_selection_and_environment() {
     );
 }
 
-/// §3.4's invariant, enforced on the COMPLETE signature.
+/// §3.4's invariant, on the COMPLETE signature, for **every** static use including generic ones.
 ///
-/// The first version compared only arity and whether a receiver was present. That is weaker than
-/// the WP claims, and it hid a real gap: method publications passed `receiver: None` while the A3b
-/// body signature for a real method carries one, so the two would have disagreed on every method
-/// had anything checked. The fixture used only free functions, so nothing did.
+/// The first version compared only arity and receiver presence. The second compared full signatures
+/// but **skipped every generic use** — while the commit message said it compared them. That is the
+/// area DEV-176 and A3c-S came from, so skipping it left the invariant unproved exactly where it
+/// had failed before.
 ///
-/// This substitutes the use's environment into `callable_types[body]` and compares receiver, every
-/// parameter and the result.
+/// The substitution is the compiler's own `substitute_ty`, applied to the same name→type view
+/// `CallableInstantiation` publishes. Writing a second instantiation algorithm to check the first
+/// would be the defect this packet removes, in a test.
 #[test]
 fn a_static_uses_signature_equals_its_substituted_body_signature() {
     let program = analyse(
-        "struct Box2 { v: Int32 }\n\
-         impl Box2 {\n\
-         \x20   pub fn peek(&self) -> Int32 {\n        self.v\n    }\n\
-         \x20   pub fn take(self) -> Int32 {\n        self.v\n    }\n\
-         \x20   pub fn combine(&self, other: Int32) -> Int32 {\n        self.v + other\n    }\n}\n\
+        "struct Wrapper<T> { value: T }\n\
+         impl<T> Wrapper<T> {\n\
+         \x20   pub fn peek(&self) -> Int32 {\n        1\n    }\n\
+         \x20   pub fn swap<U>(&self, other: U) -> U {\n        other\n    }\n\
+         \x20   pub fn take(self) -> Int32 {\n        2\n    }\n}\n\
+         struct Plain { v: Int32 }\n\
+         impl Plain {\n    pub fn get(&self) -> Int32 {\n        self.v\n    }\n}\n\
+         fn identity<T>(value: T) -> T {\n    value\n}\n\
          fn add(a: Int32, b: Int32) -> Int32 {\n    a + b\n}\n\
          fn main() {\n\
-         \x20   let b: Box2 = Box2 { v: 1 };\n\
-         \x20   let p: Int32 = b.peek();\n\
-         \x20   let c: Int32 = b.combine(2);\n\
-         \x20   let s: Int32 = add(1, 2);\n\
-         \x20   let t: Int32 = b.take();\n}\n",
+         \x20   let w: Wrapper<Int32> = Wrapper { value: 5 };\n\
+         \x20   let a: Int32 = w.peek();\n\
+         \x20   let b: Bool = w.swap(true);\n\
+         \x20   let p: Plain = Plain { v: 1 };\n\
+         \x20   let c: Int32 = p.get();\n\
+         \x20   let d: Int32 = identity(3);\n\
+         \x20   let e: Int32 = add(1, 2);\n\
+         \x20   let f: Int32 = w.take();\n}\n",
     );
     let tables = program.tables();
 
     let mut checked = 0usize;
+    let mut generic_checked = 0usize;
     let mut with_receiver = 0usize;
     for use_ in &tables.callable_uses {
         let CalleeSelection::Static { body, .. } = &use_.selection else {
@@ -214,53 +222,61 @@ fn a_static_uses_signature_equals_its_substituted_body_signature() {
         let Some(body_sig) = tables.callable_types.get(body) else {
             panic!("static use names body {body:?}, which callable_types does not carry");
         };
+
+        // The compiler's own substitution, over the environment this use published.
+        let subs = use_.environment.substitutions();
+        let expected_receiver = body_sig
+            .receiver
+            .as_ref()
+            .map(|ty| starkc::typecheck::substitute_ty(ty, &subs));
+        let expected_params: Vec<_> = body_sig
+            .params
+            .iter()
+            .map(|ty| starkc::typecheck::substitute_ty(ty, &subs))
+            .collect();
+        let expected_ret = starkc::typecheck::substitute_ty(&body_sig.ret, &subs);
+
         assert_eq!(
-            use_.signature.params.len(),
-            body_sig.params.len(),
-            "arity disagreement between the use and its body"
+            format!("{:?}", use_.signature.receiver),
+            format!("{expected_receiver:?}"),
+            "receiver differs from the substituted body signature for {use_:?}"
         );
         assert_eq!(
-            use_.signature.receiver.is_some(),
-            body_sig.receiver.is_some(),
-            "the use and its body disagree about whether there IS a receiver: {use_:?}"
+            format!("{:?}", use_.signature.params),
+            format!("{expected_params:?}"),
+            "parameters differ from the substituted body signature for {use_:?}"
         );
+        assert_eq!(
+            format!("{:?}", use_.signature.ret),
+            format!("{expected_ret:?}"),
+            "result differs from the substituted body signature for {use_:?}"
+        );
+
         if use_.signature.receiver.is_some() {
             with_receiver += 1;
         }
-        // For a non-generic body the substituted signature IS the body signature, so the types
-        // must match exactly. Generic bodies are excluded here: their parametric form is
-        // deliberately not concrete, which §3.3 records.
-        let generic = match &use_.environment {
-            GenericEnvironment::Static(bindings) => !bindings.is_empty(),
-            GenericEnvironment::FromFunctionValue => true,
-        };
-        if !generic {
-            assert_eq!(
-                format!("{:?}", use_.signature.params),
-                format!("{:?}", body_sig.params),
-                "parameter types differ between a non-generic use and its body"
-            );
-            assert_eq!(
-                format!("{:?}", use_.signature.ret),
-                format!("{:?}", body_sig.ret),
-                "result type differs between a non-generic use and its body"
-            );
-            assert_eq!(
-                format!("{:?}", use_.signature.receiver),
-                format!("{:?}", body_sig.receiver),
-                "receiver type differs between a non-generic use and its body"
-            );
+        if !subs.is_empty() {
+            generic_checked += 1;
         }
         checked += 1;
     }
+
     assert!(
-        checked >= 4,
+        checked >= 6,
         "only {checked} static uses cross-checked; the invariant is barely exercised"
     );
     assert!(
-        with_receiver >= 3,
-        "only {with_receiver} uses carried a receiver — the method half of the invariant is not \
-         being tested, which is how the receiver gap survived"
+        with_receiver >= 4,
+        "only {with_receiver} uses carried a receiver — the method half is not being tested, \
+         which is how the receiver gap survived"
+    );
+    // The load-bearing non-vacuity guard. If this is zero the test has silently regressed to the
+    // non-generic-only version it replaced, which is the failure being repaired.
+    assert!(
+        generic_checked >= 3,
+        "only {generic_checked} GENERIC uses cross-checked — a `Wrapper<T>` method, a method-own \
+         generic and a generic free function must all be present, or the invariant is unproved \
+         exactly where DEV-176 and A3c-S came from"
     );
 }
 

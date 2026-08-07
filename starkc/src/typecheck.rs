@@ -786,6 +786,23 @@ pub enum GenericEnvironment {
     FromFunctionValue,
 }
 
+impl GenericEnvironment {
+    /// The name→type view to substitute with — **the same view `CallableInstantiation` publishes**,
+    /// so a consumer or a test never has to build a second one.
+    ///
+    /// Sound because NAME-SHADOW-001 forbids two binders in scope sharing a name. Empty for
+    /// `FromFunctionValue`: the environment is on the value, not here.
+    pub fn substitutions(&self) -> HashMap<String, Ty> {
+        match self {
+            GenericEnvironment::Static(bindings) => bindings
+                .iter()
+                .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
+                .collect(),
+            GenericEnvironment::FromFunctionValue => HashMap::new(),
+        }
+    }
+}
+
 /// What the CALL SITE did to the receiver (TYPE-METHOD-002 auto-borrow / auto-deref).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverAdjustment {
@@ -826,6 +843,29 @@ pub enum DispatchProvenance {
     CoreTrait { core: hir::CoreTrait },
     /// Calling a function value.
     FunctionValue,
+}
+
+/// The receiver type a declaration BINDS, formed the way A3b forms it.
+///
+/// AS3 Boundary 2 hardening, second correction. The publication recorded the instantiated `Self`
+/// bare, while `callable_types` records the receiver **as the body binds it** — `&Self` for
+/// `&self`, `&mut Self` for `&mut self`. So the two disagreed on every borrowing method, and §3.4's
+/// invariant would have failed on all of them. It did, the moment the test stopped skipping
+/// generics.
+///
+/// This mirrors `check_fn_def`'s construction rather than re-deriving it, so the two cannot drift.
+fn bound_receiver_ty(receiver: Option<&hir::Receiver>, self_ty: Ty) -> Option<Ty> {
+    match receiver? {
+        hir::Receiver::Value => Some(self_ty),
+        hir::Receiver::Ref => Some(Ty::Ref {
+            mutable: false,
+            inner: Box::new(self_ty),
+        }),
+        hir::Receiver::RefMut => Some(Ty::Ref {
+            mutable: true,
+            inner: Box::new(self_ty),
+        }),
+    }
 }
 
 /// What the CALL SITE did to the receiver, from TYPE-METHOD-002's peel count and the form the
@@ -7300,6 +7340,7 @@ impl<'a> TypeChecker<'a> {
             return fresh;
         }
 
+        let mut pending_use: Option<(ExprId, BlockId, Vec<(GenericBinder, Ty)>)> = None;
         let mut map = HashMap::new();
         if let Some(args) = turbofish {
             let has_tensor_kind = generics.iter().any(|param| {
@@ -7411,26 +7452,12 @@ impl<'a> TypeChecker<'a> {
                     map: &env_map,
                 });
                 // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
-                // rather than verify. `callable_instantiations` carries the body but not the
-                // declaration, which is why two of twenty-one entry points use it and the rest
-                // re-select.
+                // rather than verify. **Deferred to the end of this function**, because the
+                // signature must be the INSTANTIATED one: publishing `sig` here recorded
+                // `params: [Param("T")]` against an environment saying `T = Int32`, so §3.4's
+                // invariant failed the moment the test stopped skipping generic uses.
                 let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
-                let use_ = CallableUse {
-                    selection: CalleeSelection::Static {
-                        declaration: CallableDeclId::Item(item_id),
-                        body,
-                    },
-                    environment: GenericEnvironment::Static(bindings),
-                    receiver_adjustment: ReceiverAdjustment::None,
-                    receiver_binding: ReceiverBinding::None,
-                    signature: CallableSigTy {
-                        receiver: None,
-                        params: sig.params.clone(),
-                        ret: sig.ret.clone(),
-                    },
-                    provenance: DispatchProvenance::Direct,
-                };
-                self.publish_callable_use(expr_id, use_);
+                pending_use = Some((expr_id, body, bindings));
             }
         }
 
@@ -7467,7 +7494,23 @@ impl<'a> TypeChecker<'a> {
             .collect();
         let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
 
-        self.freshen_call_sig(FnSigTy { params, ret }, span)
+        let instantiated = self.freshen_call_sig(FnSigTy { params, ret }, span);
+        if let Some((expr_id, body, bindings)) = pending_use {
+            self.publish_named_use(
+                expr_id,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: instantiated.params.clone(),
+                    ret: instantiated.ret.clone(),
+                },
+                DispatchProvenance::Direct,
+            );
+        }
+        instantiated
     }
 
     /// WP-C6.2c: like [`Self::instantiate_ty`], but a projection `T::Item` whose base substitutes
@@ -8877,10 +8920,10 @@ impl<'a> TypeChecker<'a> {
             let use_self_ty = Some(impl_self_ty.clone());
             // The receiver this use binds, instantiated. `None` when the declaration takes no
             // receiver, which keeps the published signature comparable with A3b's body signature.
-            let receiver_self_ty = sig
-                .receiver
-                .as_ref()
-                .map(|_| self.instantiate_ty(&impl_self_ty, &map));
+            let receiver_self_ty = bound_receiver_ty(
+                sig.receiver.as_ref(),
+                self.instantiate_ty(&impl_self_ty, &map),
+            );
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: trait_body,
@@ -9018,11 +9061,10 @@ impl<'a> TypeChecker<'a> {
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
             let use_self_ty = Some(env_self.clone());
-            let receiver_self_ty = def
-                .sig
-                .receiver
-                .as_ref()
-                .map(|_| self.instantiate_ty(&env_self, &map));
+            let receiver_self_ty = bound_receiver_ty(
+                def.sig.receiver.as_ref(),
+                self.instantiate_ty(&env_self, &map),
+            );
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: def.body,
