@@ -214,3 +214,128 @@ fn a_static_uses_signature_agrees_with_its_bodys_arity() {
         "only {checked} static uses cross-checked; the invariant is not being exercised"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Boundary 2 — named dispatch: methods, associated functions, qualified calls, trait defaults
+// ---------------------------------------------------------------------------------------------
+
+use starkc::typecheck::CallableDeclId;
+
+/// A method call publishes an `ImplMember` declaration — built from ids the HIR possesses.
+///
+/// The first design draft assumed methods have their own `ItemId`. They do not: `ImplItem::Fn`
+/// embeds a `FnDef` positionally inside the impl's `items`, which is why A3b chose `BlockId` for
+/// executable identity. This asserts the corrected model rather than the assumed one.
+#[test]
+fn a_method_call_publishes_an_impl_member_declaration() {
+    let program = analyse(
+        "struct Counter { value: Int32 }\n\
+         impl Counter {\n    pub fn get(&self) -> Int32 {\n        self.value\n    }\n}\n\
+         fn main() {\n    let c: Counter = Counter { value: 3 };\n    let v: Int32 = c.get();\n}\n",
+    );
+    let tables = program.tables();
+
+    let members: Vec<_> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| {
+            matches!(
+                u.selection,
+                CalleeSelection::Static {
+                    declaration: CallableDeclId::ImplMember { .. },
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(members.len(), 1, "one method call, one impl-member use");
+    assert_eq!(
+        members[0].receiver_binding,
+        ReceiverBinding::Shared,
+        "`&self` binds a shared receiver, and the binding is published separately from the \
+         call site's adjustment"
+    );
+}
+
+/// `&mut self` and `self` publish different bindings — the field is carrying information, not a
+/// constant.
+#[test]
+fn the_receiver_binding_distinguishes_self_forms() {
+    let program = analyse(
+        "struct Cell { value: Int32 }\n\
+         impl Cell {\n\
+         \x20   pub fn read(&self) -> Int32 {\n        self.value\n    }\n\
+         \x20   pub fn bump(&mut self) {\n        self.value = self.value + 1;\n    }\n\
+         \x20   pub fn consume(self) -> Int32 {\n        self.value\n    }\n}\n\
+         fn main() {\n\
+         \x20   let mut c: Cell = Cell { value: 1 };\n\
+         \x20   c.bump();\n\
+         \x20   let a: Int32 = c.read();\n\
+         \x20   let b: Int32 = c.consume();\n}\n",
+    );
+    let tables = program.tables();
+
+    let mut bindings: Vec<ReceiverBinding> = tables
+        .callable_uses
+        .iter()
+        .filter(|u| {
+            matches!(
+                u.selection,
+                CalleeSelection::Static {
+                    declaration: CallableDeclId::ImplMember { .. },
+                    ..
+                }
+            )
+        })
+        .map(|u| u.receiver_binding)
+        .collect();
+    bindings.sort_by_key(|b| format!("{b:?}"));
+    assert_eq!(
+        bindings,
+        vec![
+            ReceiverBinding::ByValue,
+            ReceiverBinding::Exclusive,
+            ReceiverBinding::Shared
+        ],
+        "three self forms must publish three distinct bindings"
+    );
+}
+
+/// Every published static use names a declaration the HIR can produce, over a program that
+/// exercises free calls, methods and associated functions together.
+#[test]
+fn every_static_use_names_a_real_declaration() {
+    let program = analyse(
+        "struct Point { x: Int32 }\n\
+         impl Point {\n\
+         \x20   pub fn origin() -> Point {\n        Point { x: 0 }\n    }\n\
+         \x20   pub fn x(&self) -> Int32 {\n        self.x\n    }\n}\n\
+         fn helper(n: Int32) -> Int32 {\n    n\n}\n\
+         fn main() {\n\
+         \x20   let p: Point = Point::origin();\n\
+         \x20   let a: Int32 = p.x();\n\
+         \x20   let b: Int32 = helper(a);\n}\n",
+    );
+    let tables = program.tables();
+
+    let mut kinds = std::collections::BTreeSet::new();
+    let mut statics = 0usize;
+    for use_ in &tables.callable_uses {
+        if let CalleeSelection::Static { declaration, .. } = &use_.selection {
+            statics += 1;
+            kinds.insert(match declaration {
+                CallableDeclId::Item(_) => "Item",
+                CallableDeclId::ImplMember { .. } => "ImplMember",
+                CallableDeclId::TraitMember { .. } => "TraitMember",
+            });
+        }
+    }
+    assert!(
+        statics >= 3,
+        "expected at least three static uses, found {statics}"
+    );
+    assert!(
+        kinds.contains("Item") && kinds.contains("ImplMember"),
+        "the fixture must exercise more than one declaration kind, got {kinds:?}"
+    );
+}

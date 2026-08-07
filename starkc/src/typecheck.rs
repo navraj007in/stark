@@ -8034,6 +8034,7 @@ impl<'a> TypeChecker<'a> {
         // It was the one publication site A3c-S missed, invisible until A4 resolved signatures:
         // the BODY worked because nothing needed the frame, and only the signature could tell.
         // Names are read against the IMPL's file, matching this `map`'s keys (DEV-101).
+        let mut published_use: Option<(BlockId, Vec<(GenericBinder, Ty)>)> = None;
         if let Some((body, own_generics)) =
             self.hir
                 .items
@@ -8068,12 +8069,34 @@ impl<'a> TypeChecker<'a> {
                 own_is_method: true,
                 map: &env_map,
             });
+            published_use = Some((
+                body,
+                Self::env_bindings(&None, &impl_names, &own_names, true, &env_map),
+            ));
         }
         params = params
             .iter()
             .map(|ty| self.instantiate_ty(ty, &map))
             .collect();
         ret = self.instantiate_ty(&ret, &map);
+        // AS3 Boundary 2: an associated function takes no receiver, so both receiver fields are
+        // `None` — recorded rather than left absent, which is the same distinction Boundary 1 drew
+        // for a non-generic call's empty environment.
+        if let Some((body, bindings)) = published_use {
+            self.publish_named_use(
+                use_expr,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: params.clone(),
+                    ret: ret.clone(),
+                },
+                DispatchProvenance::Qualified { trait_item: None },
+            );
+        }
         Ty::Fn {
             params,
             ret: Box::new(ret),
@@ -8799,6 +8822,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
+            let use_self_ty = Some(impl_self_ty.clone());
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: trait_body,
@@ -8837,6 +8861,32 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
+
+            // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
+            // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
+            // (what the callable binds) are separate fields: they correlate here, but they are
+            // different authorities and AS4 asks about the binding side.
+            let receiver_binding = match sig.receiver {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            };
+            let use_bindings =
+                Self::env_bindings(&use_self_ty, &trait_names, &own_names, true, &env_map);
+            self.publish_named_use(
+                call_expr,
+                trait_body,
+                use_bindings,
+                ReceiverAdjustment::None,
+                receiver_binding,
+                CallableSigTy {
+                    receiver: None,
+                    params: params_ty.clone(),
+                    ret: ret_ty.clone(),
+                },
+                DispatchProvenance::Qualified { trait_item: None },
+            );
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -8905,6 +8955,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
+            let use_self_ty = Some(env_self.clone());
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: def.body,
@@ -8944,6 +8995,32 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
+
+            // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
+            // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
+            // (what the callable binds) are separate fields: they correlate here, but they are
+            // different authorities and AS4 asks about the binding side.
+            let receiver_binding = match def.sig.receiver {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            };
+            let use_bindings =
+                Self::env_bindings(&use_self_ty, &impl_names, &own_names, true, &env_map);
+            self.publish_named_use(
+                call_expr,
+                def.body,
+                use_bindings,
+                ReceiverAdjustment::None,
+                receiver_binding,
+                CallableSigTy {
+                    receiver: None,
+                    params: params_ty.clone(),
+                    ret: ret_ty.clone(),
+                },
+                DispatchProvenance::Inherent,
+            );
 
             if args.len() != params_ty.len() {
                 self.diags.push(
