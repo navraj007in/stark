@@ -5479,3 +5479,40 @@ position; the inventory is enforced by a test rather than by a date. What remain
 stated rather than implied: struct fields, indexed slots, and values that never bind to a local at
 all. Those need a place-oriented check, which is a different change with its own evidence — not a
 silent exemption from this one.
+
+## DEV-194 — a trait DEFAULT body reached by a non-`Static` route ran without its `Self` binding [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **One shape, three routes, three separate repairs.** A trait default's body carries
+  `Ty::Param("Self")` throughout. Whenever it is reached by a route other than an ordinary `Static`
+  method call, something had to supply the `Self` binding — and nothing did:
+
+  | Route | What was missing |
+  | --- | --- |
+  | bound call — `announce<D: Describe>(item: &D)` → `item.shout()` | the interpreter **discarded** the environment `specialize_bound_callable` returns |
+  | bound call, MIR | `specialised_bound_key` used `fn_key_for_body` (impl members only), so a default body produced no `FnKey` |
+  | qualified call — `<T as Tr>::m(&x)` | the checker published no selection for a default at all, then no `Self` once it did |
+
+- **Effect:** `self.name()` inside the default failed with *"method 'name' not found at runtime"*,
+  or MIR lowering refused the call outright.
+- **The fallbacks had been hiding all three.** A name scan finds `name` on the runtime value's
+  nominal without needing an environment at all, so a missing `Self` binding was invisible for
+  exactly as long as a scan existed to paper over it. Deleting the scans did not cause these
+  defects; it revealed them.
+- **Two were found by CI, not by the unit suites** — `pkg/07-traits` in the external sample suite,
+  and `c62b_fully_qualified_reaches_a_trait_default_body`. That is the argument for both gates: the
+  sample suite exercises the interpreter on real programs, and the differential suite exercises
+  shapes the samples do not reach (MIR refused a program the interpreter ran).
+- **Repairs:**
+  - `Interpreter::push_resolved_env` installs the environment the specialiser produced. A `Bound`
+    call's environment cannot be published — the body is chosen only once `Self` is concrete.
+  - MIR's `specialised_bound_key` uses `key_for_selected_body`, which reaches trait defaults.
+  - `check_qualified_trait_call` falls back to `trait_default_member` when the implementor accepts
+    the default, publishes the signature from the trait (`trait_member_signature`, with `Self`
+    substituted), and publishes `Self` in the environment — which the checker knows here.
+- **Honesty note on how the MIR half was found:** not by the probe's output. The probe edit I wrote
+  to *observe* the failure also replaced `fn_key_for_body` with `key_for_selected_body`, and the
+  symptom moved. I only established the real cause by diffing what I had actually changed.
+- **Evidence:** `as3_fallback_removal::dev194_a_trait_default_reached_through_a_bound_gets_its_self_binding`
+  — two implementors, one accepting the default and one overriding it, so a resolution that ignored
+  `Self` and picked "the first impl declaring the name" prints the same text twice. Plus
+  `native_c6_2_generics_traits` 20/20 and the external sample suite 39/39.

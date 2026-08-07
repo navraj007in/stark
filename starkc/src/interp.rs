@@ -3008,6 +3008,22 @@ impl<'a> Interpreter<'a> {
     ///
     /// Only `Inherent`, `TraitImpl` and `Qualified` provenances are eligible; an operator's
     /// `CoreTrait` use can be published against the same expression and names a different callable.
+    /// The Static environment published with the selection at `expr`, if any.
+    fn static_selected_env(&self, expr: ExprId) -> Vec<(crate::typecheck::GenericBinder, Ty)> {
+        let Some(ids) = self.tables.callable_uses_by_expr.get(&expr) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find_map(|u| match &u.environment {
+                crate::typecheck::GenericEnvironment::Static(bindings) if !bindings.is_empty() => {
+                    Some(bindings.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     fn static_selected_callable(&self, expr: ExprId) -> Option<Callable> {
         let ids = self.tables.callable_uses_by_expr.get(&expr)?;
         let use_ = ids
@@ -3027,7 +3043,11 @@ impl<'a> Interpreter<'a> {
         self.callable_for_body(*body)
     }
 
-    fn specialised_bound_callable(&self, expr: ExprId, base: ExprId) -> Option<Callable> {
+    fn specialised_bound_callable(
+        &self,
+        expr: ExprId,
+        base: ExprId,
+    ) -> Option<(Callable, Vec<(crate::typecheck::GenericBinder, Ty)>)> {
         let ids = self.tables.callable_uses_by_expr.get(&expr)?;
         let use_ = ids
             .iter()
@@ -3068,7 +3088,8 @@ impl<'a> Interpreter<'a> {
             trait_args,
             method_args,
         )?;
-        self.callable_for_body(resolved.body)
+        let callable = self.callable_for_body(resolved.body)?;
+        Some((callable, resolved.environment))
     }
 
     /// The runnable form of a body the checker already selected.
@@ -3832,8 +3853,42 @@ impl<'a> Interpreter<'a> {
         // first, then `Self` is substituted through them before its own concretisation. A flat
         // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
         // boundary.
+        self.push_bindings(&env.bindings, span)
+    }
+
+    /// **AS3 Boundary 4: install a generic environment the SPECIALISER produced.**
+    ///
+    /// A `Bound` call's environment cannot be published: the body is only chosen once `Self` is
+    /// concrete, which is here. `specialize_bound_callable` returns those bindings, and without
+    /// installing them a trait DEFAULT body reached through a bound runs with no `Self` at all —
+    /// so `self.name()` inside it resolves nothing. That was the `pkg/07-traits` regression: the
+    /// name scan used to paper over the missing environment by finding `name` on the runtime
+    /// value's nominal.
+    fn push_resolved_env(
+        &mut self,
+        bindings: &[(crate::typecheck::GenericBinder, Ty)],
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        if bindings.is_empty() {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
+        self.push_bindings(bindings, span)
+    }
+
+    /// The two-pass installation shared by both. **`Self` is resolved second, on purpose:** it is
+    /// published as the impl's self type (`Wrapper<T>`), which mentions the impl's own parameters,
+    /// so it cannot be concretised until they are. A flat single pass leaves
+    /// `Self = Wrapper<Param("T")>` and fails at the first value boundary.
+    fn push_bindings(
+        &mut self,
+        bindings: &[(crate::typecheck::GenericBinder, Ty)],
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
         let mut concrete: HashMap<String, Ty> = HashMap::new();
-        for (binder, ty) in &env.bindings {
+        for (binder, ty) in bindings {
             if matches!(binder, crate::typecheck::GenericBinder::SelfType) {
                 continue;
             }
@@ -3842,7 +3897,7 @@ impl<'a> Interpreter<'a> {
                 self.concrete_runtime_ty(ty, span)?,
             );
         }
-        for (binder, ty) in &env.bindings {
+        for (binder, ty) in bindings {
             if !matches!(binder, crate::typecheck::GenericBinder::SelfType) {
                 continue;
             }
@@ -4368,9 +4423,16 @@ impl<'a> Interpreter<'a> {
         // the interpreter and MIR ask ONE authority the same question — and it is the only path
         // that reaches a trait DEFAULT body by construction rather than by the scan happening to
         // fall through to one.
-        let specialised = self
-            .static_selected_callable(expr_id)
-            .or_else(|| self.specialised_bound_callable(expr_id, base));
+        // A `Bound` resolution also yields the ENVIRONMENT the body must run under; a `Static`
+        // one's environment is published and installed by `push_callable_env`.
+        let mut bound_env: Option<Vec<(crate::typecheck::GenericBinder, Ty)>> = None;
+        let specialised = self.static_selected_callable(expr_id).or_else(|| {
+            self.specialised_bound_callable(expr_id, base)
+                .map(|(callable, env)| {
+                    bound_env = Some(env);
+                    callable
+                })
+        });
         // **AS3 Boundary 4: no name-scan fallback.** This ended in
         // `.or_else(|| self.find_method(nominal, &name, trait_filter))`. Instrumented across nine
         // suites — both differentials, iterators, bound identity, adversarial trait impls,
@@ -4413,7 +4475,10 @@ impl<'a> Interpreter<'a> {
                 // A3c-S: the callee's generic environment, live for the whole call. The guard's
                 // `Drop` covers traps, propagation and internal failures, which a manual pop after
                 // `?` would not.
-                let _env = self.push_callable_env(expr_id, span)?;
+                let _env = match &bound_env {
+                    Some(bindings) => self.push_resolved_env(bindings, span)?,
+                    None => self.push_callable_env(expr_id, span)?,
+                };
                 self.call_user_method(method, receiver_place, receiver_value, values, span)
                     .map(Flow::Value)
             }
@@ -4447,9 +4512,16 @@ impl<'a> Interpreter<'a> {
         // receiver's nominal for the member name re-decided it.
         let method = self
             .static_selected_callable(call_expr)
-            .or_else(|| self.specialised_bound_callable(call_expr, *first))
+            .or_else(|| {
+                self.specialised_bound_callable(call_expr, *first)
+                    .map(|(c, _)| c)
+            })
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
         let _ = (&method_name, trait_id);
+        // A qualified call may land on a trait DEFAULT body, which runs with `Self` parametric.
+        // Install the binding the checker published, or `self.other()` inside it resolves nothing.
+        let bindings = self.static_selected_env(call_expr);
+        let _env = self.push_resolved_env(&bindings, span)?;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
                 .call_user_method(method, receiver_place, receiver, values, span)
@@ -6752,7 +6824,10 @@ impl<'a> Interpreter<'a> {
                 })
                 // A late-bound iterator (`for x in it` where `it: T` and `T: Iterator`) resolves
                 // through the shared specialiser, not through a name scan.
-                .or_else(|| self.specialised_bound_callable(for_expr, for_expr))
+                .or_else(|| {
+                    self.specialised_bound_callable(for_expr, for_expr)
+                        .map(|(c, _)| c)
+                })
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
             self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
         } else {

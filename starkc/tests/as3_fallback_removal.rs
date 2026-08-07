@@ -220,3 +220,53 @@ fn dev192_a_bound_ordering_runs_the_users_impl() {
     // Reversed: 1 < 2 is false under this `cmp`, and 2 < 1 is true.
     agree("as3_dev192_bound_ord_reversed", source, "false\ntrue\n");
 }
+
+#[test]
+fn dev194_a_trait_default_reached_through_a_bound_gets_its_self_binding() {
+    // **The `pkg/07-traits` regression, and the sharpest argument for deleting fallbacks.**
+    //
+    // Two Bound calls nest:
+    //
+    //   announce(&s)  ->  item.shout()   Bound, resolves to the trait DEFAULT body
+    //                     self.name()    Bound, inside that body, needs `Self = Server`
+    //
+    // A `Bound` call's environment cannot be published — the body is chosen only once `Self` is
+    // concrete, which happens at run time. `specialize_bound_callable` returns those bindings and
+    // the interpreter was discarding them, so the default body ran with NO `Self` at all and the
+    // inner `self.name()` resolved nothing.
+    //
+    // **The name scan had been hiding this.** It found `name` on the runtime value's nominal
+    // without needing an environment, so the missing binding was invisible for as long as a
+    // fallback existed to paper over it. Deleting the fallback did not cause the defect; it
+    // revealed one, in the external sample suite rather than in any unit test — which is why the
+    // sample suite is a gate and not a formality.
+    let source = "trait Describe {\n\
+                  \x20   fn name(&self) -> String;\n\
+                  \x20   fn shout(&self) -> String {\n\
+                  \x20       let mut out = String::from(\"<\");\n\
+                  \x20       out.push_str(self.name().as_str());\n\
+                  \x20       out\n\
+                  \x20   }\n\
+                  }\n\
+                  struct Server { host: String }\n\
+                  struct Job { id: Int32 }\n\
+                  impl Describe for Server {\n    fn name(&self) -> String { String::from(\"server\") }\n}\n\
+                  impl Describe for Job {\n\
+                  \x20   fn name(&self) -> String { String::from(\"job\") }\n\
+                  \x20   fn shout(&self) -> String { String::from(\"JOB!\") }\n\
+                  }\n\
+                  fn announce<D: Describe>(item: &D) -> String { item.shout() }\n\
+                  fn main() {\n\
+                  \x20   let s: Server = Server { host: String::from(\"h\") };\n\
+                  \x20   let j: Job = Job { id: 1 };\n\
+                  \x20   println(announce(&s));\n\
+                  \x20   println(announce(&j));\n\
+                  \x20   println(s.shout());\n}\n";
+    // Two implementors, one taking the default and one overriding it, so a resolution that ignored
+    // `Self` and picked "the first impl declaring the name" would print the same text twice.
+    agree(
+        "as3_dev194_bound_trait_default_self",
+        source,
+        "<server\nJOB!\n<server\n",
+    );
+}

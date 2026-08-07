@@ -8006,6 +8006,63 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    /// The trait's own default body for `member`, as an (owner, member, body) triple shaped like
+    /// [`Self::operator_impl_member`]'s. Used when an implementor accepts the default and there is
+    /// therefore no impl member to find.
+    /// A TRAIT method's declared signature, with `Self` bound to the concrete receiver. The
+    /// trait-default counterpart of [`Self::declared_member_signature`], which reads an impl.
+    fn trait_member_signature(
+        &mut self,
+        trait_id: ItemId,
+        member: u32,
+        self_ty: &Ty,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method { sig, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        let receiver_form = sig.receiver;
+        let param_ids: Vec<hir::TypeId> = sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = sig.ret;
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty.clone());
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => Self::subst_self_ty(self.convert_hir_type(id), self_ty),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+
+    /// `Self` in a trait signature means the concrete receiver at this call site.
+    fn subst_self_ty(ty: Ty, self_ty: &Ty) -> Ty {
+        let mut map = HashMap::new();
+        map.insert("Self".to_string(), self_ty.clone());
+        substitute_ty(&ty, &map)
+    }
+
+    fn trait_default_member(
+        &self,
+        trait_id: ItemId,
+        member: u32,
+    ) -> Option<(ItemId, u32, BlockId)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method {
+            body: Some(body), ..
+        } = items.get(member as usize)?
+        else {
+            return None;
+        };
+        Some((trait_id, member, *body))
+    }
+
     fn check_qualified_trait_call(
         &mut self,
         call_expr: ExprId,
@@ -8054,21 +8111,41 @@ impl<'a> TypeChecker<'a> {
             },
             _ => String::new(),
         };
-        if let Some((impl_item, impl_member, body)) =
-            self.operator_impl_member(&receiver_type, &trait_name, &member_name)
-        {
-            if let Some((receiver, params, ret)) =
-                self.declared_member_signature(impl_item, impl_member)
-            {
+        // **The impl member if the implementor overrides it, otherwise the trait's DEFAULT body.**
+        //
+        // `operator_impl_member` finds written impl members only. `<T as Tr>::m(&x)` where `T`
+        // accepts the default has no impl member to find, and publishing nothing there left the
+        // interpreter — which no longer has a name scan — with nothing to select. Third instance of
+        // one shape in this packet: a trait default reached by a route other than a `Static` method
+        // call.
+        let selected = self
+            .operator_impl_member(&receiver_type, &trait_name, &member_name)
+            .or_else(|| self.trait_default_member(trait_id, member));
+        if let Some((owner, owner_member, body)) = selected {
+            // The signature comes from whichever declaration owns the body — an impl member, or
+            // the trait itself when the implementor accepts the default.
+            let signature = if owner == trait_id {
+                self.trait_member_signature(trait_id, owner_member, &receiver_type)
+            } else {
+                self.declared_member_signature(owner, owner_member)
+            };
+            if let Some((receiver, params, ret)) = signature {
                 let use_ = CallableUse {
                     selection: CalleeSelection::Static {
                         declaration: CallableDeclId::ImplMember {
-                            impl_item,
-                            member: impl_member,
+                            impl_item: owner,
+                            member: owner_member,
                         },
                         body,
                     },
-                    environment: GenericEnvironment::Static(Vec::new()),
+                    // **`Self`, published.** A trait DEFAULT body reached this way runs with
+                    // `Ty::Param("Self")` throughout, so without this binding a `self.other()`
+                    // inside it resolves nothing. The checker knows the receiver here — unlike the
+                    // bound path, where the body is only chosen at run time.
+                    environment: GenericEnvironment::Static(vec![(
+                        GenericBinder::SelfType,
+                        receiver_type.clone(),
+                    )]),
                     receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
                     receiver_binding: ReceiverBinding::Shared,
                     signature: CallableSigTy {

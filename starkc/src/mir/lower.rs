@@ -6597,7 +6597,9 @@ impl<'a> FnLowerer<'a> {
             trait_args,
             method_args,
         )?;
-        self.fn_key_for_body(resolved.body, nominal_args)
+        // A trait DEFAULT reached through a bound lives on the trait, not on any impl, so the
+        // impl-member lookup alone is not enough here.
+        self.key_for_selected_body(resolved.body, nominal, nominal_args)
     }
 
     /// The `FnKey` for a body the checker already selected, plus the receiver form.
