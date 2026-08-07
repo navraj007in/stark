@@ -5390,3 +5390,26 @@ conclusions, one of which reached a permanent record before being retracted.
   generic frame — the operand VALUES cannot supply it, since a runtime value carries no type
   arguments. Depends on DEV-191 having published the use.
 - **Evidence:** `tests/as3_fallback_removal.rs`, 8 tests, all through the full differential harness.
+
+## DEV-193 — a direct call to a known function published `FunctionValue` [CLOSED at creation, AS3 exit criterion 1, 2026-08-07]
+
+- **Defect:** `free(1)`, where `free` names a known `fn` item, fell through the call-checking chain
+  into the function-value branch and published `CalleeSelection::FunctionValue` — the selection
+  meaning *the body is not knowable here*. It is knowable: the callee path published
+  `Direct`/`Static(body)` immediately before.
+- **Effect:** `free(1)` and `g(2)` produced **identical records at their call expressions**. A
+  consumer reading the call site could not distinguish a direct call to a known body from a call
+  through a function value — the exact conflation `CalleeSelection`'s three binding times exist to
+  prevent. Nothing consumed it today, so nothing was observably wrong; it was a false statement
+  waiting for a consumer.
+- **Repair:** suppress the `FunctionValue` publication when the callee resolves to a `fn` item. The
+  record for a direct call is the callee path's; a second, weaker one contradicting it is a
+  duplicate, not extra information.
+- **Found by `tests/as3_callable_use_exactness.rs` on its first run**, which is what that test is
+  for: it derives expectations from HIR shape and `expr_types` rather than from the table under
+  test, so it can see a record that exists but says the wrong thing.
+- **One self-inflicted regression while fixing it**, worth recording: the first version used
+  `return *ret` to skip the publication. `return` exits `check_expr` entirely, skipping the
+  post-match bookkeeping that records `expr_types` — 2 lib tests and 35 `mir_differential` cases
+  failed at once. An early return out of a function whose value is recorded by its *caller-side*
+  epilogue is never a local edit.

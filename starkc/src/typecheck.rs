@@ -6282,6 +6282,26 @@ impl<'a> TypeChecker<'a> {
                             // the bindings it was created with, because `Ty::Fn` cannot say which
                             // instantiation produced it. `FunctionValue` states that rather than
                             // pretending a `BlockId` exists here.
+                            // **DEV-193: not every call reaching here is a function-VALUE call.**
+                            //
+                            // `free(1)`, where `free` names a known `fn` item, falls into this
+                            // branch too — and published `FunctionValue`, the selection that means
+                            // "the body is not knowable here". It is knowable: the callee path
+                            // published `Direct`/`Static(body)` a moment earlier. So `free(1)` and
+                            // `g(2)` produced IDENTICAL records at their call expressions, and a
+                            // consumer reading the call site could not tell a direct call from a
+                            // call through a value — the exact conflation three binding times exist
+                            // to prevent.
+                            //
+                            // The record for a direct call is the path's; publishing a second,
+                            // weaker one here would be a duplicate that contradicts it.
+                            let callee_is_known_fn = match &self.hir.expr(*callee).kind {
+                                hir::ExprKind::Path {
+                                    res: Res::Item(item),
+                                    ..
+                                } => matches!(self.hir.item(*item).kind, hir::ItemKind::Fn(_)),
+                                _ => false,
+                            };
                             let use_ = CallableUse {
                                 selection: CalleeSelection::FunctionValue,
                                 environment: GenericEnvironment::FromFunctionValue,
@@ -6294,7 +6314,9 @@ impl<'a> TypeChecker<'a> {
                                 },
                                 provenance: DispatchProvenance::FunctionValue,
                             };
-                            self.publish_callable_use(expr_id, use_);
+                            if !callee_is_known_fn {
+                                self.publish_callable_use(expr_id, use_);
+                            }
                             *ret
                         }
                         Ty::Error => Ty::Error,
