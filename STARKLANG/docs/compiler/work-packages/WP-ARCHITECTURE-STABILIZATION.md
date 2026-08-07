@@ -73,7 +73,8 @@ pipeline.
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
-| remainder of Campaign A (AS1b, AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
+| AS1b | **CLOSED 2026-08-07** — i, ii(a–e) and iii; owner-accepted at `a6107fb`. See `AS1B-OPENING-ANALYSIS.md` §9 | none |
+| remainder of Campaign A (AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
 | Campaign B (AS5–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS5/AS8 are unblocked on that axis | before C10 release qualification |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded

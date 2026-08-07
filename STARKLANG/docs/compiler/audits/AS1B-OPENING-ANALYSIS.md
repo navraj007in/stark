@@ -447,3 +447,79 @@ checking; after AS1a's logical names, that probe returned `None` for every file,
 looked local. One first-party violation existed —
 `impl HttpResponse` in `stark-http-client` for a type defined in `stark-http-core` — and is repaired
 as a locally declared `JsonBody` trait, which is what the rule is designed to permit.
+
+
+---
+
+## 9. AS1b — CLOSED (2026-08-07)
+
+Owner review of `a6107fb` accepted it as the architectural completion of the packet, with three
+closeout corrections, all applied:
+
+- **`SourceTable`'s doc comment overclaimed.** It said `freeze` was "the only way to build one"
+  while a `From<SourceRegistry>` impl and `Default` also constructed it. `From` was unused and is
+  deleted, so `freeze()` is now literally the only populated constructor; `Default` remains for
+  constructing an empty `Hir` before resolution and says so.
+- **The claim is now stated at its true strength.** `Ast` still holds a mutable `SourceRegistry` —
+  that *is* the loading phase — and `resolve` freezes a clone of it onto the `Hir`. So the precise
+  result is: **source allocation ends at the loading/front-end boundary for every downstream
+  semantic artifact. HIR and MIR carry immutable source tables and cannot allocate a source
+  identity.** Not "no registry is mutable anywhere".
+- **A stale MIR 0.4 history line** said `MirProgram` took a `SourceRegistry`; it takes a
+  `SourceTable`. Corrected.
+
+### Status
+
+| Item | State |
+| --- | --- |
+| AS1a — canonical logical source identity | CLOSED |
+| AS1b-i — `SourceId` allocated during loading | CLOSED |
+| AS1b-ii — `Span` owns source identity (a–e) | CLOSED |
+| AS1b-iii — MIR collapses onto the same identity | CLOSED |
+| DEV-122 — rival/wrong source authority | **structurally eliminated** |
+| DEV-183 — trait-coherence latent defect | CLOSED |
+
+### Acceptance criteria
+
+| # | Criterion | Evidence |
+| ---: | --- | --- |
+| 1 | Dependency diagnostics and traps resolve against the dependency's file and line table | `as1b_span_provenance` (compile-time, HIR runtime), `as1b_mir_native_provenance` (MIR engine, built native binary) |
+| 2 | No AST/HIR/MIR/query diagnostic path accepts a bare byte range | `Span` has no two-argument constructor; `only_the_registry_mints_source_ids` |
+| 3 | Span-to-location resolution total in compile-time and runtime paths | `resolve_span` returns a `ResolvedLocation`, not a `Result`; `SpanResolutionError` deleted |
+| 4 | Diagnostic JSON remains deterministic | `diagnostic_transport`; ids now come from spans rather than a name round-trip that could panic |
+| 5 | Ambient-file guessing removed only on migration evidence; item-to-file metadata retained on its own purpose | `item_files` → `item_sources`, kept for module semantics (ii-b), not for span reads |
+
+### DEV-183 ruling
+
+**TRAIT-COHERENCE-001 stands unchanged; the `JsonBody` repair stands; DEV-183 is closed.**
+
+An exception for "first-party" packages was considered and rejected. It would introduce a notion of
+publisher or repository trust into type checking — *who published this, is a fork still first-party,
+does ownership follow a registry namespace* — none of which should decide whether a program
+type-checks. And it would restore the original problem: two packages could each write
+`impl HttpResponse { fn json(...) }`, and which one owns the method would depend on dependency order
+or on which packages happened to be in the build. Preventing exactly that is what coherence rules
+are for.
+
+That the newly working rule found **one violation across 28 packages** is itself evidence the rule
+is not excessively restrictive: the ecosystem was already complying.
+
+### The result, larger than `SourceId`
+
+```text
+Before AS1b                          After AS1b
+
+parser file                                Span.source
+checker file                                    │
+item file                                  SourceTable
+callable file                                   │
+diagnostic file                  ┌──────────────┼──────────────┐
+runtime error file              HIR            MIR          backend
+MIR FileId
+backend file
+       ↓
+all answering
+"where did this come from?"
+```
+
+AS1b is closed. Further refinement of the source system is not the next target; **AS5 is.**

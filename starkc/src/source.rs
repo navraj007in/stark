@@ -232,8 +232,18 @@ impl SourceRegistry {
 /// after the parser now carries this instead, so "nobody downstream mints a `SourceId`" is a
 /// property of the type rather than a convention.
 ///
-/// The only way to build one is [`SourceRegistry::freeze`], which consumes the registry: loading is
-/// a phase that ends.
+/// [`SourceRegistry::freeze`] is the only way to build a POPULATED one, and it consumes the
+/// registry: loading is a phase that ends, and the transition is named at the point it happens.
+/// `Default` exists solely so a `Hir` can be constructed empty before resolution fills it in; it
+/// cannot be grown afterwards, because there is no `intern`.
+///
+/// What this does and does not establish, stated precisely: **source allocation ends at the
+/// loading/front-end boundary for every downstream semantic artifact.** `Ast` still holds a
+/// mutable `SourceRegistry` — that is the loading phase — and `resolve` freezes a clone of it onto
+/// the `Hir`. So this type does not prove that no registry anywhere is still mutable; it proves
+/// that HIR, MIR and everything they reach cannot allocate a source identity.
+/// `only_the_loading_phase_interns` covers the remaining case, a new `intern` added to a pass that
+/// runs *during* loading.
 #[derive(Clone, Debug, Default)]
 pub struct SourceTable(SourceRegistry);
 
@@ -267,12 +277,6 @@ impl SourceTable {
     /// Every source, in id order.
     pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
         self.0.iter()
-    }
-}
-
-impl From<SourceRegistry> for SourceTable {
-    fn from(registry: SourceRegistry) -> Self {
-        SourceTable(registry)
     }
 }
 

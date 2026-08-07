@@ -45,7 +45,8 @@ use std::fmt::Write as _;
 ///
 /// `0.4` (AS1b-iii): **source identity collapses onto the span.** [`SourceInfo`] loses its `file`
 /// field and `MirProgram` replaces `files: Vec<Arc<SourceFile>>` with a
-/// [`crate::source::SourceRegistry`]; `FileId` no longer exists. Two fields of the data model are
+/// [`crate::source::SourceTable`] — the frozen, lookup-only form of the compilation's registry;
+/// `FileId` no longer exists. Two fields of the data model are
 /// removed and one changes type, so this is a shape change by the plainest reading of §11.
 ///
 /// The increment is doing real work, not bookkeeping. A cached artifact produced under `0.3` was
