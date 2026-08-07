@@ -546,7 +546,62 @@ pub struct ProviderResourceBinding {
     pub resource: String,
 }
 
+/// The one logical identity for a file inside a package: `<package>/<path within the package>`,
+/// always `/`-joined so the same workspace observes identically on every platform.
+///
+/// DEV-113-A established this scheme for the parser. AS1a makes it the *only* scheme: a physical
+/// source had acquired a second identity because `analyze_project` and three CLI paths each built
+/// the entry `SourceFile` from `entry.to_string_lossy()` instead. PKG-IDENTITY-001 requires a
+/// package token to be "never an absolute checkout path", and §15.2 requires relocation stability —
+/// neither survives a second, path-shaped identity for the same file.
+pub fn logical_source_name(package: &str, package_root: &Path, file: &Path) -> String {
+    let relative = file
+        .strip_prefix(package_root)
+        .ok()
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|| {
+            file.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+    format!("{package}/{relative}")
+}
+
 impl Package {
+    /// The package's own directory — the manifest's parent.
+    pub fn root_dir(&self) -> PathBuf {
+        self.manifest_path
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_default()
+    }
+
+    /// The entry file's single logical identity.
+    pub fn entry_logical_name(&self) -> String {
+        logical_source_name(&self.name, &self.root_dir(), &self.entry)
+    }
+
+    /// **The one way to build a package entry's `SourceFile`.** Logical name for identity, real
+    /// disk path for module resolution and for pointing a human at a file.
+    ///
+    /// AS1a: every caller that needs this file goes through here. Building it by hand is what
+    /// produced two `SourceRecord`s for one physical file, made the phantom the only `Root`, and
+    /// leaked the checkout path into the native build key.
+    pub fn entry_source_file(
+        &self,
+        contents: impl Into<String>,
+    ) -> std::sync::Arc<crate::source::SourceFile> {
+        std::sync::Arc::new(
+            crate::source::SourceFile::new(self.entry_logical_name(), contents)
+                .with_disk_path(self.entry.clone()),
+        )
+    }
+
     pub fn from_manifest(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read manifest at '{}': {}", path.display(), e))?;

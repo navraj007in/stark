@@ -1,7 +1,9 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** PROPOSED — approval is requested only for the Sprint 1 opening items plus AS0 + AS1a;
-later packets require the AS0 report and a second owner decision.
+**Status:** **IN EXECUTION — Sprint 1 CLOSED.** The Sprint 1 opening items, AS0 (partial), AS1a and
+AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
+Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
+second owner decision, which the AS0 report now enables — see §1.
 **Date:** 2026-08-06.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
@@ -11,21 +13,37 @@ compiler position must be recorded in `COMPILER-STATE.md`.
 
 ---
 
-## 1. Decision requested
+## 1. Approval record, and the decision now due
 
-Approve **Sprint 1's opening items plus AS0 + AS1a only** as the first bounded packet:
+### Approved and delivered — Sprint 1 (2026-08-06)
 
-1. retire the Cranelift dev-dependencies and audit first-party manifest strictness — both
-   audit-gated, neither changing compiler behaviour;
-2. establish the baseline, the exact inventories and the entry-point characterization tests;
-3. close the reproduced package source-identity/provenance defect;
-4. report what the evidence says about the size, order and value of the remaining packets.
+Approved in session, executed on `wp-arch-stability/sprint-1`:
 
-Do **not** approve Campaigns A and B wholesale yet. Their current scope and ordering are a proposal
-to be resized after AS0. In particular, the proposed Campaign A gate would block the project
-roadmap's structured-concurrency compiler/runtime work until the correctness foundations pass. That
-platform impact requires an explicit second owner decision; it is not implied by approving AS0 +
-AS1a.
+1. **Cranelift retirement** and the **manifest strictness audit** — audit-gated, neither changing
+   compiler behaviour;
+2. **AS0** — baseline, inventories and the entry-point characterization matrix. **Partial:** five
+   work items remain (§7), so AS0's report exists but AS0 has not formally exited;
+3. **AS1a** — the reproduced package source-identity/provenance defect, closed;
+4. **AS2** — one compiler session; six hand-rolled pipelines removed. *Approved in session as part
+   of Sprint 1's scope; it was not in this document's original approval boundary, which is why this
+   section now records what was authorised rather than what is being asked for.*
+
+What the evidence changed, which is the point of having run AS0 first: six bypassing assemblies not
+four, three shipped binaries not two, AS5 re-sized from a tightening to a tightening plus a
+compatibility correction plus a correctness defect, and the provenance half of the source-identity
+defect found to be worse than recorded. All of it is in
+`STARKLANG/docs/compiler/audits/AS0-BASELINE-AND-INVENTORY.md` and
+`AS0-MANIFEST-STRICTNESS-AUDIT.md`.
+
+### Still reserved
+
+Campaigns A (remainder) and B are **not** approved. Their scope and ordering were always a proposal
+to be resized after AS0, and the AS0 report now exists to resize them against.
+
+**The second owner decision is therefore due.** In particular, the proposed Campaign A gate would
+block the project roadmap's structured-concurrency compiler/runtime work until the correctness
+foundations pass. That platform impact requires an explicit decision; it was not implied by
+approving Sprint 1.
 
 The compiler's large-scale pipeline is retained:
 
@@ -48,12 +66,15 @@ pipeline.
 
 ### Approval boundary
 
-| Scope | Decision now | Later integration gate if approved |
+| Scope | Status | Integration gate |
 | --- | --- | --- |
-| Cranelift retirement, manifest strictness audit | approve or reject now | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
-| AS0 + AS1a | approve or reject now | none; this is a defect/inventory packet |
-| remainder of Campaign A | reserve until the AS0 report | before structured-concurrency compiler/runtime work |
-| Campaign B | reserve until Campaign A's position is known; C8 is settled (CLOSED, CD-385) | before C10 release qualification |
+| Cranelift retirement, manifest strictness audit | **APPROVED, DELIVERED** (2026-08-06) | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
+| AS0 | **APPROVED, PARTIAL** — report delivered, five items open (§7) | none; inventory packet. Campaign A's exit needs it closed |
+| AS1a | **APPROVED, DELIVERED** | none; defect packet |
+| AS2 | **APPROVED, DELIVERED** | none |
+| Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
+| remainder of Campaign A (AS1b, AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
+| Campaign B (AS5–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS5/AS8 are unblocked on that axis | before C10 release qualification |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
@@ -197,7 +218,8 @@ Cranelift retirement (isolated commit, audit-gated)
                  required before C10
 ```
 
-Only AS0 + AS1a are proposed for approval now.
+Sprint 1 (Cranelift retirement, AS0, AS1a, AS2) is approved and delivered. Everything after it is
+reserved pending the second owner decision — see §1.
 
 - **AS1b follows AS2** so SourceId is threaded through one pipeline rather than through several
   assemblies AS2 would immediately delete.
@@ -265,10 +287,16 @@ verdicts**, and records three deltas:
 3. both accept, values differ — silent corruption, where a parser produces a string the input did
    not denote.
 
-The third is the dangerous cell and is known to be non-empty at proposal time: `package.rs` rejects
-every `\u` escape outright (`Unsupported escape`), while the LSP parser accepts `\u`, silently drops
-any scalar `char::from_u32` refuses, and never pairs surrogates — so a valid `😀` parses to
-the empty string rather than failing. A verdict-only audit would call that agreement.
+The third is the dangerous cell, and the audit found it non-empty. `package.rs` rejects every `\u`
+escape outright (`Unsupported escape`) — a compatibility gap that is still AS5's. The LSP parser
+accepted `\u`, silently dropped any scalar `char::from_u32` refused, and never paired surrogates, so
+a valid escaped emoji parsed to the empty string rather than failing. A verdict-only audit would
+have called that agreement.
+
+**That half is fixed.** It became DEV-182 / CD-384 (2026-08-06) and was repaired under the §3
+live-defect pre-emption rule rather than waiting for AS5 — its own branch, its own evidence, merged
+to `develop`. The cell is described here in the past tense on purpose: the *class* is what AS5
+inherits, not the instance.
 
 **Outcome, recorded in the AS0 report:** classify AS5 on all three axes. Existing repository files
 rejected by the strict parser require a **repository migration** before tightening. Valid RFC 8259
@@ -601,7 +629,7 @@ Campaign A passes only when AS0, AS1a, AS2, AS1b, AS3 and AS4 are complete and o
 exit report must classify each criterion PASS, FAIL, DEFERRED-BY-DECISION or NOT-APPLICABLE and
 include command-level evidence.
 
-**Reserved project-roadmap decision, not approved by AS0 + AS1a:** after the AS0 report, the owner
+**Reserved project-roadmap decision, not approved by Sprint 1:** the AS0 report now exists, so the owner
 must decide whether to amend the project roadmap so structured-concurrency compiler/runtime
 implementation may not begin until Campaign A passes. Package work not dependent on new compiler
 semantics may continue under `ROADMAP.md`'s WIP limits.
@@ -657,7 +685,7 @@ behavioural**: stricter parsing changes which manifests and JSON-RPC messages ar
 type check reaches that. Checkpoints: the RFC 8259 conformance corpus; the first-party manifest set
 re-parsed under the new authority with the Sprint 1 audit as the expected result; positive
 round-trip tests for valid escapes and surrogate pairs; negative tests for invalid Unicode scalars
-and unpaired surrogates; the LSP protocol suite if C8's gate decision put that surface in scope.
+and unpaired surrogates; the LSP protocol suite, which C8's closure (CD-385) puts in scope.
 
 If the Sprint 1 audit identified a repository migration, the manifest rewrite is its own commit with
 its own checkpoint, taken before the parser tightens — not folded into the consolidation. A

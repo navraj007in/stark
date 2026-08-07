@@ -619,25 +619,23 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
         Ok(file) => file,
         Err(code) => return code,
     };
-    let (tree, mut diagnostics) = parse_with_options(&file, ParseMode::Program, options);
+    // AS2: the ONE pipeline. This command used to assemble parse → resolve → typecheck itself and
+    // gate each phase on `diagnostics.is_empty()` rather than on errors — equivalent today, because
+    // only typecheck emits warnings ("unreachable code", "unreachable match arm"), but a warning
+    // added to parse or resolve would silently have become fatal here. The session gates on errors.
     let file = std::sync::Arc::new(file);
-    if diagnostics.is_empty() {
-        let (hir, mut resolution) =
-            starkc::resolve::resolve_with_options(&tree, file.clone(), options);
-        diagnostics.append(&mut resolution);
-        if diagnostics.is_empty() {
-            let checked = starkc::typecheck::analyze_with_options(&hir, file.clone(), options);
-            diagnostics.extend(checked.diagnostics);
-            for diagnostic in &diagnostics {
+    match starkc::session::CompilerSession::for_source(file.clone(), options).check() {
+        Err(failure) => {
+            eprint!("{}", failure.render());
+            ExitCode::FAILURE
+        }
+        Ok(program) => {
+            // Warnings that survived a successful check are still reported before the program
+            // runs, which is where they appeared before.
+            for diagnostic in program.diagnostics() {
                 eprint!("{}", diagnostic.render(&file));
             }
-            if diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == starkc::diag::Severity::Error)
-            {
-                return ExitCode::FAILURE;
-            }
-            return match starkc::interp::run(&hir, file.clone(), &checked.tables) {
+            match program.execute_hir() {
                 Ok(execution) => {
                     print!("{}", execution.output);
                     eprint!("{}", execution.stderr);
@@ -671,11 +669,7 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
                     eprint!("{}", diagnostic.render(&file));
                     ExitCode::from(status)
                 }
-            };
+            }
         }
     }
-    for diagnostic in &diagnostics {
-        eprint!("{}", diagnostic.render(&file));
-    }
-    ExitCode::FAILURE
 }

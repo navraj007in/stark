@@ -447,18 +447,15 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
             let package = &graph.packages[&graph.root_package_name];
             match std::fs::read_to_string(&package.entry) {
                 Ok(source) => {
-                    let file = Arc::new(SourceFile::new(
-                        package.entry.to_string_lossy().into_owned(),
-                        source,
-                    ));
+                    // AS1a: the SAME construction the parser uses, so one physical file gets one
+                    // identity. This arm used to name the entry by its absolute path, which made
+                    // `build_source_map` intern a second, phantom record for it.
+                    let file = package.entry_source_file(source);
                     let (ast, diagnostics) = parse_package_graph(&graph, options);
                     (file, Some(graph), ast, diagnostics)
                 }
                 Err(error) => {
-                    let file = Arc::new(SourceFile::new(
-                        package.entry.to_string_lossy().into_owned(),
-                        "",
-                    ));
+                    let file = package.entry_source_file("");
                     let diagnostic = Diagnostic::error(
                         format!("failed to read entry file: {error}"),
                         Span { lo: 0, hi: 0 },
@@ -469,26 +466,23 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
             }
         }
         ProjectInput::PackageWithOverlays { graph, overlays } => {
-            let entry = graph.packages[&graph.root_package_name].entry.clone();
+            let package = &graph.packages[&graph.root_package_name];
+            let entry = package.entry.clone();
             let source = overlays
                 .get(&entry)
                 .cloned()
                 .or_else(|| std::fs::read_to_string(&entry).ok());
             match source {
+                // AS1a: same helper as the plain-package arm. The overlay decides the CONTENT of
+                // the entry file; it never changes its identity.
                 Some(source) => {
-                    let file = Arc::new(SourceFile::new(
-                        entry.to_string_lossy().into_owned(),
-                        source,
-                    ));
+                    let file = package.entry_source_file(source);
                     let (ast, diagnostics) =
                         parse_package_graph_with_overlays(&graph, options, &overlays);
                     (file, Some(graph), ast, diagnostics)
                 }
                 None => {
-                    let file = Arc::new(SourceFile::new(
-                        entry.to_string_lossy().into_owned(),
-                        String::new(),
-                    ));
+                    let file = package.entry_source_file(String::new());
                     (
                         file,
                         Some(graph),
@@ -582,21 +576,24 @@ fn build_source_map(
     let mut map = SourceMap::default();
     for file in files {
         let id = SourceId(map.files.len() as u32);
+        // AS1a: attribute by the logical name's OWNING PACKAGE SEGMENT, matched against the graph.
+        //
+        // This used to ask whether the source *name* started with the package entry's absolute
+        // parent directory. Once DEV-113 made package files logically named (`<package>/<path>`),
+        // that predicate could never match, so every package file fell through to
+        // `Module { package: None }` and the branch was dead code on the package path. A logical
+        // name carries its package in the first segment, so the attribution is exact rather than
+        // inferred from a path prefix.
         let package = graph.and_then(|graph| {
+            let owner = file.name.split('/').next()?;
             graph
                 .packages
-                .iter()
-                .find(|(_, package)| {
-                    package
-                        .entry
-                        .parent()
-                        .is_some_and(|parent| file.name.starts_with(&*parent.to_string_lossy()))
-                })
-                .map(|(name, _)| name.clone())
+                .contains_key(owner)
+                .then(|| owner.to_string())
         });
         let provenance = if file.name == root.name {
             SourceProvenance::Root {
-                package: root_package.clone(),
+                package: package.clone().or_else(|| root_package.clone()),
             }
         } else {
             SourceProvenance::Module { package }
