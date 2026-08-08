@@ -597,6 +597,14 @@ pub(crate) enum ProducerMutation {
     /// producer-side boundary has already accepted it so the aggregate boundary is what must catch
     /// it.
     WrongAggregateField,
+    /// Audit 10-D — a function value keeps its identity but LOSES its captured generic bindings.
+    /// The representation stays a `Value::Function`, so only the environment is corrupted: this is
+    /// DEV-178's defect, not DEV-121's.
+    StripFunctionValueBindings,
+    /// Audit 10-E — a mis-represented value reaches an element/field WRITE, injected after the
+    /// producer boundary accepted it so the write boundary is what must catch it. The aggregate
+    /// class already has a control at construction; this is the other route into typed storage.
+    WrongElementWrite,
 }
 
 /// **Test-only environment mutation — AS3 #2 requalification.**
@@ -1599,6 +1607,235 @@ impl Drop for GenericFrame {
     }
 }
 
+// ---------------------------------------------------------------- the representation model --
+
+/// **The canonical `Ty` → `Value` relation, as a free function.**
+///
+/// Lifted out of `Interpreter` so the CHECKER can consult the same answer. It depends on nothing
+/// but the type, the value and the Copy set — a `&self` receiver was never carrying anything else.
+///
+/// Two consumers, one authority: the oracle asks *"does this value represent this type"*, and the
+/// checker asks *"can this type reach a value boundary at all"* — the second derived from the first
+/// by [`ty_is_runtime_representable`] rather than by a second classification.
+fn value_matches_ty_with(expected: &Ty, value: &Value, copy_items: &HashSet<ItemId>) -> bool {
+    use crate::ast::Primitive;
+    let kind = value.kind();
+    match expected {
+        // ---------------------------------------------------------------- §6.2 scalars/text --
+        Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
+        Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
+        Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
+        // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
+        // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
+        Ty::Primitive(
+            Primitive::Int8
+            | Primitive::Int16
+            | Primitive::Int32
+            | Primitive::Int64
+            | Primitive::UInt8
+            | Primitive::UInt16
+            | Primitive::UInt32
+            | Primitive::UInt64,
+        ) => kind == ValueKind::Int,
+        // `Value::Float` DOES carry a width, so it is checked: this examines information the
+        // model genuinely possesses.
+        Ty::Primitive(Primitive::Float32) => {
+            matches!(value, Value::Float(_, FloatWidth::F32))
+        }
+        Ty::Primitive(Primitive::Float64) => {
+            matches!(value, Value::Float(_, FloatWidth::F64))
+        }
+        // **Owned `String` has two spellings in the type system**, found by this match refusing
+        // to compile without both: the resolver maps the name `String` to
+        // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
+        // Both are the same owned type and both must permit exactly `Value::String`; covering
+        // only the `Core` one would have left every `String` binding unvalidated.
+        Ty::Primitive(Primitive::String) => kind == ValueKind::String,
+        // An unsized `str` is never a standalone value — only `&str` is (§6.6).
+        Ty::Primitive(Primitive::Str) => false,
+        // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
+        // boundary with one means extension gating failed.
+        Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
+
+        // ------------------------------------------------------------------ §6.4 references --
+        // **`&mut [T]` has the same two representations `&[T]` has.** `Value::Slice(place, ..)`
+        // is a view *into a place*: writing through it writes to that place, so it is exactly
+        // as much a reference as `Value::Ref` is, and it is what `&mut v[1..3]` produces. The
+        // one-line mutable arm predated the slice-view representation and so admitted only
+        // `Ref` — asymmetric with `shared_ref_matches` by omission, not by rule.
+        Ty::Ref {
+            mutable: true,
+            inner,
+        } => {
+            kind == ValueKind::Ref
+                || (matches!(inner.as_ref(), Ty::Slice(_)) && kind == ValueKind::Slice)
+        }
+        Ty::Ref {
+            mutable: false,
+            inner,
+        } => shared_ref_matches_with(inner, value, copy_items),
+
+        // --------------------------------------------------- §6.3 owned aggregates/collections --
+        Ty::Tuple(elements) => match value {
+            Value::Tuple(slots) => slots.len() == elements.len(),
+            _ => false,
+        },
+        Ty::Array(_, len) => match value {
+            Value::Array(slots) => slots.len() as u64 == *len,
+            _ => false,
+        },
+        Ty::Struct(item, _) => match value {
+            Value::Struct { item: actual, .. } => actual == item,
+            _ => false,
+        },
+        Ty::Enum(item, _) => match value {
+            Value::Enum { item: actual, .. } => actual == item,
+            _ => false,
+        },
+        Ty::Core(core, _) => Interpreter::core_ty_matches(*core, kind),
+        Ty::Range(_) => kind == ValueKind::Range,
+        Ty::Fn { .. } => kind == ValueKind::Function,
+
+        // -------------------------------------------------------- §6.6 never at a boundary --
+        // Listed individually rather than folded into a `_` arm: each is a distinct compiler
+        // defect, and a wildcard here would also swallow any `Ty` variant added later.
+        Ty::Slice(_) => false,
+        Ty::Never => false,
+        Ty::Param(_) => false,
+        Ty::Infer(_) => false,
+        Ty::Error => false,
+        // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
+        // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
+        // one means extension gating failed.
+        Ty::Extension(_) => false,
+    }
+}
+
+fn shared_ref_matches_with(inner: &Ty, value: &Value, copy_items: &HashSet<ItemId>) -> bool {
+    use crate::ast::Primitive;
+    let kind = value.kind();
+
+    // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
+    // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
+    // storage.
+    if matches!(inner, Ty::Primitive(Primitive::Str)) {
+        return kind == ValueKind::Str || kind == ValueKind::Ref;
+    }
+
+    // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
+    // one; `Vec`/`Array` immediately is the owned-storage error again.
+    if matches!(inner, Ty::Slice(_)) {
+        return kind == ValueKind::Slice || kind == ValueKind::Ref;
+    }
+
+    if kind == ValueKind::Ref {
+        return true;
+    }
+
+    // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
+    // cannot consume, invalidate or destroy the referent, so the two representations are
+    // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
+    // for convenience.
+    pointee_is_copy_with(inner, copy_items) && value_matches_ty_with(inner, value, copy_items)
+}
+
+/// Whether a shared reference's pointee is `Copy`. The CHECKER's predicate, never a second one.
+fn pointee_is_copy_with(ty: &Ty, copy_items: &HashSet<ItemId>) -> bool {
+    crate::typecheck::is_copy_type_with(ty, copy_items)
+}
+
+/// **Can a value of type `ty` exist at a runtime value boundary at all?**
+///
+/// DEV-206 asks a question one step upstream of DEV-121. DEV-121 asks *given a valid runtime type
+/// `T`, does `V` represent it*; this asks *should `T` have been allowed to reach a value boundary*.
+/// `[T]` is the case that made the difference visible: publishing it for `v[0..2]` is correct —
+/// it is a place of unsized type — and letting it escape into `println(...)` is not.
+///
+/// **Derived, not enumerated.** A second list of "runtime-representable types" beside
+/// `value_matches_ty` would be exactly the duplicate semantic authority this campaign removed. So
+/// the answer is obtained by ASKING the relation: a type that no representation satisfies cannot
+/// exist at a value boundary. The probe below is exhaustive over `ValueKind`, so a new runtime
+/// representation forces someone to say what it is here.
+pub fn ty_is_runtime_representable(ty: &Ty, copy_items: &HashSet<ItemId>) -> bool {
+    ValueKind::ALL
+        .iter()
+        .any(|kind| value_matches_ty_with(ty, &probe_value(*kind, ty), copy_items))
+}
+
+/// One representative value per runtime representation, for [`ty_is_runtime_representable`].
+///
+/// Contents are irrelevant and deliberately minimal — the relation reads shape, never payload
+/// (`a_value_kind_names_the_shape_and_not_the_contents`). Exhaustive on purpose: adding a
+/// `ValueKind` without a probe would silently shrink what the property considers representable.
+fn probe_value(kind: ValueKind, ty: &Ty) -> Value {
+    let place = || Place {
+        frame: 0,
+        local: LocalId(0),
+        projections: Vec::new(),
+    };
+    match kind {
+        ValueKind::Unit => Value::Unit,
+        ValueKind::Bool => Value::Bool(false),
+        ValueKind::Int => Value::Int(0),
+        ValueKind::Float => Value::Float(0.0, FloatWidth::F64),
+        ValueKind::Char => Value::Char('a'),
+        ValueKind::Str => Value::Str(String::new()),
+        ValueKind::String => Value::String(String::new()),
+        // **Arity comes from the TYPE.** The relation checks a tuple's arity and an array's
+        // length, so a fixed-size probe would report `[Int32; 3]` unrepresentable — a wrong answer
+        // about the type rather than about the relation. This supplies a fair witness, not a
+        // second opinion about what is representable.
+        ValueKind::Tuple => Value::Tuple(match ty {
+            Ty::Tuple(elements) => vec![None; elements.len()],
+            _ => Vec::new(),
+        }),
+        ValueKind::Array => Value::Array(match ty {
+            Ty::Array(_, len) => vec![None; *len as usize],
+            _ => Vec::new(),
+        }),
+        ValueKind::Struct => Value::Struct {
+            item: ItemId(0),
+            fields: BTreeMap::new(),
+        },
+        ValueKind::Enum => Value::Enum {
+            item: ItemId(0),
+            variant: 0,
+            fields: Vec::new(),
+            named: BTreeMap::new(),
+        },
+        ValueKind::Vec => Value::Vec(Vec::new()),
+        ValueKind::Boxed => Value::Boxed(Box::new(None)),
+        ValueKind::Option => Value::Option(None),
+        ValueKind::Result => Value::Result(Ok(Box::new(Value::Unit))),
+        ValueKind::Range => Value::Range {
+            start: 0,
+            end: 0,
+            inclusive: false,
+        },
+        ValueKind::Slice => Value::Slice(place(), 0, 0),
+        ValueKind::Ref => Value::Ref(place()),
+        ValueKind::Function => Value::Function(FunctionValue {
+            item: ItemId(0),
+            bindings: Vec::new(),
+        }),
+        ValueKind::CharsIter => Value::CharsIter(String::new(), 0),
+        ValueKind::SplitIter => Value::SplitIter(Vec::new(), 0),
+        ValueKind::VecIter => Value::VecIter(place(), 0),
+        ValueKind::HashMap => Value::HashMap(InsertionMap::new()),
+        ValueKind::HashSet => Value::HashSet(InsertionSet::new()),
+        ValueKind::HashMapKeysIter => Value::HashMapKeysIter(Vec::new(), 0),
+        ValueKind::HashMapValuesIter => Value::HashMapValuesIter(Vec::new(), 0),
+        ValueKind::HashMapIter => Value::HashMapIter(Vec::new(), 0),
+        ValueKind::HashSetIter => Value::HashSetIter(Vec::new(), 0),
+        ValueKind::MapIter => Value::MapIter(Box::new(Value::Unit), ItemId(0)),
+        ValueKind::FilterIter => Value::FilterIter(Box::new(Value::Unit), ItemId(0)),
+        ValueKind::Random => Value::Random(0),
+        ValueKind::IOError => Value::IOError(IOErrorKind::Other(String::new())),
+        ValueKind::File => Value::File(FileResource(Rc::new(RefCell::new(None)))),
+        ValueKind::Ordering => Value::Ordering(std::cmp::Ordering::Equal),
+    }
+}
+
 impl<'a> Interpreter<'a> {
     /// The registered id of the entry source. Used where a failure has no position of its own —
     /// an interpreter invariant, a missing entrypoint — so it names a real source instead of a
@@ -2493,127 +2730,7 @@ impl<'a> Interpreter<'a> {
     /// representation the alternatives are named individually, so "permitted" is always a closed
     /// set and never an absence of opinion.
     fn value_matches_ty(&self, expected: &Ty, value: &Value) -> bool {
-        use crate::ast::Primitive;
-        let kind = value.kind();
-        match expected {
-            // ---------------------------------------------------------------- §6.2 scalars/text --
-            Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
-            Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
-            Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
-            // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
-            // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
-            Ty::Primitive(
-                Primitive::Int8
-                | Primitive::Int16
-                | Primitive::Int32
-                | Primitive::Int64
-                | Primitive::UInt8
-                | Primitive::UInt16
-                | Primitive::UInt32
-                | Primitive::UInt64,
-            ) => kind == ValueKind::Int,
-            // `Value::Float` DOES carry a width, so it is checked: this examines information the
-            // model genuinely possesses.
-            Ty::Primitive(Primitive::Float32) => {
-                matches!(value, Value::Float(_, FloatWidth::F32))
-            }
-            Ty::Primitive(Primitive::Float64) => {
-                matches!(value, Value::Float(_, FloatWidth::F64))
-            }
-            // **Owned `String` has two spellings in the type system**, found by this match refusing
-            // to compile without both: the resolver maps the name `String` to
-            // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
-            // Both are the same owned type and both must permit exactly `Value::String`; covering
-            // only the `Core` one would have left every `String` binding unvalidated.
-            Ty::Primitive(Primitive::String) => kind == ValueKind::String,
-            // An unsized `str` is never a standalone value — only `&str` is (§6.6).
-            Ty::Primitive(Primitive::Str) => false,
-            // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
-            // boundary with one means extension gating failed.
-            Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
-
-            // ------------------------------------------------------------------ §6.4 references --
-            // **`&mut [T]` has the same two representations `&[T]` has.** `Value::Slice(place, ..)`
-            // is a view *into a place*: writing through it writes to that place, so it is exactly
-            // as much a reference as `Value::Ref` is, and it is what `&mut v[1..3]` produces. The
-            // one-line mutable arm predated the slice-view representation and so admitted only
-            // `Ref` — asymmetric with `shared_ref_matches` by omission, not by rule.
-            Ty::Ref {
-                mutable: true,
-                inner,
-            } => {
-                kind == ValueKind::Ref
-                    || (matches!(inner.as_ref(), Ty::Slice(_)) && kind == ValueKind::Slice)
-            }
-            Ty::Ref {
-                mutable: false,
-                inner,
-            } => self.shared_ref_matches(inner, value),
-
-            // --------------------------------------------------- §6.3 owned aggregates/collections --
-            Ty::Tuple(elements) => match value {
-                Value::Tuple(slots) => slots.len() == elements.len(),
-                _ => false,
-            },
-            Ty::Array(_, len) => match value {
-                Value::Array(slots) => slots.len() as u64 == *len,
-                _ => false,
-            },
-            Ty::Struct(item, _) => match value {
-                Value::Struct { item: actual, .. } => actual == item,
-                _ => false,
-            },
-            Ty::Enum(item, _) => match value {
-                Value::Enum { item: actual, .. } => actual == item,
-                _ => false,
-            },
-            Ty::Core(core, _) => Self::core_ty_matches(*core, kind),
-            Ty::Range(_) => kind == ValueKind::Range,
-            Ty::Fn { .. } => kind == ValueKind::Function,
-
-            // -------------------------------------------------------- §6.6 never at a boundary --
-            // Listed individually rather than folded into a `_` arm: each is a distinct compiler
-            // defect, and a wildcard here would also swallow any `Ty` variant added later.
-            Ty::Slice(_) => false,
-            Ty::Never => false,
-            Ty::Param(_) => false,
-            Ty::Infer(_) => false,
-            Ty::Error => false,
-            // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
-            // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
-            // one means extension gating failed.
-            Ty::Extension(_) => false,
-        }
-    }
-
-    /// `&T` for shared `T` — the multi-valued row, and the one that has to be a rule rather than a
-    /// list (§6.4, §6.8).
-    fn shared_ref_matches(&self, inner: &Ty, value: &Value) -> bool {
-        use crate::ast::Primitive;
-        let kind = value.kind();
-
-        // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
-        // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
-        // storage.
-        if matches!(inner, Ty::Primitive(Primitive::Str)) {
-            return kind == ValueKind::Str || kind == ValueKind::Ref;
-        }
-
-        // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
-        // one; `Vec`/`Array` immediately is the owned-storage error again.
-        if matches!(inner, Ty::Slice(_)) {
-            return kind == ValueKind::Slice || kind == ValueKind::Ref;
-        }
-
-        if kind == ValueKind::Ref {
-            return true;
-        }
-
-        // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
-        // cannot consume, invalidate or destroy the referent, so the two representations are
-        // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
-        // for convenience.
-        self.pointee_is_copy(inner) && self.value_matches_ty(inner, value)
+        value_matches_ty_with(expected, value, &self.copy_items)
     }
 
     /// §6.5. One representation each, named individually — a "these are all iterators" row would be
@@ -2718,12 +2835,6 @@ impl<'a> Interpreter<'a> {
             return ty.clone();
         }
         crate::typecheck::substitute_ty(ty, &map)
-    }
-
-    /// Whether the pointee of a shared reference is `Copy`, which is what licenses the bare-value
-    /// representation. Answered by the CHECKER's predicate, never by a second one here.
-    fn pointee_is_copy(&self, ty: &Ty) -> bool {
-        crate::typecheck::is_copy_type_with(ty, &self.copy_items)
     }
 
     /// WP-FMT-001: pack a source-level format specification into the runtime's spec word.
@@ -2879,7 +2990,19 @@ impl<'a> Interpreter<'a> {
                                 (self.clone_place_value(&place, *expr_span)?, false)
                             } else {
                                 match self.eval_expr(*expr)? {
-                                    Flow::Value(value) => (value, true),
+                                    // **DEV-203: this consumed an expression result unchecked.**
+                                    // An interpolated field is precisely the "inline value entering
+                                    // a runtime operation" class `ExpressionResult` exists for — it
+                                    // never binds to a local, so no destination boundary sees it —
+                                    // and it reached the renderer through a direct `eval_expr`
+                                    // rather than through `expect_value`.
+                                    Flow::Value(value) => {
+                                        self.check_expr_value(*expr, &value)?;
+                                        (value, true)
+                                    }
+                                    // Not a boundary: control flow leaving the interpolation is
+                                    // returned to the enclosing expression, carrying no value that
+                                    // comes to rest here.
                                     other => return Ok(other),
                                 }
                             };
@@ -3032,6 +3155,14 @@ impl<'a> Interpreter<'a> {
                         *lhs,
                         expr.span,
                     )?
+                };
+                // Audit 10-E: injected after the producer boundary accepted the value, so the
+                // WRITE boundary is what must refuse it.
+                #[cfg(test)]
+                let value = if self.mutation_armed(ProducerMutation::WrongElementWrite) {
+                    Value::Unit
+                } else {
+                    value
                 };
                 self.write_place(&place, value, *lhs, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
@@ -4446,11 +4577,38 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<FunctionValue, RuntimeError> {
         let Some(env) = self.tables.callable_instantiations.get(&use_expr) else {
+            // **DEV-204: an absent instantiation must not silently mean "no generics".**
+            //
+            // This returned an empty-binding `FunctionValue` for ANY missing entry, which is the
+            // DEV-178 defect written as a fallback: a generic function coerced to a value would
+            // carry nothing, and `Ty::Fn` cannot say which instantiation produced it, so nothing
+            // downstream could recover it. The two meanings of absence are separated by
+            // information we already have — whether the item declares generics at all.
+            let generics = match &self.hir.item(item).kind {
+                hir::ItemKind::Fn(def) => def.sig.generics.len(),
+                _ => 0,
+            };
+            if generics > 0 {
+                return Err(RuntimeError::internal(
+                    format!(
+                        "DEV-178: a generic function with {generics} parameter(s) was coerced to a                          function value with no published instantiation — the bindings are fixed                          at the coercion and cannot be recovered from `Ty::Fn` at the call"
+                    ),
+                    span,
+                ));
+            }
             return Ok(FunctionValue {
                 item,
                 bindings: Vec::new(),
             });
         };
+        // Audit 10-D: keep the value, lose the instantiation.
+        #[cfg(test)]
+        if self.mutation_armed(ProducerMutation::StripFunctionValueBindings) {
+            return Ok(FunctionValue {
+                item,
+                bindings: Vec::new(),
+            });
+        }
         // The published environment must belong to the body this item actually runs — the
         // signature is body-keyed and the environment call-site-keyed, so their agreement is
         // asserted rather than assumed.
@@ -8282,6 +8440,21 @@ impl<'a> Interpreter<'a> {
         // nested user nominal runs its own `Display::fmt`, NOT the aggregate `{field: value}` debug
         // form — matching the native lowering (`emit_display_value`). The whole composite is promoted
         // to a place so it is dropped exactly once after its bytes are submitted (Contract C).
+        // **DEV-207: a slice VIEW is a composite too, and it was not in this list.**
+        //
+        // So it fell to `format_runtime_value` — the structural debug form — and a `struct X` with
+        // its own `Display` printed `{n: 1}` instead of running `X::fmt`. The checker had published
+        // `DisplayPath([SliceElement])` for the position all along; nothing consumed it.
+        //
+        // Handled BEFORE the block below rather than added to it: a slice borrows its elements, so
+        // there is no owned composite to promote and nothing for the caller to drop afterwards.
+        // Promoting it would give a view its own drop-registered storage.
+        if let Value::Slice(..) = &value {
+            let ty = self.display_root_ty(root, span)?;
+            let text =
+                self.display_deep(root, &value, ty.as_ref(), DisplayPath::default(), span)?;
+            return Ok((text, None));
+        }
         if let Value::Tuple(_)
         | Value::Array(_)
         | Value::Vec(_)
@@ -8381,6 +8554,39 @@ impl<'a> Interpreter<'a> {
                 for slot in elems.iter() {
                     // One published position, executed once per element: the plan is static, the
                     // loop is the renderer's. No record per runtime element.
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            // **DEV-207: a slice VIEW renders through the plan, not structurally.**
+            //
+            // The checker publishes `DisplayPath([SliceElement])` for this position, and the walk
+            // had no arm for `Value::Slice` — so the value fell through to `format_runtime_value`,
+            // which renders structurally. A `struct X` with its own `Display` printed `{n: 1}`
+            // instead of calling `X::fmt`: a published selection the engine did not consume, which
+            // is the AS3 Boundary 4 class exactly.
+            //
+            // Unreachable until DEV-206, because `&[T]` was refused by `Display` eligibility
+            // outright; bare `[T]` was accepted and rendered structurally, so the same defect was
+            // there and could not be seen through a correct program.
+            Value::Slice(place, start, end) => {
+                let elements = match self.place_value(place, span)? {
+                    Value::Array(elements) | Value::Vec(elements) => elements.clone(),
+                    _ => return Err(RuntimeError::new("slice base is unavailable", span)),
+                };
+                if start > end || *end > elements.len() {
+                    return Err(RuntimeError::new("slice range out of bounds", span));
+                }
+                let step = DisplayStep::SliceElement;
+                let elem_ty = Self::display_child_ty(ty, step);
+                let mut parts = Vec::with_capacity(end - start);
+                for slot in &elements[*start..*end] {
                     parts.push(self.display_slot(
                         root,
                         slot,
@@ -10205,6 +10411,72 @@ mod tests {
              fn main() { let p = Pair { a: 1, b: 2 }; println(p.a + p.b); }",
             ProducerMutation::WrongAggregateField,
             RepBoundary::AggregateField,
+        );
+    }
+
+    /// **Audit 10-D — an independent function-value challenge.**
+    ///
+    /// Class 3 corrupts the function value's REPRESENTATION. This corrupts its captured generic
+    /// context while leaving a perfectly valid `Value::Function` in place, which is DEV-178's
+    /// defect rather than DEV-121's: the bindings are fixed at the coercion and `Ty::Fn` cannot
+    /// say which instantiation produced them, so nothing downstream can reconstruct them.
+    ///
+    /// The witness answers `size_of::<T>()`, so losing the bindings cannot pass unnoticed the way
+    /// DEV-197's identity-shaped witnesses did.
+    #[test]
+    fn audit_10d_a_function_value_stripped_of_its_bindings_is_refused() {
+        let source = "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+                      fn main() { let f: fn(Float64) -> Int32 = width; println(f(1.5)); }";
+        assert_eq!(execute(source).expect("witness runs").output, "8\n");
+        let error = execute_with(source, Some(ProducerMutation::StripFunctionValueBindings))
+            .expect_err("a function value with no instantiation must not execute its body");
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "losing a captured instantiation is a compiler defect: {}",
+            error.message
+        );
+    }
+
+    /// **Audit 10-E — the other route into typed storage.**
+    ///
+    /// The aggregate class already has a control at CONSTRUCTION. This one writes into storage that
+    /// already exists, which reaches the boundary through `write_place` rather than through
+    /// `eval_struct_lit` — a different funnel with a different expected-type source.
+    #[test]
+    fn audit_10e_a_mis_represented_write_into_existing_storage_is_refused() {
+        mutation_must_be_caught(
+            "fn main() { let mut n: Int32 = 1; n = 2; println(n); }",
+            ProducerMutation::WrongElementWrite,
+            RepBoundary::Assignment,
+        );
+    }
+
+    /// **Audit 10-C, independent of class 2.** Class 2 mutates a `&self` receiver; this is the
+    /// EXCLUSIVE form, where losing place identity also loses the caller's mutation.
+    #[test]
+    fn audit_10c_a_mut_self_receiver_must_keep_place_identity() {
+        mutation_must_be_caught(
+            "struct Holder { name: String } \
+             impl Holder { fn touch(&mut self) -> Int32 { 1 } } \
+             fn main() { let mut h = Holder { name: String::from(\"x\") }; println(h.touch()); }",
+            ProducerMutation::OwnedForReference,
+            RepBoundary::Receiver,
+        );
+    }
+
+    /// **DEV-203 adversary.** An interpolated field is an inline value entering a runtime
+    /// operation: it never binds to a local, so no destination boundary sees it. It reached the
+    /// renderer through a direct `eval_expr`, so the producer boundary did not see it either.
+    ///
+    /// Written as the mutation that would have caught it: `s.as_str()` inside `f"{...}"`, with the
+    /// view producer emitting owned storage. Before the repair this rendered happily.
+    #[test]
+    fn an_interpolated_field_is_a_checked_expression_result() {
+        mutation_must_be_caught(
+            "fn main() { let s = String::from(\"abc\"); println(f\"{s.as_str()}\"); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
         );
     }
 

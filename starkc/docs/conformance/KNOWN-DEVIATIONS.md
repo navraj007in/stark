@@ -6126,3 +6126,194 @@ renamed: a permissive path parked in the file is one a future funnel can pick up
   which requires exactly one call to `install_invocation_env` and found two.
 - **Repair:** the call site chooses the environment; the authority installs it. That split is what
   the authority was created for.
+
+## DEV-203 — an interpolated field consumed an expression result unchecked [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-121 / `RepBoundary::ExpressionResult` — an inline value entering a runtime operation
+  is read against `expr_types[expr]`.
+- **Defect:** `f"{expr}"` evaluated its non-place fields with a direct `self.eval_expr(*expr)` and
+  handed the value straight to the renderer. It never binds to a local, so no destination boundary
+  saw it; it never passed `expect_value`, so the producer boundary did not see it either. **The
+  only construct in Core v1 that was invisible to all twelve wires.**
+- **Why the census did not catch it:** the direct-`eval_expr` pin asserted `direct <= 8`, and there
+  were six. A bound with slack is not a census. It is now an exact count with every site classified
+  by name — funnel, checked consumer, or flow-through — so a seventh forces review.
+- **Repair:** the `Flow::Value` arm calls `check_expr_value`. The other arms are unchanged: control
+  flow leaving an interpolation carries no value that comes to rest there.
+- **Mutation-proved in both directions:** with the repair removed,
+  `an_interpolated_field_is_a_checked_expression_result` fails — `f"{s.as_str()}"` with the view
+  producer emitting owned storage rendered happily before, and is refused now.
+
+## DEV-204 — a missing instantiation silently produced a function value with no bindings [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-178 — a function value carries the instantiation it was created with, because
+  `Ty::Fn` records only the signature and cannot say which instantiation produced it.
+- **Defect:** `capture_function_value` answered *any* missing `callable_instantiations` entry with
+  `FunctionValue { item, bindings: Vec::new() }`. That is DEV-178's defect written as a fallback:
+  absence meant both "this function has no generics" and "the publication is missing", and the
+  second is unrecoverable downstream by construction.
+- **Repair:** the two meanings are separated by information already in hand — whether the item
+  *declares* generics. None: an empty binding list is semantically proven. Some: `InternalInvariant`.
+- **Behaviour-neutral on the whole suite**, which is the correct outcome and worth stating: no
+  reachable program today coerces a generic function without a published instantiation. This closes
+  a latent hazard rather than a live bug, and the hazard is the kind that only becomes reachable
+  once someone adds a coercion route.
+- **Found by:** the final audit's §5 fallback census, searching for
+  `FunctionValue { …, bindings: Vec::new() }` outside sites where emptiness is proven — §8 names
+  that construction explicitly as a thing to look for.
+
+## DEV-205 — `IOError::Other(msg)` bound a payload the checker never typed [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 — every boundary reads a checker-published type, and the published type is an
+  answer.
+- **Defect:** the builtin-variant arm of the pattern checker handled `Some`, `Ok` and `Err` and
+  nothing else. `IOError::Other(msg)` therefore never had its sub-pattern checked: the binding
+  received **no `local_types` entry at all**, and every use of it was published as `Ty::Error`.
+- **The program ran and printed the right answer.** The interpreter binds by position and does not
+  consult the tables to do it, so nothing observed the gap for as long as nothing read them. This is
+  the DEV-121 shape relocated into the checker: metadata that is wrong rather than absent, on a
+  program that works.
+- **Found by:** Packet 6's `ExpressionResult` boundary, on CI — `expected Error, found String`. It
+  was invisible to every local sweep because those sweeps were stopped before reaching
+  `phase4e_math_random_io`.
+- **Repair:** the arm now maps `(IOErrorOther, Ty::Core(IOError, _))` to the `String` payload the
+  constructor's own signature already declares.
+- **Forcing control, deliberately general rather than a regression pin:** `audit_published_types`
+  asserts that a program the checker accepts with **no diagnostics** publishes no `Ty::Error` in any
+  expression or local type, across eight witness families. Any future construct the checker accepts
+  without understanding fails there, whether or not it happens to execute correctly.
+
+## DEV-206 — an unsized slice type reaches a value boundary [CLOSED at creation, 2026-08-08]
+
+- **Rule:** INV-VALUE-REP-001 / §6.6 — a type's permitted runtime representations.
+- **Defect:** `v[0..2]` is published as `[Int32]` — the *unsized* slice type, not `&[Int32]` — and
+  Core v1 lets that expression be used directly (`println(values[0..2])` in the Gate 3 core-min
+  example). The relation had no arm for `Ty::Slice` as a standalone value type, so it refused the
+  only representation such an expression can have.
+- **Repair:** `Ty::Slice(_)` accepts `Value::Slice`, the place-backed view. Same reasoning as
+  DEV-200, and it does **not** weaken the pairing DEV-121 exists for: an owned `Value::Vec` behind
+  `[T]` stays refused.
+- **Recorded outside Campaign A:** whether the checker *should* publish `&[T]` for a range index is
+  a language-semantics question. It changes what the expression means, not whether the oracle's
+  representation of it is valid, so it is not a Campaign A invariant and is not resolved here.
+- **Found by:** Packet 6's `ExpressionResult` boundary, on CI, via `gate3_execution`.
+
+## DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLOSED, owner ruling 2026-08-08]
+
+**The first two diagnoses were wrong, and both are recorded because each would have removed the
+symptom by deleting a rule stated on purpose.**
+
+The language model is not in question:
+
+```text
+v[0..2]    : [T]     an unsized PLACE expression
+&v[0..2]   : &[T]    the runtime-capable slice view
+```
+
+- **Withdrawn repair 1** — widen the relation so `Ty::Slice` accepts `Value::Slice`. That conflates
+  the unsized pointee type with a runtime view and weakens exactly the distinction DEV-121 protects.
+  `unsized_and_non_runtime_types_permit_nothing` states the rule deliberately, alongside the
+  identical one for `str`.
+- **Withdrawn repair 2** — publish `&[T]` for a range index. The indexing expression *is* a place of
+  unsized type; borrowing it is what produces the reference. The change made `&v[0..2]` a double
+  reference and broke two lib tests, five differential cases and Gate 3. That breakage is expected,
+  not evidence.
+
+**The actual defect was in `Display` eligibility, whose polarity was reversed:**
+
+| Type | Before | After |
+| --- | --- | --- |
+| `[T]` | Display **accepted** | rejected — unsized, never a value |
+| `&[T]` | Display **rejected** | accepted iff `T` is displayable |
+| `[T; N]` | accepted | accepted — an array *is* a value |
+
+`[T]` and `[T; N]` shared one arm, which is how the unsized form was blessed. Separating them is
+the whole repair. `&mut [T]` is deliberately **not** broadened: DEV-206 is the `[T]`/`&[T]`
+contradiction, and nothing in the standard rules currently implies the exclusive form.
+
+The fix is in the canonical eligibility predicate, not in `println` — PRINT-DISPLAY-001 says
+printing is ordinary `Display` resolution, not a syntax hook, so interpolation and every other
+`Display` consumer inherit the same answer.
+
+**Corpus edit, recorded so AS3 #4's evidence does not look like the corpus silently moved.**
+`examples/gate3/05_core_min.stark` line 12: `println(values[0..2])` → `println(&values[0..2])`. The
+example encoded an invalid program that was accepted only because of this defect; the new
+representation boundary is what exposed it. Output is unchanged (`[40, 2]`).
+
+**Spec clarification** (not a semantic change): PRINT-DISPLAY-001 gains clause 10, stating that a
+slice is observed through a reference, that `&[T]` has the standard slice `Display` for a
+displayable `T`, and that bare `[T]` does not. Generated spec regenerated.
+
+**Evidence:** `dev206_slice_display` — 7 cases: bare rejected (naming `[Int32]`), borrowed accepted,
+bound-then-printed accepted, non-`Display` element still rejected, `Display` element dispatched,
+borrowed array slice, and a sized array still printable by value. The fourth is the control that
+stops this being "every slice is now printable".
+
+## DEV-207 — a slice view rendered structurally, ignoring the published Display plan [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 Boundary 4 — the engine consumes the checker's published `Display` selection; there
+  is no structural fallback (PRINT-DISPLAY-001 clause 9).
+- **Defect:** `display_text`'s composite list omitted `Value::Slice`, so a slice fell through to
+  `format_runtime_value` — the structural debug form. A `struct X` with its own `Display` printed
+  `{n: 1}` instead of running `X::fmt`. The checker had published `DisplayPath([SliceElement])` for
+  the position all along; nothing consumed it. `display_deep` had no `Value::Slice` arm either.
+- **Why it was unreachable until now:** `&[T]` was refused by `Display` eligibility outright, and
+  bare `[T]` was accepted *and* rendered structurally — so the same defect was present and could not
+  be observed through a correct program. DEV-206's repair made the position reachable and the gap
+  immediately visible.
+- **Repair:** a slice is routed into the plan walk before the composite block, not added to it — a
+  slice BORROWS its elements, so there is no owned composite to promote and nothing for the caller
+  to drop. `display_deep` gains a `Value::Slice` arm that reads the base's elements and renders each
+  through `DisplayStep::SliceElement`.
+- **Evidence:** `a_slice_of_display_elements_is_accepted` asserts `[x]`, not `[{n: 1}]`.
+
+## Campaign A forcing property — a place-only type may not escape into a value context [2026-08-08]
+
+Owner ruling, 2026-08-08. DEV-121 asks *given a valid runtime type `T`, does `V` represent it*;
+DEV-206 asked the question one step upstream — *should `T` have been allowed to reach a value
+boundary at all*. Publishing `[T]` for `v[0..2]` is **correct**; letting the bare place escape into
+`println(...)` is not.
+
+```text
+expr_types[expr] = [T]
+        ├── &expr                    legal place -> reference conversion
+        ├── assignment / projection  legal place use
+        └── println(expr)            value required; [T] has no representation
+```
+
+**Derived, never enumerated.** `interp::ty_is_runtime_representable(ty, copy_items)` probes the
+canonical relation with every `ValueKind`: "no representation satisfies this type" is the same
+semantic decision the oracle makes at every boundary. A second list of runtime-representable types
+beside `value_matches_ty` is exactly the duplicate authority this campaign removed.
+
+To make the relation callable by both consumers, `value_matches_ty` and `shared_ref_matches` were
+lifted out of `Interpreter` into free functions parameterised by the Copy set — the `&self`
+receiver was never carrying anything else. Behaviour-neutral (`--lib` 558, `mir_differential` 132).
+
+**A checker diagnostic was written first and WITHDRAWN.** It could not fire: every value context
+already rejects place-only types, through four *different* rules — unification for a user call, the
+unsized-local rule for `let`, `Display` eligibility for `print`, and the interpolation check.
+Shipping an unreachable diagnostic would be speculative machinery, and the audit's own scope rule
+forbids new abstractions without an identified bypass.
+
+So the forcing function is the executable property `audit_value_context_representability`: every
+value context is listed, each must **reject the place-only form and accept the reference form**,
+and the `str` case pins that the rule is about the unsized *class* rather than slices. What was
+missing was never the behaviour — it was anything comparing those four rules against each other or
+against the relation. DEV-206 is the proof that mattered: one of the four had the rule backwards.
+
+## DEV-208 — interpolation stripped the reference that makes a slice a value [CLOSED at creation, 2026-08-08]
+
+- **Rule:** PRINT-DISPLAY-001 — printing is ordinary `Display` resolution, so every consumer
+  inherits one answer.
+- **Defect:** the interpolation check tests the type with references stripped. That is right for
+  `fn render<T: Display>(v: &T)` — `Display::fmt` borrows anyway (STD-FORMAT-001), so a reference to
+  a displayable type is displayable. It is wrong for `&[T]`: the pointee is **unsized**, the
+  reference is not incidental, and stripping it turns the one displayable spelling into the one
+  that is not a value at all. After DEV-206 repaired `println`, `f"{&v[0..2]}"` was still rejected.
+- **Same defect, second consumer.** Both call `type_is_displayable`, so the predicate was already
+  shared; the *stripping* is where they diverged. Repaired by not stripping a reference whose
+  pointee is unsized.
+- **Found by:** the value-context property's control — the half that requires every context to
+  ACCEPT the reference form. Without that direction the property would have been satisfied by
+  rejecting slices everywhere, and this defect would have been invisible.

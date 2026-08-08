@@ -19,6 +19,12 @@ fn interp_source() -> String {
         // Normalised at the read: a CRLF checkout would otherwise fail these counts on Windows
         // only, which is the slowest possible way to find out.
         .replace("\r\n", "\n")
+        // Comment lines removed: a census that counts prose can be satisfied — or broken — by
+        // editing a comment, which is not what any of these pins is about.
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// **P1 — the raw user-body executor has exactly one production caller.**

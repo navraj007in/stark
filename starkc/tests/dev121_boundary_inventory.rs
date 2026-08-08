@@ -245,20 +245,81 @@ fn the_inventory_list_and_the_classifier_agree() {
 /// authority. It is what covers the values that never reach a destination boundary at all.
 #[test]
 fn the_producer_side_funnel_is_expect_value() {
-    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interp.rs"))
-        .expect("interp.rs must be readable")
-        .replace("\r\n", "\n");
+    let source = interp_source();
     let funnel = source.matches("self.expect_value(").count();
     let direct = source.matches("self.eval_expr(").count();
     assert!(
         funnel >= 25,
         "expect_value should remain the dominant expression-result path; found {funnel}"
     );
-    assert!(
-        direct <= 8,
-        "direct `eval_expr` calls bypass the funnel. Found {direct}; each new one must be \
-         classified in this file before it is added — that is what makes the inventory exact."
+    // **An exact count, not a bound.** The final audit required every direct `eval_expr` consumer
+    // to be classified, and a `<=` bound let a new one appear without review. It did: the
+    // interpolation field's non-place branch consumed an expression result with no producer check
+    // at all (DEV-203), and a bound of eight had room for it.
+    assert_eq!(
+        direct, 6,
+        "every direct `eval_expr` consumer must be classified. Found {direct}, expected 6:\n\
+         \x20 1. `expect_value` itself — the funnel\n\
+         \x20 2. `eval_block`'s tail — flows to the block's value, NotABoundary\n\
+         \x20 3. `StmtKind::Expr` — the value is dropped, not stored\n\
+         \x20 4. an interpolation field — a CHECKED consumer, `check_expr_value` (DEV-203)\n\
+         \x20 5. an `else` branch — flows to the enclosing `if`\n\
+         \x20 6. a match arm body — flows to the enclosing `match`\n\
+         A new one is either a typed consumer that must call `check_expr_value`, or a \
+         flow-through that must be classified here before it is added."
     );
+}
+
+/// **The storage-route forcing pin.** AS3 final audit §9.
+///
+/// `bind_typed_local` is claimed to be the only way a value comes to rest in a LANGUAGE local. The
+/// claim needs a pin, because a new `frame_mut().insert(local, Some(value))` elsewhere would
+/// reintroduce exactly the per-site convention Packet 3 replaced — and no behavioural test would
+/// notice, since the inserted value is usually correct.
+///
+/// The two raw `values.insert` calls are the temp-promotion helpers, which deliberately bypass
+/// `Frame::insert`: a promoted temp is a view's backing storage, not a value the frame owns and
+/// destroys, and registering it in `order` made promoted temps participate in destruction. Those
+/// locals are `LocalId(1000000 + …)`, outside the checker's local space, and have no `local_types`
+/// entry by construction — which is why `bind_typed_local` can treat a missing entry as an
+/// invariant failure.
+#[test]
+fn typed_local_storage_has_one_funnel() {
+    let source = interp_source();
+    let typed = source.matches("self.frame_mut().insert(").count();
+    assert_eq!(
+        typed, 3,
+        "found {typed} `frame_mut().insert` sites, expected 3:\n\
+         \x20 1. `bind_typed_local` — the checked funnel for let/match/loop bindings\n\
+         \x20 2. a `let` with no initialiser — inserts `None`, so there is no value to check\n\
+         \x20 3. `promote_to_owned_temp_place` — interpreter-internal backing storage\n\
+         A new site puts a value into a local without the `LetBinding`/`MatchBinding`/\
+         `LoopBinding` check. Route it through `bind_typed_local`, or classify it here."
+    );
+    let raw = source.matches(".values.insert(").count();
+    assert_eq!(
+        raw, 3,
+        "found {raw} raw `values.insert` sites, expected 3: `Frame::insert` itself and the two \
+         temp-promotion helpers, which must bypass `Frame::order` so promoted temps do not \
+         participate in destruction. A new raw insert is untracked storage."
+    );
+}
+
+/// The CODE of `interp.rs` — comment lines removed, CRLF normalised at the read.
+///
+/// **Both filters are load-bearing.** The raw-insert census below first counted 4 because a doc
+/// comment *describing* `.values.insert(...)` matched the pattern; a census that counts prose is a
+/// census that fails for reasons unrelated to what it measures, and worse, one that could be
+/// satisfied by editing a comment. CRLF normalisation is the same discipline in the other
+/// direction: without it these counts fail on a Windows checkout and nowhere else.
+fn interp_source() -> String {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interp.rs"))
+        .expect("interp.rs must be readable")
+        .replace("\r\n", "\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// **The boundary the ruling named that `RepBoundary` had no variant for — now closed.**

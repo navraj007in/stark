@@ -5702,7 +5702,20 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let spec_span = spec.span.unwrap_or(expr_span);
-        let stripped = strip_ref(&ty).clone();
+        // **DEV-206: do not strip the reference that MAKES the value.**
+        //
+        // Stripping is right for `fn render<T: Display>(v: &T)` — `Display::fmt` borrows anyway
+        // (STD-FORMAT-001), so a reference to a displayable type is displayable. It is wrong for
+        // `&[T]`: the pointee is UNSIZED, the reference is not incidental, and stripping it turns
+        // the one displayable spelling into the one that is not a value at all.
+        //
+        // Found by the value-context property, which required every context to accept the
+        // reference form and caught interpolation still rejecting `&[Int32]` after `println`
+        // had been repaired.
+        let stripped = match &ty {
+            Ty::Ref { inner, .. } if !type_is_sized(inner) => ty.clone(),
+            other => strip_ref(other).clone(),
+        };
 
         // A numeric mode requires a numeric type. `Display` does NOT imply integer formatting
         // (§11.5), so a generic `T: Display` is refused here rather than given a meaning it has
@@ -7335,6 +7348,15 @@ impl<'a> TypeChecker<'a> {
                         (Builtin::Some, Ty::Core(CoreType::Option, args)) => args.first().cloned(),
                         (Builtin::Ok, Ty::Core(CoreType::Result, args)) => args.first().cloned(),
                         (Builtin::Err, Ty::Core(CoreType::Result, args)) => args.get(1).cloned(),
+                        // **DEV-205: `IOError::Other(msg)` was missing here**, so its sub-pattern
+                        // was never checked: the binding got no `local_types` entry and every use
+                        // of it was typed `Ty::Error`. The program ran and printed correctly, which
+                        // is why nothing found it for as long as nothing read the tables — the
+                        // DEV-121 shape, in the checker rather than the oracle. The payload is the
+                        // `String` the constructor's own signature already declares.
+                        (Builtin::IOErrorOther, Ty::Core(CoreType::IOError, _)) => {
+                            Some(Ty::Primitive(Primitive::String))
+                        }
                         _ => None,
                     };
                     if let (Some(subpat), Some(payload)) = (pats.first(), payload) {
@@ -12675,7 +12697,27 @@ impl<'a> TypeChecker<'a> {
                 args.iter().all(|a| self.type_is_displayable(a))
             }
             Ty::Tuple(elems) => elems.iter().all(|e| self.type_is_displayable(e)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.type_is_displayable(elem),
+            // **DEV-206: an array is a value; a bare slice is not.**
+            //
+            // These shared an arm, which accepted the UNSIZED `[T]` — a type §6.6 says is never a
+            // standalone value, and which the representation relation refuses at every boundary
+            // for exactly that reason. So `println(v[0..2])` type-checked and then had no valid
+            // runtime representation, while `println(&v[0..2])` — the form that *can* exist — was
+            // rejected because no arm below matched a reference to a slice. The polarity was
+            // reversed.
+            Ty::Array(elem, _) => self.type_is_displayable(elem),
+            // A slice is observed THROUGH a reference. `&[T]` is displayable exactly when `T` is,
+            // which is the same elementwise rule the other containers use; nothing is invented for
+            // a non-`Display` element. Deliberately shared references only — `&mut [T]` is not
+            // broadened here, because DEV-206 is about the `[T]`/`&[T]` contradiction and nothing
+            // in the standard rules currently implies the exclusive form.
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } if matches!(inner.as_ref(), Ty::Slice(_)) => match inner.as_ref() {
+                Ty::Slice(elem) => self.type_is_displayable(elem),
+                _ => false,
+            },
             Ty::Struct(..) | Ty::Enum(..) => self.ty_satisfies_operator_bound(ty, "Display"),
             Ty::Param(_) => true, // discharged by the caller's own bound
             _ => false,
