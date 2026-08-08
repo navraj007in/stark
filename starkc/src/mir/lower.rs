@@ -10912,25 +10912,10 @@ impl<'a> FnLowerer<'a> {
             // the pattern DISCARDS still owes a destructor. The unbound walk runs first so that
             // arm-end drops (reverse registration order) destroy the bindings first and the
             // discarded leaves after, which is the order the oracle produces (DEV-080).
-            // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
-            //
-            // Decomposition is right for a droppable AGGREGATE — whatever the pattern discards
-            // still owes a destructor. It is wrong for a type carrying its own `Drop`, because
-            // decomposing is what makes that destructor never run.
-            //
-            // Registered AFTER `bind_pattern`, unlike the unbound walk: the helper MOVES the
-            // scrutinee into a temp, so running it first would leave `bind_pattern` reading a
-            // moved-from place. Sound because DEV-211 refuses any binding that would move a
-            // component out of such a value — every binding here copied a `Copy` component, and
-            // PAT-DROP-001 says a copied component "remains initialized in the hidden scrutinee".
-            let whole = mode == MatchMode::Consuming && self.ty_has_user_drop(&scrut_ty);
-            if mode == MatchMode::Consuming && !whole {
+            if mode == MatchMode::Consuming {
                 self.consume_unbound_leaves(pat, &scrut, &scrut_ty, span)?;
             }
             self.bind_pattern(pat, &scrut, &scrut_ty, mode, span)?;
-            if whole {
-                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &scrut_ty, span)?;
-            }
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
             self.current = fail;
         }
