@@ -301,3 +301,45 @@ extension checking must not recursively enter the general Core expression checke
 dependencies and are acceptable. `check_expr` is a **control-flow re-entry** edge and is not. Those
 two were wrongly treated as equivalent members of one context, and separating them is the finding —
 not the fact that the count doubled.
+
+
+---
+
+# Group 2B — the boundary located and measured (2026-08-08)
+
+`check_tensor_op` is 1332 lines. **1292 of them follow argument evaluation as one contiguous
+block, and `check_expr` does not appear in that remainder.** The phase boundary is therefore real
+in the code, not merely in the design.
+
+## The context, exactly
+
+| Core services — 7 | Tensor-owned — 9, move with the block |
+| --- | --- |
+| `resolve`, `unify`, `diags` | `broadcast_shapes`, `broadcast_to_check` |
+| `extract_const_int`, `extract_const_int_list` | `build_device`, `build_shape`, `dtype_to_ty` |
+| `combine_value_range`, `get_fix_suggestion` | `shape_volume`, `tensor_ctx`, `tensor_dtype`, `extract_dim_generic` |
+
+**Seven, against the sixteen-with-`check_expr` of the withdrawn design.** The split does not merely
+remove the bidirectional edge — it more than halves the surface, because the services that existed
+only to support *argument evaluation* (`check_expr`, `convert_hir_type`, `hir`, `options`, `text`,
+`generic_kind`, `ty_to_string`, `allow_half_type`, `build_value_range`) stay in Core, where that
+work now lives.
+
+## What 2C moves
+
+```text
+Core keeps      operation lookup and call-form validation (uses TENSOR_OPS across
+                the boundary), argument evaluation, and the final publish
+Extension takes the 1292-line rule block, behind a seven-service context
+```
+
+Form validation stays Core-side because it must run **before** argument evaluation to preserve
+diagnostic order (2A), and both are preparation. Only the rules move.
+
+## Residual risk
+
+The seven-service count is measured over `check_tensor_op`'s remainder alone. `check_tensor_refine`,
+`check_model_def` and `check_model_method_call` have their own surfaces and were measured
+separately in the 4A correction; they must be re-measured **over their post-evaluation remainders**
+before 2C, by the same method. Measuring the whole function overstates the boundary, which is what
+produced the sixteen figure.
