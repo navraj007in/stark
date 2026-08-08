@@ -5005,3 +5005,1478 @@ Two defects, recorded together because the first concealed the second.
   worked; this was the only rejection.
 - **Owning gate:** compiler track.
 
+
+---
+
+## DEV-183 — TRAIT-COHERENCE-001's cross-package clause was never enforced (CLOSED, AS1b-iii)
+
+- **Rule:** 03-Type-System, TRAIT-COHERENCE-001: *"Inherent implementations are permitted only for a
+  nominal type defined by the current package."*
+- **Status:** CLOSED. The check now works; the one first-party violation it found is repaired.
+- **Symptom:** none, which is the problem. The compiler accepted every cross-package inherent impl
+  in every package build, silently.
+- **Cause:** `typecheck::validate_impl_rules` decided "same package" by calling `find_package_root`,
+  which walked a file's PATH upward looking for a `starkpkg.json` **on disk, during type checking**.
+  After AS1a gave package sources logical `<package>/<path>` names, that path does not exist
+  relative to any working directory, so the probe returned `None` for the impl's file *and* for the
+  type's file. `None == None` made every type look local, and the rule could not fire.
+
+  It fired before AS1a only by an asymmetry: the root file carried an absolute disk path while every
+  other item's file carried a logical name, so the root probe found a manifest and the dependency
+  probe found nothing. "Different package" fell out of the difference, not out of a comparison.
+- **How it surfaced:** AS1b-ii-d removed the ambient `self.file` the probe read, replacing it with
+  the source the impl's span names. That made all three reads consistent, all three answered `None`,
+  and `test_cross_package_coherence_orphan_rule_with_real_packages` — a test written specifically to
+  pin this behaviour, and passing until then — failed. Replacing the disk probe with `source_package`
+  (the leading segment of the logical name) turned the rule on for the first time.
+- **What it found:** exactly one violation across the 28 first-party packages.
+  `stark-http-client/src/lib.stark:1468` wrote `impl HttpResponse { ... }` for `HttpResponse`, which
+  is defined in `stark-http-core`. Three packages failed to check as a result: `stark-http-client`,
+  `stark-http-client-consumer` and `stark-get`, all through that one impl.
+- **Repair:** the two methods became a locally declared `JsonBody` trait implemented for
+  `HttpResponse`. That is what TRAIT-COHERENCE-001 is designed to permit — coherence holds when the
+  current package owns *either* the trait or the head type, and `stark-http-client` owns the trait.
+  Behaviour and method names are unchanged; call sites still write `response.json()`.
+- **User impact:** a package could extend a dependency's type with inherent methods, which the
+  language does not permit. Nothing miscompiled — the accepted programs were well-typed — but two
+  packages could have added conflicting inherent `json()` methods to the same foreign type with no
+  diagnostic, and the ambiguity would have surfaced as a method-resolution failure far from either.
+- **Security/soundness impact:** none.
+- **Owning gate:** compiler track, AS1b-iii (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-184 — three of the four JSON escapers emitted invalid JSON (CLOSED, AS5-a)
+
+- **Rule:** RFC 8259 §7 — the characters that MUST be escaped inside a JSON string are the quotation
+  mark, the reverse solidus, and **the control characters U+0000 through U+001F**.
+- **Status:** CLOSED. All three repaired; AS5-c replaces them with one shared authority.
+- **Found by:** AS5's opening inventory. `AS0-MANIFEST-STRICTNESS-AUDIT.md` compared the two JSON
+  *parsers*; this is the emit side, which that audit did not cover.
+
+| Authority | Escaped | Left raw |
+| --- | --- | --- |
+| `diag.rs::escape_json` | `"` `\` `\b` `\f` `\n` `\r` `\t`, all C0 as `\u00xx` | — (correct) |
+| `lsp/protocol.rs::escape_json_string` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `onnx/verifier.rs::escape_json` | `"` `\` `\n` `\r` `\t` | 29 C0 controls |
+| `bin/stark.rs::json_escape` | `"` `\` `\n` | 31 C0 controls, **including TAB** |
+
+- **Demonstrated instance.** `stark doctor --json --root "<path containing a TAB>"` — a legal POSIX
+  path — emits a raw U+0009 inside the `install_root` string. A standard parser refuses the
+  document: `Invalid control character at: line 3 column 134`. The command advertises
+  machine-readable output and produces something no conforming parser accepts.
+- **User impact:** any tool consuming `stark doctor --json` fails on such a path, with a parse error
+  that points at the compiler's output rather than at the path. On the LSP surface the raw control
+  goes onto the wire inside a JSON-RPC message; a lenient client tolerates it and a strict one drops
+  the message or the connection.
+- **Why it survived:** `GATE-C8-CLOSURE.md` §4 records that C8's protocol validation compared
+  **verdicts, not values**. DEV-182 — the LSP parser decoding every escaped non-BMP character to the
+  empty string — passed that same evidence. "The LSP protocol suite is green" does not establish
+  that what goes on the wire is valid JSON, and this packet's dependencies section says so.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, an unescaped control
+  character in an attacker-influenced string is a message-framing hazard for a lenient client, which
+  is why AS5 exit criterion 5 routes parsing decisions through CE9 review.
+- **Repair:** each escaper now escapes every C0 control as `\u00xx`, matching `diag.rs`'s already
+  correct implementation. `tests/as5_json_escaping.rs` fails against the previous code — it names
+  the exact code points each one leaked — and passes after.
+- **Owning gate:** compiler track, AS5-a (WP-ARCHITECTURE-STABILIZATION).
+
+---
+
+## DEV-185 — the JSON layer decoded every number to `f64`, losing the value the input denotes (CLOSED, AS5-b/c)
+
+- **Rule:** RFC 8259 §6 constrains a number's *grammar* and explicitly sets no range or precision
+  limit. The governing lesson is DEV-182's, recorded in `GATE-C8-CLOSURE.md` §4: **parsing
+  successfully is insufficient; the returned value has to be the value the input denotes.**
+- **Status:** CLOSED. `JsonValue::Number` carries a `JsonNumber` preserving the exact lexical value;
+  conversion to `i64`/`f64` is an explicit consumer decision that can refuse.
+- **Found by:** AS5's review of the shared data model. The two `JsonValue` enums being textually
+  identical established that no reconciliation was needed — it did **not** establish that the
+  representation was adequate, and it was not.
+
+**Measured on the code before the repair** (`examples/as5_number_probe.rs`):
+
+```text
+input      9007199254740993          ← 2^53 + 1, an ordinary 64-bit request id
+re-emitted 9007199254740992          ← CHANGED
+as_i64     Some(9007199254740992)
+1.5 as_i64 Some(1)                   ← truncated, not refused
+      01 parses: true                ← leading zero is not JSON
+      1. parses: true                ← naked decimal point is not JSON
+   1e400 parses: true                ← decodes to infinity
+```
+
+- **User impact, in severity order:**
+  1. **A JSON-RPC request identifier can change value between arriving and being answered.** `id` is
+     correlation identity; a response carrying `…992` answers a request that was never sent. This is
+     more serious than DEV-184, because a client cannot detect it — both documents are well-formed.
+  2. `as_i64()` performed `n as i64`, so `1.5` became `1`. An integer-typed protocol field accepted
+     a fractional number silently instead of refusing it.
+  3. `JsonValue::Number(f64)` could hold NaN or an infinity, neither of which has a JSON textual
+     form — the type could represent a document that cannot be serialized, with the failure
+     surfacing at emit time far from whatever constructed it.
+- **Security/soundness impact:** none to the compiler. On the protocol surface, id confusion is a
+  correlation hazard rather than a memory-safety one.
+- **Repair:** `JsonNumber` keeps the input's exact lexical form. The parser validates the RFC
+  grammar — ASCII digits only, no leading zero, no bare `+`, no naked decimal point, and only the
+  four JSON whitespace characters around it — and preserves the text. `as_i64` succeeds only for a
+  raw integer literal; `as_f64` refuses a value it cannot represent finitely; `from_f64` refuses
+  NaN and the infinities, so a non-JSON number is unrepresentable rather than caught late.
+- **Deliberately not done:** arbitrary-precision arithmetic. The shared layer's job is to preserve
+  what the document said and let each consumer state the numeric type it requires.
+- **Owning gate:** compiler track, AS5-b/c (WP-ARCHITECTURE-STABILIZATION).
+
+### Adjacent, NOT repaired here — the LSP request-id surface
+
+The JSON layer is right to make `JsonNumber::as_i64` accept only what was *written* as an integer
+literal: `1e3` returning `None` is a deliberate consumer decision, not a limitation. But
+`lsp/protocol.rs` converts every id through `as_i64()` and models both halves as `id: i64`, so the
+protocol layer accepts only that subset:
+
+| Request id form | Today |
+| --- | --- |
+| plain JSON integer that fits `i64` | accepted |
+| string id (JSON-RPC 2.0 §4, LSP both permit it) | **rejected** |
+| other exact spellings of the same number (`1e3`, `1.0`, `+`-free variants) | **rejected** |
+| integer outside `i64` | **rejected** |
+
+Not a JSON-authority defect, and not AS5's to fix — covering it would turn a parser consolidation
+into an LSP redesign. The eventual shape is almost certainly
+
+```rust
+enum RequestId { Number(JsonNumber), String(String) }
+```
+
+**echoing the id exactly as received** rather than interpreting it, which is what JSON-RPC requires
+of a server. Recorded here so it is not lost; it needs its own packet.
+
+---
+
+## DEV-186 — the LSP transport allocates an unbounded `Content-Length` before parsing (OPEN)
+
+- **Status:** OPEN, registered rather than repaired. Found during AS5's CE9 review of the JSON
+  nesting limit; **not AS5's to fix** — see "Why this is not AS5" below.
+- **Where:** `src/lsp/server.rs:60-63`.
+
+```rust
+if let Some(content_length_str) = headers.get("Content-Length") {
+    if let Ok(content_length) = content_length_str.parse::<usize>() {
+        let mut content = vec![0u8; content_length];   // ← no bound
+        reader.read_exact(&mut content)?;
+```
+
+- **Symptom:** a peer that advertises `Content-Length: 9999999999999` causes an allocation of that
+  size **before any byte of the body is read and before the JSON parser is reached**. On a 64-bit
+  host the request either aborts the process on allocation failure or drives it into swap.
+- **Cause:** the framing layer trusts a header field. `usize` parsing bounds the *number*, not the
+  *allocation*, and `read_exact` into a pre-sized buffer commits the memory first.
+- **Why AS5's `MAX_DEPTH` does not cover it:** the two limits protect different things and belong to
+  different authorities.
+
+  | Limit | Protects | Owner |
+  | --- | --- | --- |
+  | `json::MAX_DEPTH` (128) | the stack, against recursive descent | the shared JSON parser |
+  | `Content-Length` cap | total allocation, before parsing | the LSP transport/framing layer |
+
+  A depth limit cannot help here: the parser never runs.
+- **Why this is not AS5:** AS5 consolidates JSON *parsing and escaping* authority. Message framing
+  is the transport's contract, and widening the packet to cover it would repeat the mistake the
+  string-request-id note already refuses — turning a parser consolidation into an LSP redesign.
+- **Repair shape, when taken:** a maximum message size checked at the framing layer **before**
+  allocating, with a deterministic protocol error for anything larger, and incremental reads rather
+  than one pre-sized buffer. It belongs with the request-id work in an LSP hardening packet.
+- **Security/soundness impact:** availability only, on a surface that reads from a socket or a pipe.
+  No memory-safety consequence — the allocation is safe Rust — and no compiler consequence: nothing
+  outside the language server reaches this path.
+- **Owning gate:** compiler track; awaiting an LSP hardening packet.
+
+---
+
+## DEV-187 — bound specialisation did not reach generic impls (CLOSED, AS3 Boundary 4)
+
+- **Status:** **CLOSED.** Found by AS3 Boundary 4d's negative control on its first run; closed by
+  passing the concrete `Self` from both engines. All four impl×member pairs now resolve through the
+  shared specialiser.
+- **The compiler defect was real and is fixed.** The *residual* after the fix was a defect in the
+  control itself — see "How this was mis-diagnosed twice" below, which is the part worth reading.
+- **Not a wrong-answer defect.** Programs still produce correct output; both engines fall back to
+  their pre-existing scans, which is what they did before AS3. The defect is that the shared
+  authority is bypassed exactly where it is most needed.
+
+`impl<T> Describe for W2<T>` has `self_ty = Struct(W2, [Param("T")])`. Both engines pass the **bare
+nominal head** `Struct(W2, [])` to `specialize_bound_callable`, the argument lists differ in length,
+`unify_impl_ty_with` refuses, and the specialiser returns `None` — after which each engine silently
+falls back:
+
+| Engine | Falls back to |
+| --- | --- |
+| HIR interpreter | `find_method(nominal, name, trait_filter)` |
+| MIR lowering | `find_impl_fn(nominal, name, …, bound_trait)` |
+
+So for generic impls, Boundary 4c and 4d are **not in force**, and `find_method`/`find_impl_fn`
+cannot be deleted while that is true.
+
+- **Why the interpreter cannot fix this alone:** `Value::Struct { item, fields }` carries **no type
+  arguments** (established by `AS3-DISPLAY-CHARACTERIZATION.md` §2.2). It has no concrete `W2<Int32>`
+  to pass. The type is recoverable from the caller's generic frame via `concrete_runtime_ty`, which
+  already substitutes through `typecheck::substitute_ty` — so the repair is threading that, not
+  changing the runtime representation.
+- **MIR does not have the limitation:** it carries the receiver's full `MirTy` with arguments and
+  currently discards them at this call. Its repair is smaller.
+- **Why this was invisible until now:** the program prints the right answers, so no behavioural test
+  could see it. The negative control compares **resolutions**, not output, which is the only reason
+  it surfaced — and it surfaced on the first run.
+### Refined diagnosis (2026-08-07) — the call-site repair was necessary but NOT sufficient
+
+Both engines now pass the concrete `Self` **including arguments** (`W2<Int32>`, not `W2`), using
+`expr_types` plus `concrete_runtime_ty`, which substitutes through the active generic frame via the
+shared `substitute_ty`. That change is correct on its own terms and is kept.
+
+**The generic impl still does not resolve.** So the bare-nominal-head account was only half the
+cause. **That diagnosis was WRONG and is retracted.** I predicted the index stored a degenerate head; a
+probe inside `build_trait_impl_index` shows it stores the correct one:
+
+```text
+IDX self_ty=Struct(ItemId(1), [])            generics=[]        // impl Describe for A2
+IDX self_ty=Struct(ItemId(3), [Param("T")])  generics=["T"]     // impl<T> Describe for W2<T>
+```
+
+So the parametric head is recorded correctly, `convert_hir_type` does resolve `T` to a `Param`, and
+the remaining cause is **neither the call sites nor the index shape**. It is somewhere in the
+specialiser's candidate loop or in how the test supplies the concrete `Self` — both still unexamined.
+
+Recording the retraction rather than quietly replacing it: the previous entry asserted a cause from
+"the repair had no effect", which is evidence that *something else* is wrong, not evidence of *what*.
+That inference was unsound and produced a confident wrong answer in a permanent record.
+
+- **Repair:** convert each impl's self type within its own generic scope when building the index,
+  then re-check the caller side. Pinned meanwhile by
+  `both_engines_resolve_a_bound_call_identically`, which asserts exactly the two non-generic
+  resolutions succeed; when the repair lands, that count rises and the test demands this record be
+  updated.
+- **Owning gate:** compiler track, AS3 Boundary 4 (`WP-CALLABLE-USE-TOTAL.md`).
+
+### How this was mis-diagnosed twice
+
+Worth recording, because the failure was in reasoning rather than in code.
+
+1. **Fix applied** — both engines pass the concrete `Self` with arguments (`5fb8811`). Correct, and
+   it *was* the whole compiler-side defect.
+2. **Control still showed 2/4.** Concluded the cause was index-side: `convert_hir_type` called
+   outside the impl's generic scope. **Wrong** — a probe showed the index stores
+   `Struct(W2, [Param("T")])` correctly. Retracted in `d749612`.
+3. **Fixed a real latent bug anyway** — the specialiser's member lookup used `?`, abandoning the
+   whole search when the first head-matching impl lacked the member, instead of `continue`. Correct
+   in itself, but not this cause.
+4. **Probed the actual inputs.** The *test* was passing `Struct(W2, [])` — the bare head — because
+   its self-type mapping had been reverted when I restored an earlier pinned state. The control was
+   lying about its own inputs.
+
+**The lesson is step 2.** "The fix had no effect" is evidence that *something else* is wrong; it is
+not evidence of *what*. Both wrong diagnoses came from inferring a cause instead of measuring one,
+and the measurement that settled it — printing the values actually passed — was cheaper than either
+inference.
+
+A control that misreports its own inputs is worse than no control: it produced two confident wrong
+conclusions, one of which reached a permanent record before being retracted.
+
+
+## DEV-188 — a trait method's own generics were dropped at a bound call site [CLOSED at creation, AS3 Boundary 4, CD-386, 2026-08-07]
+
+- **Rule:** 02-Syntax-Grammar.md permits a trait method to declare its own generic parameters, and
+  03-Type-System.md's turbofish rule applies to a method's generics at the call site. Nothing
+  restricts either to concrete receivers.
+- **Defect:** `check_trait_member_call` converted the declared signature and never read
+  `sig.generics`. At a call through a generic parameter's bound, the method's own generics were
+  therefore never bound: the turbofish was discarded, no inference variable was created, and the
+  argument check compared the caller's types against the type *parameter*.
+- **Effect: every trait method mentioning its own generic parameter was uncallable through a
+  bound.** Not mis-typed — uncallable. `fn g<T: Conv>(t: T) { t.to::<Int32>(1) }` on
+  `fn to<U>(&self, x: U) -> U` reported `type mismatch: expected 'U', found an integer literal`,
+  and no call site could satisfy it. The same function serves the `Self`-receiver path, so a trait
+  default calling a generic sibling on `self` failed identically.
+- **Scope, measured rather than assumed** (`examples/as3_method_args_probe.rs`): the only accepted
+  shape was one where the method's generic appears **nowhere in its signature**. `U` in a
+  parameter, `U` in the return type, and `U` in both were all rejected.
+- **The concrete-receiver path was already correct.** WP-C4.7-8.4 binds these generics, validates
+  the turbofish arity, and substitutes. This is the bound path being brought into line with a rule
+  the language already had — not a new rule, which is why it closes at creation rather than opening
+  a semantic question.
+- **Repair:** `check_trait_member_call` binds `sig.generics` from the turbofish when present and
+  from fresh inference variables otherwise, validates arity, substitutes into parameters and return
+  type, and returns the resolved bindings. `CalleeSelection::Bound::method_args` — carried but
+  always empty since Boundary 4 step 2 — is now populated from them. A core trait's contract
+  (`ContractTy`) cannot declare method generics, so its empty list is an answer, not a gap.
+- **Evidence:** `tests/dev188_bound_method_generics.rs`, 8 tests. Both halves of the repair
+  mutation-tested independently: removing the binding fails 6 of 8; removing the arity validation
+  fails the other 2.
+- **How it was found, and the correction it forces.** AS3-DISPLAY-CHARACTERIZATION.md §5 recorded
+  G2 as *accepted* — "method generics through a bound … yes". That measurement was **vacuous**: its
+  fixture's `U` appeared nowhere in the signature, the one shape that happened to work. The
+  characterization was written to justify *adding a field*, and it stopped measuring as soon as the
+  program compiled. Probing the field's actual inputs before populating it is what exposed the
+  defect underneath. §5 is corrected in the same change.
+
+
+## DEV-189 — MIR's bound specialiser passed the bare nominal head [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** `specialised_bound_key` built `Self` as `Ty::Struct(nominal, Vec::new())`, dropping
+  the receiver's type arguments, with a comment asserting "the index matches on the impl head".
+  It does not: `impl<T> Describe for W2<T>` is indexed as `Struct(W2, [Param("T")])`, so a head with
+  no arguments fails to unify on length and the specialiser returned `None` for **every generic
+  impl**. MIR then fell back to `find_impl_fn` while the interpreter used the shared authority.
+- **This is DEV-187 on the second engine.** The interpreter was repaired; MIR was not, and the
+  control did not notice — see the note on the 4d control below.
+- **Repair:** a partial `MirTy -> Ty` bridge (`mir::lower::checker_ty`), because lowering
+  substitutes in `MirTy` while the impl index speaks checker `Ty`. Partial on purpose: `FnPtr` and
+  `HostResource` return `None`, which means "do not specialise" rather than a fabricated shape.
+- **The 4d control did not catch this, and that is its own finding.**
+  `both_engines_resolve_a_bound_call_identically` calls `specialize_bound_callable` twice with a
+  self type the TEST constructs. It proves the shared authority is deterministic given identical
+  inputs — a real property — but it never checks that the two engines *supply* identical inputs,
+  which is the divergence its name promises. The census in DEV-190 is what actually found this.
+
+## DEV-190 — `self.m()` inside a trait default body published no callable use [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** the `Self`-receiver branch of `resolve_method` returned without publishing anything,
+  so `self.id()` inside `fn twice(&self) -> Int32 { self.id() * 2 }` had no `CallableUse` and both
+  engines fell back to a name scan.
+- **Same class as AS3's missing third binding time.** `Self` is a parameter, the trait is known,
+  the body is fixed only once an implementor is chosen — a `Bound` selection by the same argument
+  that produced the variant.
+- **Found by census, not by reading.** The MIR fallback was instrumented and the differential,
+  operator, iterator, bound-identity and Display suites run. It fired ~60 times; consuming the
+  `Static` selection reduced that to 2, both `self.id()` in a trait default. Publishing them took
+  it to 0, which is what licensed deleting the fallback at all.
+
+## DEV-191 — operators on a bounded generic parameter published no callable use [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Defect:** `publish_operator_use` returned early unless the operand was `Ty::Struct`/`Ty::Enum`,
+  so `a == b` inside `fn same<T: Eq>(a: T, b: T)` published nothing.
+- **Repair:** publish a `Bound` use against the Core trait when the parameter carries that bound.
+  The signature comes from the `CoreTraitMethod` contract — the same table a user `impl` is checked
+  against — not from `Eq::eq -> Bool` written in by hand.
+- **Deliberately not published for `T: Num`:** arithmetic through a `Num` bound is compiler-known
+  and primitives-only, so there is no user body for a call site to name. Pinned by
+  `arithmetic_on_a_num_bounded_parameter_still_publishes_nothing`.
+- **Surfaced only by deleting the fallback.** The `eq` fallback carried a comment stating it was
+  "verified unreached ... by mutation". That evidence was real but covered two suites, and neither
+  contained an operator on a bounded parameter; `over_acceptance_audit` did. **Unreached in the
+  suites you ran is not unreachable** — which is the argument for deleting a dead fallback rather
+  than annotating it.
+
+## DEV-192 — `==` through an `Eq` bound silently used structural equality [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **Rule:** 03-Type-System.md "Operators and Traits" — `==`/`!=` desugar to `Eq::eq`, `<` and
+  friends to `Ord::cmp`. A type with its own impl must run that impl.
+- **Defect:** in the HIR oracle both operator paths fell through when the selection was `Bound`,
+  and the fall-through for `==` on a struct value is **structural `Value` comparison** (DEV-008).
+  So inside `fn same<T: Eq>` a user's `impl Eq` was silently replaced by field-wise equality.
+  `<` had no fallback at all and trapped with "invalid binary operation".
+- **Measured at HEAD before the repair**, on a `Rec` whose `eq` compares `id` and ignores `tag`:
+
+  ```text
+  HIR-at-HEAD "false\nfalse\n"   (correct is "true\nfalse\n")
+  ```
+
+  The first answer is **wrong** — not a missing feature, a wrong result from the reference engine.
+- **Why it stayed hidden:** every existing fixture had a user `eq` that AGREED with structural
+  comparison, so the substitution produced the right answer everywhere it was exercised. A
+  differential suite cannot catch two algorithms that coincide on all its inputs. The regression
+  tests now use an `eq` that ignores a field and a `cmp` that reverses the order, so the two
+  algorithms must disagree.
+- **Repair:** `Interpreter::specialised_operator_callable` resolves the `Bound` use through the
+  shared specialiser, taking `Self` from the published `self_ty` substituted through the active
+  generic frame — the operand VALUES cannot supply it, since a runtime value carries no type
+  arguments. Depends on DEV-191 having published the use.
+- **Evidence:** `tests/as3_fallback_removal.rs`, 8 tests, all through the full differential harness.
+
+## DEV-193 — a direct call to a known function published `FunctionValue` [CLOSED at creation, AS3 exit criterion 1, 2026-08-07]
+
+- **Defect:** `free(1)`, where `free` names a known `fn` item, fell through the call-checking chain
+  into the function-value branch and published `CalleeSelection::FunctionValue` — the selection
+  meaning *the body is not knowable here*. It is knowable: the callee path published
+  `Direct`/`Static(body)` immediately before.
+- **Effect:** `free(1)` and `g(2)` produced **identical records at their call expressions**. A
+  consumer reading the call site could not distinguish a direct call to a known body from a call
+  through a function value — the exact conflation `CalleeSelection`'s three binding times exist to
+  prevent. Nothing consumed it today, so nothing was observably wrong; it was a false statement
+  waiting for a consumer.
+- **Repair:** suppress the `FunctionValue` publication when the callee resolves to a `fn` item. The
+  record for a direct call is the callee path's; a second, weaker one contradicting it is a
+  duplicate, not extra information.
+- **Found by `tests/as3_callable_use_exactness.rs` on its first run**, which is what that test is
+  for: it derives expectations from HIR shape and `expr_types` rather than from the table under
+  test, so it can see a record that exists but says the wrong thing.
+- **One self-inflicted regression while fixing it**, worth recording: the first version used
+  `return *ret` to skip the publication. `return` exits `check_expr` entirely, skipping the
+  post-match bookkeeping that records `expr_types` — 2 lib tests and 35 `mir_differential` cases
+  failed at once. An early return out of a function whose value is recorded by its *caller-side*
+  epilogue is never a local edit.
+
+## DEV-121 — CLASS CLOSED (AS3 work item 6 / exit criterion 5, 2026-08-07) — **WITHDRAWN 2026-08-08, see below**
+
+Exit criterion 5 required *"a class-level evidence statement, not one regression case."* This is it.
+
+### 1. The blind spot is closed
+
+DEV-121 UPDATE 2 named why both instances — `String::bytes()` (CD-305) and `String::split()`'s item
+(CD-340) — were found by user-facing packages rather than by tooling: `INV-VALUE-REP-001` checked
+**`let` bindings**, and *both were reachable through a `for`-loop item, which is not a `let`*.
+
+The invariant now runs at every position a local receives a value:
+
+| Site | Before | Now |
+| --- | --- | --- |
+| `let` binding | checked | checked |
+| `for`-loop item | **unchecked** — the shape both instances took | checked |
+| call parameter | **unchecked** | checked |
+| method receiver | **unchecked** | checked |
+
+### 2. The extension is load-bearing, and that is measured rather than asserted
+
+With `String::bytes()` mutated back to its DEV-121 behaviour (returning an owned `Value::Vec`), on a
+program where the view reaches a parameter and never binds to a `let`:
+
+```text
+invariant wired at parameters   TRAP  "...holds an owned Vec... (DEV-121)"
+invariant NOT wired (let-only)  OK    "3\n3\n"      <- defect completely invisible
+```
+
+The second row is the finding. Under the old coverage a broken producer yields a program that runs
+and prints the right answer — no test and no user would ever see it. That is precisely how both
+known instances reached packages.
+
+**A first mutation pass wrongly suggested the extension was inert:** removing the new call sites left
+the audit suite green. It did, because the audit exercises *correct* producers, and removing a
+detector does not change correct behaviour. The control that means something pairs a **broken
+producer** with a binding position the old check could not see. Recorded because "the mutation did
+not bite" is a question, not a verdict — the same error made three times earlier in this packet.
+
+### 3. The inventory cannot go stale
+
+`tests/dev121_view_producer_audit.rs::every_view_returning_intrinsic_is_classified` scans
+`core_method_signature` and requires **every** method arm mentioning a view type to be classified —
+either exercised as a producer or explicitly listed as taking a view only / returning owned storage
+deliberately. Adding a new `&[T]`/`&str` intrinsic without a decision fails the test.
+
+The scan deliberately over-approximates (it flags parameter-position mentions too): an extra entry
+costs a line in a table, a missed one is an unaudited producer, which is the defect class itself.
+
+Audited producers: `as_str`, `trim`, `bytes`, `as_slice`, `substring` — each exercised bound by
+`let`, passed as an argument, and (for `&str` items) as a loop item.
+
+### 4. One language fact recorded, not a gap
+
+`for b in view` where `view: &[UInt8]` is **rejected** — Core v1 does not make a slice iterable. So
+there is no loop position for a slice view, and the loop coverage rests on `&str` items from
+`split()`. Written down so this file is not later "completed" with a fixture that cannot compile.
+
+### Status
+
+**CLASS CLOSED.** The instances remain fixed (CD-305, CD-340); the detector now covers every binding
+position; the inventory is enforced by a test rather than by a date. What remains uncovered is
+stated rather than implied: struct fields, indexed slots, and values that never bind to a local at
+all. Those need a place-oriented check, which is a different change with its own evidence — not a
+silent exemption from this one.
+
+## DEV-194 — a trait DEFAULT body reached by a non-`Static` route ran without its `Self` binding [CLOSED at creation, AS3 Boundary 4, 2026-08-07]
+
+- **One shape, three routes, three separate repairs.** A trait default's body carries
+  `Ty::Param("Self")` throughout. Whenever it is reached by a route other than an ordinary `Static`
+  method call, something had to supply the `Self` binding — and nothing did:
+
+  | Route | What was missing |
+  | --- | --- |
+  | bound call — `announce<D: Describe>(item: &D)` → `item.shout()` | the interpreter **discarded** the environment `specialize_bound_callable` returns |
+  | bound call, MIR | `specialised_bound_key` used `fn_key_for_body` (impl members only), so a default body produced no `FnKey` |
+  | qualified call — `<T as Tr>::m(&x)` | the checker published no selection for a default at all, then no `Self` once it did |
+
+- **Effect:** `self.name()` inside the default failed with *"method 'name' not found at runtime"*,
+  or MIR lowering refused the call outright.
+- **The fallbacks had been hiding all three.** A name scan finds `name` on the runtime value's
+  nominal without needing an environment at all, so a missing `Self` binding was invisible for
+  exactly as long as a scan existed to paper over it. Deleting the scans did not cause these
+  defects; it revealed them.
+- **Two were found by CI, not by the unit suites** — `pkg/07-traits` in the external sample suite,
+  and `c62b_fully_qualified_reaches_a_trait_default_body`. That is the argument for both gates: the
+  sample suite exercises the interpreter on real programs, and the differential suite exercises
+  shapes the samples do not reach (MIR refused a program the interpreter ran).
+- **Repairs:**
+  - `Interpreter::push_resolved_env` installs the environment the specialiser produced. A `Bound`
+    call's environment cannot be published — the body is chosen only once `Self` is concrete.
+  - MIR's `specialised_bound_key` uses `key_for_selected_body`, which reaches trait defaults.
+  - `check_qualified_trait_call` falls back to `trait_default_member` when the implementor accepts
+    the default, publishes the signature from the trait (`trait_member_signature`, with `Self`
+    substituted), and publishes `Self` in the environment — which the checker knows here.
+- **Honesty note on how the MIR half was found:** not by the probe's output. The probe edit I wrote
+  to *observe* the failure also replaced `fn_key_for_body` with `key_for_selected_body`, and the
+  symptom moved. I only established the real cause by diffing what I had actually changed.
+- **Evidence:** `as3_fallback_removal::dev194_a_trait_default_reached_through_a_bound_gets_its_self_binding`
+  — two implementors, one accepting the default and one overriding it, so a resolution that ignored
+  `Self` and picked "the first impl declaring the name" prints the same text twice. Plus
+  `native_c6_2_generics_traits` 20/20 and the external sample suite 39/39.
+
+## DEV-195 — `Vec<CharsIter>::clear()` was refused by the MIR verifier (CLOSED by owner ruling, CD-387, 2026-08-07)
+
+- **Rule:** a program the checker accepts and the reference engine executes must be compilable. An
+  engine refusing it later is a divergence, not a language boundary.
+- **Behaviour, measured end to end:**
+
+  | Stage | Verdict |
+  | --- | --- |
+  | checker | accepts |
+  | HIR interpreter | runs it, prints `0` |
+  | MIR lowering | lowers it, emitting the fast `VecClear` |
+  | MIR verifier | **rejects — MIR-0016** |
+
+- **Cause: the two precise drop rules disagree.** `lower::ty_requires_drop_glue` answers `false` for
+  `MirTy::Core(CharsIter)`; `verify::requires_drop_glue` answers `true`, because it opens with
+  `MirTy::String | MirTy::Core(..) => true`. Lowering therefore takes the fast `VecClear` path, and
+  MIR-0016 is precisely the guard on that path.
+- **The mechanism, and why `String` is unaffected:** lowering emits `VecClear` **only** when it
+  believes the element needs no glue. `Vec<String>::clear()` and `Vec<Vec<Int32>>::clear()` emit no
+  `VecClear` at all and pass. So the disagreement puts lowering on one side of the guard and the
+  verifier on the other, for exactly the element types they answer differently about.
+- **Scope:** of the 14 measured disagreements, only `CharsIter` and `File` are `MirTy::Core` shapes
+  anything constructs. `Vec<CharsIter>` is confirmed constructible. `Vec<File>` is not tested here.
+- **User impact:** a valid program cannot be compiled natively. Not unsoundness — the refusal is
+  conservative — but a user-visible engine divergence with no diagnostic explaining why the
+  interpreter ran what the compiler refused.
+- **Why it stays OPEN:** the repair is behavioural. Making the two agree changes the accepted
+  program set, so it owes its own decision record under AS4 work item 5, and the decision — which
+  side is right — belongs to the owner, not to a refactor. The evidence supports the verifier's
+  `Core(..) => true` being an old conservative shortcut, but that reading is recorded, not adopted.
+- **Evidence:** `tests/as4_vecclear_divergence.rs`, 3 tests. Pinned as a **characterization**: it
+  asserts the current refusal, and is written so that accepting the program in future fails this
+  test by name, forcing the decision record to be written rather than the behaviour to drift.
+- **Found by:** AS4's lower-vs-verifier matrix, then driving the actual compiler rather than
+  reasoning from the matrix. The matrix said "over-rejection is possible"; running it established
+  that a real, constructible program is refused today.
+
+### DEV-195 RULING (owner, CD-387, 2026-08-07)
+
+```text
+Core(CharsIter) requires_drop_glue = false.
+
+A CharsIter is a borrowed cursor. Destroying it has no STARK-visible destruction
+action and releases no owned language or provider resource.
+
+Therefore Vec<CharsIter>::clear() may use VecClear.
+
+The verifier's blanket MirTy::Core(..) => true classification is not authoritative
+for CharsIter and must not reject that lowering.
+```
+
+**Lowering was right.** The evidence is semantic, not "one side accepts more": `CharsIter` is a
+borrowed `&str` cursor yielding `Char` by value, the native runtime is a wrapper around
+`std::str::Chars<'a>`, and the backend emits it as intrinsically borrow-carrying. It owns nothing
+destruction could release. That also restores `VecClear`'s original contract, where the verifier's
+predicate was meant to **mirror** lowering's precise rule.
+
+**Repair:** `verify::requires_drop_glue`'s `MirTy::Core(..) => true` blanket is replaced by an
+**exhaustive** per-`CoreType` match — `CharsIter => false`, every other variant unchanged at `true`.
+Exhaustive because a new `CoreType` must then be classified rather than inherit a default, which is
+the property a producer census cannot provide.
+
+**`File` is deliberately excluded, and this is the important half.** It is the other reachable row
+of the same disagreement with the **opposite** ownership: legacy Core `File` is an owning
+`OwnedResourceHandle` released through the MIR/provider close path, and
+`drop_plan::plan_for(Core(File))` is currently `Noop` — only a true `HostResource` gets
+`HostResourceClose`. So `verify`'s `File => true` may be an accidental safety barrier, and removing
+it could let the fast `VecClear` discard open handles. **It stays until `Vec<File>` is characterized
+end to end.** See DEV-196.
+
+**Evidence:** `tests/as4_vecclear_divergence.rs`, 4 tests — flipped from a refusal characterization
+to an acceptance regression, which is the transition it was written for. The lower-vs-verifier
+matrix independently dropped from 14 disagreements to 13, and its reachable list from
+`[CharsIter, File]` to `[File]`.
+
+## DEV-196 — legacy Core `File` has no drop plan; the feared barrier turns out to guard nothing (NARROWED, not a live defect)
+
+- **The shape:** `lower::ty_requires_drop_glue(Core(File)) = false`, so lowering would take the fast
+  `VecClear` path for `Vec<File>`; `drop_plan::plan_for(Core(File))` is `Noop`; only
+  `verify::requires_drop_glue(Core(File)) = true` currently prevents that lowering from verifying.
+  A predicate disagreement is holding a resource-lifecycle invariant.
+- **Reachability, measured:** `mir_ty` **refuses** `Core(File)` outright — a bare `File` binding
+  fails to lower with `type Core(File, []) (C4.5)` — so no ordinary program reaches it. It is
+  produced only by provider binding (`ResourceBinding::LegacyCore`) in a **capability-declared**
+  build. `Vec<File>` must therefore be characterized there, not through `starkc run`.
+- **What to measure:** open or create a real `File`, move it into a `Vec<File>`, `clear()`, and
+  record checker, HIR, MIR shape, verifier, and — decisively — whether any provider close appears
+  in the MIR destruction path. If the fast `VecClear` is emitted, that is a resource-lifecycle
+  defect in its own right; **do not weaken MIR-0016 for `File` to make two predicates agree.**
+- **The conceptual question it may answer.** `VecClear`'s guard really asks *"can values of `T` be
+  discarded by the fast clear without running any language-required destruction?"* For ordinary
+  types that equals `!requires_drop_glue(T)`. Legacy Core `File` may be the counterexample: it does
+  not participate in ordinary type-driven drop glue, yet discarding it is certainly not
+  destruction-free. If the equivalence fails, AS4 has a **fourth** semantic question —
+  `is_trivially_discardable` or equivalent — which would explain why `File` keeps resisting
+  classification without either existing predicate being wrong.
+- **Blocks:** merging the two precise drop authorities (AS4 item 1 for the drop rule).
+- **Pinned by:** `as4_vecclear_divergence::core_file_is_not_reachable_through_ordinary_lowering`,
+  which fails if `Core(File)` starts lowering through the ordinary path before this is resolved.
+
+### DEV-196 — ANSWERED by measurement (2026-08-07)
+
+The experiment the entry asked for was run: a **capability-declared package** (`filesystem`,
+`stark build` — not `starkc run`), a real `File::create`, moved into a `Vec<File>`, then `clear()`.
+
+```text
+Vec<File> push + clear                          refused: type Core(File, []) (C4.5)
+bare File bound by let                          refused: same
+File matched but never bound                    refused: same
+no File at all (control)                        BUILT
+```
+
+**`Core(File)` is unlowerable from source**, capability or not. `mir_ty` refuses the type, so the
+`Ok(f)` binding alone is enough — `File::create`'s `Result<File, IOError>` payload cannot be
+lowered. No source program constructs a `Vec<File>`, let alone clears one.
+
+**Where `Core(File)` is used, destruction is explicit.** The WP-C7.8.4 provider path builds its MIR
+by hand and closes the handle with `stark_file_close` (`HandleConsumed`), never through drop
+planning. So `drop_plan::plan_for(Core(File)) = Noop` is **consistent with how `File` is actually
+used**, not a hole — nothing relies on drop glue for it.
+
+**Consequences, and they change AS4's plan:**
+
+1. The feared resource-lifecycle defect is **not live**. The verifier's `File => true` guards a path
+   nothing can reach, so it is neither load-bearing nor harmful.
+2. The equivalence `fast_clear_safe(T) == !requires_drop_glue(T)` is **not tested by `File` either**,
+   because `File` never reaches a `Vec`. So the hypothesised fourth predicate
+   (`is_trivially_discardable`) has **no motivating case** and is not introduced.
+3. Merging the two precise drop authorities is **no longer blocked by a safety risk**. What remains
+   is that `Core(File)`'s classification is untested by any program — an argument for resolving it
+   through the HostResource migration, not for keeping two authorities.
+
+**`File => true` stays** in the verifier: it costs nothing, and removing it would be a change with
+no evidence behind it in either direction.
+
+**Pinned by** `as4_vecclear_divergence::dev196_a_vec_of_core_file_cannot_be_lowered_at_all`, which
+fails loudly — naming the safety question — the day `Core(File)` starts lowering.
+
+
+## DEV-121 — REOPENED (owner ruling, 2026-08-08)
+
+**The 2026-08-07 "CLASS CLOSED" entry above is premature and is withdrawn.** No new DEV number:
+same class, still open.
+
+### The contradiction
+
+That entry declared the class closed while, in its own final paragraph, listing struct fields,
+indexed slots and non-binding values as uncovered. It promoted one claim into a larger one:
+
+```text
+what was proved     every known view-producing intrinsic is exercised, and the narrow
+                    INV-VALUE-REP-001 now runs at four binding positions
+
+what was claimed    the type -> runtime-representation defect class is closed
+```
+
+Those are not the same statement, and `WP-VALUE-REP-TOTAL` defines the class by the second.
+
+### What is actually enforced
+
+| | Function | Checks | Production callers |
+| --- | --- | --- | ---: |
+| the class's named mechanism | `interp::check_value_for_ty` | the total `Ty` → `Value` relation | **0** |
+| its only wrapper | `interp::check_local_value` | ditto, per local | **0** — `#[allow(dead_code)]` |
+| what runs | `interp::check_value_representation` | INV-VALUE-REP-001 only — a `&[T]`/`&str` binding must not hold owned `Vec`/`String` | 5 |
+
+`check_value_for_ty` is an **executable specification with no production caller**. `37f07ca` records
+that A4's enforcement attempt was reverted and the relation would stay unwired until callable-use
+totality existed; `WP-VALUE-REP-TOTAL` still says "no boundary is wired". AS3 has now removed that
+blocker, so the wiring is unblocked — not done.
+
+### What the narrow work is worth
+
+Kept, and reclassified. The producer audit and the extended `INV-VALUE-REP-001` are
+**defence-in-depth evidence**, not the class authority:
+
+```text
+total relation           semantic enforcement          (unwired — this is the class)
+view-producer inventory  producer-specific adversary   (real, and stays)
+```
+
+A producer/verifier relationship, not duplicate authority — provided the narrow rule stops being an
+independent *semantic* rule once the total one is wired.
+
+### Closure conditions
+
+1. Wire `check_value_for_ty` as the **one** production relation; do not add a third validator.
+2. **Inventory every value boundary first**, exact-set, in AS3's style: parameters, receivers,
+   returns, propagation, `let`/`match`/loop bindings, assignment, field writes, element/index
+   writes, aggregate fields, and inline values entering builtins and runtime operations.
+3. Every applicable boundary calls the total relation, with the expected `Ty` taken from
+   **checker-published** types and signatures — never reconstructed from the runtime value.
+4. Retire `check_value_representation` as an independent semantic rule: delete it after migrating
+   callers, or make it a trivial delegate. Campaign A must not exit with two `Ty`→`Value`
+   authorities.
+5. Remove `#[allow(dead_code)]` from the total path, so deadness is compiler-visible.
+6. Mutation-prove across **several producer classes** — owned/view, reference/pointee, function
+   value, aggregate/container — not just `String::bytes()`.
+7. An exact boundary-inventory test, so a new HIR value-storage or transfer form forces an explicit
+   decision instead of silently bypassing validation.
+
+**The warning that matters:** replacing the current five calls with `check_value_for_ty` and
+declaring victory would repeat the same mistake with a broader predicate. *The inventory of where
+values cross typed boundaries is as important as the relation itself.*
+
+### Effect
+
+AS3 exit criteria **#3 and #5 are both FAIL** until this closes. `CAMPAIGN-A-EXIT-REPORT.md` §3.1
+carries the detail; Campaign A's gate is held on this one item.
+
+## DEV-197 — two dispatch paths ran a callee body with its generic environment missing [CLOSED at creation, A4 boundary wiring, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — *implicit and explicit dispatch install the checker-selected
+  generic environment in the HIR oracle*.
+- **Defect, two paths:**
+  - `Res::AssociatedFn` — `Stack::identity<T>(6)` called `call_callable` with **no**
+    `push_callable_env`, unlike the `Res::Item` path beside it. The body ran with `T` unbound.
+  - **function values** — `let f: fn(Int32) -> Int32 = identity; f(41)` discarded
+    `FunctionValue::bindings`, which DEV-178 had put on the value *precisely because* a function
+    value's instantiation cannot be recovered from the call site (`Ty::Fn` cannot say which one
+    produced it). The body ran with `T` unbound.
+- **Why nothing observed it:** no boundary consulted the callee's declared type, so an unbound `T`
+  had nothing to be wrong against. Both bodies were `identity`-shaped and returned their argument
+  unchanged, so the missing environment could not alter the answer either.
+- **Found by:** wiring the **first** value boundary — `RepBoundary::Return`, checking a returned
+  value against `callable_types[body].ret`. Both defects fired on its first run.
+- **Repair:** the associated-fn path pushes `push_callable_env(callee, span)` like its neighbour;
+  the function-value path pushes `push_function_value_env(&callee.bindings, span)`, a new installer
+  for bindings that are already concrete and need no resolution.
+- **Evidence:** `--lib` 538, `three_engine_differential` 109, `mir_differential` 132,
+  `cross_package_generics`, `dev176_generic_callable_context`, `as3_callable_use_exactness`.
+- **Bearing on AS3 criterion 2:** that criterion was recorded PASS in the first exit report. It was
+  passing on the paths its tests covered; these two were not covered. The criterion is only sound
+  once the boundaries that *consume* the environment exist — which is DEV-121's wiring.
+
+## DEV-197 — UPDATE: a third site, in the class the audit flagged as high-risk
+
+Packet 1's migration found a third dispatch path executing a body with **no** generic environment:
+the **`Option`/`Result` combinators** (`map`, `and_then`, `map_err`, `unwrap_or_else`), which take a
+`Value::Function` and called the raw executor directly.
+
+Same violated invariant as the other two — *a callee body ran without its checker-selected
+environment* — so it extends DEV-197 rather than taking a new number.
+
+**Mutation-proved, unlike the first two.** With the combinators installing `InvocationEnv::Empty`
+instead of the function value's captured bindings, `Some(5).map(wrap)` on `fn wrap<T>(x: T) -> T`
+fails at the call. The environment is load-bearing there; this is not precautionary wiring.
+
+**Also found: a duplicate installer I had introduced.** `push_function_value_env`, added while
+wiring the Return boundary, did the same job as the pre-existing `push_captured_env`. Deleted;
+`InvocationEnv::Captured` carries the `FunctionValue` and installs through the original authority.
+Adding a second helper for an existing semantic job is exactly what AS4 spent its packets removing.
+
+## DEV-197 — UPDATE: six more sites, found by making the environment a required parameter
+
+Collapsing `call_user_method` into the invocation authority required every method call site to name
+its environment. Six of the nine **installed none at all**:
+
+```text
+eval_binary            operator dispatch (Eq)      NO ENVIRONMENT
+eval_binary            operator dispatch (Ord)     NO ENVIRONMENT
+call_qualified_core_trait                          NO ENVIRONMENT
+language_equal         container element Eq        NO ENVIRONMENT
+next_for_iterator      Iterator::next              NO ENVIRONMENT
+display_text/display_deep  Display::fmt            NO ENVIRONMENT
+```
+
+Every one executes a user body. All are paths AS3 Boundary 4 wired for **selection** and never for
+**environment** — the two were separate concerns and only one had an authority.
+
+Same violated invariant as the first three sites, so this stays DEV-197: *a callee body ran without
+its checker-selected environment*. Nine sites now, across three discovery events, each found by
+making something mandatory rather than by reading code:
+
+| Found by | Sites |
+| --- | --- |
+| wiring the `Return` boundary | associated functions, function values |
+| routing `call_callable` through the authority | `Option`/`Result` combinators |
+| requiring an environment parameter on method dispatch | the six above |
+
+Each is fixed by consuming the environment the checker already published, via `env_for_use` — one
+mapping from `GenericEnvironment` to `InvocationEnv`, so no consumer invents its own.
+
+**Why none produced a wrong answer.** These paths dispatch to `Display::fmt`, `Eq::eq`, `Ord::cmp`
+and `Iterator::next`, whose bodies rarely mention their own generic parameters. The environment was
+missing but unconsulted — the DEV-121 shape again, and the reason nine sites accumulated without a
+single failing test.
+
+## DEV-121 — Packet 1 addendum: the destructor receiver was a representation collision, not an exemption
+
+Packet 1 collapsed the destructor's private executor into the invocation authority. That exposed a
+disagreement the two executors had been keeping apart:
+
+- `Drop::drop(&mut self)` publishes a receiver of `&mut Self` — that is what `callable_types`
+  records, because it records the receiver *as the body binds it*.
+- Destruction holds an **owned** value, and the old destructor executor bound that owned value
+  directly to `self`.
+
+So the body's `self` was a `Value::Struct` where the published type said `Ty::Ref { mutable: true }`.
+Nothing observed it, because no boundary read the receiver — the DEV-121 shape exactly.
+
+Only three repairs exist, and two are wrong:
+
+1. exempt `Drop` from the receiver boundary — a hole in the invariant at the one place destruction
+   makes it hardest to reason about;
+2. let `&mut T` accept an owned `T` — that is not a narrower rule, it is the *deletion* of the
+   distinction DEV-121 exists to enforce, and it would silently re-permit the owned-`Vec`-as-`&[T]`
+   defect the class was opened for;
+3. **materialize the receiver.**
+
+**The repair.** `ReceiverSource` names where a body's `self` comes from before it is materialized —
+`None`, `Place { kind, place }`, or `OwnedForDrop(value)` — and the authority, not the caller, turns
+it into a binding:
+
+| Source | Binding | Rule |
+| --- | --- | --- |
+| `Place { Value, .. }` | `take_place` | DEV-034: consume the resolved place, no re-evaluation |
+| `Place { Ref \| RefMut, .. }` | `Value::Ref(place)` | DEV-070: a genuine borrow of the caller's place |
+| `OwnedForDrop(v)` | `Value::Ref(backing)` | the owned value is moved into temporary storage in the **caller's** frame, so `self` is a real `&mut Self` |
+
+The backing place is held by the authority and paired structurally with `BodyEpilogue::Destructor`,
+which reads the (possibly mutated) value back out of it — `Drop::drop` may replace fields, and the
+recursive field destruction that follows must see that. A `Destructor` epilogue reached without an
+owned receiver is an `internal` invariant failure, not a fallback: the earlier
+`unwrap_or(Value::Unit)` would have let a lost receiver erase the value and skip field destruction
+in silence.
+
+**Result:** the receiver boundary below passes for destructors with **no `Drop`-specific
+exception**, which is the test of whether the materialization is real or is an exemption in
+disguise.
+
+**Evidence:** `--lib` 538, `three_engine_differential` 109, `mir_differential` 132,
+`a3cd_generic_drop`, `c788_resource_lifecycle`, `c788_lifecycle_e2e`, `a11_host_resource`,
+`as4_property_adversaries`.
+
+## DEV-121 — Packet 2: the Receiver, Parameter and Propagation boundaries
+
+Three more of the eleven `RepBoundary` sites are wired, all in the invocation authority and all
+against `callable_types[body]` — the signature the checker published for the body being entered.
+
+**One lookup, three boundaries.** The signature was previously fetched at the return boundary only.
+It is now fetched once at the top of `execute_body`, before anything is bound, so a body cannot be
+checked on the way out but unchecked on the way in. A missing signature stays an `internal`
+invariant failure rather than a skip.
+
+| Boundary | Read against | Note |
+| --- | --- | --- |
+| `Receiver` | `signature.receiver` | the receiver *as the body binds it*: `Self` / `&Self` / `&mut Self` |
+| `Parameter` | `signature.params[i]` | replaces the `local_types` probe, which read the caller-visible local rather than the callee's declared contract |
+| `Propagation` | `signature.ret` | a `?` that leaves the body **is** the body's return value (§6.5 requires the error type to match) |
+
+`Propagation` mattered most: it was the one way out of a function that no boundary observed.
+`Return` covered explicit returns and block values; `?` bypassed it entirely.
+
+A published parameter count that disagrees with the callable's bound parameters is `internal` —
+A3b forms both from the same declaration, so they cannot legitimately differ.
+
+## DEV-198 — the published callee SELECTION was the one table field never grounded [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — dispatch installs the checker-selected generic environment — and
+  DEV-121's requirement that a published expected type be *concrete* at a value boundary.
+- **Defect:** `analyze` grounds every field of a published `CallableUse` — `environment`,
+  `signature.receiver`, `signature.params`, `signature.ret` — and copied `selection` verbatim. A
+  `CalleeSelection::Bound` carries three types: `self_ty`, `trait_args`, and the method's own
+  `method_args`.
+- **What leaked:** `t.to(1)` on `fn to<U>(&self, x: U) -> U`, called through a bound with **no**
+  turbofish. `check_trait_member_call` resolves `method_args` before returning, but the integer
+  literal that determines `U` is not defaulted until later — so the selection published
+  `Infer(TypeVarId(1))`. `specialize_bound_callable` then built an environment binding
+  `U -> Infer(1)`, and the boundary compared a runtime `Int` against an inference variable.
+- **Found by:** DEV-121's `Return` boundary, then again by `Parameter`. DEV-188's own test asserted
+  the *count* of published method arguments (1, correct) and could not see that the *type* was
+  unresolved.
+- **Repair:** `ground_selection`, an **exhaustive** match over `CalleeSelection` — `Static` and
+  `FunctionValue` carry no types and pass through, `Bound` grounds all three. Exhaustive so a
+  future variant carrying a type cannot be published ungrounded by omission.
+
+## DEV-199 — an associated-type projection was unresolvable at a runtime value boundary [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-121 — the expected type at a value boundary must be concrete.
+- **Defect:** `fn first<T: Holder>(t: T) -> T::Item` publishes a return type of
+  `Ty::Param("T::Item")`. The runtime environment binds `T`, not `T::Item`, so `substitute_ty` left
+  it alone and `concrete_runtime_ty` reported an unsubstituted parameter — on a program that is
+  correct, that MIR and native both execute, and that the checker fully resolved.
+- **Why it is a boundary defect and not a language limitation:** once `T` is concrete the projection
+  has exactly one answer, and the checker already computed it. `assoc_projections` — keyed by
+  (implementing nominal, associated name) — is built in Pass 1 and was simply never published.
+- **Repair:** publish `assoc_projections` in `TypeTables`, and give `concrete_runtime_ty` a second
+  step: substitute, then discharge projections. The base is looked up in the active generic frame,
+  its nominal selects the impl, and the checker's binding replaces the projection. A projection
+  whose base is *still* parametric is left alone, so `ty_contains_param` still reports it — an
+  unresolvable projection is a missing instantiation, not something to guess at.
+- **One authority, not a third one.** The oracle consults the checker's table rather than scanning
+  the impl set itself. MIR lowering already keeps its own `ProgramMeta::assoc_projections`; a third
+  scan in the interpreter is exactly the duplication AS4 spent its packets removing.
+- **Evidence:** `c62c_associated_types` 9/9, including `projection_inferred_from_argument` and
+  `projection_used_by_value`, both of which were failing on CI at `1ea5a8b`.
+
+## DEV-200 — `&mut [T]` refused the slice-view representation `&[T]` accepts [CLOSED at creation, 2026-08-08]
+
+- **Rule:** INV-VALUE-REP-001 / §6.4 — a reference type's runtime representation.
+- **Defect:** `value_matches_ty` answered `Ty::Ref { mutable: true, .. }` with a single line —
+  `kind == ValueKind::Ref` — while `shared_ref_matches` accepts **two** representations for
+  `&[T]`: `Value::Slice` (a view) and `Value::Ref`. `Value::Slice(place, lo, hi)` is a view *into a
+  place*; writing through it writes to that place, so it is exactly as much a reference as
+  `Value::Ref`, and it is what `&mut v[1..3]` produces.
+- **Consequence:** the `Parameter` boundary rejected `sentinel__10_slice_mutation_through_view`, a
+  correct program in the C6.5 corpus, as an oracle invariant failure.
+- **Why this is a repair and not a weakening:** the asymmetry was omission, not rule. The mutable
+  arm predates the slice-view representation. The widening is *narrow* — `ValueKind::Slice` is
+  admitted only when the pointee is `Ty::Slice(_)` — so `&mut T` for every other `T` still demands a
+  genuine `Ref`, and the owned-storage pairing DEV-121 was opened for remains refused.
+
+## AS3 Packet 1 — correction to the record
+
+`1ea5a8b` ("AS3 Packet 1 COMPLETE") was reported here on scoped local evidence and went to CI
+**red**: `fmt, clippy, test` failed on all three Tier-1 platforms, and `C6.4 tier-1 qualification`
+failed on Linux, with the three defects above (`projection_*`, the bound-method generic, and — once
+`Parameter` was wired — the slice view). The defects are real and pre-existed the boundaries that
+found them; the reporting was not. The evidence line for a packet is the CI run for its commit, not
+the suites chosen to run locally.
+
+## DEV-121 — Packet 3: one funnel for every local binding
+
+`let`, a `match` arm's pattern bindings, and **both** `for` forms each did their own
+`frame_mut().insert(local, Some(value))`. Two of the four checked anything.
+
+`bind_typed_local(local, value, span, boundary)` is now the only way a value comes to rest in a
+local: `check_local_value` against `local_types[local]`, then the insert. Each caller names its own
+`RepBoundary`, because "a value entered a local" is not actionable and which of the four is.
+
+**The finding: the USER-iterator `for` form checked nothing at all.** Two spellings of one loop
+boundary — a built-in iterable and `Iterator::next` — and only the built-in one was covered. Same
+shape as everything else this campaign has surfaced: the check was a thing a site could remember to
+do, so the site that forgot was indistinguishable from a site with nothing to check.
+
+A `let` with no initialiser is handled explicitly rather than skipped by accident. Definite
+assignment (§4) guarantees no read precedes the write, so an empty slot is the correct state.
+
+**Packet 7 fell out here.** With all four binding sites on the funnel, the narrow
+`check_value_representation` — the `&[T]`/`&str`-only rule — had no callers left, and is deleted.
+Its classification test now injects against `check_local_value`, the total relation: same
+injection, same `InternalInvariant` assertion, on the rule that is actually load-bearing.
+
+## DEV-121 — Packet 4: one funnel for every write into existing storage
+
+`Assignment`, `FieldWrite` and `ElementWrite` are wired, all in `write_place`, which already had
+exactly one caller. **Which write it is follows from the place's last projection**, not from the
+caller: no projection is an assignment, a trailing `Field` is a field write, and a trailing `Index`
+or `MapIndex` is an element write — a map entry is an element exactly as an indexed slot is, the two
+differing in how the position is found rather than in what the write means.
+
+**The earlier "no local to key on" framing was wrong.** The inventory had assumed a field or an
+indexed slot could not be checked because neither has a local. Both are named by an EXPRESSION, and
+`expr_types[lhs]` is the checker's answer for the target whatever the projection depth. A missing
+entry is `internal`: the checker types every expression it accepts, so an absent one means the
+tables and the tree disagree.
+
+## DEV-201 — an operator on a GENERIC impl published an empty environment [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — dispatch installs the checker-selected generic environment.
+- **Defect:** the operator publication wrote `environment: GenericEnvironment::Static(Vec::new())`
+  unconditionally. For `impl Eq for Point` that is correct — there is nothing to bind. For
+  `impl<T> Eq for W<T>` it is a body running with `T` unbound.
+- **The information was already there and thrown away.** `operator_impl_member` calls
+  `match_impl_type` to decide whether the impl applies at all, and discarded the substitution it
+  produced. So the publication had no way to say what `T` binds to even though the function that
+  chose the impl had just computed it.
+- **Found by:** DEV-121's `Receiver` boundary, which read `callable_types[body].receiver` and got
+  `&W<Param("T")>` with no `T` in scope — reported as a MISSED TRAP by `mir_differential`
+  (`generic_impl_eq_dispatch_agrees`), because the oracle failed where MIR, which monomorphises,
+  succeeded.
+- **Repair:** `operator_impl_member` returns the substitution; the publication builds its
+  environment with `impl_dispatch_bindings` — the **existing** builder, previously named
+  `display_impl_bindings`, renamed because it was never Display-specific — and publishes the
+  **instantiated** signature per AS3 Boundary 2 §3.4, so a consumer reads `&W<Int32>` rather than
+  the declaration's `&W<T>`. `Display` gained the same signature instantiation in the same change;
+  it already had the environment right, which is why only the operator path failed.
+- **Not a second builder.** Adding `operator_impl_environment` beside `display_impl_bindings` was
+  the first attempt and was withdrawn: two constructions of one list is the shape AS4 spent its
+  packets removing.
+
+## DEV-121 — Packet 5: the last boundary, and all eleven are wired
+
+`AggregateField` is wired in `eval_struct_lit`, against
+`aggregate_field_types[lit][field]` — a new published table holding each field's **declared** type,
+instantiated for that literal, recorded by the checker at the same point it unifies the initialisers
+against it.
+
+**Why not `expr_types[init]`.** That is the type of the expression that produced the value, so
+comparing the value against it would assert nothing — the tautology the inventory's type-source rule
+exists to forbid. It also does not exist for a shorthand field: `W { v }` has no initialiser
+expression. Keying the published map by field NAME covers shorthand with the same lookup.
+
+Both aggregate forms are covered — struct literals and struct-like enum variants — because both go
+through the same `check_field_initializers` call the publication sits beside.
+
+**State of the inventory: 11 of 11 `RepBoundary` variants `Wired`.** The executable pin in
+`dev121_boundary_inventory.rs` asserts the exact set, so this cannot drift from the code. Remaining
+before DEV-121's class can close: `RepBoundary::ExpressionResult` (Packet 6, the twelfth variant and
+the producer-side funnel at `expect_value`), the four-class mutation evidence, and AS3 #2's
+requalification.
+
+## DEV-121 — Packet 6: the producer side, and the twelfth boundary
+
+The ruling's closure conditions name a boundary the enum had no word for: **inline values entering
+builtins and runtime operations**. A value handed to `call_builtin` or a `RuntimeFn` never binds to
+anything, so none of the eleven DESTINATION boundaries could see it. The inventory recorded it as a
+gap rather than folding it into `Parameter` — which would have claimed coverage it did not have —
+precisely so that closing it would be a visible change and not a redefinition.
+
+`RepBoundary::ExpressionResult` is that word, and `expect_value` enforces it against
+`expr_types[expr]`. `expect_value` is the right site for two independent reasons: it is the funnel
+every produced value passes through (the census pinned 28 callers against 6 direct `eval_expr`
+sites, none of which is a boundary), and it is the one producer path that still carries the
+`ExprId`, without which there is no checker-published type to read.
+
+**A propagation is deliberately NOT checked here.** `Flow::Propagate` parks its value and hands back
+a placeholder `Unit` that the caller discards; the parked value's type is the enclosing function's
+return type, and `RepBoundary::Propagation` reads it against that at the body boundary. Checking it
+against the expression that produced it would compare it to the wrong type.
+
+**Defence in depth, not a second authority.** The producer check and all eleven destination checks
+consume the same `check_value_for_ty`. What the producer adds is coverage of values that never reach
+a destination at all.
+
+**12 of 12 `RepBoundary` variants are `Wired`.** `Class::Unwired` is now unconstructed — that is the
+result, not dead code, and it is kept because a new boundary must be classifiable as unwired before
+it is wired.
+
+## DEV-121 — class evidence: four producer mutations, four forcing boundaries [2026-08-08]
+
+Exit criterion 5 asks for a **class-level** evidence statement, not one regression case. Twelve
+wired boundaries are not that statement on their own: a boundary that never fires is
+indistinguishable from a boundary that is not running, and Packet 6 in particular found no defect
+while firing on every expression the interpreter evaluates.
+
+**The mutation is applied to a PRODUCER, never to `check_value_for_ty`.** Corrupting the predicate
+would only show that the predicate detects an artificial mismatch. Corrupting a producer shows that
+a real value, taking a real path, is stopped by the real funnel at the intended boundary.
+
+| Class | Producer mutated | Forcing boundary |
+| --- | --- | --- |
+| 1 owned/view | `String::as_str` emits the owned `String`; `Vec::as_slice` emits the owned `Vec` | `ExpressionResult` |
+| 2 reference | a `&self` receiver binds the pointee **by value** instead of `Value::Ref(place)` | `Receiver` |
+| 3 function value | a function item coerces to a non-function value | `ExpressionResult` |
+| 4 aggregate | a declared field receives a mis-represented value, injected *after* the producer boundary accepted it | `AggregateField` |
+
+Each test asserts three things, and the middle one is what makes it evidence rather than
+decoration:
+
+1. the witness program runs **clean unmutated** — a detection on an already-broken program proves
+   nothing;
+2. exactly one producer is mutated;
+3. the failure is `InternalInvariant` **and names the intended boundary** — a mutation caught by the
+   wrong wire is a failure, not a pass.
+
+### Two things the harness itself had to get right
+
+**A thread-local does not reach the interpreter.** The first version armed the mutation in a
+`thread_local!` and every mutation silently failed to arm — all five tests reported "NOTHING refused
+it", which reads exactly like five inert boundaries. `run` executes the program on a *spawned*
+thread with a larger stack (`on_interpreter_stack`), so the interpreter never saw what the test
+thread set. A process-global would have armed correctly and been worse: the harness runs tests in
+parallel, so an armed mutation would have corrupted whatever unrelated test was executing beside it.
+The mutation is therefore a field on the `Interpreter`, scoped to exactly the one execution under
+test, reached through a `#[cfg(test)]` `run_with_mutation`. **Nothing here compiles into a shipped
+compiler**, so there is no runtime switch that could corrupt a real build.
+
+**Class 2's first witness was wrong, and the relation was right to accept it.** `struct Holder { n:
+Int32 }` is `Copy`-eligible, and §6.4 licenses the bare-value form for a `Copy` pointee — copying it
+cannot consume, invalidate or destroy the referent, so the two representations are
+indistinguishable to any observation the oracle can make. The mutation was not a violation there.
+Only a non-`Copy` pointee (`struct Holder { name: String }`) makes the owned form observably wrong,
+which is what the class is about. Recorded because the failure looked like an inert boundary and was
+a correct acceptance.
+
+### Also fixed here: the missing-metadata escape inside a wired funnel
+
+`bind_typed_local` delegated to a helper that returned `Ok(())` when `local_types[local]` was
+absent. So a language-level `let`/`match`/`for` binding whose entry went missing would have been
+**skipped, silently, inside a wire the inventory reported as `Wired`** — structurally present,
+inert in exactly the case that matters. The funnel now looks the type up itself and treats absence
+as `InternalInvariant`; every caller is a language-level binding and the checker types all of them.
+
+The permissive helper had **no remaining callers, production or test**, and is deleted rather than
+renamed: a permissive path parked in the file is one a future funnel can pick up by accident.
+
+## DEV-202 — the method-call path installed the callee's environment twice [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2, and P6 of its requalification — the callee's environment is
+  installed by the authority, and is active for the callee's work and nothing else.
+- **Defect:** `call_method` chose the environment, **installed it**, and then passed it to
+  `call_user_method`, which routes through the invocation authority — which installs it again. Every
+  method call therefore pushed the callee's instantiation onto the generic frame stack twice.
+- **The redundancy is not the problem; the SCOPE is.** The outer guard was live while the CALLER's
+  receiver place was still being resolved and materialized. Caller-side work running under the
+  callee's instantiation is the same scope error P6 exists to prevent, running in the other
+  direction — and the outer install predates the authority, so nothing had reviewed its extent
+  since the extent changed.
+- **Why it produced no wrong answer:** the two installations push identical bindings, so a lookup
+  during the overlap resolves the same way it would have. It is a defect of the *architecture
+  claim*, not of any current output — which is exactly the class AS3 #2 was reopened to find, and
+  exactly why the requalification pins the number of installation points rather than asserting a
+  table has an entry.
+- **Found by:** the AS3 #2 structural pin `the_installer_is_the_single_environment_entry_point`,
+  which requires exactly one call to `install_invocation_env` and found two.
+- **Repair:** the call site chooses the environment; the authority installs it. That split is what
+  the authority was created for.
+
+## DEV-203 — an interpolated field consumed an expression result unchecked [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-121 / `RepBoundary::ExpressionResult` — an inline value entering a runtime operation
+  is read against `expr_types[expr]`.
+- **Defect:** `f"{expr}"` evaluated its non-place fields with a direct `self.eval_expr(*expr)` and
+  handed the value straight to the renderer. It never binds to a local, so no destination boundary
+  saw it; it never passed `expect_value`, so the producer boundary did not see it either. **The
+  only construct in Core v1 that was invisible to all twelve wires.**
+- **Why the census did not catch it:** the direct-`eval_expr` pin asserted `direct <= 8`, and there
+  were six. A bound with slack is not a census. It is now an exact count with every site classified
+  by name — funnel, checked consumer, or flow-through — so a seventh forces review.
+- **Repair:** the `Flow::Value` arm calls `check_expr_value`. The other arms are unchanged: control
+  flow leaving an interpolation carries no value that comes to rest there.
+- **Mutation-proved in both directions:** with the repair removed,
+  `an_interpolated_field_is_a_checked_expression_result` fails — `f"{s.as_str()}"` with the view
+  producer emitting owned storage rendered happily before, and is refused now.
+
+## DEV-204 — a missing instantiation silently produced a function value with no bindings [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-178 — a function value carries the instantiation it was created with, because
+  `Ty::Fn` records only the signature and cannot say which instantiation produced it.
+- **Defect:** `capture_function_value` answered *any* missing `callable_instantiations` entry with
+  `FunctionValue { item, bindings: Vec::new() }`. That is DEV-178's defect written as a fallback:
+  absence meant both "this function has no generics" and "the publication is missing", and the
+  second is unrecoverable downstream by construction.
+- **Repair:** the two meanings are separated by information already in hand — whether the item
+  *declares* generics. None: an empty binding list is semantically proven. Some: `InternalInvariant`.
+- **Behaviour-neutral on the whole suite**, which is the correct outcome and worth stating: no
+  reachable program today coerces a generic function without a published instantiation. This closes
+  a latent hazard rather than a live bug, and the hazard is the kind that only becomes reachable
+  once someone adds a coercion route.
+- **Found by:** the final audit's §5 fallback census, searching for
+  `FunctionValue { …, bindings: Vec::new() }` outside sites where emptiness is proven — §8 names
+  that construction explicitly as a thing to look for.
+
+## DEV-205 — `IOError::Other(msg)` bound a payload the checker never typed [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 — every boundary reads a checker-published type, and the published type is an
+  answer.
+- **Defect:** the builtin-variant arm of the pattern checker handled `Some`, `Ok` and `Err` and
+  nothing else. `IOError::Other(msg)` therefore never had its sub-pattern checked: the binding
+  received **no `local_types` entry at all**, and every use of it was published as `Ty::Error`.
+- **The program ran and printed the right answer.** The interpreter binds by position and does not
+  consult the tables to do it, so nothing observed the gap for as long as nothing read them. This is
+  the DEV-121 shape relocated into the checker: metadata that is wrong rather than absent, on a
+  program that works.
+- **Found by:** Packet 6's `ExpressionResult` boundary, on CI — `expected Error, found String`. It
+  was invisible to every local sweep because those sweeps were stopped before reaching
+  `phase4e_math_random_io`.
+- **Repair:** the arm now maps `(IOErrorOther, Ty::Core(IOError, _))` to the `String` payload the
+  constructor's own signature already declares.
+- **Forcing control, deliberately general rather than a regression pin:** `audit_published_types`
+  asserts that a program the checker accepts with **no diagnostics** publishes no `Ty::Error` in any
+  expression or local type, across eight witness families. Any future construct the checker accepts
+  without understanding fails there, whether or not it happens to execute correctly.
+
+## DEV-206 — an unsized slice type reaches a value boundary [CLOSED at creation, 2026-08-08]
+
+- **Rule:** INV-VALUE-REP-001 / §6.6 — a type's permitted runtime representations.
+- **Defect:** `v[0..2]` is published as `[Int32]` — the *unsized* slice type, not `&[Int32]` — and
+  Core v1 lets that expression be used directly (`println(values[0..2])` in the Gate 3 core-min
+  example). The relation had no arm for `Ty::Slice` as a standalone value type, so it refused the
+  only representation such an expression can have.
+- **Repair:** `Ty::Slice(_)` accepts `Value::Slice`, the place-backed view. Same reasoning as
+  DEV-200, and it does **not** weaken the pairing DEV-121 exists for: an owned `Value::Vec` behind
+  `[T]` stays refused.
+- **Recorded outside Campaign A:** whether the checker *should* publish `&[T]` for a range index is
+  a language-semantics question. It changes what the expression means, not whether the oracle's
+  representation of it is valid, so it is not a Campaign A invariant and is not resolved here.
+- **Found by:** Packet 6's `ExpressionResult` boundary, on CI, via `gate3_execution`.
+
+## DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLOSED, owner ruling 2026-08-08]
+
+**The first two diagnoses were wrong, and both are recorded because each would have removed the
+symptom by deleting a rule stated on purpose.**
+
+The language model is not in question:
+
+```text
+v[0..2]    : [T]     an unsized PLACE expression
+&v[0..2]   : &[T]    the runtime-capable slice view
+```
+
+- **Withdrawn repair 1** — widen the relation so `Ty::Slice` accepts `Value::Slice`. That conflates
+  the unsized pointee type with a runtime view and weakens exactly the distinction DEV-121 protects.
+  `unsized_and_non_runtime_types_permit_nothing` states the rule deliberately, alongside the
+  identical one for `str`.
+- **Withdrawn repair 2** — publish `&[T]` for a range index. The indexing expression *is* a place of
+  unsized type; borrowing it is what produces the reference. The change made `&v[0..2]` a double
+  reference and broke two lib tests, five differential cases and Gate 3. That breakage is expected,
+  not evidence.
+
+**The actual defect was in `Display` eligibility, whose polarity was reversed:**
+
+| Type | Before | After |
+| --- | --- | --- |
+| `[T]` | Display **accepted** | rejected — unsized, never a value |
+| `&[T]` | Display **rejected** | accepted iff `T` is displayable |
+| `[T; N]` | accepted | accepted — an array *is* a value |
+
+`[T]` and `[T; N]` shared one arm, which is how the unsized form was blessed. Separating them is
+the whole repair. `&mut [T]` is deliberately **not** broadened: DEV-206 is the `[T]`/`&[T]`
+contradiction, and nothing in the standard rules currently implies the exclusive form.
+
+The fix is in the canonical eligibility predicate, not in `println` — PRINT-DISPLAY-001 says
+printing is ordinary `Display` resolution, not a syntax hook, so interpolation and every other
+`Display` consumer inherit the same answer.
+
+**Corpus edit, recorded so AS3 #4's evidence does not look like the corpus silently moved.**
+`examples/gate3/05_core_min.stark` line 12: `println(values[0..2])` → `println(&values[0..2])`. The
+example encoded an invalid program that was accepted only because of this defect; the new
+representation boundary is what exposed it. Output is unchanged (`[40, 2]`).
+
+**Spec clarification** (not a semantic change): PRINT-DISPLAY-001 gains clause 10, stating that a
+slice is observed through a reference, that `&[T]` has the standard slice `Display` for a
+displayable `T`, and that bare `[T]` does not. Generated spec regenerated.
+
+**Evidence:** `dev206_slice_display` — 7 cases: bare rejected (naming `[Int32]`), borrowed accepted,
+bound-then-printed accepted, non-`Display` element still rejected, `Display` element dispatched,
+borrowed array slice, and a sized array still printable by value. The fourth is the control that
+stops this being "every slice is now printable".
+
+## DEV-207 — a slice view rendered structurally, ignoring the published Display plan [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 Boundary 4 — the engine consumes the checker's published `Display` selection; there
+  is no structural fallback (PRINT-DISPLAY-001 clause 9).
+- **Defect:** `display_text`'s composite list omitted `Value::Slice`, so a slice fell through to
+  `format_runtime_value` — the structural debug form. A `struct X` with its own `Display` printed
+  `{n: 1}` instead of running `X::fmt`. The checker had published `DisplayPath([SliceElement])` for
+  the position all along; nothing consumed it. `display_deep` had no `Value::Slice` arm either.
+- **Why it was unreachable until now:** `&[T]` was refused by `Display` eligibility outright, and
+  bare `[T]` was accepted *and* rendered structurally — so the same defect was present and could not
+  be observed through a correct program. DEV-206's repair made the position reachable and the gap
+  immediately visible.
+- **Repair:** a slice is routed into the plan walk before the composite block, not added to it — a
+  slice BORROWS its elements, so there is no owned composite to promote and nothing for the caller
+  to drop. `display_deep` gains a `Value::Slice` arm that reads the base's elements and renders each
+  through `DisplayStep::SliceElement`.
+- **Evidence:** `a_slice_of_display_elements_is_accepted` asserts `[x]`, not `[{n: 1}]`.
+
+## Campaign A forcing property — a place-only type may not escape into a value context [2026-08-08]
+
+Owner ruling, 2026-08-08. DEV-121 asks *given a valid runtime type `T`, does `V` represent it*;
+DEV-206 asked the question one step upstream — *should `T` have been allowed to reach a value
+boundary at all*. Publishing `[T]` for `v[0..2]` is **correct**; letting the bare place escape into
+`println(...)` is not.
+
+```text
+expr_types[expr] = [T]
+        ├── &expr                    legal place -> reference conversion
+        ├── assignment / projection  legal place use
+        └── println(expr)            value required; [T] has no representation
+```
+
+**Derived, never enumerated.** `interp::ty_is_runtime_representable(ty, copy_items)` probes the
+canonical relation with every `ValueKind`: "no representation satisfies this type" is the same
+semantic decision the oracle makes at every boundary. A second list of runtime-representable types
+beside `value_matches_ty` is exactly the duplicate authority this campaign removed.
+
+To make the relation callable by both consumers, `value_matches_ty` and `shared_ref_matches` were
+lifted out of `Interpreter` into free functions parameterised by the Copy set — the `&self`
+receiver was never carrying anything else. Behaviour-neutral (`--lib` 558, `mir_differential` 132).
+
+**A checker diagnostic was written first and WITHDRAWN.** It could not fire: every value context
+already rejects place-only types, through four *different* rules — unification for a user call, the
+unsized-local rule for `let`, `Display` eligibility for `print`, and the interpolation check.
+Shipping an unreachable diagnostic would be speculative machinery, and the audit's own scope rule
+forbids new abstractions without an identified bypass.
+
+So the forcing function is the executable property `audit_value_context_representability`: every
+value context is listed, each must **reject the place-only form and accept the reference form**,
+and the `str` case pins that the rule is about the unsized *class* rather than slices. What was
+missing was never the behaviour — it was anything comparing those four rules against each other or
+against the relation. DEV-206 is the proof that mattered: one of the four had the rule backwards.
+
+## DEV-208 — interpolation stripped the reference that makes a slice a value [CLOSED at creation, 2026-08-08]
+
+- **Rule:** PRINT-DISPLAY-001 — printing is ordinary `Display` resolution, so every consumer
+  inherits one answer.
+- **Defect:** the interpolation check tests the type with references stripped. That is right for
+  `fn render<T: Display>(v: &T)` — `Display::fmt` borrows anyway (STD-FORMAT-001), so a reference to
+  a displayable type is displayable. It is wrong for `&[T]`: the pointee is **unsized**, the
+  reference is not incidental, and stripping it turns the one displayable spelling into the one
+  that is not a value at all. After DEV-206 repaired `println`, `f"{&v[0..2]}"` was still rejected.
+- **Same defect, second consumer.** Both call `type_is_displayable`, so the predicate was already
+  shared; the *stripping* is where they diverged. Repaired by not stripping a reference whose
+  pointee is unsized.
+- **Found by:** the value-context property's control — the half that requires every context to
+  ACCEPT the reference form. Without that direction the property would have been satisfied by
+  rejecting slices everywhere, and this defect would have been invisible.
+
+## DEV-209 — a prelude `Option`/`Result` payload was not a place [CLOSED, owner ruling 2026-08-08]
+
+- **Rule:** PAT-BIND-001 — when a scrutinee is read through a reference, a binding to a non-`Copy`
+  component receives `&C`, borrowing the component **in place**; the referent is never moved. The
+  rule is **uniform** over variant payloads, struct fields and tuple elements.
+- **Defect:** the checker published `&String` for `match *r { Some(s) => … }`; the oracle bound an
+  owned `String` — moving out of a borrow. The user-enum equivalent was correct, so this was the
+  prelude path being the poor relation of the user path, the same shape as DEV-205.
+- **Not a limitation to accept, and not the program's fault.** MIR executes the same program and
+  prints correctly, so the **oracle was the outlier**. The old comment recorded the narrowing
+  deliberately — a `Box<Value>` payload has no `Projection` to name — and that reasoning was sound
+  only while nothing compared the two answers.
+- **Three resolutions were considered and two rejected by owner ruling:** rejecting at the checker
+  would narrow the *language* to fit one engine's value model; a named oracle limitation would make
+  a first-party package oracle-ineligible over one missing projection. Neither is proportionate when
+  the feature is normative, the checker supports it, MIR supports it, and the repair is local.
+- **Repair:** the payload is slot-backed, exactly like every other component.
+
+```text
+Some / Ok / Err
+ └── payload slot
+      ├── Some(Value)   live
+      └── None          moved out
+```
+
+  `Projection::VariantPayload(n)` names it — deliberately **not** `Index(0)`, because `Index`
+  carries bounds-trap classification and an absent payload behind a matched discriminant is an
+  invariant violation, not an index trap.
+
+- **One discipline for 84 migrated sites, not 84 opinions.** `require_live_payload` for any
+  operation needing a complete `Some`/`Ok`/`Err` — an empty slot there is `InternalInvariant`,
+  because the ownership checker is what prevents reading moved storage, and inventing a runtime
+  "use of moved value" category would describe a compiler defect as a language outcome.
+  `take_payload`/`own_payload` only for operations that genuinely move: `?`, `unwrap`,
+  `unwrap_or`, consuming combinators, owned pattern bindings, destruction.
+- **A forcing function fired mid-migration:** adding the projection broke `write_place`'s exhaustive
+  boundary match, which would not compile until a payload write was classified. It is `FieldWrite`
+  — a positionally named component of an aggregate, not an element of a runtime-sized container.
+- **Evidence:** `dev209_prelude_payload_place`, 13 cases — borrow semantics for `Some`/`Ok`/`Err`,
+  the referent surviving the match, `Copy` payload still by value, an exclusive source still binding
+  shared, prelude/user-enum **parity** for both shapes, consumption through
+  `unwrap`/`unwrap_or`/`map`/`?`/owned match, `Display` for all four shapes, and lifecycle:
+  destroyed exactly once, a moved payload not destroyed twice, a borrowed payload still destroyed by
+  its owner.
+- **Mutation control:** restoring the old by-value fallback reproduces
+  `expected &String, found String` at `MatchBinding`; restoring the repair returns all 13 to green.
+- **Application witnesses left unchanged.** `stark-url` is 20/20 and the external sample suite's
+  `pkg/05-data-modelling` runs again. Rewriting valid code to avoid a compiler defect would turn
+  "an application exposed a missing capability" into "an application learned a workaround".
+
+## DEV-121 — CLOSED (owner ruling, 2026-08-08)
+
+Reopened on 2026-08-07 because the first closure was premature: it proved that every known
+view-producing intrinsic was exercised and that a *narrow* rule ran at four binding positions. That
+is a regression case, not a class.
+
+The class statement is now this:
+
+| Closure claim | Evidence |
+| --- | --- |
+| one canonical `Ty` → `Value` relation | `value_matches_ty`, exhaustive with no permissive wildcard; the narrow `check_value_representation` is **deleted**, not merely unused |
+| 12 of 12 runtime boundaries wired | `dev121_boundary_inventory`, whose progress pin asserts the exact set |
+| an exact-set forcing inventory | `classify` is exhaustive over `RepBoundary`; a new variant does not compile until it is classified |
+| no permissive typed-local metadata escape | `bind_typed_local` looks up `local_types` itself; absence is `InternalInvariant` |
+| producer-side coverage | `RepBoundary::ExpressionResult` at `expect_value`, with the direct-`eval_expr` census exact and every site named |
+| owned/view mutation | `String::as_str` / `Vec::as_slice` emitting owned storage → refused at `ExpressionResult` |
+| reference mutation | a `&self` receiver binding the pointee by value → refused at `Receiver` |
+| function-value mutation | a function item coercing to a non-function → refused at `ExpressionResult` |
+| aggregate mutation | a declared field receiving a mis-represented value → refused at `AggregateField` |
+| metadata-removal mutations | deleting any of the five published tables → `InternalInvariant` |
+
+Each mutation modifies a **producer**, never the predicate: corrupting `check_value_for_ty` would
+only show that the predicate detects an artificial mismatch. Each requires the witness to run clean
+unmutated, and each requires the failure to **name the intended boundary** — a mutation caught by
+the wrong wire is a failure, not a pass.
+
+**What the class cost to close, stated because it is the useful part of the record.** Wiring the
+boundaries found DEV-197 (nine dispatch sites), DEV-198, DEV-199, DEV-200, DEV-201, DEV-202,
+DEV-203, DEV-204, DEV-205, DEV-206, DEV-207, DEV-208 and DEV-209. None changed a visible answer
+before it was found. That is the defect class DEV-121 named: metadata and representation
+disagreeing on programs that work.
+
+## DEV-197 — CLASS CLOSED (2026-08-08)
+
+*"A callee body ran without its checker-selected generic environment."* Nine sites across three
+discovery events, each found by making something mandatory rather than by reading code — wiring the
+`Return` boundary, routing `call_callable` through the authority, and making the environment a
+required parameter of method dispatch.
+
+Closed on the AS3 #2 requalification: seven dispatch classes (free generic function, generic
+associated function, generic inherent method, operator into a generic impl, bound trait dispatch,
+function value, nested generic call), each proved by **removing** the environment and requiring the
+run to fail — with the mutation asserted to have been *reached*, and every witness answering
+`size_of::<T>()` so the instantiation is load-bearing. Structural pins hold the shape: one body
+executor, one caller of the raw executor, one environment installer, and an exhaustive
+`InvocationEnv` match.
+
+DEV-201 and DEV-202 were found after the class was believed closed, both by the pins rather than by
+behaviour. They are recorded under their own numbers because each was a distinct defect, but they
+are the same shape, and their discovery is the reason the requalification pins installation points
+instead of asserting that a table is populated.
+
+## DEV-210 — the borrow checker identified `Drop` by spelling, not identity [CLOSED at creation, 2026-08-08]
+
+- **Rule:** CD-379 — a core trait is satisfied by RESOLVED IDENTITY. A user trait merely *named*
+  like a core one does not satisfy it.
+- **Defect:** `borrowck::local_has_drop` scanned the impl set and asked whether the written trait
+  name `.ends_with("Drop")`. So `impl MyDrop for S` made `S` "implement `Drop`", and a legal partial
+  move out of one of its fields was refused with E0100. **Valid Core rejected because a user trait's
+  name ended in four particular letters.**
+- **Three answers existed** to "does this nominal have a user destructor": the interpreter's (by
+  `Res::CoreTrait(Drop)` — correct), MIR/native's `TypeContext::drop_impls` (correct), and this one.
+- **The repair was not to fix the string test.** `copy_eligible_types` already computed exactly this
+  set, by identity, and kept it private — so the borrow checker had written a second, weaker answer
+  to a question the checker was already answering correctly. `nominals_with_destructor` is now
+  published; `copy_eligible_types` consults it rather than repeating the scan.
+- **Evidence:** `as4_destructor_authority` — a real destructor still refuses the move (the control),
+  no destructor permits it, `MyDrop` and `DropLike` do not count, the published set contains exactly
+  the nominal that declares a destructor, and enums are covered.
+
+## DEV-211 — a matched component could move out of a `Drop` nominal [CLOSED at creation, 2026-08-08]
+
+- **Rule:** OWN-PARTIAL-001 — *"Moving a field from a type that implements `Drop` is prohibited,
+  because its destructor requires the complete value."*
+- **Defect:** `match e { E::A(s) => … }` on an owned `impl Drop` enum was **accepted**, and the
+  destructor then never ran: PAT-DROP-001 destroys the *unbound* components, so decomposing left
+  nothing to run the type's own `Drop`.
+- **Both engines agreed**, so this was a front-end conformance defect rather than an engine
+  divergence. The checker had the rule for struct fields (`local_has_drop`, at a projection move)
+  and never applied it to a matched component.
+- **Repair:** `reject_moves_out_of_drop_scrutinee`, a sibling of the existing
+  `reject_moves_out_of_borrow` walk — same prohibition, different reason, so the diagnostics can
+  each say what they mean rather than sharing a mode flag.
+- **Blast radius measured before implementing:** no first-party package uses `impl Drop`; three
+  sample files do, none in this shape.
+- **Evidence:** `as4_hostile_combinations` — the move is refused, and a `Copy` payload of the same
+  enum still matches, so the rule does not read as "cannot match a `Drop` enum".
+
+## DEV-212 — a `match` skipped a `Drop` nominal's own destructor [CLOSED, 2026-08-08]
+
+- **Rule:** PAT-DROP-001 / OWN-PARTIAL-001 — a value consumed by a match is destroyed exactly once,
+  and a type with its own destructor requires the complete value.
+- **Defect:** `match e { E::A(n) => … }` on an `impl Drop` enum with a **`Copy`** payload runs the
+  arm and **never runs the destructor**. Nothing moves out, so the value is complete; decomposing it
+  into components is what skips the nominal's own `Drop`. Present in **both** HIR and MIR.
+- **Attempted and withdrawn.** Destroying the value whole in `drop_unbound` caused a DOUBLE drop:
+  the guard ran before the `Binding` arm and destroyed components that had already moved into their
+  bindings. Reordering it after that check fixed the HIR side cleanly — `--lib` green, destructor
+  running. The matching MIR change (`drop_whole_scrutinee_at_arm_end` in place of
+  `consume_unbound_leaves`) did **not** take effect, and both halves were withdrawn rather than
+  leave the two engines disagreeing.
+- **The MIR half was in the wrong function**, and that is the finding worth keeping. It was written
+  into `lower_arms_consuming`; an instrumented probe printed **nothing**, which revealed that enum
+  matches take their own lowering route — `lower_enum_match` → `consume_variant_payload`. Two
+  match-lowering paths exist, and a fix applied to one of them silently does nothing to the other.
+  A test would not have found this: the code compiled, ran, and changed no behaviour.
+- **Repair, both engines.** HIR: `drop_unbound` destroys a value whose nominal has a destructor
+  whole, guarded AFTER the `Binding` check. MIR: `lower_enum_match` binds the pattern and registers
+  a whole-scrutinee arm-end drop instead of consuming the payload piecewise.
+- **Evidence:** `a_copy_payload_of_a_drop_enum_still_runs_the_destructor` requires HIR and MIR to
+  agree on `7\ndtor\n`, alongside the DEV-211 case asserting the move is refused — so the pair
+  distinguishes "destructor runs" from "cannot match a `Drop` enum at all".

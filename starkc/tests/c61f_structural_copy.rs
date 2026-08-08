@@ -53,7 +53,7 @@ fn analyze(tag: &str, src: &str) -> typecheck::TypeCheckResult {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    typecheck::analyze(&hir, file)
+    typecheck::analyze(&hir)
 }
 fn errors(tag: &str, src: &str) -> Vec<String> {
     analyze(tag, src)

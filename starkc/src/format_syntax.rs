@@ -72,7 +72,7 @@ pub fn scan_format_literal(
                     diags.push(
                         Diagnostic::error(
                             "unterminated escape sequence",
-                            Span::new(start as u32, hi as u32),
+                            Span::in_source(body.source, start as u32, hi as u32),
                         )
                         .with_code("E0218"),
                     );
@@ -95,7 +95,7 @@ pub fn scan_format_literal(
                         diags.push(
                             Diagnostic::error(
                                 "invalid escape sequence",
-                                Span::new(start as u32, i as u32),
+                                Span::in_source(body.source, start as u32, i as u32),
                             )
                             .with_code("E0218"),
                         );
@@ -115,7 +115,7 @@ pub fn scan_format_literal(
                 diags.push(
                     Diagnostic::error(
                         "unmatched '}' in an interpolated string",
-                        Span::new(i as u32, i as u32 + 1),
+                        Span::in_source(body.source, i as u32, i as u32 + 1),
                     )
                     .with_code("E0218")
                     .with_label("write '}}' for a literal closing brace"),
@@ -127,7 +127,7 @@ pub fn scan_format_literal(
                 if !literal.is_empty() {
                     segments.push(RawSegment::Literal {
                         text: std::mem::take(&mut literal),
-                        span: Span::new(literal_start as u32, i as u32),
+                        span: Span::in_source(body.source, literal_start as u32, i as u32),
                     });
                 }
                 let field_start = i;
@@ -135,7 +135,7 @@ pub fn scan_format_literal(
                     diags.push(
                         Diagnostic::error(
                             "unterminated interpolation field",
-                            Span::new(field_start as u32, hi as u32),
+                            Span::in_source(body.source, field_start as u32, hi as u32),
                         )
                         .with_code("E0218")
                         .with_label("expected a closing '}'"),
@@ -145,13 +145,13 @@ pub fn scan_format_literal(
                 let inner_lo = i + 1;
                 let colon = find_spec_colon(src, inner_lo, field_end);
                 let expr_hi = colon.unwrap_or(field_end);
-                let expr_span = Span::new(inner_lo as u32, expr_hi as u32);
+                let expr_span = Span::in_source(body.source, inner_lo as u32, expr_hi as u32);
 
                 if file.src[inner_lo..expr_hi].trim().is_empty() {
                     diags.push(
                         Diagnostic::error(
                             "empty interpolation field",
-                            Span::new(field_start as u32, field_end as u32 + 1),
+                            Span::in_source(body.source, field_start as u32, field_end as u32 + 1),
                         )
                         .with_code("E0218")
                         .with_label("write the expression to interpolate between the braces"),
@@ -162,7 +162,8 @@ pub fn scan_format_literal(
                 let spec = match colon {
                     None => FormatSpec::default(),
                     Some(colon) => {
-                        let spec_span = Span::new(colon as u32 + 1, field_end as u32);
+                        let spec_span =
+                            Span::in_source(body.source, colon as u32 + 1, field_end as u32);
                         match parse_format_spec(&file.src[colon + 1..field_end], spec_span) {
                             Ok(spec) => spec,
                             Err(diagnostic) => {
@@ -176,7 +177,7 @@ pub fn scan_format_literal(
                 segments.push(RawSegment::Field {
                     expr_span,
                     spec,
-                    span: Span::new(field_start as u32, field_end as u32 + 1),
+                    span: Span::in_source(body.source, field_start as u32, field_end as u32 + 1),
                 });
                 i = field_end + 1;
                 literal_start = i;
@@ -194,7 +195,7 @@ pub fn scan_format_literal(
     if !literal.is_empty() {
         segments.push(RawSegment::Literal {
             text: literal,
-            span: Span::new(literal_start as u32, hi as u32),
+            span: Span::in_source(body.source, literal_start as u32, hi as u32),
         });
     }
     // LIMIT-FMT-SEGMENTS, checked ONCE over the finished list rather than after each field.
@@ -709,13 +710,17 @@ mod tests {
     use super::*;
 
     fn spec(text: &str) -> Result<FormatSpec, String> {
-        parse_format_spec(text, Span::new(0, text.len() as u32)).map_err(|d| d.message.clone())
+        parse_format_spec(
+            text,
+            crate::source::registered_for_test("fmt.stark", text).span(0, text.len() as u32),
+        )
+        .map_err(|d| d.message.clone())
     }
 
     fn scan(source: &str) -> Result<Vec<RawSegment>, Vec<String>> {
         // `source` is the literal BODY, as it appears between the quotes.
-        let file = SourceFile::new("t", source.to_string());
-        let body = Span::new(0, source.len() as u32);
+        let file = crate::source::registered_for_test("t", source);
+        let body = file.span(0, source.len() as u32);
         scan_format_literal(&file, body).map_err(|ds| ds.into_iter().map(|d| d.message).collect())
     }
 

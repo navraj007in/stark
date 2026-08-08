@@ -18,7 +18,6 @@ use crate::analysis::{SourceId, SourceMap, SourceProvenance};
 use crate::source::{SourceFile, Span};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
@@ -56,95 +55,24 @@ pub struct ResolvedLocation {
     pub column: usize,
 }
 
-/// Why a span could not be located in the source it was offered against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpanResolutionError {
-    /// `hi < lo`. A span cannot end before it starts.
-    Inverted,
-    /// The span runs past the end of this source — the shape that produced DEV-122's phantom
-    /// location, where a dependency's span was measured against the consumer's line table.
-    PastEnd { source_len: usize },
-    /// The offset resolved to a line, but to a column outside that line's text. Reachable when a
-    /// line table and its source disagree, which is what a stale or foreign table looks like.
-    ColumnOutsideLine { line: usize },
-}
-
-impl SpanResolutionError {
-    /// The rendered explanation. Deliberately verbose and unmistakably internal: this text appearing
-    /// in output means a diagnostic reached rendering without knowing its own source, which is a
-    /// compiler defect to be reported, not a user error to be interpreted.
-    pub fn render(self, source_name: &str, span: Span) -> String {
-        let detail = match self {
-            SpanResolutionError::Inverted => "span is inverted (hi < lo)".to_string(),
-            SpanResolutionError::PastEnd { source_len } => {
-                format!("source is {source_len} bytes")
-            }
-            SpanResolutionError::ColumnOutsideLine { line } => {
-                format!("resolved column falls outside line {line}")
-            }
-        };
-        format!(
-            "internal diagnostic error: span {}..{} does not belong to selected source \
-             `{source_name}` ({detail}); location suppressed — DEV-122",
-            span.lo, span.hi
-        )
-    }
-}
-
-/// **DEV-122: the one checked path from a span to a location.**
+/// A span's location in the source it names.
 ///
-/// Every renderer — compile-time diagnostics and runtime trap reporting alike — resolves through
-/// here. That unification is the point of the function, not a convenience: the defect that
-/// motivated it was in the RUNTIME path, and a guard installed only on the compile-time path would
-/// have missed the half that actually bit.
+/// **AS1b-ii-d: total.** DEV-122's interim guard lived here — three checks (inverted, past-end,
+/// column-outside-line) that detected a span measured against the WRONG source and suppressed the
+/// location rather than print a convincing wrong one. Those checks are gone because the condition
+/// they detected is no longer representable: a span carries its source, `render` selects that
+/// source, and no span indexes a file it does not name.
 ///
-/// # Why each check exists
-///
-/// `SourceFile::line_col` CLAMPS an out-of-range offset to end-of-file. It cannot fail, so a span
-/// measured against the wrong source does not produce an error — it produces a well-formed,
-/// plausible, WRONG location. A 21-line consumer was told a fault lay at line 31 of itself, and a
-/// reader has no way to distinguish that from a real location. That is worse than no location,
-/// because it names a specific place to go and look.
-///
-/// So this returns `Err` rather than a best guess, and it **never** falls back to another source:
-/// substituting a different file is precisely how a dependency's span came to be rendered against
-/// the root in the first place.
-///
-/// It never panics. A diagnostic path that can abort turns a reportable defect into a lost one.
-///
-/// **This is an interim guard, not the architecture.** The platform correction is that every span
-/// carries a `SourceId` and resolution is total by construction, filed as its own work package.
-/// Until then this makes an unattributed span *visible* rather than *convincing*.
-pub fn resolve_span(
-    source: &SourceFile,
-    span: Span,
-) -> Result<ResolvedLocation, SpanResolutionError> {
-    if span.hi < span.lo {
-        return Err(SpanResolutionError::Inverted);
-    }
-    let source_len = source.src.len();
-    // `>` not `>=`: an offset exactly at end-of-file is the legitimate "just past the last byte"
-    // position a zero-width span at EOF uses.
-    if span.lo as usize > source_len || span.hi as usize > source_len {
-        return Err(SpanResolutionError::PastEnd { source_len });
-    }
+/// `line_col` clamps, so given the right source this cannot fail.
+pub fn resolve_span(source: &SourceFile, span: Span) -> ResolvedLocation {
     let (line, column) = source.line_col(span.lo);
-    // The line table and the text must agree. A column beyond the line's length means they do not,
-    // which is what a foreign or stale table looks like from here.
-    if line == 0 || line > source.line_count() {
-        return Err(SpanResolutionError::ColumnOutsideLine { line });
-    }
-    if column == 0 || column > source.line_text(line).len() + 1 {
-        return Err(SpanResolutionError::ColumnOutsideLine { line });
-    }
-    Ok(ResolvedLocation { line, column })
+    ResolvedLocation { line, column }
 }
 
 #[derive(Debug, Clone)]
 pub struct RelatedDiagnostic {
     pub message: String,
     pub span: Span,
-    pub file: Arc<SourceFile>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,7 +87,6 @@ pub struct Diagnostic {
     pub label: String,
     pub helps: Vec<String>,
     pub notes: Vec<String>,
-    pub file: Option<Arc<SourceFile>>,
     pub related: Vec<RelatedDiagnostic>,
     pub rule_id: Option<String>,
     pub deviation_id: Option<String>,
@@ -175,7 +102,6 @@ impl Diagnostic {
             label: String::new(),
             helps: Vec::new(),
             notes: Vec::new(),
-            file: None,
             related: Vec::new(),
             rule_id: None,
             deviation_id: None,
@@ -191,16 +117,10 @@ impl Diagnostic {
             label: String::new(),
             helps: Vec::new(),
             notes: Vec::new(),
-            file: None,
             related: Vec::new(),
             rule_id: None,
             deviation_id: None,
         }
-    }
-
-    pub fn with_file(mut self, file: Arc<SourceFile>) -> Self {
-        self.file = Some(file);
-        self
     }
 
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
@@ -223,16 +143,12 @@ impl Diagnostic {
         self
     }
 
-    pub fn with_related(
-        mut self,
-        file: Arc<SourceFile>,
-        span: Span,
-        message: impl Into<String>,
-    ) -> Self {
+    /// AS1b-ii-d: no file parameter. `span` names its own source, and a caller that passed a file
+    /// disagreeing with the span was stating two things where only one can be true.
+    pub fn with_related(mut self, span: Span, message: impl Into<String>) -> Self {
         self.related.push(RelatedDiagnostic {
             message: message.into(),
             span,
-            file,
         });
         self
     }
@@ -249,32 +165,31 @@ impl Diagnostic {
 
     /// Render this diagnostic against its source file, in the normative
     /// format. The result always ends with a newline.
-    pub fn render(&self, default_file: &SourceFile) -> String {
-        let file = self.file.as_deref().unwrap_or(default_file);
-        // DEV-122: resolve through the one checked path. CD-306's inline lower-bound backstop is
-        // superseded here rather than duplicated — `resolve_span` is now the only place that
-        // decides whether a span is locatable, and it is shared with runtime trap rendering.
-        let (line, col) = match resolve_span(file, self.span) {
-            Ok(resolved) => (resolved.line, resolved.column),
-            Err(error) => {
-                let mut out = String::new();
-                match &self.code {
-                    Some(code) => {
-                        let _ = writeln!(
-                            out,
-                            "{}: [{}] {}",
-                            self.severity.heading(),
-                            code,
-                            self.message
-                        );
-                    }
-                    None => {
-                        let _ = writeln!(out, "{}: {}", self.severity.heading(), self.message);
-                    }
-                }
-                let _ = writeln!(out, "  --> {}", error.render(&file.name, self.span));
-                return out;
-            }
+    /// AS1b-ii-d: the source is the one the SPAN NAMES. There is no default and no override.
+    ///
+    /// This used to be `self.file.as_deref().unwrap_or(default_file)` — two authorities, with a
+    /// caller-supplied file winning over the span. A `Diagnostic.file` that disagreed with its span
+    /// rendered against the file, and if the byte range happened to fit, the result was a plausible
+    /// wrong location. DEV-122's guard caught only the out-of-range half of that.
+    ///
+    /// The only remaining failure is a `SourceId` from a *different registry* (see
+    /// `RegisteredSource`'s note on what the type does and does not prove). That is an internal
+    /// defect, not a span that cannot be located, and it is reported as one rather than guessed at.
+    pub fn render(&self, sources: &impl crate::source::SourceLookup) -> String {
+        let Some(file) = sources.source(self.span.source) else {
+            let mut out = String::new();
+            let _ = writeln!(out, "{}: {}", self.severity.heading(), self.message);
+            let _ = writeln!(
+                out,
+                "  --> internal compiler error: span names source {:?}, which this program's \
+                 registry does not contain",
+                self.span.source
+            );
+            return out;
+        };
+        let (line, col) = {
+            let resolved = resolve_span(file, self.span);
+            (resolved.line, resolved.column)
         };
         let line_str = line.to_string();
         // Right-align the line number into a min-width-2 column so the `|`
@@ -395,42 +310,26 @@ impl DiagnosticBatch {
     pub(crate) fn from_compiler_diagnostics(
         diagnostics: &[Diagnostic],
         sources: &SourceMap,
-        default_source: SourceId,
         source_versions: &HashMap<SourceId, i64>,
         extensions: Vec<String>,
     ) -> Self {
         let diagnostics = diagnostics
             .iter()
             .map(|diagnostic| {
-                let primary_source = diagnostic
-                    .file
-                    .as_ref()
-                    .map(|file| {
-                        sources.id_for_name(&file.name).unwrap_or_else(|| {
-                            panic!(
-                                "diagnostic primary file `{}` is absent from the source map",
-                                file.name
-                            )
-                        })
-                    })
-                    .unwrap_or(default_source);
+                // AS1b-ii-d: the structured form takes its source ids straight from the spans.
+                // This used to look the primary file's NAME up in the source map and fall back to a
+                // caller-supplied default — a name round-trip that could panic, and a default that
+                // silently attributed an unattributed diagnostic to the root file.
+                let primary_source = diagnostic.span.source;
                 let related = diagnostic
                     .related
                     .iter()
-                    .map(|related| {
-                        let source = sources.id_for_name(&related.file.name).unwrap_or_else(|| {
-                            panic!(
-                                "diagnostic related file `{}` is absent from the source map",
-                                related.file.name
-                            )
-                        });
-                        DiagnosticRelatedInformation {
-                            message: related.message.clone(),
-                            location: DiagnosticLocation {
-                                source,
-                                span: related.span,
-                            },
-                        }
+                    .map(|related| DiagnosticRelatedInformation {
+                        message: related.message.clone(),
+                        location: DiagnosticLocation {
+                            source: related.span.source,
+                            span: related.span,
+                        },
                     })
                     .collect();
                 StructuredDiagnostic {
@@ -532,9 +431,6 @@ impl DiagnosticBatch {
 
 impl StructuredDiagnostic {
     pub fn render(&self, sources: &SourceMap) -> String {
-        let primary = sources
-            .get(self.primary.source)
-            .expect("structured diagnostic source must exist");
         let diagnostic = Diagnostic {
             severity: self.severity,
             code: (self.code != self.severity.uncategorized_code()).then(|| self.code.clone()),
@@ -543,12 +439,11 @@ impl StructuredDiagnostic {
             label: self.label.clone().unwrap_or_default(),
             helps: self.help.clone(),
             notes: self.notes.clone(),
-            file: Some(primary.file.clone()),
             related: Vec::new(),
             rule_id: self.rule_id.clone(),
             deviation_id: self.deviation_id.clone(),
         };
-        let mut rendered = diagnostic.render(&primary.file);
+        let mut rendered = diagnostic.render(sources);
         for related in &self.related {
             let record = sources
                 .get(related.location.source)
@@ -639,24 +534,10 @@ fn string_array_json(values: &[String]) -> String {
     )
 }
 
+/// AS5-f: this was the only correct escaper of the four, and is what `crate::json::escape` was
+/// built from. Kept as a name so the JSON emitters below read unchanged.
 pub(crate) fn escape_json(value: &str) -> String {
-    let mut escaped = String::new();
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character <= '\u{1f}' => {
-                let _ = write!(escaped, "\\u{:04x}", character as u32);
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
+    crate::json::escape(value)
 }
 
 #[cfg(test)]
@@ -665,8 +546,8 @@ mod tests {
 
     #[test]
     fn renders_normative_format() {
-        let file = SourceFile::new("example.stark", "let x: String = 42;\n");
-        let diag = Diagnostic::error("Type mismatch", Span::new(16, 18))
+        let file = crate::source::registered_for_test("example.stark", "let x: String = 42;\n");
+        let diag = Diagnostic::error("Type mismatch", file.span(16, 18))
             .with_code("E0001")
             .with_label("expected String, found Int32")
             .with_help("change the annotation or the initializer")
@@ -687,8 +568,8 @@ Error: [E0001] Type mismatch
 
     #[test]
     fn renders_without_code_or_extras() {
-        let file = SourceFile::new("f.stark", "fn main() {}\n");
-        let diag = Diagnostic::error("something went wrong", Span::point(0));
+        let file = crate::source::registered_for_test("f.stark", "fn main() {}\n");
+        let diag = Diagnostic::error("something went wrong", Span::point_in(file.id(), 0));
         let rendered = diag.render(&file);
         let expected = "\
 Error: something went wrong
@@ -703,8 +584,8 @@ Error: something went wrong
     #[test]
     fn gutter_widens_for_multidigit_lines() {
         let src = "//\n".repeat(11) + "oops\n";
-        let file = SourceFile::new("f.stark", src);
-        let diag = Diagnostic::error("bad", Span::new(33, 37)).with_code("E0002");
+        let file = crate::source::registered_for_test("f.stark", &src);
+        let diag = Diagnostic::error("bad", file.span(33, 37)).with_code("E0002");
         let rendered = diag.render(&file);
         assert!(rendered.contains("12 | oops"), "got:\n{rendered}");
         assert!(rendered.contains("   | ^^^^"), "got:\n{rendered}");

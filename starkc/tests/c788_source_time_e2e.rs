@@ -159,7 +159,7 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
         resolve_diags.is_empty(),
         "the program must resolve:\n{source}\n{resolve_diags:#?}"
     );
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -194,9 +194,13 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
     assert_eq!(providers.arena.len(), 1);
 
     // ---- lowering. This is the step that did not exist. ----
-    let program =
-        starkc::mir::lower::lower_program_with_providers(&hir, &checked.tables, file, &providers)
-            .unwrap_or_else(|e| panic!("lowering must succeed: {} at {:?}", e.what, e.span));
+    let program = starkc::mir::lower::lower_program_with_providers(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+        &providers,
+    )
+    .unwrap_or_else(|e| panic!("lowering must succeed: {} at {:?}", e.what, e.span));
 
     assert_eq!(
         program.provider_calls.len(),
@@ -324,10 +328,14 @@ fn a_program_binding_no_provider_is_unaffected() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
 
-    let program = starkc::mir::lower::lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("lowering: {}", e.what));
+    let program = starkc::mir::lower::lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("lowering: {}", e.what));
 
     assert!(program.provider_calls.is_empty());
     assert!(!program.bodies.iter().any(|b| b.blocks.iter().any(|blk| {

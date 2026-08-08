@@ -22,7 +22,7 @@ fn execute_snippet(source: &str) -> String {
         resolve_diagnostics
     );
 
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -30,7 +30,13 @@ fn execute_snippet(source: &str) -> String {
         .collect();
     assert!(errors.is_empty(), "typecheck failed: {:?}", errors);
 
-    interp::run(&hir, file, &checked.tables).unwrap().output
+    interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap()
+    .output
 }
 
 #[test]
@@ -255,7 +261,7 @@ fn test_iterator_combinators_are_refused_by_the_front_end() {
         assert!(pd.is_empty(), "{name}: parse: {pd:?}");
         let (hir, rd) = resolve(&ast, file.clone());
         assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-        let checked = typecheck::analyze(&hir, file);
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics

@@ -4357,6 +4357,14 @@ produced by user code before the trap.</li>
 <li>There is no fallback debug or structural rendering for a type
 lacking <code>Display</code>; such a program is rejected by the checker
 (E0500).</li>
+<li>A slice is observed <strong>through a reference</strong>. For an
+element type <code>T</code> satisfying the elementwise condition below,
+<code>&amp;[T]</code> has the standard slice <code>Display</code>
+implementation; a bare <code>[T]</code> is unsized, is not a value
+(03-Type-System.md, “Unsized types”), and therefore does not itself
+satisfy <code>Display</code>. <code>println(v[0..2])</code> is rejected;
+<code>println(&amp;v[0..2])</code> is the accepted spelling. A sized
+<code>[T; N]</code> is a value and needs no reference.</li>
 </ol>
 <p>An implementation MAY keep built-in fast paths for the primitive and
 standard <code>Display</code> types (integers, floats,

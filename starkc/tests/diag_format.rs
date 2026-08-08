@@ -9,8 +9,10 @@ use starkc::source::SourceFile;
 
 fn render_all(src: &str, mode: ParseMode) -> String {
     let file = SourceFile::new("example.stark", src.to_string());
-    let (_ast, diags) = parse(&file, mode);
-    diags.iter().map(|d| d.render(&file)).collect()
+    let (ast, diags) = parse(&file, mode);
+    // AS1b-ii-d: rendering resolves each span against the source it names, so the parse's own
+    // registry answers rather than the file being handed back in as a default.
+    diags.iter().map(|d| d.render(&ast.sources)).collect()
 }
 
 #[test]

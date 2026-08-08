@@ -31,7 +31,7 @@ fn compile_and_run(source: &str, tag: &str) -> std::process::Output {
     assert!(parse_diags.is_empty(), "{tag} parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "{tag} resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let type_errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -39,7 +39,11 @@ fn compile_and_run(source: &str, tag: &str) -> std::process::Output {
         .collect();
     assert!(type_errors.is_empty(), "{tag} typecheck: {type_errors:?}");
 
-    let mir_program = match lower_program(&hir, &checked.tables, file.clone()) {
+    let mir_program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => program,
         Err(e) => panic!("{tag} must lower: {} @ {:?}", e.what, e.span),
     };

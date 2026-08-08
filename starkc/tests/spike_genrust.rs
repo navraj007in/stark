@@ -761,7 +761,7 @@ const CORPUS_CASES: &[&str] = &[
 
 struct Front {
     hir: Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: TypeTables,
 }
 
@@ -773,7 +773,7 @@ fn front_end(name: &str) -> Front {
     assert!(pd.is_empty(), "{name}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
@@ -781,8 +781,8 @@ fn front_end(name: &str) -> Front {
         .collect();
     assert!(errs.is_empty(), "{name}: typecheck: {errs:?}");
     Front {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }

@@ -622,12 +622,15 @@ fn build_key_input(
     // below plus the canonical bodies serialized later carry the inputs that affect generated
     // code.
     let _ = writeln!(out, "[sources]");
-    for (i, file) in program.files.iter().enumerate() {
+    for file in program.sources.iter() {
         let mut content = Sha256::new();
         content.update(file.src.as_bytes());
         let digest = content.finalize();
         let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-        let _ = writeln!(out, "{i} {} {hex}", file.name);
+        // AS1b-iii: the index is the registry's `SourceId`, which is what every span names. It was
+        // the MIR-local `FileId`. Both are dense and load-ordered, so the table's shape is
+        // unchanged; what it indexes is now the identity the rest of the compiler uses.
+        let _ = writeln!(out, "{} {} {hex}", file.id().as_u32(), file.name);
     }
 
     let types = &program.types;
@@ -897,8 +900,12 @@ mod tests {
         assert!(pd.is_empty(), "parse: {pd:?}");
         let (hir, rd) = resolve(&ast, file.clone());
         assert!(rd.is_empty(), "resolve: {rd:?}");
-        let checked = typecheck::analyze(&hir, file.clone());
-        match crate::mir::lower::lower_program(&hir, &checked.tables, file) {
+        let checked = typecheck::analyze(&hir);
+        match crate::mir::lower::lower_program(
+            &hir,
+            &checked.tables,
+            hir.source_named(&file.name).expect("registered"),
+        ) {
             Ok(program) => program,
             Err(e) => panic!("must lower: {} @ {:?}", e.what, e.span),
         }

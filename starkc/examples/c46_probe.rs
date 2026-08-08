@@ -24,7 +24,7 @@ fn main() {
         println!("RESOLVE-ERR: {}", rd[0].message);
         return;
     }
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(d) = checked
         .diagnostics
         .iter()
@@ -37,7 +37,11 @@ fn main() {
         );
         return;
     }
-    let program = match lower_program(&hir, &checked.tables, file.clone()) {
+    let program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(p) => p,
         Err(e) => {
             println!("LOWER-UNSUPPORTED: {}", e.what);

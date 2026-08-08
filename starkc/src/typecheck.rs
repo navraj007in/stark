@@ -1,8 +1,17 @@
 //! Type checking, mutability, and definite assignment validation pass for STARK (PLAN.md M2.2).
 
+// AS6 packet 4B group 2C: the tensor semantic authority lives in
+// `extensions::tensor::check`. What remains here is the integration boundary — locating an
+// operation in `TENSOR_OPS`, validating the call form, evaluating arguments, and publishing the
+// type the extension decided — plus the `TensorCheckCtx` impl that names, exhaustively, the Core
+// services the extension is allowed to use.
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::diag::Diagnostic;
+use crate::extensions::tensor::check as tensor_check;
+use crate::extensions::tensor::check::TensorCheckCtx;
 use crate::extensions::tensor::dim::{DimVar, Poly};
+use crate::extensions::tensor::rules::TENSOR_OPS;
+use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{
     DType, Device, DeviceVar, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx,
     UnifyError,
@@ -12,9 +21,8 @@ use crate::hir::{
 };
 use crate::literal;
 use crate::options::LanguageOptions;
-use crate::source::{SourceFile, Span};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use crate::source::Span;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// WP-C6.2b-F1: a selected inherent/trait method candidate carried through visibility enforcement:
 /// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
@@ -119,6 +127,29 @@ enum GenericKind {
     Device,
 }
 
+impl GenericKind {
+    /// The tensor kind this parameter carries, if any. `Type` is the ordinary Core case and has
+    /// no tensor kind.
+    fn as_tensor_param(self) -> Option<tensor_syntax::TensorParamKind> {
+        match self {
+            GenericKind::Type => None,
+            GenericKind::Dim => Some(tensor_syntax::TensorParamKind::Dim),
+            GenericKind::DType => Some(tensor_syntax::TensorParamKind::DType),
+            GenericKind::Device => Some(tensor_syntax::TensorParamKind::Device),
+        }
+    }
+}
+
+impl From<tensor_syntax::TensorParamKind> for GenericKind {
+    fn from(kind: tensor_syntax::TensorParamKind) -> Self {
+        match kind {
+            tensor_syntax::TensorParamKind::Dim => GenericKind::Dim,
+            tensor_syntax::TensorParamKind::DType => GenericKind::DType,
+            tensor_syntax::TensorParamKind::Device => GenericKind::Device,
+        }
+    }
+}
+
 struct TensorParamScopes {
     dims: HashMap<String, DimVar>,
     dtypes: HashMap<String, DType>,
@@ -150,21 +181,16 @@ struct ControlSummary {
     may_return: bool,
 }
 
-/// A deferred trait-bound obligation (DEV-067/DEV-101): the concrete type, the bounds it must
-/// satisfy, the call span to report against, the caller's enclosing generic environment, and the
-/// file that DECLARES the bounds (so a bound's path name reads against the right file when the
-/// obligation is discharged after `self.file` has moved on).
-type BoundsCheck = (
-    Ty,
-    Vec<hir::TraitRef>,
-    Span,
-    Vec<hir::GenericParam>,
-    Arc<SourceFile>,
-);
+/// A deferred trait-bound obligation (DEV-067): the concrete type, the bounds it must satisfy,
+/// the call span to report against, and the caller's enclosing generic environment.
+///
+/// DEV-101 added a fifth element — the file declaring the bounds — so a bound path's name could be
+/// read correctly once the obligation was discharged. AS1b-ii-d removed it: the bound path's span
+/// names that file.
+type BoundsCheck = (Ty, Vec<hir::TraitRef>, Span, Vec<hir::GenericParam>);
 
 pub struct TypeChecker<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
     diags: Vec<Diagnostic>,
     subst: HashMap<TypeVarId, Ty>,
     /// WP-C4.7-6.3: inference variables introduced for UNSUFFIXED integer literals, with the
@@ -179,6 +205,15 @@ pub struct TypeChecker<'a> {
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
     display_checks: Vec<(Ty, Span)>,
+    /// **AS3 Boundary 4: the queue the `Display` dispatch plan is built from.**
+    ///
+    /// Separate from `display_checks`, which exists to emit E0500. One queue per job: a queue that
+    /// both reports errors and publishes a plan is the one a fourth concern gets added to.
+    ///
+    /// Both `println`-family arguments and interpolation fields land here, so the plan is built by
+    /// ONE walk regardless of which syntax reached `Display`.
+    ///
+    display_plans: Vec<DeferredDisplayPlan>,
     /// DEV-134: deferred `?` propagation compatibility — (operand type, enclosing return type,
     /// span). Deferred for the same reason as `display_checks`: the operand's error type is
     /// routinely an inference variable while the body is being checked (`Err(make())?`), so
@@ -191,12 +226,22 @@ pub struct TypeChecker<'a> {
     local_types: HashMap<LocalId, Ty>,
     local_mutability: HashMap<LocalId, bool>,
     struct_fields: HashMap<ItemId, HashMap<String, Ty>>,
+    /// AS3 Packet 5: the INSTANTIATED declared type of each field of an aggregate literal, keyed
+    /// by the literal expression. Publication only; consumed by the `AggregateField` boundary.
+    aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>>,
     enum_variants: HashMap<ItemId, Vec<VariantTy>>,
     fn_sigs: HashMap<ItemId, FnSigTy>,
     /// A3b: raw (pre-grounding) callable signatures, keyed by body.
     callable_sigs: HashMap<BlockId, CallableSigTy>,
     /// A3c-S: raw (pre-grounding) callable environments, keyed by the call expression.
     callable_envs: HashMap<ExprId, CallableInstantiation>,
+    /// AS3: the published uses, in publication order. `CallableUseId` is the index.
+    callable_uses: Vec<CallableUse>,
+    callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+    display_uses: BTreeMap<(ExprId, DisplayPath), CallableUseId>,
+    /// AS3: body → declaration, built on first use.
+    #[allow(dead_code)] // read by `decl_for_body`, which Boundary 2 consumes.
+    body_decls: Option<HashMap<BlockId, CallableDeclId>>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
     /// WP-C4.5c / A3c-S: ordered generic-argument types for every use of a *generic* fn item, keyed
@@ -223,7 +268,6 @@ pub struct TypeChecker<'a> {
     /// DEV-148: the item whose FILE the signature currently being converted belongs to, or `None`
     /// when the signature is local. Every name sliced out of a foreign signature — type-parameter
     /// names above all — must be read from that file, not from the file under check.
-    foreign_sig_item: Option<ItemId>,
     current_assoc_types: HashMap<String, Ty>,
     /// WP-C6.2c: resolved associated-type bindings across the whole program, keyed by
     /// `(implementing nominal, associated-type name)`. Lets a concrete projection
@@ -259,10 +303,9 @@ pub struct TypeChecker<'a> {
     /// every body, by which time `current_fn_generics` belongs to whatever was checked last, so
     /// an obligation on a caller's own type parameter cannot be discharged unless the enclosing
     /// bounds travel with it.
-    // DEV-101: a deferred trait-bound obligation carries the file that DECLARES the bounds — a
-    // bound's path name is only meaningful against its own file, and these obligations are
-    // discharged after `self.file` has returned to the root file, so the declaring file must
-    // travel with the obligation.
+    // DEV-101 made a deferred obligation carry the file that DECLARES the bounds, because a
+    // bound's path name is only meaningful against its own file and these are discharged long
+    // after the checker has moved on. AS1b-ii-d dropped it: `bound.path.span` names that file.
     bounds_checks: Vec<BoundsCheck>,
 
     /// Enabled language extensions, threaded from the CLI through the whole
@@ -465,6 +508,39 @@ mod layout_substitution_tests {
 /// parameter to be an oracle DEFECT rather than a fallback layout.
 pub fn ty_contains_param(ty: &Ty) -> bool {
     ty_contains(ty, &|t| matches!(t, Ty::Param(_)))
+}
+
+/// Collect every `Ty::Param` NAME reachable in `ty`, including associated-type projections
+/// (`"T::Item"`), which the type system encodes as a param whose name contains `::`.
+///
+/// Published because the interpreter must discharge those projections at a value boundary and
+/// needs to know which ones a type mentions before it can look them up. Traverses through the same
+/// structure as [`substitute_ty`], so the two cannot disagree about where a parameter can hide.
+pub fn collect_ty_params(ty: &Ty, out: &mut std::collections::BTreeSet<String>) {
+    match ty {
+        Ty::Param(name) => {
+            out.insert(name.clone());
+        }
+        Ty::Ref { inner, .. } => collect_ty_params(inner, out),
+        Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+            for arg in args {
+                collect_ty_params(arg, out);
+            }
+        }
+        Ty::Tuple(elems) => {
+            for elem in elems {
+                collect_ty_params(elem, out);
+            }
+        }
+        Ty::Array(elem, _) | Ty::Slice(elem) | Ty::Range(elem) => collect_ty_params(elem, out),
+        Ty::Fn { params, ret } => {
+            for param in params {
+                collect_ty_params(param, out);
+            }
+            collect_ty_params(ret, out);
+        }
+        _ => {}
+    }
 }
 
 /// How a pattern binding takes its value, decided once per `match` from its scrutinee.
@@ -729,11 +805,328 @@ impl CallableInstantiation {
 ///
 /// Bodyless trait declarations are excluded structurally rather than by a filter — they have no
 /// `BlockId` to key on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CallableSigTy {
     pub receiver: Option<Ty>,
     pub params: Vec<Ty>,
     pub ret: Ty,
+}
+
+// ------------------------------------------------------- AS3 / WP-CALLABLE-USE-TOTAL --
+
+/// A deferred callable-use publication: the call expression, the body it selected, and the generic
+/// environment — held until the instantiated signature exists (AS3 Boundary 2).
+type PendingUse = (ExprId, BlockId, Vec<(GenericBinder, Ty)>);
+
+/// What one scan of the impl set establishes about a user iterator (AS3 Boundary 4).
+struct UserIteratorSelection {
+    impl_item: ItemId,
+    member: u32,
+    body: BlockId,
+    /// The `type Item = ...` declaration, still parametric.
+    associated_item: hir::TypeId,
+    /// `match_impl_type`'s result — what makes `Item` concrete.
+    substitutions: HashMap<String, Ty>,
+    /// The same substitution as ordered binders, for the published environment.
+    bindings: Vec<(GenericBinder, Ty)>,
+}
+
+/// A published callable use. Indexes [`TypeTables::callable_uses`].
+///
+/// **A use is a STATIC SEMANTIC USE SITE, not an expression and not a runtime invocation.** One
+/// expression may give rise to zero, one or many: `println((a, b))` is one argument expression and
+/// two `Display::fmt` use sites, and `println(vec)` is one use site executed once per element. A
+/// map keyed by `ExprId` cannot represent either, which is why this id exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableUseId(pub u32);
+
+// AS3 Boundary 4 uses `hir::BoundTrait` — `User(ItemId)` or `Core(CoreTrait)` — which the compiler
+// already carries because user traits and compiler-known traits both occur as bounds.
+//
+// This resolves a model bug found by the Display characterization: `DispatchProvenance::Bound
+// { trait_item: ItemId }` could not represent `T: Display`, since `Display` is a `CoreTrait` with
+// no trait `ItemId`. Selection and provenance now speak the same identity language, and it is the
+// language the rest of the compiler already speaks.
+
+/// WHICH declaration the checker selected, expressed in ids the HIR actually possesses.
+///
+/// Methods, associated functions and trait defaults have **no `ItemId`**: `ImplItem::Fn` embeds a
+/// `FnDef` and `TraitItem::Method` embeds a signature, both positional inside their owner's `Vec`.
+/// That is why A3b chose `BlockId` for executable identity. This is the *declaration* identity,
+/// which provenance and diagnostics need and which a `BlockId` cannot express — and it is built
+/// from real ids rather than from fabricated ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableDeclId {
+    /// A free function: it has its own item.
+    Item(ItemId),
+    /// A member of an impl, by position in that impl's `items`.
+    ImplMember { impl_item: ItemId, member: u32 },
+    /// A member of a trait — the declaration site of a default body.
+    TraitMember { trait_item: ItemId, member: u32 },
+}
+
+/// What runs. Static for an ordinary call; deferred to the value for a function value.
+///
+/// DEV-178: a function value carries the item and the bindings it was created with, because the
+/// call site's `Ty::Fn` cannot reconstruct which instantiation produced it. Pretending every use
+/// has a statically known body would erase that.
+/// **Three binding times, not two.**
+///
+/// AS3 Boundary 4's Display characterization found a category the two-variant model could not
+/// represent, and it is not a Display corner: a call on a bounded generic parameter
+/// (`fn f<T: Speak>(x: T) { x.speak(); }`) has the same shape. `resolve_method`'s bound branch
+/// records `bound_trait_calls` and returns before Boundary 2's publication, so nothing was ever
+/// published for it.
+///
+/// ```text
+/// Static          body known during typecheck
+/// Bound           trait/member known during typecheck;
+///                 body known when `Self` becomes concrete
+/// FunctionValue   body and environment carried by the runtime value
+/// ```
+///
+/// **`Bound` is not a licence for an engine to select later.** It is a checker-published dispatch
+/// obligation whose *declaration identity* is fixed now, and whose *executable target* is resolved
+/// by one shared bound-specialisation authority when `Self` becomes concrete. Both engines consume
+/// that authority's result; neither implements matching. Defining it the other way would simply
+/// give the old scans a respectable name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalleeSelection {
+    Static {
+        declaration: CallableDeclId,
+        body: BlockId,
+    },
+    /// Late-bound: the obligation is fixed, the body is not.
+    Bound {
+        trait_: hir::BoundTrait,
+        /// The trait member invoked, by name — traits declare members positionally like impls, and
+        /// the specialiser resolves the position against whichever impl `Self` selects.
+        member: String,
+        /// The receiver type, which may still contain caller parameters (`T`, `W<T>`).
+        self_ty: Ty,
+        /// Trait arguments, for parameterised traits.
+        trait_args: Vec<Ty>,
+        /// The METHOD's own generic arguments. G2 characterization: `x.to::<Int32>()` through a
+        /// bound is accepted, so without these the specialiser would bind the impl's parameters
+        /// and silently drop the method's — the Iterator empty-environment class again.
+        method_args: Vec<Ty>,
+    },
+    FunctionValue,
+}
+
+/// The generic environment, on the same footing as the selection.
+///
+/// A non-generic static call is `Static(vec![])` — an empty environment, never an absent one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericEnvironment {
+    Static(Vec<(GenericBinder, Ty)>),
+    /// **The callee's environment does not exist yet**, because the callee is not selected yet.
+    /// The bound specialiser produces body and environment *atomically* — reconstructing the
+    /// environment separately from the body is how DEV-176 happened, in a new place.
+    FromBoundSelection,
+    /// Fixed at coercion and carried by the value (DEV-178).
+    FromFunctionValue,
+}
+
+impl GenericEnvironment {
+    /// The name→type view to substitute with — **the same view `CallableInstantiation` publishes**,
+    /// so a consumer or a test never has to build a second one.
+    ///
+    /// Sound because NAME-SHADOW-001 forbids two binders in scope sharing a name. Empty for
+    /// `FromFunctionValue`: the environment is on the value, not here.
+    pub fn substitutions(&self) -> HashMap<String, Ty> {
+        match self {
+            GenericEnvironment::Static(bindings) => bindings
+                .iter()
+                .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
+                .collect(),
+            // Neither carries a callee environment HERE: the function value has it, and a bound
+            // use has none until specialisation produces body and environment together.
+            GenericEnvironment::FromBoundSelection | GenericEnvironment::FromFunctionValue => {
+                HashMap::new()
+            }
+        }
+    }
+}
+
+/// What the CALL SITE did to the receiver (TYPE-METHOD-002 auto-borrow / auto-deref).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverAdjustment {
+    None,
+    ByValue,
+    Shared { derefs: u8 },
+    Exclusive { derefs: u8 },
+}
+
+/// What the SELECTED CALLABLE binds.
+///
+/// Deliberately separate from [`ReceiverAdjustment`]. They correlate in ordinary code, but they are
+/// different questions with different authorities — the call site's adjustment versus the
+/// declaration's `self` form — and AS4 asks about the binding side specifically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverBinding {
+    None,
+    ByValue,
+    Shared,
+    Exclusive,
+}
+
+/// **A `Display` render position queued for Pass 3.**
+///
+/// A named structure rather than a tuple because the third field is the reason this type exists,
+/// and a tuple hides that: `generic_scope` is the function/impl generic environment *as it was
+/// where the expression was written*.
+///
+/// The walk runs in Pass 3, since it keys positions off RESOLVED types. But
+/// `bound_method_candidates` reads LIVE scope, which Pass 3 has already torn down — so without
+/// carrying it, the walk reached `Ty::Param("T")` inside `fn show<T: Display>` and found no
+/// candidates for a bound that is plainly written, publishing nothing and saying nothing.
+///
+/// The general rule, which is not about `Display`: a deferred obligation may read resolved types
+/// freely, but any **scope-sensitive** question it asks is a question about a scope that no longer
+/// exists. Capture the scope with the obligation.
+struct DeferredDisplayPlan {
+    /// The expression that renders — a `println`-family argument or an interpolation field. Both
+    /// are roots in their own right; an interpolation field has its own `ExprId`.
+    root: ExprId,
+    ty: Ty,
+    /// `(current_fn_generics, current_impl_generics)` at the point of writing.
+    generic_scope: (
+        Option<Vec<hir::GenericParam>>,
+        Option<Vec<hir::GenericParam>>,
+    ),
+}
+
+/// **One structural position inside a `println` argument's STATIC type.**
+///
+/// `println((a, b))` is one expression and two `Display::fmt` bodies; `println(vec)` is one body
+/// executed once per element; `println((W<Int32>, W<Bool>))` is the SAME body at two different
+/// instantiations. A nominal-keyed lookup cannot tell the last pair apart — a runtime
+/// `Value::Struct { item, fields }` carries no type arguments — so the key is the static position,
+/// which distinguishes all three. See `AS3-DISPLAY-CHARACTERIZATION.md` §2.
+///
+/// Array, slice and `Vec` elements are deliberately three steps rather than one. At any given path
+/// the static type already says which it is, so collapsing them would lose nothing for lookup — but
+/// it would also let an engine walking the wrong container shape find a use anyway, and agreeing by
+/// accident is what this packet keeps finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DisplayStep {
+    TupleField(u32),
+    ArrayElement,
+    SliceElement,
+    VecElement,
+    OptionSome,
+    ResultOk,
+    ResultErr,
+}
+
+/// A path from a `println` argument to one nominal that renders through its own `Display::fmt`.
+/// Empty means the argument itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DisplayPath(pub Vec<DisplayStep>);
+
+impl DisplayPath {
+    /// This path with one more step. Used by the checker to BUILD the plan and by both engines to
+    /// walk it, so the two constructions cannot drift.
+    pub fn child(&self, step: DisplayStep) -> Self {
+        let mut steps = self.0.clone();
+        steps.push(step);
+        DisplayPath(steps)
+    }
+}
+
+/// Why this callable and not another.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DispatchProvenance {
+    /// `f(x)` — a path resolved to an item.
+    Direct,
+    /// `x.m()` — inherent method resolution.
+    Inherent,
+    /// `x.m()` where `m` came from a trait impl.
+    TraitImpl { trait_item: ItemId },
+    /// `T::m()` / `<T as Tr>::m()`.
+    Qualified { trait_item: Option<ItemId> },
+    /// A generic parameter's BOUND supplied the signature — what `bound_trait_calls` carries today.
+    /// Uses [`BoundTrait`] because a bound may name a `CoreTrait`, which has no `ItemId`.
+    Bound { trait_: hir::BoundTrait },
+    /// A compiler-known trait operation: `==`, `<`, `for`, `{}` formatting. The four families both
+    /// engines currently re-select with no filter at all.
+    CoreTrait { core: hir::CoreTrait },
+    /// Calling a function value.
+    FunctionValue,
+}
+
+/// The receiver type a declaration BINDS, formed the way A3b forms it.
+///
+/// AS3 Boundary 2 hardening, second correction. The publication recorded the instantiated `Self`
+/// bare, while `callable_types` records the receiver **as the body binds it** — `&Self` for
+/// `&self`, `&mut Self` for `&mut self`. So the two disagreed on every borrowing method, and §3.4's
+/// invariant would have failed on all of them. It did, the moment the test stopped skipping
+/// generics.
+///
+/// This mirrors `check_fn_def`'s construction rather than re-deriving it, so the two cannot drift.
+fn bound_receiver_ty(receiver: Option<&hir::Receiver>, self_ty: Ty) -> Option<Ty> {
+    match receiver? {
+        hir::Receiver::Value => Some(self_ty),
+        hir::Receiver::Ref => Some(Ty::Ref {
+            mutable: false,
+            inner: Box::new(self_ty),
+        }),
+        hir::Receiver::RefMut => Some(Ty::Ref {
+            mutable: true,
+            inner: Box::new(self_ty),
+        }),
+    }
+}
+
+/// What the CALL SITE did to the receiver, from TYPE-METHOD-002's peel count and the form the
+/// selected declaration binds.
+///
+/// AS3 Boundary 2 hardening. Every named-dispatch publication passed `ReceiverAdjustment::None`,
+/// so the field existed and published nothing — a consumer would have received
+/// `binding = Shared, adjustment = None` and still had to work out the receiver semantics itself.
+///
+/// `derefs` is how many leading `&`/`&mut` method resolution removed before matching. A receiver
+/// of `&&mut T` calling a `&self` method is two derefs and a shared adjustment; `T` calling `self`
+/// is zero derefs by value.
+fn receiver_adjustment_for(
+    derefs: u8,
+    outermost_ref_is_mut: bool,
+    binding: ReceiverBinding,
+) -> ReceiverAdjustment {
+    match binding {
+        ReceiverBinding::None => ReceiverAdjustment::None,
+        ReceiverBinding::ByValue => ReceiverAdjustment::ByValue,
+        ReceiverBinding::Shared => ReceiverAdjustment::Shared { derefs },
+        ReceiverBinding::Exclusive => {
+            // An exclusive binding reached through a shared reference would be a borrow error the
+            // checker has already rejected; recording the outermost form keeps the two answers
+            // consistent rather than asserting one from the other.
+            let _ = outermost_ref_is_mut;
+            ReceiverAdjustment::Exclusive { derefs }
+        }
+    }
+}
+
+/// Everything the checker decided about one callable use.
+///
+/// The rule this exists to serve: **the checker publishes, execution consumes, neither engine
+/// reconstructs selection.** An engine may CHOOSE among published records using runtime or static
+/// structure; it may not scan the HIR and re-run method selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallableUse {
+    pub selection: CalleeSelection,
+    pub environment: GenericEnvironment,
+    pub receiver_adjustment: ReceiverAdjustment,
+    pub receiver_binding: ReceiverBinding,
+    /// This use's signature.
+    ///
+    /// **Inference-grounded, not fully concrete**: no surviving `Ty::Infer` or `Ty::Error`. A
+    /// caller's own `Ty::Param` may remain and is concretised against the active caller
+    /// environment — the same rule `CallableInstantiation` documents, and why `callable_types` is
+    /// body-parametric.
+    pub signature: CallableSigTy,
+    pub provenance: DispatchProvenance,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -746,6 +1139,17 @@ pub struct TypeTables {
     /// package can remain library-importable without imposing a `main`
     /// requirement during type checking.
     pub fn_types: HashMap<ItemId, (Vec<Ty>, Ty)>,
+    /// **Associated-type bindings, keyed by (implementing nominal, associated name).**
+    ///
+    /// Published so the interpreter can discharge a projection like `T::Item` at a value boundary
+    /// once `T` is concrete. Without it the oracle would need its own scan of the impl set — a
+    /// third authority for a question the checker already answered, beside `normalize_projections`
+    /// here and `ProgramMeta::assoc_projections` in MIR lowering.
+    pub assoc_projections: HashMap<(ItemId, String), Ty>,
+    /// AS3 Packet 5: each aggregate literal's fields, by name, at their DECLARED type instantiated
+    /// for that literal. The `AggregateField` boundary's expected type — never the initialiser
+    /// expression's own type, which would make the check compare a value against its producer.
+    pub aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>>,
     /// WP-VALUE-REP-TOTAL A3b: every executable callable body's signature, keyed by its body.
     ///
     /// Covers all six classes `check_fn_def` sees — free functions, inherent methods, trait
@@ -761,6 +1165,31 @@ pub struct TypeTables {
     /// parameters positionally and therefore could not express impl generics, trait generics or
     /// `Self` — the reason DEV-176 exists.
     pub callable_instantiations: HashMap<ExprId, CallableInstantiation>,
+    /// **AS3 / WP-CALLABLE-USE-TOTAL: every published callable use, indexed by `CallableUseId`.**
+    ///
+    /// One record per STATIC SEMANTIC USE SITE. See `callable_uses_by_expr` for why this is not a
+    /// map keyed by expression.
+    pub callable_uses: Vec<CallableUse>,
+    /// The uses an expression gives rise to — **zero, one or many**.
+    ///
+    /// Many is not hypothetical: `display_deep` recurses through tuples, arrays, `Option`, `Result`
+    /// and slots, reaching a nominal's `Display::fmt` at any depth, so `println((a, b))` is one
+    /// argument expression and two use sites. Zero is ordinary — most expressions call nothing.
+    pub callable_uses_by_expr: HashMap<ExprId, Vec<CallableUseId>>,
+
+    /// **AS3 Boundary 4: the `Display` dispatch plan, keyed by static position.**
+    ///
+    /// `(root argument expression, path) -> the use that renders there`. Both engines recurse
+    /// value-and-static-type together and look the position up, instead of scanning a nominal's
+    /// impls for a member named `fmt`.
+    pub display_uses: BTreeMap<(ExprId, DisplayPath), CallableUseId>,
+    /// **AS3 Boundary 4a: the program's coherent dispatch index**, frozen for execution.
+    ///
+    /// Answers "given trait identity, trait arguments, concrete `Self` and a member, which
+    /// executable body does the checked program mean" — the authority `find_method` and
+    /// `find_impl_fn` currently duplicate. Carries no signatures: `callable_types[body]` is the
+    /// sole signature authority (A3b).
+    pub trait_impls: crate::bound_dispatch::TraitImplIndex,
     /// WP-C4.5c / A3c-S: grounded, ordered generic-argument types for each use of a generic fn item,
     /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
     /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
@@ -790,52 +1219,51 @@ pub struct TypeCheckResult {
     pub tables: TypeTables,
 }
 
-pub fn check(hir: &Hir, file: Arc<SourceFile>) -> Vec<Diagnostic> {
-    analyze(hir, file).diagnostics
+/// AS1b-ii-d: no `file` parameter. The checker used to be handed the root file and re-aim it at
+/// each item's declaring file as it walked; every span it reads now names its own source, which the
+/// `Hir`'s registry resolves.
+pub fn check(hir: &Hir) -> Vec<Diagnostic> {
+    analyze(hir).diagnostics
 }
 
 /// Core-only [`check`], with the option-aware pipeline (Gate 4+).
-pub fn check_with_options(
-    hir: &Hir,
-    file: Arc<SourceFile>,
-    options: LanguageOptions,
-) -> Vec<Diagnostic> {
-    analyze_with_options(hir, file, options).diagnostics
+pub fn check_with_options(hir: &Hir, options: LanguageOptions) -> Vec<Diagnostic> {
+    analyze_with_options(hir, options).diagnostics
 }
 
-pub fn analyze(hir: &Hir, file: Arc<SourceFile>) -> TypeCheckResult {
-    analyze_with_options(hir, file, LanguageOptions::CORE)
+pub fn analyze(hir: &Hir) -> TypeCheckResult {
+    analyze_with_options(hir, LanguageOptions::CORE)
 }
 
-pub fn analyze_with_options(
-    hir: &Hir,
-    file: Arc<SourceFile>,
-    options: LanguageOptions,
-) -> TypeCheckResult {
+pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckResult {
     let mut checker = TypeChecker {
         hir,
-        file: file.clone(),
         options,
         diags: Vec::new(),
         subst: HashMap::new(),
         int_literal_vars: HashMap::new(),
         display_checks: Vec::new(),
+        display_plans: Vec::new(),
         try_checks: Vec::new(),
         var_count: 0,
         expr_types: HashMap::new(),
         local_types: HashMap::new(),
         local_mutability: HashMap::new(),
         struct_fields: HashMap::new(),
+        aggregate_field_types: HashMap::new(),
         enum_variants: HashMap::new(),
         fn_sigs: HashMap::new(),
         callable_sigs: HashMap::new(),
         callable_envs: HashMap::new(),
+        callable_uses: Vec::new(),
+        callable_uses_by_expr: HashMap::new(),
+        display_uses: BTreeMap::new(),
+        body_decls: None,
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         layout_queries: HashMap::new(),
         bound_trait_calls: HashMap::new(),
         current_self_ty: None,
-        foreign_sig_item: None,
         current_assoc_types: HashMap::new(),
         assoc_projections: HashMap::new(),
         projection_obligations: Vec::new(),
@@ -867,6 +1295,50 @@ pub fn analyze_with_options(
         .iter()
         .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
+    let callable_uses: Vec<CallableUse> = checker
+        .callable_uses
+        .iter()
+        .map(|use_| CallableUse {
+            // **Grounded like every other published field.** It was the ONE field copied verbatim,
+            // and a `Bound` selection carries types: `self_ty`, `trait_args`, and the method's own
+            // `method_args`. An inferred method argument (`t.to(1)` with no turbofish) is resolved
+            // when `check_trait_member_call` returns, but the integer literal that determines it is
+            // not defaulted until later — so the selection published `Infer(N)`, the specialiser
+            // built an environment binding `U -> Infer(N)`, and the return boundary compared a
+            // value against an inference variable. Found by DEV-121's return boundary; nothing
+            // observed it before because nothing read the environment.
+            selection: ground_selection(&checker, &use_.selection),
+            environment: match &use_.environment {
+                GenericEnvironment::Static(bindings) => GenericEnvironment::Static(
+                    bindings
+                        .iter()
+                        .map(|(binder, ty)| (binder.clone(), checker.ground(ty)))
+                        .collect(),
+                ),
+                GenericEnvironment::FromBoundSelection => GenericEnvironment::FromBoundSelection,
+                GenericEnvironment::FromFunctionValue => GenericEnvironment::FromFunctionValue,
+            },
+            receiver_adjustment: use_.receiver_adjustment,
+            receiver_binding: use_.receiver_binding,
+            signature: CallableSigTy {
+                receiver: use_
+                    .signature
+                    .receiver
+                    .as_ref()
+                    .map(|ty| checker.ground(ty)),
+                params: use_
+                    .signature
+                    .params
+                    .iter()
+                    .map(|ty| checker.ground(ty))
+                    .collect(),
+                ret: checker.ground(&use_.signature.ret),
+            },
+            provenance: use_.provenance.clone(),
+        })
+        .collect();
+    let callable_uses_by_expr = checker.callable_uses_by_expr.clone();
+    let trait_impls = checker.build_trait_impl_index();
     let callable_instantiations = checker
         .callable_envs
         .iter()
@@ -953,107 +1425,134 @@ pub fn analyze_with_options(
             .with_code("E0004"),
         );
     }
+    let assoc_projections: HashMap<(ItemId, String), Ty> = checker
+        .assoc_projections
+        .iter()
+        .map(|((nominal, name), ty)| ((*nominal, name.clone()), checker.ground(ty)))
+        .collect();
+    let aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>> = checker
+        .aggregate_field_types
+        .iter()
+        .map(|(expr, fields)| {
+            (
+                *expr,
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), checker.ground(ty)))
+                    .collect(),
+            )
+        })
+        .collect();
     let mut diagnostics = checker.diags;
-    diagnostics.extend(crate::flow::check(hir, file.clone(), &expr_types));
-    diagnostics.extend(crate::borrowck::check(
-        hir,
-        file.clone(),
-        &expr_types,
-        &local_types,
-    ));
+    diagnostics.extend(crate::flow::check(hir, &expr_types));
+    diagnostics.extend(crate::borrowck::check(hir, &expr_types, &local_types));
     let tables = TypeTables {
         expr_types,
         local_types,
         local_mutability: checker.local_mutability,
         fn_types,
+        assoc_projections,
+        aggregate_field_types,
         callable_types,
         callable_instantiations,
+        callable_uses,
+        callable_uses_by_expr,
+        display_uses: checker.display_uses,
+        trait_impls,
         layout_queries,
         layout,
         bound_trait_calls: checker.bound_trait_calls,
     };
-    diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
+    diagnostics.extend(crate::interp::check_constants(hir, &tables));
     TypeCheckResult {
         diagnostics,
         tables,
     }
 }
 
+/// Ground every type a [`CalleeSelection`] carries.
+///
+/// `Static` and `FunctionValue` carry none — they name a declaration and a body, not types — so
+/// they pass through. Written as an exhaustive match rather than a `if let Bound` so a future
+/// variant that carries a type cannot be published ungrounded by omission.
+fn ground_selection(checker: &TypeChecker<'_>, selection: &CalleeSelection) -> CalleeSelection {
+    match selection {
+        CalleeSelection::Static { .. } | CalleeSelection::FunctionValue => selection.clone(),
+        CalleeSelection::Bound {
+            trait_,
+            member,
+            self_ty,
+            trait_args,
+            method_args,
+        } => CalleeSelection::Bound {
+            trait_: *trait_,
+            member: member.clone(),
+            self_ty: checker.ground(self_ty),
+            trait_args: trait_args.iter().map(|ty| checker.ground(ty)).collect(),
+            method_args: method_args.iter().map(|ty| checker.ground(ty)).collect(),
+        },
+    }
+}
+
 impl<'a> TypeChecker<'a> {
-    /// Read a span belonging to the item currently being checked. `check_crate`'s item walks
-    /// keep `self.file` pointing at the current item's declaring file, so this is correct for
-    /// spans of the item under check — and WRONG for spans of any OTHER item, which must go
-    /// through `item_text` (DEV-069).
+    /// Read a span, against the source the SPAN NAMES.
     ///
-    /// Non-panicking since WP-C4.7-4: an out-of-range span used to panic "byte index N out of
-    /// bounds" whenever a dependency file was longer than the entry file (DEV-069 failure shape
-    /// (a)). A wrong-file read is now a visible `"?"` in a diagnostic instead of a compiler
-    /// crash. With the cross-item reads fixed this should be unreachable; it is a backstop, not
-    /// a mechanism.
+    /// AS1b-ii-d. This used to slice `self.file` — "the file currently being checked" — which was
+    /// right for the item under check and wrong for every span belonging to another item. Four
+    /// separate repairs of that one mistake are recorded (DEV-069, DEV-101, DEV-148 and its
+    /// generic second site), each adding another way to carry the declaring file to the read:
+    /// `item_text`, `item_src`, `item_file`, `decl_text`, a foreign-signature item stack, and a
+    /// per-item `self.file` swap. All of it existed to answer a question the span now answers.
+    ///
+    /// `"?"` remains for an unresolvable span rather than a panic (WP-C4.7-4): a wrong read should
+    /// be visible in a diagnostic, not a compiler crash.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
-            .unwrap_or("?")
-    }
-
-    /// The file that DECLARES `item`. Multi-file programs (`mod helper;`) parse each file
-    /// separately, so spans are file-relative and only meaningful against their own file's text.
-    fn item_src(&self, item: ItemId) -> &str {
-        match self.hir.item_files.get(&item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        }
-    }
-
-    /// The `Arc<SourceFile>` that declares `item` (DEV-101), for obligations discharged later when
-    /// `self.file` no longer points at the declaring file. Falls back to the current file.
-    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
         self.hir
-            .item_files
-            .get(&item)
-            .cloned()
-            .unwrap_or_else(|| self.file.clone())
-    }
-
-    /// Read a span belonging to `item`, against the file that declares it. Every cross-item read
-    /// — another type's name, another impl's method names, another struct's field names — must
-    /// use this, because `self.file` is the file of the item being CHECKED, not the item being
-    /// LOOKED UP (DEV-069 failure shapes (b), (c), (d)).
-    /// Read a name off a DECLARATION, honouring whichever file declared it.
-    ///
-    /// CD-358: `self.text` slices the file currently being CHECKED. A name that belongs to a
-    /// declaration — an impl's generic parameter, a signature's, a field's — belongs to the file
-    /// that declared it, and across a module boundary those differ. Getting it wrong does not
-    /// error: it silently compares garbage, and a span running past the shorter file's end comes
-    /// back as `"?"`, so several names can COLLIDE on one key.
-    ///
-    /// This is the fourth time the same bug has been repaired (DEV-069, DEV-101, DEV-148 and its
-    /// generic second site), so it is a helper rather than a habit. Where a declaring item is in
-    /// scope, `foreign_sig_item` carries it and this resolves against it; where none is set the
-    /// declaration is local and the behaviour is unchanged.
-    fn decl_text(&self, span: Span) -> &str {
-        match self.foreign_sig_item {
-            Some(item) => self.item_text(item, span),
-            None => self.text(span),
-        }
-    }
-
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        self.item_src(item)
-            .get(span.lo as usize..span.hi as usize)
+            .sources
+            .get(span.source)
+            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
     }
 
-    fn find_package_root(&self, file_path: &str) -> Option<std::path::PathBuf> {
-        let mut path = std::path::Path::new(file_path);
-        while let Some(parent) = path.parent() {
-            if parent.join("starkpkg.json").exists() {
-                return Some(parent.to_path_buf());
-            }
-            path = parent;
+    /// The logical name of the file `span` belongs to.
+    fn source_name(&self, span: Span) -> &str {
+        self.hir
+            .sources
+            .get(span.source)
+            .map(|file| file.name.as_str())
+            .unwrap_or("<unknown>")
+    }
+
+    /// AS1b-ii-d: kept as a name, not a mechanism. CD-358 introduced this because a name belonging
+    /// to a DECLARATION had to be read against the declaring file while `self.text` read the file
+    /// being checked; across a module boundary those differ, and getting it wrong compared garbage
+    /// rather than erroring. A declaration's span names its own file, so this is `text`.
+    fn decl_text(&self, span: Span) -> &str {
+        self.text(span)
+    }
+
+    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
+    }
+
+    /// Which package a source belongs to, for the orphan rule.
+    ///
+    /// AS1a gives every package source the logical name `<package>/<path within the package>`, so
+    /// the package is the leading segment. `None` means "not a package build" — a single-file or
+    /// path-named compile, where every source belongs to the one program and everything is local.
+    ///
+    /// This replaced `find_package_root`, which walked the file's PATH upwards looking for a
+    /// `starkpkg.json` on disk. That only ever worked here by an asymmetry: the root file carried
+    /// an absolute disk path while every other item's file carried a logical name, so the root
+    /// probe found a manifest and the dependency probe found nothing, and "different package" fell
+    /// out of the difference. Reading identity off the names makes the comparison say what it
+    /// means, and stops it depending on the filesystem at type-check time.
+    fn source_package<'s>(&self, name: &'s str) -> Option<&'s str> {
+        if std::path::Path::new(name).is_absolute() {
+            return None;
         }
-        None
+        name.split_once('/').map(|(package, _)| package)
     }
 
     fn pat_subsumes(&self, a: &hir::PatNode, b: &hir::PatNode) -> bool {
@@ -1440,39 +1939,10 @@ impl<'a> TypeChecker<'a> {
                     ret: Box::new(Ty::Core(CoreType::Result, vec![value, error])),
                 }
             }
-            Builtin::TensorZeros
-            | Builtin::TensorOnes
-            | Builtin::TensorFull
-            | Builtin::TensorFromVec
-            | Builtin::TensorAdd
-            | Builtin::TensorSub
-            | Builtin::TensorMul
-            | Builtin::TensorDiv
-            | Builtin::TensorMin
-            | Builtin::TensorMax
-            | Builtin::TensorEq
-            | Builtin::TensorNe
-            | Builtin::TensorLt
-            | Builtin::TensorLe
-            | Builtin::TensorGt
-            | Builtin::TensorGe
-            | Builtin::TensorBroadcastTo
-            | Builtin::TensorMatMul
-            | Builtin::TensorBatchMatMul
-            | Builtin::TensorConcat
-            | Builtin::TensorPermute
-            | Builtin::TensorReshape
-            | Builtin::TensorSliceAxis
-            | Builtin::TensorTranspose
-            | Builtin::TensorSumAxis
-            | Builtin::TensorMeanAxis
-            | Builtin::TensorArgMax
-            | Builtin::TensorSum
-            | Builtin::TensorSoftmax
-            | Builtin::TensorCast
-            | Builtin::TensorScale255
-            | Builtin::TensorNormalize
-            | Builtin::TensorToDevice => Ty::Fn {
+            // AS6: one arm, not thirty-three patterns for one behaviour. Every tensor
+            // operation's *signature* is refined by the extension's own rules
+            // (`check_tensor_op`); Core only needs to know a call is a call.
+            Builtin::Tensor(_) => Ty::Fn {
                 params: vec![],
                 ret: Box::new(self.new_type_var()),
             },
@@ -2295,7 +2765,9 @@ impl<'a> TypeChecker<'a> {
                         "Model".to_string()
                     }
                 }
-                ExtensionTy::ModelError => "ModelError".to_string(),
+                ExtensionTy::ModelError => tensor_syntax::TensorTypeConstructor::ModelError
+                    .name()
+                    .to_string(),
             },
             Ty::Error => "{error}".to_string(),
         }
@@ -2422,13 +2894,9 @@ impl<'a> TypeChecker<'a> {
                     Res::TypeParam => {
                         // DEV-148: a type parameter's NAME is a span into the file that declared
                         // the signature being converted, which is not the file being checked when
-                        // the call crosses a module boundary. `foreign_sig_item` carries that file
-                        // while a foreign signature is in flight; unset, this is the ordinary
-                        // same-file path and behaves exactly as before.
-                        let name_str = match self.foreign_sig_item {
-                            Some(item) => self.item_text(item, node.span),
-                            None => self.text(node.span),
-                        };
+                        // the call crosses a module boundary. AS1b-ii-d: the span says which file
+                        // that is, so no foreign-signature item has to be carried here.
+                        let name_str = self.text(node.span);
                         match self.generic_kinds.get(name_str).copied() {
                             Some(GenericKind::Dim) => {
                                 self.tensor_error(
@@ -2554,15 +3022,16 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Ty> {
         let empty: &[hir::GenericArg] = &[];
         let arg_list = args.map_or(empty, |a| a.args.as_slice());
-        match name {
-            "TensorAny" => {
-                self.tensor_arity("TensorAny", 0, arg_list.len(), span);
+        let constructor = tensor_syntax::tensor_type_constructor(name)?;
+        match constructor {
+            tensor_syntax::TensorTypeConstructor::TensorAny => {
+                self.tensor_arity(constructor.name(), 0, arg_list.len(), span);
                 Some(Ty::Extension(Box::new(ExtensionTy::Tensor(
                     TensorKind::TensorAny,
                 ))))
             }
-            "TensorDyn" => {
-                self.tensor_arity("TensorDyn", 1, arg_list.len(), span);
+            tensor_syntax::TensorTypeConstructor::TensorDyn => {
+                self.tensor_arity(constructor.name(), 1, arg_list.len(), span);
                 let dtype = match arg_list.first() {
                     Some(hir::GenericArg::Type(t)) => self.tensor_dtype(*t, span),
                     _ => {
@@ -2574,7 +3043,7 @@ impl<'a> TypeChecker<'a> {
                     TensorKind::TensorDyn(dtype),
                 ))))
             }
-            "Tensor" => {
+            tensor_syntax::TensorTypeConstructor::Tensor => {
                 if !(2..=4).contains(&arg_list.len()) {
                     self.tensor_error(
                         &format!(
@@ -2631,11 +3100,10 @@ impl<'a> TypeChecker<'a> {
                     }),
                 ))))
             }
-            "ModelError" => {
-                self.tensor_arity("ModelError", 0, arg_list.len(), span);
+            tensor_syntax::TensorTypeConstructor::ModelError => {
+                self.tensor_arity(constructor.name(), 0, arg_list.len(), span);
                 Some(Ty::Extension(Box::new(ExtensionTy::ModelError)))
             }
-            _ => None,
         }
     }
 
@@ -2816,8 +3284,8 @@ impl<'a> TypeChecker<'a> {
                         );
                         return self.tensor_ctx.fresh_device();
                     }
-                    match spelling {
-                        Some("Cpu") => {
+                    match spelling.and_then(tensor_syntax::device_constructor) {
+                        Some(tensor_syntax::DeviceConstructor::Cpu) => {
                             if args.as_ref().is_some_and(|a| !a.args.is_empty()) {
                                 self.tensor_error(
                                     "`Cpu` does not take arguments",
@@ -2826,11 +3294,14 @@ impl<'a> TypeChecker<'a> {
                             }
                             Device::Cpu
                         }
-                        Some("Cuda") => {
+                        Some(tensor_syntax::DeviceConstructor::Cuda) => {
                             self.build_cuda_device(args.as_ref(), self.hir.ty(*ty).span)
                         }
-                        _ => {
-                            self.tensor_error("unknown tensor device; expected `Cpu`, `Cuda<N>`, or a `Device` parameter", self.hir.ty(*ty).span);
+                        None => {
+                            self.tensor_error(
+                                tensor_syntax::DEVICE_EXPECTATION,
+                                self.hir.ty(*ty).span,
+                            );
                             self.tensor_ctx.fresh_device()
                         }
                     }
@@ -2862,15 +3333,12 @@ impl<'a> TypeChecker<'a> {
             None => ValueRange::Unspecified,
             Some(hir::GenericArg::Binding { ty, .. }) => {
                 if let hir::TypeKind::Path { path, .. } = &self.hir.ty(*ty).kind {
-                    match single_segment_name(path, self) {
-                        Some("Unspecified") => ValueRange::Unspecified,
-                        Some("ByteRange") => ValueRange::ByteRange,
-                        Some("UnitRange") => ValueRange::UnitRange,
-                        Some("Normalized") => ValueRange::Normalized,
-                        _ => {
+                    match single_segment_name(path, self).and_then(tensor_syntax::value_range_state)
+                    {
+                        Some(state) => state,
+                        None => {
                             self.tensor_error(
-                                "unknown value range; expected `ByteRange`, `UnitRange`, \
-                                 `Normalized`, or `Unspecified`",
+                                tensor_syntax::VALUE_RANGE_EXPECTATION,
                                 self.hir.ty(*ty).span,
                             );
                             ValueRange::Unspecified
@@ -2970,21 +3438,13 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .filter(|bound| bound.res == Res::Err)
             .filter_map(|bound| single_segment_name(&bound.path, self))
-            .filter_map(|name| match name {
-                "Dim" => Some(GenericKind::Dim),
-                "DType" => Some(GenericKind::DType),
-                "Device" => Some(GenericKind::Device),
-                _ => None,
-            })
+            .filter_map(|name| tensor_syntax::tensor_param_kind(name).map(GenericKind::from))
             .collect::<Vec<_>>();
         if extension_bounds.is_empty() {
             return GenericKind::Type;
         }
         if generic.bounds.len() != 1 || extension_bounds.len() != 1 {
-            self.tensor_error(
-                "tensor kind parameters must have exactly one of `Dim`, `DType`, or `Device` and no trait bounds",
-                generic.name,
-            );
+            self.tensor_error(tensor_syntax::TENSOR_PARAM_KIND_EXPECTATION, generic.name);
         }
         extension_bounds[0]
     }
@@ -3079,21 +3539,28 @@ impl<'a> TypeChecker<'a> {
                 diagnostic.span = *found;
             }
             if let Some(expected) = expected_span {
-                let (line, column) = self.file.line_col(expected.lo);
-                diagnostic = diagnostic
-                    .with_note(format!("expected dimension originates at {line}:{column}"));
+                if let Some(source) = self.hir.sources.get(expected.source) {
+                    let (line, column) = source.line_col(expected.lo);
+                    diagnostic = diagnostic
+                        .with_note(format!("expected dimension originates at {line}:{column}"));
+                }
             }
             if let Some(found) = found_span {
-                let (line, column) = self.file.line_col(found.lo);
-                diagnostic =
-                    diagnostic.with_note(format!("found dimension originates at {line}:{column}"));
+                if let Some(source) = self.hir.sources.get(found.source) {
+                    let (line, column) = source.line_col(found.lo);
+                    diagnostic = diagnostic
+                        .with_note(format!("found dimension originates at {line}:{column}"));
+                }
             }
         }
         self.diags.push(diagnostic);
     }
 
     fn check_crate(&mut self) {
-        let root_file = self.file.clone();
+        // AS1b-ii-d: each of this function's three item walks used to open by pointing `self.file`
+        // at the item's declaring file and close by restoring the root — DEV-069's mechanism for
+        // getting span reads and diagnostic attribution right. Reads go through the span's own
+        // source now, so there is no ambient file to aim.
         // Pass 1: Populate item signatures (structs, enums, functions)
         for item in &self.hir.items {
             let item_id = hir::ItemId(
@@ -3103,12 +3570,6 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
 
             match &item.kind {
                 hir::ItemKind::Struct { fields, .. } => {
@@ -3239,30 +3700,20 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         self.check_public_api_reachability();
         self.check_type_well_formedness();
 
-        let start_len = self.diags.len();
         self.validate_impl_rules();
-        let end_len = self.diags.len();
-        for i in start_len..end_len {
-            if self.diags[i].file.is_none() {
-                self.diags[i].file = Some(root_file.clone());
-            }
-        }
 
         // WP-C6.2c: precompute concrete associated-type bindings before checking bodies, so a
         // projection carried through generic instantiation (`Ty::Param("H::Item")`) can be
         // normalised to the impl's bound type at any call site.
-        self.build_assoc_projections(&root_file);
+        self.build_assoc_projections();
 
         // Pass 2: Typecheck bodies & run semantic checks
         for item in &self.hir.items {
@@ -3275,12 +3726,6 @@ impl<'a> TypeChecker<'a> {
             );
             // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
             self.current_module = self.hir.item_modules.get(&item_id).copied();
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
 
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
@@ -3344,17 +3789,13 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
-            self.file = root_file.clone();
             let mut state = HashSet::new();
             for &stmt_id in stmts {
                 self.check_stmt(stmt_id, &mut state);
@@ -3363,8 +3804,6 @@ impl<'a> TypeChecker<'a> {
                 let _tail_ty = self.check_expr(*tail_id);
             }
         }
-
-        self.file = root_file;
 
         // WP-C6.2c: resolve deferred associated-type projections (`T::Item` where the base was an
         // inference variable) now that every argument has unified — before int-literal defaulting,
@@ -3398,6 +3837,33 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // **AS3 Boundary 4: build the `Display` dispatch plan.**
+        //
+        // Here, not at the call sites: the walk keys positions off the RESOLVED type, and this is
+        // the first point where every one of them is settled. Publishing earlier would key
+        // positions off inference variables.
+        let plans = std::mem::take(&mut self.display_plans);
+        for plan in plans {
+            let DeferredDisplayPlan {
+                root,
+                ty,
+                generic_scope: (fn_generics, impl_generics),
+            } = plan;
+            let resolved = self.resolve(&ty);
+            if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
+                continue;
+            }
+            // Restore the scope this expression was WRITTEN in, so a `T: Display` bound is visible
+            // to the walk exactly as it was where the programmer wrote it.
+            let saved_fn = std::mem::replace(&mut self.current_fn_generics, fn_generics);
+            let saved_impl = std::mem::replace(&mut self.current_impl_generics, impl_generics);
+            if self.type_is_displayable(&resolved) {
+                self.publish_display_uses(root, &resolved, self.hir.expr(root).span);
+            }
+            self.current_fn_generics = saved_fn;
+            self.current_impl_generics = saved_impl;
+        }
+
         // DEV-134: `?` propagation compatibility, for the same reason and at the same point.
         let tries = std::mem::take(&mut self.try_checks);
         for (operand_ty, ret_ty, span) in tries {
@@ -3406,17 +3872,15 @@ impl<'a> TypeChecker<'a> {
 
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
-        for (concrete_ty, bounds_list, span, enclosing, decl_file) in bounds {
+        for (concrete_ty, bounds_list, span, enclosing) in bounds {
             // DEV-067(a): restore the generic environment this obligation was recorded in, so a
             // caller's own `T: Ord` can discharge a callee's `T: Ord` (TYPE-GENERIC-001).
             let saved_generics = self.current_fn_generics.replace(enclosing);
-            // DEV-101: a bound's path NAME is declared by the callee, so `satisfies_bound` (which
-            // identifies the trait by that text) and the diagnostic must read it against the
-            // callee's file. `self.file` has since returned to the root file, so select the
-            // declaring file for the reads and ALWAYS restore it before pushing a diagnostic, whose
-            // `span` belongs to the caller's call site. `ty_to_string` is item-aware, so the
-            // concrete type's name is unaffected by the temporary switch.
-            let saved_file = std::mem::replace(&mut self.file, decl_file);
+            // DEV-101 also swapped `self.file` to the declaring file around these reads, because
+            // `satisfies_bound` identifies the trait by the bound path's TEXT and the checker had
+            // long since returned to the root file. The swap is gone: `bound.path.span` names the
+            // callee's file, and the diagnostic's `span` names the caller's call site — the two
+            // no longer have to take turns owning one ambient file.
             let mut violations = Vec::new();
             for bound in bounds_list {
                 if !self.satisfies_bound(&concrete_ty, &bound) {
@@ -3426,7 +3890,6 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
-            self.file = saved_file;
             self.current_fn_generics = saved_generics;
             for (ty_str, bound_str) in violations {
                 self.diags.push(
@@ -3499,15 +3962,12 @@ impl<'a> TypeChecker<'a> {
         for (public_item, private_item, span) in exposures {
             let private_name = self.item_name(private_item);
             let public_name = self.item_name(public_item);
-            let mut diagnostic = Diagnostic::error(
+            let diagnostic = Diagnostic::error(
                 format!("public item '{public_name}' exposes non-public type '{private_name}'"),
                 span,
             )
             .with_code("E0209")
             .with_note("make the type publicly nameable or remove it from the public signature");
-            if let Some(file) = self.hir.item_files.get(&public_item) {
-                diagnostic.file = Some(file.clone());
-            }
             self.diags.push(diagnostic);
         }
     }
@@ -3636,27 +4096,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn validate_impl_rules(&mut self) {
-        type ImplRecord = (Option<Res>, Ty, HashSet<String>, Span, Arc<SourceFile>);
+        type ImplRecord = (Option<Res>, Ty, HashSet<String>, Span);
         let mut impls: Vec<ImplRecord> = Vec::new();
         let mut copy_types = HashSet::new();
         let mut drop_types = HashSet::new();
-        let root_file = self.file.clone();
 
         for item in &self.hir.items {
-            let item_id = hir::ItemId(
-                self.hir
-                    .items
-                    .iter()
-                    .position(|i| std::ptr::eq(i, item))
-                    .unwrap() as u32,
-            );
-            if let Some(item_file) = self.hir.item_files.get(&item_id) {
-                self.file = item_file.clone();
-            } else {
-                self.file = root_file.clone();
-            }
-            let start_len = self.diags.len();
-
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -3676,11 +4121,11 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect();
 
-            let impl_pkg = self.find_package_root(&self.file.name);
+            let impl_pkg = self.source_package(self.source_name(item.span));
 
             let trait_is_local = if let Some(Res::Item(trait_item_id)) = trait_res {
-                if let Some(trait_file) = self.hir.item_files.get(&trait_item_id) {
-                    self.find_package_root(&trait_file.name) == impl_pkg
+                if let Some(trait_file) = self.hir.item_file(trait_item_id) {
+                    self.source_package(&trait_file.name) == impl_pkg
                 } else {
                     false
                 }
@@ -3690,8 +4135,8 @@ impl<'a> TypeChecker<'a> {
 
             let self_type_is_local = match &self_ty {
                 Ty::Struct(struct_item_id, _) | Ty::Enum(struct_item_id, _) => {
-                    if let Some(type_file) = self.hir.item_files.get(struct_item_id) {
-                        self.find_package_root(&type_file.name) == impl_pkg
+                    if let Some(type_file) = self.hir.item_file(*struct_item_id) {
+                        self.source_package(&type_file.name) == impl_pkg
                     } else {
                         false
                     }
@@ -3715,34 +4160,32 @@ impl<'a> TypeChecker<'a> {
             }
 
             let mut conflicting = None;
-            for (previous_trait, previous_ty, previous_methods, prev_span, prev_file) in &impls {
+            for (previous_trait, previous_ty, previous_methods, prev_span) in &impls {
                 if *previous_trait == trait_res
                     && self.types_may_overlap(previous_ty, &self_ty)
                     && (trait_res.is_some() || !previous_methods.is_disjoint(&method_names))
                 {
-                    conflicting = Some((prev_span, prev_file));
+                    conflicting = Some(*prev_span);
                     break;
                 }
             }
 
-            if let Some((prev_span, prev_file)) = conflicting {
+            if let Some(prev_span) = conflicting {
+                // AS1b-ii-d: the record used to carry the impl's file alongside its span so this
+                // note could name it. The span names it.
+                let note = format!(
+                    "conflicting implementation found in {} at {:?}",
+                    self.source_name(prev_span),
+                    prev_span
+                );
                 self.diags.push(
                     Diagnostic::error("overlapping implementation for the same type", item.span)
                         .with_code("E0500")
                         .with_label("another applicable impl already exists")
-                        .with_note(format!(
-                            "conflicting implementation found in {} at {:?}",
-                            prev_file.name, prev_span
-                        )),
+                        .with_note(note),
                 );
             }
-            impls.push((
-                trait_res,
-                self_ty.clone(),
-                method_names,
-                item.span,
-                self.file.clone(),
-            ));
+            impls.push((trait_res, self_ty.clone(), method_names, item.span));
 
             let trait_name = trait_
                 .as_ref()
@@ -3941,38 +4384,22 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            let end_len = self.diags.len();
-            for i in start_len..end_len {
-                if self.diags[i].file.is_none() {
-                    self.diags[i].file = Some(self.file.clone());
-                }
-            }
+            // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
+            // here, because a span could not say which file it indexed. It can now, so there is
+            // nothing to stamp and `start_len` has no reader.
         }
 
         for item_id in copy_types.intersection(&drop_types) {
-            let file = self
-                .hir
-                .item_files
-                .get(item_id)
-                .cloned()
-                .unwrap_or(root_file.clone());
             self.diags.push(
                 Diagnostic::error(
                     "a type cannot implement both Copy and Drop",
                     self.hir.item(*item_id).span,
                 )
-                .with_file(file)
                 .with_code("E0500"),
             );
         }
 
         for item_id in copy_types.iter().copied() {
-            let file = self
-                .hir
-                .item_files
-                .get(&item_id)
-                .cloned()
-                .unwrap_or(root_file.clone());
             let fields: Vec<Ty> = match &self.hir.item(item_id).kind {
                 hir::ItemKind::Struct { .. } => self
                     .struct_fields
@@ -4004,12 +4431,34 @@ impl<'a> TypeChecker<'a> {
                         "Copy may only be implemented when every field is Copy",
                         self.hir.item(item_id).span,
                     )
-                    .with_file(file)
                     .with_code("E0500"),
                 );
             }
         }
-        self.file = root_file;
+    }
+
+    /// Record each field's DECLARED type, instantiated for this literal's type arguments.
+    ///
+    /// AS3 Packet 5. The `AggregateField` boundary needs the type the *nominal declares* for the
+    /// field, not the type of the expression that produced the value — the second would compare a
+    /// value against its own producer and assert nothing. `expected` is the nominal's parametric
+    /// field map and `map` is the substitution the literal's arguments determine, which is exactly
+    /// what `check_field_initializers` unifies against; publishing here rather than re-deriving
+    /// keeps the boundary reading the same answer the checker enforced.
+    ///
+    /// Shorthand initialisers (`W { v }`) are covered for free: the key is the FIELD NAME, so a
+    /// field with no initialiser expression still has a published type.
+    fn publish_aggregate_field_types(
+        &mut self,
+        expr_id: ExprId,
+        expected: &HashMap<String, Ty>,
+        map: &HashMap<String, Ty>,
+    ) {
+        let concrete = expected
+            .iter()
+            .map(|(name, ty)| (name.clone(), self.instantiate_ty(ty, map)))
+            .collect();
+        self.aggregate_field_types.insert(expr_id, concrete);
     }
 
     fn trait_method_signature_matches(
@@ -4589,6 +5038,118 @@ impl<'a> TypeChecker<'a> {
     /// caller's `decl_text` yields a different string, every `map` lookup misses, and the
     /// environment silently publishes as empty. Resolving names inside this helper is exactly how
     /// that regression happened, so the caller supplies them.
+    /// The declaration a body belongs to, built once and cached.
+    ///
+    /// AS3: `CallableDeclId` needs the impl/trait member position, which the HIR expresses only by
+    /// index into the owner's `items`. Deriving it per publication site would mean four scans
+    /// written four ways; deriving it once means one.
+    ///
+    /// **This is a lookup, not a selection.** The body is already the checker's own answer — this
+    /// only says which declaration that answer came from.
+    #[allow(dead_code)] // consumed by Boundary 2, which is the next commit.
+    fn decl_for_body(&mut self, body: BlockId) -> Option<CallableDeclId> {
+        if self.body_decls.is_none() {
+            let mut map: HashMap<BlockId, CallableDeclId> = HashMap::new();
+            for (index, item) in self.hir.items.iter().enumerate() {
+                let owner = ItemId(index as u32);
+                match &item.kind {
+                    hir::ItemKind::Fn(def) => {
+                        map.insert(def.body, CallableDeclId::Item(owner));
+                    }
+                    hir::ItemKind::Impl { items, .. } => {
+                        for (member, impl_item) in items.iter().enumerate() {
+                            if let hir::ImplItem::Fn { def, .. } = impl_item {
+                                map.insert(
+                                    def.body,
+                                    CallableDeclId::ImplMember {
+                                        impl_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    hir::ItemKind::Trait { items, .. } => {
+                        for (member, trait_item) in items.iter().enumerate() {
+                            if let hir::TraitItem::Method { body: Some(b), .. } = trait_item {
+                                map.insert(
+                                    *b,
+                                    CallableDeclId::TraitMember {
+                                        trait_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.body_decls = Some(map);
+        }
+        self.body_decls
+            .as_ref()
+            .and_then(|map| map.get(&body))
+            .copied()
+    }
+
+    /// Publish a `CallableUse` for a named-dispatch site (AS3 Boundary 2).
+    ///
+    /// Takes the same inputs the instantiation table already receives, so the two are built from
+    /// one decision rather than two.
+    #[allow(clippy::too_many_arguments, dead_code)] // consumed by Boundary 2.
+    fn publish_named_use(
+        &mut self,
+        call_expr: ExprId,
+        body: BlockId,
+        bindings: Vec<(GenericBinder, Ty)>,
+        receiver_adjustment: ReceiverAdjustment,
+        receiver_binding: ReceiverBinding,
+        signature: CallableSigTy,
+        provenance: DispatchProvenance,
+    ) {
+        let Some(declaration) = self.decl_for_body(body) else {
+            // **A body with no declaration is an internal inconsistency, and is reported as one.**
+            //
+            // This used to `return`, which turned the inconsistency into MISSING METADATA — the
+            // precise thing AS3's rule forbids, since an execution site finding no record must be
+            // an internal compiler error rather than a licence to fall through and scan. Silently
+            // omitting a use would have made the totality invariant unenforceable by construction.
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "internal compiler error: callable body {body:?} belongs to no item, impl                          member or trait member, so no CallableUse can be published for it"
+                    ),
+                    self.hir.expr(call_expr).span,
+                )
+                .with_code("E9001"),
+            );
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static { declaration, body },
+            environment: GenericEnvironment::Static(bindings),
+            receiver_adjustment,
+            receiver_binding,
+            signature,
+            provenance,
+        };
+        self.publish_callable_use(call_expr, use_);
+    }
+
+    /// **AS3: publish one callable use.** The single point at which the checker's selection becomes
+    /// something an engine may consume.
+    ///
+    /// Returns the id so a caller that needs to refer to the use later can. Ungrounded types are
+    /// fine here — `analyze` grounds every published use once, at the end, the same way it grounds
+    /// `callable_instantiations`.
+    fn publish_callable_use(&mut self, expr: ExprId, use_: CallableUse) -> CallableUseId {
+        let id = CallableUseId(self.callable_uses.len() as u32);
+        self.callable_uses.push(use_);
+        self.callable_uses_by_expr.entry(expr).or_default().push(id);
+        id
+    }
+
     fn publish_callable_env(&mut self, published: PublishedEnv<'_>) {
         let PublishedEnv {
             call_expr,
@@ -4599,6 +5160,24 @@ impl<'a> TypeChecker<'a> {
             own_is_method,
             map,
         } = published;
+        let bindings = Self::env_bindings(&self_ty, impl_names, own_names, own_is_method, map);
+        self.callable_envs
+            .insert(call_expr, CallableInstantiation { body, bindings });
+    }
+
+    /// Build the ordered binder list for one callable use.
+    ///
+    /// AS3 extracted this from `publish_callable_env` so the instantiation table and the
+    /// `CallableUse` record are built by the SAME code. Two constructions of "what generic
+    /// environment did this use select" is the shape of defect this packet exists to remove, and
+    /// duplicating it here to publish a second table would have been an immediate instance.
+    fn env_bindings(
+        self_ty: &Option<Ty>,
+        impl_names: &[String],
+        own_names: &[String],
+        own_is_method: bool,
+        map: &HashMap<String, Ty>,
+    ) -> Vec<(GenericBinder, Ty)> {
         let mut bindings: Vec<(GenericBinder, Ty)> = Vec::new();
         if let Some(self_ty) = self_ty {
             // **`Self` is substituted through the WHOLE map here, not only through the binders
@@ -4608,7 +5187,7 @@ impl<'a> TypeChecker<'a> {
             // install would refuse a correct program. `map` holds every binding the checker
             // selected, including the impl's, so resolving here uses all of them regardless of
             // which are individually named as binders.
-            bindings.push((GenericBinder::SelfType, substitute_ty(&self_ty, map)));
+            bindings.push((GenericBinder::SelfType, substitute_ty(self_ty, map)));
         }
         for (index, name) in impl_names.iter().enumerate() {
             if let Some(ty) = map.get(name) {
@@ -4637,8 +5216,7 @@ impl<'a> TypeChecker<'a> {
                 bindings.push((binder, ty.clone()));
             }
         }
-        self.callable_envs
-            .insert(call_expr, CallableInstantiation { body, bindings });
+        bindings
     }
 
     /// **NAME-SHADOW-001 (DEV-177): a generic parameter may not duplicate another one in scope.**
@@ -4688,11 +5266,7 @@ impl<'a> TypeChecker<'a> {
                     )
                     .with_code("E0204")
                     .with_label(format!("'{name}' is already declared by {what}"))
-                    .with_related(
-                        self.file.clone(),
-                        first,
-                        format!("'{name}' first declared here"),
-                    ),
+                    .with_related(first, format!("'{name}' first declared here")),
                 );
             }
             seen.push((name, param.name));
@@ -5125,7 +5699,20 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let spec_span = spec.span.unwrap_or(expr_span);
-        let stripped = strip_ref(&ty).clone();
+        // **DEV-206: do not strip the reference that MAKES the value.**
+        //
+        // Stripping is right for `fn render<T: Display>(v: &T)` — `Display::fmt` borrows anyway
+        // (STD-FORMAT-001), so a reference to a displayable type is displayable. It is wrong for
+        // `&[T]`: the pointee is UNSIZED, the reference is not incidental, and stripping it turns
+        // the one displayable spelling into the one that is not a value at all.
+        //
+        // Found by the value-context property, which required every context to accept the
+        // reference form and caught interpolation still rejecting `&[Int32]` after `println`
+        // had been repaired.
+        let stripped = match &ty {
+            Ty::Ref { inner, .. } if !type_is_sized(inner) => ty.clone(),
+            other => strip_ref(other).clone(),
+        };
 
         // A numeric mode requires a numeric type. `Display` does NOT imply integer formatting
         // (§11.5), so a generic `T: Display` is refused here rather than given a meaning it has
@@ -5236,6 +5823,9 @@ impl<'a> TypeChecker<'a> {
         // path — a user trait merely NAMED `Display` does not satisfy it.
         if let Ty::Param(param_name) = &stripped {
             let param_name = param_name.clone();
+            // Queued before the guard: a parameter WITH the bound is a real late-bound render
+            // position, and this branch returns early.
+            self.record_display_plan(expr, stripped.clone());
             if self.bound_method_candidates(&param_name, "fmt").is_empty() {
                 self.diags.push(
                     Diagnostic::error(
@@ -5248,6 +5838,11 @@ impl<'a> TypeChecker<'a> {
             }
             return;
         }
+        // **AS3 Boundary 4: interpolation is the SECOND `Display` entry point**, and it renders the
+        // same way — `"{w}"` on a `W<A>` runs `W`'s own `fmt` and stops, exactly as `println(w)`
+        // does. So it queues the same walk rather than getting a dispatch mechanism of its own,
+        // which is what left `find_impl_fn(nominal, "fmt", ..)` serving two callers.
+        self.record_display_plan(expr, stripped.clone());
         if !self.type_is_displayable(&stripped) {
             self.diags.push(
                 Diagnostic::error(
@@ -5388,9 +5983,12 @@ impl<'a> TypeChecker<'a> {
                         // unaffected. Ownership-transferring cross-file constant use is deferred to
                         // the front-end/multi-file completion package (recorded in
                         // KNOWN-DEVIATIONS.md alongside DEV-083).
-                        let const_file = self.hir.item_files.get(item_id);
-                        let cross_file =
-                            const_file.is_some_and(|declaring| declaring.name != self.file.name);
+                        // AS1b-ii-d: identity, not name equality against an ambient file.
+                        let cross_file = self
+                            .hir
+                            .item_sources
+                            .get(item_id)
+                            .is_some_and(|declaring| *declaring != expr.span.source);
                         if cross_file {
                             self.diags.push(
                                 Diagnostic::error(
@@ -5583,6 +6181,7 @@ impl<'a> TypeChecker<'a> {
                             let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
                         }
                         self.require_operator_bound(&lhs_ty, "Eq", expr.span);
+                        self.publish_operator_use(expr_id, &lhs_ty, "Eq", "eq", hir::CoreTrait::Eq);
                         Ty::Primitive(Primitive::Bool)
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -5590,6 +6189,13 @@ impl<'a> TypeChecker<'a> {
                             let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
                         }
                         self.require_operator_bound(&lhs_ty, "Ord", expr.span);
+                        self.publish_operator_use(
+                            expr_id,
+                            &lhs_ty,
+                            "Ord",
+                            "cmp",
+                            hir::CoreTrait::Ord,
+                        );
                         Ty::Primitive(Primitive::Bool)
                     }
                     BinOp::And | BinOp::Or => {
@@ -5688,13 +6294,19 @@ impl<'a> TypeChecker<'a> {
                     ..
                 } = &self.hir.expr(*callee).kind
                 {
-                    self.check_qualified_trait_call(*trait_id, *member, args, expr.span)
+                    self.check_qualified_trait_call(expr_id, *trait_id, *member, args, expr.span)
                 } else if let hir::ExprKind::Path {
                     res: Res::CoreTraitMember(core_trait, method_span),
                     ..
                 } = &self.hir.expr(*callee).kind
                 {
-                    self.check_qualified_core_trait_call(*core_trait, *method_span, args, expr.span)
+                    self.check_qualified_core_trait_call(
+                        expr_id,
+                        *core_trait,
+                        *method_span,
+                        args,
+                        expr.span,
+                    )
                 } else if let hir::ExprKind::Path {
                     res: Res::Builtin(builtin),
                     turbofish,
@@ -5725,6 +6337,7 @@ impl<'a> TypeChecker<'a> {
                             if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
                                 self.display_checks
                                     .push((ty.clone(), self.hir.expr(*arg).span));
+                                self.record_display_plan(*arg, ty.clone());
                             }
                         }
                         match self.resolve(&callee_ty) {
@@ -5773,6 +6386,7 @@ impl<'a> TypeChecker<'a> {
                     let arg_tys: Vec<Ty> = args.iter().map(|&a| self.check_expr(a)).collect();
                     match self.resolve(&callee_ty) {
                         Ty::Fn { params, ret } => {
+                            let param_snapshot = params.clone();
                             if params.len() != arg_tys.len() {
                                 self.diags.push(
                                     Diagnostic::error(
@@ -5794,6 +6408,49 @@ impl<'a> TypeChecker<'a> {
                             // WP-C6.2c: resolve any deferred return projection now the arguments
                             // have fixed the base type parameters.
                             self.discharge_ready_projections();
+                            // AS3 Boundary 1: the DYNAMIC half of the model, published at the same
+                            // time as the static half so it is exercised from the start.
+                            //
+                            // The checker knows this is a call and knows its signature. It does NOT
+                            // know the body: DEV-178 established that the value carries the item and
+                            // the bindings it was created with, because `Ty::Fn` cannot say which
+                            // instantiation produced it. `FunctionValue` states that rather than
+                            // pretending a `BlockId` exists here.
+                            // **DEV-193: not every call reaching here is a function-VALUE call.**
+                            //
+                            // `free(1)`, where `free` names a known `fn` item, falls into this
+                            // branch too — and published `FunctionValue`, the selection that means
+                            // "the body is not knowable here". It is knowable: the callee path
+                            // published `Direct`/`Static(body)` a moment earlier. So `free(1)` and
+                            // `g(2)` produced IDENTICAL records at their call expressions, and a
+                            // consumer reading the call site could not tell a direct call from a
+                            // call through a value — the exact conflation three binding times exist
+                            // to prevent.
+                            //
+                            // The record for a direct call is the path's; publishing a second,
+                            // weaker one here would be a duplicate that contradicts it.
+                            let callee_is_known_fn = match &self.hir.expr(*callee).kind {
+                                hir::ExprKind::Path {
+                                    res: Res::Item(item),
+                                    ..
+                                } => matches!(self.hir.item(*item).kind, hir::ItemKind::Fn(_)),
+                                _ => false,
+                            };
+                            let use_ = CallableUse {
+                                selection: CalleeSelection::FunctionValue,
+                                environment: GenericEnvironment::FromFunctionValue,
+                                receiver_adjustment: ReceiverAdjustment::None,
+                                receiver_binding: ReceiverBinding::None,
+                                signature: CallableSigTy {
+                                    receiver: None,
+                                    params: param_snapshot,
+                                    ret: (*ret).clone(),
+                                },
+                                provenance: DispatchProvenance::FunctionValue,
+                            };
+                            if !callee_is_known_fn {
+                                self.publish_callable_use(expr_id, use_);
+                            }
                             *ret
                         }
                         Ty::Error => Ty::Error,
@@ -6149,6 +6806,7 @@ impl<'a> TypeChecker<'a> {
                         .get(struct_id)
                         .cloned()
                         .unwrap_or_default();
+                    self.publish_aggregate_field_types(expr_id, &expected, &map);
                     self.check_field_initializers(
                         Some(*struct_id),
                         &expected,
@@ -6170,6 +6828,7 @@ impl<'a> TypeChecker<'a> {
                             _ => None,
                         });
                     if let Some(expected) = expected {
+                        self.publish_aggregate_field_types(expr_id, &expected, &map);
                         self.check_field_initializers(None, &expected, &map, fields, expr.span);
                         Ty::Enum(*enum_id, args)
                     } else {
@@ -6506,6 +7165,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 };
 
+                // AS3 Boundary 4: publish the `Iterator::next` this loop selected. Placed after
+                // the element type is resolved, because that resolution is what proves an
+                // `Iterator` impl matched.
+                self.publish_iterator_use(expr_id, &resolved_iter_ty);
                 self.local_types.insert(*local, elem_ty);
                 self.local_mutability.insert(*local, false);
 
@@ -6682,6 +7345,15 @@ impl<'a> TypeChecker<'a> {
                         (Builtin::Some, Ty::Core(CoreType::Option, args)) => args.first().cloned(),
                         (Builtin::Ok, Ty::Core(CoreType::Result, args)) => args.first().cloned(),
                         (Builtin::Err, Ty::Core(CoreType::Result, args)) => args.get(1).cloned(),
+                        // **DEV-205: `IOError::Other(msg)` was missing here**, so its sub-pattern
+                        // was never checked: the binding got no `local_types` entry and every use
+                        // of it was typed `Ty::Error`. The program ran and printed correctly, which
+                        // is why nothing found it for as long as nothing read the tables — the
+                        // DEV-121 shape, in the checker rather than the oracle. The payload is the
+                        // `String` the constructor's own signature already declares.
+                        (Builtin::IOErrorOther, Ty::Core(CoreType::IOError, _)) => {
+                            Some(Ty::Primitive(Primitive::String))
+                        }
                         _ => None,
                     };
                     if let (Some(subpat), Some(payload)) = (pats.first(), payload) {
@@ -6944,7 +7616,10 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Ty::Extension(ext) => match &*ext {
                 ExtensionTy::Tensor(kind) => {
-                    match self.tensor_ctx.freshen_tensor(kind, dims, dtypes, devices) {
+                    match self
+                        .tensor_ctx
+                        .freshen_tensor(kind, dims, dtypes, devices, span)
+                    {
                         Ok(kind) => Ty::Extension(Box::new(ExtensionTy::Tensor(kind))),
                         Err(error) => {
                             self.emit_tensor_unify_error(&error, span);
@@ -7016,18 +7691,48 @@ impl<'a> TypeChecker<'a> {
                         .with_code("E0101"),
                 );
             }
-            return self.freshen_call_sig(sig, span);
+            let fresh = self.freshen_call_sig(sig, span);
+            // **AS3: a non-generic call is published too.**
+            //
+            // `callable_instantiations` records nothing here — there is no environment to record —
+            // which is why `push_callable_env` reports "not pushed" and the interpreter falls
+            // through. Under totality that absence is indistinguishable from "no record exists",
+            // and the whole point is that an execution site finding no record is an internal
+            // compiler error rather than a licence to scan. So the environment is an explicitly
+            // EMPTY `Static(vec![])`.
+            if let (Some(expr_id), hir::ItemKind::Fn(def)) =
+                (use_expr, &self.hir.item(item_id).kind)
+            {
+                let body = def.body;
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::Item(item_id),
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(Vec::new()),
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: ReceiverBinding::None,
+                    signature: CallableSigTy {
+                        receiver: None,
+                        params: fresh.params.clone(),
+                        ret: fresh.ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Direct,
+                };
+                self.publish_callable_use(expr_id, use_);
+            }
+            return fresh;
         }
 
+        let mut pending_use: Option<PendingUse> = None;
         let mut map = HashMap::new();
         if let Some(args) = turbofish {
             let has_tensor_kind = generics.iter().any(|param| {
                 param.bounds.iter().any(|bound| {
                     bound.res == Res::Err
-                        && matches!(
-                            single_segment_name(&bound.path, self),
-                            Some("Dim" | "DType" | "Device")
-                        )
+                        && single_segment_name(&bound.path, self)
+                            .and_then(tensor_syntax::tensor_param_kind)
+                            .is_some()
                 })
             });
             if has_tensor_kind {
@@ -7070,13 +7775,8 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_generic_env();
-                self.bounds_checks.push((
-                    arg_ty.clone(),
-                    trait_bounds,
-                    span,
-                    enclosing,
-                    self.item_file(item_id),
-                ));
+                self.bounds_checks
+                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, arg_ty);
             }
         } else {
@@ -7091,13 +7791,8 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_generic_env();
-                self.bounds_checks.push((
-                    var.clone(),
-                    trait_bounds,
-                    span,
-                    enclosing,
-                    self.item_file(item_id),
-                ));
+                self.bounds_checks
+                    .push((var.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, var);
             }
         }
@@ -7112,10 +7807,9 @@ impl<'a> TypeChecker<'a> {
         let has_tensor_kinded_param = generics.iter().any(|param| {
             param.bounds.iter().any(|bound| {
                 bound.res == Res::Err
-                    && matches!(
-                        single_segment_name(&bound.path, self),
-                        Some("Dim" | "DType" | "Device")
-                    )
+                    && single_segment_name(&bound.path, self)
+                        .and_then(tensor_syntax::tensor_param_kind)
+                        .is_some()
             })
         });
         if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
@@ -7139,6 +7833,13 @@ impl<'a> TypeChecker<'a> {
                     own_is_method: false,
                     map: &env_map,
                 });
+                // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
+                // rather than verify. **Deferred to the end of this function**, because the
+                // signature must be the INSTANTIATED one: publishing `sig` here recorded
+                // `params: [Param("T")]` against an environment saying `T = Int32`, so §3.4's
+                // invariant failed the moment the test stopped skipping generic uses.
+                let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
+                pending_use = Some((expr_id, body, bindings));
             }
         }
 
@@ -7175,7 +7876,23 @@ impl<'a> TypeChecker<'a> {
             .collect();
         let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
 
-        self.freshen_call_sig(FnSigTy { params, ret }, span)
+        let instantiated = self.freshen_call_sig(FnSigTy { params, ret }, span);
+        if let Some((expr_id, body, bindings)) = pending_use {
+            self.publish_named_use(
+                expr_id,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: instantiated.params.clone(),
+                    ret: instantiated.ret.clone(),
+                },
+                DispatchProvenance::Direct,
+            );
+        }
+        instantiated
     }
 
     /// WP-C6.2c: like [`Self::instantiate_ty`], but a projection `T::Item` whose base substitutes
@@ -7308,6 +8025,8 @@ impl<'a> TypeChecker<'a> {
     /// `ty_satisfies_operator_bound`'s existing approach for the same compiler-known traits.
     fn check_qualified_core_trait_call(
         &mut self,
+        // AS3 Boundary 4: the call expression, so the selected impl member can be published.
+        call_expr: ExprId,
         core_trait: hir::CoreTrait,
         method_span: Span,
         args: &[ExprId],
@@ -7328,6 +8047,17 @@ impl<'a> TypeChecker<'a> {
         while let Ty::Ref { inner, .. } = receiver_type {
             receiver_type = self.resolve(&inner);
         }
+        // **AS3 Boundary 4: publish the selection.** `Eq::eq(&a, &b)` is the explicit spelling of
+        // the same dispatch `a == b` performs, so it publishes through the same publisher — one
+        // statement of what a qualified core-trait call means, not two.
+        let receiver_for_publication = receiver_type.clone();
+        self.publish_operator_use(
+            call_expr,
+            &receiver_for_publication,
+            core_trait_name,
+            &method_name,
+            core_trait,
+        );
 
         let mut selected: Option<hir::FnSig> = None;
         for item in &self.hir.items {
@@ -7419,8 +8149,66 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    /// The trait's own default body for `member`, as an (owner, member, body) triple shaped like
+    /// [`Self::operator_impl_member`]'s. Used when an implementor accepts the default and there is
+    /// therefore no impl member to find.
+    /// A TRAIT method's declared signature, with `Self` bound to the concrete receiver. The
+    /// trait-default counterpart of [`Self::declared_member_signature`], which reads an impl.
+    fn trait_member_signature(
+        &mut self,
+        trait_id: ItemId,
+        member: u32,
+        self_ty: &Ty,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method { sig, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        let receiver_form = sig.receiver;
+        let param_ids: Vec<hir::TypeId> = sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = sig.ret;
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty.clone());
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => Self::subst_self_ty(self.convert_hir_type(id), self_ty),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+
+    /// `Self` in a trait signature means the concrete receiver at this call site.
+    fn subst_self_ty(ty: Ty, self_ty: &Ty) -> Ty {
+        let mut map = HashMap::new();
+        map.insert("Self".to_string(), self_ty.clone());
+        substitute_ty(&ty, &map)
+    }
+
+    fn trait_default_member(
+        &self,
+        trait_id: ItemId,
+        member: u32,
+    ) -> Option<(ItemId, u32, BlockId)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method {
+            body: Some(body), ..
+        } = items.get(member as usize)?
+        else {
+            return None;
+        };
+        Some((trait_id, member, *body))
+    }
+
     fn check_qualified_trait_call(
         &mut self,
+        call_expr: ExprId,
         trait_id: ItemId,
         member: u32,
         args: &[ExprId],
@@ -7450,6 +8238,71 @@ impl<'a> TypeChecker<'a> {
         let mut receiver_type = self.resolve(first_actual);
         while let Ty::Ref { inner, .. } = receiver_type {
             receiver_type = self.resolve(&inner);
+        }
+        // AS3 Boundary 4: publish the selection, so the interpreter reads the body instead of
+        // scanning the receiver's nominal for the member name.
+        let trait_name = match &self.hir.item(trait_id).kind {
+            hir::ItemKind::Trait { name, .. } => self.item_text(trait_id, *name).to_string(),
+            _ => String::new(),
+        };
+        let member_name = match &self.hir.item(trait_id).kind {
+            hir::ItemKind::Trait { items, .. } => match items.get(member as usize) {
+                Some(hir::TraitItem::Method { sig, .. }) => {
+                    self.item_text(trait_id, sig.name).to_string()
+                }
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        // **The impl member if the implementor overrides it, otherwise the trait's DEFAULT body.**
+        //
+        // `operator_impl_member` finds written impl members only. `<T as Tr>::m(&x)` where `T`
+        // accepts the default has no impl member to find, and publishing nothing there left the
+        // interpreter — which no longer has a name scan — with nothing to select. Third instance of
+        // one shape in this packet: a trait default reached by a route other than a `Static` method
+        // call.
+        let selected = self
+            .operator_impl_member(&receiver_type, &trait_name, &member_name)
+            .map(|(owner, owner_member, body, _)| (owner, owner_member, body))
+            .or_else(|| self.trait_default_member(trait_id, member));
+        if let Some((owner, owner_member, body)) = selected {
+            // The signature comes from whichever declaration owns the body — an impl member, or
+            // the trait itself when the implementor accepts the default.
+            let signature = if owner == trait_id {
+                self.trait_member_signature(trait_id, owner_member, &receiver_type)
+            } else {
+                self.declared_member_signature(owner, owner_member)
+            };
+            if let Some((receiver, params, ret)) = signature {
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::ImplMember {
+                            impl_item: owner,
+                            member: owner_member,
+                        },
+                        body,
+                    },
+                    // **`Self`, published.** A trait DEFAULT body reached this way runs with
+                    // `Ty::Param("Self")` throughout, so without this binding a `self.other()`
+                    // inside it resolves nothing. The checker knows the receiver here — unlike the
+                    // bound path, where the body is only chosen at run time.
+                    environment: GenericEnvironment::Static(vec![(
+                        GenericBinder::SelfType,
+                        receiver_type.clone(),
+                    )]),
+                    receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+                    receiver_binding: ReceiverBinding::Shared,
+                    signature: CallableSigTy {
+                        receiver,
+                        params,
+                        ret,
+                    },
+                    provenance: DispatchProvenance::Qualified {
+                        trait_item: Some(trait_id),
+                    },
+                };
+                self.publish_callable_use(call_expr, use_);
+            }
         }
 
         let impl_infos: Vec<_> = self
@@ -7567,83 +8420,8 @@ impl<'a> TypeChecker<'a> {
         if !args.is_empty() {
             self.tensor_error("`refine` takes no value arguments", call_span);
         }
-        let Some(generic_args) = turbofish else {
-            self.tensor_error("`refine` requires an explicit target shape", name_span);
-            return Ty::Error;
-        };
-
-        // A `refine` boundary may also assign the initial value range with an
-        // optional `range = R` binding; the remaining args are positional.
-        let range_arg = generic_args.args.iter().find(
-            |a| matches!(a, hir::GenericArg::Binding { name, .. } if self.text(*name) == "range"),
-        );
-        let range = self.build_value_range(range_arg, generic_args.span);
-        let positional: Vec<hir::GenericArg> = generic_args
-            .args
-            .iter()
-            .filter(|a| !matches!(a, hir::GenericArg::Binding { .. }))
-            .cloned()
-            .collect();
-
-        let (dtype, shape) = match base {
-            Ty::Extension(ext) => match &*ext {
-                ExtensionTy::Tensor(TensorKind::TensorDyn(dtype)) => match positional.as_slice() {
-                    [hir::GenericArg::Shape(shape)] => (*dtype, self.build_refine_shape(shape)),
-                    _ => {
-                        self.tensor_error(
-                            "`TensorDyn<T>::refine` expects exactly one shape argument",
-                            generic_args.span,
-                        );
-                        return Ty::Error;
-                    }
-                },
-                ExtensionTy::Tensor(TensorKind::TensorAny) => match positional.as_slice() {
-                    [hir::GenericArg::Type(dtype), hir::GenericArg::Shape(shape)] => (
-                        self.tensor_dtype(*dtype, generic_args.span),
-                        self.build_refine_shape(shape),
-                    ),
-                    _ => {
-                        self.tensor_error(
-                            "`TensorAny::refine` expects a dtype and a shape",
-                            generic_args.span,
-                        );
-                        return Ty::Error;
-                    }
-                },
-                ExtensionTy::Tensor(TensorKind::Tensor(_)) => {
-                    self.tensor_error(
-                        "`refine` is valid only on `TensorDyn` or `TensorAny`",
-                        name_span,
-                    );
-                    return Ty::Error;
-                }
-                _ => {
-                    self.tensor_error(
-                        "`refine` receiver must be `TensorDyn` or `TensorAny`",
-                        name_span,
-                    );
-                    return Ty::Error;
-                }
-            },
-            Ty::Error => return Ty::Error,
-            _ => {
-                self.tensor_error(
-                    "`refine` receiver must be `TensorDyn` or `TensorAny`",
-                    name_span,
-                );
-                return Ty::Error;
-            }
-        };
-
-        let tensor = Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-            TensorTy {
-                dtype,
-                shape,
-                device: self.tensor_ctx.fresh_device(),
-                range,
-            },
-        ))));
-        Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
+        // AS6 packet 4B group 2C: what a refinement produces is tensor semantics.
+        tensor_check::eval_tensor_refine(self, base, turbofish, name_span)
     }
 
     fn associated_fn_type(
@@ -7746,7 +8524,6 @@ impl<'a> TypeChecker<'a> {
         // the IMPL's file, not the caller's. The names must be sliced consistently on both sides —
         // the map's keys and the `Ty::Param`s they substitute into — or substitution silently
         // fails to fire and the caller sees a stray parameter type like `'r'`.
-        let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
         let self_ty = self.convert_hir_type(self_ty_id);
         let previous_self = self.current_self_ty.replace(self_ty);
         let mut params: Vec<Ty> = sig
@@ -7785,6 +8562,7 @@ impl<'a> TypeChecker<'a> {
         // It was the one publication site A3c-S missed, invisible until A4 resolved signatures:
         // the BODY worked because nothing needed the frame, and only the signature could tell.
         // Names are read against the IMPL's file, matching this `map`'s keys (DEV-101).
+        let mut published_use: Option<(BlockId, Vec<(GenericBinder, Ty)>)> = None;
         if let Some((body, own_generics)) =
             self.hir
                 .items
@@ -7819,13 +8597,34 @@ impl<'a> TypeChecker<'a> {
                 own_is_method: true,
                 map: &env_map,
             });
+            published_use = Some((
+                body,
+                Self::env_bindings(&None, &impl_names, &own_names, true, &env_map),
+            ));
         }
-        self.foreign_sig_item = previous_sig_item;
         params = params
             .iter()
             .map(|ty| self.instantiate_ty(ty, &map))
             .collect();
         ret = self.instantiate_ty(&ret, &map);
+        // AS3 Boundary 2: an associated function takes no receiver, so both receiver fields are
+        // `None` — recorded rather than left absent, which is the same distinction Boundary 1 drew
+        // for a non-generic call's empty environment.
+        if let Some((body, bindings)) = published_use {
+            self.publish_named_use(
+                use_expr,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: params.clone(),
+                    ret: ret.clone(),
+                },
+                DispatchProvenance::Qualified { trait_item: None },
+            );
+        }
         Ty::Fn {
             params,
             ret: Box::new(ret),
@@ -7943,16 +8742,18 @@ impl<'a> TypeChecker<'a> {
     /// Both arms end in the same argument-checking loop; they differ only in where the declared
     /// parameter and return types come from — an HIR signature for a user trait, the Core trait's
     /// implementation contract for a compiler-known one.
+    /// Returns the return type and the method's own generic arguments at this call site.
     fn check_bound_method_call(
         &mut self,
         candidate: &BoundMethod,
         p_name: &str,
+        turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
-    ) -> Ty {
+    ) -> (Ty, Vec<Ty>) {
         match candidate {
             BoundMethod::User { trait_id, sig } => {
-                self.check_trait_member_call(*trait_id, sig, args, call_span)
+                self.check_trait_member_call(*trait_id, sig, turbofish, args, call_span)
             }
             BoundMethod::Core {
                 method, trait_args, ..
@@ -7972,7 +8773,9 @@ impl<'a> TypeChecker<'a> {
                     Some(term) => self.contract_ty_to_ty(term, &self_ty, &trait_arg_tys),
                 };
                 self.check_call_arguments(params_ty, args, call_span);
-                ret_ty
+                // A core trait's contract is fixed (`ContractTy`) and declares no method-level
+                // generics, so this list is empty as a FACT about core traits, not as a gap.
+                (ret_ty, Vec::new())
             }
         }
     }
@@ -8054,7 +8857,7 @@ impl<'a> TypeChecker<'a> {
 
     /// WP-C6.2c: populate `assoc_projections` from every impl's associated-type bindings, keyed by
     /// the implementing nominal's `ItemId` and the associated-type name.
-    fn build_assoc_projections(&mut self, root_file: &Arc<SourceFile>) {
+    fn build_assoc_projections(&mut self) {
         let count = self.hir.items.len();
         for index in 0..count {
             let item_id = ItemId(index as u32);
@@ -8075,12 +8878,6 @@ impl<'a> TypeChecker<'a> {
             if bindings.is_empty() {
                 continue;
             }
-            self.file = self
-                .hir
-                .item_files
-                .get(&item_id)
-                .cloned()
-                .unwrap_or_else(|| root_file.clone());
             let nominal = match self.convert_hir_type(self_ty) {
                 Ty::Struct(id, _) | Ty::Enum(id, _) => Some(id),
                 _ => None,
@@ -8092,7 +8889,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        self.file = root_file.clone();
     }
 
     /// WP-C6.2c: associated-type projections pinned by explicit binding constraints in scope
@@ -8228,33 +9024,73 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Checks a call's arguments against an already-resolved trait method signature (see
-    /// `find_trait_method_sig`) and returns its return type. `trait_id` is the declaring trait,
-    /// whose file the signature's types (including `Self::Item` associated-type spans) are read
-    /// against — DEV-101 provenance, needed for a cross-package trait.
+    /// `find_trait_method_sig`) and returns its return type.
+    ///
+    /// `trait_id` was the declaring trait, carried here for DEV-101 provenance: the signature's
+    /// types — including `Self::Item` associated-type spans — had to be read against the trait's
+    /// file, which differs from the caller's for a cross-package trait. AS1b-ii-d: those spans
+    /// name the trait's file themselves. The parameter is kept so the call sites still say which
+    /// trait they resolved.
+    /// Returns the method's return type **and** this call site's binding of the method's own
+    /// generic parameters, in declaration order — the `method_args` a `CalleeSelection::Bound`
+    /// publishes.
     fn check_trait_member_call(
         &mut self,
-        trait_id: ItemId,
+        _trait_id: ItemId,
         sig: &hir::FnSig,
+        turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
-    ) -> Ty {
-        // The signature's types are declared in the TRAIT's file; convert them there, then restore
-        // the caller's file for the argument expressions below.
-        let trait_file = self.item_file(trait_id);
-        let caller_file = std::mem::replace(&mut self.file, trait_file);
+    ) -> (Ty, Vec<Ty>) {
+        // **AS3 Boundary 4 (DEV-188): bind the method's OWN generic parameters.**
+        //
+        // This ignored `sig.generics` entirely, so `U` stayed rigid and *any* trait method that
+        // mentioned its own generic parameter was uncallable through a bound — the turbofish was
+        // dropped on the floor. The concrete-receiver path (WP-C4.7-8.4) and the trait-default
+        // path already do exactly this; only the bound and `Self`-receiver paths did not.
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        let mut method_args: Vec<Ty> = Vec::new();
+        if let Some(generic_args) = turbofish {
+            self.validate_generic_arity(sig.generics.len(), generic_args.args.len(), call_span);
+        }
+        for (index, param) in sig.generics.iter().enumerate() {
+            let ty = match turbofish.and_then(|g| g.args.get(index)) {
+                Some(hir::GenericArg::Type(t)) => self.convert_hir_type(*t),
+                Some(_) => Ty::Error,
+                // No turbofish (or too few): infer it from the arguments, as an ordinary generic
+                // call does. `t.to(1)` must work without a turbofish for the same reason `f(1)`
+                // does.
+                None => self.new_type_var(),
+            };
+            map.insert(self.decl_text(param.name).to_string(), ty.clone());
+            method_args.push(ty);
+        }
+
+        // AS1b-ii-d: this used to swap `self.file` to the trait's file to convert the signature
+        // and swap back for the arguments. The signature's spans name the trait's file and the
+        // arguments' name the caller's, so both convert correctly with no swap at all.
         let params_ty: Vec<Ty> = sig
             .params
             .iter()
-            .map(|p| self.convert_hir_type(p.ty))
+            .map(|p| {
+                let ty = self.convert_hir_type(p.ty);
+                self.instantiate_ty(&ty, &map)
+            })
             .collect();
         let ret_ty = match sig.ret {
             hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
-            hir::RetTy::Ty(t) => self.convert_hir_type(t),
+            hir::RetTy::Ty(t) => {
+                let ty = self.convert_hir_type(t);
+                self.instantiate_ty(&ty, &map)
+            }
             hir::RetTy::Never(_) => Ty::Never,
         };
-        self.file = caller_file;
         self.check_call_arguments(params_ty, args, call_span);
-        ret_ty
+        // Resolve after the arguments have constrained any inference variable introduced above, so
+        // an omitted turbofish still publishes the type the call site actually settled on rather
+        // than an unresolved `_infer_N`.
+        let method_args = method_args.iter().map(|ty| self.resolve(ty)).collect();
+        (self.resolve(&ret_ty), method_args)
     }
 
     fn resolve_method(
@@ -8281,9 +9117,19 @@ impl<'a> TypeChecker<'a> {
             return self.check_tensor_refine(resolved_base, turbofish, args, name_span, call_span);
         }
 
+        // AS3 Boundary 2 hardening: TYPE-METHOD-002's auto-dereference is a decision the CALL SITE
+        // makes, and it was being discarded. Counting the peels here is what lets
+        // `ReceiverAdjustment` publish it instead of every consumer re-deriving it from the
+        // receiver's type — which is precisely the reconstruction this packet exists to remove.
         let mut receiver_ty = resolved_base.clone();
+        let mut receiver_derefs: u8 = 0;
+        let mut outermost_ref_is_mut = false;
+        if let Ty::Ref { mutable, .. } = &receiver_ty {
+            outermost_ref_is_mut = *mutable;
+        }
         while let Ty::Ref { inner, .. } = receiver_ty {
             receiver_ty = self.resolve(&inner);
+            receiver_derefs = receiver_derefs.saturating_add(1);
         }
 
         // DEV-067(b) (WP-C4.7-7): a method call on a BOUNDED generic parameter resolves through
@@ -8335,10 +9181,27 @@ impl<'a> TypeChecker<'a> {
                 // WP-C6.2c: a trait method returning `Self::Item` yields the receiver's
                 // projection (`T::Item`), which is then pinned by any explicit
                 // `T: Trait<Item = ..>` binding in scope.
-                let ret = self.check_bound_method_call(&candidate, &p_name, args, call_span);
+                let (ret, method_args) =
+                    self.check_bound_method_call(&candidate, &p_name, turbofish, args, call_span);
                 let ret = Self::subst_self(&ret, &p_name);
                 let binding_map = self.assoc_binding_map();
-                return self.normalize_projections(&ret, &binding_map);
+                let ret = self.normalize_projections(&ret, &binding_map);
+                // **AS3 Boundary 4 step 2: publish the LATE-BOUND obligation.**
+                //
+                // This branch previously returned here, so a call on a bounded generic parameter
+                // published no `CallableUse` at all — the missing third category. The body cannot
+                // be named: `Self` is `Ty::Param(p_name)` and stays parametric until the enclosing
+                // function is instantiated. What IS fixed is the obligation, and that is what a
+                // `Bound` selection records.
+                self.publish_bound_use(
+                    call_expr,
+                    &candidate,
+                    &p_name,
+                    &name_str,
+                    &ret,
+                    method_args,
+                );
+                return ret;
             }
         }
 
@@ -8357,7 +9220,27 @@ impl<'a> TypeChecker<'a> {
             if p_name == "Self" {
                 if let Some(trait_id) = self.current_trait_id {
                     if let Some(sig) = self.find_trait_method_sig(trait_id, &name_str) {
-                        return self.check_trait_member_call(trait_id, &sig, args, call_span);
+                        // Same DEV-188 repair: a sibling default body calling another generic
+                        // trait method through `self` had `U` rigid for the same reason.
+                        let (ret, method_args) = self
+                            .check_trait_member_call(trait_id, &sig, turbofish, args, call_span);
+                        // **AS3 Boundary 4 (DEV-190): publish this call too.**
+                        //
+                        // Like the bounded-parameter branch before step 2, this returned without
+                        // publishing anything — so `self.id()` inside `fn twice(&self)` had no
+                        // `CallableUse`, and both engines had to fall back to a name scan. It is a
+                        // `Bound` selection by the same argument: `Self` is a parameter, the trait
+                        // is known, and the body is fixed only once an implementor is chosen.
+                        let candidate = BoundMethod::User { trait_id, sig };
+                        self.publish_bound_use(
+                            call_expr,
+                            &candidate,
+                            "Self",
+                            &name_str,
+                            &ret,
+                            method_args,
+                        );
+                        return ret;
                     }
                 }
             }
@@ -8401,10 +9284,8 @@ impl<'a> TypeChecker<'a> {
                 // from the IMPL's file. Without this, `impl<T> Wrap<T>` resolved through a module
                 // boundary produced a parameter named from the caller's file — `Wrap<T>::get`
                 // returned `&S` — and no substitution could ever fire.
-                let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
                 let impl_self_ty = self.convert_hir_type(*impl_self_ty_id);
                 let matched = self.match_impl_type(&impl_self_ty, &receiver_ty, generics);
-                self.foreign_sig_item = previous_sig_item;
                 let Some(map) = matched else {
                     continue;
                 };
@@ -8519,7 +9400,6 @@ impl<'a> TypeChecker<'a> {
             // CD-358: a trait default's signature is declared in the TRAIT's file, which may
             // differ from the impl's file and from the file under check. DEV-069 already applied
             // that rule to the default's NAME; its parameter and return types need it too.
-            let previous_sig_item = self.foreign_sig_item.replace(trait_id);
             // WP-C4.7-9 audit: a TRAIT-DEFAULT method may declare its own generic parameters
             // too (`02:64`). WP-C4.7-8.4 gave the selected-impl path fresh per-call-site
             // variables for those; this path had the same gap, so `d.say(5)` on an
@@ -8559,6 +9439,13 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
+            let use_self_ty = Some(impl_self_ty.clone());
+            // The receiver this use binds, instantiated. `None` when the declaration takes no
+            // receiver, which keeps the published signature comparable with A3b's body signature.
+            let receiver_self_ty = bound_receiver_ty(
+                sig.receiver.as_ref(),
+                self.instantiate_ty(&impl_self_ty, &map),
+            );
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: trait_body,
@@ -8597,7 +9484,36 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
-            self.foreign_sig_item = previous_sig_item;
+
+            // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
+            // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
+            // (what the callable binds) are separate fields: they correlate here, but they are
+            // different authorities and AS4 asks about the binding side.
+            let receiver_binding = match sig.receiver {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            };
+            let use_bindings =
+                Self::env_bindings(&use_self_ty, &trait_names, &own_names, true, &env_map);
+            self.publish_named_use(
+                call_expr,
+                trait_body,
+                use_bindings,
+                receiver_adjustment_for(receiver_derefs, outermost_ref_is_mut, receiver_binding),
+                receiver_binding,
+                CallableSigTy {
+                    // AS3 Boundary 2 hardening: a real method's A3b body signature carries its
+                    // receiver, so publishing `None` here made the §3.4 invariant unenforceable —
+                    // the two signatures would disagree on every method. The instantiated `Self`
+                    // is the receiver this use binds.
+                    receiver: receiver_self_ty.clone(),
+                    params: params_ty.clone(),
+                    ret: ret_ty.clone(),
+                },
+                DispatchProvenance::Qualified { trait_item: None },
+            );
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -8622,7 +9538,6 @@ impl<'a> TypeChecker<'a> {
         if let Some((def, _, mut map, impl_self_ty, impl_item_id)) = selected {
             // CD-358: every name below — the method's own generic parameters, and the parameter
             // and return TYPES — is a span into the impl's file.
-            let previous_sig_item = self.foreign_sig_item.replace(impl_item_id);
             // WP-C4.7-8.4: the candidate's `map` carries only the IMPL's generic parameters. A
             // method may declare its OWN (`02:64` puts `GenericParams?` on every `FunctionSig`,
             // and `02:120` makes an impl item a `Function`), and those need a fresh inference
@@ -8667,6 +9582,11 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|param| self.decl_text(param.name).to_string())
                 .collect();
+            let use_self_ty = Some(env_self.clone());
+            let receiver_self_ty = bound_receiver_ty(
+                def.sig.receiver.as_ref(),
+                self.instantiate_ty(&env_self, &map),
+            );
             self.publish_callable_env(PublishedEnv {
                 call_expr,
                 body: def.body,
@@ -8706,7 +9626,36 @@ impl<'a> TypeChecker<'a> {
                 hir::RetTy::Never(_) => Ty::Never,
             };
             self.current_self_ty = previous_self;
-            self.foreign_sig_item = previous_sig_item;
+
+            // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
+            // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
+            // (what the callable binds) are separate fields: they correlate here, but they are
+            // different authorities and AS4 asks about the binding side.
+            let receiver_binding = match def.sig.receiver {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            };
+            let use_bindings =
+                Self::env_bindings(&use_self_ty, &impl_names, &own_names, true, &env_map);
+            self.publish_named_use(
+                call_expr,
+                def.body,
+                use_bindings,
+                receiver_adjustment_for(receiver_derefs, outermost_ref_is_mut, receiver_binding),
+                receiver_binding,
+                CallableSigTy {
+                    // AS3 Boundary 2 hardening: a real method's A3b body signature carries its
+                    // receiver, so publishing `None` here made the §3.4 invariant unenforceable —
+                    // the two signatures would disagree on every method. The instantiated `Self`
+                    // is the receiver this use binds.
+                    receiver: receiver_self_ty.clone(),
+                    params: params_ty.clone(),
+                    ret: ret_ty.clone(),
+                },
+                DispatchProvenance::Inherent,
+            );
 
             if args.len() != params_ty.len() {
                 self.diags.push(
@@ -8731,6 +9680,13 @@ impl<'a> TypeChecker<'a> {
         } else if let Some((params_ty, ret_ty, needs_mut)) =
             self.core_method_signature(&receiver_ty, &name_str, name_span)
         {
+            // **AS3 Boundary 4: a core container that compares its elements.**
+            //
+            // `vec.contains(&x)`, `set.insert(v)`, `map.get(k)` and friends run `Eq::eq` on the
+            // ELEMENT when it is a user nominal — the interpreter's `language_equal`. That site had
+            // no expression id and so scanned for a member named `eq`; publishing here gives it
+            // one, keyed on the container call itself.
+            self.publish_core_element_eq_use(call_expr, &receiver_ty, &name_str);
             if needs_mut && !self.is_mutable_place(base_expr) {
                 self.diags.push(
                     Diagnostic::error(
@@ -8983,38 +9939,84 @@ impl<'a> TypeChecker<'a> {
         // resulting substitution is applied to the associated `Item` — `type Item = T` on
         // `Repeat<Int32>` must yield `Int32`, not a dangling `Ty::Param`.
         // DEV-069: impl/assoc-type names are read against the declaring impl's own file.
-        let (associated_type, map) =
-            self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-                let impl_id = ItemId(idx as u32);
-                let hir::ItemKind::Impl {
-                    trait_: Some(trait_ref),
-                    self_ty,
-                    items,
-                    generics,
-                    ..
-                } = &item.kind
-                else {
-                    return None;
-                };
-                if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator)) {
-                    return None;
-                }
-                let map = self.match_impl_type(
-                    &self.impl_self_ty_with_args(impl_id, *self_ty),
-                    iter_ty,
-                    generics,
-                )?;
-                items.iter().find_map(|item| match item {
+        let selection = self.resolve_user_iterator(iter_ty)?;
+        let item_ty = self.convert_hir_type(selection.associated_item);
+        Some(self.instantiate_ty(&item_ty, &selection.substitutions))
+    }
+
+    /// **The single Iterator selection.** One scan answers every question a `for` loop asks:
+    /// which impl, which `next` body, what the substitution is, and what `Item` becomes.
+    ///
+    /// AS3 Boundary 4 hardening. The first attempt added a *second* selector beside
+    /// `user_iterator_item_type`, which reintroduced two defects the programme exists to remove:
+    ///
+    /// * it identified the trait by **spelling** (`item_text(..) == "Iterator"`) while this one
+    ///   uses resolved identity — DEV-BOUND-TRAIT-IDENTITY's exact class;
+    /// * it discarded `match_impl_type`'s substitution and published an EMPTY generic environment,
+    ///   so `impl<T> Iterator for Repeat<T>` lost its `T` binding while the element-type
+    ///   calculation kept it.
+    ///
+    /// Both were invisible to behavioural tests, which is why there is one selector now rather than
+    /// two agreeing ones.
+    fn resolve_user_iterator(&mut self, iter_ty: &Ty) -> Option<UserIteratorSelection> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_item = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            // Resolved identity, never the spelling.
+            if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator)) {
+                continue;
+            }
+            let Some(substitutions) = self.match_impl_type(
+                &self.impl_self_ty_with_args(impl_item, *self_ty),
+                iter_ty,
+                generics,
+            ) else {
+                continue;
+            };
+            let mut associated_item = None;
+            let mut next_member = None;
+            for (member, impl_item_node) in items.iter().enumerate() {
+                match impl_item_node {
                     hir::ImplItem::AssocType { name, ty }
-                        if self.item_text(impl_id, *name) == "Item" =>
+                        if self.item_text(impl_item, *name) == "Item" =>
                     {
-                        Some((*ty, map.clone()))
+                        associated_item = Some(*ty);
                     }
-                    _ => None,
-                })
-            })?;
-        let item_ty = self.convert_hir_type(associated_type);
-        Some(self.instantiate_ty(&item_ty, &map))
+                    hir::ImplItem::Fn { def, .. }
+                        if self.item_text(impl_item, def.sig.name) == "next" =>
+                    {
+                        next_member = Some((member as u32, def.body));
+                    }
+                    _ => {}
+                }
+            }
+            let associated_item = associated_item?;
+            let (member, body) = next_member?;
+            // The impl's own generic parameters, in declaration order, bound to what
+            // `match_impl_type` resolved — so `impl<T> Iterator for Repeat<T>` publishes `T`.
+            let impl_names: Vec<String> = generics
+                .iter()
+                .map(|param| self.item_text(impl_item, param.name).to_string())
+                .collect();
+            let bindings = Self::env_bindings(&None, &impl_names, &[], true, &substitutions);
+            return Some(UserIteratorSelection {
+                impl_item,
+                member,
+                body,
+                associated_item,
+                substitutions,
+                bindings,
+            });
+        }
+        None
     }
 
     fn core_method_signature(
@@ -9642,59 +10644,19 @@ impl<'a> TypeChecker<'a> {
     /// One-way: parameters are bound only from the IMPLEMENTATION side. A `Ty::Param` on the
     /// receiver side is an ordinary type to match against, never a hole to fill — otherwise an
     /// impl for a concrete type would spuriously match a generic receiver.
+    /// AS3 Boundary 4 step 3: delegates to the shared structural matcher so the checker and the
+    /// bound specialiser use **one** algorithm. Two matchers that must agree is the pattern this
+    /// packet removes; the only difference between the callers is how they resolve inference
+    /// variables, which is why that is a parameter rather than a fork.
     fn unify_impl_ty(
         &self,
         implementation: &Ty,
         receiver: &Ty,
         map: &mut HashMap<String, Ty>,
     ) -> bool {
-        let (imp, recv) = (self.resolve(implementation), self.resolve(receiver));
-        match (imp, recv) {
-            // A parameter absorbs whatever it is matched against, but must stay CONSISTENT: the
-            // same parameter appearing twice (`Pair<T, T>`) has to see the same type both times.
-            (Ty::Param(name), recv) => match map.get(&name) {
-                Some(bound) if !matches!(bound, Ty::Param(p) if *p == name) => {
-                    self.types_equal(bound, &recv)
-                }
-                _ => {
-                    map.insert(name, recv);
-                    true
-                }
-            },
-            (Ty::Struct(l, l_args), Ty::Struct(r, r_args))
-            | (Ty::Enum(l, l_args), Ty::Enum(r, r_args))
-                if l == r && l_args.len() == r_args.len() =>
-            {
-                l_args
-                    .iter()
-                    .zip(&r_args)
-                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (Ty::Core(l, l_args), Ty::Core(r, r_args))
-                if l == r && l_args.len() == r_args.len() =>
-            {
-                l_args
-                    .iter()
-                    .zip(&r_args)
-                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (Ty::Tuple(l), Ty::Tuple(r)) if l.len() == r.len() => {
-                l.iter().zip(&r).all(|(l, r)| self.unify_impl_ty(l, r, map))
-            }
-            (
-                Ty::Ref {
-                    mutable: lm,
-                    inner: li,
-                },
-                Ty::Ref {
-                    mutable: rm,
-                    inner: ri,
-                },
-            ) if lm == rm => self.unify_impl_ty(&li, &ri, map),
-            (Ty::Array(l, ln), Ty::Array(r, rn)) if ln == rn => self.unify_impl_ty(&l, &r, map),
-            (Ty::Slice(l), Ty::Slice(r)) => self.unify_impl_ty(&l, &r, map),
-            (left, right) => self.types_equal(&left, &right),
-        }
+        crate::bound_dispatch::unify_impl_ty_with(implementation, receiver, map, &|ty| {
+            self.resolve(ty)
+        })
     }
 
     fn match_impl_type(
@@ -9982,6 +10944,766 @@ impl<'a> TypeChecker<'a> {
     /// unconditionally rejected. `HashMap`/`HashSet`/iterator/`Random`/`IOError` CoreTypes are
     /// deliberately excluded: they are not normatively specified as Eq/Ord-comparable, and
     /// giving them one now would be new semantics, not a bug fix (Charter rule 4).
+    /// Publish the `CallableUse` for an operator that dispatches to a user body (AS3 Boundary 3).
+    ///
+    /// Only user nominals reach a user body: primitives have built-in operator meaning (DEV-075),
+    /// and a `Ty::Core` composite compares element-wise through the runtime rather than through one
+    /// selected callable. Publishing nothing for those is correct — they are not callable uses.
+    /// The `Bound` half of [`Self::publish_operator_use`]: `a == b` where `a: T` and `T: Eq`.
+    ///
+    /// The signature comes from the Core trait's own contract — the same `CoreTraitMethod` table a
+    /// user `impl` is checked against — rather than from `Eq::eq -> Bool` written in by hand. There
+    /// is deliberately no second statement of what these operators mean.
+    /// **AS3 Boundary 4: the `Display` dispatch plan for one `println` argument.**
+    ///
+    /// Walks the argument's STATIC type in the shape `display_deep` and `emit_display_value`
+    /// already render (`AS3-DISPLAY-CHARACTERIZATION.md` §2.3), publishing one use per position
+    /// that reaches a user body.
+    ///
+    /// **The STOP rule is the load-bearing part.** `println(W<A>)` prints `W!`, not a `W!`
+    /// containing an `A!`: the outer nominal's own `fmt` runs and the renderer does not descend
+    /// into its fields. So the walk stops at the first nominal with a `Display` impl. Descending
+    /// further would publish uses no engine executes, and a totality claim over those would be
+    /// false.
+    /// Queue one expression that renders through `Display`, with the generic scope it was
+    /// written in. Called by `println`-family arguments and by interpolation fields alike.
+    fn record_display_plan(&mut self, root: ExprId, ty: Ty) {
+        self.display_plans.push(DeferredDisplayPlan {
+            root,
+            ty,
+            generic_scope: (
+                self.current_fn_generics.clone(),
+                self.current_impl_generics.clone(),
+            ),
+        });
+    }
+
+    fn publish_display_uses(&mut self, root: ExprId, ty: &Ty, span: Span) {
+        self.walk_display_ty(root, ty, DisplayPath::default(), span, 0);
+    }
+
+    fn walk_display_ty(
+        &mut self,
+        root: ExprId,
+        ty: &Ty,
+        path: DisplayPath,
+        span: Span,
+        depth: u32,
+    ) {
+        // A displayable type is a finite tree, but `Ty` is produced by inference and a defect
+        // elsewhere should not become a stack overflow here.
+        if depth > 64 {
+            return;
+        }
+        let ty = self.resolve(ty);
+        match &ty {
+            // A reference renders as its referent: `Display::fmt` borrows anyway.
+            Ty::Ref { inner, .. } => {
+                let inner = (**inner).clone();
+                self.walk_display_ty(root, &inner, path, span, depth + 1);
+            }
+            Ty::Tuple(elems) => {
+                for (index, elem) in elems.clone().into_iter().enumerate() {
+                    let step = DisplayStep::TupleField(index as u32);
+                    self.walk_display_ty(root, &elem, path.child(step), span, depth + 1);
+                }
+            }
+            Ty::Array(elem, _) => {
+                let elem = (**elem).clone();
+                let next = path.child(DisplayStep::ArrayElement);
+                self.walk_display_ty(root, &elem, next, span, depth + 1);
+            }
+            Ty::Slice(elem) => {
+                let elem = (**elem).clone();
+                let next = path.child(DisplayStep::SliceElement);
+                self.walk_display_ty(root, &elem, next, span, depth + 1);
+            }
+            Ty::Core(CoreType::Vec, args) => {
+                if let Some(elem) = args.first().cloned() {
+                    let next = path.child(DisplayStep::VecElement);
+                    self.walk_display_ty(root, &elem, next, span, depth + 1);
+                }
+            }
+            Ty::Core(CoreType::Option, args) => {
+                if let Some(inner) = args.first().cloned() {
+                    let next = path.child(DisplayStep::OptionSome);
+                    self.walk_display_ty(root, &inner, next, span, depth + 1);
+                }
+            }
+            Ty::Core(CoreType::Result, args) => {
+                let args = args.clone();
+                if let Some(ok) = args.first().cloned() {
+                    let next = path.child(DisplayStep::ResultOk);
+                    self.walk_display_ty(root, &ok, next, span, depth + 1);
+                }
+                if let Some(err) = args.get(1).cloned() {
+                    let next = path.child(DisplayStep::ResultErr);
+                    self.walk_display_ty(root, &err, next, span, depth + 1);
+                }
+            }
+            // **STOP.** A user nominal with a `Display` impl renders through it and no further.
+            Ty::Struct(..) | Ty::Enum(..) => self.publish_display_static(root, &ty, path, span),
+            // A generic parameter's body is not knowable here — `show<T: Display>` is checked once
+            // with `T` unbound, and one `show` may be instantiated at several types. The obligation
+            // is fixed, and that is what `Bound` records (§3).
+            Ty::Param(name) => {
+                let name = name.clone();
+                self.publish_display_bound(root, &name, path);
+            }
+            // Primitives, `String`, `Ordering`, `IOError` — rendered by the engines themselves,
+            // with no user callable to name.
+            _ => {}
+        }
+    }
+
+    fn publish_display_static(&mut self, root: ExprId, ty: &Ty, path: DisplayPath, span: Span) {
+        let Some((impl_item, member, body, substitution)) =
+            self.operator_impl_member(ty, "Display", "fmt")
+        else {
+            return;
+        };
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(self.impl_dispatch_bindings(impl_item, ty)),
+            // `Display::fmt(&self)` borrows; the renderer holds the value and lends it.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            // §3.4: the INSTANTIATED signature, so `impl<T> Display for W<T>` publishes `&W<Int32>`
+            // rather than the declaration's `&W<T>`.
+            signature: CallableSigTy {
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Display,
+            },
+        };
+        let _ = span;
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+
+    fn publish_display_bound(&mut self, root: ExprId, param_name: &str, path: DisplayPath) {
+        let candidates = self.bound_method_candidates(param_name, "fmt");
+        let Some(BoundMethod::Core {
+            core_trait: core @ hir::CoreTrait::Display,
+            method: contract,
+            ..
+        }) = candidates.into_iter().find(|c| {
+            matches!(
+                c,
+                BoundMethod::Core {
+                    core_trait: hir::CoreTrait::Display,
+                    ..
+                }
+            )
+        })
+        else {
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &[]),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: Vec::new(),
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params: Vec::new(),
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core),
+            },
+        };
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+
+    /// The impl's generic parameters bound to the rendered type's arguments — the "instantiated
+    /// environment" requirement the Iterator hardening established after publishing an empty one.
+    fn impl_dispatch_bindings(&mut self, impl_item: ItemId, ty: &Ty) -> Vec<(GenericBinder, Ty)> {
+        let hir::ItemKind::Impl {
+            self_ty, generics, ..
+        } = &self.hir.item(impl_item).kind
+        else {
+            return Vec::new();
+        };
+        let (self_ty, generics) = (*self_ty, generics.clone());
+        let parametric = self.impl_self_ty_with_args(impl_item, self_ty);
+        let Some(map) = self.match_impl_type(&parametric, ty, &generics) else {
+            return Vec::new();
+        };
+        let impl_names: Vec<String> = generics
+            .iter()
+            .map(|param| self.item_text(impl_item, param.name).to_string())
+            .collect();
+        // `env_bindings`, not a second construction of the same list: `Display::fmt` declares no
+        // generics of its own, so the method half is empty and `Self` is the rendered type.
+        Self::env_bindings(&Some(ty.clone()), &impl_names, &[], true, &map)
+    }
+
+    /// The `Eq::eq` a core container method runs on its elements, published against the container
+    /// call.
+    ///
+    /// The method list is explicit rather than "anything that might compare": publishing a use the
+    /// renderer never executes would make the totality claim false, which is the same discipline
+    /// the `Display` walk's STOP rule follows.
+    fn publish_core_element_eq_use(&mut self, call_expr: ExprId, receiver: &Ty, method: &str) {
+        // **Publish for every container method, not a hand-listed subset.**
+        //
+        // The first version listed the methods believed to compare elements and omitted `get_mut`,
+        // so `map.get_mut(&k)` fell back to STRUCTURAL comparison and silently retrieved the wrong
+        // entry — caught by `hash_collections_use_language_eq_for_keys`, whose whole purpose is a
+        // user `Eq` that disagrees with structural equality.
+        //
+        // The asymmetry decides it: an unused entry costs a table slot, while a missing one is a
+        // wrong answer. That is the opposite of the Display walk's STOP rule, and deliberately so —
+        // there, over-publishing would falsify a claim about what the renderer executes; here the
+        // claim is only "if this call compares elements, this is the body", which stays true
+        // whether or not it does.
+        let _ = method;
+        let mut receiver = self.resolve(receiver);
+        while let Ty::Ref { inner, .. } = receiver {
+            receiver = self.resolve(&inner);
+        }
+        // The compared type: a map compares KEYS, a set and a Vec compare elements.
+        let element = match &receiver {
+            Ty::Core(CoreType::HashMap, args) => args.first().cloned(),
+            Ty::Core(CoreType::HashSet | CoreType::Vec, args) => args.first().cloned(),
+            _ => None,
+        };
+        let Some(element) = element else { return };
+        // `publish_operator_use` already handles "not a user nominal" and "no `Eq` impl" by
+        // publishing nothing, and handles a bounded parameter through DEV-191's branch.
+        self.publish_operator_use(call_expr, &element, "Eq", "eq", hir::CoreTrait::Eq);
+    }
+
+    fn publish_bound_operator_use(
+        &mut self,
+        expr_id: ExprId,
+        param_name: &str,
+        method: &str,
+        core: hir::CoreTrait,
+    ) {
+        let candidates = self.bound_method_candidates(param_name, method);
+        let Some(BoundMethod::Core {
+            core_trait,
+            method: contract,
+            trait_args,
+        }) = candidates
+            .into_iter()
+            .find(|c| matches!(c, BoundMethod::Core { core_trait, .. } if *core_trait == core))
+        else {
+            // No such bound in scope. Arithmetic on a `T: Num` reaches here and correctly
+            // publishes nothing: `Num` is compiler-known and primitives-only, so there is no
+            // user body for a call site to name.
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let trait_arg_tys: Vec<Ty> = trait_args
+            .iter()
+            .map(|ty| self.convert_hir_type(*ty))
+            .collect();
+        let params: Vec<Ty> = contract
+            .params
+            .iter()
+            .map(|term| self.contract_ty_to_ty(*term, &self_ty, &trait_arg_tys))
+            .collect();
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &trait_arg_tys),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core_trait),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: trait_arg_tys,
+                // A core trait's contract cannot declare method-level generics (DEV-188).
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core_trait),
+            },
+        };
+        self.publish_callable_use(expr_id, use_);
+    }
+
+    fn publish_operator_use(
+        &mut self,
+        expr_id: ExprId,
+        operand: &Ty,
+        trait_name: &str,
+        method: &str,
+        core: hir::CoreTrait,
+    ) {
+        let operand = self.resolve(operand);
+        // **AS3 Boundary 4 (DEV-191): an operator on a BOUNDED GENERIC PARAMETER.**
+        //
+        // `a == b` inside `fn same<T: Eq>(a: T, b: T)` published nothing at all — this guard
+        // returned on `Ty::Param`. So MIR, which sees the monomorphised `P` and lowers a user
+        // `Eq::eq` call, had no published record to consume and fell back to scanning impls by
+        // name. It is the same missing binding time step 2 found for method calls, on the operator
+        // path: the trait is fixed here, the body only once `T` is instantiated.
+        if let Ty::Param(param_name) = &operand {
+            let param_name = param_name.clone();
+            self.publish_bound_operator_use(expr_id, &param_name, method, core);
+            return;
+        }
+        if !matches!(operand, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some((impl_item, member, body, substitution)) =
+            self.operator_impl_member(&operand, trait_name, method)
+        else {
+            return;
+        };
+        // **The signature is READ from the declaration, not assumed.** `Eq::eq` returns `Bool` and
+        // `Ord::cmp` returns `Ordering`, but writing those in would be this packet's own defect —
+        // a second answer to what the callable's signature is, which §3.4's invariant then has to
+        // reconcile against the body's.
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        // **DEV-201: an operator on a GENERIC impl published an empty environment.**
+        //
+        // `Static(Vec::new())` was written here unconditionally. For `impl Eq for Point` that is
+        // correct — there is nothing to bind. For `impl<T> Eq for W<T>` it is a body running with
+        // `T` unbound, which is AS3 criterion 2's exact prohibition. Nothing observed it until
+        // DEV-121's receiver boundary read `callable_types[body].receiver` and found
+        // `&W<Param(\"T\")>` with no `T` in scope.
+        let environment = self.impl_dispatch_bindings(impl_item, &operand);
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(environment),
+            // `Eq::eq(&self, &other)` and `Ord::cmp(&self, &other)` both borrow: the receiver binds
+            // shared, and the call site takes a shared borrow of an owned operand — zero derefs.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            // AS3 Boundary 2 §3.4: the publication records the INSTANTIATED signature, so a
+            // consumer reading it sees `&W<Int32>` rather than the declaration's `&W<T>`.
+            signature: CallableSigTy {
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
+            },
+            provenance: DispatchProvenance::CoreTrait { core },
+        };
+        self.publish_callable_use(expr_id, use_);
+    }
+
+    /// The declared signature of an impl member, converted — receiver, parameters and result.
+    ///
+    /// AS3 Boundary 3: the operator publication reads the signature it publishes rather than
+    /// asserting one, so `callable_uses` and `callable_types` describe the same declaration.
+    #[allow(clippy::type_complexity)]
+    fn declared_member_signature(
+        &mut self,
+        impl_item: ItemId,
+        member: u32,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Impl { items, self_ty, .. } = &self.hir.item(impl_item).kind else {
+            return None;
+        };
+        let hir::ImplItem::Fn { def, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        // Take the ids out of the borrow before converting: `convert_hir_type` needs `&mut self`,
+        // and `FnDef` is not `Clone`, so the borrow has to end rather than be copied.
+        let receiver_form = def.sig.receiver;
+        let param_ids: Vec<hir::TypeId> = def.sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = def.sig.ret;
+        let self_ty_id = *self_ty;
+
+        let self_ty = self.convert_hir_type(self_ty_id);
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty);
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => self.convert_hir_type(id),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+
+    /// Build the program's coherent dispatch index (AS3 Boundary 4a).
+    ///
+    /// Built in the CHECKER, which already has converted self-types and knows every declaration,
+    /// and frozen into `TypeTables`. Building it in each engine would be two indexes of one fact —
+    /// which is the shape of `find_method` and `find_impl_fn`.
+    ///
+    /// Records the **effective** target per member: the impl's override where one exists, otherwise
+    /// the trait's default body (G1), together with the binder namespace that body owns.
+    fn build_trait_impl_index(&mut self) -> crate::bound_dispatch::TraitImplIndex {
+        let mut impls = Vec::new();
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_item = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_,
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            let trait_ref = trait_.clone();
+            let self_ty_id = *self_ty;
+            let generic_names: Vec<String> = generics
+                .iter()
+                .map(|param| self.item_text(impl_item, param.name).to_string())
+                .collect();
+            // Members written in the impl.
+            let mut effective_members: Vec<crate::bound_dispatch::IndexedTarget> = Vec::new();
+            let mut written: Vec<String> = Vec::new();
+            for (member, impl_item_node) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_item_node else {
+                    continue;
+                };
+                let name = self.item_text(impl_item, def.sig.name).to_string();
+                written.push(name.clone());
+                let mut binders = vec![GenericBinder::SelfType];
+                for (position, impl_name) in generic_names.iter().enumerate() {
+                    binders.push(GenericBinder::ImplParam {
+                        index: position,
+                        name: impl_name.clone(),
+                    });
+                }
+                for (position, param) in def.sig.generics.iter().enumerate() {
+                    binders.push(GenericBinder::MethodParam {
+                        index: position,
+                        name: self.item_text(impl_item, param.name).to_string(),
+                    });
+                }
+                effective_members.push(crate::bound_dispatch::IndexedTarget {
+                    member: name,
+                    declaration: CallableDeclId::ImplMember {
+                        impl_item,
+                        member: member as u32,
+                    },
+                    body: def.body,
+                    binders,
+                });
+            }
+            // G1: trait defaults the impl did NOT override are still executable targets, and their
+            // bodies own the TRAIT's binder namespace rather than the impl's.
+            let bound_trait = trait_ref.as_ref().map(|reference| match reference.res {
+                Res::Item(trait_id) => hir::BoundTrait::User(trait_id),
+                Res::CoreTrait(core) => hir::BoundTrait::Core(core),
+                _ => hir::BoundTrait::User(impl_item),
+            });
+            if let Some(hir::BoundTrait::User(trait_id)) = bound_trait {
+                if let hir::ItemKind::Trait {
+                    items: trait_items,
+                    generics: trait_generics,
+                    ..
+                } = &self.hir.item(trait_id).kind
+                {
+                    let trait_generics = trait_generics.to_vec();
+                    for (member, trait_item) in trait_items.iter().enumerate() {
+                        let hir::TraitItem::Method {
+                            sig,
+                            body: Some(body),
+                        } = trait_item
+                        else {
+                            continue;
+                        };
+                        let name = self.item_text(trait_id, sig.name).to_string();
+                        if written.contains(&name) {
+                            continue;
+                        }
+                        let mut binders = vec![GenericBinder::SelfType];
+                        for (position, param) in trait_generics.iter().enumerate() {
+                            binders.push(GenericBinder::TraitParam {
+                                index: position,
+                                name: self.item_text(trait_id, param.name).to_string(),
+                            });
+                        }
+                        for (position, param) in sig.generics.iter().enumerate() {
+                            binders.push(GenericBinder::MethodParam {
+                                index: position,
+                                name: self.item_text(trait_id, param.name).to_string(),
+                            });
+                        }
+                        effective_members.push(crate::bound_dispatch::IndexedTarget {
+                            member: name,
+                            declaration: CallableDeclId::TraitMember {
+                                trait_item: trait_id,
+                                member: member as u32,
+                            },
+                            body: *body,
+                            binders,
+                        });
+                    }
+                }
+            }
+            let converted_self = self.convert_hir_type(self_ty_id);
+            let trait_args: Vec<Ty> = trait_ref
+                .as_ref()
+                .and_then(|reference| reference.args.as_ref())
+                .map(|args| {
+                    args.args
+                        .iter()
+                        .filter_map(|arg| match arg {
+                            hir::GenericArg::Type(id) => Some(*id),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| self.convert_hir_type(id))
+                .collect();
+            impls.push(crate::bound_dispatch::IndexedImpl {
+                impl_item,
+                trait_: bound_trait,
+                trait_args,
+                self_ty: converted_self,
+                generic_names,
+                effective_members,
+            });
+        }
+        crate::bound_dispatch::TraitImplIndex::from_parts(impls)
+    }
+
+    /// Publish a `CallableUse::Bound` for a call resolved through a generic parameter's bound.
+    ///
+    /// AS3 Boundary 4 step 2, deliberately landed **before** Display so the late-bound mechanism is
+    /// proved on an ordinary `fn f<T: Speak>(x: T) { x.speak(); }` rather than tangled with
+    /// recursive formatting.
+    fn publish_bound_use(
+        &mut self,
+        call_expr: ExprId,
+        candidate: &BoundMethod,
+        param_name: &str,
+        method: &str,
+        ret: &Ty,
+        method_args: Vec<Ty>,
+    ) {
+        let (trait_, receiver_form, params) = match candidate {
+            BoundMethod::User { trait_id, sig } => (
+                hir::BoundTrait::User(*trait_id),
+                sig.receiver,
+                sig.params.iter().map(|p| p.ty).collect::<Vec<_>>(),
+            ),
+            BoundMethod::Core {
+                core_trait, method, ..
+            } => {
+                // A core trait's contract is declared, not written in HIR, so its parameter types
+                // are not `TypeId`s. The signature is published with the receiver and result only;
+                // the specialiser produces the full instantiated signature from the impl it picks.
+                let receiver_self = Ty::Param(param_name.to_string());
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Bound {
+                        trait_: hir::BoundTrait::Core(*core_trait),
+                        member: method.name.to_string(),
+                        self_ty: receiver_self.clone(),
+                        trait_args: Vec::new(),
+                        // Always empty, and that is the answer rather than a gap: a core trait's
+                        // contract is `ContractTy`, which cannot declare method-level generics.
+                        method_args,
+                    },
+                    environment: GenericEnvironment::FromBoundSelection,
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: match method.receiver {
+                        Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                        Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                        Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                        None => ReceiverBinding::None,
+                    },
+                    signature: CallableSigTy {
+                        receiver: bound_receiver_ty(method.receiver.as_ref(), receiver_self),
+                        params: Vec::new(),
+                        ret: ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Bound {
+                        trait_: hir::BoundTrait::Core(*core_trait),
+                    },
+                };
+                self.publish_callable_use(call_expr, use_);
+                return;
+            }
+        };
+        let receiver_self = Ty::Param(param_name.to_string());
+        let params: Vec<Ty> = params
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_,
+                member: method.to_string(),
+                self_ty: receiver_self.clone(),
+                trait_args: Vec::new(),
+                // DEV-188: this call site's binding of the METHOD's own generics, from the
+                // turbofish or inferred from the arguments.
+                method_args,
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::None,
+            receiver_binding: match receiver_form {
+                Some(hir::Receiver::Value) => ReceiverBinding::ByValue,
+                Some(hir::Receiver::Ref) => ReceiverBinding::Shared,
+                Some(hir::Receiver::RefMut) => ReceiverBinding::Exclusive,
+                None => ReceiverBinding::None,
+            },
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(receiver_form.as_ref(), receiver_self),
+                params,
+                ret: ret.clone(),
+            },
+            provenance: DispatchProvenance::Bound { trait_ },
+        };
+        self.publish_callable_use(call_expr, use_);
+    }
+
+    /// Publish the `Iterator::next` use a `for` loop selects.
+    ///
+    /// Uses `resolve_user_iterator` — the SAME selection the element type came from — so there is
+    /// one answer to "which `next` does this loop run", not two that must agree.
+    fn publish_iterator_use(&mut self, for_expr: ExprId, iter_ty: &Ty) {
+        let iter_ty = self.resolve(iter_ty);
+        if !matches!(iter_ty, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some(selection) = self.resolve_user_iterator(&iter_ty) else {
+            return;
+        };
+        let (impl_item, member, body) = (selection.impl_item, selection.member, selection.body);
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        // Instantiated against the impl's substitution: `impl<T> Iterator for Repeat<T>` publishes
+        // a `next` returning `Option<Int32>` for `Repeat<Int32>`, not `Option<T>`.
+        let receiver = receiver.map(|ty| self.instantiate_ty(&ty, &selection.substitutions));
+        let params: Vec<Ty> = params
+            .iter()
+            .map(|ty| self.instantiate_ty(ty, &selection.substitutions))
+            .collect();
+        let ret = self.instantiate_ty(&ret, &selection.substitutions);
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            // The impl's generic environment, RETAINED. Publishing an empty one here was the
+            // second defect the hardening review found.
+            environment: GenericEnvironment::Static(selection.bindings),
+            // `Iterator::next(&mut self)` advances the iterator, so the loop takes an exclusive
+            // borrow of the iterator place — no dereferencing.
+            receiver_adjustment: ReceiverAdjustment::Exclusive { derefs: 0 },
+            receiver_binding: ReceiverBinding::Exclusive,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Iterator,
+            },
+        };
+        self.publish_callable_use(for_expr, use_);
+    }
+
+    /// The impl that supplies operator trait `required` for a user nominal, and the member index
+    /// and body of the method that implements it.
+    ///
+    /// **AS3 Boundary 3.** `ty_satisfies_operator_bound` already performs this scan — it walks every
+    /// impl looking for one whose trait path reads `"Eq"`/`"Ord"` and whose self type matches — and
+    /// then returns a `bool`, discarding the impl it just found. So the checker *does* select for
+    /// `==` and `<`; it throws the selection away and both engines find it again.
+    ///
+    /// That makes this a **fourth** scan of the same shape, after `Interpreter::find_method` and
+    /// `FnLowerer::find_impl_fn`. `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md` counted three because
+    /// it looked for algorithms that *return* a callable; this one answers a narrower question and
+    /// drops the answer, which is how it escaped the count.
+    fn operator_impl_member(
+        &self,
+        ty: &Ty,
+        required: &str,
+        method: &str,
+    ) -> Option<(ItemId, u32, BlockId, HashMap<String, Ty>)> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_id = ItemId(idx as u32);
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                generics,
+                items,
+            } = &item.kind
+            else {
+                continue;
+            };
+            if self.item_text(impl_id, trait_ref.path.span) != required {
+                continue;
+            }
+            // **The substitution is RETURNED, not discarded.** It was computed here to decide
+            // whether the impl applies at all, and thrown away — so the operator publication had
+            // no way to say what `impl<T> Eq for W<T>` binds `T` to, and published an empty
+            // environment for a generic impl.
+            let Some(substitution) = self.match_impl_type(
+                &self.impl_self_ty_with_args(impl_id, *self_ty),
+                ty,
+                generics,
+            ) else {
+                continue;
+            };
+            for (member, impl_item) in items.iter().enumerate() {
+                if let hir::ImplItem::Fn { def, .. } = impl_item {
+                    if self.item_text(impl_id, def.sig.name) == method {
+                        return Some((impl_id, member as u32, def.body, substitution));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn ty_satisfies_operator_bound(&self, ty: &Ty, required: &str) -> bool {
         match ty {
             // DEV-075 (owner specification decision, 2026-07-20). This gate is about the
@@ -10895,7 +12617,27 @@ impl<'a> TypeChecker<'a> {
                 args.iter().all(|a| self.type_is_displayable(a))
             }
             Ty::Tuple(elems) => elems.iter().all(|e| self.type_is_displayable(e)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.type_is_displayable(elem),
+            // **DEV-206: an array is a value; a bare slice is not.**
+            //
+            // These shared an arm, which accepted the UNSIZED `[T]` — a type §6.6 says is never a
+            // standalone value, and which the representation relation refuses at every boundary
+            // for exactly that reason. So `println(v[0..2])` type-checked and then had no valid
+            // runtime representation, while `println(&v[0..2])` — the form that *can* exist — was
+            // rejected because no arm below matched a reference to a slice. The polarity was
+            // reversed.
+            Ty::Array(elem, _) => self.type_is_displayable(elem),
+            // A slice is observed THROUGH a reference. `&[T]` is displayable exactly when `T` is,
+            // which is the same elementwise rule the other containers use; nothing is invented for
+            // a non-`Display` element. Deliberately shared references only — `&mut [T]` is not
+            // broadened here, because DEV-206 is about the `[T]`/`&[T]` contradiction and nothing
+            // in the standard rules currently implies the exclusive form.
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } if matches!(inner.as_ref(), Ty::Slice(_)) => match inner.as_ref() {
+                Ty::Slice(elem) => self.type_is_displayable(elem),
+                _ => false,
+            },
             Ty::Struct(..) | Ty::Enum(..) => self.ty_satisfies_operator_bound(ty, "Display"),
             Ty::Param(_) => true, // discharged by the caller's own bound
             _ => false,
@@ -11008,10 +12750,46 @@ fn is_copy_primitive(primitive: Primitive) -> bool {
 /// Per-instance genericity is handled at the query, not here: this set answers "is `struct H` ever
 /// `Copy`", and `is_copy_with_impls`/`is_copy_type` additionally require every type argument to be
 /// `Copy` (`args.all(is_copy)`), so `H<&P>` is `Copy` while `H<String>` is not, from one set.
-pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+/// **AS4: the single authority for "does this nominal have a user destructor?"**
+///
+/// Answered by RESOLVED IDENTITY — `Res::CoreTrait(CoreTrait::Drop)` — never by the trait's
+/// spelling. CD-379 settled that rule for `Display`; DEV-210 is the same defect found in the borrow
+/// checker, which asked whether the written trait name `.ends_with("Drop")` and so refused a legal
+/// partial move on any type implementing a user trait called `MyDrop`.
+///
+/// Extracted from `copy_eligible_types`, which already computed exactly this set for its own use
+/// and kept it private. Publishing it costs nothing and removes the incentive to write a third
+/// scan: every consumer of "has a destructor" now reads one answer.
+pub fn nominals_with_destructor(hir: &Hir) -> HashSet<ItemId> {
     let mut drop_items: HashSet<ItemId> = HashSet::new();
+    for item in hir.items.iter() {
+        let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            self_ty,
+            ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Drop) {
+            continue;
+        }
+        if let hir::TypeKind::Path {
+            res: Res::Item(target),
+            ..
+        } = &hir.ty(*self_ty).kind
+        {
+            drop_items.insert(*target);
+        }
+    }
+    drop_items
+}
+
+pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+    // One authority, consulted rather than repeated: this scan used to compute `drop_items` inline.
+    let drop_items = nominals_with_destructor(hir);
     let mut eligible: HashSet<ItemId> = HashSet::new();
-    for (idx, item) in hir.items.iter().enumerate() {
+    for item in hir.items.iter() {
         if let hir::ItemKind::Impl {
             trait_: Some(trait_ref),
             self_ty,
@@ -11023,19 +12801,12 @@ pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
                 ..
             } = &hir.ty(*self_ty).kind
             {
-                match trait_ref.res {
-                    // An explicit `impl Copy` seeds the set; its field validity is checked
-                    // separately (a `Copy`+non-`Copy`-field type is a reported error).
-                    Res::CoreTrait(hir::CoreTrait::Copy) => {
-                        eligible.insert(*target);
-                    }
-                    Res::CoreTrait(hir::CoreTrait::Drop) => {
-                        drop_items.insert(*target);
-                    }
-                    _ => {}
+                // An explicit `impl Copy` seeds the set; its field validity is checked separately
+                // (a `Copy`+non-`Copy`-field type is a reported error).
+                if trait_ref.res == Res::CoreTrait(hir::CoreTrait::Copy) {
+                    eligible.insert(*target);
                 }
             }
-            let _ = idx;
         }
     }
     // Fixpoint: a nominal joins the set once all its fields are eligible under the current set.
@@ -11200,461 +12971,6 @@ fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TensorGenericSchema {
-    None,
-    DTypeAndShape,
-    DTypeAndDim,
-    Shape,
-    Axis,
-    AxisStartLen,
-    DType,
-    Device,
-    IndexList,
-}
-
-impl TensorGenericSchema {
-    const fn arity(self) -> usize {
-        match self {
-            TensorGenericSchema::None => 0,
-            TensorGenericSchema::DTypeAndShape | TensorGenericSchema::DTypeAndDim => 2,
-            TensorGenericSchema::Shape
-            | TensorGenericSchema::Axis
-            | TensorGenericSchema::DType
-            | TensorGenericSchema::Device
-            | TensorGenericSchema::IndexList => 1,
-            TensorGenericSchema::AxisStartLen => 3,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TensorDTypeRule {
-    Construct,
-    Match,
-    Compare,
-    Preserve,
-    ArgMax,
-    Cast,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TensorDeviceRule {
-    Fresh,
-    Match,
-    Preserve,
-    Target,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TensorShapeRule {
-    Construct,
-    FromVec,
-    Elementwise,
-    BroadcastTo,
-    MatMul,
-    BatchMatMul,
-    Concat,
-    Permute,
-    Reshape,
-    SliceAxis,
-    Transpose,
-    ReduceAxis,
-    FullReduce,
-    Softmax,
-    Cast,
-    ToDevice,
-    /// A value-range transition (Gate 7): identity shape/dtype, requires the
-    /// receiver to already be in `from`, and produces `to`.
-    RangeTransition {
-        from: crate::extensions::tensor::types::ValueRange,
-        to: crate::extensions::tensor::types::ValueRange,
-    },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TensorResultRule {
-    Tensor,
-    BoolTensor,
-    Int64Tensor,
-    FallibleTensor,
-}
-
-#[derive(Clone, Copy)]
-struct TensorOpDescriptor {
-    name: &'static str,
-    arity: usize,
-    standalone: bool,
-    method: bool,
-    generics: TensorGenericSchema,
-    dtype: TensorDTypeRule,
-    device: TensorDeviceRule,
-    shape: TensorShapeRule,
-    result: TensorResultRule,
-}
-
-macro_rules! tensor_op {
-    ($name:literal, $arity:literal, $method:literal, $generics:expr, $dtype:expr, $device:expr, $shape:expr, $result:expr $(,)?) => {
-        TensorOpDescriptor {
-            name: $name,
-            arity: $arity,
-            standalone: true,
-            method: $method,
-            generics: $generics,
-            dtype: $dtype,
-            device: $device,
-            shape: $shape,
-            result: $result,
-        }
-    };
-}
-
-static TENSOR_OPS: &[TensorOpDescriptor] = &[
-    tensor_op!(
-        "zeros",
-        0,
-        false,
-        TensorGenericSchema::DTypeAndShape,
-        TensorDTypeRule::Construct,
-        TensorDeviceRule::Fresh,
-        TensorShapeRule::Construct,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "ones",
-        0,
-        false,
-        TensorGenericSchema::DTypeAndShape,
-        TensorDTypeRule::Construct,
-        TensorDeviceRule::Fresh,
-        TensorShapeRule::Construct,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "full",
-        1,
-        false,
-        TensorGenericSchema::DTypeAndShape,
-        TensorDTypeRule::Construct,
-        TensorDeviceRule::Fresh,
-        TensorShapeRule::Construct,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "from_vec",
-        1,
-        false,
-        TensorGenericSchema::DTypeAndDim,
-        TensorDTypeRule::Construct,
-        TensorDeviceRule::Fresh,
-        TensorShapeRule::FromVec,
-        TensorResultRule::FallibleTensor,
-    ),
-    tensor_op!(
-        "add",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "sub",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "mul",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "div",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "min",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "max",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "eq",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "ne",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "lt",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "le",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "gt",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "ge",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Compare,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Elementwise,
-        TensorResultRule::BoolTensor,
-    ),
-    tensor_op!(
-        "broadcast_to",
-        1,
-        true,
-        TensorGenericSchema::Shape,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::BroadcastTo,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "matmul",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::MatMul,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "batch_matmul",
-        2,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::BatchMatMul,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "concat",
-        2,
-        true,
-        TensorGenericSchema::Axis,
-        TensorDTypeRule::Match,
-        TensorDeviceRule::Match,
-        TensorShapeRule::Concat,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "permute",
-        1,
-        true,
-        TensorGenericSchema::IndexList,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::Permute,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "reshape",
-        1,
-        true,
-        TensorGenericSchema::Shape,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::Reshape,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "slice_axis",
-        1,
-        true,
-        TensorGenericSchema::AxisStartLen,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::SliceAxis,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "transpose",
-        1,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::Transpose,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "sum_axis",
-        1,
-        true,
-        TensorGenericSchema::Axis,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::ReduceAxis,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "mean_axis",
-        1,
-        true,
-        TensorGenericSchema::Axis,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::ReduceAxis,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "argmax",
-        1,
-        true,
-        TensorGenericSchema::Axis,
-        TensorDTypeRule::ArgMax,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::ReduceAxis,
-        TensorResultRule::Int64Tensor,
-    ),
-    tensor_op!(
-        "sum",
-        1,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::FullReduce,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "softmax",
-        1,
-        true,
-        TensorGenericSchema::Axis,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::Softmax,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "cast",
-        1,
-        true,
-        TensorGenericSchema::DType,
-        TensorDTypeRule::Cast,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::Cast,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "to_device",
-        1,
-        true,
-        TensorGenericSchema::Device,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Target,
-        TensorShapeRule::ToDevice,
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "scale_255",
-        1,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::RangeTransition {
-            from: crate::extensions::tensor::types::ValueRange::ByteRange,
-            to: crate::extensions::tensor::types::ValueRange::UnitRange,
-        },
-        TensorResultRule::Tensor,
-    ),
-    tensor_op!(
-        "normalize",
-        1,
-        true,
-        TensorGenericSchema::None,
-        TensorDTypeRule::Preserve,
-        TensorDeviceRule::Preserve,
-        TensorShapeRule::RangeTransition {
-            from: crate::extensions::tensor::types::ValueRange::UnitRange,
-            to: crate::extensions::tensor::types::ValueRange::Normalized,
-        },
-        TensorResultRule::Tensor,
-    ),
-];
-
-/// Why an explicit `broadcast_to` failed: a rank mismatch, or a specific
-/// target-aligned axis that cannot be expanded to the target dimension.
-enum BroadcastError {
-    Rank { source: usize, target: usize },
-    Axis { result_axis: usize },
-}
-
 impl TypeChecker<'_> {
     fn check_tensor_builtin_call(
         &mut self,
@@ -11663,42 +12979,13 @@ impl TypeChecker<'_> {
         args: &[ExprId],
         span: Span,
     ) -> Ty {
-        let op_name = match builtin {
-            Builtin::TensorZeros => "zeros",
-            Builtin::TensorOnes => "ones",
-            Builtin::TensorFull => "full",
-            Builtin::TensorFromVec => "from_vec",
-            Builtin::TensorAdd => "add",
-            Builtin::TensorSub => "sub",
-            Builtin::TensorMul => "mul",
-            Builtin::TensorDiv => "div",
-            Builtin::TensorMin => "min",
-            Builtin::TensorMax => "max",
-            Builtin::TensorEq => "eq",
-            Builtin::TensorNe => "ne",
-            Builtin::TensorLt => "lt",
-            Builtin::TensorLe => "le",
-            Builtin::TensorGt => "gt",
-            Builtin::TensorGe => "ge",
-            Builtin::TensorBroadcastTo => "broadcast_to",
-            Builtin::TensorMatMul => "matmul",
-            Builtin::TensorBatchMatMul => "batch_matmul",
-            Builtin::TensorConcat => "concat",
-            Builtin::TensorPermute => "permute",
-            Builtin::TensorReshape => "reshape",
-            Builtin::TensorSliceAxis => "slice_axis",
-            Builtin::TensorTranspose => "transpose",
-            Builtin::TensorSumAxis => "sum_axis",
-            Builtin::TensorMeanAxis => "mean_axis",
-            Builtin::TensorArgMax => "argmax",
-            Builtin::TensorSum => "sum",
-            Builtin::TensorSoftmax => "softmax",
-            Builtin::TensorCast => "cast",
-            Builtin::TensorToDevice => "to_device",
-            Builtin::TensorScale255 => "scale_255",
-            Builtin::TensorNormalize => "normalize",
-            _ => return Ty::Error,
+        // AS6: the spelling table belonged to the extension, not to Core's checker — the same
+        // criterion-2 shape the resolver's table had. `TensorBuiltin::op_name` is exhaustive, so a
+        // new operation cannot reach here unnamed.
+        let Builtin::Tensor(op) = builtin else {
+            return Ty::Error;
         };
+        let op_name = op.op_name();
         self.check_tensor_op(op_name, None, turbofish, args, span)
     }
 
@@ -11712,58 +12999,6 @@ impl TypeChecker<'_> {
         call_span: Span,
     ) -> Ty {
         self.check_tensor_op(name, Some(receiver), turbofish, args, call_span)
-    }
-
-    fn get_fix_suggestion(&mut self, expected: &TensorKind, found: &TensorKind) -> Option<String> {
-        let (TensorKind::Tensor(expected), TensorKind::Tensor(found)) = (expected, found) else {
-            return None;
-        };
-        let dtype_differs = match (expected.dtype, found.dtype) {
-            (DType::Var(_), _) | (_, DType::Var(_)) => false,
-            (left, right) => left != right,
-        };
-        let device_differs = match (expected.device, found.device) {
-            (Device::Var(_), _) | (_, Device::Var(_)) => false,
-            (left, right) => left != right,
-        };
-        let shape_differs = expected.shape.dims != found.shape.dims;
-
-        match (dtype_differs, device_differs, shape_differs) {
-            (true, false, false) => Some(format!(
-                "cast the second tensor with `.cast::<{}>()`",
-                expected.dtype.name()
-            )),
-            (false, true, false) => Some(format!(
-                "move the second tensor with `.to_device::<{}>()`",
-                expected.device
-            )),
-            (false, false, true) if self.can_broadcast_to(&found.shape, &expected.shape) => {
-                let target = self.tensor_ctx.display_shape(&expected.shape);
-                Some(format!(
-                    "broadcast the second tensor with `.broadcast_to::<{target}>()`"
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    fn dtype_to_ty(&self, dtype: DType) -> Ty {
-        match dtype {
-            DType::Int8 => Ty::Primitive(Primitive::Int8),
-            DType::Int16 => Ty::Primitive(Primitive::Int16),
-            DType::Int32 => Ty::Primitive(Primitive::Int32),
-            DType::Int64 => Ty::Primitive(Primitive::Int64),
-            DType::UInt8 => Ty::Primitive(Primitive::UInt8),
-            DType::UInt16 => Ty::Primitive(Primitive::UInt16),
-            DType::UInt32 => Ty::Primitive(Primitive::UInt32),
-            DType::UInt64 => Ty::Primitive(Primitive::UInt64),
-            DType::Float16 => Ty::Primitive(Primitive::Float16),
-            DType::Float32 => Ty::Primitive(Primitive::Float32),
-            DType::Float64 => Ty::Primitive(Primitive::Float64),
-            DType::BFloat16 => Ty::Primitive(Primitive::BFloat16),
-            DType::Bool => Ty::Primitive(Primitive::Bool),
-            DType::Var(_) => Ty::Error,
-        }
     }
 
     fn extract_const_int(&self, arg: &hir::GenericArg) -> Option<i64> {
@@ -11827,119 +13062,6 @@ impl TypeChecker<'_> {
         }
     }
 
-    /// Right-aligned NumPy-style broadcast of two shapes. On success returns the
-    /// result shape; on failure returns the result-aligned axis at which the two
-    /// dimensions are neither provably equal nor a literal `1`.
-    fn broadcast_shapes(&mut self, sa: &Shape, sb: &Shape, span: Span) -> Result<Shape, usize> {
-        let rank_a = sa.rank();
-        let rank_b = sb.rank();
-        let rank_out = std::cmp::max(rank_a, rank_b);
-        let mut dims_out = Vec::with_capacity(rank_out);
-        let mut spans_out = Vec::with_capacity(rank_out);
-
-        for trailing in 0..rank_out {
-            let index_a = rank_a.checked_sub(trailing + 1);
-            let index_b = rank_b.checked_sub(trailing + 1);
-            let dim_a = index_a.map(|index| &sa.dims[index]);
-            let dim_b = index_b.map(|index| &sb.dims[index]);
-            let span_a = index_a
-                .and_then(|index| sa.spans.get(index).copied())
-                .unwrap_or(span);
-            let span_b = index_b
-                .and_then(|index| sb.spans.get(index).copied())
-                .unwrap_or(span);
-
-            match (dim_a, dim_b) {
-                (Some(da), Some(db)) => {
-                    let resolved_a = self
-                        .tensor_ctx
-                        .resolve_dim(da)
-                        .unwrap_or_else(|_| da.clone());
-                    let resolved_b = self
-                        .tensor_ctx
-                        .resolve_dim(db)
-                        .unwrap_or_else(|_| db.clone());
-
-                    if resolved_a == resolved_b {
-                        dims_out.push(resolved_a);
-                        spans_out.push(span_a);
-                    } else if resolved_a.as_constant() == Some(1) {
-                        dims_out.push(resolved_b);
-                        spans_out.push(span_b);
-                    } else if resolved_b.as_constant() == Some(1) {
-                        dims_out.push(resolved_a);
-                        spans_out.push(span_a);
-                    } else {
-                        // Broadcasting is proof-based: unrelated variables do
-                        // not become equal merely because an operation wants
-                        // them to. Only equality already established by the
-                        // surrounding type constraints is accepted here. Report
-                        // the axis aligned to the result shape.
-                        return Err(rank_out - 1 - trailing);
-                    }
-                }
-                (Some(da), None) => {
-                    dims_out.push(da.clone());
-                    spans_out.push(span_a);
-                }
-                (None, Some(db)) => {
-                    dims_out.push(db.clone());
-                    spans_out.push(span_b);
-                }
-                (None, None) => unreachable!(),
-            }
-        }
-
-        dims_out.reverse();
-        spans_out.reverse();
-        Ok(Shape::with_spans(dims_out, spans_out))
-    }
-
-    /// Whether `source` can be explicitly broadcast to `target`. On failure
-    /// distinguishes a rank mismatch from a specific target-aligned axis that
-    /// cannot be expanded.
-    fn broadcast_to_check(&mut self, source: &Shape, target: &Shape) -> Result<(), BroadcastError> {
-        if source.rank() > target.rank() {
-            return Err(BroadcastError::Rank {
-                source: source.rank(),
-                target: target.rank(),
-            });
-        }
-        for trailing in 0..source.rank() {
-            let source_index = source.rank() - 1 - trailing;
-            let target_index = target.rank() - 1 - trailing;
-            let source_dim = self
-                .tensor_ctx
-                .resolve_dim(&source.dims[source_index])
-                .unwrap_or_else(|_| source.dims[source_index].clone());
-            let target_dim = self
-                .tensor_ctx
-                .resolve_dim(&target.dims[target_index])
-                .unwrap_or_else(|_| target.dims[target_index].clone());
-            if source_dim != target_dim && source_dim.as_constant() != Some(1) {
-                return Err(BroadcastError::Axis {
-                    result_axis: target_index,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Boolean form for callers that only need the yes/no answer (e.g. fix
-    /// suggestions).
-    fn can_broadcast_to(&mut self, source: &Shape, target: &Shape) -> bool {
-        self.broadcast_to_check(source, target).is_ok()
-    }
-
-    fn shape_volume(&mut self, shape: &Shape) -> Result<Poly, ()> {
-        let mut volume = Poly::constant(1);
-        for dimension in &shape.dims {
-            let resolved = self.tensor_ctx.resolve_dim(dimension).map_err(|_| ())?;
-            volume = volume.mul(&resolved).map_err(|_| ())?;
-        }
-        Ok(volume)
-    }
-
     fn check_tensor_op(
         &mut self,
         op_name: &str,
@@ -11981,1298 +13103,24 @@ impl TypeChecker<'_> {
             actual_ops.push(self.check_expr(*arg));
         }
 
-        let get_tensor_kind = |ty: &Ty| -> Option<TensorKind> {
-            let resolved = self.resolve(ty);
-            let tensor_ty = match resolved {
-                Ty::Ref { inner, .. } => self.resolve(&inner),
-                other => other,
-            };
-            match tensor_ty {
-                Ty::Extension(ext) => match &*ext {
-                    ExtensionTy::Tensor(kind) => Some(kind.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        if actual_ops.len() != descriptor.arity {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of arguments to `{op_name}`: expected {}, found {}",
-                        descriptor.arity,
-                        actual_ops.len()
-                    ),
-                    span,
-                )
-                .with_code("E0005"),
-            );
-            return Ty::Error;
-        }
-
-        let generic_arity = turbofish.map_or(0, |generic_args| generic_args.args.len());
-        if generic_arity != descriptor.generics.arity() {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of generic arguments to `{op_name}`: expected {}, found {generic_arity}",
-                        descriptor.generics.arity()
-                    ),
-                    turbofish.map_or(span, |generic_args| generic_args.span),
-                )
-                .with_code("E0213"),
-            );
-            return Ty::Error;
-        }
-
-        debug_assert!(match descriptor.device {
-            TensorDeviceRule::Fresh => matches!(
-                descriptor.shape,
-                TensorShapeRule::Construct | TensorShapeRule::FromVec
-            ),
-            TensorDeviceRule::Match => descriptor.arity == 2,
-            TensorDeviceRule::Preserve | TensorDeviceRule::Target => descriptor.arity == 1,
-        });
-        debug_assert!(match descriptor.dtype {
-            TensorDTypeRule::Construct => matches!(
-                descriptor.generics,
-                TensorGenericSchema::DTypeAndShape | TensorGenericSchema::DTypeAndDim
-            ),
-            TensorDTypeRule::Cast => descriptor.generics == TensorGenericSchema::DType,
-            TensorDTypeRule::ArgMax
-            | TensorDTypeRule::Compare
-            | TensorDTypeRule::Match
-            | TensorDTypeRule::Preserve => true,
-        });
-
-        if !matches!(
-            descriptor.shape,
-            TensorShapeRule::Construct | TensorShapeRule::FromVec
-        ) {
-            for (index, operand) in actual_ops.iter().enumerate() {
-                if receiver.is_some() && index == 0 {
-                    continue;
-                }
-                if !matches!(self.resolve(operand), Ty::Ref { mutable: false, .. }) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "tensor operand {} of `{op_name}` must be borrowed (for example `&tensor`)",
-                                index + 1
-                            ),
-                            span,
-                        )
-                        .with_code("E0005"),
-                    );
-                    return Ty::Error;
-                }
-            }
-        }
-
-        match descriptor.shape {
-            TensorShapeRule::Construct => {
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!(
-                                    "`{}` requires explicit type and shape generic arguments",
-                                    op_name
-                                ),
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 2 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "`{}` expects 2 generic arguments, found {}",
-                                op_name,
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "first generic argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-                let shape = match &g_args.args[1] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "second generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                if op_name == "full" {
-                    let val_ty = actual_ops[0].clone();
-                    let expected_val_ty = self.dtype_to_ty(dtype);
-                    let _ = self.unify(expected_val_ty, val_ty, span);
-                }
-
-                Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                    TensorTy {
-                        dtype,
-                        shape,
-                        device: self.tensor_ctx.fresh_device(),
-                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                    },
-                ))))
-            }
-            TensorShapeRule::FromVec => {
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "`from_vec` requires explicit type and dimension generic arguments",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 2 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "`from_vec` expects 2 generic arguments, found {}",
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "first generic argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-                let dim_poly = match &g_args.args[1] {
-                    hir::GenericArg::Shape(s) => {
-                        let shape = self.build_shape(s);
-                        if shape.dims.len() != 1 {
-                            self.diags.push(Diagnostic::error(
-                                "from_vec dimension argument must have rank 1",
-                                s.span,
-                            ));
-                            Poly::constant(1)
-                        } else {
-                            shape.dims[0].clone()
-                        }
-                    }
-                    _ => Poly::constant(1),
-                };
-
-                let val_ty = actual_ops[0].clone();
-                let expected_val_ty = Ty::Core(CoreType::Vec, vec![self.dtype_to_ty(dtype)]);
-                let _ = self.unify(expected_val_ty, val_ty, span);
-
-                let tensor = Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                    TensorTy {
-                        dtype,
-                        shape: Shape::new(vec![dim_poly]),
-                        device: self.tensor_ctx.fresh_device(),
-                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                    },
-                ))));
-                Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
-            }
-            TensorShapeRule::Elementwise => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            let mut diag = Diagnostic::error(
-                                format!(
-                                    "tensor element type mismatch: expected `{}`, found `{}`",
-                                    ta.dtype.name(),
-                                    tb.dtype.name()
-                                ),
-                                span,
-                            )
-                            .with_code("E0212");
-                            if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                diag = diag.with_note(fix);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            let mut diag = Diagnostic::error(
-                                format!(
-                                    "tensor device mismatch: expected `{:?}`, found `{:?}`",
-                                    ta.device, tb.device
-                                ),
-                                span,
-                            )
-                            .with_code("E0212");
-                            if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                diag = diag.with_note(fix);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        let out_shape = match self.broadcast_shapes(&ta.shape, &tb.shape, span) {
-                            Ok(s) => s,
-                            Err(result_axis) => {
-                                let lhs = self.tensor_ctx.display_shape(&ta.shape);
-                                let rhs = self.tensor_ctx.display_shape(&tb.shape);
-                                let mut diag = Diagnostic::error(
-                                    "tensor shapes cannot be broadcast together",
-                                    span,
-                                )
-                                .with_code("E0212")
-                                .with_note(format!("left shape: {lhs}"))
-                                .with_note(format!("right shape: {rhs}"))
-                                .with_note(format!(
-                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
-                                ));
-                                for origin in
-                                    self.tensor_ctx.dim_origin_notes(&[&ta.shape, &tb.shape])
-                                {
-                                    diag = diag.with_note(origin);
-                                }
-                                if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                    diag = diag.with_note(fix);
-                                }
-                                self.diags.push(diag);
-                                return Ty::Error;
-                            }
-                        };
-
-                        let out_dtype = if descriptor.result == TensorResultRule::BoolTensor {
-                            DType::Bool
-                        } else {
-                            ta.dtype
-                        };
-
-                        // Elementwise ops must not merge incompatible value-range
-                        // states. An `Unspecified` operand is neutral (a bare
-                        // constant); two different *specified* ranges are an error.
-                        let out_range = match self.combine_value_range(ta.range, tb.range) {
-                            Some(r) => r,
-                            None => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!(
-                                            "`{}` cannot merge tensors with value ranges `{}` and `{}`",
-                                            descriptor.name, ta.range, tb.range
-                                        ),
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: out_dtype,
-                                shape: out_shape,
-                                device: ta.device,
-                                range: out_range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::BroadcastTo => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "`broadcast_to` requires explicit shape generic argument",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "`broadcast_to` expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_shape = match &g_args.args[0] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        if let Err(err) = self.broadcast_to_check(&t.shape, &target_shape) {
-                            let source = self.tensor_ctx.display_shape(&t.shape);
-                            let target = self.tensor_ctx.display_shape(&target_shape);
-                            let mut diag =
-                                Diagnostic::error("cannot `broadcast_to` the target shape", span)
-                                    .with_code("E0212")
-                                    .with_note(format!("source shape: {source}"))
-                                    .with_note(format!("target shape: {target}"));
-                            diag = match err {
-                                BroadcastError::Rank {
-                                    source: s,
-                                    target: t,
-                                } => diag.with_note(format!(
-                                    "rank mismatch: source rank {s} exceeds target rank {t}"
-                                )),
-                                BroadcastError::Axis { result_axis } => diag.with_note(format!(
-                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
-                                )),
-                            };
-                            for origin in
-                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
-                            {
-                                diag = diag.with_note(origin);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: target_shape,
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::MatMul => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if ta.shape.rank() != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "matmul first argument must be rank 2, found rank {}",
-                                    ta.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if tb.shape.rank() != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "matmul second argument must be rank 2, found rank {}",
-                                    tb.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("matmul dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("matmul device mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[1], &tb.shape.dims[0], 0)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[1]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(vec![
-                                    ta.shape.dims[0].clone(),
-                                    tb.shape.dims[1].clone(),
-                                ]),
-                                device: ta.device,
-                                // matmul mixes values across the contracted
-                                // axis, so any input value range is no longer
-                                // meaningful: the result is Unspecified.
-                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::BatchMatMul => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if ta.shape.rank() != 3 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul first argument must be rank 3, found rank {}",
-                                    ta.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if tb.shape.rank() != 3 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul second argument must be rank 3, found rank {}",
-                                    tb.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("batch_matmul dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("batch_matmul device mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[0], &tb.shape.dims[0], 0)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[0]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "batch_matmul batch dimension mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[2], &tb.shape.dims[1], 1)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[2]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[1]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "batch_matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(vec![
-                                    ta.shape.dims[0].clone(),
-                                    ta.shape.dims[1].clone(),
-                                    tb.shape.dims[2].clone(),
-                                ]),
-                                device: ta.device,
-                                // See matmul: the contracted product is not a
-                                // value-range-preserving operation.
-                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Concat => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "concat requires explicit axis generic argument",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "concat expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "concat axis must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        let rank = ta.shape.rank();
-                        if tb.shape.rank() != rank {
-                            self.diags.push(Diagnostic::error(
-                                "concat tensors must have equal rank",
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("concat axis {} is out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("concat dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("concat device mismatch", span));
-                            return Ty::Error;
-                        }
-                        let mut out_dims = Vec::new();
-                        for i in 0..rank {
-                            if i as i64 == axis {
-                                let sum_dim = match ta.shape.dims[i].add(&tb.shape.dims[i]) {
-                                    Ok(d) => d,
-                                    Err(_) => {
-                                        self.diags.push(Diagnostic::error(
-                                            "concat dimension overflow",
-                                            span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                };
-                                out_dims.push(sum_dim);
-                            } else {
-                                if self
-                                    .tensor_ctx
-                                    .unify_dim(&ta.shape.dims[i], &tb.shape.dims[i], i)
-                                    .is_err()
-                                {
-                                    self.diags.push(Diagnostic::error(
-                                        format!(
-                                            "concat dimension mismatch at axis {}: {} and {}",
-                                            i, ta.shape.dims[i], tb.shape.dims[i]
-                                        ),
-                                        span,
-                                    ));
-                                    return Ty::Error;
-                                }
-                                out_dims.push(ta.shape.dims[i].clone());
-                            }
-                        }
-
-                        // Concat joins two tensors, so their value ranges must
-                        // combine like an elementwise op (Unspecified neutral).
-                        let out_range = match self.combine_value_range(ta.range, tb.range) {
-                            Some(r) => r,
-                            None => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!(
-                                            "`concat` cannot merge tensors with value ranges `{}` and `{}`",
-                                            ta.range, tb.range
-                                        ),
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(out_dims),
-                                device: ta.device,
-                                range: out_range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Permute => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("permute requires explicit target index list", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "permute expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let permutation = match self.extract_const_int_list(&g_args.args[0]) {
-                    Some(p) => p,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "permute argument must be a constant integer list",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if permutation.len() != rank {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "permute length mismatch: expected list of length {}, found {}",
-                                    rank,
-                                    permutation.len()
-                                ),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        let mut seen = HashSet::new();
-                        for &idx in &permutation {
-                            if idx < 0 || idx >= rank as i64 {
-                                self.diags.push(Diagnostic::error(
-                                    format!("index {} is out of range for rank {}", idx, rank),
-                                    g_args.span,
-                                ));
-                                return Ty::Error;
-                            }
-                            if !seen.insert(idx) {
-                                self.diags.push(Diagnostic::error(
-                                    format!("duplicate index {} in permute list", idx),
-                                    g_args.span,
-                                ));
-                                return Ty::Error;
-                            }
-                        }
-
-                        let mut out_dims = Vec::new();
-                        for &idx in &permutation {
-                            out_dims.push(t.shape.dims[idx as usize].clone());
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(out_dims),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Reshape => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("reshape requires explicit target shape", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "reshape expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_shape = match &g_args.args[0] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let (source_volume, target_volume) = match (
-                            self.shape_volume(&t.shape),
-                            self.shape_volume(&target_shape),
-                        ) {
-                            (Ok(source), Ok(target)) => (source, target),
-                            _ => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        "reshape element-count calculation overflowed",
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        if source_volume != target_volume {
-                            let source_shape = self.tensor_ctx.display_shape(&t.shape);
-                            let target_display = self.tensor_ctx.display_shape(&target_shape);
-                            let source_product = self.tensor_ctx.shape_product_display(&t.shape);
-                            let target_product =
-                                self.tensor_ctx.shape_product_display(&target_shape);
-                            let mut diag =
-                                Diagnostic::error("reshape cannot preserve element count", span)
-                                    .with_code("E0212")
-                                    .with_note(format!("source shape: {source_shape}"))
-                                    .with_note(format!("target shape: {target_display}"))
-                                    .with_note(format!(
-                                        "required: {source_product} == {target_product}"
-                                    ));
-                            for origin in
-                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
-                            {
-                                diag = diag.with_note(origin);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: target_shape,
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::SliceAxis => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "slice_axis requires AXIS, START, LEN generic arguments",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 3 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "slice_axis expects 3 generic arguments, found {}",
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "AXIS must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-                let Some(start) = self.extract_dim_generic(&g_args.args[1], "START") else {
-                    return Ty::Error;
-                };
-                let Some(len) = self.extract_dim_generic(&g_args.args[2], "LEN") else {
-                    return Ty::Error;
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("axis {} out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        let axis_len = self
-                            .tensor_ctx
-                            .resolve_dim(&t.shape.dims[axis as usize])
-                            .unwrap_or_else(|_| t.shape.dims[axis as usize].clone());
-                        let start = self.tensor_ctx.resolve_dim(&start).unwrap_or(start);
-                        let len = self.tensor_ctx.resolve_dim(&len).unwrap_or(len);
-                        let end = match start.add(&len) {
-                            Ok(end) => end,
-                            Err(_) => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        "slice dimension arithmetic overflowed",
-                                        g_args.span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        let exact = end == axis_len;
-                        let literal_within_bounds = match (
-                            start.as_constant(),
-                            len.as_constant(),
-                            axis_len.as_constant(),
-                            end.as_constant(),
-                        ) {
-                            (Some(start), Some(len), Some(axis_len), Some(end)) => {
-                                start >= 0 && len >= 0 && end <= axis_len
-                            }
-                            _ => false,
-                        };
-                        if !exact && !literal_within_bounds {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "cannot prove slice constraint `{start} + {len} == {axis_len}`"
-                                    ),
-                                    g_args.span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        let mut out_dims = t.shape.dims.clone();
-                        out_dims[axis as usize] = len;
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(out_dims),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::ReduceAxis | TensorShapeRule::Softmax => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("`{}` requires explicit axis generic argument", op_name),
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        format!("`{}` expects exactly 1 generic argument", op_name),
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "AXIS must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("axis {} is out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-
-                        if descriptor.shape == TensorShapeRule::Softmax {
-                            // Softmax preserves shape/dtype/device but produces
-                            // probabilities, not the input's image values, so the
-                            // value range does not carry through.
-                            Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                                TensorTy {
-                                    dtype: t.dtype,
-                                    shape: t.shape.clone(),
-                                    device: t.device,
-                                    range:
-                                        crate::extensions::tensor::types::ValueRange::Unspecified,
-                                },
-                            ))))
-                        } else {
-                            let mut out_dims = t.shape.dims.clone();
-                            out_dims.remove(axis as usize);
-
-                            let out_dtype = if descriptor.result == TensorResultRule::Int64Tensor {
-                                DType::Int64
-                            } else {
-                                t.dtype
-                            };
-
-                            Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                                TensorTy {
-                                    dtype: out_dtype,
-                                    shape: Shape::new(out_dims),
-                                    device: t.device,
-                                    // Reductions (incl. softmax/argmax) change
-                                    // the meaning of the values, so the input
-                                    // value range does not carry through.
-                                    range:
-                                        crate::extensions::tensor::types::ValueRange::Unspecified,
-                                },
-                            ))))
-                        }
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::FullReduce => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: t.dtype,
-                            shape: Shape::new(Vec::new()),
-                            device: t.device,
-                            // A full reduction to a scalar drops the value range.
-                            range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Cast => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("cast requires explicit target type", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "cast expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "cast argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: target_dtype,
-                            shape: t.shape.clone(),
-                            device: t.device,
-                            range: t.range,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::RangeTransition { from, to } => {
-                use crate::extensions::tensor::types::DType as TDType;
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        // The transition operations are defined on Float32 values.
-                        if !matches!(t.dtype, TDType::Float32 | TDType::Var(_)) {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "`{}` requires a Float32 tensor, found {}",
-                                        descriptor.name,
-                                        t.dtype.name()
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-                        // The receiver must already carry the source value range.
-                        if t.range != from {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "`{}` requires a `{from}` tensor, found `{}`",
-                                        descriptor.name, t.range
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212")
-                                .with_note(format!(
-                                    "`{}` transitions the value range `{from}` -> `{to}`",
-                                    descriptor.name
-                                )),
-                            );
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: t.shape.clone(),
-                                device: t.device,
-                                range: to,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::ToDevice => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("to_device requires explicit target device", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "to_device expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_device = self.build_device(Some(&g_args.args[0]), g_args.span);
-
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: t.dtype,
-                            shape: t.shape.clone(),
-                            device: target_device,
-                            range: t.range,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Transpose => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if rank != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!("transpose expects a rank-2 tensor, found rank {}", rank),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(vec![
-                                    t.shape.dims[1].clone(),
-                                    t.shape.dims[0].clone(),
-                                ]),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-        }
+        // AS6 packet 4B group 2C: Core's half is done — the operation is located, the call form
+        // is validated, and every argument expression has been evaluated. Every dtype, shape,
+        // device, schema and broadcasting decision from here on is the extension's.
+        tensor_check::eval_tensor_op(
+            self,
+            op_name,
+            descriptor,
+            receiver.is_some(),
+            turbofish,
+            actual_ops,
+            span,
+        )
     }
 
+    /// AS6 packet 4D-A: Core normalises the declaration — enters the generic scope, classifies
+    /// each parameter, converts each written port type — and the extension decides whether what
+    /// the declaration says is *allowed*. Staged rather than hoisted so that a conversion
+    /// diagnostic cannot overtake the duplicate-name diagnostic for the same port.
     fn check_model_def(&mut self, _item_id: ItemId, def: &hir::ModelDef) {
         if !self.options.tensor() {
             self.diags.push(Diagnostic::error(
@@ -13282,83 +13130,34 @@ impl TypeChecker<'_> {
             return;
         }
 
-        let mut inputs_count = 0;
-        let mut outputs_count = 0;
-        let mut port_names = HashSet::new();
-
         let saved = self.enter_tensor_param_scope(&def.generics);
 
-        // Verify generic parameter kinds
         for g in &def.generics {
             let kind = self.generic_kind(g);
-            if kind != GenericKind::Dim {
-                self.diags.push(
-                    Diagnostic::error(
-                        "model generic parameters must have kind `Dim` (e.g. `<N: Dim>`)",
-                        g.name,
-                    )
-                    .with_code("E0211"),
-                );
-            }
+            tensor_check::ModelDeclCheck::check_generic_kind(self, kind.as_tensor_param(), g.name);
         }
 
+        let mut declaration = tensor_check::ModelDeclCheck::new();
         for port in &def.ports {
             let name = self.text(port.name).to_string();
-            if !port_names.insert(name.clone()) {
-                self.diags.push(
-                    Diagnostic::error(format!("duplicate port name `{}`", name), port.name)
-                        .with_code("E0211"),
-                );
-            }
-
-            match port.dir {
-                crate::ast::PortDir::Input => inputs_count += 1,
-                crate::ast::PortDir::Output => outputs_count += 1,
-            }
-
+            declaration.declare_port(self, &name, port.name, port.dir);
             let ty = self.convert_hir_type(port.ty);
-            match self.resolve(&ty) {
-                Ty::Extension(ext) => match ext.as_ref() {
-                    ExtensionTy::Tensor(TensorKind::Tensor(_) | TensorKind::TensorDyn(_)) => {
-                        // Valid
-                    }
-                    _ => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("invalid port type `{}`: models allow only `Tensor` and `TensorDyn` ports", self.ty_to_string(&ty)),
-                                port.span,
-                            )
-                            .with_code("E0211"),
-                        );
-                    }
-                },
-                Ty::Error => {}
-                _ => {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!("invalid port type `{}`: models allow only `Tensor` and `TensorDyn` ports", self.ty_to_string(&ty)),
-                            port.span,
-                        )
-                        .with_code("E0211"),
-                    );
-                }
-            }
+            declaration.check_port_type(self, &ty, port.span);
         }
-
-        if inputs_count == 0 {
-            self.diags.push(
-                Diagnostic::error("model must declare at least one input port", def.name)
-                    .with_code("E0211"),
-            );
-        }
-        if outputs_count == 0 {
-            self.diags.push(
-                Diagnostic::error("model must declare at least one output port", def.name)
-                    .with_code("E0211"),
-            );
-        }
+        declaration.finish(self, def.name);
 
         self.exit_tensor_param_scope(saved);
+    }
+
+    /// The `range = R` binding of a generic argument list, if any.
+    fn value_range_of(
+        &mut self,
+        generic_args: &hir::GenericArgs,
+    ) -> crate::extensions::tensor::types::ValueRange {
+        let range_arg = generic_args.args.iter().find(
+            |a| matches!(a, hir::GenericArg::Binding { name, .. } if self.text(*name) == "range"),
+        );
+        self.build_value_range(range_arg, generic_args.span)
     }
 
     fn check_model_method_call(
@@ -13369,11 +13168,10 @@ impl TypeChecker<'_> {
         name_span: Span,
         call_span: Span,
     ) -> Ty {
-        if name != "predict" {
-            self.diags.push(Diagnostic::error(
-                format!("model type has no method named `{}`", name),
-                name_span,
-            ));
+        // AS6 packet 4B group 2C: a model's method surface, its `.predict(...)` calling
+        // convention and its result shape are model semantics; Core keeps the HIR walk, the
+        // declaration scope, the freshening and the argument evaluation.
+        if !tensor_check::check_model_method_name(self, name, name_span) {
             return Ty::Error;
         }
 
@@ -13395,18 +13193,7 @@ impl TypeChecker<'_> {
             .filter(|p| p.dir == crate::ast::PortDir::Output)
             .collect();
 
-        if args.len() != inputs.len() {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of arguments for `.predict(...)`: expected {}, found {}",
-                        inputs.len(),
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .with_code("E0005"),
-            );
+        if !tensor_check::check_model_predict_arity(self, inputs.len(), args.len(), call_span) {
             return Ty::Error;
         }
 
@@ -13456,47 +13243,102 @@ impl TypeChecker<'_> {
             })
             .collect::<Vec<_>>();
 
+        // Argument evaluation stays here and stays interleaved: the extension rule runs once per
+        // argument, immediately after that argument is checked, so diagnostic order is unchanged.
         for (arg_expr_id, (expected_port_ty, port_decl_span)) in
             args.iter().zip(instantiated_inputs)
         {
             let arg_ty = self.check_expr(*arg_expr_id);
-            match self.resolve(&arg_ty) {
-                Ty::Ref { inner, .. } => {
-                    let diagnostic_count = self.diags.len();
-                    if self
-                        .unify(
-                            expected_port_ty.clone(),
-                            *inner.clone(),
-                            self.hir.expr(*arg_expr_id).span,
-                        )
-                        .is_err()
-                    {
-                        let (line, column) = self.file.line_col(port_decl_span.lo);
-                        if let Some(diagnostic) = self.diags.get_mut(diagnostic_count) {
-                            diagnostic.notes.push(format!(
-                                "corresponding model port declared at {}:{line}:{column}",
-                                self.file.name
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!("mismatched types: expected a borrowed tensor (e.g. `&tensor`), found `{}`", self.ty_to_string(&arg_ty)),
-                            self.hir.expr(*arg_expr_id).span,
-                        )
-                        .with_code("E0005"),
-                    );
-                }
-            }
+            let arg_span = self.hir.expr(*arg_expr_id).span;
+            let port_note = self.hir.sources.get(port_decl_span.source).map(|source| {
+                let (line, column) = source.line_col(port_decl_span.lo);
+                format!(
+                    "corresponding model port declared at {}:{line}:{column}",
+                    source.name
+                )
+            });
+            tensor_check::check_model_predict_arg(
+                self,
+                arg_ty,
+                expected_port_ty,
+                arg_span,
+                port_note,
+            );
         }
 
-        if instantiated_outputs.len() == 1 {
-            instantiated_outputs[0].clone()
-        } else {
-            Ty::Tuple(instantiated_outputs)
-        }
+        tensor_check::model_predict_result(instantiated_outputs)
+    }
+}
+
+/// AS6 packet 4B group 2C: the Core services the tensor semantic rules may use, and the whole of
+/// what they may use. `check_expr` is deliberately not among them — the tensor checker consumes
+/// checked expression types, it does not cause expression checking.
+impl TensorCheckCtx for TypeChecker<'_> {
+    fn diags(&mut self) -> &mut Vec<Diagnostic> {
+        &mut self.diags
+    }
+
+    fn tensor_error(&mut self, message: &str, span: Span) {
+        TypeChecker::tensor_error(self, message, span)
+    }
+
+    fn resolve(&self, ty: &Ty) -> Ty {
+        TypeChecker::resolve(self, ty)
+    }
+
+    fn unify(&mut self, a: Ty, b: Ty, span: Span) -> Result<(), ()> {
+        TypeChecker::unify(self, a, b, span)
+    }
+
+    fn ty_to_string(&self, ty: &Ty) -> String {
+        TypeChecker::ty_to_string(self, ty)
+    }
+
+    fn extract_const_int(&self, arg: &hir::GenericArg) -> Option<i64> {
+        TypeChecker::extract_const_int(self, arg)
+    }
+
+    fn extract_const_int_list(&mut self, arg: &hir::GenericArg) -> Option<Vec<i64>> {
+        TypeChecker::extract_const_int_list(self, arg)
+    }
+
+    fn extract_dim_generic(&mut self, arg: &hir::GenericArg, label: &str) -> Option<Poly> {
+        TypeChecker::extract_dim_generic(self, arg, label)
+    }
+
+    fn combine_value_range(
+        &self,
+        a: crate::extensions::tensor::types::ValueRange,
+        b: crate::extensions::tensor::types::ValueRange,
+    ) -> Option<crate::extensions::tensor::types::ValueRange> {
+        TypeChecker::combine_value_range(self, a, b)
+    }
+
+    fn value_range_of(
+        &mut self,
+        generic_args: &hir::GenericArgs,
+    ) -> crate::extensions::tensor::types::ValueRange {
+        TypeChecker::value_range_of(self, generic_args)
+    }
+
+    fn build_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        TypeChecker::build_shape(self, shape)
+    }
+
+    fn build_refine_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        TypeChecker::build_refine_shape(self, shape)
+    }
+
+    fn build_device(&mut self, arg: Option<&hir::GenericArg>, span: Span) -> Device {
+        TypeChecker::build_device(self, arg, span)
+    }
+
+    fn tensor_dtype(&mut self, ty_id: TypeId, span: Span) -> DType {
+        TypeChecker::tensor_dtype(self, ty_id, span)
+    }
+
+    fn tensor_state(&mut self) -> &mut UnifyCtx {
+        &mut self.tensor_ctx
     }
 }
 
@@ -13505,6 +13347,8 @@ mod tests {
     use super::*;
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
+    use crate::source::SourceFile;
+    use std::sync::Arc;
 
     fn check_src(src: &str) -> Vec<Diagnostic> {
         let file = Arc::new(SourceFile::new("test.stark".to_string(), src.to_string()));
@@ -13512,7 +13356,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem_diags) = resolve(&tree, file.clone());
         let mut all_diags = sem_diags.clone();
-        let mut type_diags = check(&hir, file);
+        let mut type_diags = check(&hir);
         all_diags.append(&mut type_diags);
         all_diags
     }
@@ -13755,7 +13599,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem) = crate::resolve::resolve_with_options(&tree, file.clone(), opts);
         let mut all = sem;
-        all.extend(check_with_options(&hir, file, opts));
+        all.extend(check_with_options(&hir, opts));
         all
     }
 
@@ -14103,7 +13947,7 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem_diags) = resolve(&tree, file.clone());
         let mut all_diags = sem_diags.clone();
-        let mut type_diags = check(&hir, file);
+        let mut type_diags = check(&hir);
         all_diags.append(&mut type_diags);
         all_diags
     }
@@ -14351,7 +14195,7 @@ mod tests {
         assert!(parse_diags.is_empty());
         let (hir, resolve_diags) = crate::resolve::resolve(&ast, file.clone());
         assert!(resolve_diags.is_empty());
-        let result = analyze(&hir, file);
+        let result = analyze(&hir);
         assert!(
             result.diagnostics.is_empty(),
             "unexpected diagnostics: {:?}",

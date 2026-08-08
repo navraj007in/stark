@@ -515,14 +515,18 @@ fn cmd_lex(path: &str) -> ExitCode {
         Ok(f) => f,
         Err(code) => return code,
     };
-    let (tokens, diags) = tokenize(&file);
+    // AS1b-ii: a standalone lex is a one-file operation; it registers that file and lexes it.
+    let mut registry = starkc::source::SourceRegistry::default();
+    let registered = registry.intern(std::sync::Arc::new(file));
+    let (tokens, diags) = tokenize(&registered, registered.id());
+    let file = registered.file().clone();
     for token in &tokens {
         let (line, col) = file.line_col(token.span.lo);
         let text = &file.src[token.span.lo as usize..token.span.hi as usize];
         println!("{line}:{col}\t{:?}\t{text:?}", token.kind);
     }
     for diag in &diags {
-        eprint!("{}", diag.render(&file));
+        eprint!("{}", diag.render(&registered));
     }
     if diags.is_empty() {
         ExitCode::SUCCESS
@@ -538,7 +542,8 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool, options: LanguageOptions) 
     };
     let (tree, diags) = parse_with_options(&file, mode, options);
     for diag in &diags {
-        eprint!("{}", diag.render(&file));
+        // AS1b-ii-d: the parse registered this file, so its registry resolves the spans.
+        eprint!("{}", diag.render(&tree.sources));
     }
     if !diags.is_empty() {
         eprintln!("{}: {} error(s)", file.name, diags.len());
@@ -619,25 +624,23 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
         Ok(file) => file,
         Err(code) => return code,
     };
-    let (tree, mut diagnostics) = parse_with_options(&file, ParseMode::Program, options);
+    // AS2: the ONE pipeline. This command used to assemble parse → resolve → typecheck itself and
+    // gate each phase on `diagnostics.is_empty()` rather than on errors — equivalent today, because
+    // only typecheck emits warnings ("unreachable code", "unreachable match arm"), but a warning
+    // added to parse or resolve would silently have become fatal here. The session gates on errors.
     let file = std::sync::Arc::new(file);
-    if diagnostics.is_empty() {
-        let (hir, mut resolution) =
-            starkc::resolve::resolve_with_options(&tree, file.clone(), options);
-        diagnostics.append(&mut resolution);
-        if diagnostics.is_empty() {
-            let checked = starkc::typecheck::analyze_with_options(&hir, file.clone(), options);
-            diagnostics.extend(checked.diagnostics);
-            for diagnostic in &diagnostics {
-                eprint!("{}", diagnostic.render(&file));
+    match starkc::session::CompilerSession::for_source(file.clone(), options).check() {
+        Err(failure) => {
+            eprint!("{}", failure.render());
+            ExitCode::FAILURE
+        }
+        Ok(program) => {
+            // Warnings that survived a successful check are still reported before the program
+            // runs, which is where they appeared before.
+            for diagnostic in program.diagnostics() {
+                eprint!("{}", diagnostic.render(program.sources()));
             }
-            if diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == starkc::diag::Severity::Error)
-            {
-                return ExitCode::FAILURE;
-            }
-            return match starkc::interp::run(&hir, file.clone(), &checked.tables) {
+            match program.execute_hir() {
                 Ok(execution) => {
                     print!("{}", execution.output);
                     eprint!("{}", execution.stderr);
@@ -668,14 +671,10 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
                     };
                     let mut diagnostic = starkc::diag::Diagnostic::error(headline, error.span);
                     diagnostic.code = code.map(str::to_string);
-                    eprint!("{}", diagnostic.render(&file));
+                    eprint!("{}", diagnostic.render(program.sources()));
                     ExitCode::from(status)
                 }
-            };
+            }
         }
     }
-    for diagnostic in &diagnostics {
-        eprint!("{}", diagnostic.render(&file));
-    }
-    ExitCode::FAILURE
 }

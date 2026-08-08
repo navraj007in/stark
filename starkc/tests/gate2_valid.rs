@@ -19,7 +19,7 @@ fn analyze(name: &str, source: String) -> Vec<Diagnostic> {
     let (hir, mut resolution) = resolve(&ast, file.clone());
     diagnostics.append(&mut resolution);
     if !diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        diagnostics.append(&mut typecheck::check(&hir, file));
+        diagnostics.append(&mut typecheck::check(&hir));
     }
     diagnostics
 }
@@ -101,7 +101,7 @@ fn test_multi_file_module_loading() {
     diags.append(&mut resolution);
     assert!(diags.is_empty(), "resolution failed: {:?}", diags);
 
-    let mut tc_diags = typecheck::check(&hir, file.clone());
+    let mut tc_diags = typecheck::check(&hir);
     diags.append(&mut tc_diags);
     assert!(diags.is_empty(), "typecheck failed: {:?}", diags);
 
@@ -309,13 +309,17 @@ fn test_borrowck_diagnostic_in_nonroot_file_reports_correct_file() {
         "resolve failed: {:?}",
         resolve_diags
     );
-    let diags = typecheck::check(&hir, file);
+    let diags = typecheck::check(&hir);
 
     let moved = diags
         .iter()
         .find(|d| d.code.as_deref() == Some("E0100"))
         .unwrap_or_else(|| panic!("expected E0100 use-of-moved-value, got {diags:?}"));
-    let moved_file = moved.file.as_ref().expect("diagnostic should carry a file");
+    // AS1b-ii-d: the diagnostic's source is its span's, resolved through the program's registry.
+    let moved_file = hir
+        .sources
+        .get(moved.span.source)
+        .expect("the diagnostic's span must name a registered source");
     assert!(
         moved_file.name.ends_with("moved.stark"),
         "expected the diagnostic's file to be moved.stark, got {:?}",
@@ -354,16 +358,16 @@ fn test_flow_diagnostic_in_nonroot_file_reports_correct_file() {
         "resolve failed: {:?}",
         resolve_diags
     );
-    let diags = typecheck::check(&hir, file);
+    let diags = typecheck::check(&hir);
 
     let uninit = diags
         .iter()
         .find(|d| d.code.as_deref() == Some("E0401"))
         .unwrap_or_else(|| panic!("expected E0401 use-of-uninitialized, got {diags:?}"));
-    let uninit_file = uninit
-        .file
-        .as_ref()
-        .expect("diagnostic should carry a file");
+    let uninit_file = hir
+        .sources
+        .get(uninit.span.source)
+        .expect("the diagnostic's span must name a registered source");
     assert!(
         uninit_file.name.ends_with("uninit.stark"),
         "expected the diagnostic's file to be uninit.stark, got {:?}",
@@ -1678,7 +1682,7 @@ fn cross_file_const_use_is_rejected() {
         !resolve_diags.iter().any(|d| d.severity == Severity::Error),
         "resolve: {resolve_diags:?}"
     );
-    let diagnostics = typecheck::check(&hir, file);
+    let diagnostics = typecheck::check(&hir);
     std::fs::remove_dir_all(&dir).ok();
 
     assert!(

@@ -230,7 +230,7 @@ fn the_set_cannot_be_mutated_while_an_iterator_is_live() {
         assert!(parse_diags.is_empty(), "{tag}: must parse");
         let (hir, resolve_diags) = starkc::resolve::resolve(&ast, file.clone());
         assert!(resolve_diags.is_empty(), "{tag}: must resolve");
-        let checked = starkc::typecheck::analyze(&hir, file.clone());
+        let checked = starkc::typecheck::analyze(&hir);
         let errors: Vec<_> = checked
             .diagnostics
             .iter()

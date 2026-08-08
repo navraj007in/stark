@@ -38,7 +38,7 @@ struct Compiled {
     program: starkc::mir::MirProgram,
     hir: starkc::hir::Hir,
     tables: starkc::typecheck::TypeTables,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     generated: String,
 }
 
@@ -51,15 +51,19 @@ fn compile(source: &str, tag: &str) -> Compiled {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     let versions = build_versions(
         "0.0.0-test".to_string(),
         "test-triple".to_string(),
@@ -68,11 +72,14 @@ fn compile(source: &str, tag: &str) -> Compiled {
     let generated = emit_program::emit(&program, &versions, &TargetLayout::default())
         .unwrap_or_else(|e| panic!("{tag} emit: {e:?}"))
         .main_rs;
+    let registered = hir
+        .source_named(&file.name)
+        .expect("the parse registered this file");
     Compiled {
         program,
         hir,
         tables: checked.tables,
-        file,
+        file: registered,
         generated,
     }
 }

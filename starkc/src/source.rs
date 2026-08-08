@@ -5,27 +5,323 @@
 //! `04-Semantic-Analysis.md`. Columns count bytes within the line, which is
 //! sufficient until the diagnostics renderer grows Unicode-width awareness.
 
-/// A half-open byte range `[lo, hi)` within one source file.
+/// A half-open byte range `[lo, hi)` **within a named source** (AS1b-ii).
+///
+/// The source is part of the span because a byte range without it is meaningless, and
+/// `SourceFile::line_col` clamps rather than fails — so a span measured against the wrong file
+/// yields a well-formed, plausible, wrong location. DEV-122 is that defect, twice.
+///
+/// There is deliberately **no** two-argument constructor. Every construction names a source, so a
+/// site cannot acquire one by whatever happened to be in scope. `WP-SPAN-SOURCEID.md` §6 names that
+/// as the failure mode this change is most likely to introduce.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Span {
+    pub source: SourceId,
     pub lo: u32,
     pub hi: u32,
 }
 
 impl Span {
-    pub fn new(lo: u32, hi: u32) -> Self {
+    pub fn in_source(source: SourceId, lo: u32, hi: u32) -> Self {
         debug_assert!(lo <= hi, "span lo {lo} > hi {hi}");
-        Span { lo, hi }
+        Span { source, lo, hi }
     }
 
-    /// A zero-width span at a single offset.
-    pub fn point(at: u32) -> Self {
-        Span { lo: at, hi: at }
+    /// A zero-width span at a single offset in `source`.
+    pub fn point_in(source: SourceId, at: u32) -> Self {
+        Span {
+            source,
+            lo: at,
+            hi: at,
+        }
+    }
+
+    /// A span for something with **no meaningful location** in `source` — a synthesised item, an
+    /// interpreter invariant failure, a lowering rejection with nothing to point at.
+    ///
+    /// It resolves to the start of `source`, which is exactly what the `Span { lo: 0, hi: 0 }`
+    /// sentinel this replaces already rendered as. **The name is the point:** these sites are
+    /// asserting "no location", and the renderer still shows one. Making absence representable means
+    /// `Option<Span>` through `Diagnostic` and `RuntimeError`, which is a separate change — see
+    /// `AS1B-OPENING-ANALYSIS.md`. Until then this at least says so out loud instead of looking
+    /// like a real position.
+    pub fn synthetic(source: SourceId) -> Self {
+        Span {
+            source,
+            lo: 0,
+            hi: 0,
+        }
     }
 
     /// The smallest span covering both `self` and `other`.
+    ///
+    /// Both must belong to the same source: a range spanning two files denotes nothing.
+    ///
+    /// **The check is unconditional, deliberately.** It was a `debug_assert_eq!` with a comment
+    /// saying "in release the left source wins" — which meant a release compiler would silently
+    /// produce `source A, 100..130` from `A 100..110` joined with `B 120..130`. That is a
+    /// plausible, well-formed, wrong location: DEV-122's exact failure class, moved from rendering
+    /// to span *composition*, and reachable only in the builds users run. Joining spans across
+    /// files is an internal compiler defect with no meaningful recovery, so it fails loudly
+    /// everywhere.
     pub fn to(self, other: Span) -> Span {
-        Span::new(self.lo.min(other.lo), self.hi.max(other.hi))
+        assert_eq!(
+            self.source, other.source,
+            "cannot join spans from different sources"
+        );
+        Span {
+            source: self.source,
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
+    }
+}
+
+/// Stable identity for one source within a compilation.
+///
+/// **AS1b-i moved this here from `analysis`, and moved its allocation earlier.** It lived beside
+/// `SourceMap`, which assigned ids *after* parse, resolve and typecheck had already run — so the
+/// identity a span needs did not exist at the moment spans are created. `WP-SPAN-SOURCEID.md`
+/// describes `SourceId` as groundwork already in place; that was true of the type and not of when
+/// it was handed out.
+///
+/// It belongs in `source` because `Span` is here and will carry one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SourceId(u32);
+
+impl SourceId {
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// A source together with the identity a **particular compilation** gave it.
+///
+/// Deliberately not a field on [`SourceFile`]. A `SourceFile` is just bytes with a name and can be
+/// reused across sessions; a `SourceId` is registry-local and means nothing outside the compilation
+/// that minted it. Storing one inside the other would make a reusable value carry a
+/// session-scoped fact.
+///
+/// **Only [`SourceRegistry::intern`] can build one.** The fields are private and there is no public
+/// constructor, so holding a `RegisteredSource` is proof the source was **registered rather than
+/// fabricated** — which is what `WP-SPAN-SOURCEID.md` §6 warns about.
+///
+/// It is *not* proof that the registering registry is the same one a given `Hir` carries. `SourceId`
+/// is registry-local, but Rust's type system does not encode registry identity here, and
+/// [`Span::in_source`] accepts a raw `SourceId`. Encoding that would need generative lifetimes and
+/// is disproportionate to the risk; agreement between a program and its registry is held by
+/// behavioural tests instead (`as1b_source_registry`).
+///
+/// Derefs to the file, so existing `.name`, `.src` and `.line_col()` uses read unchanged.
+#[derive(Clone, Debug)]
+pub struct RegisteredSource {
+    id: SourceId,
+    file: std::sync::Arc<SourceFile>,
+}
+
+impl RegisteredSource {
+    pub fn id(&self) -> SourceId {
+        self.id
+    }
+
+    pub fn file(&self) -> &std::sync::Arc<SourceFile> {
+        &self.file
+    }
+
+    /// A span in *this* source. The only way to mint one without naming an id by hand.
+    pub fn span(&self, lo: u32, hi: u32) -> Span {
+        Span::in_source(self.id, lo, hi)
+    }
+
+    /// A span for something with no meaningful position in this source.
+    pub fn synthetic_span(&self) -> Span {
+        Span::synthetic(self.id)
+    }
+}
+
+/// Two handles are equal when they name the same source. The id is the identity; the `Arc` is
+/// what it resolves to, and within one compilation the registry guarantees those agree.
+impl PartialEq for RegisteredSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for RegisteredSource {}
+
+impl std::ops::Deref for RegisteredSource {
+    type Target = SourceFile;
+
+    fn deref(&self) -> &SourceFile {
+        &self.file
+    }
+}
+
+/// The one allocator of [`SourceId`]. Files are interned as they are loaded, in load order.
+///
+/// Identity is the file's LOGICAL NAME, which after AS1a is `<package>/<path>` for package sources
+/// and the path for a single-file compile — one physical file, one name, one id. Interning the same
+/// name twice returns the first id rather than making a second identity, which is the invariant
+/// AS1a had to repair by hand in `build_source_map`.
+///
+/// `SourceMap` is now a *view* over this: it adds provenance and answers lookups, and no longer
+/// decides what an id is.
+#[derive(Default, Debug, Clone)]
+pub struct SourceRegistry {
+    files: Vec<RegisteredSource>,
+    by_name: std::collections::HashMap<String, SourceId>,
+}
+
+impl SourceRegistry {
+    /// Register `file`, or return the id it already has. Idempotent by logical name.
+    ///
+    /// The first registration wins: a later `Arc` with the same name is dropped rather than
+    /// replacing the first, so an id never silently changes what it denotes mid-compilation.
+    pub fn intern(&mut self, file: std::sync::Arc<SourceFile>) -> RegisteredSource {
+        if let Some(&id) = self.by_name.get(&file.name) {
+            return self.files[id.0 as usize].clone();
+        }
+        let id = SourceId(self.files.len() as u32);
+        self.by_name.insert(file.name.clone(), id);
+        // The only construction of a `RegisteredSource` in the crate.
+        self.files.push(RegisteredSource { id, file });
+        self.files[id.0 as usize].clone()
+    }
+
+    pub fn get(&self, id: SourceId) -> Option<&RegisteredSource> {
+        self.files.get(id.0 as usize)
+    }
+
+    pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
+        self.by_name.get(name).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// The first source registered in this compilation.
+    ///
+    /// Registration order is load order and loading starts at the entry file, so this is the
+    /// entry — the source a failure with no position of its own (an interpreter invariant, a
+    /// missing entrypoint) is attributed to, so that it names a real registered source rather
+    /// than a fabricated one. `None` only when nothing has been parsed.
+    pub fn entry(&self) -> Option<&RegisteredSource> {
+        self.files.first()
+    }
+
+    /// Every registered source, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
+        self.files.iter()
+    }
+
+    /// End the loading phase. The result resolves ids and cannot mint one.
+    pub fn freeze(self) -> SourceTable {
+        SourceTable(self)
+    }
+}
+
+/// A compilation's **finished** source set: it resolves ids, and cannot mint one.
+///
+/// AS1b-iii. `Hir` and `MirProgram` described their registry as frozen after parsing, but held a
+/// [`SourceRegistry`] whose `intern` is public and `&mut` — the freeze was a comment. Everything
+/// after the parser now carries this instead, so "nobody downstream mints a `SourceId`" is a
+/// property of the type rather than a convention.
+///
+/// [`SourceRegistry::freeze`] is the only way to build a POPULATED one, and it consumes the
+/// registry: loading is a phase that ends, and the transition is named at the point it happens.
+/// `Default` exists solely so a `Hir` can be constructed empty before resolution fills it in; it
+/// cannot be grown afterwards, because there is no `intern`.
+///
+/// What this does and does not establish, stated precisely: **source allocation ends at the
+/// loading/front-end boundary for every downstream semantic artifact.** `Ast` still holds a
+/// mutable `SourceRegistry` — that is the loading phase — and `resolve` freezes a clone of it onto
+/// the `Hir`. So this type does not prove that no registry anywhere is still mutable; it proves
+/// that HIR, MIR and everything they reach cannot allocate a source identity.
+/// `only_the_loading_phase_interns` covers the remaining case, a new `intern` added to a pass that
+/// runs *during* loading.
+#[derive(Clone, Debug, Default)]
+pub struct SourceTable(SourceRegistry);
+
+impl SourceTable {
+    pub fn get(&self, id: SourceId) -> Option<&RegisteredSource> {
+        self.0.get(id)
+    }
+
+    pub fn id_for_name(&self, name: &str) -> Option<SourceId> {
+        self.0.id_for_name(name)
+    }
+
+    /// The source a name denotes, as a handle. `None` if this compilation never loaded it.
+    pub fn named(&self, name: &str) -> Option<&RegisteredSource> {
+        self.id_for_name(name).and_then(|id| self.get(id))
+    }
+
+    /// The first source registered, i.e. the entry — see [`SourceRegistry::entry`].
+    pub fn entry(&self) -> Option<&RegisteredSource> {
+        self.0.entry()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every source, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = &RegisteredSource> {
+        self.0.iter()
+    }
+}
+
+impl SourceLookup for SourceTable {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        self.0.source(id)
+    }
+}
+
+/// A registered source for the crate's own unit tests.
+///
+/// Tests need a real `SourceId`, and the rule is that ids come from a registry — so this builds
+/// one rather than fabricating a value. The registry is dropped; the handle keeps the `Arc` and
+/// the id, which is all a test needs.
+#[cfg(test)]
+pub(crate) fn registered_for_test(name: &str, src: &str) -> RegisteredSource {
+    let mut registry = SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(SourceFile::new(name, src)))
+}
+
+/// Anything that can answer "which source is this id?".
+///
+/// AS1b-ii-d: rendering resolves a span through its own `SourceId`, and the thing holding the
+/// sources differs by caller — the registry on an `Ast`/`Hir`, or the `SourceMap` a `ProjectAnalysis`
+/// exposes. Both answer the same question, so both implement this rather than one being converted
+/// into the other at every call.
+pub trait SourceLookup {
+    fn source(&self, id: SourceId) -> Option<&SourceFile>;
+}
+
+impl SourceLookup for SourceRegistry {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        self.get(id).map(|registered| registered.file().as_ref())
+    }
+}
+
+/// A single registered source answers for **its own id and no other**.
+///
+/// This is what the single-file paths (a one-file `stark run`, the standalone tools, unit tests)
+/// hand to rendering. It is not a "default file": a span naming a different source resolves to
+/// `None` and renders as an internal compiler error, rather than being measured against this file
+/// and producing a confident wrong location. That substitution was DEV-122.
+impl SourceLookup for RegisteredSource {
+    fn source(&self, id: SourceId) -> Option<&SourceFile> {
+        (self.id == id).then(|| self.file.as_ref())
     }
 }
 
@@ -160,9 +456,36 @@ mod tests {
 
     #[test]
     fn span_join() {
-        let a = Span::new(4, 7);
-        let b = Span::new(10, 12);
-        assert_eq!(a.to(b), Span::new(4, 12));
-        assert_eq!(b.to(a), Span::new(4, 12));
+        // AS1b-ii: a span names a source, so even a unit test registers one rather than
+        // conjuring an id.
+        let mut registry = SourceRegistry::default();
+        let s = registry
+            .intern(std::sync::Arc::new(SourceFile::new("t.stark", "")))
+            .id();
+        let a = Span::in_source(s, 4, 7);
+        let b = Span::in_source(s, 10, 12);
+        assert_eq!(a.to(b), Span::in_source(s, 4, 12));
+        assert_eq!(b.to(a), Span::in_source(s, 4, 12));
+    }
+
+    /// Joining across sources must fail in EVERY build, not only in debug.
+    ///
+    /// With a `debug_assert`, a release compiler produced `A 100..130` from `A 100..110` joined
+    /// with `B 120..130` — a well-formed, plausible, wrong location, which is DEV-122's failure
+    /// class at composition time. `cargo test` runs in debug, so this test cannot observe the
+    /// release build directly; what it pins is that the check is a real `assert` that panics,
+    /// rather than an equality the function is free to paper over.
+    #[test]
+    #[should_panic(expected = "cannot join spans from different sources")]
+    fn joining_spans_from_different_sources_panics() {
+        let mut registry = SourceRegistry::default();
+        let a = registry
+            .intern(std::sync::Arc::new(SourceFile::new("a.stark", "")))
+            .id();
+        let b = registry
+            .intern(std::sync::Arc::new(SourceFile::new("b.stark", "")))
+            .id();
+        assert_ne!(a, b, "the two sources must actually differ");
+        let _ = Span::in_source(a, 100, 110).to(Span::in_source(b, 120, 130));
     }
 }

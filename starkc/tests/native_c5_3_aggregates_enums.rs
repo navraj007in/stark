@@ -24,7 +24,7 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
     assert!(parse_diags.is_empty(), "{tag} parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "{tag} resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let type_errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -32,7 +32,11 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
         .collect();
     assert!(type_errors.is_empty(), "{tag} typecheck: {type_errors:?}");
 
-    let program = match lower_program(&hir, &checked.tables, file) {
+    let program = match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => program,
         Err(e) => panic!("{tag} must lower: {} @ {:?}", e.what, e.span),
     };
@@ -813,8 +817,12 @@ fn the_build_report_records_the_layout_contract_identity() {
     let file = Arc::new(SourceFile::new("c5_3_report.stark", source.to_string()));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let Ok(program) = lower_program(&hir, &checked.tables, file) else {
+    let checked = typecheck::analyze(&hir);
+    let Ok(program) = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) else {
         panic!("must lower");
     };
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("must verify: {e:?}"));
@@ -852,8 +860,12 @@ fn an_unknown_target_contract_is_rejected_before_emission() {
     let file = Arc::new(SourceFile::new("c5_3_badtarget.stark", source.to_string()));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let Ok(program) = lower_program(&hir, &checked.tables, file) else {
+    let checked = typecheck::analyze(&hir);
+    let Ok(program) = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) else {
         panic!("must lower");
     };
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("must verify: {e:?}"));
