@@ -150,6 +150,19 @@ impl From<tensor_syntax::TensorParamKind> for GenericKind {
     }
 }
 
+/// AS7 Packet 2 — outer values displaced by entering a `Self`-carrying scope: an impl, a trait's
+/// default bodies, or a method whose receiver fixes `Self`.
+///
+/// Each field is `Option`al *about whether this scope establishes it at all*, so a caller that
+/// only installs `Self` does not have to state an opinion about the enclosing trait id. That is
+/// why this is not one flat `AmbientContext`: the four fields share a scope shape, not a lifetime.
+struct SelfScope {
+    self_ty: Option<Ty>,
+    assoc_types: Option<HashMap<String, Ty>>,
+    impl_generics: Option<Option<Vec<hir::GenericParam>>>,
+    trait_id: Option<Option<ItemId>>,
+}
+
 struct TensorParamScopes {
     dims: HashMap<String, DimVar>,
     dtypes: HashMap<String, DType>,
@@ -3458,6 +3471,83 @@ impl<'a> TypeChecker<'a> {
         extension_bounds[0]
     }
 
+    // -----------------------------------------------------------------------------------------
+    // AS7 Packet 2 — scoped ambient contexts.
+    //
+    // The eight ambient fields are NOT one context: they have different dynamic scopes, and
+    // collapsing them into a single `AmbientContext` would make it possible to restore a
+    // function's return type while leaving an impl's `Self` behind. They are grouped by the scope
+    // they actually belong to, and each group has a matching enter/exit pair.
+    //
+    // Every pair SAVES AND RESTORES. None of them clears to a default. That distinction is the
+    // whole point of the packet: `check_fn_def` used to clear `current_fn_ret` to `None` on exit,
+    // which is correct only while item checking never nests — and AS7's own splitting is the
+    // change most likely to break that invariant. Restoring is identical in behaviour today and
+    // correct by construction tomorrow.
+    // -----------------------------------------------------------------------------------------
+
+    /// Outer values displaced by entering an item.
+    fn enter_item_scope(&mut self, item_id: ItemId) -> Option<u32> {
+        let saved = self.current_module;
+        // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
+        self.current_module = self.hir.item_modules.get(&item_id).copied();
+        saved
+    }
+
+    fn exit_item_scope(&mut self, saved: Option<u32>) {
+        self.current_module = saved;
+    }
+
+    /// Outer values displaced by entering a `Self`-carrying scope: an impl, a trait's default
+    /// bodies, or a method whose receiver fixes `Self`.
+    ///
+    /// Narrow on purpose — the four fields of this family are not always installed together, so
+    /// the caller passes only what it establishes and the rest is untouched (see [`SelfScope`]).
+    /// Enter a scope in which `Self` is `self_ty`. Restores through [`exit_self_scope`].
+    fn enter_self_scope(&mut self, self_ty: Ty) -> SelfScope {
+        SelfScope {
+            self_ty: self.current_self_ty.replace(self_ty),
+            assoc_types: None,
+            impl_generics: None,
+            trait_id: None,
+        }
+    }
+
+    fn exit_self_scope(&mut self, saved: SelfScope) {
+        self.current_self_ty = saved.self_ty;
+        if let Some(assoc) = saved.assoc_types {
+            self.current_assoc_types = assoc;
+        }
+        if let Some(generics) = saved.impl_generics {
+            self.current_impl_generics = generics;
+        }
+        if let Some(trait_id) = saved.trait_id {
+            self.current_trait_id = trait_id;
+        }
+    }
+
+    /// Outer values displaced by entering a function signature and body.
+    fn enter_fn_scope(
+        &mut self,
+        generics: Vec<hir::GenericParam>,
+    ) -> (Option<Ty>, Option<Vec<hir::GenericParam>>) {
+        let saved_ret = self.current_fn_ret.take();
+        let saved_generics = self.current_fn_generics.replace(generics);
+        (saved_ret, saved_generics)
+    }
+
+    /// Publish the function's return type once it has been converted. Separate from
+    /// `enter_fn_scope` because the return type is converted *with the signature's generics
+    /// already in scope* (WP-C7.9 Packet I).
+    fn set_fn_return(&mut self, ret: Ty) {
+        self.current_fn_ret = Some(ret);
+    }
+
+    fn exit_fn_scope(&mut self, saved: (Option<Ty>, Option<Vec<hir::GenericParam>>)) {
+        self.current_fn_ret = saved.0;
+        self.current_fn_generics = saved.1;
+    }
+
     fn exit_tensor_param_scope(&mut self, saved: TensorParamScopes) {
         self.dim_scope = saved.dims;
         self.dtype_scope = saved.dtypes;
@@ -3680,7 +3770,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 hir::ItemKind::Impl { self_ty, items, .. } => {
                     let impl_self_ty = self.convert_hir_type(*self_ty);
-                    let previous_self = self.current_self_ty.replace(impl_self_ty);
+                    let previous_self = self.enter_self_scope(impl_self_ty);
                     // Register methods of the impl
                     for impl_item in items {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
@@ -3704,7 +3794,7 @@ impl<'a> TypeChecker<'a> {
                             self.suppress_tensor_diagnostics = false;
                         }
                     }
-                    self.current_self_ty = previous_self;
+                    self.exit_self_scope(previous_self);
                 }
                 _ => {}
             }
@@ -3733,8 +3823,7 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
-            // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
-            self.current_module = self.hir.item_modules.get(&item_id).copied();
+            let saved_item_scope = self.enter_item_scope(item_id);
 
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
@@ -3749,11 +3838,14 @@ impl<'a> TypeChecker<'a> {
                     generics,
                     ..
                 } => {
-                    let prev_self = self.current_self_ty.take();
-                    let prev_assoc = std::mem::take(&mut self.current_assoc_types);
                     // WP-C6.2b-F5: bring the impl-head generics/bounds into scope for the bodies.
-                    let prev_impl_generics = self.current_impl_generics.replace(generics.clone());
-                    self.current_self_ty = Some(self.convert_hir_type(*self_ty));
+                    let converted_self = self.convert_hir_type(*self_ty);
+                    let saved_scope = SelfScope {
+                        self_ty: self.current_self_ty.replace(converted_self),
+                        assoc_types: Some(std::mem::take(&mut self.current_assoc_types)),
+                        impl_generics: Some(self.current_impl_generics.replace(generics.clone())),
+                        trait_id: None,
+                    };
                     for impl_item in items {
                         if let hir::ImplItem::AssocType { name, ty } = impl_item {
                             let ty = self.convert_hir_type(*ty);
@@ -3766,14 +3858,15 @@ impl<'a> TypeChecker<'a> {
                             self.check_fn_def(item_id, def);
                         }
                     }
-                    self.current_self_ty = prev_self;
-                    self.current_assoc_types = prev_assoc;
-                    self.current_impl_generics = prev_impl_generics;
+                    self.exit_self_scope(saved_scope);
                 }
                 hir::ItemKind::Trait { items, .. } => {
-                    let prev_self = self.current_self_ty.take();
-                    let prev_trait = self.current_trait_id.replace(item_id);
-                    self.current_self_ty = Some(Ty::Param("Self".to_string()));
+                    let saved_scope = SelfScope {
+                        self_ty: self.current_self_ty.replace(Ty::Param("Self".to_string())),
+                        assoc_types: None,
+                        impl_generics: None,
+                        trait_id: Some(self.current_trait_id.replace(item_id)),
+                    };
                     for trait_item in items {
                         if let hir::TraitItem::Method {
                             sig,
@@ -3787,8 +3880,7 @@ impl<'a> TypeChecker<'a> {
                             self.check_fn_def(item_id, &def);
                         }
                     }
-                    self.current_self_ty = prev_self;
-                    self.current_trait_id = prev_trait;
+                    self.exit_self_scope(saved_scope);
                 }
                 hir::ItemKind::Const { value, ty, .. } => {
                     let expected_ty = self.convert_hir_type(*ty);
@@ -3797,6 +3889,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => {}
             }
+
+            self.exit_item_scope(saved_item_scope);
 
             // AS1b-ii-d: the diagnostics this item produced used to be stamped with `self.file`
             // here, because a span could not say which file it indexed. It can now, so there is
@@ -4552,7 +4646,7 @@ impl<'a> TypeChecker<'a> {
         // `Self` in a signature resolves through `current_self_ty`, and converting a type without
         // it both fails and reports a spurious "use of 'Self' outside impl or trait". The impl's
         // own self type is exactly what it should be here.
-        let saved_self_ty = self.current_self_ty.replace(self_ty.clone());
+        let saved_self_ty = self.enter_self_scope(self_ty.clone());
 
         let associated: HashMap<String, TypeId> = items
             .iter()
@@ -4852,7 +4946,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        self.current_self_ty = saved_self_ty;
+        self.exit_self_scope(saved_self_ty);
     }
 
     /// The `Ty` a contract term denotes for this implementation.
@@ -5315,7 +5409,7 @@ impl<'a> TypeChecker<'a> {
             owner_label,
         );
 
-        self.current_fn_generics = Some(sig.generics.clone());
+        let saved_fn_scope = self.enter_fn_scope(sig.generics.clone());
 
         let expected_ret = match sig.ret {
             hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
@@ -5328,7 +5422,7 @@ impl<'a> TypeChecker<'a> {
                     .with_code("E0001"),
             );
         }
-        self.current_fn_ret = Some(expected_ret.clone());
+        self.set_fn_return(expected_ret.clone());
 
         // Parameters in local_types
         let mut state = HashSet::new();
@@ -5432,8 +5526,9 @@ impl<'a> TypeChecker<'a> {
         } else {
             let _ = self.unify(expected_ret, ret_ty, sig.span);
         }
-        self.current_fn_ret = None;
-        self.current_fn_generics = None;
+        // AS7 Packet 2: RESTORE the enclosing function's scope rather than clearing it. Identical
+        // while item checking does not nest; correct by construction if AS7's splitting makes it.
+        self.exit_fn_scope(saved_fn_scope);
         self.exit_tensor_param_scope(saved_dims);
     }
 
@@ -8359,7 +8454,7 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         };
 
-        let previous_self = self.current_self_ty.replace(receiver_type.clone());
+        let previous_self = self.enter_self_scope(receiver_type.clone());
         let previous_assoc = std::mem::take(&mut self.current_assoc_types);
         for (name, ty) in associated {
             let ty = self.convert_hir_type(ty);
@@ -8393,8 +8488,10 @@ impl<'a> TypeChecker<'a> {
             }
             hir::RetTy::Never(_) => Ty::Never,
         };
-        self.current_self_ty = previous_self;
-        self.current_assoc_types = previous_assoc;
+        self.exit_self_scope(SelfScope {
+            assoc_types: Some(previous_assoc),
+            ..previous_self
+        });
 
         if expected.len() != actual_args.len() {
             self.diags.push(
@@ -8534,7 +8631,7 @@ impl<'a> TypeChecker<'a> {
         // the map's keys and the `Ty::Param`s they substitute into — or substitution silently
         // fails to fire and the caller sees a stray parameter type like `'r'`.
         let self_ty = self.convert_hir_type(self_ty_id);
-        let previous_self = self.current_self_ty.replace(self_ty);
+        let previous_self = self.enter_self_scope(self_ty);
         let mut params: Vec<Ty> = sig
             .params
             .iter()
@@ -8545,7 +8642,7 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Ty(ty) => self.convert_hir_type(ty),
             hir::RetTy::Never(_) => Ty::Never,
         };
-        self.current_self_ty = previous_self;
+        self.exit_self_scope(previous_self);
 
         let mut map = HashMap::new();
         for param in &impl_generics {
@@ -9475,7 +9572,7 @@ impl<'a> TypeChecker<'a> {
                     .with_code("E0400"),
                 );
             }
-            let previous_self = self.current_self_ty.replace(impl_self_ty);
+            let previous_self = self.enter_self_scope(impl_self_ty);
             let params_ty: Vec<Ty> = sig
                 .params
                 .iter()
@@ -9492,7 +9589,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 hir::RetTy::Never(_) => Ty::Never,
             };
-            self.current_self_ty = previous_self;
+            self.exit_self_scope(previous_self);
 
             // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
             // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
@@ -9616,7 +9713,7 @@ impl<'a> TypeChecker<'a> {
                     .with_code("E0400"),
                 );
             }
-            let previous_self = self.current_self_ty.replace(impl_self_ty);
+            let previous_self = self.enter_self_scope(impl_self_ty);
             let params_ty: Vec<Ty> = def
                 .sig
                 .params
@@ -9634,7 +9731,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 hir::RetTy::Never(_) => Ty::Never,
             };
-            self.current_self_ty = previous_self;
+            self.exit_self_scope(previous_self);
 
             // AS3 Boundary 2: the same selection, published so an engine can CONSUME it rather
             // than re-derive it. Receiver ADJUSTMENT (what the call site did) and receiver BINDING
@@ -13403,7 +13500,11 @@ mod tests {
         // current_self_ty — the `.replace()` / restore pattern used at eight sites.
         assert_eq!(tc.current_self_ty, None, "entry state");
         let save_outer = tc.current_self_ty.replace(outer.clone());
-        assert_eq!(tc.current_self_ty, Some(outer.clone()), "outer scope installed");
+        assert_eq!(
+            tc.current_self_ty,
+            Some(outer.clone()),
+            "outer scope installed"
+        );
         let save_inner = tc.current_self_ty.replace(inner.clone());
         assert_eq!(tc.current_self_ty, Some(inner), "inner scope installed");
         tc.current_self_ty = save_inner;
@@ -13425,56 +13526,101 @@ mod tests {
         assert_eq!(tc.current_trait_id, None);
     }
 
-    /// **Pins the first latent site.** `check_fn_def` sets `current_fn_ret` and then CLEARS it to
-    /// `None` rather than restoring the previous value. That is correct only because
-    /// `check_fn_def`'s three call sites — free functions, impl methods, trait default methods —
-    /// all sit in the single Pass-2 item loop and never nest.
+    /// **The first latent site, now converted.** `check_fn_def` used to set `current_fn_ret` and
+    /// then CLEAR it to `None`, which was correct only while item checking never nests. It now
+    /// saves and restores, so nesting is correct by construction.
     ///
-    /// AS7 Packet 2 converts this to save/restore. **When it does, this test fails**, and the
-    /// assertion below should be replaced by the nesting assertion above.
+    /// This test exercises the real `enter_fn_scope`/`exit_fn_scope` helpers. Packet 1's version
+    /// asserted the same property by assigning the fields by hand — it therefore pinned a
+    /// *pattern* rather than the implementation, and did **not** fail when the implementation
+    /// changed. That was a defect in the harness, and this is the correction: a test that does not
+    /// call the code it describes cannot detect the code changing.
     #[test]
-    fn as7_current_fn_ret_is_cleared_not_restored_pending_packet_2() {
+    fn as7_fn_scope_saves_and_restores_the_enclosing_function() {
         let file = Arc::new(SourceFile::new("t.stark".to_string(), String::new()));
         let (tree, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&tree, file.clone());
         let mut tc = TypeChecker::new(&hir, LanguageOptions::default());
 
-        // Simulate the nesting AS7's splitting could introduce, using today's set/clear pattern.
-        tc.current_fn_ret = Some(Ty::Primitive(Primitive::Int32)); // outer function
-        tc.current_fn_ret = Some(Ty::Primitive(Primitive::Bool)); // inner function
-        tc.current_fn_ret = None; // inner leaves, as check_fn_def does
+        let outer_ret = Ty::Primitive(Primitive::Int32);
+        let inner_ret = Ty::Primitive(Primitive::Bool);
 
+        let outer = tc.enter_fn_scope(Vec::new());
+        tc.set_fn_return(outer_ret.clone());
+        assert_eq!(tc.current_fn_ret, Some(outer_ret.clone()));
+
+        let inner = tc.enter_fn_scope(Vec::new());
+        tc.set_fn_return(inner_ret.clone());
         assert_eq!(
-            tc.current_fn_ret, None,
-            "TODAY: the outer return type is LOST, not restored. Safe only because item checking \
-             never nests. AS7 Packet 2 must make this restore `Some(Int32)`; when it does, this \
-             assertion is the one that fails and must be flipped."
+            tc.current_fn_ret,
+            Some(inner_ret),
+            "inner function installed"
+        );
+
+        tc.exit_fn_scope(inner);
+        assert_eq!(
+            tc.current_fn_ret,
+            Some(outer_ret),
+            "leaving the inner function must RESTORE the enclosing return type. Clearing it to \
+             None — the pre-Packet-2 behaviour — loses it, and is detectable only under nesting."
+        );
+
+        tc.exit_fn_scope(outer);
+        assert_eq!(tc.current_fn_ret, None, "original state restored");
+        assert!(tc.current_fn_generics.is_none());
+    }
+
+    /// **The second latent site, now converted.** `current_module` was assigned once per item and
+    /// never restored — correct only because that single write dominated every item branch.
+    #[test]
+    fn as7_item_scope_saves_and_restores_the_enclosing_module() {
+        let file = Arc::new(SourceFile::new("t.stark".to_string(), String::new()));
+        let (tree, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&tree, file.clone());
+        let mut tc = TypeChecker::new(&hir, LanguageOptions::default());
+
+        tc.current_module = Some(7);
+        let saved = tc.enter_item_scope(ItemId(0));
+        tc.exit_item_scope(saved);
+        assert_eq!(
+            tc.current_module,
+            Some(7),
+            "leaving an item must restore the enclosing module rather than leaving the item's own"
         );
     }
 
-    /// **Pins the second latent site.** `current_module` is assigned once per item at the top of
-    /// the Pass-2 loop, before the item `match`, so it dominates every branch and no item can
-    /// inherit a stale module. It is never saved or restored. Same conclusion: correct today,
-    /// correct only by dominance, and AS7 Packet 2 converts it to an entered/left item scope.
+    /// The structural half: no ambient field may be *cleared* on scope exit anywhere in production
+    /// code. Clearing is the pre-Packet-2 shape, and it is invisible until something nests.
     #[test]
-    fn as7_current_module_is_assigned_per_item_not_restored_pending_packet_2() {
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck.rs"))
-            .expect("own source")
-            .replace("\r\n", "\n");
-        // Production code only — this test's own search literal lives in the test module and
-        // would otherwise match itself, which is how the first run of it failed. `rfind`, not
-        // `find`: this file has an earlier inline test module at ~line 384, so the first marker
+    fn as7_no_ambient_field_is_cleared_on_scope_exit() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck.rs"))
+                .expect("own source")
+                .replace("\r\n", "\n");
+        // `rfind`, not `find`: this file has an earlier inline test module, so the first marker
         // would truncate almost the whole file and the check would pass vacuously.
         let production = match source.rfind("#[cfg(test)]") {
             Some(i) => &source[..i],
             None => source.as_str(),
         };
-        let assignments = production.matches("self.current_module =").count();
-        assert_eq!(
-            assignments, 1,
-            "current_module is written in exactly one place today (the Pass-2 loop header, which \
-             dominates every item branch). A second write means the dominance argument no longer \
-             holds and the field needs a real scope."
+        let mut cleared = Vec::new();
+        for field in [
+            "current_fn_ret",
+            "current_fn_generics",
+            "current_self_ty",
+            "current_trait_id",
+            "current_impl_generics",
+            "current_module",
+        ] {
+            if production.contains(&format!("self.{field} = None;")) {
+                cleared.push(field);
+            }
+        }
+        assert!(
+            cleared.is_empty(),
+            "these ambient fields are CLEARED rather than restored on exit: {cleared:?}. \
+             Clearing is correct only while the scope never nests; save the outer value and put \
+             it back instead."
         );
     }
 
