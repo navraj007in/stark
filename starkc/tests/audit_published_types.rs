@@ -91,9 +91,13 @@ const WITNESSES: &[(&str, &str)] = &[
          match e { E::A { n } => println(n), E::B => println(0) } }",
     ),
     (
-        "range index producing a slice — DEV-206",
+        // The BORROWED form. This witness was written while `println(v[0..2])` was still
+        // accepted, and DEV-206's repair — which rejects the unsized place — is what made it
+        // stale. Kept as a witness rather than deleted: a range index is exactly the construct
+        // whose published types this file exists to check, and `&[Int32]` is its valid spelling.
+        "borrowed range index producing a slice view — DEV-206",
         "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.push(2); \
-         println(v[0..2]); }",
+         println(&v[0..2]); }",
     ),
     (
         "generic function and a function value",
