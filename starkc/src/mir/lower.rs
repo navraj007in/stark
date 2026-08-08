@@ -12562,6 +12562,58 @@ mod as4_drop_predicate_inventory {
         ]
     }
 
+    /// **RB0 Q1 — the iterator drop-glue asymmetry, pinned with its evidence.**
+    ///
+    /// RB0 asked for a per-iterator evidence packet and an individual decision. The packet is in
+    /// `AS4-RB0-Q1-ITERATORS.md`; the finding is that **the asymmetry has no basis in the
+    /// representations**:
+    ///
+    /// ```text
+    /// VecIter<'a,T>   { slice: &'a [T], index: usize }    borrowed cursor, owns nothing
+    /// KeysIter<'a,K>  { keys:  &'a [K], index: usize }    borrowed cursor, owns nothing
+    /// Iter<T>         emits AS KeysIter                   borrowed cursor, owns nothing
+    /// CharsIter<'a>   { inner: std::str::Chars<'a> }      borrowed cursor, owns nothing
+    /// ```
+    ///
+    /// None has a Rust `Drop`; all four plan as `DropPlan::Noop`. Yet `CharsIter` answers `false`
+    /// (CD-387) and the other three answer `true`.
+    ///
+    /// **Observationally inert, which is why it is pinned rather than repaired here.** The plan is
+    /// `Noop` either way, so the difference costs a drop unit and a drop flag, not correctness.
+    /// Making them agree changes MIR shape, so it is behavioural and owes its own CD (RB0 exit
+    /// criterion 5). This test makes the inconsistency a recorded fact that cannot drift while that
+    /// decision is pending.
+    #[test]
+    fn rb0_q1_the_iterator_asymmetry_is_pinned_with_its_evidence() {
+        use crate::hir::CoreType;
+        use crate::mir::drop_rule::core_requires_drop_glue;
+
+        // The four iterators that `mir_ty` can actually construct as `MirTy::Core`.
+        assert!(
+            !core_requires_drop_glue(CoreType::CharsIter),
+            "CD-387: a borrowed `&str` cursor requires no glue"
+        );
+        for other in [CoreType::VecIter, CoreType::KeysIter, CoreType::Iter] {
+            assert!(
+                core_requires_drop_glue(other),
+                "{other:?} still answers `true`. It is the SAME shape as CharsIter — a borrowed \
+                 cursor owning nothing, with no Rust `Drop` and a `Noop` drop plan — so if this \
+                 has been changed to `false`, RB0 Q1 was decided and needs its CD and its entry in \
+                 AS4-RB0-Q1-ITERATORS.md."
+            );
+        }
+        // The iterators `mir_ty` cannot construct keep the verifier's historical answer, per the
+        // AS4-DROP-AUTHORITY consolidation rule for unreachable representations.
+        for unreachable in [
+            CoreType::SplitIter,
+            CoreType::ValuesIter,
+            CoreType::MapIter,
+            CoreType::FilterIter,
+        ] {
+            assert!(core_requires_drop_glue(unreachable));
+        }
+    }
+
     /// **THE MATRIX AS4 ACTUALLY NEEDS: `lower` precise vs `verify` precise.**
     ///
     /// Reviewer finding on `0257320`: this packet compared the verifier's conservative rule against

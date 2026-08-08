@@ -113,8 +113,8 @@ exists. Both are **adopted unchanged**:
 
 | | Question | State after this inventory |
 | --- | --- | --- |
-| Q1 | iterator drop-glue asymmetry | carried forward untouched; no evidence added |
-| Q2 | `FnPtr` reference disagreement | **measured and pinned** — the disagreement is now a failing-if-changed test rather than a note. Still unresolved, correctly |
+| Q1 | iterator drop-glue asymmetry | **RESOLVED WITH EVIDENCE (2026-08-08)** — `AS4-RB0-Q1-ITERATORS.md`. Every constructible iterator is a borrowed cursor owning nothing, with no Rust `Drop` and a `Noop` drop plan, so the asymmetry is historical rather than semantic. Change deferred to its own CD |
+| Q2 | `FnPtr` reference disagreement | **ANSWERED (2026-08-07)** — `AS4-REFERENCE-RULE.md`. The two ask different questions (storage vs signature); the identical pair merged, the near neighbour renamed |
 
 ---
 
