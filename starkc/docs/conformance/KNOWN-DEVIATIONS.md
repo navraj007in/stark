@@ -1,5 +1,35 @@
 # STARK Compiler — Known Deviations and Stub Ledger
 
+> **How to read this file (added 2026-08-09, AS8).** Entries are **append-only**: a deviation
+> tracked across several packets gets a NEW heading each time rather than an edited one. **The
+> first heading for a deviation is therefore not its status** — the last one is. `DEV-121` opens
+> with *"(OPEN; instance fixed CD-305, class open)"* and is CLOSED **3,558 lines later**.
+>
+> This is the same hazard AS8 fixed at the top of `COMPILER-STATE.md`, and the same fix applies:
+> read the index below before reading the body.
+>
+> `starkc/scripts/as8-reconcile-deviations.py` regenerates the reconciliation and cross-checks
+> every entry against the decision record and the test corpus. Its standing findings, 2026-08-09:
+> **7 deviations are closed in the record and named by no test**, and **44 are named in no decision
+> record or archive at all**. Neither is automatically wrong — an open deviation may keep a
+> reproducing test and a closed one may keep its regression test — but both are short lists worth
+> reading rather than 189 entries worth.
+
+## Multi-entry deviations — the last heading is the live one
+
+| Deviation | Entries | First | **Live** | Latest heading |
+| --- | ---: | ---: | ---: | --- |
+| `DEV-121` | 13 | L2813 | **L6371** | DEV-121 — CLOSED (owner ruling, 2026-08-08) |
+| `DEV-197` | 4 | L5730 | **L6403** | DEV-197 — CLASS CLOSED (2026-08-08) |
+| `DEV-195` | 2 | L5520 | **L5557** |  DEV-195 RULING (owner, CD-387, 2026-08-07) |
+| `DEV-196` | 2 | L5595 | **L5620** |  DEV-196 — ANSWERED by measurement (2026-08-07) |
+| `DEV-206` | 2 | L6186 | **L6201** | DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLO |
+
+*Derived by `as8-reconcile-deviations.py`; no status is asserted here that the file does not
+already state in its own last heading for that deviation.*
+
+---
+
 WP-C0.4 deliverable. Every entry below was independently verified against current source (head
 `6fa8c15b94bd1376a847132498d31dd356524180`, 2026-07-17), not merely copied from a seed list or a
 prior session's memory — several seeded suspicions turned out to need correction in the process

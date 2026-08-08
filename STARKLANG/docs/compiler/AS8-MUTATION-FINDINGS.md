@@ -222,6 +222,40 @@ ENGINE-MUTATION-TARGETS.md       predictions revised; Selected-tests columns mus
                                  HAND_AUTHORED controls, which is how MUT-005/006 were missed
 ```
 
+## Disposition — what a survivor is, and what it is not (owner ruling, 2026-08-09)
+
+**A surviving mutant does not mean the compiler is wrong.** It means:
+
+> *"I can introduce this defect and the selected evidence cannot detect it."*
+
+It does **not** mean:
+
+> *"The current compiler contains this defect."*
+
+Batch 2 is the clean demonstration. `MUT-012` and `MUT-013` survived and revealed **missing
+evidence and coverage, not wrong behaviour at HEAD** — `&mut` is correctly non-`Copy` over `MirTy`
+today, and `()` correctly canonicalises to `Unit` today. Allocating DEV numbers for those would
+record defects that do not exist and would corrupt the ledger in the direction that is hardest to
+undo.
+
+```text
+surviving hypothetical defect                      ->  AS8 residual / coverage gap / evidence gap
+current HEAD demonstrably wrong                    ->  DEV
+duplicated copies demonstrably DISAGREE            ->  DEV
+dormant but genuinely incorrect code already at    ->  DEV candidate, on the DEV-179 precedent
+    HEAD
+historical defect reintroduced ONLY by mutation    ->  cite the historical DEV/CD + AS8 residual;
+                                                       NO new DEV
+```
+
+`AS8-MUT-005` sits in the last row and is the sharpest case for it: it reintroduces the CD-251
+zero-variant-enum defect, which was real, was found, and is fixed. The survivor is a statement
+about the differential's reach, not about HEAD. It cites CD-251 and opens `AS8-R1`; it does not
+open a DEV.
+
+**No DEV number is allocated by this packet.** Every shared-authority survivor remains an `AS8-R*`
+finding until something is shown to be wrong at HEAD.
+
 ## Residuals opened
 
 ```text

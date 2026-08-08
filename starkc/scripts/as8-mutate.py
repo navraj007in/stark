@@ -239,6 +239,35 @@ BATCHES = {
                   "with three silent consequences. A survivor would mean that warning is "
                   "unenforced by anything."),
     ],
+    # ------------------------------- EI5 Batch 4b (Batch 4 re-selected, and why it had to be) --
+    # AS8-MUT-016 was recorded SURVIVED and the result is UNINTERPRETABLE, for a reason worth
+    # stating rather than quietly fixing: EI5 named `EV-PROVIDER-LOOP` as the control, and THIS
+    # HARNESS CANNOT RUN IT. The loopback suites live in `packages/*/native/Cargo.toml` -- separate
+    # crates -- and every trial here runs `cargo test -p starkc`. The external control was never
+    # invoked, so the trial measured its absence, not the authority's exposure.
+    #
+    # It is the SECOND time in this packet that a selected test set omitted the only suite that
+    # could kill (MUT-005/006 was the first). The rule AS8 added to EI5 -- select every suite that
+    # NAMES the authority -- is necessary and was not sufficient: a suite in another CRATE is
+    # invisible to "select the right --test flag".
+    #
+    # In-tree, `provider_sig::signature` has exactly ONE consumer: `mir/verify.rs`. So the honest
+    # in-tree question is whether the VERIFIER notices, and these suites are the ones that drive a
+    # provider program through it.
+    "4b": [
+        dict(id="AS8-MUT-025", target="ESF-PROV-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::provider_sig::signature — re-selected against its real consumers",
+             file="src/mir/provider_sig.rs",
+             find="    Ok((tys, PROVIDER_STATUS_TY))",
+             repl="    tys.reverse();\n    Ok((tys, PROVIDER_STATUS_TY))",
+             tests=["--test", "c788_starkc_build", "--test", "a10_stark_time_e2e",
+                    "--test", "a10_provider_emit", "--test", "a10_provider_verify"],
+             note="Identical mutation to MUT-016, selected against the suites that actually drive "
+                  "a provider program through `mir/verify.rs` and the backend. If this ALSO "
+                  "survives, the in-tree evidence does not reach the provider signature mapping "
+                  "at all and EI2-R2 understates the gap: not merely 'two engines, not three', "
+                  "but no in-tree control of any kind."),
+    ],
     # ------------------------------------------------ EI5 Batch 5 (canonicalisation helpers) --
     "5": [
         # PREFLIGHT FINDING, 2026-08-09. The original single anchor matched TWICE: `is_integer`
@@ -328,6 +357,158 @@ BATCHES = {
                   "carry expected_trap_category, so a kill here means the corpus pins semantics "
                   "independently of the engines agreeing. EV-COPY-MATRIX, Batch 8's other row, is "
                   "ALREADY ANSWERED by MUT-003 — it survived, so it is a transcription."),
+    ],
+    # ---------------------------- EI5 Batch 9 (resolver and MIR verifier rules) -- AS8 SCOPE ---
+    # AS8's work section names FIVE rule families for source mutation: "ownership, trap, drop,
+    # RESOLVER and MIR VERIFIER rules". Batches 1-8 covered ownership, trap and drop. These are the
+    # two that were still missing, and neither appears in EI5's ranked batches -- EI5 ranked the
+    # SHARED-FATE register, and the resolver and the verifier are not register entries. That is a
+    # gap between two documents rather than in either one, and it is why the packet's own scope has
+    # to be read alongside the ranking it delegates to.
+    #
+    # THE VERIFIER IS AN ODD MUTATION TARGET AND THE PREDICTIONS SAY SO. `mir/verify.rs` is a
+    # CHECK, not a producer: WEAKENING it removes a rejection, so nothing fails unless a test
+    # asserts the rejection itself. A survivor here means the verifier's rule is unverified, which
+    # is a sharper thing than an unverified engine rule -- the verifier is what other evidence
+    # leans on.
+    "9": [
+        dict(id="AS8-MUT-034", target="resolver visibility", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="resolve::item_is_visible_from",
+             file="src/resolve.rs",
+             find="        matches!(\n            self.ast.item(ast::ItemId(item_id.0)).vis,\n            Some(ast::Vis::Pub)\n        )",
+             repl="        true",
+             tests=["--test", "conformance", "--test", "three_engine_differential"],
+             note="Every item becomes visible from every module — private items stop being private. "
+                  "07 governs visibility and resolve.rs carries in-module tests for exactly this "
+                  "(`private_item_is_not_visible_from_a_descendant_module`), so `--lib` would also "
+                  "kill it; the selection asks whether the SPEC FIXTURES do."),
+        dict(id="AS8-MUT-035", target="resolver visibility", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="resolve::name_is_visible_from — re-export visibility",
+             file="src/resolve.rs",
+             find="        if let Some(vis) = self.reexport_vis.get(&(module_id, name.to_string())) {\n            return matches!(vis, Some(ast::Vis::Pub));\n        }",
+             repl="        if self.reexport_vis.contains_key(&(module_id, name.to_string())) {\n            return true;\n        }",
+             tests=["--test", "conformance", "--test", "three_engine_differential"],
+             note="A NON-`pub` re-export becomes visible outside its module. `use` without `pub` "
+                  "must not re-export (07)."),
+        dict(id="AS8-MUT-036", target="MIR verifier", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::verify::paths_prefix_related — move-path overlap",
+             file="src/mir/verify.rs",
+             find="    let n = a.len().min(b.len());\n    a[..n] == b[..n]",
+             repl="    let _ = a.len().min(b.len());\n    false",
+             tests=["--test", "mir_verify", "--test", "mir_differential",
+                    "--test", "three_engine_differential"],
+             note="Two move paths are never considered prefix-related, so overlapping partial "
+                  "moves stop being detected. WEAKENS the verifier: it removes a rejection rather "
+                  "than adding one, so only a test that asserts the rejection can notice."),
+        dict(id="AS8-MUT-037", target="MIR verifier", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::verify::may_need_drop — the HostResource arm",
+             file="src/mir/verify.rs",
+             find="        MirTy::HostResource(_) => true,",
+             repl="        MirTy::HostResource(_) => false,",
+             tests=["--test", "mir_verify", "--test", "a11_host_resource",
+                    "--test", "c788_resource_lifecycle", "--test", "dev146_resource_borrow_weakening"],
+             note="A11 §5: a host resource's drop IS its provider close. The source comment records "
+                  "that lowering and the verifier were CORRECTED SEPARATELY here — lowering stopped "
+                  "emitting the Drop, and when that was fixed the verifier rejected the Drop it now "
+                  "emitted. AS8-DA-006 is that pair; this trial disturbs the verifier half."),
+    ],
+    # ----------------------------------- AS8-DA: paired one-sided trials on duplicate authorities --
+    # NOT an EI5 batch and NOT an EI0 category. Owner ruling 2026-08-09: EI0's vocabulary answers
+    # WHAT KIND of semantic authority something is; duplication answers HOW MANY implementations
+    # exist and what relationship they have. Encoding both in one enum would make the model less
+    # precise, so these carry AS8-DA-* identifiers and stay orthogonal to the register.
+    #
+    # THE OWNER ALSO CORRECTED THE INSTINCT TO CONSOLIDATE, and the correction is the whole design
+    # of this batch: a verifier can derive its value from implementing a rule INDEPENDENTLY.
+    # Replacing both copies with one helper removes drift and CREATES SHARED FATE -- the verifier
+    # could then no longer detect a wrong shared predicate. Mutation classifies which it is:
+    #
+    #     mutate copy A only -> killed?  YES  independent redundancy is useful, KEEP BOTH
+    #                                    NO   copy A is unguarded
+    #     mutate copy B only -> killed?  YES  useful cross-check
+    #                                    NO   copy B can drift silently
+    #     both survive -> architectural residual: one authority, or an explicit cross-check
+    "da": [
+        dict(id="AS8-MUT-026", target="AS8-DA-002", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_vec_runtime — implementation A (interpreter)",
+             file="src/mir/interp.rs",
+             find='fn is_vec_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(\n        rt,\n        VecNew\n            | VecWithCapacity\n            | VecPush\n            | VecPop\n            | VecLen\n            | VecIsEmpty\n            | VecIndexGet\n            | VecReplace\n            | VecRemove\n            | VecClear\n            | VecIterNew\n            | VecIterNext\n            | VecGetRef\n            | VecGetMutRef\n    )\n}',
+             repl='fn is_vec_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(\n        rt,\n        VecNew\n            | VecWithCapacity\n            | VecPush\n            | VecPop\n            | VecLen\n            | VecIsEmpty\n            | VecIndexGet\n            | VecReplace\n            | VecRemove\n            | VecIterNew\n            | VecIterNext\n            | VecGetRef\n            | VecGetMutRef\n    )\n}',
+             tests=["--test", "mir_differential", "--test", "three_engine_differential", "--test", "mir_verify"],
+             note="ONE-SIDED: only implementation A (interpreter) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-027", target="AS8-DA-002", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_vec_runtime_fn — implementation B (verifier)",
+             file="src/mir/verify.rs",
+             find='fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(\n        rt,\n        VecNew\n            | VecWithCapacity\n            | VecPush\n            | VecPop\n            | VecLen\n            | VecIsEmpty\n            | VecIndexGet\n            | VecReplace\n            | VecRemove\n            | VecClear\n            | VecIterNew\n            | VecIterNext\n            | VecGetRef\n            | VecGetMutRef\n    )\n}',
+             repl='fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(\n        rt,\n        VecNew\n            | VecWithCapacity\n            | VecPush\n            | VecPop\n            | VecLen\n            | VecIsEmpty\n            | VecIndexGet\n            | VecReplace\n            | VecRemove\n            | VecIterNew\n            | VecIterNext\n            | VecGetRef\n            | VecGetMutRef\n    )\n}',
+             tests=["--test", "mir_verify", "--test", "mir_differential", "--test", "three_engine_differential"],
+             note="ONE-SIDED: only implementation B (verifier) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-028", target="AS8-DA-003", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_box_runtime — implementation A (interpreter)",
+             file="src/mir/interp.rs",
+             find='fn is_box_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, BoxNew | BoxIntoInner)\n}',
+             repl='fn is_box_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, BoxNew)\n}',
+             tests=["--test", "mir_differential", "--test", "three_engine_differential", "--test", "mir_verify"],
+             note="ONE-SIDED: only implementation A (interpreter) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-029", target="AS8-DA-003", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_box_runtime_fn — implementation B (verifier)",
+             file="src/mir/verify.rs",
+             find='fn is_box_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, BoxNew | BoxIntoInner)\n}',
+             repl='fn is_box_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, BoxNew)\n}',
+             tests=["--test", "mir_verify", "--test", "mir_differential", "--test", "three_engine_differential"],
+             note="ONE-SIDED: only implementation B (verifier) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-030", target="AS8-DA-004", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_slice_runtime — implementation A (interpreter)",
+             file="src/mir/interp.rs",
+             find='fn is_slice_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)\n}',
+             repl='fn is_slice_runtime(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, SliceNew | SliceNewMut | SliceLen)\n}',
+             tests=["--test", "mir_differential", "--test", "three_engine_differential", "--test", "mir_verify"],
+             note="ONE-SIDED: only implementation A (interpreter) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-031", target="AS8-DA-004", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="is_slice_runtime_fn — implementation B (verifier)",
+             file="src/mir/verify.rs",
+             find='fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)\n}',
+             repl='fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {\n    use RuntimeFn::*;\n    matches!(rt, SliceNew | SliceNewMut | SliceLen)\n}',
+             tests=["--test", "mir_verify", "--test", "mir_differential", "--test", "three_engine_differential"],
+             note="ONE-SIDED: only implementation B (verifier) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-032", target="AS8-DA-005", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="scalar_src — implementation A (provider_synth)",
+             file="src/provider_synth.rs",
+             find='fn scalar_src(s: ScalarTy) -> &\'static str {\n    match s {\n        ScalarTy::U8 => "UInt8",\n        ScalarTy::U16 => "UInt16",\n        ScalarTy::U32 => "UInt32",\n        ScalarTy::U64 => "UInt64",\n        ScalarTy::I8 => "Int8",\n        ScalarTy::I16 => "Int16",\n        ScalarTy::I32 => "Int32",\n        ScalarTy::I64 => "Int64",\n        ScalarTy::Bool => "Bool",\n        ScalarTy::F32 => "Float32",\n        ScalarTy::F64 => "Float64",\n    }\n}',
+             repl='fn scalar_src(s: ScalarTy) -> &\'static str {\n    match s {\n        ScalarTy::U8 => "UInt16",\n        ScalarTy::U16 => "UInt16",\n        ScalarTy::U32 => "UInt32",\n        ScalarTy::U64 => "UInt64",\n        ScalarTy::I8 => "Int8",\n        ScalarTy::I16 => "Int16",\n        ScalarTy::I32 => "Int32",\n        ScalarTy::I64 => "Int64",\n        ScalarTy::Bool => "Bool",\n        ScalarTy::F32 => "Float32",\n        ScalarTy::F64 => "Float64",\n    }\n}',
+             tests=["--test", "a10_provider_bind", "--test", "a10_provider_emit", "--test", "c788_starkc_build"],
+             note="ONE-SIDED: only implementation A (provider_synth) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
+        dict(id="AS8-MUT-033", target="AS8-DA-005", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="scalar_name — implementation B (provider_derive)",
+             file="src/provider_derive.rs",
+             find='fn scalar_name(s: ScalarTy) -> &\'static str {\n    match s {\n        ScalarTy::U8 => "UInt8",\n        ScalarTy::U16 => "UInt16",\n        ScalarTy::U32 => "UInt32",\n        ScalarTy::U64 => "UInt64",\n        ScalarTy::I8 => "Int8",\n        ScalarTy::I16 => "Int16",\n        ScalarTy::I32 => "Int32",\n        ScalarTy::I64 => "Int64",\n        ScalarTy::Bool => "Bool",\n        ScalarTy::F32 => "Float32",\n        ScalarTy::F64 => "Float64",\n    }\n}',
+             repl='fn scalar_name(s: ScalarTy) -> &\'static str {\n    match s {\n        ScalarTy::U8 => "UInt16",\n        ScalarTy::U16 => "UInt16",\n        ScalarTy::U32 => "UInt32",\n        ScalarTy::U64 => "UInt64",\n        ScalarTy::I8 => "Int8",\n        ScalarTy::I16 => "Int16",\n        ScalarTy::I32 => "Int32",\n        ScalarTy::I64 => "Int64",\n        ScalarTy::Bool => "Bool",\n        ScalarTy::F32 => "Float32",\n        ScalarTy::F64 => "Float64",\n    }\n}',
+             tests=["--test", "a10_provider_bind", "--test", "a10_provider_emit", "--test", "c788_starkc_build"],
+             note="ONE-SIDED: only implementation B (provider_derive) is disturbed, so the other copy still "
+                  "holds the correct answer. A KILL means the independent redundancy is doing real "
+                  "work and the pair should be KEPT; a SURVIVOR means this copy can drift silently "
+                  "and nothing in the tree notices."),
     ],
     # ----------------------------------------------------- EI5 Batch 6 (trap categorisation) --
     # EI2-R3 and the register both say a mis-categorised trap is "invisible to every mechanism in
