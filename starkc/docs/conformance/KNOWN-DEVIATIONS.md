@@ -5769,3 +5769,38 @@ fails at the call. The environment is load-bearing there; this is not precaution
 wiring the Return boundary, did the same job as the pre-existing `push_captured_env`. Deleted;
 `InvocationEnv::Captured` carries the `FunctionValue` and installs through the original authority.
 Adding a second helper for an existing semantic job is exactly what AS4 spent its packets removing.
+
+## DEV-197 — UPDATE: six more sites, found by making the environment a required parameter
+
+Collapsing `call_user_method` into the invocation authority required every method call site to name
+its environment. Six of the nine **installed none at all**:
+
+```text
+eval_binary            operator dispatch (Eq)      NO ENVIRONMENT
+eval_binary            operator dispatch (Ord)     NO ENVIRONMENT
+call_qualified_core_trait                          NO ENVIRONMENT
+language_equal         container element Eq        NO ENVIRONMENT
+next_for_iterator      Iterator::next              NO ENVIRONMENT
+display_text/display_deep  Display::fmt            NO ENVIRONMENT
+```
+
+Every one executes a user body. All are paths AS3 Boundary 4 wired for **selection** and never for
+**environment** — the two were separate concerns and only one had an authority.
+
+Same violated invariant as the first three sites, so this stays DEV-197: *a callee body ran without
+its checker-selected environment*. Nine sites now, across three discovery events, each found by
+making something mandatory rather than by reading code:
+
+| Found by | Sites |
+| --- | --- |
+| wiring the `Return` boundary | associated functions, function values |
+| routing `call_callable` through the authority | `Option`/`Result` combinators |
+| requiring an environment parameter on method dispatch | the six above |
+
+Each is fixed by consuming the environment the checker already published, via `env_for_use` — one
+mapping from `GenericEnvironment` to `InvocationEnv`, so no consumer invents its own.
+
+**Why none produced a wrong answer.** These paths dispatch to `Display::fmt`, `Eq::eq`, `Ord::cmp`
+and `Iterator::next`, whose bodies rarely mention their own generic parameters. The environment was
+missing but unconsulted — the DEV-121 shape again, and the reason nine sites accumulated without a
+single failing test.

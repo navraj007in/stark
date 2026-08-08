@@ -569,13 +569,22 @@ enum InvocationEnv {
 ///
 /// Making the difference a parameter is what lets one executor serve both — it is not a new
 /// semantic rule, it is the existing difference named.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum BodyEpilogue {
     /// Ordinary call: clean the frame's locals, return the body's value.
     Call,
     /// Destructor: return the receiver's final value; the enclosing destruction walk owns the
     /// remaining locals.
     Destructor { receiver_local: LocalId },
+    /// Method: like `Call`, plus two things a method owes its caller — a `&mut self` receiver is
+    /// written back on the error path, and a returned reference derived from `self` is rebased onto
+    /// the CALLER's receiver place (DEV-035), because the place it carries points into the frame
+    /// that was just popped.
+    Method {
+        receiver_kind: hir::Receiver,
+        receiver_local: LocalId,
+        receiver_place: Place,
+    },
 }
 
 /// A callable selected together with the environment it must run under. Constructing one is the
@@ -1730,6 +1739,71 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    /// The published environment for a `Display` render position, keyed the way the plan is.
+    fn display_env(&self, root: ExprId, path: &DisplayPath) -> InvocationEnv {
+        self.tables
+            .display_uses
+            .get(&(root, path.clone()))
+            .and_then(|id| self.tables.callable_uses.get(id.0 as usize))
+            .and_then(|use_| self.env_for_use(use_))
+            .unwrap_or(InvocationEnv::Empty)
+    }
+
+    /// **The environment a published `CallableUse` calls for.**
+    ///
+    /// One mapping from the checker's `GenericEnvironment` to the interpreter's `InvocationEnv`,
+    /// so every consumer of a published selection installs the same thing. Six method-dispatch
+    /// paths installed nothing at all before Packet 1 made the parameter mandatory — operators,
+    /// qualified core-trait calls, container `Eq`, `Iterator::next` and both `Display` paths.
+    ///
+    /// `FromBoundSelection` returns `None`: a bound selection's environment comes from the
+    /// specialiser, which produces it atomically with the body, and reconstructing it here would be
+    /// the second answer Rule 1 forbids.
+    fn env_for_use(&self, use_: &crate::typecheck::CallableUse) -> Option<InvocationEnv> {
+        match &use_.environment {
+            crate::typecheck::GenericEnvironment::Static(bindings) => {
+                Some(InvocationEnv::Concrete(bindings.clone()))
+            }
+            crate::typecheck::GenericEnvironment::FromBoundSelection => None,
+            crate::typecheck::GenericEnvironment::FromFunctionValue => None,
+        }
+    }
+
+    /// The published environment for a core-trait dispatch at `expr`, or `Empty` when the selection
+    /// is a non-generic `Static` one. Used by the operator, iterator and `Display` paths, which all
+    /// select through `selected_core_trait_callable`.
+    fn core_trait_env(&self, expr: ExprId, core: CoreTrait) -> InvocationEnv {
+        self.selected_core_trait_callable(expr, core)
+            .as_ref()
+            .and_then(|use_| self.env_for_use(use_))
+            .unwrap_or(InvocationEnv::Empty)
+    }
+
+    /// **DEV-035:** a reference returned from a `&self`/`&mut self` method that was derived from
+    /// `self` carries a `Place` pointing into the method's own — just popped — frame, so any later
+    /// dereference failed with "dangling reference". Rebase it onto the caller-side receiver place,
+    /// preserving projections taken inside the method.
+    ///
+    /// References into the method's OTHER locals are left untouched: the borrow checker's
+    /// return-escape check (E0103) rejects those, and if one ever slipped through the existing
+    /// "dangling reference" trap is the correct backstop, not a silent rebase.
+    fn rebase_if_method(
+        &self,
+        mut value: Value,
+        body_frame: usize,
+        epilogue: &BodyEpilogue,
+    ) -> Value {
+        if let BodyEpilogue::Method {
+            receiver_local,
+            receiver_place,
+            ..
+        } = epilogue
+        {
+            rebase_frame_refs(&mut value, body_frame, *receiver_local, receiver_place);
+        }
+        value
+    }
+
     /// **AS3 Packet 1: the ONE invocation authority.**
     ///
     /// Rule 1 — *no executable callable body without an invocation authority*. Body, generic
@@ -1858,6 +1932,7 @@ impl<'a> Interpreter<'a> {
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
+        let body_frame = self.frames.len() - 1;
         // AS1b-ii: DEV-069's per-call file swap is GONE. It existed so `self.file` named the
         // executing body's file while `text()` sliced against it; `text()` now slices against the
         // source the span itself names, so there is nothing for the swap to keep correct.
@@ -1877,11 +1952,41 @@ impl<'a> Interpreter<'a> {
                 .and_then(Option::take);
             self.frames.pop();
             result?;
-            return Ok(restored.unwrap_or(Value::Unit));
+            // **Not `unwrap_or(Unit)`.** The callable has a receiver, it was inserted, and a
+            // `Drop` body cannot legitimately make its own receiver binding vanish — so `None`
+            // here is an interpreter defect. Falling back to `Unit` would let a representation or
+            // lifetime bug erase the receiver and have destruction continue on nothing, silently
+            // skipping the recursive field destruction that follows.
+            return restored.ok_or_else(|| {
+                RuntimeError::internal(
+                    "the `Drop` receiver disappeared while its destructor executed",
+                    span,
+                )
+            });
         }
-        if result.is_err() {
+        if let Err(error) = result {
+            if let BodyEpilogue::Method {
+                receiver_kind,
+                receiver_local,
+                ref receiver_place,
+            } = epilogue
+            {
+                // A `&mut self` receiver is written back even on the error path: the caller's place
+                // was emptied to make the binding, and leaving it empty would lose the value.
+                let restored = self
+                    .frame_mut()
+                    .values
+                    .get_mut(&receiver_local)
+                    .and_then(Option::take);
+                let place = receiver_place.clone();
+                self.frames.pop();
+                if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
+                    self.place_slot_mut(&place, span)?.replace(restored);
+                }
+                return Err(error);
+            }
             self.frames.pop();
-            return result.map(|_| Value::Unit);
+            return Err(error);
         }
         let flow = result?;
         // The other half of the invariant: nothing may still be parked on the way out either. A
@@ -1893,6 +1998,21 @@ impl<'a> Interpreter<'a> {
                  boundary",
                 span,
             ));
+        }
+        // A `&self` receiver is taken back out before cleanup so the method's own locals are
+        // destroyed without the borrowed receiver among them — the ordering `call_user_method`
+        // established, preserved here rather than restated there.
+        if let BodyEpilogue::Method {
+            receiver_kind: hir::Receiver::Ref,
+            receiver_local,
+            ..
+        } = epilogue
+        {
+            let _restored = self
+                .frame_mut()
+                .values
+                .get_mut(&receiver_local)
+                .and_then(Option::take);
         }
         self.cleanup_current_frame()?;
         self.frames.pop();
@@ -1922,9 +2042,9 @@ impl<'a> Interpreter<'a> {
         match flow {
             Flow::Value(value) | Flow::Return(value) => {
                 self.check_value_for_ty(&declared_ret, &value, span, RepBoundary::Return)?;
-                Ok(value)
+                Ok(self.rebase_if_method(value, body_frame, &epilogue))
             }
-            Flow::Propagate(value) => Ok(value),
+            Flow::Propagate(value) => Ok(self.rebase_if_method(value, body_frame, &epilogue)),
             Flow::Break(_) | Flow::Continue => {
                 Err(RuntimeError::new("loop control escaped a function", span))
             }
@@ -3414,7 +3534,7 @@ impl<'a> Interpreter<'a> {
                     let result = self.call_user_method(
                         method,
                         receiver_place.clone(),
-                        Value::Ref(receiver_place),
+                        self.core_trait_env(expr, hir::CoreTrait::Eq),
                         vec![Value::Ref(argument_place)],
                         span,
                     )?;
@@ -3464,7 +3584,7 @@ impl<'a> Interpreter<'a> {
                     let ordering = self.call_user_method(
                         method,
                         receiver_place.clone(),
-                        Value::Ref(receiver_place),
+                        self.core_trait_env(expr, hir::CoreTrait::Ord),
                         vec![Value::Ref(argument_place)],
                         span,
                     )?;
@@ -4698,7 +4818,7 @@ impl<'a> Interpreter<'a> {
                     None => InvocationEnv::Published(expr_id),
                 };
                 let _env = self.install_invocation_env(&environment, span)?;
-                self.call_user_method(method, receiver_place, receiver_value, values, span)
+                self.call_user_method(method, receiver_place, environment, values, span)
                     .map(Flow::Value)
             }
             Err(propagated) => Ok(Flow::Propagate(propagated)),
@@ -4726,7 +4846,6 @@ impl<'a> Interpreter<'a> {
         };
         // WP-C2.2 (DEV-034/DEV-035): same single-resolution receiver handling as `call_method`.
         let receiver_place = self.core_receiver_place(*first, span)?;
-        let receiver = self.clone_place_value(&receiver_place, span)?;
         // `<T as Tr>::m()` is a `Qualified` dispatch the checker already resolved; scanning the
         // receiver's nominal for the member name re-decided it.
         let method = self
@@ -4743,7 +4862,13 @@ impl<'a> Interpreter<'a> {
         let _env = self.push_resolved_env(&bindings, span)?;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
-                .call_user_method(method, receiver_place, receiver, values, span)
+                .call_user_method(
+                    method,
+                    receiver_place,
+                    InvocationEnv::Concrete(bindings),
+                    values,
+                    span,
+                )
                 .map(Flow::Value),
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
@@ -4770,7 +4895,6 @@ impl<'a> Interpreter<'a> {
             return Err(RuntimeError::new("trait call requires receiver", span));
         };
         let receiver_place = self.core_receiver_place(*first, span)?;
-        let receiver = self.clone_place_value(&receiver_place, span)?;
         // A qualified core-trait call publishes through `publish_operator_use`, so it carries
         // `CoreTrait` provenance — the same record `a == b` produces, because it is the same
         // dispatch spelled explicitly.
@@ -4785,10 +4909,11 @@ impl<'a> Interpreter<'a> {
             })
             .or_else(|| self.specialised_operator_callable(call_expr, core_trait, span))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        let environment = self.core_trait_env(call_expr, core_trait);
         let _ = method_name;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
-                .call_user_method(method, receiver_place, receiver, values, span)
+                .call_user_method(method, receiver_place, environment, values, span)
                 .map(Flow::Value),
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
@@ -4844,13 +4969,21 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// **A method invocation, through the one authority.**
+    ///
+    /// This was the last of three body-execution funnels: it pushed its own frame, called
+    /// `eval_block` and popped, duplicating `execute_body` so that a method could carry its own
+    /// epilogue. That epilogue is now [`BodyEpilogue::Method`], so the difference is a parameter
+    /// and the executor is shared.
+    ///
+    /// The environment is supplied by the CALLER, which is what selected the body — a `Bound`
+    /// selection carries the specialiser's bindings, everything else the checker's published
+    /// instantiation.
     fn call_user_method(
         &mut self,
         callable: Callable,
         receiver_place: Place,
-        // Kept for call-site symmetry (nominal lookup resolves from it); the `&self` binding
-        // itself is a genuine reference since DEV-070's fix, so the clone is no longer bound.
-        _receiver_value: Value,
+        environment: InvocationEnv,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
@@ -4858,94 +4991,27 @@ impl<'a> Interpreter<'a> {
             return Err(RuntimeError::new("method has no receiver", span));
         };
         let receiver = match receiver_kind {
-            // WP-C2.2 (DEV-034): consume the already-resolved place (proper move semantics for
-            // non-Copy receivers, including partial moves out of fields) instead of re-evaluating
-            // the receiver expression — the source of the confirmed double-evaluation bug.
+            // WP-C2.2 (DEV-034): consume the already-resolved place — proper move semantics for a
+            // non-Copy receiver, including partial moves out of fields — rather than re-evaluating
+            // the receiver expression, which was a confirmed double-evaluation bug.
             hir::Receiver::Value => self.take_place(&receiver_place, span)?,
-            // DEV-070 (A2): a `&self` receiver binds a genuine REFERENCE to the caller's place,
-            // not a value clone — the same fix the correction brief applied to `Eq::eq`/
-            // `Ord::cmp` dispatch (Issue 2). With the clone, `*self` failed "cannot dereference
-            // non-reference"; field reads worked only via the deref-normalizing place walk.
-            // Observationally equivalent otherwise: the referent cannot be mutated while the
-            // method runs (shared borrow, single-threaded), and the old clone was discarded
-            // without STARK drop effects. (`&mut self` keeps its take/write-back model.)
-            hir::Receiver::Ref => Value::Ref(receiver_place.clone()),
-            // **DEV-180: a `&mut self` receiver is a REFERENCE, like `&self`.**
-            //
-            // It used to take the owned value out of the caller's slot, bind that as `self`, and
-            // write it back afterwards — so a local typed `&mut Self` held a `Struct` for the whole
-            // body, the flattening WP-VALUE-REP-TOTAL §6.4 forbids. DEV-070 moved `&self` to a
-            // genuine reference and left this alone; its safety argument ("the referent cannot
-            // mutate during the call") is about SHARED borrows and never applied here.
-            //
-            // Nothing required take/write-back: writing through a mutable reference already works
-            // for every `&mut` parameter in the language, and this uses that same path. Mutation
-            // permission comes from the static type and the borrow checker, not from the runtime
-            // representation — now identical for both borrowed receivers.
-            hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
+            // DEV-070 (A2): `&self` binds a genuine REFERENCE to the caller's place, not a clone.
+            hir::Receiver::Ref | hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
         };
-        let mut frame = Frame::default();
-        self.check_value_representation(receiver_local, &receiver, span)?;
-        frame.insert(receiver_local, Some(receiver));
-        for (local, value) in callable.params.iter().copied().zip(args) {
-            self.check_value_representation(local, &value, span)?;
-            frame.insert(local, Some(value));
-        }
-        self.frames.push(frame);
-        let method_frame = self.frames.len() - 1;
-        // DEV-069: a method body executes against the file that declares its impl (or, for an
-        // un-overridden trait default, the trait's file) — this is the second body-execution
-        // funnel alongside `call_callable`, and it needs the same swap. Restored on BOTH exits.
-        let result = self.eval_block(callable.body);
-        if let Err(error) = result {
-            let restored = self
-                .frame_mut()
-                .values
-                .get_mut(&receiver_local)
-                .and_then(Option::take);
-            self.frames.pop();
-            if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
-                self.place_slot_mut(&receiver_place, span)?
-                    .replace(restored);
-            }
-            return Err(error);
-        }
-        let flow = result?;
-        // DEV-180: only a shared receiver still needs taking back out of the frame; a `&mut`
-        // receiver was never removed from the caller's place, so there is nothing to restore.
-        let restored = if receiver_kind == hir::Receiver::Ref {
-            self.frame_mut()
-                .values
-                .get_mut(&receiver_local)
-                .and_then(Option::take)
-        } else {
-            None
-        };
-        let _ = &restored;
-        // Destructors for the method's own locals still belong to the method's file, so the
-        // restore happens after cleanup (matching `call_callable`).
-        self.cleanup_current_frame()?;
-        self.frames.pop();
-
-        let mut value = match flow {
-            Flow::Value(value) | Flow::Return(value) => value,
-            Flow::Propagate(value) => value,
-            Flow::Break(_) | Flow::Continue => {
-                return Err(RuntimeError::new("loop control escaped a method", span))
-            }
-        };
-        // WP-C2.2 (DEV-035): a reference returned from a `&self`/`&mut self` method that was
-        // derived from `self` (e.g. `&self.field`, or `self.items.iter()`) carries a `Place`
-        // pointing into the method's own — just popped — call frame, so any later dereference
-        // failed with "dangling reference" (confirmed empirically: an ordinary getter returning
-        // `&self.value` crashed unconditionally). Rebase such places onto the caller-side
-        // receiver place, preserving any field/index projections taken inside the method.
-        // References into other locals of the popped frame are left untouched: the borrow
-        // checker's return-escape check (E0103, WP-C1.4) rejects those at compile time, and if
-        // one ever slips through, the existing "dangling reference" trap is the correct
-        // backstop, not a silent rebase.
-        rebase_frame_refs(&mut value, method_frame, receiver_local, &receiver_place);
-        Ok(value)
+        self.invoke_with_epilogue(
+            ResolvedInvocation {
+                callable,
+                environment,
+            },
+            Some(receiver),
+            args,
+            BodyEpilogue::Method {
+                receiver_kind,
+                receiver_local,
+                receiver_place,
+            },
+            span,
+        )
     }
 
     /// DEV-DISPLAY-DISPATCH: whether the receiver expression's static type is (a reference to) a
@@ -5172,7 +5238,9 @@ impl<'a> Interpreter<'a> {
                 return match self.call_user_method(
                     method,
                     receiver_place,
-                    left,
+                    call_expr
+                        .map(|e| self.core_trait_env(e, CoreTrait::Eq))
+                        .unwrap_or(InvocationEnv::Empty),
                     vec![Value::Ref(argument_place)],
                     span,
                 )? {
@@ -7088,7 +7156,14 @@ impl<'a> Interpreter<'a> {
                         .map(|(c, _)| c)
                 })
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
-            self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
+            let iterator_env = self.core_trait_env(for_expr, hir::CoreTrait::Iterator);
+            self.call_user_method(
+                method,
+                iterator_place.clone(),
+                iterator_env,
+                Vec::new(),
+                span,
+            )?
         } else {
             let (next, updated) = self.iterator_step(current, Some(iterator_place), span)?;
             *self.place_value_mut(iterator_place, span)? = updated;
@@ -7798,11 +7873,10 @@ impl<'a> Interpreter<'a> {
             {
                 // Give the by-value argument its own storage so `&self` can borrow it.
                 let place = self.promote_to_owned_temp_place(value, span)?;
-                let receiver_value = self.clone_place_value(&place, span)?;
                 let result = self.call_user_method(
                     callable,
                     place.clone(),
-                    receiver_value,
+                    self.display_env(root, &DisplayPath::default()),
                     Vec::new(),
                     span,
                 );
@@ -7875,11 +7949,10 @@ impl<'a> Interpreter<'a> {
                     ));
                 };
                 let place = self.promote_to_owned_temp_place(value.clone(), span)?;
-                let receiver_value = self.clone_place_value(&place, span)?;
                 let text = match self.call_user_method(
                     callable,
                     place.clone(),
-                    receiver_value,
+                    self.display_env(root, &path),
                     Vec::new(),
                     span,
                 )? {
