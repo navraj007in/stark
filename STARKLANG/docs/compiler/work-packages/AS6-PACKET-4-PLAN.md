@@ -343,3 +343,48 @@ The seven-service count is measured over `check_tensor_op`'s remainder alone. `c
 separately in the 4A correction; they must be re-measured **over their post-evaluation remainders**
 before 2C, by the same method. Measuring the whole function overstates the boundary, which is what
 produced the sixteen figure.
+
+
+## The remaining three entry points, measured over their remainders
+
+```text
+                          total  remainder  re-entry
+check_tensor_refine          92         82     none
+check_model_def              87         87     none   (no check_expr at all)
+check_model_method_call     143         44     none
+```
+
+**No re-entry in any remainder**, so the one-directional design holds across the whole surface.
+
+But the union of Core services is **14, not 7**, and the extra seven come almost entirely from one
+place:
+
+| Entry point | Core services in its remainder |
+| --- | --- |
+| `check_tensor_op` | resolve, unify, diags, extract_const_int, extract_const_int_list, combine_value_range, get_fix_suggestion |
+| `check_tensor_refine` | build_value_range, text |
+| `check_model_method_call` | diags, hir, resolve, ty_to_string |
+| **`check_model_def`** | **convert_hir_type, generic_kind, options, resolve, ty_to_string, diags, text** |
+
+### The finding: model DECLARATION checking is a different slice
+
+`check_model_def` has no `check_expr` at all — its remainder is the whole function — and it needs
+`convert_hir_type`, `generic_kind` and `options`. That is because declaring a model means
+**converting written type syntax**, which is Core machinery by nature, not a tensor semantic
+decision.
+
+So 2C should not treat the four entry points as one extraction:
+
+```text
+tensor OPERATION rules        7 services, clean, extract first
+model METHOD-call checking    4 services, subset of the above plus hir
+tensor refine                 2 services, trivial
+model DECLARATION checking    pulls in the type-conversion machinery — evaluate
+                              separately; it may be more Core-mechanism than
+                              extension-rule, and forcing it behind the same
+                              context would widen the interface by 4 for one caller
+```
+
+Extracting the first three gives the boundary AS6 wants at a seven-service surface. Whether
+`check_model_def` follows is a judgement about where model *declaration* validation belongs, and
+should be decided on its own evidence rather than by grouping.
