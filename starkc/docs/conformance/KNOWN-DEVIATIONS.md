@@ -6046,3 +6046,61 @@ a destination at all.
 **12 of 12 `RepBoundary` variants are `Wired`.** `Class::Unwired` is now unconstructed — that is the
 result, not dead code, and it is kept because a new boundary must be classifiable as unwired before
 it is wired.
+
+## DEV-121 — class evidence: four producer mutations, four forcing boundaries [2026-08-08]
+
+Exit criterion 5 asks for a **class-level** evidence statement, not one regression case. Twelve
+wired boundaries are not that statement on their own: a boundary that never fires is
+indistinguishable from a boundary that is not running, and Packet 6 in particular found no defect
+while firing on every expression the interpreter evaluates.
+
+**The mutation is applied to a PRODUCER, never to `check_value_for_ty`.** Corrupting the predicate
+would only show that the predicate detects an artificial mismatch. Corrupting a producer shows that
+a real value, taking a real path, is stopped by the real funnel at the intended boundary.
+
+| Class | Producer mutated | Forcing boundary |
+| --- | --- | --- |
+| 1 owned/view | `String::as_str` emits the owned `String`; `Vec::as_slice` emits the owned `Vec` | `ExpressionResult` |
+| 2 reference | a `&self` receiver binds the pointee **by value** instead of `Value::Ref(place)` | `Receiver` |
+| 3 function value | a function item coerces to a non-function value | `ExpressionResult` |
+| 4 aggregate | a declared field receives a mis-represented value, injected *after* the producer boundary accepted it | `AggregateField` |
+
+Each test asserts three things, and the middle one is what makes it evidence rather than
+decoration:
+
+1. the witness program runs **clean unmutated** — a detection on an already-broken program proves
+   nothing;
+2. exactly one producer is mutated;
+3. the failure is `InternalInvariant` **and names the intended boundary** — a mutation caught by the
+   wrong wire is a failure, not a pass.
+
+### Two things the harness itself had to get right
+
+**A thread-local does not reach the interpreter.** The first version armed the mutation in a
+`thread_local!` and every mutation silently failed to arm — all five tests reported "NOTHING refused
+it", which reads exactly like five inert boundaries. `run` executes the program on a *spawned*
+thread with a larger stack (`on_interpreter_stack`), so the interpreter never saw what the test
+thread set. A process-global would have armed correctly and been worse: the harness runs tests in
+parallel, so an armed mutation would have corrupted whatever unrelated test was executing beside it.
+The mutation is therefore a field on the `Interpreter`, scoped to exactly the one execution under
+test, reached through a `#[cfg(test)]` `run_with_mutation`. **Nothing here compiles into a shipped
+compiler**, so there is no runtime switch that could corrupt a real build.
+
+**Class 2's first witness was wrong, and the relation was right to accept it.** `struct Holder { n:
+Int32 }` is `Copy`-eligible, and §6.4 licenses the bare-value form for a `Copy` pointee — copying it
+cannot consume, invalidate or destroy the referent, so the two representations are
+indistinguishable to any observation the oracle can make. The mutation was not a violation there.
+Only a non-`Copy` pointee (`struct Holder { name: String }`) makes the owned form observably wrong,
+which is what the class is about. Recorded because the failure looked like an inert boundary and was
+a correct acceptance.
+
+### Also fixed here: the missing-metadata escape inside a wired funnel
+
+`bind_typed_local` delegated to a helper that returned `Ok(())` when `local_types[local]` was
+absent. So a language-level `let`/`match`/`for` binding whose entry went missing would have been
+**skipped, silently, inside a wire the inventory reported as `Wired`** — structurally present,
+inert in exactly the case that matters. The funnel now looks the type up itself and treats absence
+as `InternalInvariant`; every caller is a language-level binding and the checker types all of them.
+
+The permissive helper had **no remaining callers, production or test**, and is deleted rather than
+renamed: a permissive path parked in the file is one a future funnel can pick up by accident.

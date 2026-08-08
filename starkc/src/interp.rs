@@ -561,6 +561,44 @@ enum InvocationEnv {
     Captured(FunctionValue),
 }
 
+/// **Test-only producer mutations — AS3 / DEV-121 class evidence.**
+///
+/// Twelve wired boundaries that never fire prove nothing: "found no defect" and "is not running"
+/// look identical from outside. This is the control that separates them.
+///
+/// **The mutation is applied to a PRODUCER, never to `check_value_for_ty`.** Corrupting the
+/// predicate would only show that the predicate detects an artificial mismatch; corrupting a
+/// producer shows that a real value, taking a real path, is stopped by the real funnel at the
+/// intended boundary. Each arm below is a place where the interpreter *constructs* a
+/// representation, and the mutation makes it construct the wrong one.
+///
+/// `#[cfg(test)]` throughout: no part of this compiles into a shipped compiler, so there is no
+/// runtime switch that could corrupt a real build.
+///
+/// **Carried on the `Interpreter`, not in a global or a thread-local.** The first attempt used a
+/// thread-local and every mutation silently failed to arm: `run` executes the program on a
+/// *spawned* thread with a larger stack (`on_interpreter_stack`), so the interpreter never saw
+/// what the test thread set. A process-global would have armed correctly and been worse — the
+/// test harness runs tests in parallel, so an armed mutation would have corrupted whatever
+/// unrelated test happened to be executing beside it. A field on the instance is scoped to exactly
+/// the one execution under test.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ProducerMutation {
+    /// Class 1 — owned/view. `String::as_str` and `Vec::as_slice` emit OWNED storage where the
+    /// declared type is a view. The original DEV-121 pairing.
+    OwnedForView,
+    /// Class 2 — reference. A `&self` receiver binds the pointee BY VALUE instead of a
+    /// `Value::Ref` into the caller's place. The materialization defect, deliberately reintroduced.
+    OwnedForReference,
+    /// Class 3 — function value. A function item coerces to something that is not a function.
+    NonFunctionValue,
+    /// Class 4 — aggregate. A declared field receives a mis-represented value, injected AFTER the
+    /// producer-side boundary has already accepted it so the aggregate boundary is what must catch
+    /// it.
+    WrongAggregateField,
+}
+
 /// **Where a body's `self` comes from, before it is materialized.**
 ///
 /// Materialization belongs to the invocation authority rather than to each caller, because the
@@ -1311,6 +1349,27 @@ pub fn run(
     on_interpreter_stack(move || run_here(hir, file, tables))
 }
 
+/// [`run`] with one producer mutation armed, for the DEV-121 class evidence. Test-only.
+#[cfg(test)]
+pub(crate) fn run_with_mutation(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+    mutation: Option<ProducerMutation>,
+) -> Result<Execution, RuntimeError> {
+    on_interpreter_stack(move || {
+        let mut interpreter = Interpreter::new(hir, file, tables);
+        interpreter.mutation = mutation;
+        let (status, exit_stderr) = interpreter.run_main()?;
+        let stderr = format!("{}{exit_stderr}", interpreter.stderr);
+        Ok(Execution {
+            output: interpreter.output,
+            status,
+            stderr,
+        })
+    })
+}
+
 /// [`run`] without the stack switch, for a caller that is already on a suitable stack.
 fn run_here(
     hir: &Hir,
@@ -1467,6 +1526,9 @@ struct Interpreter<'a> {
     /// a guard holding `&mut self.generic_frames` would conflict with the `&mut self` call it is
     /// meant to wrap.
     generic_frames: std::rc::Rc<std::cell::RefCell<Vec<HashMap<String, Ty>>>>,
+    /// The one producer mutation armed for this execution, if any. See [`ProducerMutation`].
+    #[cfg(test)]
+    mutation: Option<ProducerMutation>,
 }
 
 /// RAII guard for one entry of [`Interpreter::generic_frames`].
@@ -1610,7 +1672,15 @@ impl<'a> Interpreter<'a> {
             const_cache: HashMap::new(),
             const_stack: Vec::new(),
             generic_frames: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            #[cfg(test)]
+            mutation: None,
         }
+    }
+
+    /// Whether `mutation` is the one armed for this execution.
+    #[cfg(test)]
+    fn mutation_armed(&self, mutation: ProducerMutation) -> bool {
+        self.mutation == Some(mutation)
     }
 
     fn eval_const_item(&mut self, item: ItemId) -> Result<Value, RuntimeError> {
@@ -1990,6 +2060,14 @@ impl<'a> Interpreter<'a> {
                 kind: hir::Receiver::Value,
                 place,
             } => Some(self.take_place(&place, span)?),
+            // Class 2 mutation: bind the pointee BY VALUE, which is the materialization defect
+            // the destructor case was repaired for.
+            #[cfg(test)]
+            ReceiverSource::Place { ref place, .. }
+                if self.mutation_armed(ProducerMutation::OwnedForReference) =>
+            {
+                Some(self.place_value(place, span)?.clone())
+            }
             // DEV-070 (A2): `&self`/`&mut self` bind a genuine REFERENCE to the caller's place,
             // not a clone.
             ReceiverSource::Place { place, .. } => Some(Value::Ref(place)),
@@ -2280,25 +2358,6 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
-    /// [`check_value_for_ty`] against a local's declared type.
-    ///
-    /// A local with no recorded type is not an error here: the tables do not type every internal
-    /// local the interpreter creates, and inventing a type to check against would be worse than
-    /// checking nothing. A6's producer inventory is what closes that gap, by finding the producers
-    /// rather than by guessing at the consumers.
-    fn check_local_value(
-        &self,
-        local: LocalId,
-        value: &Value,
-        span: Span,
-        boundary: RepBoundary,
-    ) -> Result<(), RuntimeError> {
-        let Some(ty) = self.tables.local_types.get(&local) else {
-            return Ok(());
-        };
-        self.check_value_for_ty(&ty.clone(), value, span, boundary)
-    }
-
     /// **The one way a value comes to rest in a local.** AS3 Packet 3.
     ///
     /// `let`, a `match` arm's pattern bindings, and both `for` forms each did their own
@@ -2309,6 +2368,14 @@ impl<'a> Interpreter<'a> {
     /// Every caller names its own [`RepBoundary`], because "a value entered a local" is not
     /// actionable — which of the four is. The expected type is `local_types[local]`, the checker's
     /// answer for that binding, never anything reconstructed from the value.
+    ///
+    /// **A missing `local_types` entry is an `InternalInvariant`, not a skip.** Every caller here
+    /// is a LANGUAGE-level binding — a `let`, a `match` arm's pattern binding, a `for` loop item —
+    /// and the checker types all of them. Inheriting
+    /// [`Self::check_local_value_if_typed`]'s permissiveness would have left a missing-metadata
+    /// escape inside a wire the inventory reports as `Wired`: structurally present, silently
+    /// inert for any binding whose entry went missing. That is the pattern this sprint exists to
+    /// delete, and a funnel is exactly where it would be least visible.
     fn bind_typed_local(
         &mut self,
         local: LocalId,
@@ -2316,7 +2383,23 @@ impl<'a> Interpreter<'a> {
         span: Span,
         boundary: RepBoundary,
     ) -> Result<(), RuntimeError> {
-        self.check_local_value(local, &value, span, boundary)?;
+        let expected = self
+            .tables
+            .local_types
+            .get(&local)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                        "missing checker-published local type at {} — every language-level \
+                         binding is typed, so this is a publication defect, not a binding to \
+                         exempt",
+                        boundary.as_str()
+                    ),
+                    span,
+                )
+            })?;
+        self.check_value_for_ty(&expected, &value, span, boundary)?;
         self.frame_mut().insert(local, Some(value));
         Ok(())
     }
@@ -3312,11 +3395,18 @@ impl<'a> Interpreter<'a> {
                 // **DEV-178: capture the instantiation here, where it is selected.** The later
                 // call cannot recover it — see `FunctionValue`. Concretised against the ACTIVE
                 // frame before storage, because the value may outlive that frame.
-                hir::ItemKind::Fn(_) => Ok(Value::Function(self.capture_function_value(
-                    item,
-                    expr,
-                    self.hir.expr(expr).span,
-                )?)),
+                hir::ItemKind::Fn(_) => {
+                    // Class 3 mutation: a function item coerces to a non-function value.
+                    #[cfg(test)]
+                    if self.mutation_armed(ProducerMutation::NonFunctionValue) {
+                        return Ok(Value::Unit);
+                    }
+                    Ok(Value::Function(self.capture_function_value(
+                        item,
+                        expr,
+                        self.hir.expr(expr).span,
+                    )?))
+                }
                 hir::ItemKind::Const { .. } => self.eval_const_item(item),
                 _ => Err(RuntimeError::new(
                     "item is not a runtime value",
@@ -5454,6 +5544,10 @@ impl<'a> Interpreter<'a> {
         args: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        // Copied out before the receiver's storage is borrowed mutably below; the seams for the
+        // view producers sit inside those borrows and cannot re-borrow `self`.
+        #[cfg(test)]
+        let armed = self.mutation;
         let receiver_ty = self
             .tables
             .expr_types
@@ -6303,7 +6397,14 @@ impl<'a> Interpreter<'a> {
                 // `Value::Ref` is what a `&str` of a place actually is, and `deref_place` /
                 // `deref_value` already normalise through it, so the receiver of a chained call
                 // resolves back to the `String`'s own place.
-                "as_str" => Ok(Value::Ref(receiver_place.clone())),
+                "as_str" => {
+                    // Class 1 mutation: emit the owned `String` where `&str` is declared.
+                    #[cfg(test)]
+                    if armed == Some(ProducerMutation::OwnedForView) {
+                        return Ok(Value::String(string.clone()));
+                    }
+                    Ok(Value::Ref(receiver_place.clone()))
+                }
                 "trim" => Ok(Value::Str(string.trim().to_string())),
                 "contains" => Ok(Value::Bool(
                     string.contains(&string_arg(values.next(), span)?),
@@ -6436,7 +6537,14 @@ impl<'a> Interpreter<'a> {
                     vector.clear();
                     Ok(Value::Unit)
                 }
-                "as_slice" => Ok(Value::Slice(receiver_place.clone(), 0, vector.len())),
+                "as_slice" => {
+                    // Class 1 mutation: emit the owned `Vec` where `&[T]` is declared.
+                    #[cfg(test)]
+                    if armed == Some(ProducerMutation::OwnedForView) {
+                        return Ok(Value::Vec(vector.clone()));
+                    }
+                    Ok(Value::Slice(receiver_place.clone(), 0, vector.len()))
+                }
                 _ => Err(RuntimeError::new(
                     format!("unsupported Vec method '{name}'"),
                     span,
@@ -6757,6 +6865,14 @@ impl<'a> Interpreter<'a> {
                     },
                     field.name,
                 )?
+            };
+            // Class 4 mutation: injected AFTER the producer-side boundary has accepted the value,
+            // so `AggregateField` is what must catch it rather than `ExpressionResult`.
+            #[cfg(test)]
+            let value = if self.mutation_armed(ProducerMutation::WrongAggregateField) {
+                Value::Unit
+            } else {
+                value
             };
             // An initialiser for a field the nominal does not declare is a checker error the
             // program cannot reach execution with, so an absent entry here is a table/tree
@@ -9778,9 +9894,14 @@ mod tests {
             .expect("the parse registered this file");
         let probe_span = registered.synthetic_span();
         let interpreter = Interpreter::new(&hir, registered, &tables);
+        let expected = tables
+            .local_types
+            .get(&local)
+            .cloned()
+            .expect("the probe just declared this local");
         let error = interpreter
-            .check_local_value(
-                local,
+            .check_value_for_ty(
+                &expected,
                 &Value::Vec(Vec::new()),
                 probe_span,
                 RepBoundary::LetBinding,
@@ -9835,6 +9956,14 @@ mod tests {
     }
 
     fn execute(source: &str) -> Result<Execution, RuntimeError> {
+        execute_with(source, None)
+    }
+
+    /// `execute`, with one producer mutation armed for this run only.
+    fn execute_with(
+        source: &str,
+        mutation: Option<ProducerMutation>,
+    ) -> Result<Execution, RuntimeError> {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, parse_diags) = parse(&file, ParseMode::Program);
         assert!(parse_diags.is_empty(), "parse diagnostics: {parse_diags:?}");
@@ -9855,7 +9984,170 @@ mod tests {
         let registered = hir
             .source_named(&file.name)
             .expect("the parse registered this file");
-        run(&hir, registered, &checked.tables)
+        run_with_mutation(&hir, registered, &checked.tables, mutation)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // DEV-121 CLASS EVIDENCE — four producer mutations, four forcing boundaries
+    // ---------------------------------------------------------------------------------------
+    //
+    // Exit criterion 5 asks for a CLASS-level statement, not one regression case. Twelve wired
+    // boundaries are not that statement on their own: a boundary that never fires is
+    // indistinguishable from a boundary that is not running, and Packet 6 in particular found no
+    // defect while firing on every expression the interpreter evaluates.
+    //
+    // Each test below follows the same three-step shape, which is what makes it evidence rather
+    // than decoration:
+    //
+    //   1. the witness program runs CLEAN unmutated — a "detection" on an already-broken program
+    //      proves nothing;
+    //   2. one PRODUCER is mutated (never `check_value_for_ty`, which would only show the
+    //      predicate detects an artificial mismatch);
+    //   3. the real funnel refuses it, classified `InternalInvariant`, NAMING the intended
+    //      boundary — so a mutation caught by the wrong wire is a failure, not a pass.
+    //
+    // The four classes and their forcing sites are the owner's, recorded 2026-08-08:
+    //
+    //   owned/view          -> ExpressionResult
+    //   reference           -> Receiver
+    //   function value      -> ExpressionResult
+    //   aggregate/container -> AggregateField
+
+    /// Runs `source` twice: once clean, once with `mutation` armed. Returns the mutated run's
+    /// error after asserting the clean run succeeded.
+    fn mutation_must_be_caught(
+        source: &str,
+        mutation: ProducerMutation,
+        boundary: RepBoundary,
+    ) -> RuntimeError {
+        // Step 1 — the witness must genuinely pass first.
+        execute(source).unwrap_or_else(|error| {
+            panic!("witness must run clean before it is mutated: {error:?}")
+        });
+
+        // Step 2 — arm one producer mutation, on THIS execution only. Nothing global is touched,
+        // so a test running in parallel beside this one is unaffected.
+        let error = execute_with(source, Some(mutation))
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{mutation:?} produced a mis-represented value and NOTHING \
+                                       refused it — the boundary is inert"
+                )
+            });
+
+        // Step 3 — refused as a compiler defect, at the intended wire.
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "a representation defect is a compiler defect, never a language trap: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(boundary.as_str()),
+            "{mutation:?} must be caught at {} — a mutation caught by a different wire is not \
+             evidence for this class. Got: {}",
+            boundary.as_str(),
+            error.message
+        );
+        error
+    }
+
+    /// **Class 1 — owned/view.** The original DEV-121 pairing: a producer of `&str`/`&[T]` emits
+    /// OWNED storage instead of a view, so passing the value MOVES what it only borrows.
+    #[test]
+    fn class_1_an_owned_value_behind_a_view_type_is_refused() {
+        let error = mutation_must_be_caught(
+            "fn main() { let s = String::from(\"abc\"); let v = s.as_str(); println(v); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
+        );
+        assert!(
+            error.message.contains("String"),
+            "the diagnostic should name the representation actually found: {}",
+            error.message
+        );
+    }
+
+    /// Class 1, the sequence half — `Vec::as_slice` emitting an owned `Vec` where `&[T]` is
+    /// declared. Both halves of the class are exercised because the two have separate producers.
+    #[test]
+    fn class_1_an_owned_vec_behind_a_slice_type_is_refused() {
+        mutation_must_be_caught(
+            "fn main() { let v: Vec<Int32> = Vec::new(); let s = v.as_slice(); println(s.len()); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
+        );
+    }
+
+    /// **Class 2 — reference.** A `&self` receiver binds the pointee BY VALUE instead of a
+    /// `Value::Ref` into the caller's place. This is the destructor materialization defect
+    /// deliberately reintroduced, and it is why the receiver boundary had to pass for `Drop`
+    /// without a `Drop`-shaped exemption: an exemption there would have made this mutation
+    /// undetectable for every destructor.
+    ///
+    /// **The pointee must be NON-`Copy`, and the first witness got that wrong.** §6.4 licenses the
+    /// bare-value form for a `Copy` pointee — copying it cannot consume, invalidate or destroy the
+    /// referent, so the two representations are indistinguishable to any observation the oracle can
+    /// make. A `struct Holder { n: Int32 }` is `Copy`-eligible, so the mutation was not a violation
+    /// there and the relation was right to accept it. Only a non-`Copy` pointee makes the owned
+    /// form observably wrong, which is exactly what the class is about.
+    #[test]
+    fn class_2_an_owned_value_behind_a_reference_receiver_is_refused() {
+        mutation_must_be_caught(
+            "struct Holder { name: String } \
+             impl Holder { fn peek(&self) -> Int32 { 1 } } \
+             fn main() { let h = Holder { name: String::from(\"x\") }; println(h.peek()); }",
+            ProducerMutation::OwnedForReference,
+            RepBoundary::Receiver,
+        );
+    }
+
+    /// **Class 3 — function value.** A function item coerces to something that is not a function.
+    /// The declared type is `fn(Int32) -> Int32`; §6 permits exactly one representation for it.
+    #[test]
+    fn class_3_a_non_function_behind_a_function_type_is_refused() {
+        mutation_must_be_caught(
+            "fn identity(x: Int32) -> Int32 { x } \
+             fn main() { let f: fn(Int32) -> Int32 = identity; println(f(41)); }",
+            ProducerMutation::NonFunctionValue,
+            RepBoundary::ExpressionResult,
+        );
+    }
+
+    /// **Class 4 — aggregate.** A declared field receives a mis-represented value.
+    ///
+    /// The mutation is injected AFTER the producer-side boundary has already accepted the value,
+    /// which is the point: with `ExpressionResult` live it would otherwise catch nearly everything
+    /// upstream, and this class needs to show that the AGGREGATE wire independently works.
+    #[test]
+    fn class_4_a_mis_represented_aggregate_field_is_refused() {
+        mutation_must_be_caught(
+            "struct Pair { a: Int32, b: Int32 } \
+             fn main() { let p = Pair { a: 1, b: 2 }; println(p.a + p.b); }",
+            ProducerMutation::WrongAggregateField,
+            RepBoundary::AggregateField,
+        );
+    }
+
+    /// **The control on the controls.** The mutation must be OFF unless a test arms it — otherwise
+    /// the four tests above would be reporting on a permanently broken interpreter rather than on
+    /// an injected defect, and every other test in this suite would be failing too.
+    ///
+    /// Asserted through the real entry point rather than by reading a flag, because "the default
+    /// is off" is a claim about what `run` does, not about a field's initialiser.
+    #[test]
+    fn no_producer_mutation_is_armed_by_default() {
+        let source = "struct Pair { a: Int32, b: Int32 } \
+                      fn main() { let p = Pair { a: 1, b: 2 }; println(p.a + p.b); }";
+        assert_eq!(execute(source).expect("clean by default").output, "3\n");
+        assert_eq!(
+            execute_with(source, None)
+                .expect("explicitly unmutated")
+                .output,
+            "3\n",
+            "passing `None` must be identical to not arming at all"
+        );
     }
 
     #[test]
