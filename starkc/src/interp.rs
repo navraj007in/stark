@@ -561,6 +561,23 @@ enum InvocationEnv {
     Captured(FunctionValue),
 }
 
+/// **What happens to the frame when a body finishes.** A destructor differs from an ordinary call
+/// in two ways that were previously expressed by having a whole second executor: it hands back the
+/// receiver's FINAL value (a `Drop::drop(&mut self)` may legally mutate or replace fields, and the
+/// recursive field destruction must see that), and it does not run `cleanup_current_frame`, because
+/// it is already inside destruction.
+///
+/// Making the difference a parameter is what lets one executor serve both — it is not a new
+/// semantic rule, it is the existing difference named.
+#[derive(Clone, Copy)]
+enum BodyEpilogue {
+    /// Ordinary call: clean the frame's locals, return the body's value.
+    Call,
+    /// Destructor: return the receiver's final value; the enclosing destruction walk owns the
+    /// remaining locals.
+    Destructor { receiver_local: LocalId },
+}
+
 /// A callable selected together with the environment it must run under. Constructing one is the
 /// only way to reach [`Interpreter::execute_body`].
 struct ResolvedInvocation {
@@ -1738,6 +1755,20 @@ impl<'a> Interpreter<'a> {
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        self.invoke_with_epilogue(invocation, receiver, args, BodyEpilogue::Call, span)
+    }
+
+    /// The authority proper. [`Self::invoke_callable`] is the ordinary-call spelling; a destructor
+    /// differs only in its [`BodyEpilogue`], so it shares this entry rather than owning a second
+    /// executor.
+    fn invoke_with_epilogue(
+        &mut self,
+        invocation: ResolvedInvocation,
+        receiver: Option<Value>,
+        args: Vec<Value>,
+        epilogue: BodyEpilogue,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let ResolvedInvocation {
             callable,
             environment,
@@ -1745,7 +1776,7 @@ impl<'a> Interpreter<'a> {
         // Installed FIRST and live for the whole call, so every boundary below resolves
         // `Ty::Param` against the callee's own instantiation.
         let _env = self.install_invocation_env(&environment, span)?;
-        self.execute_body(callable, receiver, args, span)
+        self.execute_body(callable, receiver, args, epilogue, span)
     }
 
     /// Install an invocation's environment. Every variant is explicit: "this callable has no
@@ -1777,6 +1808,7 @@ impl<'a> Interpreter<'a> {
         callable: Callable,
         receiver: Option<Value>,
         args: Vec<Value>,
+        epilogue: BodyEpilogue,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         if args.len() != callable.params.len() {
@@ -1834,6 +1866,19 @@ impl<'a> Interpreter<'a> {
         // was derived from `error.span.source`, so it was a copy of something the error already
         // carried, and a copy is a thing that can disagree.
         let result = self.eval_block(callable.body);
+        if let BodyEpilogue::Destructor { receiver_local } = epilogue {
+            // The destructor's own locals belong to the enclosing destruction walk, so no
+            // `cleanup_current_frame` here — and the receiver comes back because `drop()` may have
+            // mutated or replaced fields that the recursive field destruction must then see.
+            let restored = self
+                .frame_mut()
+                .values
+                .get_mut(&receiver_local)
+                .and_then(Option::take);
+            self.frames.pop();
+            result?;
+            return Ok(restored.unwrap_or(Value::Unit));
+        }
         if result.is_err() {
             self.frames.pop();
             return result.map(|_| Value::Unit);
@@ -8139,36 +8184,37 @@ impl<'a> Interpreter<'a> {
                 ));
             }
             if let Some(callable) = self.find_drop(item) {
-                let mut frame = Frame::default();
-                // Move the real value into the destructor's `self` binding rather than a clone:
-                // `Drop::drop(&mut self)` may legally mutate or replace fields (e.g. via
-                // `replace(&mut self.field, ..)`), and those mutations must be visible to the
-                // recursive field destruction below. A cloned receiver would let the destructor
-                // observe and mutate a throwaway copy while `value` itself stayed pristine,
-                // causing the pre-destructor field state to be dropped a second time and any
-                // replacement value installed during `drop()` to never be dropped at all.
-                let receiver_local = callable.receiver.map(|(_, local)| local);
-                if let Some(local) = receiver_local {
-                    frame.insert(local, Some(value));
-                    value = Value::Unit;
-                }
-                self.frames.push(frame);
-                // DEV-069: the THIRD body-execution funnel (alongside `call_callable` and
-                // `call_user_method`) — a destructor body belongs to the file declaring its
-                // `Drop` impl, which need not be the file of the code going out of scope.
-                let result = self.eval_block(callable.body);
-                if let Some(local) = receiver_local {
-                    if let Some(restored) = self
-                        .frame_mut()
-                        .values
-                        .get_mut(&local)
-                        .and_then(Option::take)
-                    {
-                        value = restored;
-                    }
-                }
-                self.frames.pop();
-                result?;
+                // **Packet 1: the destructor body goes through the invocation authority.**
+                //
+                // This was the THIRD body-execution funnel — its own frame push, `eval_block` and
+                // pop, alongside `execute_body` and `call_user_method`. A destructor running with
+                // the wrong environment is the DEV-176 shape exactly, so it is the last funnel that
+                // should have had its own copy.
+                //
+                // **The environment is provably `Empty`, not assumed.** A generic `Drop` impl is
+                // refused immediately above (DEV-176/A3c-D), so a destructor body only ever runs
+                // for a non-generic impl, which has no parameters to bind.
+                //
+                // The receiver is MOVED in, not cloned: `Drop::drop(&mut self)` may mutate or
+                // replace fields, and the recursive field destruction below must see that. The
+                // `Destructor` epilogue hands it back.
+                let Some((_, receiver_local)) = callable.receiver else {
+                    return Err(RuntimeError::internal(
+                        "a `Drop::drop` implementation without a receiver reached destruction",
+                        self.hir.item(item).span,
+                    ));
+                };
+                let restored = self.invoke_with_epilogue(
+                    ResolvedInvocation {
+                        callable,
+                        environment: InvocationEnv::Empty,
+                    },
+                    Some(value),
+                    Vec::new(),
+                    BodyEpilogue::Destructor { receiver_local },
+                    self.hir.item(item).span,
+                )?;
+                value = restored;
             }
         }
         match &mut value {
