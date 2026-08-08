@@ -182,11 +182,31 @@ fn method_owners(modules: &BTreeMap<String, String>) -> BTreeMap<String, String>
                 }
                 continue;
             }
-            let Some(rest) = t
-                .strip_prefix("pub(crate) fn ")
-                .or_else(|| t.strip_prefix("pub fn "))
-                .or_else(|| t.strip_prefix("fn "))
-            else {
+            // Strip ANY visibility qualifier, not an enumerated few.
+            //
+            // The first version of this list recognised `pub(crate) fn`, `pub fn` and `fn` — and
+            // NOT `pub(super) fn`, which is the visibility essentially every method extracted by
+            // AS7 was given. The ownership map therefore saw 36 of 234 methods, roughly 15%, and
+            // reported the dependency graph green while five real violations existed, including
+            // the `traits -> convert` cycle Packet 7 stopped on and believed it had resolved.
+            //
+            // An enumerated prefix list is the wrong shape for this: it fails SILENTLY and in the
+            // direction that reports success. Parse the visibility instead — `pub`, `pub(crate)`,
+            // `pub(super)`, `pub(in ::some::path)` — and accept whatever follows.
+            let after_vis = if let Some(rest) = t.strip_prefix("pub") {
+                match rest.strip_prefix('(') {
+                    // `pub(...) fn` — skip to the closing paren of the restriction.
+                    Some(inner) => match inner.find(')') {
+                        Some(close) => inner[close + 1..].trim_start(),
+                        None => continue,
+                    },
+                    // bare `pub fn`
+                    None => rest.trim_start(),
+                }
+            } else {
+                t
+            };
+            let Some(rest) = after_vis.strip_prefix("fn ") else {
                 continue;
             };
             if let Some(name) = rest.split('(').next() {
