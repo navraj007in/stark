@@ -2,8 +2,8 @@
 
 **Status:** **IN EXECUTION — Sprints 1, 2 and 3 CLOSED. Campaign A PASS. Sprint 4 (AS6 → AS7 → AS8)
 in execution on `wp-arch-stability/sprint-4`.** Campaign B was **APPROVED by owner decision on
-2026-08-08** (§1). AS6 is in execution and has not closed: it must still satisfy its published exit
-criteria and Tier-2/CI qualification. AS7 may begin only after AS6 closes; AS8 is ordered after AS7.
+2026-08-08** (§1). **AS6 CLOSED 2026-08-08 on qualification PASS** — `AS6-EXIT-QUALIFICATION.md`.
+AS7 is the next packet; AS8 is ordered after AS7.
 **Date:** 2026-08-06, status reconciled 2026-08-08.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
@@ -112,6 +112,7 @@ pipeline.
 | remainder of Campaign A (AS3, AS4) | **CLOSED** — Campaign A exits **PASS**, CI-confirmed. The AS0 report discharged the decision this row was waiting on | discharged; the structured-concurrency gate below is satisfied |
 | AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |
 | Campaign B remainder (AS6–AS8) | **APPROVED for execution, 2026-08-08** — the whole of Campaign B as already designed, not AS6 alone. C8 is settled (CLOSED, CD-385), so AS8 is unblocked on that axis | before C10 release qualification |
+| AS6 | **CLOSED 2026-08-08 — qualification PASS.** All five exit criteria met on `6050efa`; CI green on three Tier-1 platforms, zero failing jobs. `STARKLANG/docs/compiler/audits/AS6-EXIT-QUALIFICATION.md` (CD-390). Four residue entries and three limits recorded, not hidden | discharged; **AS7 may open** |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
