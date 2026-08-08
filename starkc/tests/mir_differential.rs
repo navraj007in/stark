@@ -31,7 +31,7 @@ fn corpus_dir() -> PathBuf {
 
 struct Front {
     hir: starkc::hir::Hir,
-    file: Arc<SourceFile>,
+    file: starkc::source::RegisteredSource,
     tables: starkc::typecheck::TypeTables,
 }
 
@@ -41,7 +41,7 @@ fn front_end(name: &str, source: String) -> Front {
     assert!(pd.is_empty(), "{name}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -49,8 +49,8 @@ fn front_end(name: &str, source: String) -> Front {
         .collect();
     assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
     Front {
+        file: hir.source_named(&file.name).expect("registered"),
         hir,
-        file,
         tables: checked.tables,
     }
 }
@@ -235,8 +235,8 @@ fn differential(name: &str, source: String) {
             // oracle's span exactly (both derive from the same HIR spans); synthetic-origin
             // traps (e.g. for-loop desugar) compare their documented classification instead.
             assert!(
-                (source.file.0 as usize) < program.files.len(),
-                "{name}: MIR trap carries an invalid FileId"
+                program.sources.get(source.span.source).is_some(),
+                "{name}: MIR trap names a source absent from the program's registry"
             );
             match source.origin {
                 starkc::mir::Origin::UserCode => assert_eq!(
@@ -1280,7 +1280,7 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
     assert!(pd.is_empty(), "parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -1289,10 +1289,18 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
     assert!(errors.is_empty(), "typecheck: {errors:?}");
 
     // Oracle vs MIR.
-    let oracle =
-        interp::run_with_partial_output(&hir, file.clone(), &checked.tables).expect("oracle runs");
-    let program = lower_program(&hir, &checked.tables, file.clone())
-        .unwrap_or_else(|e| panic!("lowering failed: {} @ {:?}", e.what, e.span));
+    let oracle = interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .expect("oracle runs");
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("lowering failed: {} @ {:?}", e.what, e.span));
     // Module-qualified symbols + a second interned file.
     let symbols: Vec<&str> = program
         .bodies
@@ -1308,8 +1316,8 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
         "expected the module-qualified fn symbol, got {symbols:?}"
     );
     assert!(
-        program.files.len() >= 2,
-        "expected the helper file interned in the file table"
+        program.sources.len() >= 2,
+        "expected the helper file present in the program's source registry"
     );
     let verified = verify_program(&program).expect("multi-file program verifies");
     let exec = match run_program(verified) {

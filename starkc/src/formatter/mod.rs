@@ -22,18 +22,48 @@ use crate::options::LanguageOptions;
 use crate::parser::{parse_with_options_into, ParseMode};
 use crate::source::SourceFile;
 
+/// A parse that blocked formatting, with the sources its diagnostics resolve against.
+///
+/// AS1b-ii-d: the registry travels with the diagnostics. It used to be discarded with the failed
+/// parse, leaving the caller to render against the one file it happened to have — which is right
+/// only while a format is single-file, and silently wrong the moment a `mod` is followed.
+#[derive(Debug)]
+pub struct FormatFailure {
+    diagnostics: Vec<Diagnostic>,
+    sources: crate::source::SourceRegistry,
+}
+
+impl FormatFailure {
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn sources(&self) -> &crate::source::SourceRegistry {
+        &self.sources
+    }
+}
+
 /// Format `file`. Refuses to run (returning the blocking diagnostics
 /// instead of guessing) if `file` does not parse cleanly — an AST-based
 /// formatter has no text to fall back on for the parts it couldn't build a
 /// tree for.
-pub fn format_file(file: &SourceFile, options: LanguageOptions) -> Result<String, Vec<Diagnostic>> {
+pub fn format_file(file: &SourceFile, options: LanguageOptions) -> Result<String, FormatFailure> {
     let mut ast = Ast::default();
     let (root, diags) = parse_with_options_into(file, ParseMode::Program, options, &mut ast);
     if diags.iter().any(|d| d.severity == Severity::Error) {
-        return Err(diags);
+        return Err(FormatFailure {
+            diagnostics: diags,
+            sources: ast.sources,
+        });
     }
     ast.root = root;
-    let (_, comments, _) = tokenize_with_comments(file);
+    // AS1b-ii: identity comes from the AST the parse just filled, not from a second id threaded in
+    // beside the file. `parse_with_options_into` interned this exact source a few lines above.
+    let source = ast
+        .sources
+        .id_for_name(&file.name)
+        .expect("the parse registered this file");
+    let (_, comments, _) = tokenize_with_comments(file, source);
     Ok(printer::format(&ast, file, &comments))
 }
 

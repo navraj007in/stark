@@ -241,7 +241,7 @@ pub fn is_stored_ref_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagn
     // already slot-backed: `ValueSlot::dead()` needs no default, so it is excluded here and keeps
     // its existing treatment.
     let ty = env.local_ty(local)?;
-    if !emit_types::ty_carries_reference(&ty) || emit_types::is_slot_backed(&ty, env.types) {
+    if !emit_types::mentions_a_reference(&ty) || emit_types::is_slot_backed(&ty, env.types) {
         return Ok(false);
     }
     match env.body.locals[local as usize].kind {

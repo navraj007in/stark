@@ -1465,8 +1465,24 @@ impl RequestBuilder {
     }
 }
 
-impl HttpResponse {
-    pub fn json(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+/// JSON access on a response.
+///
+/// **This is a trait because `HttpResponse` belongs to `stark_http_core`, not to this package.**
+/// It was an inherent `impl HttpResponse`, which TRAIT-COHERENCE-001 permits only for a nominal
+/// type the current package defines. The compiler did not enforce that across packages until
+/// AS1b-iii, so the violation compiled for as long as it existed. A locally declared trait is what
+/// the rule is designed to allow: coherence is satisfied when THIS package owns either the trait or
+/// the head type, and here it owns the trait.
+///
+/// The methods and their behaviour are unchanged. Callers outside this package need the trait in
+/// scope (`use stark_http_client::JsonBody;`) to write `response.json()`.
+pub trait JsonBody {
+    fn json(&self) -> Result<stark_json::JsonValue, JsonBodyError>;
+    fn json_checked(&self) -> Result<stark_json::JsonValue, JsonBodyError>;
+}
+
+impl JsonBody for HttpResponse {
+    fn json(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
         /// The body parsed as JSON, whatever the server called it.
         ///
         /// The content type is NOT required here. Servers mislabel JSON often enough that refusing on
@@ -1488,7 +1504,7 @@ impl HttpResponse {
             Err(error) => Err(JsonBodyError::Invalid(error)),
         }
     }
-    pub fn json_checked(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
+    fn json_checked(&self) -> Result<stark_json::JsonValue, JsonBodyError> {
         /// `json`, but the server must have said `application/json`.
         ///
         /// For a caller who would rather fail than parse something an endpoint did not claim was JSON —

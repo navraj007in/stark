@@ -71,7 +71,7 @@ fn mutation_while_borrowed_is_refused(tag: &str, source: &str) {
         "{tag}: the source must RESOLVE — an unresolved name would make this test pass for the \
          wrong reason: {resolve_diags:?}"
     );
-    let checked = starkc::typecheck::analyze(&hir, file.clone());
+    let checked = starkc::typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

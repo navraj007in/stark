@@ -687,6 +687,12 @@ argument's `Display` implementation by ordinary trait resolution. For a call
    before the trap.
 9. There is no fallback debug or structural rendering for a type lacking
    `Display`; such a program is rejected by the checker (E0500).
+10. A slice is observed **through a reference**. For an element type `T`
+    satisfying the elementwise condition below, `&[T]` has the standard slice
+    `Display` implementation; a bare `[T]` is unsized, is not a value
+    (03-Type-System.md, "Unsized types"), and therefore does not itself satisfy
+    `Display`. `println(v[0..2])` is rejected; `println(&v[0..2])` is the
+    accepted spelling. A sized `[T; N]` is a value and needs no reference.
 
 An implementation MAY keep built-in fast paths for the primitive and standard
 `Display` types (integers, floats, `Bool`, `Char`, `String`, `str`, `Unit`,

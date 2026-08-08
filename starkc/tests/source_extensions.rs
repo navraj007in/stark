@@ -39,7 +39,7 @@ fn parse_project(path: &Path) -> Vec<starkc::diag::Diagnostic> {
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error)
     {
-        diagnostics.append(&mut typecheck::check(&hir, file));
+        diagnostics.append(&mut typecheck::check(&hir));
     }
     diagnostics
 }

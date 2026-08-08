@@ -1,5 +1,150 @@
 # STARK Compiler STATE
 
+## CD-391 — AS7 CLOSED, qualification PASS (2026-08-08)
+
+**`STARKLANG/docs/compiler/audits/AS7-EXIT-QUALIFICATION.md` is the record.**
+
+The type checker is split by semantic ownership. `typecheck.rs` was 14,432 lines; `typecheck/mod.rs`
+is now **596 production lines** — a facade carrying the module declarations, the four entry points
+and AS6's `TensorCheckCtx` impl. Ten modules, dependency graph documented and **executable**:
+
+```text
+types <- state <- infer <- traits <- convert <- bounds <- patterns/body <- items <- mod
+
+body 4,396 | traits 3,200 | infer 1,262 | types 1,153 | items 986
+convert 901 | state 896 | patterns 429 | bounds 116 | mod 596 production
+```
+
+```text
+1 no semantic behaviour or diagnostic structure changes  PASS  ZERO fixture changes, ten packets
+2 dependency direction documented and cycle-free         PASS  regenerated at the exact head
+3 internals not accidentally public                      PASS  API 31 -> 31; removed one that was
+4 default build/dependency surface unchanged             PASS  no manifest change at all
+5 file-size reduction reported as outcome                reported, never used as the criterion
+```
+
+CI green on the exact head: **CI 24/24 and C7.8 Native Capabilities 4/4 on both `977b7a3` and
+`4c4311a`, zero failing**, including `fmt, clippy, test` on windows-x64 — the platform no local
+evidence in this packet covered — and both C6.4 tier-1 qualification runs.
+
+**The graph was revised once, under the packet's stop condition.** `convert` and `traits` were
+genuinely strongly connected: converting `HashMap<K,V>` must prove `K: Hash + Eq`, and proving
+`Iterator<Item = Foo>` must convert the written `Item`. The owner ruling rejected a permitted cycle
+and added `bounds` as the missing orchestration layer. The pre-move dependency check found this
+**before** the split fossilised it, which is the argument for writing such a check first.
+
+**Ambient state.** All eight fields now enter and leave through named scoped operations that save
+and restore; two latent defects were fixed — `current_fn_ret` was cleared rather than restored, and
+`current_module` was never restored. Both were correct only under "item checking never nests", the
+invariant the splitting was most likely to break.
+
+**The finding AS8 inherits.** Four defects in AS7's own verification — `find` vs `rfind`,
+trait-impl methods conflated with inherent ones, "prose" references that were machine-checked, and
+`cargo check --lib` not compiling `#[cfg(test)]` code — plus one in the qualification's own
+measurement. One sentence covers them: *a check that does not cover the thing being claimed cannot
+support the claim.* The discipline that worked: *introduce the violation on purpose and watch the
+check fail.* AS8 is entirely an evidence packet and should adopt it as a standing requirement — a
+mutation suite that kills nothing looks identical to one that works until you try.
+
+**Recorded limits:** `pub(super)` is wide inside `typecheck` and narrowing it is later work;
+`body.rs` is 4,396 lines and a further split was not attempted because the approved decomposition
+names one `body`; 35 historical `.md` files still say `typecheck.rs` and are preserved as written.
+
+**Next:** AS8 may open. It is assurance against the frozen AS6/AS7 result. Sprint 4 then closes with
+its Tier-3 closeout, and Campaign B exits before C10. **Unresolved:** PR #11 is a draft carrying 121
+commits against `develop` purely to trigger CI; PR #10 (sprint-3) is the merge path for AS0-AS6.
+Sprint 4 cannot close without deciding how AS7 and sprint-4 actually land.
+
+## CD-390 — AS6 CLOSED, qualification PASS (2026-08-08)
+
+**`STARKLANG/docs/compiler/audits/AS6-EXIT-QUALIFICATION.md` is the record.**
+
+AS6 passes all five published exit criteria on head `6050efa`. CI fully green on all three Tier-1
+platforms — CI 24/24 and C7.8 Native Capabilities 4/4, zero failing jobs — plus 629 local tests,
+0 failed, and `cargo fmt --check` clean.
+
+```text
+1 Core-only sessions load no tensor-owned name or rule       PASS  two-directional, per surface
+2 no open-ended tensor spelling tables in central Core       PASS  + a forcing test that pins it
+3 tensor behaviour and ONNX verification unchanged           PASS  ZERO fixture changes
+4 no public extension/plugin/provider API introduced         PASS  zero pub items; compiler-enforced
+5 Part B artifact-provider work remains blocked              PASS  C9.3 evidence still absent
+```
+
+**What moved.** Three catalogues and six vocabulary tables left Core: the resolver's builtin
+catalogue, `hir::Builtin`'s 33 tensor variants, `TENSOR_OPS` and the rule types, the parser's 21
+spellings, the resolver's 15-name type table, and the checker's kind/device/value-range classifiers
+*with the diagnostic phrases that recite them*. The tensor semantic authority — 1,276 lines of
+dtype/shape/device/schema/broadcasting rules — sits behind a **fifteen-service context that does not
+contain `check_expr`**, so the extension may consume checked types but cannot cause Core expression
+checking. `TypeChecker`'s members are private to its module, so that boundary is compiler-enforced.
+
+**Recorded residue, four entries across three files**, held as a set-equality ledger rather than a
+skip-list: `ast::Primitive::name`'s two element-type spellings (a closed Core enum; sealing it is
+the `hir::Builtin` cut applied to `Primitive`, wider than AS6 scoped), `deploy/ir.rs`'s `DeployTy`
+Display, and `deploy/emit.rs`'s generated-Rust host type name.
+
+**The finding.** Criterion 2 is the only one of the five with **no behavioural signature**, and it
+failed twice after its surfaces had been declared clean — a spelling table returns one arm at a
+time and every test still passes. AS7's criterion 2 ("dependency direction documented and
+cycle-free") has the same shape; its executable check should exist **before** the modularisation
+starts.
+
+**Next:** AS7 may open. It requires exclusive tree ownership — a 14,000-line pass split cannot
+survive a parallel session in the same file — and takes its ambient-state conversions first, as
+separate commits, before the file splitting.
+
+## CD-389 — Campaign B approved, Sprint 4 in execution, AS6 open (2026-08-08)
+
+**Where compiler work actually stands. Read this before anything below it.**
+
+```text
+Campaign A          PASS — closed, CI-confirmed. Do not reopen.
+Campaign B          APPROVED for execution, 2026-08-08 (AS6-AS8 as designed)
+Current sprint      Sprint 4 — AS6, then AS7, then AS8
+Current packet      AS6, extension quarantine — IN EXECUTION, NOT CLOSED
+                    (superseded by CD-390: AS6 CLOSED; and CD-391: AS7 CLOSED)
+Active branch       wp-arch-stability/sprint-4
+Gate track          C0-C10: see the CD records below; C8 CLOSED (CD-385)
+```
+
+**AS6's position.** Six packets have landed. The tensor extension's *semantic authority* and its
+*surface vocabulary* are out of Core:
+
+```text
+architectural discovery        DONE   46ae2ec
+builtin/catalogue quarantine   DONE   fe80129
+runtime/lowering boundary      DONE   33cb0a7
+tensor type-system boundary    DONE   62ef6b0 (rules), 9147073 (authority, 15-service context)
+parser residual audit          DONE   5190d1b   CI green, 28/28 jobs
+exit-criterion cleanup         DONE   6050efa   model-decl split, vocabulary tables, forcing lint
+AS6 exit qualification         DONE   PASS — see CD-390 above
+```
+
+**AS6 is NOT closed and nothing downstream may say it is.** Closure requires the published exit
+criteria and Tier-2/CI qualification on the exact head. The owner approval of Campaign B ratifies
+the landed work as *execution*; it does not substitute for that evidence.
+
+**The finding this packet contributes.** Exit criterion 2 — "central Core modules do not contain
+open-ended tensor spelling tables or method catalogues" — is the only one of AS6's five with **no
+behavioural signature**. Criteria 1 and 3 are pinned in both directions by the session-isolation
+suite; criterion 2 is not pinned by anything that runs. It therefore decayed silently, and residue
+survived three packets that each reported their surface clean: `resolve.rs` kept a 15-name
+vocabulary table, and a census found the tensor type-constructor spellings in **three** places and
+the element-type spellings in **four**. `starkc/tests/as6_core_module_vocabulary.rs` is the
+structural check that now pins it — the deliverable the work package listed and no implementation
+packet had built.
+
+**Carry into AS7:** a structural criterion needs a structural check committed with the cut, not a
+procedure and not a reviewer's grep. AS7's criterion 2 ("dependency direction documented and
+cycle-free") has the same shape and should get its executable check before the modularisation
+starts.
+
+**Branch note.** Sprint 4's AS6 packets began on `wp-arch-stability/sprint-3` to preserve the active
+execution state after Campaign A closed; from `6050efa` execution continues on
+`wp-arch-stability/sprint-4`. History is retained, not rewritten. See
+`WP-ARCHITECTURE-STABILIZATION.md` §1.
+
 ## CD-385 — Gate C8 CLOSED, deliberately short on one requirement (2026-08-06)
 
 **Owner ruling. `STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` is the record.**

@@ -306,7 +306,7 @@ id = "TYP-001"
 chapter = "03-Type-System"
 description = "Primitive Scalar Types (signed/unsigned integers, floats, Bool, Char, Unit, str)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -314,7 +314,7 @@ id = "TYP-002"
 chapter = "03-Type-System"
 description = "Compound Types (array type [T; N] and tuple types)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -322,7 +322,7 @@ id = "TYP-003"
 chapter = "03-Type-System"
 description = "User-Defined Types (nominal structs and enums)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -330,7 +330,7 @@ id = "TYP-004"
 chapter = "03-Type-System"
 description = "Reference Types (borrowed references &T and mutable references &mut T)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -338,7 +338,7 @@ id = "TYP-005"
 chapter = "03-Type-System"
 description = "Generic Parameters (polymorphism on structs, enums, impls, traits, and functions)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -346,7 +346,7 @@ id = "TYP-006"
 chapter = "03-Type-System"
 description = "Trait Bounds (checking trait bound constraints on generic parameters)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -354,7 +354,7 @@ id = "TYP-007"
 chapter = "03-Type-System"
 description = "Type Inference (local variable type propagation and resolution)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -362,7 +362,7 @@ id = "TYP-008"
 chapter = "03-Type-System"
 description = "Coercions and Casts (explicit castings using as operator)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 
@@ -384,7 +384,7 @@ id = "SEM-002"
 chapter = "04-Semantic-Analysis"
 description = "Trait Resolution (method dispatch, bound conformance)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -392,7 +392,7 @@ id = "SEM-003"
 chapter = "04-Semantic-Analysis"
 description = "Constant Evaluation (array volumes, constant value folding)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -400,7 +400,7 @@ id = "SEM-004"
 chapter = "04-Semantic-Analysis"
 description = "Return Type Verification (definite function return check E0301)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -408,7 +408,7 @@ id = "SEM-005"
 chapter = "04-Semantic-Analysis"
 description = "Loop Control Checks (break/continue loop nesting check E0302)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -416,7 +416,7 @@ id = "SEM-006"
 chapter = "04-Semantic-Analysis"
 description = "Match arm exhaustiveness check (E0303)"
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs"]
 
 [[rule]]
@@ -428,7 +428,7 @@ description = "Coherence rules (orphan rules, overlapping implementation check)"
 # file with no starkpkg.json on disk, under which find_package_root always returned None,
 # leaving cross-package coherence genuinely unverified until now. See DEV-021 (verified correct).
 status = "implemented"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/conformance.rs", "starkc/tests/gate2_package.rs"]
 positive_tests = []
 negative_tests = ["starkc/tests/gate2_package.rs::test_cross_package_coherence_orphan_rule_with_real_packages"]
@@ -531,7 +531,7 @@ description = "Standard traits (Clone, Hash, Default, Display, Error, Iterator)"
 # WP-C1.3 rule-level audit of exhaustiveness (e.g. Error trait coverage, user-defined impls vs.
 # builtins) — see COMPILER-STATE.md DEV-013.
 status = "partial"
-source = "starkc/src/typecheck.rs"
+source = "starkc/src/typecheck/"
 tests = ["starkc/tests/gate4a_prelude_traits.rs"]
 positive_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_trait_bounds_clone_default_display", "starkc/tests/gate4a_prelude_traits.rs::test_replace", "starkc/tests/gate4a_prelude_traits.rs::test_take", "starkc/tests/gate4a_prelude_traits.rs::test_swap"]
 negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]

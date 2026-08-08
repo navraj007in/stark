@@ -3,8 +3,15 @@
 Gate C3 spike. Prepared 2026-07-19. Records the direct-backend candidate (Candidate B in
 `STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md`) measured against the same frozen
 workload as WP-C3.2, for a like-for-like comparison. **Disposable spike (charter §2.2), not a
-production backend.** Artifact: `starkc/tests/spike_cranelift.rs` — an isolated integration test,
-not wired into `stark build`. It does not select a backend — that is WP-C3.4 (CE5).
+production backend.** It does not select a backend — that is WP-C3.4 (CE5).
+
+> **This report is historical and its artifacts no longer exist.** WP-C3.4 selected
+> `SELECT-GENERATED` on 2026-07-19; per the dependency note below, that is the condition on which
+> `starkc/tests/spike_cranelift.rs` and the Cranelift dev-dependencies were removed. Both were
+> retired on 2026-08-06 under WP-ARCHITECTURE-STABILIZATION Sprint 1. **Nothing in this document is
+> runnable.** The measurements below are preserved as the Gate C3 evidence of record — they are not
+> reproducible from the current tree, and re-running them would mean restoring the spike from
+> history (`git log -- starkc/tests/spike_cranelift.rs`).
 
 ## What was built and run
 
@@ -162,6 +169,11 @@ surface. Licence: Apache-2.0 with LLVM exception (Bytecode Alliance). Pinned to 
 1.93 compatibility. These lines and `tests/spike_cranelift.rs` are removed when Gate C3 selects a
 backend (WP-C3.4); the spike is not production architecture (charter §2.2).
 
+**Discharged 2026-08-06.** Gate C3 selected generated Rust (`SELECT-GENERATED`, CE5, 2026-07-19),
+so the five dev-dependencies and the spike test were removed as this note directed. The MSRV-churn
+finding recorded above — Cranelift 0.133 requiring rustc ≥ 1.94, forcing the 0.110 pin — is part of
+why the pin was a standing maintenance cost, and it stands as evidence even though the pin is gone.
+
 ## Breadth run (2026-07-19)
 
 Coverage remains **3/17**. Extending the direct backend to the aggregate/generic breadth that the
@@ -176,11 +188,16 @@ breadth cost is mandatory MIR work anyway** (Gate C4 supplies monomorphization-r
 drop-elaborated, layout-bearing MIR), so the HIR-level comparison overstates the direct backend's
 long-run cost.
 
-## Reproduce
+## Reproduce — NOT RUNNABLE (historical)
+
+The spike test and its dependencies were removed on 2026-08-06 (see the notice at the top of this
+report). The command below is recorded as it stood on 2026-07-19 and **will fail on the current
+tree**; it is kept so the measurements above state how they were produced, not as an instruction.
 
 ```bash
+# HISTORICAL — requires restoring tests/spike_cranelift.rs and the Cranelift dev-dependencies
 cd starkc
-cargo test --test spike_cranelift -- --nocapture   # prints the frozen-corpus coverage + timings
+cargo test --test spike_cranelift -- --nocapture   # printed the frozen-corpus coverage + timings
 ```
 
-Skips (MANUAL) if `cc` is unavailable.
+Skipped (MANUAL) if `cc` was unavailable.

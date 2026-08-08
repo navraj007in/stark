@@ -19,7 +19,7 @@ fn main() {
         println!("RESOLVE-ERR: {}", rd[0].message);
         return;
     }
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(d) = checked
         .diagnostics
         .iter()
@@ -32,7 +32,11 @@ fn main() {
         );
         return;
     }
-    match interp::run_with_partial_output(&hir, file, &checked.tables) {
+    match interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    ) {
         Ok(exec) => println!("ORACLE-OK: {:?}", exec.output),
         Err((e, partial)) => println!("ORACLE-ERR: {:?} (partial {:?})", e.message, partial),
     }

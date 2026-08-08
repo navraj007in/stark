@@ -44,7 +44,7 @@ fn rejected_e0103(tag: &str, src: &str) {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<_> = checked
         .diagnostics
         .iter()
