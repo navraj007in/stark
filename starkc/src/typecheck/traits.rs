@@ -390,7 +390,7 @@ pub fn nominals_with_destructor(hir: &Hir) -> HashSet<ItemId> {
         else {
             continue;
         };
-        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Clone) {
+        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Drop) {
             continue;
         }
         if let hir::TypeKind::Path {
