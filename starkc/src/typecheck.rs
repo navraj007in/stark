@@ -194,6 +194,9 @@ pub struct TypeChecker<'a> {
     local_types: HashMap<LocalId, Ty>,
     local_mutability: HashMap<LocalId, bool>,
     struct_fields: HashMap<ItemId, HashMap<String, Ty>>,
+    /// AS3 Packet 5: the INSTANTIATED declared type of each field of an aggregate literal, keyed
+    /// by the literal expression. Publication only; consumed by the `AggregateField` boundary.
+    aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>>,
     enum_variants: HashMap<ItemId, Vec<VariantTy>>,
     fn_sigs: HashMap<ItemId, FnSigTy>,
     /// A3b: raw (pre-grounding) callable signatures, keyed by body.
@@ -1111,6 +1114,10 @@ pub struct TypeTables {
     /// third authority for a question the checker already answered, beside `normalize_projections`
     /// here and `ProgramMeta::assoc_projections` in MIR lowering.
     pub assoc_projections: HashMap<(ItemId, String), Ty>,
+    /// AS3 Packet 5: each aggregate literal's fields, by name, at their DECLARED type instantiated
+    /// for that literal. The `AggregateField` boundary's expected type — never the initialiser
+    /// expression's own type, which would make the check compare a value against its producer.
+    pub aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>>,
     /// WP-VALUE-REP-TOTAL A3b: every executable callable body's signature, keyed by its body.
     ///
     /// Covers all six classes `check_fn_def` sees — free functions, inherent methods, trait
@@ -1211,6 +1218,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         local_types: HashMap::new(),
         local_mutability: HashMap::new(),
         struct_fields: HashMap::new(),
+        aggregate_field_types: HashMap::new(),
         enum_variants: HashMap::new(),
         fn_sigs: HashMap::new(),
         callable_sigs: HashMap::new(),
@@ -1390,6 +1398,19 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         .iter()
         .map(|((nominal, name), ty)| ((*nominal, name.clone()), checker.ground(ty)))
         .collect();
+    let aggregate_field_types: HashMap<ExprId, HashMap<String, Ty>> = checker
+        .aggregate_field_types
+        .iter()
+        .map(|(expr, fields)| {
+            (
+                *expr,
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), checker.ground(ty)))
+                    .collect(),
+            )
+        })
+        .collect();
     let mut diagnostics = checker.diags;
     diagnostics.extend(crate::flow::check(hir, &expr_types));
     diagnostics.extend(crate::borrowck::check(hir, &expr_types, &local_types));
@@ -1399,6 +1420,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         local_mutability: checker.local_mutability,
         fn_types,
         assoc_projections,
+        aggregate_field_types,
         callable_types,
         callable_instantiations,
         callable_uses,
@@ -4418,6 +4440,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Record each field's DECLARED type, instantiated for this literal's type arguments.
+    ///
+    /// AS3 Packet 5. The `AggregateField` boundary needs the type the *nominal declares* for the
+    /// field, not the type of the expression that produced the value — the second would compare a
+    /// value against its own producer and assert nothing. `expected` is the nominal's parametric
+    /// field map and `map` is the substitution the literal's arguments determine, which is exactly
+    /// what `check_field_initializers` unifies against; publishing here rather than re-deriving
+    /// keeps the boundary reading the same answer the checker enforced.
+    ///
+    /// Shorthand initialisers (`W { v }`) are covered for free: the key is the FIELD NAME, so a
+    /// field with no initialiser expression still has a published type.
+    fn publish_aggregate_field_types(
+        &mut self,
+        expr_id: ExprId,
+        expected: &HashMap<String, Ty>,
+        map: &HashMap<String, Ty>,
+    ) {
+        let concrete = expected
+            .iter()
+            .map(|(name, ty)| (name.clone(), self.instantiate_ty(ty, map)))
+            .collect();
+        self.aggregate_field_types.insert(expr_id, concrete);
+    }
+
     fn trait_method_signature_matches(
         &self,
         trait_sig: &hir::FnSig,
@@ -6750,6 +6796,7 @@ impl<'a> TypeChecker<'a> {
                         .get(struct_id)
                         .cloned()
                         .unwrap_or_default();
+                    self.publish_aggregate_field_types(expr_id, &expected, &map);
                     self.check_field_initializers(
                         Some(*struct_id),
                         &expected,
@@ -6771,6 +6818,7 @@ impl<'a> TypeChecker<'a> {
                             _ => None,
                         });
                     if let Some(expected) = expected {
+                        self.publish_aggregate_field_types(expr_id, &expected, &map);
                         self.check_field_initializers(None, &expected, &map, fields, expr.span);
                         Ty::Enum(*enum_id, args)
                     } else {
@@ -8198,6 +8246,7 @@ impl<'a> TypeChecker<'a> {
         // call.
         let selected = self
             .operator_impl_member(&receiver_type, &trait_name, &member_name)
+            .map(|(owner, owner_member, body, _)| (owner, owner_member, body))
             .or_else(|| self.trait_default_member(trait_id, member));
         if let Some((owner, owner_member, body)) = selected {
             // The signature comes from whichever declaration owns the body — an impl member, or
@@ -11066,7 +11115,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn publish_display_static(&mut self, root: ExprId, ty: &Ty, path: DisplayPath, span: Span) {
-        let Some((impl_item, member, body)) = self.operator_impl_member(ty, "Display", "fmt")
+        let Some((impl_item, member, body, substitution)) =
+            self.operator_impl_member(ty, "Display", "fmt")
         else {
             return;
         };
@@ -11079,14 +11129,21 @@ impl<'a> TypeChecker<'a> {
                 declaration: CallableDeclId::ImplMember { impl_item, member },
                 body,
             },
-            environment: GenericEnvironment::Static(self.display_impl_bindings(impl_item, ty)),
+            environment: GenericEnvironment::Static(self.impl_dispatch_bindings(impl_item, ty)),
             // `Display::fmt(&self)` borrows; the renderer holds the value and lends it.
             receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
             receiver_binding: ReceiverBinding::Shared,
+            // §3.4: the INSTANTIATED signature, so `impl<T> Display for W<T>` publishes `&W<Int32>`
+            // rather than the declaration's `&W<T>`.
             signature: CallableSigTy {
-                receiver,
-                params,
-                ret,
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
             },
             provenance: DispatchProvenance::CoreTrait {
                 core: hir::CoreTrait::Display,
@@ -11146,7 +11203,7 @@ impl<'a> TypeChecker<'a> {
 
     /// The impl's generic parameters bound to the rendered type's arguments — the "instantiated
     /// environment" requirement the Iterator hardening established after publishing an empty one.
-    fn display_impl_bindings(&mut self, impl_item: ItemId, ty: &Ty) -> Vec<(GenericBinder, Ty)> {
+    fn impl_dispatch_bindings(&mut self, impl_item: ItemId, ty: &Ty) -> Vec<(GenericBinder, Ty)> {
         let hir::ItemKind::Impl {
             self_ty, generics, ..
         } = &self.hir.item(impl_item).kind
@@ -11286,7 +11343,7 @@ impl<'a> TypeChecker<'a> {
         if !matches!(operand, Ty::Struct(..) | Ty::Enum(..)) {
             return;
         }
-        let Some((impl_item, member, body)) =
+        let Some((impl_item, member, body, substitution)) =
             self.operator_impl_member(&operand, trait_name, method)
         else {
             return;
@@ -11299,20 +11356,35 @@ impl<'a> TypeChecker<'a> {
         else {
             return;
         };
+        // **DEV-201: an operator on a GENERIC impl published an empty environment.**
+        //
+        // `Static(Vec::new())` was written here unconditionally. For `impl Eq for Point` that is
+        // correct — there is nothing to bind. For `impl<T> Eq for W<T>` it is a body running with
+        // `T` unbound, which is AS3 criterion 2's exact prohibition. Nothing observed it until
+        // DEV-121's receiver boundary read `callable_types[body].receiver` and found
+        // `&W<Param(\"T\")>` with no `T` in scope.
+        let environment = self.impl_dispatch_bindings(impl_item, &operand);
         let use_ = CallableUse {
             selection: CalleeSelection::Static {
                 declaration: CallableDeclId::ImplMember { impl_item, member },
                 body,
             },
-            environment: GenericEnvironment::Static(Vec::new()),
+            environment: GenericEnvironment::Static(environment),
             // `Eq::eq(&self, &other)` and `Ord::cmp(&self, &other)` both borrow: the receiver binds
             // shared, and the call site takes a shared borrow of an owned operand — zero derefs.
             receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
             receiver_binding: ReceiverBinding::Shared,
+            // AS3 Boundary 2 §3.4: the publication records the INSTANTIATED signature, so a
+            // consumer reading it sees `&W<Int32>` rather than the declaration's `&W<T>`.
             signature: CallableSigTy {
-                receiver,
-                params,
-                ret,
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
             },
             provenance: DispatchProvenance::CoreTrait { core },
         };
@@ -11653,7 +11725,7 @@ impl<'a> TypeChecker<'a> {
         ty: &Ty,
         required: &str,
         method: &str,
-    ) -> Option<(ItemId, u32, BlockId)> {
+    ) -> Option<(ItemId, u32, BlockId, HashMap<String, Ty>)> {
         for (idx, item) in self.hir.items.iter().enumerate() {
             let impl_id = ItemId(idx as u32);
             let hir::ItemKind::Impl {
@@ -11668,20 +11740,21 @@ impl<'a> TypeChecker<'a> {
             if self.item_text(impl_id, trait_ref.path.span) != required {
                 continue;
             }
-            if self
-                .match_impl_type(
-                    &self.impl_self_ty_with_args(impl_id, *self_ty),
-                    ty,
-                    generics,
-                )
-                .is_none()
-            {
+            // **The substitution is RETURNED, not discarded.** It was computed here to decide
+            // whether the impl applies at all, and thrown away — so the operator publication had
+            // no way to say what `impl<T> Eq for W<T>` binds `T` to, and published an empty
+            // environment for a generic impl.
+            let Some(substitution) = self.match_impl_type(
+                &self.impl_self_ty_with_args(impl_id, *self_ty),
+                ty,
+                generics,
+            ) else {
                 continue;
-            }
+            };
             for (member, impl_item) in items.iter().enumerate() {
                 if let hir::ImplItem::Fn { def, .. } = impl_item {
                     if self.item_text(impl_id, def.sig.name) == method {
-                        return Some((impl_id, member as u32, def.body));
+                        return Some((impl_id, member as u32, def.body, substitution));
                     }
                 }
             }

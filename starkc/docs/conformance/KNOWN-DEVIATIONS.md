@@ -5938,3 +5938,111 @@ failed on Linux, with the three defects above (`projection_*`, the bound-method 
 `Parameter` was wired — the slice view). The defects are real and pre-existed the boundaries that
 found them; the reporting was not. The evidence line for a packet is the CI run for its commit, not
 the suites chosen to run locally.
+
+## DEV-121 — Packet 3: one funnel for every local binding
+
+`let`, a `match` arm's pattern bindings, and **both** `for` forms each did their own
+`frame_mut().insert(local, Some(value))`. Two of the four checked anything.
+
+`bind_typed_local(local, value, span, boundary)` is now the only way a value comes to rest in a
+local: `check_local_value` against `local_types[local]`, then the insert. Each caller names its own
+`RepBoundary`, because "a value entered a local" is not actionable and which of the four is.
+
+**The finding: the USER-iterator `for` form checked nothing at all.** Two spellings of one loop
+boundary — a built-in iterable and `Iterator::next` — and only the built-in one was covered. Same
+shape as everything else this campaign has surfaced: the check was a thing a site could remember to
+do, so the site that forgot was indistinguishable from a site with nothing to check.
+
+A `let` with no initialiser is handled explicitly rather than skipped by accident. Definite
+assignment (§4) guarantees no read precedes the write, so an empty slot is the correct state.
+
+**Packet 7 fell out here.** With all four binding sites on the funnel, the narrow
+`check_value_representation` — the `&[T]`/`&str`-only rule — had no callers left, and is deleted.
+Its classification test now injects against `check_local_value`, the total relation: same
+injection, same `InternalInvariant` assertion, on the rule that is actually load-bearing.
+
+## DEV-121 — Packet 4: one funnel for every write into existing storage
+
+`Assignment`, `FieldWrite` and `ElementWrite` are wired, all in `write_place`, which already had
+exactly one caller. **Which write it is follows from the place's last projection**, not from the
+caller: no projection is an assignment, a trailing `Field` is a field write, and a trailing `Index`
+or `MapIndex` is an element write — a map entry is an element exactly as an indexed slot is, the two
+differing in how the position is found rather than in what the write means.
+
+**The earlier "no local to key on" framing was wrong.** The inventory had assumed a field or an
+indexed slot could not be checked because neither has a local. Both are named by an EXPRESSION, and
+`expr_types[lhs]` is the checker's answer for the target whatever the projection depth. A missing
+entry is `internal`: the checker types every expression it accepts, so an absent one means the
+tables and the tree disagree.
+
+## DEV-201 — an operator on a GENERIC impl published an empty environment [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — dispatch installs the checker-selected generic environment.
+- **Defect:** the operator publication wrote `environment: GenericEnvironment::Static(Vec::new())`
+  unconditionally. For `impl Eq for Point` that is correct — there is nothing to bind. For
+  `impl<T> Eq for W<T>` it is a body running with `T` unbound.
+- **The information was already there and thrown away.** `operator_impl_member` calls
+  `match_impl_type` to decide whether the impl applies at all, and discarded the substitution it
+  produced. So the publication had no way to say what `T` binds to even though the function that
+  chose the impl had just computed it.
+- **Found by:** DEV-121's `Receiver` boundary, which read `callable_types[body].receiver` and got
+  `&W<Param("T")>` with no `T` in scope — reported as a MISSED TRAP by `mir_differential`
+  (`generic_impl_eq_dispatch_agrees`), because the oracle failed where MIR, which monomorphises,
+  succeeded.
+- **Repair:** `operator_impl_member` returns the substitution; the publication builds its
+  environment with `impl_dispatch_bindings` — the **existing** builder, previously named
+  `display_impl_bindings`, renamed because it was never Display-specific — and publishes the
+  **instantiated** signature per AS3 Boundary 2 §3.4, so a consumer reads `&W<Int32>` rather than
+  the declaration's `&W<T>`. `Display` gained the same signature instantiation in the same change;
+  it already had the environment right, which is why only the operator path failed.
+- **Not a second builder.** Adding `operator_impl_environment` beside `display_impl_bindings` was
+  the first attempt and was withdrawn: two constructions of one list is the shape AS4 spent its
+  packets removing.
+
+## DEV-121 — Packet 5: the last boundary, and all eleven are wired
+
+`AggregateField` is wired in `eval_struct_lit`, against
+`aggregate_field_types[lit][field]` — a new published table holding each field's **declared** type,
+instantiated for that literal, recorded by the checker at the same point it unifies the initialisers
+against it.
+
+**Why not `expr_types[init]`.** That is the type of the expression that produced the value, so
+comparing the value against it would assert nothing — the tautology the inventory's type-source rule
+exists to forbid. It also does not exist for a shorthand field: `W { v }` has no initialiser
+expression. Keying the published map by field NAME covers shorthand with the same lookup.
+
+Both aggregate forms are covered — struct literals and struct-like enum variants — because both go
+through the same `check_field_initializers` call the publication sits beside.
+
+**State of the inventory: 11 of 11 `RepBoundary` variants `Wired`.** The executable pin in
+`dev121_boundary_inventory.rs` asserts the exact set, so this cannot drift from the code. Remaining
+before DEV-121's class can close: `RepBoundary::ExpressionResult` (Packet 6, the twelfth variant and
+the producer-side funnel at `expect_value`), the four-class mutation evidence, and AS3 #2's
+requalification.
+
+## DEV-121 — Packet 6: the producer side, and the twelfth boundary
+
+The ruling's closure conditions name a boundary the enum had no word for: **inline values entering
+builtins and runtime operations**. A value handed to `call_builtin` or a `RuntimeFn` never binds to
+anything, so none of the eleven DESTINATION boundaries could see it. The inventory recorded it as a
+gap rather than folding it into `Parameter` — which would have claimed coverage it did not have —
+precisely so that closing it would be a visible change and not a redefinition.
+
+`RepBoundary::ExpressionResult` is that word, and `expect_value` enforces it against
+`expr_types[expr]`. `expect_value` is the right site for two independent reasons: it is the funnel
+every produced value passes through (the census pinned 28 callers against 6 direct `eval_expr`
+sites, none of which is a boundary), and it is the one producer path that still carries the
+`ExprId`, without which there is no checker-published type to read.
+
+**A propagation is deliberately NOT checked here.** `Flow::Propagate` parks its value and hands back
+a placeholder `Unit` that the caller discards; the parked value's type is the enclosing function's
+return type, and `RepBoundary::Propagation` reads it against that at the body boundary. Checking it
+against the expression that produced it would compare it to the wrong type.
+
+**Defence in depth, not a second authority.** The producer check and all eleven destination checks
+consume the same `check_value_for_ty`. What the producer adds is coverage of values that never reach
+a destination at all.
+
+**12 of 12 `RepBoundary` variants are `Wired`.** `Class::Unwired` is now unconstructed — that is the
+result, not dead code, and it is kept because a new boundary must be classifiable as unwired before
+it is wired.

@@ -22,20 +22,34 @@
 //!
 //! # Status at the time of writing
 //!
-//! Four boundaries are wired — `Return` (`9e5dc3b`), then `Receiver`, `Parameter` and
+//! **All twelve `RepBoundary` variants are wired.** — `Return` (`9e5dc3b`), then `Receiver`, `Parameter` and
 //! `Propagation` together (AS3 Packet 2). All four live in the invocation authority and all four
 //! read one lookup of `callable_types[body]`, so a body cannot be checked on the way out but
 //! unchecked on the way in. Wiring `Return` immediately exposed DEV-197 (bodies running with no
 //! generic environment); wiring `Receiver` exposed the destructor representation collision, which
-//! receiver materialization repaired rather than exempted. The remaining seven are `Unwired`, each
-//! with its site and type source identified so the work is bounded rather than exploratory.
+//! receiver materialization repaired rather than exempted. Packet 3 then added `LetBinding`,
+//! `MatchBinding` and `LoopBinding` through one `bind_typed_local` funnel — and found that the
+//! USER-iterator `for` form checked nothing at all, a second spelling of a boundary only one of
+//! whose spellings was covered. The remaining four are `Unwired`, each with its site and type
+//! source identified so the work is bounded rather than exploratory. Packet 4 then wired the three
+//! write boundaries through `write_place` — one path, and *which* write it is follows from the
+//! place's last projection rather than from the caller. Only `AggregateField` remains.
 //!
-//! **One boundary has no `RepBoundary` variant at all** — inline values entering builtins and
-//! runtime operations, which the ruling names explicitly. See
-//! `builtin_arguments_are_a_boundary_with_no_repboundary_variant`: the expected type is available
-//! (`expr_types[arg]`, via the `arg_exprs` `call_builtin` now receives), but the vocabulary to name
-//! the boundary is not. Recorded rather than folded into `Parameter`, which would claim coverage
-//! the inventory does not have.
+//! **The earlier "no local to key on" framing was wrong, and this is where it broke.** A field and
+//! an indexed slot both have a checker-published type, because both are named by an EXPRESSION:
+//! `expr_types[lhs]` answers for the target whatever the projection depth.
+//!
+//! Packet 5 closed the last one, `AggregateField`, on `aggregate_field_types[lit][field]` — the
+//! field's DECLARED type instantiated for that literal, published where the checker unified the
+//! initialisers against it. Deliberately not `expr_types[init]`: that is the type of the expression
+//! that produced the value, so it would assert nothing, and a shorthand field (`W { v }`) has no
+//! initialiser expression to read at all.
+//!
+//! **The boundary that had no `RepBoundary` variant is closed.** Inline values entering builtins and
+//! runtime operations — named explicitly by the ruling — are covered by
+//! `RepBoundary::ExpressionResult` at `expect_value`, the producer-side funnel. It was recorded as a
+//! gap rather than folded into `Parameter` precisely so that closing it would be a visible change
+//! rather than a redefinition.
 //!
 //! **No boundary is structurally impossible.** That is a finding, not an omission: the earlier
 //! framing assumed struct fields and indexed slots could not be reached because they have no local
@@ -51,6 +65,12 @@ enum Class {
     /// A boundary requiring the total relation, and it runs here today.
     Wired,
     /// A boundary requiring the total relation; the call is not there yet.
+    ///
+    /// **Currently unconstructed, and that is the result rather than dead code** — every variant of
+    /// `RepBoundary` is `Wired`. Kept because it is the vocabulary the next boundary needs: a new
+    /// variant must be classifiable as unwired before it is wired, and deleting this would force
+    /// whoever adds one to either wire it in the same commit or invent a word for "not yet".
+    #[allow(dead_code)]
     Unwired,
     /// Cannot carry a mis-represented value, with a written reason.
     #[allow(dead_code)]
@@ -93,39 +113,45 @@ fn classify(boundary: RepBoundary) -> Row {
             class: Class::Wired,
         },
         RepBoundary::LetBinding => Row {
-            site: "eval_stmt — hir::StmtKind::Let",
+            site: "bind_typed_local, from eval_stmt — hir::StmtKind::Let",
             expected_ty_from: "local_types[local]",
-            class: Class::Unwired,
+            class: Class::Wired,
         },
         RepBoundary::MatchBinding => Row {
-            site: "eval_expr — the match arm's `bindings` insert",
+            site: "bind_typed_local, from the match arm's pattern bindings",
             expected_ty_from: "local_types[local] for each bound local",
-            class: Class::Unwired,
+            class: Class::Wired,
         },
         RepBoundary::LoopBinding => Row {
-            site: "eval_expr — both `for` forms' loop-item insert",
+            site: "bind_typed_local, from BOTH `for` forms — built-in iterable and user iterator",
             expected_ty_from: "local_types[local]",
-            class: Class::Unwired,
+            class: Class::Wired,
         },
         RepBoundary::Assignment => Row {
             site: "write_place — the single place-write path, with an empty projection",
-            expected_ty_from: "local_types[place.local]",
-            class: Class::Unwired,
+            expected_ty_from: "expr_types[the Assign lhs] — the checker's type for the target",
+            class: Class::Wired,
         },
         RepBoundary::FieldWrite => Row {
             site: "write_place — projection ending in Projection::Field",
-            expected_ty_from: "the nominal's declared field type, instantiated",
-            class: Class::Unwired,
+            expected_ty_from: "expr_types[the Assign lhs] — the field expression's declared type",
+            class: Class::Wired,
         },
         RepBoundary::ElementWrite => Row {
-            site: "write_place — projection ending in Projection::Index",
-            expected_ty_from: "the container's element type from the base's expr_types",
-            class: Class::Unwired,
+            site: "write_place — projection ending in Projection::Index or ::MapIndex",
+            expected_ty_from: "expr_types[the Assign lhs] — the element expression's declared type",
+            class: Class::Wired,
+        },
+        RepBoundary::ExpressionResult => Row {
+            site: "expect_value — every expression result, before the consumer sees it",
+            expected_ty_from: "expr_types[expr] — the checker's type for that expression",
+            class: Class::Wired,
         },
         RepBoundary::AggregateField => Row {
-            site: "eval_struct_lit — the per-field `values.insert`",
-            expected_ty_from: "the nominal's declared field type, instantiated",
-            class: Class::Unwired,
+            site: "eval_struct_lit — before the per-field `values.insert`",
+            expected_ty_from: "aggregate_field_types[lit][field] — the nominal's declared field \
+                               type, instantiated for this literal",
+            class: Class::Wired,
         },
     }
 }
@@ -144,6 +170,7 @@ const ALL: &[RepBoundary] = &[
     RepBoundary::FieldWrite,
     RepBoundary::ElementWrite,
     RepBoundary::AggregateField,
+    RepBoundary::ExpressionResult,
 ];
 
 #[test]
@@ -183,8 +210,8 @@ fn every_boundary_has_a_site_and_a_checker_published_type_source() {
 fn the_inventory_list_and_the_classifier_agree() {
     assert_eq!(
         ALL.len(),
-        11,
-        "RepBoundary has 11 variants; update ALL and `classify` together"
+        12,
+        "RepBoundary has 12 variants; update ALL and `classify` together"
     );
     let mut seen: Vec<String> = ALL.iter().map(|b| format!("{b:?}")).collect();
     seen.sort();
@@ -213,8 +240,9 @@ fn the_inventory_list_and_the_classifier_agree() {
 /// boundaries when it finally does. Classified `NotABoundary`, with that reason, rather than left
 /// as an unexplained gap.
 ///
-/// A producer-side assertion at `expect_value` would not replace destination checks — both consume
-/// the same `check_value_for_ty`, so it adds defence, not a second authority.
+/// The producer-side assertion at `expect_value` (Packet 6) does not REPLACE the destination
+/// checks — both consume the same `check_value_for_ty`, so it adds defence, not a second
+/// authority. It is what covers the values that never reach a destination boundary at all.
 #[test]
 fn the_producer_side_funnel_is_expect_value() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/interp.rs"))
@@ -233,31 +261,40 @@ fn the_producer_side_funnel_is_expect_value() {
     );
 }
 
-/// **A boundary the ruling names that `RepBoundary` has no variant for.**
+/// **The boundary the ruling named that `RepBoundary` had no variant for — now closed.**
 ///
 /// The closure conditions list "inline values entering builtins/runtime operations". A value passed
-/// to `call_builtin` or a `RuntimeFn` never binds to a local, so no existing variant describes it:
-/// it is not a `Parameter` (that is a user callable's declared parameter, typed by
-/// `callable_types`), and folding it into one would make the inventory claim coverage it does not
-/// have.
+/// to `call_builtin` or a `RuntimeFn` never binds to a local, so none of the eleven DESTINATION
+/// boundaries could see it: it is not a `Parameter` (that is a user callable's declared parameter,
+/// typed by `callable_types`), and folding it into one would have claimed coverage the inventory
+/// did not have.
 ///
-/// The expected type IS available — `call_builtin` now receives `arg_exprs`, so `expr_types[arg]`
-/// gives the checker's answer for each argument. What is missing is a variant to name the boundary.
+/// `RepBoundary::ExpressionResult` names it, and `expect_value` — the funnel every such value
+/// passes through, and the one place that still has the `ExprId` — enforces it against
+/// `expr_types[expr]`. A builtin argument is an expression result, so it is covered at the producer
+/// rather than needing a `BuiltinArgument` variant whose expected type would have been the same
+/// table anyway.
 ///
-/// Recorded as a test rather than a comment so it is part of the exact set: closing DEV-121
-/// requires either adding `RepBoundary::BuiltinArgument` and wiring it, or establishing that
-/// builtins cannot receive a mis-represented value — and the second is a claim needing evidence,
-/// not an assumption.
+/// This test now asserts the closure rather than the gap: the variant exists, it is classified, and
+/// it is `Wired`.
 #[test]
-fn builtin_arguments_are_a_boundary_with_no_repboundary_variant() {
-    // Nothing to assert against the enum yet — the point is that the set is incomplete, and this
-    // test is where that fact lives until it is closed.
-    let named_by_a_variant = ALL.iter().any(|b| format!("{b:?}").contains("Builtin"));
+fn inline_values_entering_builtins_are_covered_by_the_producer_boundary() {
+    let row = classify(RepBoundary::ExpressionResult);
+    assert_eq!(
+        row.class,
+        Class::Wired,
+        "the producer-side boundary is what covers a value that never binds to a local"
+    );
     assert!(
-        !named_by_a_variant,
-        "a `Builtin`-shaped RepBoundary variant now exists: add it to `classify` with its site \
-         (`call_builtin`, via `arg_exprs`) and its type source (`expr_types[arg]`), and delete \
-         this test."
+        row.site.contains("expect_value"),
+        "the funnel is `expect_value`, because it is the one producer path carrying the ExprId; \
+         got {:?}",
+        row.site
+    );
+    assert!(
+        row.expected_ty_from.contains("expr_types"),
+        "the expected type must be the checker's answer for the expression; got {:?}",
+        row.expected_ty_from
     );
 }
 
@@ -273,7 +310,20 @@ fn dev121_wiring_progress_is_recorded_exactly() {
         .collect();
     assert_eq!(
         wired,
-        vec!["Parameter", "Receiver", "Return", "Propagation"],
+        vec![
+            "LetBinding",
+            "Parameter",
+            "Receiver",
+            "Return",
+            "Propagation",
+            "MatchBinding",
+            "LoopBinding",
+            "Assignment",
+            "FieldWrite",
+            "ElementWrite",
+            "AggregateField",
+            "ExpressionResult",
+        ],
         "DEV-121 closes when every boundary is Wired. Update this pin in the same change that \
          wires one, and update AS3 #3/#5 in CAMPAIGN-A-EXIT-REPORT.md when the list is complete."
     );

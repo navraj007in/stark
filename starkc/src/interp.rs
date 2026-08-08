@@ -631,6 +631,11 @@ pub enum RepBoundary {
     FieldWrite,
     ElementWrite,
     AggregateField,
+    /// **The producer side.** Every other variant names a place a value comes to REST; this one
+    /// names the moment a value is produced by an expression and handed to whatever consumes it.
+    /// It is what covers inline values that never bind to a local — a builtin's argument, an
+    /// operand of a runtime operation — which the eleven destination boundaries cannot see.
+    ExpressionResult,
 }
 
 impl RepBoundary {
@@ -649,6 +654,7 @@ impl RepBoundary {
             RepBoundary::FieldWrite => "a field write",
             RepBoundary::ElementWrite => "an element write",
             RepBoundary::AggregateField => "an aggregate field",
+            RepBoundary::ExpressionResult => "an expression result",
         }
     }
 }
@@ -2199,10 +2205,17 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
-                if let Some(value) = value.as_ref() {
-                    self.check_value_representation(*local, value, stmt.span)?;
+                // A `let` with no initialiser binds nothing yet — definite assignment (§4) is
+                // what guarantees the read cannot precede the write, so there is no value to check
+                // and an empty slot is the correct state, not an unchecked one.
+                match value {
+                    Some(value) => {
+                        self.bind_typed_local(*local, value, stmt.span, RepBoundary::LetBinding)?
+                    }
+                    None => {
+                        self.frame_mut().insert(*local, None);
+                    }
                 }
-                self.frame_mut().insert(*local, value);
                 Ok(Flow::Value(Value::Unit))
             }
             hir::StmtKind::Return(expr) => {
@@ -2273,7 +2286,6 @@ impl<'a> Interpreter<'a> {
     /// local the interpreter creates, and inventing a type to check against would be worse than
     /// checking nothing. A6's producer inventory is what closes that gap, by finding the producers
     /// rather than by guessing at the consumers.
-    #[allow(dead_code)]
     fn check_local_value(
         &self,
         local: LocalId,
@@ -2285,6 +2297,44 @@ impl<'a> Interpreter<'a> {
             return Ok(());
         };
         self.check_value_for_ty(&ty.clone(), value, span, boundary)
+    }
+
+    /// **The one way a value comes to rest in a local.** AS3 Packet 3.
+    ///
+    /// `let`, a `match` arm's pattern bindings, and both `for` forms each did their own
+    /// `frame_mut().insert(local, Some(value))`, and only two of the four checked anything. That is
+    /// how DEV-121 survived: the check was a thing a site could remember to do, so the sites that
+    /// forgot were indistinguishable from the sites with nothing to check.
+    ///
+    /// Every caller names its own [`RepBoundary`], because "a value entered a local" is not
+    /// actionable — which of the four is. The expected type is `local_types[local]`, the checker's
+    /// answer for that binding, never anything reconstructed from the value.
+    fn bind_typed_local(
+        &mut self,
+        local: LocalId,
+        value: Value,
+        span: Span,
+        boundary: RepBoundary,
+    ) -> Result<(), RuntimeError> {
+        self.check_local_value(local, &value, span, boundary)?;
+        self.frame_mut().insert(local, Some(value));
+        Ok(())
+    }
+
+    /// [`check_value_for_ty`] against an expression's published type.
+    ///
+    /// A missing entry is `internal`: the checker types every expression it accepts, so an absent
+    /// one means the tables and the tree disagree.
+    fn check_expr_value(&self, expr: ExprId, value: &Value) -> Result<(), RuntimeError> {
+        let span = self.hir.expr(expr).span;
+        let declared = self.tables.expr_types.get(&expr).cloned().ok_or_else(|| {
+            RuntimeError::internal(
+                "no published type for an evaluated expression — the checker types every \
+                 expression it accepts, so this is a table/tree disagreement",
+                span,
+            )
+        })?;
+        self.check_value_for_ty(&declared, value, span, RepBoundary::ExpressionResult)
     }
 
     /// The relation of WP-VALUE-REP-TOTAL §6, as executable code.
@@ -2528,87 +2578,6 @@ impl<'a> Interpreter<'a> {
     /// representation. Answered by the CHECKER's predicate, never by a second one here.
     fn pointee_is_copy(&self, ty: &Ty) -> bool {
         crate::typecheck::is_copy_type_with(ty, &self.copy_items)
-    }
-
-    /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
-    ///
-    /// WP-COPY-CANON's law is that Copy/move behaviour AND the representation carrying it follow
-    /// from the normalized semantic type, never from the expression that produced the value.
-    /// DEV-121 broke the second half: `let view = owner.bytes();` had `view: &[UInt8]` in the type
-    /// tables and an OWNED `Value::Vec` at runtime. Passing it therefore moved it, and the caller's
-    /// binding was emptied — on a program the checker and MIR both accepted, with correct MIR.
-    ///
-    /// # Why this is narrow on purpose
-    ///
-    /// It asserts ONE direction of one pairing: a binding whose declared type is a reference to an
-    /// unsized sequence (`&[T]`, `&str`) must not hold an owned `Vec`/`String`. It deliberately
-    /// does not assert a total type→representation mapping, because the oracle's value model is not
-    /// one: `&Int32` may legitimately arrive as the scalar itself through auto-deref, and a rule
-    /// claiming otherwise would fire on correct programs and have to be weakened — which is how an
-    /// invariant becomes advisory. A narrow rule that always means something beats a broad one with
-    /// exemptions. Widening is a separate change with its own evidence.
-    ///
-    /// The type tables are already on the interpreter (`self.tables`); the claim in DEV-121 that
-    /// the oracle is "untyped at runtime" was only half right. It has the types at every `let`, and
-    /// simply never consulted them.
-    ///
-    /// # Coverage (AS3 item 6, 2026-08-07)
-    ///
-    /// It checked **`let` bindings only**, and DEV-121 UPDATE 2 named that as the reason both known
-    /// instances — `String::bytes()` (CD-305) and `String::split()`'s item (CD-340) — were found by
-    /// user-facing programs rather than by tooling: *both were reachable through a `for`-loop item,
-    /// and a loop binding is not a `let`.* It now runs at all three places a local receives a value:
-    ///
-    /// | Site | Covered |
-    /// | --- | --- |
-    /// | `let` binding | since CD-3xx |
-    /// | `for`-loop item binding | **now** — the shape both known instances took |
-    /// | call parameter and method receiver | **now** |
-    ///
-    /// Still uncovered, stated rather than implied: struct fields, indexed slots, and values that
-    /// never bind to a local at all (an argument consumed inline by a builtin). Those need a
-    /// place-oriented check, not a binding-oriented one, and that is a different change.
-    ///
-    /// A firing is a COMPILER defect, not a user error, so the message says so and names the DEV.
-    fn check_value_representation(
-        &self,
-        local: LocalId,
-        value: &Value,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        let Some(ty) = self.tables.local_types.get(&local) else {
-            return Ok(());
-        };
-        let Ty::Ref { inner, .. } = ty else {
-            return Ok(());
-        };
-        let expects_view = matches!(
-            inner.as_ref(),
-            Ty::Slice(_) | Ty::Primitive(crate::ast::Primitive::Str)
-        );
-        if !expects_view {
-            return Ok(());
-        }
-        let owned = match value {
-            Value::Vec(_) => "an owned Vec",
-            Value::String(_) => "an owned String",
-            _ => return Ok(()),
-        };
-        // **A0: this is a compiler defect, not a language trap.** The prose said "internal" from the
-        // day it was written while `RuntimeError::new` classified it `FailureClass::Trap` — so a
-        // representation failure in the ORACLE was presentable to the differential harness as a
-        // legitimate program outcome. That is the worst possible classification for it: the HIR
-        // interpreter is what MIR and native are compared against, so a trap-classified oracle bug
-        // invites the comparator to pressure the other engines into reproducing it. `internal`
-        // makes the harness fail loudly instead.
-        Err(RuntimeError::internal(
-            format!(
-                "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
-                 represented by a view, never by owned storage, or passing it consumes what it \
-                 only borrows (DEV-121)"
-            ),
-            span,
-        ))
     }
 
     /// WP-FMT-001: pack a source-level format specification into the runtime's spec word.
@@ -2918,7 +2887,7 @@ impl<'a> Interpreter<'a> {
                         expr.span,
                     )?
                 };
-                self.write_place(&place, value, expr.span)?;
+                self.write_place(&place, value, *lhs, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
             }
             hir::ExprKind::Range { lo, hi, inclusive } => {
@@ -2998,7 +2967,7 @@ impl<'a> Interpreter<'a> {
                 Ok(Flow::Value(Value::Array(vec![Some(value); count])))
             }
             hir::ExprKind::StructLit { res, fields, .. } => {
-                self.eval_struct_lit(*res, fields, expr.span)
+                self.eval_struct_lit(expr_id, *res, fields, expr.span)
             }
             hir::ExprKind::If {
                 cond,
@@ -3040,7 +3009,12 @@ impl<'a> Interpreter<'a> {
                     let mut bindings = Vec::new();
                     if self.match_source(arm.pat, &source, &mut bindings)? {
                         for (local, value) in &bindings {
-                            self.frame_mut().insert(*local, Some(value.clone()));
+                            self.bind_typed_local(
+                                *local,
+                                value.clone(),
+                                expr.span,
+                                RepBoundary::MatchBinding,
+                            )?;
                         }
                         let flow = self.eval_expr(arm.body)?;
                         let locals: Vec<_> = bindings.iter().map(|(local, _)| *local).collect();
@@ -3110,8 +3084,12 @@ impl<'a> Interpreter<'a> {
                         while let Some(value) = remaining.next() {
                             // INV-VALUE-REP-001 at the LOOP ITEM — the blind spot DEV-121
                             // UPDATE 2 named. Both known instances of the class arrived here.
-                            self.check_value_representation(*local, &value, expr.span)?;
-                            self.frame_mut().insert(*local, Some(value));
+                            self.bind_typed_local(
+                                *local,
+                                value,
+                                expr.span,
+                                RepBoundary::LoopBinding,
+                            )?;
                             let flow = self.eval_block(*body)?;
                             self.cleanup_locals(&[*local])?;
                             match flow {
@@ -3138,7 +3116,16 @@ impl<'a> Interpreter<'a> {
                         while let Some(value) =
                             self.next_for_iterator(&iterator_place, expr_id, expr.span)?
                         {
-                            self.frame_mut().insert(*local, Some(value));
+                            // The USER-iterator form checked nothing at all — the same loop
+                            // boundary as the branch above, reached through `Iterator::next`
+                            // instead of a built-in iterable. Two spellings of one binding, and
+                            // only one of them was covered.
+                            self.bind_typed_local(
+                                *local,
+                                value,
+                                expr.span,
+                                RepBoundary::LoopBinding,
+                            )?;
                             let flow = self.eval_block(*body)?;
                             self.cleanup_locals(&[*local])?;
                             match flow {
@@ -3169,7 +3156,24 @@ impl<'a> Interpreter<'a> {
 
     fn expect_value(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
         match self.eval_expr(expr)? {
-            Flow::Value(value) => Ok(value),
+            // **The PRODUCER-side boundary.** AS3 Packet 6.
+            //
+            // The eleven destination boundaries see values that come to rest. A value handed
+            // straight to a builtin or a runtime operation never binds to anything, so none of them
+            // sees it — the gap the inventory recorded and could not name, because `RepBoundary`
+            // had no variant for it. `expect_value` is the funnel every such value passes through,
+            // and it carries the `ExprId`, so `expr_types[expr]` is the checker's own answer.
+            //
+            // Defence in depth, not a second authority: this and every destination check consume
+            // the same `check_value_for_ty`.
+            Flow::Value(value) => {
+                self.check_expr_value(expr, &value)?;
+                Ok(value)
+            }
+            // NOT checked against this expression: the parked value is a PROPAGATION, whose type is
+            // the enclosing function's return type, and the `Unit` handed back is a placeholder the
+            // caller discards. `RepBoundary::Propagation` reads it against the right type at the
+            // body boundary.
             Flow::Propagate(value) => {
                 self.pending_propagation = Some(value);
                 Ok(Value::Unit)
@@ -6698,12 +6702,32 @@ impl<'a> Interpreter<'a> {
         Ok(Ok(completed.into_iter().map(Some).collect()))
     }
 
+    /// **The `AggregateField` boundary lives here.** AS3 Packet 5.
+    ///
+    /// The expected type is the field's DECLARED type, instantiated for this literal —
+    /// `aggregate_field_types[lit]`, published by the checker at the same point it unified the
+    /// initialisers against it. Deliberately not `expr_types[init]`: that is the type of the
+    /// expression that produced the value, so comparing the value against it would assert nothing,
+    /// and it does not exist at all for a shorthand field (`W { v }`), which has no initialiser
+    /// expression. The field NAME is the key, so shorthand is covered by the same lookup.
     fn eval_struct_lit(
         &mut self,
+        lit: ExprId,
         res: Res,
         fields: &[hir::FieldInit],
         span: Span,
     ) -> Result<Flow, RuntimeError> {
+        let declared = self.tables.aggregate_field_types.get(&lit).ok_or_else(|| {
+            RuntimeError::internal(
+                "no published field types for an aggregate literal — the checker publishes them \
+                 wherever it checks the initialisers, so this is a publication defect",
+                span,
+            )
+        })?;
+        let declared: BTreeMap<String, Ty> = declared
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect();
         let mut values = BTreeMap::new();
         let mut completed_order: Vec<String> = Vec::new();
         for field in fields {
@@ -6734,6 +6758,21 @@ impl<'a> Interpreter<'a> {
                     field.name,
                 )?
             };
+            // An initialiser for a field the nominal does not declare is a checker error the
+            // program cannot reach execution with, so an absent entry here is a table/tree
+            // disagreement rather than a field to skip.
+            let field_ty = declared.get(&name).ok_or_else(|| {
+                RuntimeError::internal(
+                    format!("aggregate literal initialises undeclared field '{name}'"),
+                    field.name,
+                )
+            })?;
+            self.check_value_for_ty(
+                &field_ty.clone(),
+                &value,
+                field.name,
+                RepBoundary::AggregateField,
+            )?;
             completed_order.push(name.clone());
             values.insert(name, Some(value));
         }
@@ -8266,7 +8305,48 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| RuntimeError::new("use of moved value", span))
     }
 
-    fn write_place(&mut self, place: &Place, value: Value, span: Span) -> Result<(), RuntimeError> {
+    /// **The one path by which a value is written into existing storage.** AS3 Packet 4.
+    ///
+    /// Three of the eleven boundaries live here — `Assignment`, `FieldWrite` and `ElementWrite` —
+    /// and which one this write *is* follows from the place's last projection, not from the caller.
+    /// The earlier framing assumed a field or an element could not be checked because neither has a
+    /// local to key on; both do have a checker-published type, because both are named by an
+    /// EXPRESSION, and `expr_types[target]` is the checker's answer for it whatever the projection
+    /// depth.
+    ///
+    /// A missing `expr_types` entry is an `internal` invariant failure. The checker types every
+    /// expression it accepts, and the only caller is a real `Assign` left-hand side — so an absent
+    /// entry means the tables and the tree disagree, which is not a case to skip validation for.
+    fn write_place(
+        &mut self,
+        place: &Place,
+        value: Value,
+        target: ExprId,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        let boundary = match place.projections.last() {
+            None => RepBoundary::Assignment,
+            Some(Projection::Field(_)) => RepBoundary::FieldWrite,
+            // A map entry is an element of a container exactly as an indexed slot is; the two
+            // differ in how the position is found, not in what the write means.
+            Some(Projection::Index(_) | Projection::MapIndex(_)) => RepBoundary::ElementWrite,
+        };
+        let declared = self
+            .tables
+            .expr_types
+            .get(&target)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                    "no published type for the target of {} — the checker types every expression \
+                     it accepts, so this is a table/tree disagreement, not a write to exempt",
+                    boundary.as_str()
+                ),
+                    span,
+                )
+            })?;
+        self.check_value_for_ty(&declared, &value, span, boundary)?;
         let previous = self.place_slot_mut(place, span)?.replace(value);
         if let Some(previous) = previous {
             self.drop_value(previous)?;
@@ -9699,7 +9779,12 @@ mod tests {
         let probe_span = registered.synthetic_span();
         let interpreter = Interpreter::new(&hir, registered, &tables);
         let error = interpreter
-            .check_value_representation(local, &Value::Vec(Vec::new()), probe_span)
+            .check_local_value(
+                local,
+                &Value::Vec(Vec::new()),
+                probe_span,
+                RepBoundary::LetBinding,
+            )
             .expect_err("an owned Vec behind a `&[UInt8]` binding is a representation mismatch");
 
         assert_eq!(
