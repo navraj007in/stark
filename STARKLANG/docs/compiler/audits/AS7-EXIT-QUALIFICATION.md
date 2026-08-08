@@ -1,6 +1,6 @@
 # AS7 exit qualification — pass modularisation and compiler API boundary
 
-**Verdict: PASS on the five exit criteria, conditional on exact-head CI.**
+**Verdict: PASS on all five exit criteria. Unconditional — exact-head CI green.**
 
 **Head:** `977b7a3`. **Date:** 2026-08-08. **Branch:** `wp-arch-stability/as7-modularization`,
 worktree `/Users/nexper/Documents/GitHub/stark-as7`, forked from `3f18e49`.
@@ -191,16 +191,23 @@ local, head 977b7a3    665 tests across 19 targets, 0 failed
                        cargo fmt --check CLEAN
                        conformance baseline verification CLEAN
                        as7_module_dependencies 4/4 at the exact head
-CI                     PENDING — see §8
+
+CI, head 977b7a3       CI 24/24 success, C7.8 Native Capabilities 4/4 success, ZERO failing
+CI, head 4c4311a       CI 24/24 success, C7.8 Native Capabilities 4/4 success, ZERO failing
+                       Includes `fmt, clippy, test` on linux-x64, macos-arm64 AND windows-x64 —
+                       the platform no local evidence in this packet ever covered — plus both
+                       C6.4 tier-1 qualification runs, C6.5 corpus replay and tier-1 agreement,
+                       spec fixture conformance, the pinned external sample suite, DEV-160 under
+                       Miri, and first-party package qualification on all three platforms.
 ```
 
 ## 8. Verdict
 
-**AS7 PASSES its five exit criteria on local evidence. Closure is conditional on exact-head CI**,
-which for this branch requires PR #11 (draft, CI-only, against `develop`) to complete on `977b7a3`.
+**AS7 PASSES all five exit criteria. Unconditional — CI is green on the exact head across all
+three Tier-1 platforms, 28 jobs across two workflows, zero failing.**
 
-No document may record `AS7 CLOSED` until those jobs report success. Propagation then follows the
-order AS6 established: `COMPILER-STATE.md` first, then `WP-ARCHITECTURE-STABILIZATION.md`, then the
-derived contributor documents.
+Propagation follows the order AS6 established: `COMPILER-STATE.md` first, then
+`WP-ARCHITECTURE-STABILIZATION.md`, then the derived contributor documents.
 
-AS8 may open once it does.
+**AS8 may open.** It is assurance written against the frozen AS6/AS7 result and cannot be batched
+with the work it challenges.

@@ -1,5 +1,60 @@
 # STARK Compiler STATE
 
+## CD-391 — AS7 CLOSED, qualification PASS (2026-08-08)
+
+**`STARKLANG/docs/compiler/audits/AS7-EXIT-QUALIFICATION.md` is the record.**
+
+The type checker is split by semantic ownership. `typecheck.rs` was 14,432 lines; `typecheck/mod.rs`
+is now **596 production lines** — a facade carrying the module declarations, the four entry points
+and AS6's `TensorCheckCtx` impl. Ten modules, dependency graph documented and **executable**:
+
+```text
+types <- state <- infer <- traits <- convert <- bounds <- patterns/body <- items <- mod
+
+body 4,396 | traits 3,200 | infer 1,262 | types 1,153 | items 986
+convert 901 | state 896 | patterns 429 | bounds 116 | mod 596 production
+```
+
+```text
+1 no semantic behaviour or diagnostic structure changes  PASS  ZERO fixture changes, ten packets
+2 dependency direction documented and cycle-free         PASS  regenerated at the exact head
+3 internals not accidentally public                      PASS  API 31 -> 31; removed one that was
+4 default build/dependency surface unchanged             PASS  no manifest change at all
+5 file-size reduction reported as outcome                reported, never used as the criterion
+```
+
+CI green on the exact head: **CI 24/24 and C7.8 Native Capabilities 4/4 on both `977b7a3` and
+`4c4311a`, zero failing**, including `fmt, clippy, test` on windows-x64 — the platform no local
+evidence in this packet covered — and both C6.4 tier-1 qualification runs.
+
+**The graph was revised once, under the packet's stop condition.** `convert` and `traits` were
+genuinely strongly connected: converting `HashMap<K,V>` must prove `K: Hash + Eq`, and proving
+`Iterator<Item = Foo>` must convert the written `Item`. The owner ruling rejected a permitted cycle
+and added `bounds` as the missing orchestration layer. The pre-move dependency check found this
+**before** the split fossilised it, which is the argument for writing such a check first.
+
+**Ambient state.** All eight fields now enter and leave through named scoped operations that save
+and restore; two latent defects were fixed — `current_fn_ret` was cleared rather than restored, and
+`current_module` was never restored. Both were correct only under "item checking never nests", the
+invariant the splitting was most likely to break.
+
+**The finding AS8 inherits.** Four defects in AS7's own verification — `find` vs `rfind`,
+trait-impl methods conflated with inherent ones, "prose" references that were machine-checked, and
+`cargo check --lib` not compiling `#[cfg(test)]` code — plus one in the qualification's own
+measurement. One sentence covers them: *a check that does not cover the thing being claimed cannot
+support the claim.* The discipline that worked: *introduce the violation on purpose and watch the
+check fail.* AS8 is entirely an evidence packet and should adopt it as a standing requirement — a
+mutation suite that kills nothing looks identical to one that works until you try.
+
+**Recorded limits:** `pub(super)` is wide inside `typecheck` and narrowing it is later work;
+`body.rs` is 4,396 lines and a further split was not attempted because the approved decomposition
+names one `body`; 35 historical `.md` files still say `typecheck.rs` and are preserved as written.
+
+**Next:** AS8 may open. It is assurance against the frozen AS6/AS7 result. Sprint 4 then closes with
+its Tier-3 closeout, and Campaign B exits before C10. **Unresolved:** PR #11 is a draft carrying 121
+commits against `develop` purely to trigger CI; PR #10 (sprint-3) is the merge path for AS0-AS6.
+Sprint 4 cannot close without deciding how AS7 and sprint-4 actually land.
+
 ## CD-390 — AS6 CLOSED, qualification PASS (2026-08-08)
 
 **`STARKLANG/docs/compiler/audits/AS6-EXIT-QUALIFICATION.md` is the record.**
@@ -48,7 +103,7 @@ Campaign A          PASS — closed, CI-confirmed. Do not reopen.
 Campaign B          APPROVED for execution, 2026-08-08 (AS6-AS8 as designed)
 Current sprint      Sprint 4 — AS6, then AS7, then AS8
 Current packet      AS6, extension quarantine — IN EXECUTION, NOT CLOSED
-                    (superseded by CD-390: AS6 CLOSED, qualification PASS)
+                    (superseded by CD-390: AS6 CLOSED; and CD-391: AS7 CLOSED)
 Active branch       wp-arch-stability/sprint-4
 Gate track          C0-C10: see the CD records below; C8 CLOSED (CD-385)
 ```

@@ -2,8 +2,9 @@
 
 **Status:** **IN EXECUTION — Sprints 1, 2 and 3 CLOSED. Campaign A PASS. Sprint 4 (AS6 → AS7 → AS8)
 in execution on `wp-arch-stability/sprint-4`.** Campaign B was **APPROVED by owner decision on
-2026-08-08** (§1). **AS6 CLOSED 2026-08-08 on qualification PASS** — `AS6-EXIT-QUALIFICATION.md`.
-AS7 is the next packet; AS8 is ordered after AS7.
+2026-08-08** (§1). **AS6 CLOSED 2026-08-08** (`AS6-EXIT-QUALIFICATION.md`) and **AS7 CLOSED 2026-08-08**
+(`AS7-EXIT-QUALIFICATION.md`). AS8 is the remaining Sprint 4 packet: assurance written against the
+frozen AS6/AS7 result, which it may not be batched with.
 **Date:** 2026-08-06, status reconciled 2026-08-08.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
@@ -112,6 +113,7 @@ pipeline.
 | remainder of Campaign A (AS3, AS4) | **CLOSED** — Campaign A exits **PASS**, CI-confirmed. The AS0 report discharged the decision this row was waiting on | discharged; the structured-concurrency gate below is satisfied |
 | AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |
 | Campaign B remainder (AS6–AS8) | **APPROVED for execution, 2026-08-08** — the whole of Campaign B as already designed, not AS6 alone. C8 is settled (CLOSED, CD-385), so AS8 is unblocked on that axis | before C10 release qualification |
+| AS7 | **CLOSED 2026-08-08 — qualification PASS.** All five exit criteria met on `977b7a3`; CI green on three Tier-1 platforms, 28 jobs across two workflows, zero failing. `STARKLANG/docs/compiler/audits/AS7-EXIT-QUALIFICATION.md` (CD-391). The checker is ten modules with an executable, cycle-free dependency graph; `mod.rs` production 14,432 -> 596 | discharged; **AS8 may open** |
 | AS6 | **CLOSED 2026-08-08 — qualification PASS.** All five exit criteria met on `6050efa`; CI green on three Tier-1 platforms, zero failing jobs. `STARKLANG/docs/compiler/audits/AS6-EXIT-QUALIFICATION.md` (CD-390). Four residue entries and three limits recorded, not hidden | discharged; **AS7 may open** |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
