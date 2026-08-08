@@ -55,15 +55,28 @@ export const pillars = [
   },
 ];
 
-/** The genuinely unusual engineering claim, and the one worth explaining carefully. */
+/**
+ * The genuinely unusual engineering claim, and the one worth explaining carefully.
+ *
+ * Wording calibrated by WP-ENGINE-INDEPENDENCE EI6 (2026-08-09) against what EI1-EI5 measured.
+ * Three things this copy must keep saying, because each was earned rather than assumed:
+ *   - three ENGINES, four CONFIGURATIONS. Native debug and release are one engine at two
+ *     optimisation levels, sharing the lowering, the emitted Rust and every semantic authority.
+ *   - agreement is not the standard, and where a rule is SHARED agreement cannot corroborate it.
+ *   - the shared rules are registered publicly rather than omitted.
+ * Do not restore "three independent implementations" or any equivalent: the register does not
+ * support it. See STARKLANG/docs/compiler/ENGINE-PUBLIC-CLAIM-CALIBRATION.md.
+ */
 export const conformance = {
-  title: 'Four engines, one answer',
+  title: 'Three engines, four configurations, one answer',
   body:
-    'A STARK program can run four ways: a reference interpreter that defines the semantics, a mid-level IR interpreter, and native binaries built in debug and release. Every maintained conformance case runs through all four, and they must agree — on output, on exit status, on which destructor ran when, and on the exact category and source location of any trap.',
+    'A STARK program can run four ways: a reference interpreter that defines the semantics, a mid-level IR interpreter, and a native binary compiled through generated Rust in debug and release. Every maintained conformance case runs through all four, and they must agree — on output, on exit status, on which destructor ran when, and on the exact category and source location of any trap.',
   emphasis:
-    'Agreement alone is not the standard. Each case also pins its expected result against the specification, so three engines agreeing on the wrong answer fails.',
+    'Agreement alone is not the standard. Conformance cases are pinned against the specification, not against each other, so engines agreeing on the wrong answer fails. And where a rule is decided once and shared by every engine — Copy eligibility, destructor eligibility, trap categories — agreement cannot corroborate it. Those rules are listed in a public register and checked separately.',
   note:
     'That distinction is not theoretical. It is how a bound that every engine ignored equally, and an operation that completed where the specification required a trap, were both found and fixed.',
+  toolchain:
+    'The native engine compiles STARK to safe Rust and builds it with rustc, which makes rustc an external check: it rejects generated code that violates Rust\'s borrow and move rules, and has caught real lowering defects that way. It is not a check on meaning — generated Rust can be valid and still say the wrong thing. Where the two languages differ, STARK decides: arithmetic lowers to explicit checked operations rather than relying on the build profile, shifts do not use Rust\'s checked_shl because it validates only the shift count, and destruction order is STARK\'s own plan rather than Rust\'s.',
 };
 
 export const example = {
