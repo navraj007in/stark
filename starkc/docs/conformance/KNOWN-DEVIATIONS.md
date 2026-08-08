@@ -5804,3 +5804,137 @@ mapping from `GenericEnvironment` to `InvocationEnv`, so no consumer invents its
 and `Iterator::next`, whose bodies rarely mention their own generic parameters. The environment was
 missing but unconsulted — the DEV-121 shape again, and the reason nine sites accumulated without a
 single failing test.
+
+## DEV-121 — Packet 1 addendum: the destructor receiver was a representation collision, not an exemption
+
+Packet 1 collapsed the destructor's private executor into the invocation authority. That exposed a
+disagreement the two executors had been keeping apart:
+
+- `Drop::drop(&mut self)` publishes a receiver of `&mut Self` — that is what `callable_types`
+  records, because it records the receiver *as the body binds it*.
+- Destruction holds an **owned** value, and the old destructor executor bound that owned value
+  directly to `self`.
+
+So the body's `self` was a `Value::Struct` where the published type said `Ty::Ref { mutable: true }`.
+Nothing observed it, because no boundary read the receiver — the DEV-121 shape exactly.
+
+Only three repairs exist, and two are wrong:
+
+1. exempt `Drop` from the receiver boundary — a hole in the invariant at the one place destruction
+   makes it hardest to reason about;
+2. let `&mut T` accept an owned `T` — that is not a narrower rule, it is the *deletion* of the
+   distinction DEV-121 exists to enforce, and it would silently re-permit the owned-`Vec`-as-`&[T]`
+   defect the class was opened for;
+3. **materialize the receiver.**
+
+**The repair.** `ReceiverSource` names where a body's `self` comes from before it is materialized —
+`None`, `Place { kind, place }`, or `OwnedForDrop(value)` — and the authority, not the caller, turns
+it into a binding:
+
+| Source | Binding | Rule |
+| --- | --- | --- |
+| `Place { Value, .. }` | `take_place` | DEV-034: consume the resolved place, no re-evaluation |
+| `Place { Ref \| RefMut, .. }` | `Value::Ref(place)` | DEV-070: a genuine borrow of the caller's place |
+| `OwnedForDrop(v)` | `Value::Ref(backing)` | the owned value is moved into temporary storage in the **caller's** frame, so `self` is a real `&mut Self` |
+
+The backing place is held by the authority and paired structurally with `BodyEpilogue::Destructor`,
+which reads the (possibly mutated) value back out of it — `Drop::drop` may replace fields, and the
+recursive field destruction that follows must see that. A `Destructor` epilogue reached without an
+owned receiver is an `internal` invariant failure, not a fallback: the earlier
+`unwrap_or(Value::Unit)` would have let a lost receiver erase the value and skip field destruction
+in silence.
+
+**Result:** the receiver boundary below passes for destructors with **no `Drop`-specific
+exception**, which is the test of whether the materialization is real or is an exemption in
+disguise.
+
+**Evidence:** `--lib` 538, `three_engine_differential` 109, `mir_differential` 132,
+`a3cd_generic_drop`, `c788_resource_lifecycle`, `c788_lifecycle_e2e`, `a11_host_resource`,
+`as4_property_adversaries`.
+
+## DEV-121 — Packet 2: the Receiver, Parameter and Propagation boundaries
+
+Three more of the eleven `RepBoundary` sites are wired, all in the invocation authority and all
+against `callable_types[body]` — the signature the checker published for the body being entered.
+
+**One lookup, three boundaries.** The signature was previously fetched at the return boundary only.
+It is now fetched once at the top of `execute_body`, before anything is bound, so a body cannot be
+checked on the way out but unchecked on the way in. A missing signature stays an `internal`
+invariant failure rather than a skip.
+
+| Boundary | Read against | Note |
+| --- | --- | --- |
+| `Receiver` | `signature.receiver` | the receiver *as the body binds it*: `Self` / `&Self` / `&mut Self` |
+| `Parameter` | `signature.params[i]` | replaces the `local_types` probe, which read the caller-visible local rather than the callee's declared contract |
+| `Propagation` | `signature.ret` | a `?` that leaves the body **is** the body's return value (§6.5 requires the error type to match) |
+
+`Propagation` mattered most: it was the one way out of a function that no boundary observed.
+`Return` covered explicit returns and block values; `?` bypassed it entirely.
+
+A published parameter count that disagrees with the callable's bound parameters is `internal` —
+A3b forms both from the same declaration, so they cannot legitimately differ.
+
+## DEV-198 — the published callee SELECTION was the one table field never grounded [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — dispatch installs the checker-selected generic environment — and
+  DEV-121's requirement that a published expected type be *concrete* at a value boundary.
+- **Defect:** `analyze` grounds every field of a published `CallableUse` — `environment`,
+  `signature.receiver`, `signature.params`, `signature.ret` — and copied `selection` verbatim. A
+  `CalleeSelection::Bound` carries three types: `self_ty`, `trait_args`, and the method's own
+  `method_args`.
+- **What leaked:** `t.to(1)` on `fn to<U>(&self, x: U) -> U`, called through a bound with **no**
+  turbofish. `check_trait_member_call` resolves `method_args` before returning, but the integer
+  literal that determines `U` is not defaulted until later — so the selection published
+  `Infer(TypeVarId(1))`. `specialize_bound_callable` then built an environment binding
+  `U -> Infer(1)`, and the boundary compared a runtime `Int` against an inference variable.
+- **Found by:** DEV-121's `Return` boundary, then again by `Parameter`. DEV-188's own test asserted
+  the *count* of published method arguments (1, correct) and could not see that the *type* was
+  unresolved.
+- **Repair:** `ground_selection`, an **exhaustive** match over `CalleeSelection` — `Static` and
+  `FunctionValue` carry no types and pass through, `Bound` grounds all three. Exhaustive so a
+  future variant carrying a type cannot be published ungrounded by omission.
+
+## DEV-199 — an associated-type projection was unresolvable at a runtime value boundary [CLOSED at creation, 2026-08-08]
+
+- **Rule:** DEV-121 — the expected type at a value boundary must be concrete.
+- **Defect:** `fn first<T: Holder>(t: T) -> T::Item` publishes a return type of
+  `Ty::Param("T::Item")`. The runtime environment binds `T`, not `T::Item`, so `substitute_ty` left
+  it alone and `concrete_runtime_ty` reported an unsubstituted parameter — on a program that is
+  correct, that MIR and native both execute, and that the checker fully resolved.
+- **Why it is a boundary defect and not a language limitation:** once `T` is concrete the projection
+  has exactly one answer, and the checker already computed it. `assoc_projections` — keyed by
+  (implementing nominal, associated name) — is built in Pass 1 and was simply never published.
+- **Repair:** publish `assoc_projections` in `TypeTables`, and give `concrete_runtime_ty` a second
+  step: substitute, then discharge projections. The base is looked up in the active generic frame,
+  its nominal selects the impl, and the checker's binding replaces the projection. A projection
+  whose base is *still* parametric is left alone, so `ty_contains_param` still reports it — an
+  unresolvable projection is a missing instantiation, not something to guess at.
+- **One authority, not a third one.** The oracle consults the checker's table rather than scanning
+  the impl set itself. MIR lowering already keeps its own `ProgramMeta::assoc_projections`; a third
+  scan in the interpreter is exactly the duplication AS4 spent its packets removing.
+- **Evidence:** `c62c_associated_types` 9/9, including `projection_inferred_from_argument` and
+  `projection_used_by_value`, both of which were failing on CI at `1ea5a8b`.
+
+## DEV-200 — `&mut [T]` refused the slice-view representation `&[T]` accepts [CLOSED at creation, 2026-08-08]
+
+- **Rule:** INV-VALUE-REP-001 / §6.4 — a reference type's runtime representation.
+- **Defect:** `value_matches_ty` answered `Ty::Ref { mutable: true, .. }` with a single line —
+  `kind == ValueKind::Ref` — while `shared_ref_matches` accepts **two** representations for
+  `&[T]`: `Value::Slice` (a view) and `Value::Ref`. `Value::Slice(place, lo, hi)` is a view *into a
+  place*; writing through it writes to that place, so it is exactly as much a reference as
+  `Value::Ref`, and it is what `&mut v[1..3]` produces.
+- **Consequence:** the `Parameter` boundary rejected `sentinel__10_slice_mutation_through_view`, a
+  correct program in the C6.5 corpus, as an oracle invariant failure.
+- **Why this is a repair and not a weakening:** the asymmetry was omission, not rule. The mutable
+  arm predates the slice-view representation. The widening is *narrow* — `ValueKind::Slice` is
+  admitted only when the pointee is `Ty::Slice(_)` — so `&mut T` for every other `T` still demands a
+  genuine `Ref`, and the owned-storage pairing DEV-121 was opened for remains refused.
+
+## AS3 Packet 1 — correction to the record
+
+`1ea5a8b` ("AS3 Packet 1 COMPLETE") was reported here on scoped local evidence and went to CI
+**red**: `fmt, clippy, test` failed on all three Tier-1 platforms, and `C6.4 tier-1 qualification`
+failed on Linux, with the three defects above (`projection_*`, the bound-method generic, and — once
+`Parameter` was wired — the slice view). The defects are real and pre-existed the boundaries that
+found them; the reporting was not. The evidence line for a packet is the CI run for its commit, not
+the suites chosen to run locally.

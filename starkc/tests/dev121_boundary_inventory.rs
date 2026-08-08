@@ -22,10 +22,13 @@
 //!
 //! # Status at the time of writing
 //!
-//! One boundary is wired (`Return`, `9e5dc3b`), and wiring it immediately exposed DEV-197: two
-//! dispatch paths ran callee bodies with no generic environment installed. The remaining ten are
-//! `Unwired`, each with its site and type source identified so the work is bounded rather than
-//! exploratory.
+//! Four boundaries are wired — `Return` (`9e5dc3b`), then `Receiver`, `Parameter` and
+//! `Propagation` together (AS3 Packet 2). All four live in the invocation authority and all four
+//! read one lookup of `callable_types[body]`, so a body cannot be checked on the way out but
+//! unchecked on the way in. Wiring `Return` immediately exposed DEV-197 (bodies running with no
+//! generic environment); wiring `Receiver` exposed the destructor representation collision, which
+//! receiver materialization repaired rather than exempted. The remaining seven are `Unwired`, each
+//! with its site and type source identified so the work is bounded rather than exploratory.
 //!
 //! **One boundary has no `RepBoundary` variant at all** — inline values entering builtins and
 //! runtime operations, which the ruling names explicitly. See
@@ -70,24 +73,24 @@ struct Row {
 fn classify(boundary: RepBoundary) -> Row {
     match boundary {
         RepBoundary::Return => Row {
-            site: "call_callable — Flow::Value | Flow::Return, after the frame pop",
+            site: "execute_body — Flow::Value | Flow::Return, after the frame pop",
             expected_ty_from: "callable_types[callable.body].ret",
             class: Class::Wired,
         },
         RepBoundary::Propagation => Row {
-            site: "call_callable — Flow::Propagate; and eval_expr's pending_propagation store",
-            expected_ty_from: "callable_types[body].ret — the `Result`'s error argument",
-            class: Class::Unwired,
+            site: "execute_body — Flow::Propagate, after the frame pop",
+            expected_ty_from: "callable_types[body].ret — a `?` that leaves the body IS its return",
+            class: Class::Wired,
         },
         RepBoundary::Parameter => Row {
-            site: "call_callable and call_user_method — the params/values zip",
+            site: "execute_body — the params/args zip, before the frame is pushed",
             expected_ty_from: "callable_types[body].params, positionally",
-            class: Class::Unwired,
+            class: Class::Wired,
         },
         RepBoundary::Receiver => Row {
-            site: "call_callable and call_user_method — the receiver insert",
-            expected_ty_from: "callable_types[body].receiver",
-            class: Class::Unwired,
+            site: "execute_body — the receiver insert, after materialization",
+            expected_ty_from: "callable_types[body].receiver — as the body BINDS it",
+            class: Class::Wired,
         },
         RepBoundary::LetBinding => Row {
             site: "eval_stmt — hir::StmtKind::Let",
@@ -270,7 +273,7 @@ fn dev121_wiring_progress_is_recorded_exactly() {
         .collect();
     assert_eq!(
         wired,
-        vec!["Return"],
+        vec!["Parameter", "Receiver", "Return", "Propagation"],
         "DEV-121 closes when every boundary is Wired. Update this pin in the same change that \
          wires one, and update AS3 #3/#5 in CAMPAIGN-A-EXIT-REPORT.md when the list is complete."
     );

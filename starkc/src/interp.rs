@@ -561,6 +561,28 @@ enum InvocationEnv {
     Captured(FunctionValue),
 }
 
+/// **Where a body's `self` comes from, before it is materialized.**
+///
+/// Materialization belongs to the invocation authority rather than to each caller, because the
+/// binding it produces must match the receiver type the checker published — which is what
+/// `RepBoundary::Receiver` will compare against.
+///
+/// The destructor case is why this exists. Destruction holds an OWNED value, but a
+/// `Drop::drop(&mut self)` publishes `&mut Self`. Handing the owned value straight in would make
+/// the receiver boundary reject every destructor, and the only sound answers are to materialize a
+/// real reference or to weaken `&mut T` — the second would gut DEV-121 exactly when it is being
+/// closed.
+enum ReceiverSource {
+    /// A free function or associated function.
+    None,
+    /// A method receiver already at a caller-side place.
+    Place { kind: hir::Receiver, place: Place },
+    /// A destructor's owned value. Materialized into temporary backing storage in the CALLER's
+    /// frame, so the body-visible `self` is a genuine `Value::Ref` and the mutated value can be
+    /// read back afterwards.
+    OwnedForDrop(Value),
+}
+
 /// **What happens to the frame when a body finishes.** A destructor differs from an ordinary call
 /// in two ways that were previously expressed by having a whole second executor: it hands back the
 /// receiver's FINAL value (a `Drop::drop(&mut self)` may legally mutate or replace fields, and the
@@ -573,9 +595,11 @@ enum InvocationEnv {
 enum BodyEpilogue {
     /// Ordinary call: clean the frame's locals, return the body's value.
     Call,
-    /// Destructor: return the receiver's final value; the enclosing destruction walk owns the
-    /// remaining locals.
-    Destructor { receiver_local: LocalId },
+    /// Destructor: return the receiver's final value, read back from the temporary backing
+    /// storage its `self` reference pointed at; the enclosing destruction walk owns the remaining
+    /// locals. Pairs only with [`ReceiverSource::OwnedForDrop`], which is what creates that
+    /// storage — the authority holds the place, so no caller can hand back a different one.
+    Destructor,
     /// Method: like `Call`, plus two things a method owes its caller — a `&mut self` receiver is
     /// written back on the error path, and a returned reference derived from `self` is rebased onto
     /// the CALLER's receiver place (DEV-035), because the place it carries points into the frame
@@ -1397,7 +1421,7 @@ fn run_item_here(
             callable,
             environment: InvocationEnv::Empty,
         },
-        None,
+        ReceiverSource::None,
         Vec::new(),
         span,
     )?;
@@ -1721,7 +1745,7 @@ impl<'a> Interpreter<'a> {
                 callable,
                 environment: InvocationEnv::Empty,
             },
-            None,
+            ReceiverSource::None,
             Vec::new(),
             self.hir.item(main).span,
         )?;
@@ -1825,7 +1849,7 @@ impl<'a> Interpreter<'a> {
     fn invoke_callable(
         &mut self,
         invocation: ResolvedInvocation,
-        receiver: Option<Value>,
+        receiver: ReceiverSource,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
@@ -1838,7 +1862,7 @@ impl<'a> Interpreter<'a> {
     fn invoke_with_epilogue(
         &mut self,
         invocation: ResolvedInvocation,
-        receiver: Option<Value>,
+        receiver: ReceiverSource,
         args: Vec<Value>,
         epilogue: BodyEpilogue,
         span: Span,
@@ -1880,7 +1904,7 @@ impl<'a> Interpreter<'a> {
     fn execute_body(
         &mut self,
         callable: Callable,
-        receiver: Option<Value>,
+        receiver: ReceiverSource,
         args: Vec<Value>,
         epilogue: BodyEpilogue,
         span: Span,
@@ -1888,6 +1912,32 @@ impl<'a> Interpreter<'a> {
         if args.len() != callable.params.len() {
             return Err(RuntimeError::new("runtime argument count mismatch", span));
         }
+        // **The declared signature, looked up ONCE, before anything is bound.**
+        //
+        // A missing signature is an INVARIANT VIOLATION, not an exemption. A3b's claim is that
+        // every executable body has a published signature; an `Option` here would reintroduce the
+        // "missing metadata means skip validation" pattern AS3 spent this sprint deleting, and
+        // would let any future body that loses its entry quietly stop being checked.
+        //
+        // Hoisted from the return boundary so the receiver and the parameters are read against the
+        // SAME published signature the return is. Three boundaries, one lookup: a body cannot be
+        // checked on the way out but unchecked on the way in.
+        let signature = self
+            .tables
+            .callable_types
+            .get(&callable.body)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                        "missing callable signature for executable body {:?} — A3b publishes one \
+                         for every executable body, so this is a publication defect, not a \
+                         callable class to exempt",
+                        callable.body
+                    ),
+                    span,
+                )
+            })?;
         // **A3: `pending_propagation` is an intra-expression adapter, never live across a call.**
         //
         // It is interpreter state, not frame state, and `expect_value` parks a propagated value
@@ -1922,13 +1972,73 @@ impl<'a> Interpreter<'a> {
                 span,
             ));
         }
+        // **Materialization.** The binding produced here must match the receiver type the checker
+        // published, which is what `RepBoundary::Receiver` compares against.
+        let mut drop_backing = None;
+        let materialized = match receiver {
+            ReceiverSource::None => None,
+            // WP-C2.2 (DEV-034): a by-value receiver CONSUMES the already-resolved place — proper
+            // move semantics, including partial moves out of fields — rather than re-evaluating the
+            // receiver expression, which was a confirmed double-evaluation bug.
+            ReceiverSource::Place {
+                kind: hir::Receiver::Value,
+                place,
+            } => Some(self.take_place(&place, span)?),
+            // DEV-070 (A2): `&self`/`&mut self` bind a genuine REFERENCE to the caller's place,
+            // not a clone.
+            ReceiverSource::Place { place, .. } => Some(Value::Ref(place)),
+            // The destructor case: an owned value becomes a real `&mut Self` by giving it backing
+            // storage in the CALLER's frame, which outlives the body and can be read back.
+            ReceiverSource::OwnedForDrop(value) => {
+                let backing = self.promote_to_owned_temp_place(value, span)?;
+                drop_backing = Some(backing.clone());
+                Some(Value::Ref(backing))
+            }
+        };
         let mut frame = Frame::default();
-        if let (Some((_, local)), Some(value)) = (callable.receiver, receiver) {
+        if let (Some((_, local)), Some(value)) = (callable.receiver, materialized) {
+            // **The RECEIVER boundary.** `callable_types` records the receiver *as the body binds
+            // it* — `Self` for `self`, `&Self` for `&self`, `&mut Self` for `&mut self` — so this
+            // compares the materialized binding against exactly what the body will read.
+            //
+            // A destructor passes here with no `Drop`-shaped exception: its `ReceiverSource::
+            // OwnedForDrop` became a genuine `Value::Ref` into caller-frame backing storage, which
+            // is what `&mut Self` means. That is the whole reason materialization moved into the
+            // authority.
+            let declared = signature.receiver.as_ref().ok_or_else(|| {
+                RuntimeError::internal(
+                    "a callable with a runtime receiver has no receiver in its published \
+                     signature — A3b forms both from the same declaration, so they cannot \
+                     legitimately disagree",
+                    span,
+                )
+            })?;
+            self.check_value_for_ty(declared, &value, span, RepBoundary::Receiver)?;
             frame.insert(local, Some(value));
         }
-        for (local, value) in callable.params.iter().copied().zip(args) {
-            // INV-VALUE-REP-001 at a CALL PARAMETER — the second uncovered site DEV-121 named.
-            self.check_value_representation(local, &value, span)?;
+        // **The PARAMETER boundary** — the second uncovered site DEV-121 named. Read against the
+        // published signature rather than `local_types`, so a parameter is checked by the contract
+        // the CALLEE declared, under the callee's own instantiation.
+        if signature.params.len() != callable.params.len() {
+            return Err(RuntimeError::internal(
+                format!(
+                    "published signature for body {:?} declares {} parameters but the callable \
+                     binds {} — A3b forms both from the same declaration",
+                    callable.body,
+                    signature.params.len(),
+                    callable.params.len()
+                ),
+                span,
+            ));
+        }
+        for ((local, declared), value) in callable
+            .params
+            .iter()
+            .copied()
+            .zip(signature.params.iter())
+            .zip(args)
+        {
+            self.check_value_for_ty(declared, &value, span, RepBoundary::Parameter)?;
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
@@ -1941,17 +2051,25 @@ impl<'a> Interpreter<'a> {
         // was derived from `error.span.source`, so it was a copy of something the error already
         // carried, and a copy is a thing that can disagree.
         let result = self.eval_block(callable.body);
-        if let BodyEpilogue::Destructor { receiver_local } = epilogue {
+        if let BodyEpilogue::Destructor = epilogue {
+            // The pairing is structural: only `OwnedForDrop` creates backing storage, so a
+            // `Destructor` epilogue without it is a miswired call site, not a program error.
+            let Some(backing) = drop_backing else {
+                self.frames.pop();
+                return Err(RuntimeError::internal(
+                    "a `Destructor` epilogue ran without an owned receiver to give back",
+                    span,
+                ));
+            };
             // The destructor's own locals belong to the enclosing destruction walk, so no
             // `cleanup_current_frame` here — and the receiver comes back because `drop()` may have
             // mutated or replaced fields that the recursive field destruction must then see.
-            let restored = self
-                .frame_mut()
-                .values
-                .get_mut(&receiver_local)
-                .and_then(Option::take);
             self.frames.pop();
             result?;
+            // Read the (possibly mutated) value back out of the backing storage the body's `self`
+            // referenced. `Drop::drop(&mut self)` may replace fields, and the recursive field
+            // destruction that follows must see that.
+            let restored = self.take_place(&backing, span).ok();
             // **Not `unwrap_or(Unit)`.** The callable has a receiver, it was inserted, and a
             // `Drop` body cannot legitimately make its own receiver binding vanish — so `None`
             // here is an interpreter defect. Falling back to `Unit` would let a representation or
@@ -2016,35 +2134,22 @@ impl<'a> Interpreter<'a> {
         }
         self.cleanup_current_frame()?;
         self.frames.pop();
-        // **The RETURN boundary, against the checker-published signature.**
-        //
-        // A missing signature is an INVARIANT VIOLATION, not an exemption. A3b's claim is that
-        // every executable body has a published signature; an `Option` here would reintroduce
-        // exactly the "missing metadata means skip validation" pattern AS3 spent this sprint
-        // deleting, and would let any future body that loses its entry quietly stop being checked.
-        let declared_ret = self
-            .tables
-            .callable_types
-            .get(&callable.body)
-            .ok_or_else(|| {
-                RuntimeError::internal(
-                    format!(
-                        "missing callable signature for executable body {:?} — A3b publishes one \
-                         for every executable body, so this is a publication defect, not a \
-                         callable class to exempt",
-                        callable.body
-                    ),
-                    span,
-                )
-            })?
-            .ret
-            .clone();
+        let declared_ret = &signature.ret;
         match flow {
+            // The RETURN boundary, against the same published signature the receiver and the
+            // parameters were read against.
             Flow::Value(value) | Flow::Return(value) => {
-                self.check_value_for_ty(&declared_ret, &value, span, RepBoundary::Return)?;
+                self.check_value_for_ty(declared_ret, &value, span, RepBoundary::Return)?;
                 Ok(self.rebase_if_method(value, body_frame, &epilogue))
             }
-            Flow::Propagate(value) => Ok(self.rebase_if_method(value, body_frame, &epilogue)),
+            // **The PROPAGATION boundary.** A `?` that leaves the body IS the body's return value —
+            // §6.5 requires the error type to match, so the propagated `Result::Err`/`Option::None`
+            // is read against the declared return type exactly as an explicit `return` is. Leaving
+            // it unchecked meant `?` was the one way out of a function that no boundary observed.
+            Flow::Propagate(value) => {
+                self.check_value_for_ty(declared_ret, &value, span, RepBoundary::Propagation)?;
+                Ok(self.rebase_if_method(value, body_frame, &epilogue))
+            }
             Flow::Break(_) | Flow::Continue => {
                 Err(RuntimeError::new("loop control escaped a function", span))
             }
@@ -2141,7 +2246,14 @@ impl<'a> Interpreter<'a> {
         span: Span,
         boundary: RepBoundary,
     ) -> Result<(), RuntimeError> {
-        let concrete = self.concrete_runtime_ty(expected, span)?;
+        // The resolution failure carries no boundary of its own, and "an unsubstituted parameter
+        // reached a value boundary" is unactionable without knowing WHICH — so name it here.
+        let concrete = self
+            .concrete_runtime_ty(expected, span)
+            .map_err(|mut error| {
+                error.message = format!("{} [at {}]", error.message, boundary.as_str());
+                error
+            })?;
         if self.value_matches_ty(&concrete, value) {
             return Ok(());
         }
@@ -2225,7 +2337,18 @@ impl<'a> Interpreter<'a> {
             Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
 
             // ------------------------------------------------------------------ §6.4 references --
-            Ty::Ref { mutable: true, .. } => kind == ValueKind::Ref,
+            // **`&mut [T]` has the same two representations `&[T]` has.** `Value::Slice(place, ..)`
+            // is a view *into a place*: writing through it writes to that place, so it is exactly
+            // as much a reference as `Value::Ref` is, and it is what `&mut v[1..3]` produces. The
+            // one-line mutable arm predated the slice-view representation and so admitted only
+            // `Ref` — asymmetric with `shared_ref_matches` by omission, not by rule.
+            Ty::Ref {
+                mutable: true,
+                inner,
+            } => {
+                kind == ValueKind::Ref
+                    || (matches!(inner.as_ref(), Ty::Slice(_)) && kind == ValueKind::Slice)
+            }
             Ty::Ref {
                 mutable: false,
                 inner,
@@ -2342,6 +2465,14 @@ impl<'a> Interpreter<'a> {
             Some(map) => crate::typecheck::substitute_ty(ty, map),
             None => ty.clone(),
         };
+        // **Then discharge associated-type projections.** `fn first<T: Holder>(t: T) -> T::Item`
+        // publishes `Param("T::Item")`, and substitution cannot touch it: the environment binds
+        // `T`, not `T::Item`. Once `T` is concrete the projection has exactly one answer, and the
+        // checker already computed it — `tables.assoc_projections`, keyed by (implementing
+        // nominal, associated name). Consulted rather than re-derived; an oracle-local scan of the
+        // impl set would be a third authority for a question `normalize_projections` and MIR's
+        // `ProgramMeta` already answer.
+        let concrete = self.resolve_projections(&concrete);
         if crate::typecheck::ty_contains_param(&concrete) {
             return Err(RuntimeError::internal(
                 format!(
@@ -2352,6 +2483,45 @@ impl<'a> Interpreter<'a> {
             ));
         }
         Ok(concrete)
+    }
+
+    /// Replace every resolvable `Param("Base::Assoc")` in `ty` with the checker's binding.
+    ///
+    /// `Base` is looked up in the active generic frame; its nominal selects the impl, and
+    /// `assoc_projections` gives the impl's `type Assoc = ...`. A projection whose base is still
+    /// parametric is left alone — `ty_contains_param` then reports it, which is the correct
+    /// outcome: an unresolvable projection at a value boundary is a missing instantiation, not
+    /// something to guess at.
+    fn resolve_projections(&self, ty: &Ty) -> Ty {
+        let mut projections = std::collections::BTreeSet::new();
+        crate::typecheck::collect_ty_params(ty, &mut projections);
+        let frames = self.generic_frames.borrow();
+        let bindings = frames.last();
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        for name in projections {
+            let Some((base, assoc)) = name.split_once("::") else {
+                continue;
+            };
+            // The base may be bound in the environment (`T`) or already concrete in the type.
+            let base_ty = match bindings.and_then(|b| b.get(base)) {
+                Some(ty) => ty.clone(),
+                None => continue,
+            };
+            let Some(nominal) = nominal_item_of_ty(&base_ty) else {
+                continue;
+            };
+            if let Some(bound) = self
+                .tables
+                .assoc_projections
+                .get(&(nominal, assoc.to_string()))
+            {
+                map.insert(name.clone(), bound.clone());
+            }
+        }
+        if map.is_empty() {
+            return ty.clone();
+        }
+        crate::typecheck::substitute_ty(ty, &map)
     }
 
     /// Whether the pointee of a shared reference is `Copy`, which is what licenses the bare-value
@@ -3905,7 +4075,7 @@ impl<'a> Interpreter<'a> {
                                 callable,
                                 environment: InvocationEnv::Published(callee),
                             },
-                            None,
+                            ReceiverSource::None,
                             values,
                             span,
                         )
@@ -3952,7 +4122,7 @@ impl<'a> Interpreter<'a> {
                                 callable,
                                 environment: InvocationEnv::Published(callee),
                             },
-                            None,
+                            ReceiverSource::None,
                             values,
                             span,
                         )
@@ -3991,7 +4161,7 @@ impl<'a> Interpreter<'a> {
                                     callable,
                                     environment: InvocationEnv::Captured(callee.clone()),
                                 },
-                                None,
+                                ReceiverSource::None,
                                 values,
                                 span,
                             )
@@ -4023,7 +4193,7 @@ impl<'a> Interpreter<'a> {
                                 callable,
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
-                            None,
+                            ReceiverSource::None,
                             values,
                             span,
                         )
@@ -4990,20 +5160,15 @@ impl<'a> Interpreter<'a> {
         let Some((receiver_kind, receiver_local)) = callable.receiver else {
             return Err(RuntimeError::new("method has no receiver", span));
         };
-        let receiver = match receiver_kind {
-            // WP-C2.2 (DEV-034): consume the already-resolved place — proper move semantics for a
-            // non-Copy receiver, including partial moves out of fields — rather than re-evaluating
-            // the receiver expression, which was a confirmed double-evaluation bug.
-            hir::Receiver::Value => self.take_place(&receiver_place, span)?,
-            // DEV-070 (A2): `&self` binds a genuine REFERENCE to the caller's place, not a clone.
-            hir::Receiver::Ref | hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
-        };
         self.invoke_with_epilogue(
             ResolvedInvocation {
                 callable,
                 environment,
             },
-            Some(receiver),
+            ReceiverSource::Place {
+                kind: receiver_kind,
+                place: receiver_place.clone(),
+            },
             args,
             BodyEpilogue::Method {
                 receiver_kind,
@@ -5446,7 +5611,7 @@ impl<'a> Interpreter<'a> {
                                 callable: callable.clone(),
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
-                            None,
+                            ReceiverSource::None,
                             vec![*value],
                             span,
                         )?;
@@ -5460,7 +5625,7 @@ impl<'a> Interpreter<'a> {
                             callable: callable.clone(),
                             environment: InvocationEnv::Captured(callee.clone()),
                         },
-                        None,
+                        ReceiverSource::None,
                         vec![*value],
                         span,
                     ),
@@ -5473,7 +5638,7 @@ impl<'a> Interpreter<'a> {
                                 callable: callable.clone(),
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
-                            None,
+                            ReceiverSource::None,
                             vec![*value],
                             span,
                         )?;
@@ -5489,7 +5654,7 @@ impl<'a> Interpreter<'a> {
                                 callable: callable.clone(),
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
-                            None,
+                            ReceiverSource::None,
                             vec![*error],
                             span,
                         )?;
@@ -5502,7 +5667,7 @@ impl<'a> Interpreter<'a> {
                             callable: callable.clone(),
                             environment: InvocationEnv::Captured(callee.clone()),
                         },
-                        None,
+                        ReceiverSource::None,
                         vec![*value],
                         span,
                     ),
@@ -7443,7 +7608,7 @@ impl<'a> Interpreter<'a> {
                 callable,
                 environment: InvocationEnv::Captured(callee),
             },
-            None,
+            ReceiverSource::None,
             values,
             span,
         )
@@ -8271,23 +8436,26 @@ impl<'a> Interpreter<'a> {
                 // The receiver is MOVED in, not cloned: `Drop::drop(&mut self)` may mutate or
                 // replace fields, and the recursive field destruction below must see that. The
                 // `Destructor` epilogue hands it back.
-                let Some((_, receiver_local)) = callable.receiver else {
+                if callable.receiver.is_none() {
                     return Err(RuntimeError::internal(
                         "a `Drop::drop` implementation without a receiver reached destruction",
                         self.hir.item(item).span,
                     ));
-                };
-                let restored = self.invoke_with_epilogue(
+                }
+                // The value is MOVED into backing storage by the authority, and the body's `self`
+                // becomes a genuine `&mut Self` reference to it — so the published receiver type
+                // and the runtime binding agree without a `Drop`-shaped exemption.
+                let dtor_span = self.hir.item(item).span;
+                value = self.invoke_with_epilogue(
                     ResolvedInvocation {
                         callable,
                         environment: InvocationEnv::Empty,
                     },
-                    Some(value),
+                    ReceiverSource::OwnedForDrop(value),
                     Vec::new(),
-                    BodyEpilogue::Destructor { receiver_local },
-                    self.hir.item(item).span,
+                    BodyEpilogue::Destructor,
+                    dtor_span,
                 )?;
-                value = restored;
             }
         }
         match &mut value {
@@ -8567,6 +8735,19 @@ fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a 
         (Value::HashMap(map), Projection::MapIndex(index)) => {
             map.0.get_mut(*index).map(|(_, value)| value)
         }
+        _ => None,
+    }
+}
+
+/// The nominal an associated-type projection's base selects. `nominal_item` answers the same
+/// question for a runtime `Value`; this one answers it for a `Ty`, which is what a projection has.
+/// References are looked through — `&H::Item` projects through `H` — and anything without a
+/// nominal (a primitive, a tuple, a core container) implements no user trait with an associated
+/// type, so `None` is the honest answer rather than a guess.
+fn nominal_item_of_ty(ty: &Ty) -> Option<ItemId> {
+    match ty {
+        Ty::Struct(item, _) | Ty::Enum(item, _) => Some(*item),
+        Ty::Ref { inner, .. } => nominal_item_of_ty(inner),
         _ => None,
     }
 }
@@ -9063,7 +9244,7 @@ mod tests {
                     callable,
                     environment: InvocationEnv::Empty,
                 },
-                None,
+                ReceiverSource::None,
                 Vec::new(),
                 interp.file.synthetic_span(),
             )
@@ -9097,7 +9278,7 @@ mod tests {
                     callable,
                     environment: InvocationEnv::Empty,
                 },
-                None,
+                ReceiverSource::None,
                 Vec::new(),
                 interp.file.synthetic_span(),
             )
@@ -11014,7 +11195,7 @@ mod tests {
                     callable,
                     environment: InvocationEnv::Empty,
                 },
-                None,
+                ReceiverSource::None,
                 Vec::new(),
                 span,
             )

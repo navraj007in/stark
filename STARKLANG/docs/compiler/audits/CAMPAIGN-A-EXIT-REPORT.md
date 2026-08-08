@@ -84,6 +84,29 @@ that depends on it, and until this packet nothing did.
 It is also why AS3 #2 cannot stand as PASS on its previous evidence, and why #2 and #3 requalify
 together.
 
+### 3.1a AS3 #3 — progress since this report (updated 2026-08-08)
+
+The classification above stands at **FAIL** until every `RepBoundary` is wired. This subsection
+records how far the closure packet has got, so "nearly done" cannot accumulate around the gate the
+way it did before the 2026-08-07 premature closure.
+
+| Packet | State | What it established |
+| --- | --- | --- |
+| 1 — one body executor | **done** | `eval_block(callable.body)` appears in exactly one place. Receiver materialization moved into the authority, so a destructor's `self` is a genuine `&mut Self` and needs no `Drop`-shaped exemption from the receiver boundary |
+| 2 — `Receiver`, `Parameter`, `Propagation` | **done** | 4 of 11 boundaries wired, all against one lookup of `callable_types[body]` |
+| 3–7 — bindings, writes, aggregates, expression results | **not started** | 7 boundaries remain `Unwired` |
+
+The executable inventory is `starkc/tests/dev121_boundary_inventory.rs`; its progress pin asserts
+the exact wired set, so this table cannot drift from the code.
+
+**Three defects were found by wiring these four boundaries**, none of which any test observed
+before — DEV-198 (the published callee *selection* was the one table field never grounded, so a
+bound method's inferred generic argument reached the runtime as an inference variable), DEV-199
+(an associated-type projection `T::Item` was unresolvable at a value boundary because the checker's
+`assoc_projections` table was never published), and DEV-200 (`&mut [T]` refused the slice-view
+representation that `&[T]` accepts). That rate — three real defects for four boundaries — is the
+argument for finishing the remaining seven rather than accepting partial wiring.
+
 ### 3.1 AS3 #3 — FAIL, and the first draft understated it
 
 The first draft said four binding positions were covered and named struct fields, indexed slots and

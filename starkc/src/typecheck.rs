@@ -475,6 +475,39 @@ pub fn ty_contains_param(ty: &Ty) -> bool {
     ty_contains(ty, &|t| matches!(t, Ty::Param(_)))
 }
 
+/// Collect every `Ty::Param` NAME reachable in `ty`, including associated-type projections
+/// (`"T::Item"`), which the type system encodes as a param whose name contains `::`.
+///
+/// Published because the interpreter must discharge those projections at a value boundary and
+/// needs to know which ones a type mentions before it can look them up. Traverses through the same
+/// structure as [`substitute_ty`], so the two cannot disagree about where a parameter can hide.
+pub fn collect_ty_params(ty: &Ty, out: &mut std::collections::BTreeSet<String>) {
+    match ty {
+        Ty::Param(name) => {
+            out.insert(name.clone());
+        }
+        Ty::Ref { inner, .. } => collect_ty_params(inner, out),
+        Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+            for arg in args {
+                collect_ty_params(arg, out);
+            }
+        }
+        Ty::Tuple(elems) => {
+            for elem in elems {
+                collect_ty_params(elem, out);
+            }
+        }
+        Ty::Array(elem, _) | Ty::Slice(elem) | Ty::Range(elem) => collect_ty_params(elem, out),
+        Ty::Fn { params, ret } => {
+            for param in params {
+                collect_ty_params(param, out);
+            }
+            collect_ty_params(ret, out);
+        }
+        _ => {}
+    }
+}
+
 /// How a pattern binding takes its value, decided once per `match` from its scrutinee.
 ///
 /// **STARK differs from Rust here, deliberately.** Rust's match ergonomics bind EVERY component by
@@ -1071,6 +1104,13 @@ pub struct TypeTables {
     /// package can remain library-importable without imposing a `main`
     /// requirement during type checking.
     pub fn_types: HashMap<ItemId, (Vec<Ty>, Ty)>,
+    /// **Associated-type bindings, keyed by (implementing nominal, associated name).**
+    ///
+    /// Published so the interpreter can discharge a projection like `T::Item` at a value boundary
+    /// once `T` is concrete. Without it the oracle would need its own scan of the impl set — a
+    /// third authority for a question the checker already answered, beside `normalize_projections`
+    /// here and `ProgramMeta::assoc_projections` in MIR lowering.
+    pub assoc_projections: HashMap<(ItemId, String), Ty>,
     /// WP-VALUE-REP-TOTAL A3b: every executable callable body's signature, keyed by its body.
     ///
     /// Covers all six classes `check_fn_def` sees — free functions, inherent methods, trait
@@ -1219,7 +1259,15 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         .callable_uses
         .iter()
         .map(|use_| CallableUse {
-            selection: use_.selection.clone(),
+            // **Grounded like every other published field.** It was the ONE field copied verbatim,
+            // and a `Bound` selection carries types: `self_ty`, `trait_args`, and the method's own
+            // `method_args`. An inferred method argument (`t.to(1)` with no turbofish) is resolved
+            // when `check_trait_member_call` returns, but the integer literal that determines it is
+            // not defaulted until later — so the selection published `Infer(N)`, the specialiser
+            // built an environment binding `U -> Infer(N)`, and the return boundary compared a
+            // value against an inference variable. Found by DEV-121's return boundary; nothing
+            // observed it before because nothing read the environment.
+            selection: ground_selection(&checker, &use_.selection),
             environment: match &use_.environment {
                 GenericEnvironment::Static(bindings) => GenericEnvironment::Static(
                     bindings
@@ -1337,6 +1385,11 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
             .with_code("E0004"),
         );
     }
+    let assoc_projections: HashMap<(ItemId, String), Ty> = checker
+        .assoc_projections
+        .iter()
+        .map(|((nominal, name), ty)| ((*nominal, name.clone()), checker.ground(ty)))
+        .collect();
     let mut diagnostics = checker.diags;
     diagnostics.extend(crate::flow::check(hir, &expr_types));
     diagnostics.extend(crate::borrowck::check(hir, &expr_types, &local_types));
@@ -1345,6 +1398,7 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
         local_types,
         local_mutability: checker.local_mutability,
         fn_types,
+        assoc_projections,
         callable_types,
         callable_instantiations,
         callable_uses,
@@ -1359,6 +1413,30 @@ pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckRes
     TypeCheckResult {
         diagnostics,
         tables,
+    }
+}
+
+/// Ground every type a [`CalleeSelection`] carries.
+///
+/// `Static` and `FunctionValue` carry none — they name a declaration and a body, not types — so
+/// they pass through. Written as an exhaustive match rather than a `if let Bound` so a future
+/// variant that carries a type cannot be published ungrounded by omission.
+fn ground_selection(checker: &TypeChecker<'_>, selection: &CalleeSelection) -> CalleeSelection {
+    match selection {
+        CalleeSelection::Static { .. } | CalleeSelection::FunctionValue => selection.clone(),
+        CalleeSelection::Bound {
+            trait_,
+            member,
+            self_ty,
+            trait_args,
+            method_args,
+        } => CalleeSelection::Bound {
+            trait_: *trait_,
+            member: member.clone(),
+            self_ty: checker.ground(self_ty),
+            trait_args: trait_args.iter().map(|ty| checker.ground(ty)).collect(),
+            method_args: method_args.iter().map(|ty| checker.ground(ty)).collect(),
+        },
     }
 }
 
