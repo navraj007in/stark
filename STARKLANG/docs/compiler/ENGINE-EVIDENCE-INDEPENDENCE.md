@@ -3,7 +3,7 @@
 **Packet:** `WP-ENGINE-INDEPENDENCE.md` EI2, approved 2026-08-09 (CD-392), executed as an AS8
 prerequisite. **Vocabulary frozen at EI0; register at `ENGINE-SHARED-FATE-REGISTER.md`.**
 
-**Status: EI2 COMPLETE.** One EI1 residual closed, three new residuals opened.
+**Status: EI2 COMPLETE.** One EI1 residual closed, three opened. **EI2-R1 corrected 2026-08-09** — the first version omitted `c6_mutation` and overstated the gap; see question 5.
 
 ---
 
@@ -58,6 +58,7 @@ all. That is now a residual against the *claim*, not against the measurement.
 | `EV-SAMPLES` — `External sample suite (pinned)` | native | **external repository**, pinned by commit SHA with a resolution check | `EXTERNALLY_DERIVED` | **LOW** | strongest control in the tree | Covers whole-application behaviour, not specific authorities; a shared-authority defect would surface only if a sample happens to exercise it |
 | `EV-PROVIDER-LOOP` — `C7.8 provider metadata/unit/resource/loopback` | mir, native | **live peers**, real sockets/processes | `EXTERNALLY_DERIVED` | **LOW–MEDIUM** | genuine external oracle | Two engines only (see `ESF-PROV-001`); no third-engine control exists for providers |
 | `EV-STRUCTURAL` — `as6_core_module_vocabulary`, `as7_module_dependencies` | n/a — source structure | the source itself, plus a frozen declaration | `HAND_AUTHORED` | **LOW** | each was proved to fail on an injected violation | Structural, not semantic; says nothing about engine agreement |
+| `EV-MUTATION-C65` — `c6_mutation`, the C6.5 mutation controls | hir, mir, native | **the production comparator, `compare_observations`**, tested against deliberately corrupted observations | `HAND_AUTHORED` negative control | **LOW for what it covers** | **This IS a demonstrated negative control** — see the correction below | **Its own §14.1 states the limit: "evidence about comparator and witness sensitivity — it does not authorise mutating compiler source. Nothing here modifies an engine."** The mutation is applied to a normalised observation *after* the engines produce it |
 
 ## The six required questions, answered for the load-bearing sources
 
@@ -78,9 +79,31 @@ three engines and for the corpus manifest.
 **No, for the six `INVISIBLE` authorities.** This is the audit's central answer and it is negative.
 
 **5. Is there a negative control?**
-Only for the structural tests, each of which was proved to fail on an injected violation. **No
-semantic evidence source in this table has a demonstrated negative control** — none has been shown
-to fail when the thing it checks is broken.
+
+**CORRECTED 2026-08-09.** The first version of this audit answered "only for the structural tests"
+and stated that no semantic evidence source has a demonstrated negative control. **That was wrong,
+because it omitted `c6_mutation` from the table.**
+
+The C6.5 mutation controls are a genuine, already-implemented negative control for the
+**comparator**, and they enforce exactly the both-directions discipline CD-392 later made binding:
+
+```text
+§14.6 clause 1   the witness must genuinely pass first — three-engine agreement is asserted on the
+                 UNMUTATED observation, so a "detection" on an already-failing case proves nothing
+§14.6 clause 2   the mutation must change the intended dimension — a NO-OP MUTATION CANNOT PASS AS
+                 A DETECTION, which is the survival half of the invariant
+§14.7            no mutation is simulated by asserting `false`; the comparator under test is the
+                 production `compare_observations`, the same function the replay uses
+```
+
+**The corrected answer:** the *comparator* has a demonstrated negative control. **No evidence
+source has a demonstrated negative control for a shared-authority defect**, because — by
+`c6_mutation`'s own §14.1 — no mutation in the tree touches compiler source; the mutation is applied
+to an observation after the engines have produced it.
+
+That is a narrower and accurate gap, and it is precisely the one AS8's work item names when it says
+*"observation/comparator mutation alone is insufficient"*. EI5's batches are the first mutations
+that will touch compiler source.
 
 **6. Is there an independent spec-derived assertion?**
 For the front end, yes (`EV-SPEC-FIXTURES`). For runtime semantics, **no**.
@@ -88,10 +111,11 @@ For the front end, yes (`EV-SPEC-FIXTURES`). For runtime semantics, **no**.
 ## Residuals opened
 
 ```text
-EI2-R1  No semantic evidence source has a demonstrated negative control. Under CD-392's evidence
-        invariant, none of them may yet be cited as establishing what it claims. This is the
-        single largest gap the audit found and it is AS8's own to close, since AS8 is the packet
-        that runs mutation trials.
+EI2-R1  CORRECTED. The comparator HAS a demonstrated negative control (`c6_mutation`, C6.5 §14).
+        The real gap is narrower: no evidence source has a demonstrated negative control for a
+        SHARED-AUTHORITY defect, because no mutation in the tree touches compiler source. AS8's
+        EI5 batches are the first that will. The original wording overstated the gap by omitting
+        c6_mutation from the audit table.
 
 EI2-R2  Provider evidence has two engines, not three. The three-engine independence claim must be
         stated with that exclusion or it overstates its scope.
