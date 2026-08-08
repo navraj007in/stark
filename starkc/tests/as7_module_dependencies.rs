@@ -113,7 +113,13 @@ fn present_modules() -> BTreeMap<String, String> {
 /// Strip `//` comments and `#[cfg(test)]` bodies: a doc comment naming a module is not a
 /// dependency, and a unit test may legitimately reach anywhere.
 fn production_code(source: &str) -> String {
-    let source = match source.find("#[cfg(test)]") {
+    // `rfind`, not `find`. `mod.rs` carries an early inline `#[cfg(test)]` module at ~line 384,
+    // so the FIRST marker truncates almost the whole file — and with it nearly every method the
+    // ownership map needs. That defect let three real `infer -> mod` edges through
+    // (`bind_int_literal_var`, `text`, `ty_to_string`) while the test reported green. It is the
+    // third time this exact `find`/`rfind` slip has appeared in this programme; the others were
+    // in the AS6 vocabulary lint and the ambient-state harness.
+    let source = match source.rfind("#[cfg(test)]") {
         Some(i) => &source[..i],
         None => source,
     };
@@ -132,6 +138,10 @@ fn production_code(source: &str) -> String {
 fn split_modules_do_not_glob_import_siblings() {
     let violations: Vec<String> = present_modules()
         .iter()
+        // `mod.rs` is exempt: it is the facade, and its own `#[cfg(test)]` modules legitimately
+        // write `use super::*`. The ban exists to keep SPLIT modules' edges visible, which is
+        // what this test is named for.
+        .filter(|(m, _)| m.as_str() != "mod")
         .filter(|(_, src)| production_code(src).contains("use super::*"))
         .map(|(m, _)| format!("typecheck/{m}.rs uses `use super::*`"))
         .collect();
@@ -147,8 +157,25 @@ fn split_modules_do_not_glob_import_siblings() {
 fn method_owners(modules: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut owner = BTreeMap::new();
     for (m, src) in modules {
+        // Inherent `TypeChecker` method names are unique, which is what makes this map sound.
+        // TRAIT IMPL methods are not: `impl TensorCheckCtx for TypeChecker` defines `resolve` and
+        // `unify` alongside the inherent ones, and attributing those to their `impl` block's
+        // module produced two phantom `infer -> mod` edges. Skip `impl ... for ...` bodies.
+        let mut in_trait_impl = false;
+        let mut depth = 0i32;
         for line in production_code(src).lines() {
             let t = line.trim_start();
+            if t.starts_with("impl ") && t.contains(" for ") {
+                in_trait_impl = true;
+                depth = 0;
+            }
+            if in_trait_impl {
+                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if depth <= 0 && line.contains('}') {
+                    in_trait_impl = false;
+                }
+                continue;
+            }
             let Some(rest) = t
                 .strip_prefix("pub(crate) fn ")
                 .or_else(|| t.strip_prefix("pub fn "))

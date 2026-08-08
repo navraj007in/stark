@@ -863,3 +863,19 @@ pub struct TypeCheckResult {
 /// read correctly once the obligation was discharged. AS1b-ii-d removed it: the bound path's span
 /// names that file.
 pub(super) type BoundsCheck = (Ty, Vec<hir::TraitRef>, Span, Vec<hir::GenericParam>);
+
+// AS7 Packet 6: a pure predicate on the primitive set — the bottom of the DAG.
+/// WP-C4.7-6.3: the primitive integer types an unsuffixed integer literal may adopt.
+pub(super) fn is_integer_primitive(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Int8
+            | Primitive::Int16
+            | Primitive::Int32
+            | Primitive::Int64
+            | Primitive::UInt8
+            | Primitive::UInt16
+            | Primitive::UInt32
+            | Primitive::UInt64
+    )
+}

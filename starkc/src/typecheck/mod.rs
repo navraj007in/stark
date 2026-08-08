@@ -14,7 +14,6 @@ use crate::extensions::tensor::rules::TENSOR_OPS;
 use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{
     DType, Device, DeviceVar, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx,
-    UnifyError,
 };
 use crate::hir::{
     self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId, TypeId,
@@ -26,8 +25,9 @@ use std::collections::{HashMap, HashSet};
 
 /// WP-C6.2b-F1: a selected inherent/trait method candidate carried through visibility enforcement:
 /// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
+mod infer;
 mod state;
-use state::{SelfScope, TypeChecker};
+use state::{SelfScope, TensorParamScopes, TypeChecker};
 
 mod types;
 pub use types::{
@@ -279,7 +279,42 @@ pub fn analyze(hir: &Hir) -> TypeCheckResult {
 /// AS7 Packet 1: the constructor extracted from `analyze_with_options`, unchanged.
 /// Behaviour-identical — it exists so the ambient-state harness can build a checker without
 /// duplicating sixty field initialisers, and because `state.rs` will own it.
-impl<'a> TypeChecker<'a> {}
+impl<'a> TypeChecker<'a> {
+    /// Register tensor extension generic kinds for an item scope.
+    fn enter_tensor_param_scope(&mut self, generics: &[hir::GenericParam]) -> TensorParamScopes {
+        let saved = TensorParamScopes {
+            dims: std::mem::take(&mut self.dim_scope),
+            dtypes: std::mem::take(&mut self.dtype_scope),
+            devices: std::mem::take(&mut self.device_scope),
+            kinds: std::mem::take(&mut self.generic_kinds),
+        };
+        for g in generics {
+            let name = self.text(g.name).to_string();
+            let kind = self.generic_kind(g);
+            self.generic_kinds.insert(name.clone(), kind);
+            match kind {
+                GenericKind::Dim => {
+                    let var = self.tensor_ctx.rigid_dim(DimProvenance {
+                        span: g.name,
+                        origin: OriginKind::Param,
+                        label: name.clone(),
+                    });
+                    self.dim_scope.insert(name, var);
+                }
+                GenericKind::DType => {
+                    let dtype = self.tensor_ctx.rigid_dtype();
+                    self.dtype_scope.insert(name, dtype);
+                }
+                GenericKind::Device => {
+                    let device = self.tensor_ctx.rigid_device();
+                    self.device_scope.insert(name, device);
+                }
+                GenericKind::Type => {}
+            }
+        }
+        saved
+    }
+}
 
 pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckResult {
     let mut checker = TypeChecker::new(hir, options);
@@ -495,25 +530,6 @@ fn ground_selection(checker: &TypeChecker<'_>, selection: &CalleeSelection) -> C
 }
 
 impl<'a> TypeChecker<'a> {
-    /// Read a span, against the source the SPAN NAMES.
-    ///
-    /// AS1b-ii-d. This used to slice `self.file` — "the file currently being checked" — which was
-    /// right for the item under check and wrong for every span belonging to another item. Four
-    /// separate repairs of that one mistake are recorded (DEV-069, DEV-101, DEV-148 and its
-    /// generic second site), each adding another way to carry the declaring file to the read:
-    /// `item_text`, `item_src`, `item_file`, `decl_text`, a foreign-signature item stack, and a
-    /// per-item `self.file` swap. All of it existed to answer a question the span now answers.
-    ///
-    /// `"?"` remains for an unresolvable span rather than a panic (WP-C4.7-4): a wrong read should
-    /// be visible in a diagnostic, not a compiler crash.
-    fn text(&self, span: Span) -> &str {
-        self.hir
-            .sources
-            .get(span.source)
-            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
-            .unwrap_or("?")
-    }
-
     /// The logical name of the file `span` belongs to.
     fn source_name(&self, span: Span) -> &str {
         self.hir
@@ -528,11 +544,6 @@ impl<'a> TypeChecker<'a> {
     /// being checked; across a module boundary those differ, and getting it wrong compared garbage
     /// rather than erroring. A declaration's span names its own file, so this is `text`.
     fn decl_text(&self, span: Span) -> &str {
-        self.text(span)
-    }
-
-    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
-    fn item_text(&self, _item: ItemId, span: Span) -> &str {
         self.text(span)
     }
 
@@ -1064,488 +1075,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn resolve(&self, ty: &Ty) -> Ty {
-        match ty {
-            Ty::Infer(id) => {
-                if let Some(target) = self.subst.get(id) {
-                    self.resolve(target)
-                } else {
-                    ty.clone()
-                }
-            }
-            Ty::Ref { mutable, inner } => Ty::Ref {
-                mutable: *mutable,
-                inner: Box::new(self.resolve(inner)),
-            },
-            Ty::Struct(item, args) => {
-                Ty::Struct(*item, args.iter().map(|arg| self.resolve(arg)).collect())
-            }
-            Ty::Enum(item, args) => {
-                Ty::Enum(*item, args.iter().map(|arg| self.resolve(arg)).collect())
-            }
-            Ty::Core(core, args) => {
-                Ty::Core(*core, args.iter().map(|arg| self.resolve(arg)).collect())
-            }
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| self.resolve(e)).collect()),
-            Ty::Array(elem, len) => Ty::Array(Box::new(self.resolve(elem)), *len),
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.resolve(elem))),
-            Ty::Fn { params, ret } => Ty::Fn {
-                params: params.iter().map(|p| self.resolve(p)).collect(),
-                ret: Box::new(self.resolve(ret)),
-            },
-            Ty::Range(elem) => Ty::Range(Box::new(self.resolve(elem))),
-            Ty::Extension(ext) => Ty::Extension(ext.clone()),
-            _ => ty.clone(),
-        }
-    }
-
-    /// Deep-resolve a type for publication in [`TypeTables`], additionally
-    /// grounding tensor shape dimensions through the tensor unification context
-    /// (e.g. a model's fresh output dim `N` bound to `1` by a `predict` call).
-    /// Unlike [`Self::resolve`] this is *not* used on the unification hot path,
-    /// so backend consumers see concrete shapes wherever they are determined.
-    fn ground(&self, ty: &Ty) -> Ty {
-        let ty = self.resolve(ty);
-        self.ground_tensor_dims(&ty)
-    }
-
-    fn ground_tensor_dims(&self, ty: &Ty) -> Ty {
-        match ty {
-            Ty::Extension(ext) => match &**ext {
-                ExtensionTy::Tensor(TensorKind::Tensor(t)) => {
-                    let dims: Vec<_> = t
-                        .shape
-                        .dims
-                        .iter()
-                        .map(|d| self.tensor_ctx.resolve_dim(d).unwrap_or_else(|_| d.clone()))
-                        .collect();
-                    // Grounding preserves rank; keep spans only if they still align.
-                    let spans = if t.shape.spans.len() == dims.len() {
-                        t.shape.spans.clone()
-                    } else {
-                        Vec::new()
-                    };
-                    Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                        TensorTy {
-                            dtype: t.dtype,
-                            shape: Shape { dims, spans },
-                            device: t.device,
-                            range: t.range,
-                        },
-                    ))))
-                }
-                _ => ty.clone(),
-            },
-            Ty::Ref { mutable, inner } => Ty::Ref {
-                mutable: *mutable,
-                inner: Box::new(self.ground_tensor_dims(inner)),
-            },
-            Ty::Struct(item, args) => Ty::Struct(
-                *item,
-                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
-            ),
-            Ty::Enum(item, args) => Ty::Enum(
-                *item,
-                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
-            ),
-            Ty::Core(core, args) => Ty::Core(
-                *core,
-                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
-            ),
-            Ty::Tuple(elems) => {
-                Ty::Tuple(elems.iter().map(|e| self.ground_tensor_dims(e)).collect())
-            }
-            Ty::Array(elem, len) => Ty::Array(Box::new(self.ground_tensor_dims(elem)), *len),
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.ground_tensor_dims(elem))),
-            Ty::Range(elem) => Ty::Range(Box::new(self.ground_tensor_dims(elem))),
-            Ty::Fn { params, ret } => Ty::Fn {
-                params: params.iter().map(|p| self.ground_tensor_dims(p)).collect(),
-                ret: Box::new(self.ground_tensor_dims(ret)),
-            },
-            _ => ty.clone(),
-        }
-    }
-
-    fn occurs_in(&self, id: TypeVarId, ty: &Ty) -> bool {
-        match ty {
-            Ty::Infer(other_id) => id == *other_id,
-            Ty::Ref { inner, .. } => self.occurs_in(id, inner),
-            Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
-                args.iter().any(|arg| self.occurs_in(id, arg))
-            }
-            Ty::Tuple(elems) => elems.iter().any(|e| self.occurs_in(id, e)),
-            Ty::Array(elem, _) => self.occurs_in(id, elem),
-            Ty::Slice(elem) => self.occurs_in(id, elem),
-            Ty::Fn { params, ret } => {
-                params.iter().any(|p| self.occurs_in(id, p)) || self.occurs_in(id, ret)
-            }
-            Ty::Range(elem) => self.occurs_in(id, elem),
-            Ty::Extension(ext) => match &**ext {
-                ExtensionTy::Tensor(_) | ExtensionTy::Model(_) | ExtensionTy::ModelError => false,
-            },
-            _ => false,
-        }
-    }
-
-    /// WP-C4.7-6.3: gate binding an integer-literal inference var.
-    ///
-    /// Returns `Ok(true)` if the binding may proceed. An integer literal is not a wildcard: it
-    /// may adopt any primitive INTEGER type whose range holds its value, and nothing else. This
-    /// is expected-type propagation, not a coercion — 03's step 4 confines coercions to explicit
-    /// coercion sites — so it does not open an implicit-conversion hole: only the literal itself
-    /// is retyped, never a typed value.
-    fn bind_int_literal_var(&mut self, id: TypeVarId, other: &Ty, span: Span) -> Result<bool, ()> {
-        let Some(&(value, lit_span)) = self.int_literal_vars.get(&id) else {
-            return Ok(true);
-        };
-        // Binding to another variable keeps it open; the eventual concrete binding is checked.
-        // `!` coerces to every type (the never-coercion rule) and `Ty::Error` is recovery — both
-        // pass through untouched rather than being reported as a literal-typing failure.
-        if matches!(other, Ty::Infer(_) | Ty::Never | Ty::Error) {
-            return Ok(true);
-        }
-        let Ty::Primitive(primitive) = other else {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "type mismatch: expected '{}', found an integer literal",
-                        self.ty_to_string(other)
-                    ),
-                    span,
-                )
-                .with_code("E0001"),
-            );
-            return Ok(false);
-        };
-        if !is_integer_primitive(*primitive) {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "type mismatch: expected '{}', found an integer literal",
-                        self.ty_to_string(other)
-                    ),
-                    span,
-                )
-                .with_code("E0001"),
-            );
-            return Ok(false);
-        }
-        if !literal::primitive_int_range_contains(*primitive, value) {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "integer literal out of range for '{}'",
-                        self.ty_to_string(other)
-                    ),
-                    lit_span,
-                )
-                .with_code("E0008"),
-            );
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    /// WP-C4.7-6.3: force an integer literal's type NOW, for the places that cannot wait for the
-    /// deferred defaulting pass because they must branch on a concrete type — chiefly method
-    /// resolution, where `3.cmp(&5)` needs a real receiver type to find candidates. Returns the
-    /// type unchanged when it is not an open integer-literal variable.
-    fn default_int_literal_now(&mut self, ty: &Ty) -> Ty {
-        let resolved = self.resolve(ty);
-        let Ty::Infer(id) = resolved else {
-            return resolved;
-        };
-        let Some(&(value, _)) = self.int_literal_vars.get(&id) else {
-            return resolved;
-        };
-        let primitive = if i32::try_from(value).is_ok() {
-            Primitive::Int32
-        } else {
-            Primitive::Int64
-        };
-        let concrete = Ty::Primitive(primitive);
-        self.subst.insert(id, concrete.clone());
-        concrete
-    }
-
-    /// WP-C6.2b-F2: default UNCONSTRAINED integer literals anywhere inside a type, not only at the
-    /// top level. Method resolution must branch on a concrete receiver, and `let w = W { v: 7 };
-    /// w.get()` gives `W<_infer>` where `_infer` is the literal `7`'s variable — so a trait/inherent
-    /// impl written for the specific instance `W<Int32>` never matched `W<_infer>`. Defaulting the
-    /// literal (03 solving step 5, "int literals default to Int32") makes the receiver `W<Int32>`
-    /// so the concrete-instance impl matches. Only literal variables are touched (`int_literal_vars`);
-    /// a genuine unbound inference variable is left alone.
-    fn default_int_literals_deep(&mut self, ty: &Ty) -> Ty {
-        let ty = self.default_int_literal_now(ty);
-        match ty {
-            Ty::Struct(id, args) => Ty::Struct(
-                id,
-                args.iter()
-                    .map(|a| self.default_int_literals_deep(a))
-                    .collect(),
-            ),
-            Ty::Enum(id, args) => Ty::Enum(
-                id,
-                args.iter()
-                    .map(|a| self.default_int_literals_deep(a))
-                    .collect(),
-            ),
-            Ty::Core(core, args) => Ty::Core(
-                core,
-                args.iter()
-                    .map(|a| self.default_int_literals_deep(a))
-                    .collect(),
-            ),
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| self.default_int_literals_deep(e))
-                    .collect(),
-            ),
-            Ty::Array(elem, n) => Ty::Array(Box::new(self.default_int_literals_deep(&elem)), n),
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.default_int_literals_deep(&elem))),
-            Ty::Ref { mutable, inner } => Ty::Ref {
-                mutable,
-                inner: Box::new(self.default_int_literals_deep(&inner)),
-            },
-            Ty::Range(inner) => Ty::Range(Box::new(self.default_int_literals_deep(&inner))),
-            other => other,
-        }
-    }
-
-    /// WP-C4.7-6.3: 03-Type-System solving step 5 — "default an **unconstrained** integer literal
-    /// to `Int32` when representable, otherwise `Int64`". Runs after all bodies are checked, so
-    /// every expected type has had its chance to constrain the literal first. A literal that a
-    /// later use constrained (TYPE-INFER-001 permits that for an unannotated local) is already
-    /// bound and is left alone.
-    fn default_unconstrained_int_literals(&mut self) {
-        // RESOLVE first, then default the END of the chain. A literal variable is frequently
-        // bound to ANOTHER variable rather than to a concrete type — `MyOpt::Some2(7)` unifies
-        // the literal with the enum's own element variable — and that made the literal look
-        // "constrained" while the chain terminated at an unbound, non-literal variable. Such a
-        // chain used to escape defaulting entirely and surface as `type Infer(N)` at MIR
-        // lowering, which is precisely the failure this ordering prevents.
-        let pending: Vec<(TypeVarId, i128)> = self
-            .int_literal_vars
-            .iter()
-            .filter_map(|(&id, &(value, _))| match self.resolve(&Ty::Infer(id)) {
-                Ty::Infer(open) => Some((open, value)),
-                _ => None,
-            })
-            .collect();
-        for (id, value) in pending {
-            let primitive = if i32::try_from(value).is_ok() {
-                Primitive::Int32
-            } else {
-                Primitive::Int64
-            };
-            self.subst.insert(id, Ty::Primitive(primitive));
-        }
-    }
-
-    fn unify(&mut self, t1: Ty, t2: Ty, span: Span) -> Result<(), ()> {
-        let t1 = self.resolve(&t1);
-        let t2 = self.resolve(&t2);
-
-        match (t1, t2) {
-            (Ty::Infer(id1), Ty::Infer(id2)) if id1 == id2 => Ok(()),
-            (Ty::Infer(id), other) | (other, Ty::Infer(id)) => {
-                if self.occurs_in(id, &other) {
-                    self.diags.push(
-                        Diagnostic::error("recursive type inference mismatch", span)
-                            .with_code("E0001"),
-                    );
-                    return Err(());
-                }
-                if !self.bind_int_literal_var(id, &other, span)? {
-                    return Err(());
-                }
-                self.subst.insert(id, other);
-                Ok(())
-            }
-            (Ty::Primitive(p1), Ty::Primitive(p2)) if p1 == p2 => Ok(()),
-            (Ty::Struct(s1, args1), Ty::Struct(s2, args2)) if s1 == s2 => {
-                self.unify_type_lists(args1, args2, span)
-            }
-            (Ty::Enum(e1, args1), Ty::Enum(e2, args2)) if e1 == e2 => {
-                self.unify_type_lists(args1, args2, span)
-            }
-            (Ty::Core(c1, args1), Ty::Core(c2, args2)) if c1 == c2 => {
-                self.unify_type_lists(args1, args2, span)
-            }
-            (
-                Ty::Ref {
-                    mutable: false,
-                    inner: expected,
-                },
-                Ty::Ref {
-                    mutable: true,
-                    inner: actual,
-                },
-            ) => self.unify(*expected, *actual, span),
-            (
-                Ty::Ref {
-                    mutable: m1,
-                    inner: i1,
-                },
-                Ty::Ref {
-                    mutable: m2,
-                    inner: i2,
-                },
-            ) => {
-                if m1 == m2 {
-                    self.unify(*i1, *i2, span)
-                } else {
-                    self.diags.push(
-                        Diagnostic::error("reference mutability mismatch", span).with_code("E0001"),
-                    );
-                    Err(())
-                }
-            }
-            (Ty::Tuple(elems1), Ty::Tuple(elems2)) => {
-                if elems1.len() == elems2.len() {
-                    for (e1, e2) in elems1.into_iter().zip(elems2) {
-                        self.unify(e1, e2, span)?;
-                    }
-                    Ok(())
-                } else {
-                    self.diags
-                        .push(Diagnostic::error("tuple size mismatch", span).with_code("E0001"));
-                    Err(())
-                }
-            }
-            (Ty::Array(e1, len1), Ty::Array(e2, len2)) => {
-                if len1 == len2 {
-                    self.unify(*e1, *e2, span)
-                } else {
-                    self.diags
-                        .push(Diagnostic::error("array length mismatch", span).with_code("E0001"));
-                    Err(())
-                }
-            }
-            (Ty::Slice(e1), Ty::Slice(e2)) => self.unify(*e1, *e2, span),
-            (Ty::Slice(expected), Ty::Array(actual, _)) => self.unify(*expected, *actual, span),
-            (
-                Ty::Fn {
-                    params: p1,
-                    ret: r1,
-                },
-                Ty::Fn {
-                    params: p2,
-                    ret: r2,
-                },
-            ) => {
-                if p1.len() == p2.len() {
-                    for (param1, param2) in p1.into_iter().zip(p2) {
-                        self.unify(param1, param2, span)?;
-                    }
-                    self.unify(*r1, *r2, span)
-                } else {
-                    self.diags.push(
-                        Diagnostic::error("function signature parameters mismatch", span)
-                            .with_code("E0005"),
-                    );
-                    Err(())
-                }
-            }
-            (Ty::Range(e1), Ty::Range(e2)) => self.unify(*e1, *e2, span),
-            (Ty::Param(p1), Ty::Param(p2)) if p1 == p2 => Ok(()),
-            (Ty::Extension(a), Ty::Extension(b)) => match (a.as_ref(), b.as_ref()) {
-                (ExtensionTy::Tensor(ta), ExtensionTy::Tensor(tb)) => {
-                    self.unify_tensor_types(ta, tb, span)
-                }
-                (ExtensionTy::Model(ma), ExtensionTy::Model(mb)) => {
-                    if ma.item_id == mb.item_id {
-                        Ok(())
-                    } else {
-                        let name_a =
-                            if let hir::ItemKind::Model(def) = &self.hir.item(ma.item_id).kind {
-                                self.text(def.name).to_string()
-                            } else {
-                                "Model".to_string()
-                            };
-                        let name_b =
-                            if let hir::ItemKind::Model(def) = &self.hir.item(mb.item_id).kind {
-                                self.text(def.name).to_string()
-                            } else {
-                                "Model".to_string()
-                            };
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("type mismatch: model `{name_a}` and model `{name_b}`"),
-                                span,
-                            )
-                            .with_code("E0005"),
-                        );
-                        Err(())
-                    }
-                }
-                (ExtensionTy::ModelError, ExtensionTy::ModelError) => Ok(()),
-                _ => {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "type mismatch: `{}` and `{}`",
-                                self.ty_to_string(&Ty::Extension(a.clone())),
-                                self.ty_to_string(&Ty::Extension(b.clone()))
-                            ),
-                            span,
-                        )
-                        .with_code("E0005"),
-                    );
-                    Err(())
-                }
-            },
-            (Ty::Never, _) | (_, Ty::Never) => Ok(()),
-            (Ty::Error, _) | (_, Ty::Error) => Ok(()),
-            (t1_resolved, t2_resolved) => {
-                self.diags.push(
-                    Diagnostic::error(
-                        format!(
-                            "type mismatch: expected '{}', found '{}'",
-                            self.ty_to_string(&t1_resolved),
-                            self.ty_to_string(&t2_resolved)
-                        ),
-                        span,
-                    )
-                    .with_code("E0001"),
-                );
-                Err(())
-            }
-        }
-    }
-
-    fn unify_type_lists(&mut self, left: Vec<Ty>, right: Vec<Ty>, span: Span) -> Result<(), ()> {
-        if left.len() != right.len() {
-            self.diags.push(
-                Diagnostic::error("generic argument count mismatch", span).with_code("E0001"),
-            );
-            return Err(());
-        }
-        for (left, right) in left.into_iter().zip(right) {
-            self.unify(left, right, span)?;
-        }
-        Ok(())
-    }
-
-    /// DEV-069: `item` is the nominal's DECLARING item — its name span is only meaningful
-    /// against its own file, which is not necessarily the file being checked.
-    fn format_nominal(&self, item: ItemId, name: Span, args: &[Ty]) -> String {
-        let name = self.item_text(item, name);
-        if args.is_empty() {
-            name.to_string()
-        } else {
-            format!(
-                "{}<{}>",
-                name,
-                args.iter()
-                    .map(|arg| self.ty_to_string(arg))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    }
-
     fn convert_generic_type_args(&mut self, args: Option<&hir::GenericArgs>) -> Vec<Ty> {
         args.map_or_else(Vec::new, |args| {
             args.args
@@ -1673,103 +1202,6 @@ impl<'a> TypeChecker<'a> {
             self.diags.push(
                 Diagnostic::error(format!("missing field '{missing}'"), span).with_code("E0001"),
             );
-        }
-    }
-
-    fn ty_to_string(&self, ty: &Ty) -> String {
-        let ty = self.resolve(ty);
-        match ty {
-            Ty::Primitive(p) => p.name().to_string(),
-            Ty::Struct(id, args) => {
-                let item = self.hir.item(id);
-                if let hir::ItemKind::Struct { name, .. } = &item.kind {
-                    self.format_nominal(id, *name, &args)
-                } else {
-                    "Struct".to_string()
-                }
-            }
-            Ty::Enum(id, args) => {
-                let item = self.hir.item(id);
-                if let hir::ItemKind::Enum { name, .. } = &item.kind {
-                    self.format_nominal(id, *name, &args)
-                } else {
-                    "Enum".to_string()
-                }
-            }
-            Ty::Core(core, args) => {
-                let name = match core {
-                    CoreType::String => "String",
-                    CoreType::Vec => "Vec",
-                    CoreType::Box => "Box",
-                    CoreType::Option => "Option",
-                    CoreType::Result => "Result",
-                    CoreType::Range => "Range",
-                    CoreType::RangeInclusive => "RangeInclusive",
-                    CoreType::CharsIter => "CharsIter",
-                    CoreType::SplitIter => "SplitIter",
-                    CoreType::VecIter => "VecIter",
-                    CoreType::HashMap => "HashMap",
-                    CoreType::HashSet => "HashSet",
-                    CoreType::KeysIter => "KeysIter",
-                    CoreType::ValuesIter => "ValuesIter",
-                    CoreType::Iter => "Iter",
-                    CoreType::MapIter => "MapIter",
-                    CoreType::FilterIter => "FilterIter",
-                    CoreType::Random => "Random",
-                    CoreType::IOError => "IOError",
-                    CoreType::File => "File",
-                    CoreType::Ordering => "Ordering",
-                };
-                if args.is_empty() {
-                    name.to_string()
-                } else {
-                    format!(
-                        "{}<{}>",
-                        name,
-                        args.iter()
-                            .map(|arg| self.ty_to_string(arg))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            }
-            Ty::Ref { mutable, inner } => {
-                let prefix = if mutable { "&mut " } else { "&" };
-                format!("{}{}", prefix, self.ty_to_string(&inner))
-            }
-            Ty::Tuple(elems) => {
-                let el_strs: Vec<String> = elems.iter().map(|e| self.ty_to_string(e)).collect();
-                format!("({})", el_strs.join(", "))
-            }
-            Ty::Array(elem, len) => {
-                format!("[{}; {}]", self.ty_to_string(&elem), len)
-            }
-            Ty::Slice(elem) => {
-                format!("[{}]", self.ty_to_string(&elem))
-            }
-            Ty::Fn { params, ret } => {
-                let p_strs: Vec<String> = params.iter().map(|p| self.ty_to_string(p)).collect();
-                format!("fn({}) -> {}", p_strs.join(", "), self.ty_to_string(&ret))
-            }
-            Ty::Range(elem) => format!("Range<{}>", self.ty_to_string(&elem)),
-            Ty::Param(name) => name.clone(),
-            Ty::Never => "!".to_string(),
-            Ty::Infer(id) => format!("_infer_{}", id.0),
-            Ty::Extension(ext) => match ext.as_ref() {
-                ExtensionTy::Tensor(tensor) => self.tensor_ctx.display_tensor(tensor),
-                ExtensionTy::Model(model) => {
-                    let item = self.hir.item(model.item_id);
-                    if let hir::ItemKind::Model(def) = &item.kind {
-                        self.text(def.name).to_string()
-                    } else {
-                        "Model".to_string()
-                    }
-                }
-                ExtensionTy::ModelError => tensor_syntax::TensorTypeConstructor::ModelError
-                    .name()
-                    .to_string(),
-            },
-            Ty::Error => "{error}".to_string(),
         }
     }
 
@@ -2435,98 +1867,6 @@ impl<'a> TypeChecker<'a> {
             self.diags
                 .push(Diagnostic::error(message.to_string(), span).with_code("E0211"));
         }
-    }
-
-    /// Unify two tensor types, delegating shape/device unification to the
-    /// extension and rendering a provenance-rich diagnostic on mismatch (§9).
-    fn unify_tensor_types(&mut self, a: &TensorKind, b: &TensorKind, span: Span) -> Result<(), ()> {
-        match (a, b) {
-            (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                match self.tensor_ctx.unify_tensor(ta, tb) {
-                    Ok(()) => Ok(()),
-                    Err(err) => {
-                        self.emit_tensor_unify_error(&err, span);
-                        Err(())
-                    }
-                }
-            }
-            (TensorKind::TensorDyn(da), TensorKind::TensorDyn(db)) if da == db => Ok(()),
-            (TensorKind::TensorAny, TensorKind::TensorAny) => Ok(()),
-            _ => {
-                self.diags.push(
-                    Diagnostic::error(
-                        format!(
-                            "tensor type mismatch: expected `{}`, found `{}`",
-                            self.tensor_ctx.display_tensor(a),
-                            self.tensor_ctx.display_tensor(b)
-                        ),
-                        span,
-                    )
-                    .with_code("E0212"),
-                );
-                Err(())
-            }
-        }
-    }
-
-    fn emit_tensor_unify_error(&mut self, err: &UnifyError, span: Span) {
-        let msg = match err {
-            UnifyError::DTypeMismatch { expected, found } => format!(
-                "tensor element type mismatch: expected `{}`, found `{}`",
-                expected.name(),
-                found.name()
-            ),
-            UnifyError::RankMismatch { expected, found } => {
-                format!("tensor rank mismatch: expected rank {expected}, found rank {found}")
-            }
-            UnifyError::DimMismatch {
-                axis,
-                expected,
-                found,
-                expected_origin,
-                found_origin,
-                ..
-            } => format!(
-                "tensor dimension mismatch at axis {axis}: expected `{}` from {expected_origin}, found `{}` from {found_origin}",
-                self.tensor_ctx.display_dim(expected),
-                self.tensor_ctx.display_dim(found)
-            ),
-            UnifyError::DeviceMismatch { expected, found } => {
-                format!("tensor device mismatch: expected `{expected}`, found `{found}`")
-            }
-            UnifyError::RangeMismatch { expected, found } => {
-                format!(
-                    "tensor value-range mismatch: expected `{expected}`, found `{found}`"
-                )
-            }
-            UnifyError::Arithmetic => "tensor dimension arithmetic overflowed".to_string(),
-        };
-        let mut diagnostic = Diagnostic::error(msg, span).with_code("E0212");
-        if let UnifyError::DimMismatch {
-            expected_span,
-            found_span,
-            ..
-        } = err
-        {
-            if let Some(found) = found_span {
-                diagnostic.span = *found;
-            }
-            if let Some(expected) = expected_span {
-                if let Some(source) = self.hir.sources.get(expected.source) {
-                    let (line, column) = source.line_col(expected.lo);
-                    diagnostic = diagnostic
-                        .with_note(format!("expected dimension originates at {line}:{column}"));
-                }
-            }
-            if let Some(found) = found_span {
-                if let Some(source) = self.hir.sources.get(found.source) {
-                    let (line, column) = source.line_col(found.lo);
-                    diagnostic = diagnostic
-                        .with_note(format!("found dimension originates at {line}:{column}"));
-                }
-            }
-        }
-        self.diags.push(diagnostic);
     }
 
     fn check_crate(&mut self) {
@@ -6525,64 +5865,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn instantiate_ty(&self, ty: &Ty, map: &HashMap<String, Ty>) -> Ty {
-        match ty {
-            Ty::Param(name) => {
-                if let Some(target) = map.get(name) {
-                    return target.clone();
-                }
-                // WP-C6.2c: a projection `T::Item` instantiates by substituting the base type
-                // parameter and resolving the associated type through the concrete impl.
-                if let Some((base, assoc)) = name.split_once("::") {
-                    if let Some(Ty::Struct(id, _) | Ty::Enum(id, _)) = map.get(base) {
-                        if let Some(bound) = self.assoc_projections.get(&(*id, assoc.to_string())) {
-                            return bound.clone();
-                        }
-                    }
-                }
-                ty.clone()
-            }
-            Ty::Ref { mutable, inner } => Ty::Ref {
-                mutable: *mutable,
-                inner: Box::new(self.instantiate_ty(inner, map)),
-            },
-            Ty::Struct(item, args) => Ty::Struct(
-                *item,
-                args.iter()
-                    .map(|arg| self.instantiate_ty(arg, map))
-                    .collect(),
-            ),
-            Ty::Enum(item, args) => Ty::Enum(
-                *item,
-                args.iter()
-                    .map(|arg| self.instantiate_ty(arg, map))
-                    .collect(),
-            ),
-            Ty::Core(core, args) => Ty::Core(
-                *core,
-                args.iter()
-                    .map(|arg| self.instantiate_ty(arg, map))
-                    .collect(),
-            ),
-            Ty::Tuple(elems) => {
-                Ty::Tuple(elems.iter().map(|e| self.instantiate_ty(e, map)).collect())
-            }
-            Ty::Array(elem, len) => Ty::Array(Box::new(self.instantiate_ty(elem, map)), *len),
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.instantiate_ty(elem, map))),
-            Ty::Fn { params, ret } => Ty::Fn {
-                params: params.iter().map(|p| self.instantiate_ty(p, map)).collect(),
-                ret: Box::new(self.instantiate_ty(ret, map)),
-            },
-            Ty::Range(elem) => Ty::Range(Box::new(self.instantiate_ty(elem, map))),
-            Ty::Extension(ext) => match &**ext {
-                ExtensionTy::Tensor(_) | ExtensionTy::Model(_) | ExtensionTy::ModelError => {
-                    ty.clone()
-                }
-            },
-            _ => ty.clone(),
-        }
-    }
-
     fn freshen_call_ty(
         &mut self,
         ty: Ty,
@@ -7158,13 +6440,6 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Never(_) => Ty::Never,
         };
         Some((receiver, params, ret))
-    }
-
-    /// `Self` in a trait signature means the concrete receiver at this call site.
-    fn subst_self_ty(ty: Ty, self_ty: &Ty) -> Ty {
-        let mut map = HashMap::new();
-        map.insert("Self".to_string(), self_ty.clone());
-        substitute_ty(&ty, &map)
     }
 
     fn trait_default_member(
@@ -7896,42 +7171,6 @@ impl<'a> TypeChecker<'a> {
             }
         }
         map
-    }
-
-    /// WP-C6.2c: rewrite `Self` in a trait method's converted type to the concrete receiver.
-    /// `Self` alone becomes `recv`; `Self::Item` becomes `recv::Item` (a projection string that a
-    /// later normalisation step resolves). Applied to a method-call result before it is returned.
-    fn subst_self(ty: &Ty, recv: &str) -> Ty {
-        match ty {
-            Ty::Param(name) if name == "Self" => Ty::Param(recv.to_string()),
-            Ty::Param(name) => match name.strip_prefix("Self::") {
-                Some(assoc) => Ty::Param(format!("{recv}::{assoc}")),
-                None => ty.clone(),
-            },
-            Ty::Ref { mutable, inner } => Ty::Ref {
-                mutable: *mutable,
-                inner: Box::new(Self::subst_self(inner, recv)),
-            },
-            Ty::Struct(item, args) => Ty::Struct(
-                *item,
-                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
-            ),
-            Ty::Enum(item, args) => Ty::Enum(
-                *item,
-                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
-            ),
-            Ty::Core(core, args) => Ty::Core(
-                *core,
-                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
-            ),
-            Ty::Tuple(elems) => {
-                Ty::Tuple(elems.iter().map(|e| Self::subst_self(e, recv)).collect())
-            }
-            Ty::Array(elem, len) => Ty::Array(Box::new(Self::subst_self(elem, recv)), *len),
-            Ty::Slice(elem) => Ty::Slice(Box::new(Self::subst_self(elem, recv))),
-            Ty::Range(elem) => Ty::Range(Box::new(Self::subst_self(elem, recv))),
-            other => other.clone(),
-        }
     }
 
     /// WP-C6.2c: resolve any associated-type projection reachable in `ty`. A `Ty::Param("X::Item")`
@@ -11379,21 +10618,6 @@ fn convert_float_suffix(suffix: crate::lexer::FloatSuffix) -> Primitive {
         crate::lexer::FloatSuffix::F32 => Primitive::Float32,
         crate::lexer::FloatSuffix::F64 => Primitive::Float64,
     }
-}
-
-/// WP-C4.7-6.3: the primitive integer types an unsuffixed integer literal may adopt.
-fn is_integer_primitive(p: Primitive) -> bool {
-    matches!(
-        p,
-        Primitive::Int8
-            | Primitive::Int16
-            | Primitive::Int32
-            | Primitive::Int64
-            | Primitive::UInt8
-            | Primitive::UInt16
-            | Primitive::UInt32
-            | Primitive::UInt64
-    )
 }
 
 fn is_numeric(p: Primitive) -> bool {

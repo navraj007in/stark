@@ -21,14 +21,15 @@
 
 use super::types::{
     BoundsCheck, CallableDeclId, CallableInstantiation, CallableSigTy, CallableUse, CallableUseId,
-    DeferredDisplayPlan, DisplayPath, FnSigTy, GenericKind, LoopContext, Ty, TypeVarId, VariantTy,
+    DeferredDisplayPlan, DisplayPath, ExtensionTy, FnSigTy, GenericKind, LoopContext, Ty,
+    TypeVarId, VariantTy,
 };
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::DimVar;
+use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{DType, Device, UnifyCtx};
-use crate::extensions::tensor::types::{DimProvenance, OriginKind};
-use crate::hir::Res;
 use crate::hir::{self, BlockId, ExprId, Hir, ItemId, LocalId};
+use crate::hir::{CoreType, Res};
 use crate::options::LanguageOptions;
 use crate::source::Span;
 use std::collections::{BTreeMap, HashMap};
@@ -242,44 +243,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Register tensor extension generic kinds for an item scope.
-    pub(super) fn enter_tensor_param_scope(
-        &mut self,
-        generics: &[hir::GenericParam],
-    ) -> TensorParamScopes {
-        let saved = TensorParamScopes {
-            dims: std::mem::take(&mut self.dim_scope),
-            dtypes: std::mem::take(&mut self.dtype_scope),
-            devices: std::mem::take(&mut self.device_scope),
-            kinds: std::mem::take(&mut self.generic_kinds),
-        };
-        for g in generics {
-            let name = self.text(g.name).to_string();
-            let kind = self.generic_kind(g);
-            self.generic_kinds.insert(name.clone(), kind);
-            match kind {
-                GenericKind::Dim => {
-                    let var = self.tensor_ctx.rigid_dim(DimProvenance {
-                        span: g.name,
-                        origin: OriginKind::Param,
-                        label: name.clone(),
-                    });
-                    self.dim_scope.insert(name, var);
-                }
-                GenericKind::DType => {
-                    let dtype = self.tensor_ctx.rigid_dtype();
-                    self.dtype_scope.insert(name, dtype);
-                }
-                GenericKind::Device => {
-                    let device = self.tensor_ctx.rigid_device();
-                    self.device_scope.insert(name, device);
-                }
-                GenericKind::Type => {}
-            }
-        }
-        saved
-    }
-
     /// Outer values displaced by entering an item.
     pub(super) fn enter_item_scope(&mut self, item_id: ItemId) -> Option<u32> {
         let saved = self.current_module;
@@ -347,5 +310,151 @@ impl<'a> TypeChecker<'a> {
         self.dtype_scope = saved.dtypes;
         self.device_scope = saved.devices;
         self.generic_kinds = saved.kinds;
+    }
+
+    // AS7 Packet 6: source text and type rendering read the checker's own storage, so they are
+    // state services. The dependency checker found `infer` and `state` reaching into `mod` for
+    // them once its ownership map was repaired.
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-ii-d. This used to slice `self.file` — "the file currently being checked" — which was
+    /// right for the item under check and wrong for every span belonging to another item. Four
+    /// separate repairs of that one mistake are recorded (DEV-069, DEV-101, DEV-148 and its
+    /// generic second site), each adding another way to carry the declaring file to the read:
+    /// `item_text`, `item_src`, `item_file`, `decl_text`, a foreign-signature item stack, and a
+    /// per-item `self.file` swap. All of it existed to answer a question the span now answers.
+    ///
+    /// `"?"` remains for an unresolvable span rather than a panic (WP-C4.7-4): a wrong read should
+    /// be visible in a diagnostic, not a compiler crash.
+    pub(super) fn text(&self, span: Span) -> &str {
+        self.hir
+            .sources
+            .get(span.source)
+            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
+            .unwrap_or("?")
+    }
+
+    pub(super) fn ty_to_string(&self, ty: &Ty) -> String {
+        let ty = self.resolve(ty);
+        match ty {
+            Ty::Primitive(p) => p.name().to_string(),
+            Ty::Struct(id, args) => {
+                let item = self.hir.item(id);
+                if let hir::ItemKind::Struct { name, .. } = &item.kind {
+                    self.format_nominal(id, *name, &args)
+                } else {
+                    "Struct".to_string()
+                }
+            }
+            Ty::Enum(id, args) => {
+                let item = self.hir.item(id);
+                if let hir::ItemKind::Enum { name, .. } = &item.kind {
+                    self.format_nominal(id, *name, &args)
+                } else {
+                    "Enum".to_string()
+                }
+            }
+            Ty::Core(core, args) => {
+                let name = match core {
+                    CoreType::String => "String",
+                    CoreType::Vec => "Vec",
+                    CoreType::Box => "Box",
+                    CoreType::Option => "Option",
+                    CoreType::Result => "Result",
+                    CoreType::Range => "Range",
+                    CoreType::RangeInclusive => "RangeInclusive",
+                    CoreType::CharsIter => "CharsIter",
+                    CoreType::SplitIter => "SplitIter",
+                    CoreType::VecIter => "VecIter",
+                    CoreType::HashMap => "HashMap",
+                    CoreType::HashSet => "HashSet",
+                    CoreType::KeysIter => "KeysIter",
+                    CoreType::ValuesIter => "ValuesIter",
+                    CoreType::Iter => "Iter",
+                    CoreType::MapIter => "MapIter",
+                    CoreType::FilterIter => "FilterIter",
+                    CoreType::Random => "Random",
+                    CoreType::IOError => "IOError",
+                    CoreType::File => "File",
+                    CoreType::Ordering => "Ordering",
+                };
+                if args.is_empty() {
+                    name.to_string()
+                } else {
+                    format!(
+                        "{}<{}>",
+                        name,
+                        args.iter()
+                            .map(|arg| self.ty_to_string(arg))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
+            Ty::Ref { mutable, inner } => {
+                let prefix = if mutable { "&mut " } else { "&" };
+                format!("{}{}", prefix, self.ty_to_string(&inner))
+            }
+            Ty::Tuple(elems) => {
+                let el_strs: Vec<String> = elems.iter().map(|e| self.ty_to_string(e)).collect();
+                format!("({})", el_strs.join(", "))
+            }
+            Ty::Array(elem, len) => {
+                format!("[{}; {}]", self.ty_to_string(&elem), len)
+            }
+            Ty::Slice(elem) => {
+                format!("[{}]", self.ty_to_string(&elem))
+            }
+            Ty::Fn { params, ret } => {
+                let p_strs: Vec<String> = params.iter().map(|p| self.ty_to_string(p)).collect();
+                format!("fn({}) -> {}", p_strs.join(", "), self.ty_to_string(&ret))
+            }
+            Ty::Range(elem) => format!("Range<{}>", self.ty_to_string(&elem)),
+            Ty::Param(name) => name.clone(),
+            Ty::Never => "!".to_string(),
+            Ty::Infer(id) => format!("_infer_{}", id.0),
+            Ty::Extension(ext) => match ext.as_ref() {
+                ExtensionTy::Tensor(tensor) => self.tensor_ctx.display_tensor(tensor),
+                ExtensionTy::Model(model) => {
+                    let item = self.hir.item(model.item_id);
+                    if let hir::ItemKind::Model(def) = &item.kind {
+                        self.text(def.name).to_string()
+                    } else {
+                        "Model".to_string()
+                    }
+                }
+                ExtensionTy::ModelError => tensor_syntax::TensorTypeConstructor::ModelError
+                    .name()
+                    .to_string(),
+            },
+            Ty::Error => "{error}".to_string(),
+        }
+    }
+
+    // AS7 Packet 6: the nominal-type renderer belongs with `ty_to_string`, a state service.
+    /// DEV-069: `item` is the nominal's DECLARING item — its name span is only meaningful
+    /// against its own file, which is not necessarily the file being checked.
+    pub(super) fn format_nominal(&self, item: ItemId, name: Span, args: &[Ty]) -> String {
+        let name = self.item_text(item, name);
+        if args.is_empty() {
+            name.to_string()
+        } else {
+            format!(
+                "{}<{}>",
+                name,
+                args.iter()
+                    .map(|arg| self.ty_to_string(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+
+    // AS7 Packet 6: `item_text` is the file-provenance counterpart of `text` — the pair this
+    // repo has already paid for once, when a span was read against the wrong file. They belong
+    // in one module.
+    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
+    pub(super) fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 }
