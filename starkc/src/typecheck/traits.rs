@@ -17,15 +17,19 @@ use crate::ast::Primitive;
 use crate::hir::{self, CoreType, Hir, ItemId, Res, TypeId};
 use std::collections::{HashMap, HashSet};
 
-/// Why a trait relation holds. `Impl` carries the selected impl so that the layer above can look
-/// up *that impl's* associated types — the same impl this layer chose, which is what preserves
-/// the existing behaviour when several traits expose the same associated name.
+/// Why a trait relation holds **for a nominal type**. `Impl` carries the selected impl so that the
+/// layer above can look up *that impl's* associated types — the same impl this layer chose, which
+/// is what preserves the existing behaviour when several traits expose the same associated name.
+///
+/// The owner ruling sketched a third variant, `Yes`, for "holds with no impl to point at". It is
+/// deliberately absent: this witness is only ever produced for `Ty::Struct`/`Ty::Enum`, and every
+/// non-nominal case — primitives, Core containers, references, generic parameters — is answered
+/// as a `bool` by `satisfies_bound_identity` before a witness is ever requested. A `Yes` variant
+/// would be unconstructible, and CI's `-D warnings` says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BoundWitness {
-    /// The relation does not hold.
+    /// No impl discharges the bound.
     No,
-    /// It holds, with no impl to point at (a primitive or built-in rule).
-    Yes,
     /// It holds because of this `impl <Trait> for <Ty>` item.
     Impl(ItemId),
 }
