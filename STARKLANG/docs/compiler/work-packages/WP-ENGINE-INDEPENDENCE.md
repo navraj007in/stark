@@ -191,12 +191,14 @@ The packet must identify semantic assumptions delegated to Rust/rustc and record
 Create:
 
 ```text
-STARKLANG/docs/compiler/work-packages/WP-ENGINE-INDEPENDENCE.md
-STARKLANG/docs/compiler/ENGINE-SHARED-FATE-REGISTER.md
-STARKLANG/docs/compiler/ENGINE-RISK-PROFILES.md
-STARKLANG/docs/compiler/RUSTC-ASSUMPTION-INVENTORY.md
-STARKLANG/docs/compiler/ENGINE-EVIDENCE-INDEPENDENCE.md
-STARKLANG/docs/compiler/engine-shared-fate.json
+STARKLANG/docs/compiler/work-packages/WP-ENGINE-INDEPENDENCE.md   this packet
+STARKLANG/docs/compiler/ENGINE-SHARED-FATE-REGISTER.md            EI0+EI1  DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-EVIDENCE-INDEPENDENCE.md           EI2      DONE 2026-08-09
+STARKLANG/docs/compiler/RUSTC-ASSUMPTION-INVENTORY.md             EI3      DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-RISK-PROFILES.md                   EI4      DONE 2026-08-09
+STARKLANG/docs/compiler/engine-shared-fate.json                   EI1      DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-MUTATION-TARGETS.md                EI5      DONE 2026-08-09
+                                                                  EI6      OPEN — AS8/C10 closure
 ```
 
 This file is the work packet. The remaining files are execution outputs.
