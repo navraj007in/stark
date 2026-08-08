@@ -947,3 +947,23 @@ pub(super) fn is_integer(p: Primitive) -> bool {
             | Primitive::UInt64
     )
 }
+
+// AS7 Packet 8: literal suffix -> primitive is a pure fact about the token.
+pub(super) fn convert_int_suffix(suffix: crate::lexer::IntSuffix) -> Primitive {
+    match suffix {
+        crate::lexer::IntSuffix::I8 => Primitive::Int8,
+        crate::lexer::IntSuffix::I16 => Primitive::Int16,
+        crate::lexer::IntSuffix::I32 => Primitive::Int32,
+        crate::lexer::IntSuffix::I64 => Primitive::Int64,
+        crate::lexer::IntSuffix::U8 => Primitive::UInt8,
+        crate::lexer::IntSuffix::U16 => Primitive::UInt16,
+        crate::lexer::IntSuffix::U32 => Primitive::UInt32,
+        crate::lexer::IntSuffix::U64 => Primitive::UInt64,
+    }
+}
+pub(super) fn convert_float_suffix(suffix: crate::lexer::FloatSuffix) -> Primitive {
+    match suffix {
+        crate::lexer::FloatSuffix::F32 => Primitive::Float32,
+        crate::lexer::FloatSuffix::F64 => Primitive::Float64,
+    }
+}

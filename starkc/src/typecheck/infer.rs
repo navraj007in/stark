@@ -758,4 +758,11 @@ impl TypeChecker<'_> {
             _ => false,
         }
     }
+
+    // AS7 Packet 8: moved to the layer that owns the question.
+    pub(super) fn new_type_var(&mut self) -> Ty {
+        let id = TypeVarId(self.var_count);
+        self.var_count += 1;
+        Ty::Infer(id)
+    }
 }

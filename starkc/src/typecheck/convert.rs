@@ -30,7 +30,7 @@ use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{
     DType, Device, DimProvenance, OriginKind, Shape, TensorKind, TensorTy,
 };
-use crate::hir::{self, CoreType, Res, TypeId};
+use crate::hir::{self, CoreType, ItemId, Res, TypeId};
 use crate::source::Span;
 use std::collections::HashMap;
 
@@ -856,6 +856,46 @@ impl TypeChecker<'_> {
                 )
                 .with_code("E0001"),
             );
+        }
+    }
+
+    // AS7 Packet 8: moved to the layer that owns the question.
+    pub(super) fn nominal_param_map(&self, item_id: ItemId, args: &[Ty]) -> HashMap<String, Ty> {
+        self.item_generic_params(item_id)
+            .iter()
+            .zip(args)
+            // DEV-101: the nominal's parameter names are declared by `item_id`, so they read
+            // against its file — matching the `Ty::Param(name)` recorded in the nominal's field
+            // types (built under the nominal's own file). `self.text` (the caller's file) mismatched
+            // for a cross-file nominal, leaving generic fields unsubstituted.
+            .map(|(param, arg)| (self.item_text(item_id, param.name).to_string(), arg.clone()))
+            .collect()
+    }
+    pub(super) fn nominal_use_args(
+        &mut self,
+        item_id: ItemId,
+        explicit: Option<&hir::GenericArgs>,
+        span: Span,
+    ) -> Vec<Ty> {
+        let expected = self.item_generic_params(item_id).len();
+        if let Some(explicit) = explicit {
+            let args = self.convert_generic_type_args(Some(explicit));
+            self.validate_generic_arity(expected, args.len(), span);
+            args
+        } else {
+            (0..expected).map(|_| self.new_type_var()).collect()
+        }
+    }
+
+    // AS7 Packet 8: reading an item's declared generic parameters is part of converting a
+    // written application of it.
+    pub(super) fn item_generic_params(&self, item_id: ItemId) -> &[hir::GenericParam] {
+        match &self.hir.item(item_id).kind {
+            hir::ItemKind::Struct { generics, .. }
+            | hir::ItemKind::Enum { generics, .. }
+            | hir::ItemKind::Trait { generics, .. }
+            | hir::ItemKind::TypeAlias { generics, .. } => generics,
+            _ => &[],
         }
     }
 }

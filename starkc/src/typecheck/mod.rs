@@ -26,9 +26,12 @@ mod bounds;
 /// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
 mod convert;
 mod infer;
+mod patterns;
 mod state;
 mod traits;
 use state::{single_segment_name, SelfScope, TypeChecker};
+use traits::is_copy_with_impls;
+pub use traits::{copy_eligible_types, nominals_with_destructor};
 
 mod types;
 pub use types::{
@@ -44,8 +47,8 @@ use types::{
 
 // Crate-internal pure helpers of the representation, used by the passes still in `mod.rs`.
 use types::{
-    is_float_primitive, is_integer, is_numeric, standard_display_type, standard_hash_type,
-    ty_contains_error, ty_contains_infer, unit_or_tuple,
+    convert_float_suffix, convert_int_suffix, is_float_primitive, is_integer, is_numeric,
+    standard_display_type, standard_hash_type, ty_contains_error, ty_contains_infer, unit_or_tuple,
 };
 
 type MethodCandidate<'a> = (&'a hir::FnDef, bool, HashMap<String, Ty>, Ty, bool, ItemId);
@@ -535,136 +538,6 @@ impl<'a> TypeChecker<'a> {
         name.split_once('/').map(|(package, _)| package)
     }
 
-    fn pat_subsumes(&self, a: &hir::PatNode, b: &hir::PatNode) -> bool {
-        match (&a.kind, &b.kind) {
-            (hir::PatKind::Wild | hir::PatKind::Binding { .. }, _) => true,
-            (_, hir::PatKind::Wild | hir::PatKind::Binding { .. }) => false,
-            (hir::PatKind::Lit(la), hir::PatKind::Lit(lb)) => {
-                // WP-C1.5: `Lit` itself carries no value for Int/Float/Str (only shape tags --
-                // base/suffix/raw), so comparing it directly treats any two same-kind literal
-                // patterns as equal regardless of value, e.g. `match x { 1 => .., 2 => .. }`
-                // spuriously flagged the second arm as unreachable. Parse both literals' actual
-                // values from their source text (the same logic `interp.rs` uses to evaluate
-                // them) and compare those instead.
-                match (
-                    literal::eval_lit_value(*la, self.text(a.span), &self.hir.str_lits),
-                    literal::eval_lit_value(*lb, self.text(b.span), &self.hir.str_lits),
-                ) {
-                    (Some(va), Some(vb)) => va == vb,
-                    // Unparseable literal: fall back to the old shape-only comparison rather
-                    // than silently treating it as never-equal (matches this function's existing
-                    // "when in doubt" bias -- it also does not exist to catch parse failures).
-                    _ => la == lb,
-                }
-            }
-            (hir::PatKind::Path { res: ra, .. }, hir::PatKind::Path { res: rb, .. }) => ra == rb,
-            (hir::PatKind::Tuple(pa), hir::PatKind::Tuple(pb)) => {
-                pa.len() == pb.len()
-                    && pa
-                        .iter()
-                        .zip(pb)
-                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
-            }
-            (hir::PatKind::Array(pa), hir::PatKind::Array(pb)) => {
-                pa.len() == pb.len()
-                    && pa
-                        .iter()
-                        .zip(pb)
-                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
-            }
-            (
-                hir::PatKind::TupleVariant {
-                    res: ra, pats: pa, ..
-                },
-                hir::PatKind::TupleVariant {
-                    res: rb, pats: pb, ..
-                },
-            ) => {
-                ra == rb
-                    && pa.len() == pb.len()
-                    && pa
-                        .iter()
-                        .zip(pb)
-                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
-            }
-            (
-                hir::PatKind::Struct {
-                    res: ra,
-                    fields: fa,
-                    ..
-                },
-                hir::PatKind::Struct {
-                    res: rb,
-                    fields: fb,
-                    ..
-                },
-            ) => {
-                if ra != rb {
-                    return false;
-                }
-                for field_a in fa {
-                    let name_a = self.text(field_a.name);
-                    let Some(field_b) = fb.iter().find(|f| self.text(f.name) == name_a) else {
-                        return false;
-                    };
-                    match (field_a.pat, field_b.pat) {
-                        (Some(pa), Some(pb)) => {
-                            if !self.pat_subsumes(self.hir.pat(pa), self.hir.pat(pb)) {
-                                return false;
-                            }
-                        }
-                        (Some(_), None) => return false,
-                        _ => {}
-                    }
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// WP-C1.5: whether a pattern always matches, regardless of the scrutinee's value -- used
-    /// alongside the top-level `Wild`/`Binding` check to decide match-arm exhaustiveness. A bare
-    /// `Wild`/`Binding` is trivially irrefutable; a `Tuple`/`Array` pattern is irrefutable if
-    /// every element is; a `Struct` pattern is irrefutable if every explicit field sub-pattern
-    /// is (a shorthand field with no sub-pattern, e.g. `Point { x }`, is itself a binding).
-    /// Without this, `match pair { (a, b) => .. }` (a fully-binding tuple pattern, matches any
-    /// tuple) was flagged as non-exhaustive by the new general "requires wildcard" rule below,
-    /// even though this single arm covers every possible tuple value.
-    /// Does this pattern name a CONSTRUCTOR — a variant path, a struct shape, a tuple or an array?
-    ///
-    /// Used to decide whether a reference-typed scrutinee is an error (PAT-BIND-001: `&T` is not a
-    /// nominal type, so a constructor path cannot name it). A wildcard or a plain binding names no
-    /// constructor and is fine against a reference — `match r { other => .. }` binds the reference
-    /// and is not what the rule forbids. Literal patterns likewise cannot apply to a reference and
-    /// are rejected by ordinary unification, so they need no separate report here.
-    fn pat_is_constructor(&self, pat_id: PatId) -> bool {
-        !matches!(
-            &self.hir.pat(pat_id).kind,
-            hir::PatKind::Wild | hir::PatKind::Binding { .. } | hir::PatKind::Lit(_)
-        )
-    }
-
-    fn is_irrefutable(&self, pat: &hir::PatNode) -> bool {
-        match &pat.kind {
-            hir::PatKind::Wild | hir::PatKind::Binding { .. } => true,
-            hir::PatKind::Tuple(pats) | hir::PatKind::Array(pats) => pats
-                .iter()
-                .all(|&pat_id| self.is_irrefutable(self.hir.pat(pat_id))),
-            // A `Struct { .. }` pattern matching an *enum variant* (`res: Res::Variant`) is not
-            // irrefutable on its own -- other variants can still occur. Only a plain-struct
-            // pattern (exactly one possible shape) can be irrefutable this way.
-            hir::PatKind::Struct { res, fields, .. } if !matches!(res, Res::Variant(..)) => {
-                fields.iter().all(|field| {
-                    field
-                        .pat
-                        .is_none_or(|pat_id| self.is_irrefutable(self.hir.pat(pat_id)))
-                })
-            }
-            _ => false,
-        }
-    }
-
     /// WP-C1.5: minimal constant evaluator for array-repeat-expression counts (`[value; count]`,
     /// 02-Syntax-Grammar.md:330). Handles the two confirmed-common shapes -- a literal, or a
     /// reference to a `const` item (recursing into its initializer) -- rather than a full
@@ -742,12 +615,6 @@ impl<'a> TypeChecker<'a> {
             }
             _ => None,
         }
-    }
-
-    fn new_type_var(&mut self) -> Ty {
-        let id = TypeVarId(self.var_count);
-        self.var_count += 1;
-        Ty::Infer(id)
     }
 
     fn builtin_type(&mut self, builtin: Builtin) -> Ty {
@@ -1059,44 +926,6 @@ impl<'a> TypeChecker<'a> {
             }
             hir::DimExpr::Error => "<err>".to_string(),
         }
-    }
-
-    fn item_generic_params(&self, item_id: ItemId) -> &[hir::GenericParam] {
-        match &self.hir.item(item_id).kind {
-            hir::ItemKind::Struct { generics, .. }
-            | hir::ItemKind::Enum { generics, .. }
-            | hir::ItemKind::Trait { generics, .. }
-            | hir::ItemKind::TypeAlias { generics, .. } => generics,
-            _ => &[],
-        }
-    }
-
-    fn nominal_use_args(
-        &mut self,
-        item_id: ItemId,
-        explicit: Option<&hir::GenericArgs>,
-        span: Span,
-    ) -> Vec<Ty> {
-        let expected = self.item_generic_params(item_id).len();
-        if let Some(explicit) = explicit {
-            let args = self.convert_generic_type_args(Some(explicit));
-            self.validate_generic_arity(expected, args.len(), span);
-            args
-        } else {
-            (0..expected).map(|_| self.new_type_var()).collect()
-        }
-    }
-
-    fn nominal_param_map(&self, item_id: ItemId, args: &[Ty]) -> HashMap<String, Ty> {
-        self.item_generic_params(item_id)
-            .iter()
-            .zip(args)
-            // DEV-101: the nominal's parameter names are declared by `item_id`, so they read
-            // against its file — matching the `Ty::Param(name)` recorded in the nominal's field
-            // types (built under the nominal's own file). `self.text` (the caller's file) mismatched
-            // for a cross-file nominal, leaving generic fields unsubstituted.
-            .map(|(param, arg)| (self.item_text(item_id, param.name).to_string(), arg.clone()))
-            .collect()
     }
 
     fn is_unsized_value_type(&self, ty: &Ty) -> bool {
@@ -4820,289 +4649,6 @@ impl<'a> TypeChecker<'a> {
 
         self.expr_types.insert(expr_id, ty.clone());
         ty
-    }
-
-    fn is_copy_ty(&mut self, ty: &Ty) -> bool {
-        let resolved = self.resolve(ty);
-        let copy_types = copy_eligible_types(self.hir);
-        is_copy_with_impls(&resolved, &copy_types)
-    }
-
-    fn scrutinee_reads_through_ref(&self, expr: ExprId) -> bool {
-        match &self.hir.expr(expr).kind {
-            hir::ExprKind::Unary {
-                op: crate::ast::UnOp::Deref,
-                ..
-            } => true,
-            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
-                matches!(self.expr_types.get(base), Some(Ty::Ref { .. }))
-                    || self.scrutinee_reads_through_ref(*base)
-            }
-            _ => false,
-        }
-    }
-
-    fn check_pat_with_mode(
-        &mut self,
-        pat_id: PatId,
-        expected: Ty,
-        bind_non_copy_by_ref: BindMode,
-    ) -> Ty {
-        let pat = self.hir.pat(pat_id);
-        match &pat.kind {
-            hir::PatKind::Lit(lit) => match lit {
-                Lit::Int { suffix, .. } => {
-                    if let Some(s) = suffix {
-                        Ty::Primitive(convert_int_suffix(*s))
-                    } else {
-                        Ty::Primitive(Primitive::Int32)
-                    }
-                }
-                Lit::Float { suffix, .. } => {
-                    if let Some(s) = suffix {
-                        Ty::Primitive(convert_float_suffix(*s))
-                    } else {
-                        Ty::Primitive(Primitive::Float64)
-                    }
-                }
-                Lit::Str { .. } => Ty::Ref {
-                    mutable: false,
-                    inner: Box::new(Ty::Primitive(Primitive::Str)),
-                },
-                Lit::Char => Ty::Primitive(Primitive::Char),
-                Lit::Bool(_) => Ty::Primitive(Primitive::Bool),
-            },
-            hir::PatKind::Wild => expected,
-            hir::PatKind::Binding { local, .. } => {
-                let binding_ty = if bind_non_copy_by_ref.binds_by_ref(self.is_copy_ty(&expected)) {
-                    Ty::Ref {
-                        mutable: false,
-                        inner: Box::new(expected.clone()),
-                    }
-                } else {
-                    expected.clone()
-                };
-                self.local_types.insert(*local, binding_ty);
-                expected
-            }
-            hir::PatKind::Path { res, .. } => match res {
-                Res::Item(item_id) => {
-                    if let Some(const_ty) = self.const_types.get(item_id) {
-                        let const_ty = const_ty.clone();
-                        if !matches!(
-                            self.resolve(&const_ty),
-                            Ty::Primitive(
-                                Primitive::Int8
-                                    | Primitive::Int16
-                                    | Primitive::Int32
-                                    | Primitive::Int64
-                                    | Primitive::UInt8
-                                    | Primitive::UInt16
-                                    | Primitive::UInt32
-                                    | Primitive::UInt64
-                                    | Primitive::Float32
-                                    | Primitive::Float64
-                                    | Primitive::Bool
-                                    | Primitive::Char
-                            )
-                        ) {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    "constant patterns are restricted to primitive scalar values",
-                                    pat.span,
-                                )
-                                .with_code("E0305")
-                                .with_note(
-                                    "aggregate and other nonprimitive constants cannot be patterns",
-                                ),
-                            );
-                            Ty::Error
-                        } else {
-                            const_ty
-                        }
-                    } else {
-                        Ty::Error
-                    }
-                }
-                Res::Variant(enum_id, _) => {
-                    let args = self.nominal_use_args(*enum_id, None, pat.span);
-                    Ty::Enum(*enum_id, args)
-                }
-                // Companion to resolve.rs's `lower_pattern` fix: a bare `None` pattern now
-                // reaches here as `PatKind::Path { res: Res::Builtin(Builtin::None), .. }`
-                // (previously unreachable -- `None` always fell through to a fresh binding).
-                // No payload to check; mirrors the `Res::Builtin(Builtin::Some)` no-payload-
-                // present arm of the `TupleVariant` case just below, which likewise returns the
-                // expected type unchecked against the specific builtin/type pairing (relying on
-                // the caller's `unify(scr_ty, pat_ty, ..)` to catch a genuine mismatch).
-                Res::Builtin(Builtin::None) => self.resolve(&expected),
-                _ => Ty::Error,
-            },
-            hir::PatKind::TupleVariant { res, pats, .. } => {
-                if let Res::Variant(enum_id, variant_idx) = res {
-                    let args = match self.resolve(&expected) {
-                        Ty::Enum(expected_id, args) if expected_id == *enum_id => args,
-                        _ => self.nominal_use_args(*enum_id, None, pat.span),
-                    };
-                    let map = self.nominal_param_map(*enum_id, &args);
-                    let tys_opt = self.enum_variants.get(enum_id).and_then(|variants| {
-                        let variant = &variants[*variant_idx as usize];
-                        if let VariantFields::Tuple(tys) = &variant.fields {
-                            Some(tys.clone())
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(tys) = tys_opt {
-                        for (p, expected_t) in pats.iter().zip(tys) {
-                            let expected_t = self.instantiate_ty(&expected_t, &map);
-                            let p_ty = self.check_pat_with_mode(
-                                *p,
-                                expected_t.clone(),
-                                bind_non_copy_by_ref,
-                            );
-                            let _ = self.unify(expected_t, p_ty, p.span(self.hir));
-                        }
-                    }
-                    Ty::Enum(*enum_id, args)
-                } else if let Res::Builtin(builtin) = res {
-                    let resolved = self.resolve(&expected);
-                    let payload = match (builtin, &resolved) {
-                        (Builtin::Some, Ty::Core(CoreType::Option, args)) => args.first().cloned(),
-                        (Builtin::Ok, Ty::Core(CoreType::Result, args)) => args.first().cloned(),
-                        (Builtin::Err, Ty::Core(CoreType::Result, args)) => args.get(1).cloned(),
-                        // **DEV-205: `IOError::Other(msg)` was missing here**, so its sub-pattern
-                        // was never checked: the binding got no `local_types` entry and every use
-                        // of it was typed `Ty::Error`. The program ran and printed correctly, which
-                        // is why nothing found it for as long as nothing read the tables — the
-                        // DEV-121 shape, in the checker rather than the oracle. The payload is the
-                        // `String` the constructor's own signature already declares.
-                        (Builtin::IOErrorOther, Ty::Core(CoreType::IOError, _)) => {
-                            Some(Ty::Primitive(Primitive::String))
-                        }
-                        _ => None,
-                    };
-                    if let (Some(subpat), Some(payload)) = (pats.first(), payload) {
-                        let p_ty = self.check_pat_with_mode(
-                            *subpat,
-                            payload.clone(),
-                            bind_non_copy_by_ref,
-                        );
-                        let _ = self.unify(payload, p_ty, subpat.span(self.hir));
-                    }
-                    resolved
-                } else {
-                    Ty::Error
-                }
-            }
-            hir::PatKind::Struct { res, fields, .. } => {
-                if let Res::Item(struct_id) = res {
-                    let args = self.nominal_use_args(*struct_id, None, pat.span);
-                    let map = self.nominal_param_map(*struct_id, &args);
-                    let expected_fields = self
-                        .struct_fields
-                        .get(struct_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    for field in fields {
-                        let f_name = self.text(field.name);
-                        if let Some(expected_f_ty) = expected_fields.get(f_name) {
-                            if let Some(sub_pat) = field.pat {
-                                let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
-                                let p_ty = self.check_pat_with_mode(
-                                    sub_pat,
-                                    expected_f_ty.clone(),
-                                    bind_non_copy_by_ref,
-                                );
-                                let _ = self.unify(expected_f_ty, p_ty, field.name);
-                            } else if let Some(local) = field.local {
-                                let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
-                                let binding_ty = if bind_non_copy_by_ref
-                                    .binds_by_ref(self.is_copy_ty(&expected_f_ty))
-                                {
-                                    Ty::Ref {
-                                        mutable: false,
-                                        inner: Box::new(expected_f_ty.clone()),
-                                    }
-                                } else {
-                                    expected_f_ty.clone()
-                                };
-                                self.local_types.insert(local, binding_ty);
-                            }
-                        }
-                    }
-                    Ty::Struct(*struct_id, args)
-                } else if let Res::Variant(enum_id, variant_idx) = res {
-                    let args = match self.resolve(&expected) {
-                        Ty::Enum(expected_id, args) if expected_id == *enum_id => args,
-                        _ => self.nominal_use_args(*enum_id, None, pat.span),
-                    };
-                    let map = self.nominal_param_map(*enum_id, &args);
-                    let expected_fields = self
-                        .enum_variants
-                        .get(enum_id)
-                        .and_then(|variants| variants.get(*variant_idx as usize))
-                        .and_then(|variant| match &variant.fields {
-                            VariantFields::Struct(fields) => Some(fields.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    for field in fields {
-                        let name = self.text(field.name);
-                        if let Some(field_ty) = expected_fields.get(name) {
-                            let field_ty = self.instantiate_ty(field_ty, &map);
-                            if let Some(subpat) = field.pat {
-                                let pat_ty = self.check_pat_with_mode(
-                                    subpat,
-                                    field_ty.clone(),
-                                    bind_non_copy_by_ref,
-                                );
-                                let _ = self.unify(field_ty, pat_ty, field.name);
-                            } else if let Some(local) = field.local {
-                                let binding_ty = if bind_non_copy_by_ref
-                                    .binds_by_ref(self.is_copy_ty(&field_ty))
-                                {
-                                    Ty::Ref {
-                                        mutable: false,
-                                        inner: Box::new(field_ty.clone()),
-                                    }
-                                } else {
-                                    field_ty.clone()
-                                };
-                                self.local_types.insert(local, binding_ty);
-                            }
-                        }
-                    }
-                    Ty::Enum(*enum_id, args)
-                } else {
-                    Ty::Error
-                }
-            }
-            hir::PatKind::Tuple(elems) => {
-                let expected_elems = match self.resolve(&expected) {
-                    Ty::Tuple(tys) if tys.len() == elems.len() => tys,
-                    _ => (0..elems.len()).map(|_| self.new_type_var()).collect(),
-                };
-                let tys = elems
-                    .iter()
-                    .zip(expected_elems)
-                    .map(|(&p, ty)| self.check_pat_with_mode(p, ty, bind_non_copy_by_ref))
-                    .collect();
-                Ty::Tuple(tys)
-            }
-            hir::PatKind::Array(elems) => {
-                let elem_ty = match self.resolve(&expected) {
-                    Ty::Array(elem, _) | Ty::Slice(elem) => *elem,
-                    _ => self.new_type_var(),
-                };
-                for &e in elems {
-                    let ety = self.check_pat_with_mode(e, elem_ty.clone(), bind_non_copy_by_ref);
-                    let _ = self.unify(elem_ty.clone(), ety, pat.span);
-                }
-                Ty::Array(Box::new(elem_ty), elems.len() as u64)
-            }
-            hir::PatKind::Error => Ty::Error,
-        }
     }
 
     /// WP-C5.3e / DEV-100: publish the tables a layout walk needs so the walk itself can live in
@@ -9287,19 +8833,6 @@ impl PatId {
     }
 }
 
-fn convert_int_suffix(suffix: crate::lexer::IntSuffix) -> Primitive {
-    match suffix {
-        crate::lexer::IntSuffix::I8 => Primitive::Int8,
-        crate::lexer::IntSuffix::I16 => Primitive::Int16,
-        crate::lexer::IntSuffix::I32 => Primitive::Int32,
-        crate::lexer::IntSuffix::I64 => Primitive::Int64,
-        crate::lexer::IntSuffix::U8 => Primitive::UInt8,
-        crate::lexer::IntSuffix::U16 => Primitive::UInt16,
-        crate::lexer::IntSuffix::U32 => Primitive::UInt32,
-        crate::lexer::IntSuffix::U64 => Primitive::UInt64,
-    }
-}
-
 /// DEV-052: reverse of `resolve.rs`'s private `resolve_core_trait` -- the source spelling of a
 /// `CoreTrait`, used to match an `impl <name> for T` block by its trait-ref source text, the
 /// same way `ty_satisfies_operator_bound` already does for these compiler-known traits.
@@ -9639,13 +9172,6 @@ fn receiver_source(receiver: Option<hir::Receiver>) -> &'static str {
     }
 }
 
-fn convert_float_suffix(suffix: crate::lexer::FloatSuffix) -> Primitive {
-    match suffix {
-        crate::lexer::FloatSuffix::F32 => Primitive::Float32,
-        crate::lexer::FloatSuffix::F64 => Primitive::Float64,
-    }
-}
-
 fn is_cast_numeric(p: Primitive) -> bool {
     is_numeric(p) || matches!(p, Primitive::Float16 | Primitive::BFloat16)
 }
@@ -9896,172 +9422,6 @@ fn strip_ref(ty: &Ty) -> &Ty {
     current
 }
 
-fn is_copy_primitive(primitive: Primitive) -> bool {
-    !matches!(primitive, Primitive::String | Primitive::Str)
-}
-
-/// WP-C6.1g-a (OWN-COPY-001, amended): the set of nominal items that are `Copy` — the union of
-/// items with an explicit `impl Copy` and items **structurally** eligible: every stored
-/// field/payload recursively `Copy`, no `Drop` implementation, no owned non-`Copy` resource, no
-/// `&mut` field. Computed once and shared by the type checker (`is_copy_with_impls`) and the move
-/// checker (`borrowck`) so the two cannot disagree — a divergence there is the DEV-072 class.
-///
-/// Per-instance genericity is handled at the query, not here: this set answers "is `struct H` ever
-/// `Copy`", and `is_copy_with_impls`/`is_copy_type` additionally require every type argument to be
-/// `Copy` (`args.all(is_copy)`), so `H<&P>` is `Copy` while `H<String>` is not, from one set.
-/// **AS4: the single authority for "does this nominal have a user destructor?"**
-///
-/// Answered by RESOLVED IDENTITY — `Res::CoreTrait(CoreTrait::Drop)` — never by the trait's
-/// spelling. CD-379 settled that rule for `Display`; DEV-210 is the same defect found in the borrow
-/// checker, which asked whether the written trait name `.ends_with("Drop")` and so refused a legal
-/// partial move on any type implementing a user trait called `MyDrop`.
-///
-/// Extracted from `copy_eligible_types`, which already computed exactly this set for its own use
-/// and kept it private. Publishing it costs nothing and removes the incentive to write a third
-/// scan: every consumer of "has a destructor" now reads one answer.
-pub fn nominals_with_destructor(hir: &Hir) -> HashSet<ItemId> {
-    let mut drop_items: HashSet<ItemId> = HashSet::new();
-    for item in hir.items.iter() {
-        let hir::ItemKind::Impl {
-            trait_: Some(trait_ref),
-            self_ty,
-            ..
-        } = &item.kind
-        else {
-            continue;
-        };
-        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Drop) {
-            continue;
-        }
-        if let hir::TypeKind::Path {
-            res: Res::Item(target),
-            ..
-        } = &hir.ty(*self_ty).kind
-        {
-            drop_items.insert(*target);
-        }
-    }
-    drop_items
-}
-
-pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
-    // One authority, consulted rather than repeated: this scan used to compute `drop_items` inline.
-    let drop_items = nominals_with_destructor(hir);
-    let mut eligible: HashSet<ItemId> = HashSet::new();
-    for item in hir.items.iter() {
-        if let hir::ItemKind::Impl {
-            trait_: Some(trait_ref),
-            self_ty,
-            ..
-        } = &item.kind
-        {
-            if let hir::TypeKind::Path {
-                res: Res::Item(target),
-                ..
-            } = &hir.ty(*self_ty).kind
-            {
-                // An explicit `impl Copy` seeds the set; its field validity is checked separately
-                // (a `Copy`+non-`Copy`-field type is a reported error).
-                if trait_ref.res == Res::CoreTrait(hir::CoreTrait::Copy) {
-                    eligible.insert(*target);
-                }
-            }
-        }
-    }
-    // Fixpoint: a nominal joins the set once all its fields are eligible under the current set.
-    // Terminates because the set only grows and is bounded by the item count.
-    loop {
-        let mut changed = false;
-        for (idx, item) in hir.items.iter().enumerate() {
-            let id = ItemId(idx as u32);
-            if eligible.contains(&id) || drop_items.contains(&id) {
-                continue;
-            }
-            let field_tys: Vec<TypeId> = match &item.kind {
-                hir::ItemKind::Struct { fields, .. } => fields.iter().map(|f| f.ty).collect(),
-                // **OWN-COPY-001, amended (CD-251): a ZERO-VARIANT enum is never structurally
-                // `Copy`.**
-                //
-                // The unamended rule reached the wrong answer by vacuous truth: "every payload of
-                // every variant is `Copy`" is trivially true when there are no variants. That
-                // reasoning silently assumes a value of the type arose from one of those variants.
-                //
-                // CD-234 makes that assumption false. A host-resource nominal is deliberately a
-                // zero-variant enum -- opaque because nothing in source can construct one -- but its
-                // values enter from an external provider. Vacuous `Copy` then made those values
-                // freely duplicable, so `MatchDesugar` extracted a payload with `copy` and
-                // exactly-once close was broken in the FRONT END, before MIR existed. (`MIR-0026`
-                // rejected the result, which is how this was found.)
-                //
-                // General rule, not a provider marker: an enum is structurally `Copy` only if it has
-                // at least one variant AND every payload of every variant is `Copy`. No existing
-                // program can be affected, because no existing program could obtain a value of an
-                // uninhabited type to copy.
-                hir::ItemKind::Enum { variants, .. } if variants.is_empty() => continue,
-                hir::ItemKind::Enum { variants, .. } => variants
-                    .iter()
-                    .flat_map(|v| match &v.kind {
-                        hir::VariantKind::Unit => Vec::new(),
-                        hir::VariantKind::Tuple(tys) => tys.clone(),
-                        hir::VariantKind::Struct(fields) => fields.iter().map(|f| f.ty).collect(),
-                    })
-                    .collect(),
-                _ => continue,
-            };
-            if field_tys
-                .iter()
-                .all(|t| field_ty_copy_eligible(hir, *t, &eligible))
-            {
-                eligible.insert(id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    eligible
-}
-
-/// Whether a written field type is `Copy`-eligible, treating a bare type parameter as `Copy`
-/// (per-instance genericity is enforced at the query by requiring the actual argument `Copy`).
-/// Conservative: any form not provably `Copy` returns `false`, so a value stays `Move`.
-fn field_ty_copy_eligible(hir: &Hir, ty: TypeId, eligible: &HashSet<ItemId>) -> bool {
-    match &hir.ty(ty).kind {
-        hir::TypeKind::Primitive(p) => is_copy_primitive(*p),
-        hir::TypeKind::Ref { mutable, .. } => !*mutable,
-        hir::TypeKind::Array { elem, .. } => field_ty_copy_eligible(hir, *elem, eligible),
-        hir::TypeKind::Slice(_) => false,
-        hir::TypeKind::Tuple(elems) => elems
-            .iter()
-            .all(|e| field_ty_copy_eligible(hir, *e, eligible)),
-        hir::TypeKind::Fn { .. } | hir::TypeKind::Never => true,
-        hir::TypeKind::Error => false,
-        hir::TypeKind::Path { res, args, .. } => {
-            let args_copy = |eligible: &HashSet<ItemId>| {
-                args.as_ref().map(|a| &a.args).is_none_or(|list| {
-                    list.iter().all(|arg| match arg {
-                        hir::GenericArg::Type(t) => field_ty_copy_eligible(hir, *t, eligible),
-                        // Non-type args (const, shape) carry no ownership.
-                        _ => true,
-                    })
-                })
-            };
-            match res {
-                // A bare type parameter is assumed `Copy`; the actual argument's copy-ness is
-                // checked at instantiation (`is_copy_with_impls`'s `args.all(is_copy)`).
-                Res::TypeParam => true,
-                Res::Primitive(p) => is_copy_primitive(*p),
-                Res::Item(id) => eligible.contains(id) && args_copy(eligible),
-                // Option/Result are `Copy` when their arguments are; every other core nominal
-                // (`Box`, `Vec`, `String`, maps, sets, iterators, ranges) is an owned resource.
-                Res::CoreType(CoreType::Option | CoreType::Result) => args_copy(eligible),
-                _ => false,
-            }
-        }
-    }
-}
-
 /// Whether `ty` is `Copy`, given the set of `Copy`-eligible nominals.
 ///
 /// **Published for WP-VALUE-REP-TOTAL A2.** The representation relation permits `&T` to be
@@ -10070,36 +9430,6 @@ fn field_ty_copy_eligible(hir: &Hir, ty: TypeId, eligible: &HashSet<ItemId>) -> 
 /// behaviour, which is the disagreement WP-COPY-CANON exists to prevent.
 pub fn is_copy_type_with(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
     is_copy_with_impls(ty, copy_types)
-}
-
-fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
-    match ty {
-        Ty::Primitive(primitive) => is_copy_primitive(*primitive),
-        Ty::Ref { mutable: false, .. } | Ty::Never | Ty::Error => true,
-        Ty::Struct(id, args) | Ty::Enum(id, args) => {
-            copy_types.contains(id) && args.iter().all(|arg| is_copy_with_impls(arg, copy_types))
-        }
-        Ty::Core(CoreType::Option | CoreType::Result, args) => {
-            args.iter().all(|arg| is_copy_with_impls(arg, copy_types))
-        }
-        Ty::Core(_, _) => false,
-        Ty::Tuple(elements) => elements
-            .iter()
-            .all(|element| is_copy_with_impls(element, copy_types)),
-        Ty::Array(element, _) => is_copy_with_impls(element, copy_types),
-        Ty::Infer(_) | Ty::Param(_) => false,
-        // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop ("reference
-        // values, function values, `Unit`, and `!` are `Copy`") / TYPE-FN-001. This arm
-        // previously listed `Ty::Fn` alongside `&mut`/slices as non-Copy, contradicting the
-        // spec.
-        Ty::Fn { .. } => true,
-        Ty::Ref { mutable: true, .. } | Ty::Slice(_) | Ty::Range(_) => false,
-        Ty::Extension(ext) => match &**ext {
-            ExtensionTy::Tensor(tensor) => tensor.is_copy(),
-            ExtensionTy::Model(_) => false,
-            ExtensionTy::ModelError => false,
-        },
-    }
 }
 
 impl TypeChecker<'_> {

@@ -10,11 +10,12 @@
 //! that converted HIR types here would close the `convert <-> traits` cycle that stopped Packet 7.
 
 use super::state::TypeChecker;
-use super::types::Ty;
 use super::types::{is_float_primitive, is_numeric, standard_display_type, standard_hash_type};
+use super::types::{ExtensionTy, Ty};
+
 use crate::ast::Primitive;
-use crate::hir::{self, CoreType, ItemId, Res, TypeId};
-use std::collections::HashMap;
+use crate::hir::{self, CoreType, Hir, ItemId, Res, TypeId};
+use std::collections::{HashMap, HashSet};
 
 /// Why a trait relation holds. `Impl` carries the selected impl so that the layer above can look
 /// up *that impl's* associated types — the same impl this layer chose, which is what preserves
@@ -230,4 +231,205 @@ impl TypeChecker<'_> {
                     })
             })
     }
+
+    // AS7 Packet 8: moved to the layer that owns the question.
+    pub(super) fn is_copy_ty(&mut self, ty: &Ty) -> bool {
+        let resolved = self.resolve(ty);
+        let copy_types = copy_eligible_types(self.hir);
+        is_copy_with_impls(&resolved, &copy_types)
+    }
+}
+
+// AS7 Packet 8: Copy is a trait relation, so its eligibility set belongs with identity.
+pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+    // One authority, consulted rather than repeated: this scan used to compute `drop_items` inline.
+    let drop_items = nominals_with_destructor(hir);
+    let mut eligible: HashSet<ItemId> = HashSet::new();
+    for item in hir.items.iter() {
+        if let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            self_ty,
+            ..
+        } = &item.kind
+        {
+            if let hir::TypeKind::Path {
+                res: Res::Item(target),
+                ..
+            } = &hir.ty(*self_ty).kind
+            {
+                // An explicit `impl Copy` seeds the set; its field validity is checked separately
+                // (a `Copy`+non-`Copy`-field type is a reported error).
+                if trait_ref.res == Res::CoreTrait(hir::CoreTrait::Copy) {
+                    eligible.insert(*target);
+                }
+            }
+        }
+    }
+    // Fixpoint: a nominal joins the set once all its fields are eligible under the current set.
+    // Terminates because the set only grows and is bounded by the item count.
+    loop {
+        let mut changed = false;
+        for (idx, item) in hir.items.iter().enumerate() {
+            let id = ItemId(idx as u32);
+            if eligible.contains(&id) || drop_items.contains(&id) {
+                continue;
+            }
+            let field_tys: Vec<TypeId> = match &item.kind {
+                hir::ItemKind::Struct { fields, .. } => fields.iter().map(|f| f.ty).collect(),
+                // **OWN-COPY-001, amended (CD-251): a ZERO-VARIANT enum is never structurally
+                // `Copy`.**
+                //
+                // The unamended rule reached the wrong answer by vacuous truth: "every payload of
+                // every variant is `Copy`" is trivially true when there are no variants. That
+                // reasoning silently assumes a value of the type arose from one of those variants.
+                //
+                // CD-234 makes that assumption false. A host-resource nominal is deliberately a
+                // zero-variant enum -- opaque because nothing in source can construct one -- but its
+                // values enter from an external provider. Vacuous `Copy` then made those values
+                // freely duplicable, so `MatchDesugar` extracted a payload with `copy` and
+                // exactly-once close was broken in the FRONT END, before MIR existed. (`MIR-0026`
+                // rejected the result, which is how this was found.)
+                //
+                // General rule, not a provider marker: an enum is structurally `Copy` only if it has
+                // at least one variant AND every payload of every variant is `Copy`. No existing
+                // program can be affected, because no existing program could obtain a value of an
+                // uninhabited type to copy.
+                hir::ItemKind::Enum { variants, .. } if variants.is_empty() => continue,
+                hir::ItemKind::Enum { variants, .. } => variants
+                    .iter()
+                    .flat_map(|v| match &v.kind {
+                        hir::VariantKind::Unit => Vec::new(),
+                        hir::VariantKind::Tuple(tys) => tys.clone(),
+                        hir::VariantKind::Struct(fields) => fields.iter().map(|f| f.ty).collect(),
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            if field_tys
+                .iter()
+                .all(|t| field_ty_copy_eligible(hir, *t, &eligible))
+            {
+                eligible.insert(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    eligible
+}
+pub(super) fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
+    match ty {
+        Ty::Primitive(primitive) => is_copy_primitive(*primitive),
+        Ty::Ref { mutable: false, .. } | Ty::Never | Ty::Error => true,
+        Ty::Struct(id, args) | Ty::Enum(id, args) => {
+            copy_types.contains(id) && args.iter().all(|arg| is_copy_with_impls(arg, copy_types))
+        }
+        Ty::Core(CoreType::Option | CoreType::Result, args) => {
+            args.iter().all(|arg| is_copy_with_impls(arg, copy_types))
+        }
+        Ty::Core(_, _) => false,
+        Ty::Tuple(elements) => elements
+            .iter()
+            .all(|element| is_copy_with_impls(element, copy_types)),
+        Ty::Array(element, _) => is_copy_with_impls(element, copy_types),
+        Ty::Infer(_) | Ty::Param(_) => false,
+        // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop ("reference
+        // values, function values, `Unit`, and `!` are `Copy`") / TYPE-FN-001. This arm
+        // previously listed `Ty::Fn` alongside `&mut`/slices as non-Copy, contradicting the
+        // spec.
+        Ty::Fn { .. } => true,
+        Ty::Ref { mutable: true, .. } | Ty::Slice(_) | Ty::Range(_) => false,
+        Ty::Extension(ext) => match &**ext {
+            ExtensionTy::Tensor(tensor) => tensor.is_copy(),
+            ExtensionTy::Model(_) => false,
+            ExtensionTy::ModelError => false,
+        },
+    }
+}
+
+/// WP-C6.1g-a (OWN-COPY-001, amended): the set of nominal items that are `Copy` — the union of
+/// items with an explicit `impl Copy` and items **structurally** eligible: every stored
+/// field/payload recursively `Copy`, no `Drop` implementation, no owned non-`Copy` resource, no
+/// `&mut` field. Computed once and shared by the type checker (`is_copy_with_impls`) and the move
+/// checker (`borrowck`) so the two cannot disagree — a divergence there is the DEV-072 class.
+///
+/// Per-instance genericity is handled at the query, not here: this set answers "is `struct H` ever
+/// `Copy`", and `is_copy_with_impls`/`is_copy_type` additionally require every type argument to be
+/// `Copy` (`args.all(is_copy)`), so `H<&P>` is `Copy` while `H<String>` is not, from one set.
+/// **AS4: the single authority for "does this nominal have a user destructor?"**
+///
+/// Answered by RESOLVED IDENTITY — `Res::CoreTrait(CoreTrait::Drop)` — never by the trait's
+/// spelling. CD-379 settled that rule for `Display`; DEV-210 is the same defect found in the borrow
+/// checker, which asked whether the written trait name `.ends_with("Drop")` and so refused a legal
+/// partial move on any type implementing a user trait called `MyDrop`.
+///
+/// Extracted from `copy_eligible_types`, which already computed exactly this set for its own use
+/// and kept it private. Publishing it costs nothing and removes the incentive to write a third
+/// scan: every consumer of "has a destructor" now reads one answer.
+pub fn nominals_with_destructor(hir: &Hir) -> HashSet<ItemId> {
+    let mut drop_items: HashSet<ItemId> = HashSet::new();
+    for item in hir.items.iter() {
+        let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            self_ty,
+            ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Drop) {
+            continue;
+        }
+        if let hir::TypeKind::Path {
+            res: Res::Item(target),
+            ..
+        } = &hir.ty(*self_ty).kind
+        {
+            drop_items.insert(*target);
+        }
+    }
+    drop_items
+}
+/// Whether a written field type is `Copy`-eligible, treating a bare type parameter as `Copy`
+/// (per-instance genericity is enforced at the query by requiring the actual argument `Copy`).
+/// Conservative: any form not provably `Copy` returns `false`, so a value stays `Move`.
+pub(super) fn field_ty_copy_eligible(hir: &Hir, ty: TypeId, eligible: &HashSet<ItemId>) -> bool {
+    match &hir.ty(ty).kind {
+        hir::TypeKind::Primitive(p) => is_copy_primitive(*p),
+        hir::TypeKind::Ref { mutable, .. } => !*mutable,
+        hir::TypeKind::Array { elem, .. } => field_ty_copy_eligible(hir, *elem, eligible),
+        hir::TypeKind::Slice(_) => false,
+        hir::TypeKind::Tuple(elems) => elems
+            .iter()
+            .all(|e| field_ty_copy_eligible(hir, *e, eligible)),
+        hir::TypeKind::Fn { .. } | hir::TypeKind::Never => true,
+        hir::TypeKind::Error => false,
+        hir::TypeKind::Path { res, args, .. } => {
+            let args_copy = |eligible: &HashSet<ItemId>| {
+                args.as_ref().map(|a| &a.args).is_none_or(|list| {
+                    list.iter().all(|arg| match arg {
+                        hir::GenericArg::Type(t) => field_ty_copy_eligible(hir, *t, eligible),
+                        // Non-type args (const, shape) carry no ownership.
+                        _ => true,
+                    })
+                })
+            };
+            match res {
+                // A bare type parameter is assumed `Copy`; the actual argument's copy-ness is
+                // checked at instantiation (`is_copy_with_impls`'s `args.all(is_copy)`).
+                Res::TypeParam => true,
+                Res::Primitive(p) => is_copy_primitive(*p),
+                Res::Item(id) => eligible.contains(id) && args_copy(eligible),
+                // Option/Result are `Copy` when their arguments are; every other core nominal
+                // (`Box`, `Vec`, `String`, maps, sets, iterators, ranges) is an owned resource.
+                Res::CoreType(CoreType::Option | CoreType::Result) => args_copy(eligible),
+                _ => false,
+            }
+        }
+    }
+}
+pub(super) fn is_copy_primitive(primitive: Primitive) -> bool {
+    !matches!(primitive, Primitive::String | Primitive::Str)
 }
