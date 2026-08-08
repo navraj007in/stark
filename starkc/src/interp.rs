@@ -362,7 +362,7 @@ fn constant_expr_allowed(hir: &Hir, expr: ExprId) -> Result<(), (Span, &'static 
 /// format a `Float32` value using its own shortest-round-trip digits once it's nested inside a
 /// tuple/array/struct/collection and reaches the generic recursive `Display for Value` impl,
 /// which has no static-type context to consult. Math builtins (`sqrt`, `sin`, `cos`, ...) are
-/// typed `Float64 -> Float64` only (`typecheck.rs`'s builtin signatures), so they always
+/// typed `Float64 -> Float64` only (`typecheck/body.rs`'s builtin signatures), so they always
 /// produce `F64` and never need to preserve an argument's width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FloatWidth {
@@ -3632,11 +3632,11 @@ impl<'a> Interpreter<'a> {
         let text = self.text(span);
         let value = literal::eval_lit_value(lit, text, &self.hir.str_lits)
             .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
-        // WP-C1.5 (DEV-015): defense-in-depth mirror of typecheck.rs's suffixed-literal
+        // WP-C1.5 (DEV-015): defense-in-depth mirror of the checker's suffixed-literal
         // magnitude check (`check_expr`'s `Lit::Int` arm) -- re-verified here in case a literal
         // ever reaches evaluation without having gone through that check (e.g. a future
         // alternate entry point). Unsuffixed-literal-vs-inferred-type magnitude is not
-        // re-checked here since that requires the type table typecheck.rs already consulted;
+        // re-checked here since that requires the type table the checker already consulted;
         // trusting the already-validated static type for that half is the same trust boundary
         // `check_integer_range` (used elsewhere in this file) already relies on.
         if let (
@@ -4029,7 +4029,7 @@ impl<'a> Interpreter<'a> {
             // when one exists, per 03-Type-System.md "Operators and Traits" (`==`/`!=` desugar
             // to `Eq::eq`) -- structural `Value` equality was previously used unconditionally,
             // even for struct/enum values whose type has a real, type-checker-verified `impl Eq`
-            // with custom comparison logic (typecheck.rs's `require_operator_bound` already
+            // with custom comparison logic (typecheck/body.rs's `require_operator_bound` already
             // requires such an impl to exist for any struct/enum `==`, so this dispatch cannot
             // find a program that type-checks but has no matching impl). Primitives and
             // Ty::Core container types (Option/Result/Vec/Box/String) have no user-overridable
@@ -9677,7 +9677,7 @@ fn float_arg(value: Option<Value>, span: Span) -> Result<f64, RuntimeError> {
 
 /// Numeric comparison for `math::min`/`math::max`/`clamp` (`T: Ord`, Int or
 /// Float only — a narrower runtime scope than the unconstrained type
-/// variable these builtins get in `typecheck.rs`; see
+/// variable these builtins get in `typecheck/body.rs`; see
 /// `docs/PHASE8_GRAMMAR_GAPS.md`'s note on `assert_eq`/`Eq` for the same
 /// pattern elsewhere).
 fn numeric_cmp(
@@ -11002,7 +11002,7 @@ mod tests {
         );
     }
 
-    /// WP-C1.3 regression test for the companion typecheck.rs finding made while investigating
+    /// WP-C1.3 regression test for the companion checker finding made while investigating
     /// DEV-008: `Ty::Core` container types (Option/Result/Vec) had no arm in
     /// `require_operator_bound` at all, so `==` on `Option<Int32>` was unconditionally rejected
     /// by the type checker even though Int32 is obviously Eq. Confirms both that it now
@@ -12548,7 +12548,7 @@ mod tests {
         assert_eq!(execution.output, "3\n");
     }
 
-    /// DEV-060 [CLOSED]: end-to-end confirmation that the fixed program (see `typecheck.rs`'s
+    /// DEV-060 [CLOSED]: end-to-end confirmation that the fixed program (see `typecheck/mod.rs`'s
     /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
     /// decisive diagnostic-level regression) both type-checks *and* executes correctly -- two
     /// calls to an un-overridden trait default method on the same receiver now produce the
@@ -12648,7 +12648,7 @@ mod tests {
         assert_eq!(execution.output, "42\n5\nnone\n8\n7\nerror\n");
     }
 
-    /// Companion regression for DEV-060 (see `typecheck.rs`'s
+    /// Companion regression for DEV-060 (see `typecheck/mod.rs`'s
     /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
     /// decisive diagnostic-level regression): two calls to an *overridden* trait method (not a
     /// default fallback) are unaffected by DEV-060.
@@ -12691,7 +12691,7 @@ mod tests {
 
     /// DEV-051 end-to-end: a trait default method calling a sibling trait method through `self`
     /// (both directly, and transitively through a chain of two default methods) now type-checks
-    /// *and* executes correctly. See `typecheck.rs`'s `trait_default_method_calling_sibling_
+    /// *and* executes correctly. See `typecheck/mod.rs`'s `trait_default_method_calling_sibling_
     /// trait_method_through_self_type_checks` for the type-checking half of this regression.
     #[test]
     fn trait_default_method_calling_sibling_trait_method_through_self_executes() {
@@ -12722,7 +12722,7 @@ mod tests {
     /// matched *any* value with no diagnostic -- confirmed to produce **wrong runtime output**,
     /// not merely a spurious rejection: `match Some(5) { None => 999, Some(a) => a }` printed
     /// `999`. This is the decisive end-to-end regression for that fix; `resolve.rs`/
-    /// `typecheck.rs` carry the resolution/type-checking half.
+    /// `typecheck/` carries the resolution/type-checking half.
     #[test]
     fn bare_none_pattern_matches_by_value_not_as_a_wildcard() {
         let execution = execute(

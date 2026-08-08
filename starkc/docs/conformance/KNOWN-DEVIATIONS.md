@@ -71,7 +71,7 @@ impact, workaround, proposed disposition, owning future gate.
   artifact provenance."
 - **Original behaviour:** `Span` carries no file identity at all (`source.rs:10-13`); there is no
   `FileId`/`SourceId` type anywhere in the crate. Parse (`parser.rs:359-363`) and typecheck
-  (`typecheck.rs:1916-1919,2065-2068` plus 4 backfill sites) correctly reconstructed per-item
+  (`typecheck/:1916-1919,2065-2068` plus 4 backfill sites) correctly reconstructed per-item
   file identity via a `HashMap<ItemId, Arc<SourceFile>>` side table. Resolve (`resolve.rs`, 20
   diagnostic sites, zero `.with_file()` calls), flow analysis (`flow.rs:21-24`, file parameter
   named `_file` and structurally unused), and borrow checking (`borrowck.rs`, single
@@ -89,7 +89,7 @@ impact, workaround, proposed disposition, owning future gate.
   Charter rule 16 ("diagnostics are part of behaviour") treats as a first-class defect, not
   cosmetic.
 - **Resolution:** fixed in two stages. **WP-C1.2** fixed the resolve half: added
-  `push_diag`/`current_file_arc()` helpers (`resolve.rs`), mirroring typecheck.rs's own
+  `push_diag`/`current_file_arc()` helpers (`resolve.rs`), mirroring typecheck/'s own
   if-none backfill pattern; all 20 `self.diags.push` call sites converted to `self.push_diag`.
   Verified with a same-package regression test and a cross-package test
   (`gate2_package.rs::test_cross_package_diagnostic_reports_dependency_file_not_root_file`).
@@ -136,7 +136,7 @@ impact, workaround, proposed disposition, owning future gate.
   comparison (`03-Type-System.md:516-531`).
 - **Previous behaviour:** `==`/`!=` were pure structural equality on the interpreter's `Value`
   enum unconditionally — no dispatch through a user's `Eq` implementation, even though
-  `typecheck.rs`'s `require_operator_bound` already required a real `impl Eq for T` to exist for
+  `typecheck/`'s `require_operator_bound` already required a real `impl Eq for T` to exist for
   any struct/enum `==` to type-check in the first place.
 - **Resolved 2026-07-17 (WP-C1.3), option 1 — implemented normative dispatch:**
   `eval_binary` (interp.rs) now looks up a resolved `Eq` impl via the existing `find_method`/
@@ -153,7 +153,7 @@ impact, workaround, proposed disposition, owning future gate.
   gap are closed.
 - **Regression tests:** `interp.rs::custom_eq_impl_is_dispatched_not_structural`,
   `::custom_eq_impl_is_dispatched_for_ne_too`, `::option_and_vec_equality_are_structural`;
-  `typecheck.rs::option_result_vec_box_satisfy_eq_when_their_type_args_do`,
+  `typecheck/::option_result_vec_box_satisfy_eq_when_their_type_args_do`,
   `::option_of_non_eq_type_is_rejected`.
 - **Owning gate:** closed, WP-C1.3.
 
@@ -276,13 +276,13 @@ it satisfied — the gate's claim is correspondingly narrower. See
     `.clone()` on `String`/`Vec`/`Option`/`Result`/`HashMap`/`HashSet`/`Range`/`IOError` failed
     with E0303 "method call on non-struct/enum type" — recognized as a bound, but with no
     method-signature entry or dispatch case anywhere for any builtin type. Fixed with a generic
-    dispatch point in both `core_method_signature` (typecheck.rs) and `call_core_method`
+    dispatch point in both `core_method_signature` (typecheck/) and `call_core_method`
     (interp.rs, reusing `Value`'s existing derived Rust `Clone`).
   - **Default trait method bodies: confirmed BROKEN, now FIXED** (found while testing the trait
     family broadly; squarely inside WP-C1.3's own checklist item "default methods"). A trait
     method with a real default body was never used as a fallback when unoverridden — the HIR
     already carried `TraitItem::Method { body: Some(_), .. }`, it was simply never consulted.
-    Fixed in both typecheck.rs (a `default_fallback` search before concluding "not found") and
+    Fixed in both typecheck/ (a `default_fallback` search before concluding "not found") and
     interp.rs (`find_method` gained the analogous fallback). Verified both that an unoverridden
     default runs and that an overriding impl still takes precedence.
   - Hand-written-impl-vs-builtin-only question: confirmed — hand-written impls are the normal,
@@ -323,7 +323,7 @@ it satisfied — the gate's claim is correspondingly narrower. See
 - **Original behaviour:** confirmed empirically — `let x: UInt8 = 300u8;` compiled and
   `starkc check` reported clean; `let x = 99999999999;` (unsuffixed, exceeds Int32) silently
   typed as a broken Int32 instead of promoting to Int64. No stage checked literal magnitude
-  against suffix range; `typecheck.rs`'s `convert_int_suffix` only mapped the suffix to a type
+  against suffix range; `typecheck/`'s `convert_int_suffix` only mapped the suffix to a type
   tag.
 - **User impact (while open):** a program could declare an integer literal with a suffix that
   cannot represent its value, and the compiler accepted it silently.
@@ -331,7 +331,7 @@ it satisfied — the gate's claim is correspondingly narrower. See
   soundness gap: the declared type's range guarantee didn't actually hold for literals.
 - **Resolution:** design question settled (user-approved 2026-07-18): typecheck/const-eval time,
   not the lexer — an unsuffixed literal's fit-check needs its inferred target type, which the
-  lexer never has. Fixed in `typecheck.rs`'s `check_expr` `Lit::Int` arm: suffixed literals
+  lexer never has. Fixed in `typecheck/body.rs`'s `check_expr` `Lit::Int` arm: suffixed literals
   checked against their suffix's exact range (new **E0008**, via a new
   `literal::int_suffix_range_contains` helper); unsuffixed literals promoted to Int64 if they
   don't fit Int32, rejected (E0008) if they don't fit Int64 either. A defense-in-depth suffix
@@ -343,7 +343,7 @@ it satisfied — the gate's claim is correspondingly narrower. See
 
 - **Normative expectation:** Charter §2.5 lists `cargo clippy --all-targets -- -D warnings`
   passing as a default definition-of-done requirement.
-- **Original behaviour:** 22 clippy errors existed across `typecheck.rs`, `interp.rs`,
+- **Original behaviour:** 22 clippy errors existed across `typecheck/`, `interp.rs`,
   `lsp/protocol.rs`, and `lsp/server.rs`, none touched by WP-C1.1 (confirmed by isolating clippy
   output to files that WP changed: zero hits). CI (`.github/workflows/ci.yml`'s `fmt, clippy,
   test` job) had been red since the 2026-07-17 03:29 push for exactly this reason, across several
@@ -352,7 +352,7 @@ it satisfied — the gate's claim is correspondingly narrower. See
 - **Security/soundness impact:** none identified.
 - **Resolution:** fixed as a standalone cleanup during WP-C1.4 at the user's explicit request.
   All 22 fixes are mechanical and zero-behavior-change: 13x `args.get(0)` → `args.first()`
-  (`typecheck.rs`); 2x explicit-closure-clone → `.cloned()` (`interp.rs`, `lsp/server.rs`); 2x
+  (`typecheck/`); 2x explicit-closure-clone → `.cloned()` (`interp.rs`, `lsp/server.rs`); 2x
   manual `if let Some` inside a `for` loop → `.into_iter().flatten()` (`interp.rs`); 3x
   `*inner = Box::new(x)` → `**inner = x` (avoids a needless allocation, `interp.rs`);
   `JsonValue`'s inherent `to_string` → `impl std::fmt::Display` (`lsp/protocol.rs` — no call-site
@@ -433,13 +433,13 @@ in WP-C1.6)
   ("unresolved import") which collides with `flow.rs`'s correct use of E0401 ("use of
   possibly-uninitialized variable" per spec). `resolve.rs` uses E0203 for both "no parent module
   for super" and "item is private," neither of which is "ambiguous name" (spec's actual E0203),
-  colliding with `typecheck.rs`'s correct E0203 use for "ambiguous trait method call." `parser.rs`
+  colliding with `typecheck/`'s correct E0203 use for "ambiguous trait method call." `parser.rs`
   uses E0202 for module-loading errors ("file not found for module," "conflicting module files"),
   colliding with `resolve.rs`'s own correct E0202 use for "undefined type." Two more found during
-  WP-C1.5, while touching match-arm code for the exhaustiveness fix: `typecheck.rs`'s "unreachable
+  WP-C1.5, while touching match-arm code for the exhaustiveness fix: `typecheck/`'s "unreachable
   match arm" warning uses E0500 — spec table: E0500="Trait not implemented" (an *error*, not a
   warning) — colliding with 15 other, spec-correct E0500 "trait not implemented" error sites in
-  the same file. `typecheck.rs`'s "method call on non-struct/enum type" error uses E0303 — spec
+  the same file. `typecheck/`'s "method call on non-struct/enum type" error uses E0303 — spec
   table: E0303="Non-exhaustive match" — colliding with the (WP-C1.5-strengthened) spec-correct
   E0303 exhaustiveness sites.
 - **User impact:** any tool matching on diagnostic code alone (not message text) cannot
@@ -480,7 +480,7 @@ in WP-C1.6)
   orphan and overlap rules to apply across the complete resolved package graph, independent of
   source order. C2.9 supplies the canonical package/version token used by those algorithms.
 - **Previous state:** every existing coherence test used an in-memory single file with no real
-  `starkpkg.json`, under which `typecheck.rs`'s filesystem-walk-up package-root detection
+  `starkpkg.json`, under which `typecheck/`'s filesystem-walk-up package-root detection
   (`find_package_root`) always returns `None` — making it impossible to tell from existing tests
   whether cross-package detection worked or every impl was silently treated as same-package.
 - **Current state:** a new real two-package-workspace test
@@ -500,7 +500,7 @@ in WP-C1.6)
   signature to be publicly nameable by consumers.
 - **Current behaviour:** no stage checks whether a `pub fn`'s signature or a `pub struct`'s
   fields transitively expose a private type. Confirmed absent in both resolve.rs and
-  typecheck.rs.
+  typecheck/.
 - **User impact:** a public API can silently expose a type that callers outside the module
   cannot actually name, which is a usability rough edge (a "leaky" public API) rather than a
   soundness gap.
@@ -558,7 +558,7 @@ in WP-C1.6)
   of implementing `From`.
 - **Proposed disposition:** root cause not yet isolated — unlike DEV-013's method-call findings,
   this is an *associated/static* function call (`Type::function()`, no receiver value), a
-  different resolution path (`find_associated_fn` in interp.rs and its typecheck.rs counterpart)
+  different resolution path (`find_associated_fn` in interp.rs and its typecheck/ counterpart)
   that may have an analogous "doesn't search trait impls" gap, or may be specific to `From`'s
   generic trait parameter confusing the self-type match. Needs its own investigation before a
   fix is attempted, not assumed to be the same pattern as DEV-013's fixes. `Into`/`TryFrom` not
@@ -630,7 +630,7 @@ WP-C1.5)
   per the spec's own trait signature cannot currently be written at all. (b) Independently,
   `interp.rs::eval_binary`'s `<`/`<=`/`>`/`>=` handling has arms only for `(Int, Int)`,
   `(Float, Float)`, and `(String|Str, String|Str)` — no struct/enum arm exists, unlike the
-  `Eq`/`eq` dispatch DEV-008 added. `typecheck.rs::ty_satisfies_operator_bound` already accepts
+  `Eq`/`eq` dispatch DEV-008 added. `typecheck/body.rs::ty_satisfies_operator_bound` already accepts
   `Ty::Struct`/`Ty::Enum` for the `"Ord"` bound whenever a matching `impl Ord for T` exists, so if
   (a) were fixed in isolation, a struct/enum `<` comparison would type-check and then crash at
   runtime with `"invalid binary operation"` — the same compile-time/runtime mismatch class `==`/
@@ -770,7 +770,7 @@ WP-C1.5)
 - **Current behaviour:** `interp.rs::eval_expr`'s `ExprKind::For` calls `iter_values`, which only
   accepts `Value::Range` (eagerly materialized) and `Value::Array`/`Value::Vec` (consumed by
   value) — anything else, including the exact `.iter()` case the spec names, errors with "value
-  is not iterable." This is also caught at compile time: `typecheck.rs`'s `for`-loop type-checking
+  is not iterable." This is also caught at compile time: `typecheck/`'s `for`-loop type-checking
   independently recognizes only the same Range/Array/Vec shapes, so `for x in v.iter() { ... }`
   fails to compile with `[E0001] for-loop requires an iterable value, found 'VecIter<Int32>'`
   (both layers agree with each other — this is a real feature gap, not a compile-succeeds/
@@ -781,7 +781,7 @@ WP-C1.5)
 - **Security/soundness impact:** none identified — a missing-feature gap.
 - **Workaround:** use a `while let Some(x) = it.next() { ... }`-style manual loop instead of
   `for x in it { ... }` for any iterator that isn't a bare `Range`/`Array`/`Vec`.
-- **Proposed disposition:** both `typecheck.rs`'s for-loop type check and `interp.rs::iter_values`
+- **Proposed disposition:** both `typecheck/`'s for-loop type check and `interp.rs::iter_values`
   need to accept any `Iterator`-implementing type (the existing `MapIter`/`FilterIter`/etc.
   `Value` variants and their `iterator_step` protocol), not just the three hardcoded shapes.
 - **Resolution:** type checking derives the element type from standard iterator core types or a
@@ -1358,7 +1358,7 @@ WP-C1.5)
   redundancy warning against `(Some(a), _)` was internally consistent with the compiler's wrong
   interpretation, not a bug in the redundancy check itself).
 - **The "spurious non-exhaustive" half of the original finding is not a bug and is not part of
-  this entry.** Re-reading `typecheck.rs`'s exhaustiveness check (`check_expr`'s `Match` arm)
+  this entry.** Re-reading `typecheck/`'s exhaustiveness check (`check_expr`'s `Match` arm)
   confirms it is a deliberate, self-documented, sound-by-construction design choice: any
   scrutinee type outside a small set of exactly-enumerable domains (bool/enum/Option/Result)
   requires at least one *individually* irrefutable arm rather than attempting real cross-arm
@@ -1374,7 +1374,7 @@ WP-C1.5)
 - **Resolution:** `lower_pattern`'s `Binding` arm now also checks `resolve_builtin(name)` (gated
   by the tensor extension exactly as `resolve_unqualified` already gates ordinary bare-identifier
   builtin resolution, per DEV-004) before falling back to "fresh binding," producing a real
-  `PatKind::Path { res: Res::Builtin(builtin), .. }` value pattern. `typecheck.rs`'s
+  `PatKind::Path { res: Res::Builtin(builtin), .. }` value pattern. `typecheck/`'s
   `check_pat` gained a matching `Res::Builtin(Builtin::None) => self.resolve(&expected)` arm
   (mirroring the existing `Res::Builtin(Builtin::Some | ..)` handling already present for the
   `TupleVariant` case). Regressions: `resolve::tests::
@@ -1573,7 +1573,7 @@ WP-C1.5)
   set the tag from that same lookup); literal evaluation reads the width straight off the
   literal's own suffix (`0.1f32` vs. unsuffixed, which the checker already defaults to
   `Float64`); the transcendental math builtins are `Float64 -> Float64` only by signature (per
-  `typecheck.rs`) and always tag `F64`; `math::abs` is generically `T -> T` and preserves the
+  `typecheck/`) and always tag `F64`; `math::abs` is generically `T -> T` and preserves the
   input's own tag. Regressions (all in `interp.rs`):
   `float32_nested_in_tuple_uses_float32_round_trip_digits`,
   `float32_nested_in_array_uses_float32_round_trip_digits`,
@@ -1647,7 +1647,7 @@ WP-C1.5)
 - **Root cause (isolated during C3-ENTRY closure):** `borrowck.rs`'s `method_receiver` — which
   the `Call` handler uses to decide whether a method receiver is moved, borrowed, or mutably
   borrowed before executing the borrow-checked body — only ever searched `ImplItem::Fn`
-  overrides. It had no equivalent to `typecheck.rs::resolve_method`'s `default_fallback`
+  overrides. It had no equivalent to `typecheck/body.rs::resolve_method`'s `default_fallback`
   (WP-C1.3/DEV-013), the mechanism that lets an un-overridden trait default method type-check at
   all. So for a call to such a method, `method_receiver` returned `None`, and the `Call`
   handler's `None => self.check_expr(*base)` arm ran instead of the `Some(Receiver::Ref/RefMut/
@@ -1662,7 +1662,7 @@ WP-C1.5)
 - **Security/soundness impact:** none identified — this was a rejection of legal code
   (availability), not an acceptance of illegal code.
 - **Fix:** added the matching trait-default-body fallback directly to `method_receiver`
-  (`borrowck.rs`) — mirrors `typecheck.rs`'s `default_fallback` search (find a trait impl for
+  (`borrowck.rs`) — mirrors `typecheck/`'s `default_fallback` search (find a trait impl for
   the receiver's type where the trait declares an un-overridden method with a body matching the
   call name) but returns just that method's declared `sig.receiver`, which the existing
   `Some(Receiver::Ref/RefMut/Value)` arms then handle exactly as they already do for overridden
@@ -1729,7 +1729,7 @@ WP-C1.5)
 - **Workaround:** rebind the function name per use.
 - **Owning gate:** same discovery as DEV-061; owner approved fix-now (CD-027); **FIXED**: added
   `Ty::Fn { .. } => true` arms to `borrowck.rs::is_copy_type` and
-  `typecheck.rs::is_copy_with_impls` (the latter previously listed `Ty::Fn` explicitly as
+  `typecheck/traits.rs::is_copy_with_impls` (the latter previously listed `Ty::Fn` explicitly as
   non-Copy, contradicting the spec). Regression test:
   `typecheck::tests::fn_typed_local_is_copy_and_reusable`. — closed.
 
@@ -1753,7 +1753,7 @@ WP-C1.5)
 - **Security/soundness impact:** none.
 - **Workaround:** hand-written `match`.
 - **Owning gate:** owner approved fix-now (CD-027); **FIXED**: `Option::map`/`and_then` and
-  `Result::map`/`map_err`/`and_then` added to `typecheck.rs`'s core-method signatures (fresh
+  `Result::map`/`map_err`/`and_then` added to `typecheck/`'s core-method signatures (fresh
   inference variable for `U`/`F`, unified through the declared `fn(...)` parameter — the same
   pattern the iterator `.map` signature already used) and to `interp.rs::call_core_method` as a
   consuming pre-match interception (take_place the receiver, call the fn value re-entrantly with
@@ -1782,7 +1782,7 @@ WP-C1.5)
   (`Dim`/`DType`/`Device`) unify through the tensor context and are exempt. The same recorded
   table is what MIR monomorphisation consumes, so instance collection never sees an unnamed
   instantiation (mir.md §2's stated upstream requirement).
-- **Regression evidence:** `typecheck.rs::tests::undetermined_generic_fn_coercion_is_rejected`,
+- **Regression evidence:** `typecheck/::tests::undetermined_generic_fn_coercion_is_rejected`,
   `::undetermined_generic_call_requires_turbofish` (rejection + turbofish acceptance), and
   `::determined_generic_fn_coercion_publishes_instantiation` (determined coercion stays
   accepted and publishes `[Int32]`). — closed.
@@ -1908,11 +1908,11 @@ WP-C1.5)
   file. `resolve.rs`/`hir.rs` carry `synthetic_spans` for generated wrappers so lowering
   never text-reads a synthetic span.
 - **Why open:** fixing the front end means threading per-item file identity through
-  `typecheck.rs`, `borrowck.rs`, and `interp.rs` — a front-end WP, out of WP-C4.5's
+  `typecheck/`, `borrowck.rs`, and `interp.rs` — a front-end WP, out of WP-C4.5's
   MIR scope. Until then the differential multi-file test pins the front-end-safe subset
   (scalar free functions, literal-free dependency bodies, no cross-file methods/fields),
   padded so dependency name spans stay in-bounds.
-- **Resolution (WP-C4.7-4, 2026-07-20).** Root cause: `typecheck.rs`, `borrowck.rs`, and
+- **Resolution (WP-C4.7-4, 2026-07-20).** Root cause: `typecheck/`, `borrowck.rs`, and
   `interp.rs` each hold ONE "current file" and read every span against it. For the item being
   checked that is correct — `check_crate` already swapped `self.file` per item — but every
   *lookup* of another item (a nominal's name, an impl's method names, a trait's default method
@@ -2629,10 +2629,10 @@ attribute syntax existed. No fix owed.
   of DEV-014 (closed) through DEV-018.
 - `starkc/src/resolve.rs` and `starkc/tests/gate2_package.rs` (new WP-C1.2 tests) — source of
   DEV-019 through DEV-022.
-- `starkc/src/typecheck.rs` and `starkc/src/interp.rs` (new WP-C1.3 tests) — source of DEV-008
+- `starkc/src/typecheck/` and `starkc/src/interp.rs` (new WP-C1.3 tests) — source of DEV-008
   and DEV-013's closure, plus DEV-023/DEV-024.
 - `starkc/src/borrowck.rs`/`flow.rs` (WP-C1.4 tests) — source of DEV-006's closure and DEV-016.
-- `starkc/src/literal.rs`/`typecheck.rs` (WP-C1.5 tests) — source of DEV-015's closure and
+- `starkc/src/literal.rs`/`typecheck/` (WP-C1.5 tests) — source of DEV-015's closure and
   DEV-025.
 - `starkc/scripts/generate-conformance-report.py` (WP-C1.6) — source of DEV-017's partial
   closure.
@@ -2682,16 +2682,16 @@ DEV-051, DEV-052, and DEV-055 were found by WP-C2.12 while building the differen
 corpus, initially left unfixed (corpus-building is not a semantic-repair WP); all three were
 independently reproduced against the current head and **closed** with real fixes in a later
 correction-brief session (DEV-051: trait default methods couldn't call a sibling trait method
-through `self`, fixed in `typecheck.rs`'s `resolve_method`; DEV-052: qualified `Trait::method(...)`
+through `self`, fixed in `typecheck/body.rs`'s `resolve_method`; DEV-052: qualified `Trait::method(...)`
 syntax didn't resolve for compiler `CoreTrait`s, fixed via a new `Res::CoreTraitMember` in
-`resolve.rs`/`typecheck.rs`/`interp.rs`; DEV-055: glob-imported unit enum variants didn't resolve
+`resolve.rs`/`typecheck/`/`interp.rs`; DEV-055: glob-imported unit enum variants didn't resolve
 at all, fixed in `resolve.rs`). DEV-053 and DEV-054 were also found there, investigated as a
 dedicated follow-up in the same original session, found to share one root cause (a bare `None`
 pattern never matched by value -- it silently acted as an unconditional wildcard, confirmed to
 produce **wrong runtime output**, not merely a spurious diagnostic -- DEV-053's original
 "tuple-pattern usefulness/exhaustiveness" framing was itself a downstream artifact of this same
 misclassification, not a separate algorithm bug), and **closed** with a real fix in
-`resolve.rs`/`typecheck.rs`. DEV-060 (repeated call to an un-overridden trait default method
+`resolve.rs`/`typecheck/`. DEV-060 (repeated call to an un-overridden trait default method
 wrongly flagged as a move) was found while writing DEV-051's regression tests, confirmed
 pre-existing and unrelated to that fix (via `git stash`), and was **closed during C3-ENTRY
 closure** (2026-07-19) with a real fix in `borrowck.rs`'s `method_receiver`.
@@ -2800,7 +2800,7 @@ C2.8–C2.11 disposition.
   starts using the hash — a real hash table in the native runtime, for instance — in programs that
   had compiled cleanly until then.
 - **Fix:** the bound is enforced at TYPE INSTANTIATION, through a general mechanism for
-  implementation-declared generic bounds (`typecheck.rs`: `builtin_type_bounds` /
+  implementation-declared generic bounds (`typecheck/`: `builtin_type_bounds` /
   `check_builtin_type_bounds`), not at `insert`. `HashMap<Float64, Int32>` is therefore ill-typed
   wherever it is written, including in a signature that is never called. Rejection is `E0500`, the
   same code every other unsatisfied bound uses.
@@ -3313,7 +3313,7 @@ C2.8–C2.11 disposition.
   not a second defect: the `Try` arm asked "is the return type `?`-capable?" and "is the operand
   `?`-capable?" as two INDEPENDENT questions and never related them, so one missing relation
   produced both symptoms. One mechanism, one repair, no new DEV number (WP-DEV-134-139 §2).
-- **Resolution (CD-335):** `check_try_compatibility` in `typecheck.rs`, recorded during body
+- **Resolution (CD-335):** `check_try_compatibility` in `typecheck/`, recorded during body
   checking and drained after inference settles — the same deferral `display_checks` uses, and for
   the same reason: the operand's error type is routinely an inference variable while the body is
   being checked, so an eager comparison would either reject valid code or force a premature
@@ -3999,7 +3999,7 @@ C2.8–C2.11 disposition.
   `TcpStream::connect` are unreachable from every test and consumer in the tree, and are recorded
   as `surface_blocked` in the CD-355 gate for exactly that reason.
 - **Where the failure is:** NOT the resolver. `super::Wrap::make` reaches `Res::AssociatedFn` and
-  then fails in `typecheck.rs`'s associated-function lookup (the E0200 at the `candidates` empty
+  then fails in `typecheck/`'s associated-function lookup (the E0200 at the `candidates` empty
   case), which scans impls for one whose `self_ty` path resolves to `Res::Item(nominal)`. Methods
   are unaffected because method lookup goes by the receiver's TYPE, not by path resolution — which
   is precisely why the two behave differently.
@@ -4054,7 +4054,7 @@ C2.8–C2.11 disposition.
   impl's own file". The rule was already written down twice. General statement worth keeping:
   `self.text` is correct ONLY for spans from the file under check, and every lookup that reads a
   name off a foreign declaration needs `item_text`.
-- **Fix:** `src/typecheck.rs` — `item_text` in the member comparison and the three generic-name
+- **Fix:** `src/typecheck/state.rs` — `item_text` in the member comparison and the three generic-name
   map insertions, plus the `foreign_sig_item` context across the signature conversion. Evidence:
   `tests/dev148_associated_fn_across_modules.rs` (7 tests over a real two-file package graph,
   since a single-file fixture cannot reproduce a provenance bug). Vacuity-checked: reverting the
@@ -4333,7 +4333,7 @@ Two defects, recorded together because the first concealed the second.
   `item_text` returns `"?"` for an out-of-range span, so two mis-sliced parameter names could
   COLLIDE on one key and substitute each other's types, which would be a WRONG program rather than
   a rejected one. A two-parameter test pins that they cannot.
-- **Fix:** `src/typecheck.rs` — a `decl_text` helper that resolves against `foreign_sig_item` when
+- **Fix:** `src/typecheck/traits.rs` — a `decl_text` helper that resolves against `foreign_sig_item` when
   a declaring item is in scope, plus that context set across the method candidate loop, the
   selected signature's conversion, and the trait-default path.
 - **Evidence:** `tests/cd358_cross_module_provenance.rs` (8 tests over real two-file package
@@ -4360,7 +4360,7 @@ Two defects, recorded together because the first concealed the second.
   `[E0302] method 'fmt' not found for type 'T'`. The identical shape over a user-declared trait
   compiled and ran. The bound was *checked* — `satisfies_bound` accepted `T: Display` — and then
   contributed nothing to method resolution.
-- **Root cause:** `typecheck.rs::resolve_method`'s bounded-generic branch resolved each bound by
+- **Root cause:** `typecheck/body.rs::resolve_method`'s bounded-generic branch resolved each bound by
   searching `hir::ItemKind::Trait` items for a matching name. A compiler-known trait has no
   declaration item, so the search returned `None`, the branch fell through, and the impl scan
   below it could not match a `Ty::Param` receiver either. Method visibility therefore depended on
@@ -4383,7 +4383,7 @@ Two defects, recorded together because the first concealed the second.
 - **Security/soundness impact:** none. It refused valid programs; it never accepted a wrong one.
   The ownership half is the one worth noting: it was also a REFUSAL (a spurious move error), not a
   missed move.
-- **Fix:** `typecheck.rs` collects candidates from both kinds of trait into one list and runs one
+- **Fix:** `typecheck/` collects candidates from both kinds of trait into one list and runs one
   selection over it; a Core trait's signatures come from `core_trait_contract`, the same table
   user `impl` blocks are already checked against, so there is no second signature registry.
   `borrowck.rs` reads the receiver form from the same source. `interp.rs` dispatches a

@@ -31,7 +31,7 @@ library: `starkc` (`src/main.rs`), `stark` (`src/bin/stark.rs`), `starkide`
 | `ast.rs` | 746 | Arena-allocated AST (typed IDs, not references/lifetimes; names as `Span`s; no grouping-paren nodes). | n/a (populated by parser) | `Ast { types, exprs, stmts, items, pats, blocks, dims, root, item_files: HashMap<ItemId, Arc<SourceFile>>, synthetic_spans }` (`ast.rs:32-46`) | `alloc_*`/accessor methods (`ast.rs:660-707`) |
 | `resolve.rs` | 2,753 | Name resolution + AST→HIR lowering (PLAN.md M2.1): module tree, path/import/glob resolution, builtin/primitive/core-trait/core-type resolution, tensor-extension name gating (**the extension's own name table lives in `extensions/tensor/syntax.rs`; the resolver calls it** — AS6). | `&Ast`, `Arc<SourceFile>`, `LanguageOptions` | `(Hir, Vec<Diagnostic>)` | `resolve(ast, file)` (`resolve.rs:84`, Core-only), `resolve_with_options(ast, file, options)` (`resolve.rs:89`), `is_tensor_builtin(b)` (`resolve.rs:2170`, delegating to `extensions::tensor::owns_builtin`) |
 | `hir.rs` | 680 | High-level IR — the desugared representation every pass after resolution uses exclusively. | n/a (populated by resolve) | `Hir { types, exprs, stmts, items, pats, blocks, root, item_files, ... }` | allocator/accessor methods mirroring `ast.rs` (`hir.rs:597-637`) |
-| `typecheck.rs` | 14,432 | Type checking, mutability, and the **Core half** of tensor checking (PLAN.md M2.2) — call-form validation, written-type-syntax conversion, generic-parameter scopes and unification bridging. **The tensor semantic rules are not here**: AS6 moved dtype/shape/device/schema/broadcasting decisions to `extensions/tensor/check.rs` behind a fifteen-service context. Invokes `flow::check` and `borrowck::check` as sub-passes at the end. | `&Hir`, `Arc<SourceFile>`, `LanguageOptions` | `TypeCheckResult { diagnostics, tables: TypeTables { expr_types, local_types, local_mutability } }` (`typecheck.rs:144-155`) | `check(hir)` (`typecheck.rs:1225`), `check_with_options(hir, options)` (`:1230`, wraps `analyze_with_options(...).diagnostics`), `analyze(hir)` (`:1234`), `analyze_with_options(hir, options)` (`:1238`, true root entry) |
+| `typecheck/` | 14,432 | Type checking, mutability, and the **Core half** of tensor checking (PLAN.md M2.2) — call-form validation, written-type-syntax conversion, generic-parameter scopes and unification bridging. **The tensor semantic rules are not here**: AS6 moved dtype/shape/device/schema/broadcasting decisions to `extensions/tensor/check.rs` behind a fifteen-service context. Invokes `flow::check` and `borrowck::check` as sub-passes at the end. | `&Hir`, `Arc<SourceFile>`, `LanguageOptions` | `TypeCheckResult { diagnostics, tables: TypeTables { expr_types, local_types, local_mutability } }` (`typecheck/:144-155`) | `check(hir)` (`typecheck/:1225`), `check_with_options(hir, options)` (`:1230`, wraps `analyze_with_options(...).diagnostics`), `analyze(hir)` (`:1234`), `analyze_with_options(hir, options)` (`:1238`, true root entry) |
 | `flow.rs` | 403 | Definite-assignment / assignment-mutability data-flow analysis, kept separate from type inference. | `&Hir`, `Arc<SourceFile>` (**unused**, see §4), `&HashMap<ExprId, Ty>` | `Vec<Diagnostic>` | `check(hir, _file, expr_types)` (`flow.rs:21`) |
 | `borrowck.rs` | 900 | Borrow checker / ownership pass (PLAN.md M2.4): active-borrow and moved-place tracking, one-`&mut`-XOR-many-`&`. | `&Hir`, `Arc<SourceFile>` (single file, see §4), `&HashMap<ExprId,Ty>`, `&HashMap<LocalId,Ty>` | `Vec<Diagnostic>` | `check(hir, file, expr_types, local_types)` (`borrowck.rs:47`, whole-crate), `check_fn(...)` (`:68`), `check_snippet(...)` (`:89`) |
 | `interp.rs` | 3,464 | Gate-3 tree-walking interpreter over typed HIR; deterministic `BTreeMap`-backed `HashMap`/`HashSet` runtime value (see §3). | `&Hir`, `Arc<SourceFile>`, `&TypeTables` | `Result<Execution { output: String }, RuntimeError { message, span }>` | `run(hir, file, tables)` (`interp.rs:397`, runs `main`), `run_item(hir, file, tables, item)` (`:412`, used by `test_runner`) |
@@ -190,9 +190,9 @@ pipelines") is written to prevent, and it has already partially happened.
      language options.
   3. **Type-table handling**: `starkc check` throws away type tables via `check_with_options`;
      `stark check`/`build` always compute them via `analyze_with_options`. Harmless in practice —
-     `check_with_options` is confirmed to be a thin wrapper (`typecheck.rs:162-168`:
+     `check_with_options` is confirmed to be a thin wrapper (`typecheck/:162-168`:
      `analyze_with_options(...).diagnostics`) — but it is a second code path nonetheless.
-- Confirmed `typecheck::check_with_options` (`typecheck.rs:162-168`) and `typecheck::check`
+- Confirmed `typecheck::check_with_options` (`typecheck/:162-168`) and `typecheck::check`
   (`:157-159`) are both thin wrappers over `analyze_with_options`/`analyze` — no separate
   type-checking logic exists between "check" and "run/analyze" modes.
 
@@ -209,7 +209,7 @@ WP-C0.1's job is to map and report, not repair.
 ### Global/static state
 No `lazy_static!`, `OnceCell`, or `OnceLock` usage anywhere in `starkc/src`. All `static`
 occurrences are either `&'static str` idioms or one genuine immutable lookup table:
-`static TENSOR_OPS: &[TensorOpDescriptor] = &[...]` (`typecheck.rs:5936`) — fixed data, not
+`static TENSOR_OPS: &[TensorOpDescriptor] = &[...]` (`typecheck/:5936`) — fixed data, not
 mutable global state. One `static N: AtomicUsize` exists at
 `deploy/template/runtime.rs.in:644`, but this is inside a **template emitted into the generated
 deployment host crate** (Gate 5 output) — it is part of the generated program's runtime, not the
@@ -221,7 +221,7 @@ compiler's own state.
 - `bin/starkide.rs:1144,1189,1207` — `Command::new("stty")` to query/restore terminal raw-mode
   state for the TUI editor. Not compiler-internal.
 - No `Command::new`/`std::process::Command` in any of `lexer.rs`, `parser.rs`, `resolve.rs`,
-  `typecheck.rs`, `interp.rs`, `flow.rs`, `borrowck.rs`, `deploy/*`, `onnx/*`, `doc_gen/*`,
+  `typecheck/`, `interp.rs`, `flow.rs`, `borrowck.rs`, `deploy/*`, `onnx/*`, `doc_gen/*`,
   `formatter/*`, `lsp/*`. (Test files spawn `Command::new(env!("CARGO_BIN_EXE_starkc"))` — test
   harness only, e.g. `tests/gate4_tensor.rs:8`.)
 
@@ -281,7 +281,7 @@ by stage:
    the correct file.
 2. **Typecheck — correct, via deliberate per-item backfill.** `TypeChecker` swaps `self.file`
    per item during both passes of `check_crate`, using `hir.item_files.get(&item_id)`
-   (`typecheck.rs:1916-1919` Pass 1, `:2065-2068` Pass 2), and back-fills any diagnostic still
+   (`typecheck/:1916-1919` Pass 1, `:2065-2068` Pass 2), and back-fills any diagnostic still
    missing a file after each item (`:2041-2044`, `:2050-2054`, `:2126-2129`, `:2437-2440`). Two
    sites use explicit `.with_file(file)` for cross-item diagnostics referencing a *different*
    item's file (Copy/Drop conflicts referencing another struct) — `:2455`, `:2498`. All 185
@@ -308,7 +308,7 @@ by stage:
    actually came from — no per-item `item_files` lookup exists in `borrowck.rs` (zero
    `item_files`/`with_file` hits). Both are invoked at the end of
    `typecheck::analyze_with_options`, passing the checker's own top-level (root/entry) file
-   (`typecheck.rs:221-222`). **For multi-file packages, every flow and borrow-check diagnostic
+   (`typecheck/:221-222`). **For multi-file packages, every flow and borrow-check diagnostic
    for a non-root-file item is misattributed to the root file.**
 5. **Interp.** `interp::run`/`run_item` take a single `file: Arc<SourceFile>` used to build
    `RuntimeError { message, span }` on trap — same single-file assumption as borrowck.
@@ -338,30 +338,30 @@ tests).
 
 | File | Primary module(s) exercised |
 |---|---|
-| `conformance.rs` | `lexer.rs`, `parser.rs`, `resolve.rs`, `typecheck.rs` — spec-fixture manifest harness |
+| `conformance.rs` | `lexer.rs`, `parser.rs`, `resolve.rs`, `typecheck/` — spec-fixture manifest harness |
 | `diag_format.rs` | `diag.rs`, `parser.rs` — end-to-end diagnostic rendering |
 | `doc_gen.rs` | `doc_gen/extract.rs`, `doc_gen/markdown.rs`, `doc_gen/highlight.rs`, `doc_gen/mod.rs` |
 | `formatter.rs` | `formatter/mod.rs`, `formatter/printer.rs`, `formatter/precedence.rs` — golden-file + idempotence + re-parse sweep |
-| `gate2_package.rs` | `package.rs`, `parser.rs` (`parse_package_graph`), `resolve.rs`, `typecheck.rs` |
-| `gate2_valid.rs` | `resolve.rs`, `typecheck.rs` — single-file semantic checker |
+| `gate2_package.rs` | `package.rs`, `parser.rs` (`parse_package_graph`), `resolve.rs`, `typecheck/` |
+| `gate2_valid.rs` | `resolve.rs`, `typecheck/` — single-file semantic checker |
 | `gate3_execution.rs` | `interp.rs` (+ resolve/typecheck prerequisites) |
 | `gate3_package_resolution.rs` | `package.rs`, `resolve.rs` — multi-file resolution |
 | `gate4_onnx.rs` | `onnx/importer.rs`, `onnx/verifier.rs` |
-| `gate4_semantics.rs` | `typecheck.rs` (tensor-extension semantics), `resolve.rs` |
-| `gate4_tensor.rs` | `extensions/tensor/*`, `resolve.rs`, `typecheck.rs` — via `starkc check --extension tensor` subprocess |
-| `gate4a_prelude_traits.rs` | `resolve.rs`, `typecheck.rs`, `interp.rs` — Core prelude/traits |
-| `gate4b_string_vec.rs` | `resolve.rs`, `typecheck.rs`, `interp.rs` — String/Vec stdlib |
-| `gate4c_collections.rs` | `resolve.rs`, `typecheck.rs`, `interp.rs` — HashMap/HashSet/iterators |
+| `gate4_semantics.rs` | `typecheck/` (tensor-extension semantics), `resolve.rs` |
+| `gate4_tensor.rs` | `extensions/tensor/*`, `resolve.rs`, `typecheck/` — via `starkc check --extension tensor` subprocess |
+| `gate4a_prelude_traits.rs` | `resolve.rs`, `typecheck/`, `interp.rs` — Core prelude/traits |
+| `gate4b_string_vec.rs` | `resolve.rs`, `typecheck/`, `interp.rs` — String/Vec stdlib |
+| `gate4c_collections.rs` | `resolve.rs`, `typecheck/`, `interp.rs` — HashMap/HashSet/iterators |
 | `gate5_codegen.rs` | `deploy/*` end-to-end with real ONNX Runtime backend — `#[ignore]`d, non-hermetic |
 | `gate5_defects.rs` | `deploy/lower.rs`, `deploy/mod.rs` — diagnostic-guard corpus |
 | `gate5_emit.rs` | `deploy/emit.rs` |
 | `gate5_lower.rs` | `deploy/lower.rs`, `deploy/ir.rs` — drives `deploy::lower_pipeline` |
-| `gate5_semantic_gaps.rs` | `typecheck.rs` — Core semantic gap closure |
+| `gate5_semantic_gaps.rs` | `typecheck/` — Core semantic gap closure |
 | `gate7_defects.rs` | `deploy/lower.rs`, `onnx/*` — Gate 7 defect-corpus guard |
 | `gate7_deploy.rs` | `deploy/*` — symbolic-shape lowering |
-| `gate7_frontend.rs` | `resolve.rs`, `typecheck.rs`, `extensions/tensor/*` |
-| `gate7_semantic.rs` | `typecheck.rs` — tensor value-range semantics |
-| `phase4e_math_random_io.rs` | `resolve.rs`, `typecheck.rs`, `interp.rs` — Math/Random/IOError stdlib (see §6) |
+| `gate7_frontend.rs` | `resolve.rs`, `typecheck/`, `extensions/tensor/*` |
+| `gate7_semantic.rs` | `typecheck/` — tensor value-range semantics |
+| `phase4e_math_random_io.rs` | `resolve.rs`, `typecheck/`, `interp.rs` — Math/Random/IOError stdlib (see §6) |
 | `robustness.rs` | `lexer.rs`, `parser.rs` — deterministic pseudo-fuzz (fixed-seed LCG) |
 | `snapshots.rs` | `parser.rs`, `ast_dump.rs` — byte-for-byte AST dump comparison |
 | `test_framework.rs` | `test_runner/mod.rs` |
@@ -382,7 +382,7 @@ case), `TODO`/`FIXME`/`XXX`/`HACK` (any case) returned **zero matches**. There a
 marker-tagged stubs in the compiler source.
 
 `unreachable!()` — 8 sites, all genuine exhaustiveness guards, not hidden stubs: `package.rs:73`
-(JSON fallthrough), `typecheck.rs:6513`, `interp.rs:3232` (`AssignOp::Assign`, handled by an
+(JSON fallthrough), `typecheck/:6513`, `interp.rs:3232` (`AssignOp::Assign`, handled by an
 earlier path — this arm covers only compound-assign operators), `onnx/importer.rs:409,789`
 (protobuf field-kind fallthrough), `formatter/printer.rs:642,657,665`.
 

@@ -271,13 +271,13 @@ type 'Ordering'` and further `[E0200] undefined variable 'Ordering::...'` errors
 
 (b) Consequently — and independently confirmable even setting (a) aside — `eval_binary` has no
 `Ord`/`cmp`-dispatch arm for struct/enum values, unlike the `Eq`/`eq` fix from DEV-008.
-`typecheck.rs::ty_satisfies_operator_bound` (lines 5841–5852) *does* accept `Ty::Struct`/
+`typecheck/body.rs::ty_satisfies_operator_bound` (lines 5841–5852) *does* accept `Ty::Struct`/
 `Ty::Enum` for the `"Ord"` bound whenever a matching `impl Ord for T` exists in the HIR (i.e. the
 type-checker's static check is structurally ready for this, independent of whether `Ordering`
 resolves) — so if (a) were fixed, a struct/enum `<` comparison would type-check successfully and
 then crash at runtime with `"invalid binary operation"` on reaching `eval_binary`, the same class
 of gap `<`/`>` had for `==`/`!=` before DEV-008's fix. This is a compile-time/runtime **mismatch**
-of exactly the kind Gate C2 exists to surface: typecheck.rs is (partially) ready for a feature
+of exactly the kind Gate C2 exists to surface: typecheck/ is (partially) ready for a feature
 that has no working runtime implementation, and no working way to even author the required trait
 method body today. Recorded as DEV-027.
 
@@ -725,7 +725,7 @@ Spec: `03-Type-System.md` "Subtyping and Coercion" → "Numeric Coercions" (line
   does not fit the target type, "including NaN/Inf."
 
 `interp.rs::eval_cast` (lines 1111–1137), dispatched on the statically-known target type
-(`self.tables.expr_types.get(&expr)`, populated by `typecheck.rs`):
+(`self.tables.expr_types.get(&expr)`, populated by `typecheck/`):
 - `Int → Int-primitive target`: `check_integer_range` (lines 1139–1162, `i8::try_from`/.../
   `u64::try_from` against the target primitive) — traps (`"integer overflow"`) if out of range.
 - `Int → Float-primitive target`: `value as f64` — always succeeds (widening; Core v1's largest
@@ -764,7 +764,7 @@ interpreted execution).
 Spec: `03-Type-System.md` line 28: "Default integer type is `Int32` for literals that fit,
 `Int64` otherwise."
 
-`typecheck.rs::check_expr`, `Lit::Int` arm (lines 3083–3123, the **DEV-015 fix**, closed in
+`typecheck/body.rs::check_expr`, `Lit::Int` arm (lines 3083–3123, the **DEV-015 fix**, closed in
 WP-C1.5): for a suffixed literal (`300u8`), checks the parsed value against
 `literal::int_suffix_range_contains` and emits `E0008` if out of range; for an unsuffixed
 literal, checks `i32::try_from(value).is_ok()` first (→ `Int32`), else `i64::try_from(value)
@@ -772,7 +772,7 @@ literal, checks `i32::try_from(value).is_ok()` first (→ `Int32`), else `i64::t
 (lines 914–943) carries a defensive re-check of the same suffix-range condition at evaluation
 time (deliberate defense-in-depth in case a literal ever reaches evaluation through a path that
 bypassed the typecheck-time check — it does not re-check the unsuffixed-vs-inferred-type case,
-since that already depends on the type table `typecheck.rs` produced). **Matches spec exactly**,
+since that already depends on the type table `typecheck/` produced). **Matches spec exactly**,
 and is the concrete site where DEV-015 (fixed this cycle, `C1-exit-report.md` deviation table) is
 directly relevant to this document's numeric conversion topic, as WP-C2.1's scope explicitly
 anticipated.
@@ -845,7 +845,7 @@ moves the elements out eagerly, line 2724); anything else — including the exac
 the spec calls out by name — falls to `_ => Err("value is not iterable")`. Verified that this is
 actually caught earlier, at **compile time**: `for x in v.iter() { ... }` (`v: Vec<Int32>`) fails
 with `[E0001] for-loop requires an iterable value, found 'VecIter<Int32>'` — i.e.
-`typecheck.rs`'s `for`-loop type-checking independently only recognizes the same Range/Array/Vec
+`typecheck/`'s `for`-loop type-checking independently only recognizes the same Range/Array/Vec
 shapes `iter_values` handles, not the general `Iterator`-trait-bound check the spec describes.
 Both layers agree with each other (no compile-succeeds/runtime-crashes mismatch here, unlike
 §2.4(b)'s finding), but together they represent a real, current gap between the spec's general
@@ -854,7 +854,7 @@ Both layers agree with each other (no compile-succeeds/runtime-crashes mismatch 
 chains, and any user type implementing `Iterator` cannot currently be used directly as a
 `for`-loop's iterable, only iterated manually via `.next()` in a `while`/`loop`. Recorded as
 DEV-031; flagged as adjacent to, but distinct from, this
-document's core `interp.rs` focus (the compile-time half of this gap lives in `typecheck.rs`).
+document's core `interp.rs` focus (the compile-time half of this gap lives in `typecheck/`).
 
 ### 9.5 Related, already-known deviations affecting this section
 - **DEV-023** (open, unscheduled): `Display`/`Hash` are declared in the prelude

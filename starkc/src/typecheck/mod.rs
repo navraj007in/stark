@@ -844,7 +844,7 @@ mod tests {
     /// even though the method only takes `&self`. Root cause: `borrowck.rs`'s `method_receiver`
     /// (used by the `Call` handler to decide whether a method receiver is moved, borrowed, or
     /// mutably borrowed) only ever searched `ImplItem::Fn` overrides -- it had no equivalent to
-    /// `typecheck.rs::resolve_method`'s `default_fallback` (WP-C1.3/DEV-013), so an
+    /// `typecheck/body.rs::resolve_method`'s `default_fallback` (WP-C1.3/DEV-013), so an
     /// un-overridden default method returned `None`, and the `None` arm unconditionally
     /// consumed (moved) the receiver via `check_expr`'s `Path` arm, regardless of the method's
     /// real receiver kind. Fixed by adding the matching trait-default-body fallback to

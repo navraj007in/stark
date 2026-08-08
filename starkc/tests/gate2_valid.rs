@@ -282,7 +282,7 @@ fn test_circular_mod_reference_does_not_hang() {
 /// WP-C1.4 regression test for DEV-006 (borrowck half): a use-after-move error inside a
 /// mod-loaded, non-root file used to render against the root file (`borrowck.rs`'s
 /// `BorrowChecker` held a single whole-crate `self.file`, never swapped per item the way
-/// resolve.rs/typecheck.rs already do). Confirms the diagnostic's file now correctly identifies
+/// resolve.rs / `typecheck/` already do). Confirms the diagnostic's file now correctly identifies
 /// `moved.stark`, not `main.stark`.
 #[test]
 fn test_borrowck_diagnostic_in_nonroot_file_reports_correct_file() {

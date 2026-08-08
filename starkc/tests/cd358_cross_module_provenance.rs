@@ -23,7 +23,7 @@
 //!
 //! # Why not an inspection of the call sites
 //!
-//! There are ~90 `self.text` calls in `typecheck.rs`, most of them legitimately reading the file
+//! There are ~90 `self.text` calls across `typecheck/` (89 at the AS7 split), most of them legitimately reading the file
 //! under check (expression spans, diagnostic text). Classifying them by eye is exactly the process
 //! that has already missed this four times. A probe that actually compiles two-file packages found
 //! the remaining live site — a generic method — in one run.
