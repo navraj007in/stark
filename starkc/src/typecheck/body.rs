@@ -20,8 +20,9 @@
 //! out, and `as7_module_dependencies` asserts the extension never calls back into `check_expr`.
 
 use super::state::TypeChecker;
-use super::state::{PublishedEnv, SelfScope};
+use super::state::{single_segment_name, PublishedEnv, SelfScope};
 use super::traits::core_trait_source_name;
+use super::types::PendingUse;
 use super::types::{
     bound_receiver_ty, receiver_adjustment_for, BindMode, CallableDeclId, CallableSigTy,
     CalleeSelection, ControlSummary, DispatchProvenance, DisplayPath, DisplayStep, ExtensionTy,
@@ -32,6 +33,7 @@ use super::types::{
     convert_float_suffix, convert_int_suffix, is_float_primitive, is_integer, is_numeric,
     strip_ref, substitute_ty, ty_contains_infer, unit_or_tuple, CallableUse,
 };
+use crate::extensions::tensor::syntax as tensor_syntax;
 
 use super::types::standard_display_type;
 use super::types::BoundMethod;
@@ -4392,5 +4394,449 @@ impl TypeChecker<'_> {
             }
         }
         summary
+    }
+}
+
+impl TypeChecker<'_> {
+    // AS7 correction (2026-08-09): the publication family was moved into `state` during
+    // Packets 9a/9b on the reasoning that publication WRITES STORAGE. That classified these
+    // by their effect rather than by what they need: each RESOLVES, INSTANTIATES or SELECTS
+    // TRAIT CANDIDATES before writing, which is work `state` may not do. The decision of what
+    // to publish belongs with the caller, and these functions ARE that decision.
+    /// Record each field's DECLARED type, instantiated for this literal's type arguments.
+    ///
+    /// AS3 Packet 5. The `AggregateField` boundary needs the type the *nominal declares* for the
+    /// field, not the type of the expression that produced the value — the second would compare a
+    /// value against its own producer and assert nothing. `expected` is the nominal's parametric
+    /// field map and `map` is the substitution the literal's arguments determine, which is exactly
+    /// what `check_field_initializers` unifies against; publishing here rather than re-deriving
+    /// keeps the boundary reading the same answer the checker enforced.
+    ///
+    /// Shorthand initialisers (`W { v }`) are covered for free: the key is the FIELD NAME, so a
+    /// field with no initialiser expression still has a published type.
+    pub(super) fn publish_aggregate_field_types(
+        &mut self,
+        expr_id: ExprId,
+        expected: &HashMap<String, Ty>,
+        map: &HashMap<String, Ty>,
+    ) {
+        let concrete = expected
+            .iter()
+            .map(|(name, ty)| (name.clone(), self.instantiate_ty(ty, map)))
+            .collect();
+        self.aggregate_field_types.insert(expr_id, concrete);
+    }
+    /// The `Eq::eq` a core container method runs on its elements, published against the container
+    /// call.
+    ///
+    /// The method list is explicit rather than "anything that might compare": publishing a use the
+    /// renderer never executes would make the totality claim false, which is the same discipline
+    /// the `Display` walk's STOP rule follows.
+    pub(super) fn publish_core_element_eq_use(
+        &mut self,
+        call_expr: ExprId,
+        receiver: &Ty,
+        method: &str,
+    ) {
+        // **Publish for every container method, not a hand-listed subset.**
+        //
+        // The first version listed the methods believed to compare elements and omitted `get_mut`,
+        // so `map.get_mut(&k)` fell back to STRUCTURAL comparison and silently retrieved the wrong
+        // entry — caught by `hash_collections_use_language_eq_for_keys`, whose whole purpose is a
+        // user `Eq` that disagrees with structural equality.
+        //
+        // The asymmetry decides it: an unused entry costs a table slot, while a missing one is a
+        // wrong answer. That is the opposite of the Display walk's STOP rule, and deliberately so —
+        // there, over-publishing would falsify a claim about what the renderer executes; here the
+        // claim is only "if this call compares elements, this is the body", which stays true
+        // whether or not it does.
+        let _ = method;
+        let mut receiver = self.resolve(receiver);
+        while let Ty::Ref { inner, .. } = receiver {
+            receiver = self.resolve(&inner);
+        }
+        // The compared type: a map compares KEYS, a set and a Vec compare elements.
+        let element = match &receiver {
+            Ty::Core(CoreType::HashMap, args) => args.first().cloned(),
+            Ty::Core(CoreType::HashSet | CoreType::Vec, args) => args.first().cloned(),
+            _ => None,
+        };
+        let Some(element) = element else { return };
+        // `publish_operator_use` already handles "not a user nominal" and "no `Eq` impl" by
+        // publishing nothing, and handles a bounded parameter through DEV-191's branch.
+        self.publish_operator_use(call_expr, &element, "Eq", "eq", hir::CoreTrait::Eq);
+    }
+    pub(super) fn publish_display_bound(
+        &mut self,
+        root: ExprId,
+        param_name: &str,
+        path: DisplayPath,
+    ) {
+        let candidates = self.bound_method_candidates(param_name, "fmt");
+        let Some(BoundMethod::Core {
+            core_trait: core @ hir::CoreTrait::Display,
+            method: contract,
+            ..
+        }) = candidates.into_iter().find(|c| {
+            matches!(
+                c,
+                BoundMethod::Core {
+                    core_trait: hir::CoreTrait::Display,
+                    ..
+                }
+            )
+        })
+        else {
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &[]),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: Vec::new(),
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params: Vec::new(),
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core),
+            },
+        };
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+    pub(super) fn publish_display_static(
+        &mut self,
+        root: ExprId,
+        ty: &Ty,
+        path: DisplayPath,
+        span: Span,
+    ) {
+        let Some((impl_item, member, body, substitution)) =
+            self.operator_impl_member(ty, "Display", "fmt")
+        else {
+            return;
+        };
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(self.impl_dispatch_bindings(impl_item, ty)),
+            // `Display::fmt(&self)` borrows; the renderer holds the value and lends it.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            // §3.4: the INSTANTIATED signature, so `impl<T> Display for W<T>` publishes `&W<Int32>`
+            // rather than the declaration's `&W<T>`.
+            signature: CallableSigTy {
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Display,
+            },
+        };
+        let _ = span;
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+    /// Publish the `Iterator::next` use a `for` loop selects.
+    ///
+    /// Uses `resolve_user_iterator` — the SAME selection the element type came from — so there is
+    /// one answer to "which `next` does this loop run", not two that must agree.
+    pub(super) fn publish_iterator_use(&mut self, for_expr: ExprId, iter_ty: &Ty) {
+        let iter_ty = self.resolve(iter_ty);
+        if !matches!(iter_ty, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some(selection) = self.resolve_user_iterator(&iter_ty) else {
+            return;
+        };
+        let (impl_item, member, body) = (selection.impl_item, selection.member, selection.body);
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        // Instantiated against the impl's substitution: `impl<T> Iterator for Repeat<T>` publishes
+        // a `next` returning `Option<Int32>` for `Repeat<Int32>`, not `Option<T>`.
+        let receiver = receiver.map(|ty| self.instantiate_ty(&ty, &selection.substitutions));
+        let params: Vec<Ty> = params
+            .iter()
+            .map(|ty| self.instantiate_ty(ty, &selection.substitutions))
+            .collect();
+        let ret = self.instantiate_ty(&ret, &selection.substitutions);
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            // The impl's generic environment, RETAINED. Publishing an empty one here was the
+            // second defect the hardening review found.
+            environment: GenericEnvironment::Static(selection.bindings),
+            // `Iterator::next(&mut self)` advances the iterator, so the loop takes an exclusive
+            // borrow of the iterator place — no dereferencing.
+            receiver_adjustment: ReceiverAdjustment::Exclusive { derefs: 0 },
+            receiver_binding: ReceiverBinding::Exclusive,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Iterator,
+            },
+        };
+        self.publish_callable_use(for_expr, use_);
+    }
+}
+
+impl TypeChecker<'_> {
+    // AS7 correction: instantiating a signature CONVERTS WRITTEN TYPES, so it cannot live
+    // below `convert`. Its single caller is here.
+    pub(super) fn instantiate_sig(
+        &mut self,
+        item_id: ItemId,
+        sig: FnSigTy,
+        turbofish: Option<&hir::GenericArgs>,
+        use_expr: Option<ExprId>,
+        span: Span,
+    ) -> FnSigTy {
+        let item = self.hir.item(item_id);
+        let generics = match &item.kind {
+            hir::ItemKind::Fn(def) => &def.sig.generics,
+            _ => return sig,
+        };
+
+        if generics.is_empty() {
+            if turbofish.is_some() {
+                self.diags.push(
+                    Diagnostic::error("generic arguments provided for non-generic function", span)
+                        .with_code("E0101"),
+                );
+            }
+            let fresh = self.freshen_call_sig(sig, span);
+            // **AS3: a non-generic call is published too.**
+            //
+            // `callable_instantiations` records nothing here — there is no environment to record —
+            // which is why `push_callable_env` reports "not pushed" and the interpreter falls
+            // through. Under totality that absence is indistinguishable from "no record exists",
+            // and the whole point is that an execution site finding no record is an internal
+            // compiler error rather than a licence to scan. So the environment is an explicitly
+            // EMPTY `Static(vec![])`.
+            if let (Some(expr_id), hir::ItemKind::Fn(def)) =
+                (use_expr, &self.hir.item(item_id).kind)
+            {
+                let body = def.body;
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::Item(item_id),
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(Vec::new()),
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: ReceiverBinding::None,
+                    signature: CallableSigTy {
+                        receiver: None,
+                        params: fresh.params.clone(),
+                        ret: fresh.ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Direct,
+                };
+                self.publish_callable_use(expr_id, use_);
+            }
+            return fresh;
+        }
+
+        let mut pending_use: Option<PendingUse> = None;
+        let mut map = HashMap::new();
+        if let Some(args) = turbofish {
+            let has_tensor_kind = generics.iter().any(|param| {
+                param.bounds.iter().any(|bound| {
+                    bound.res == Res::Err
+                        && single_segment_name(&bound.path, self)
+                            .and_then(tensor_syntax::tensor_param_kind)
+                            .is_some()
+                })
+            });
+            if has_tensor_kind {
+                self.tensor_error(
+                    "explicit tensor-kind function arguments are reserved for tensor operation typing; use inference here",
+                    span,
+                );
+            }
+            if args.args.len() != generics.len() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "generic parameters mismatch: expected {} generic arguments, found {}",
+                            generics.len(),
+                            args.args.len()
+                        ),
+                        span,
+                    )
+                    .with_code("E0101"),
+                );
+            }
+
+            for (param, arg) in generics.iter().zip(&args.args) {
+                // DEV-101: the generic parameter NAME is declared by the callee, so its span is
+                // only meaningful against the callee's file (`item_text`) — reading it with
+                // `self.text` (the CALLER's file) produced a wrong string for a cross-file/
+                // cross-package callee, so this key never matched the `Ty::Param(name)` recorded in
+                // `fn_sigs` (built under the callee's file) and the parameter stayed unsubstituted.
+                // The turbofish ARGUMENT below is the caller's, so it stays on `self.file`.
+                let param_name = self.item_text(item_id, param.name).to_string();
+                let arg_ty = match arg {
+                    hir::GenericArg::Type(t) => self.convert_hir_type(*t),
+                    _ => Ty::Error,
+                };
+
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
+                let enclosing = self.current_generic_env();
+                self.bounds_checks
+                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
+                map.insert(param_name, arg_ty);
+            }
+        } else {
+            for param in generics {
+                // DEV-101: callee-declared name → callee's file.
+                let param_name = self.item_text(item_id, param.name).to_string();
+                let var = self.new_type_var();
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
+                let enclosing = self.current_generic_env();
+                self.bounds_checks
+                    .push((var.clone(), trait_bounds, span, enclosing));
+                map.insert(param_name, var);
+            }
+        }
+
+        // WP-C4.5c: record the ordered instantiation for MIR monomorphisation, keyed by the
+        // referencing path expression. Fresh inference variables recorded here resolve through
+        // `subst` by the time `analyze` grounds and publishes the table; any that remain
+        // undetermined are rejected there (E0004 — TYPE-GENERIC-001 / TYPE-FN-002, DEV-064).
+        // Tensor-kinded parameters (`Dim`/`DType`/`Device` bounds) unify through the tensor
+        // context, not value-type substitution — those functions are extension territory and
+        // are neither recorded nor subject to the undetermined-instantiation rejection.
+        let has_tensor_kinded_param = generics.iter().any(|param| {
+            param.bounds.iter().any(|bound| {
+                bound.res == Res::Err
+                    && single_segment_name(&bound.path, self)
+                        .and_then(tensor_syntax::tensor_param_kind)
+                        .is_some()
+            })
+        });
+        if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
+            // A3c-S: the same instantiation as a provenance-carrying environment. A free function
+            // has no impl, no trait and no `Self`, so this is the degenerate case of the table —
+            // recorded through the same path so there is one answer to what a generic call means
+            // rather than one table for free functions and another for methods.
+            if let hir::ItemKind::Fn(def) = &self.hir.item(item_id).kind {
+                let body = def.body;
+                let own_names: Vec<String> = generics
+                    .iter()
+                    .map(|param| self.item_text(item_id, param.name).to_string())
+                    .collect();
+                let env_map = map.clone();
+                self.publish_callable_env(PublishedEnv {
+                    call_expr: expr_id,
+                    body,
+                    self_ty: None,
+                    impl_names: &[],
+                    own_names: &own_names,
+                    own_is_method: false,
+                    map: &env_map,
+                });
+                // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
+                // rather than verify. **Deferred to the end of this function**, because the
+                // signature must be the INSTANTIATED one: publishing `sig` here recorded
+                // `params: [Param("T")]` against an environment saying `T = Int32`, so §3.4's
+                // invariant failed the moment the test stopped skipping generic uses.
+                let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
+                pending_use = Some((expr_id, body, bindings));
+            }
+        }
+
+        // Associated-type equality bindings participate in substitution, so a
+        // return such as `I::Item` becomes concrete at each instantiation of
+        // `fn first<I: Iterator<Item = Int32>>(...)`.
+        for param in generics {
+            // DEV-101: the parameter name and the associated-binding name are both callee-declared,
+            // so they read against the callee's file. (The binding TYPE `ty` is converted below;
+            // for a cross-file callee whose binding type names a callee-local type, that conversion
+            // still reads `self.file` — covered by the cross-package associated-type work, not the
+            // core unbounded/inference fix.)
+            let param_name = self.item_text(item_id, param.name).to_string();
+            for bound in &param.bounds {
+                if let Some(args) = &bound.args {
+                    for arg in &args.args {
+                        if let hir::GenericArg::Binding { name, ty } = arg {
+                            let binding = self.convert_hir_type(*ty);
+                            let binding = self.instantiate_ty(&binding, &map);
+                            map.insert(
+                                format!("{param_name}::{}", self.item_text(item_id, *name)),
+                                binding,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let params: Vec<Ty> = sig
+            .params
+            .iter()
+            .map(|p| self.instantiate_ty_deferring_projections(p, &map, span))
+            .collect();
+        let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
+
+        let instantiated = self.freshen_call_sig(FnSigTy { params, ret }, span);
+        if let Some((expr_id, body, bindings)) = pending_use {
+            self.publish_named_use(
+                expr_id,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: instantiated.params.clone(),
+                    ret: instantiated.ret.clone(),
+                },
+                DispatchProvenance::Direct,
+            );
+        }
+        instantiated
     }
 }

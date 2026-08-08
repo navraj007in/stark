@@ -24,6 +24,7 @@ mod infer;
 mod items;
 mod patterns;
 mod state;
+mod trait_contracts;
 mod traits;
 use state::TypeChecker;
 use traits::core_trait_bound_method;

@@ -31,7 +31,17 @@ use std::path::PathBuf;
 
 /// The approved decomposition (owner decision, 2026-08-08). Frozen for the packet.
 const MODULES: &[&str] = &[
-    "mod", "types", "state", "infer", "traits", "convert", "bounds", "patterns", "body", "items",
+    "mod",
+    "types",
+    "state",
+    "infer",
+    "traits",
+    "convert",
+    "bounds",
+    "trait_contracts",
+    "patterns",
+    "body",
+    "items",
 ];
 
 /// **Revised in Packet 7 by owner ruling, after this test fired.** The original cut put trait
@@ -41,8 +51,16 @@ const MODULES: &[&str] = &[
 /// do not need a cycle — the missing layer was the orchestration, now `bounds`.
 ///
 /// ```text
-///   types <- state <- infer <- traits <- convert <- bounds <- patterns/body <- items
+///   types <- state <- infer <- traits <- convert <- {bounds, trait_contracts}
+///                                                    <- patterns/body <- items
 /// ```
+///
+/// **`trait_contracts` added 2026-08-09 by the AS7 correction.** The Packet-7 split put trait
+/// IDENTITY below `convert` and left the CONVERSION-DEPENDENT trait machinery — impl-rule
+/// validation, Core trait contract checking, associated-function typing, the trait-impl index —
+/// in `traits`, where it kept calling `convert_hir_type`. The repaired forcing test exposed that
+/// as a live `traits -> convert` cycle. Identity stays below `convert`; anything that must
+/// convert written types to answer a trait question sits above it.
 ///
 /// This graph must REJECT `traits -> convert`, `traits -> bounds` and `convert -> bounds`, and
 /// PERMIT `convert -> traits`, `bounds -> convert` and `bounds -> traits`.
@@ -51,8 +69,10 @@ const DECLARED_EDGES: &[(&str, &str)] = &[
     ("items", "body"),
     ("body", "patterns"),
     ("body", "bounds"),
+    ("body", "trait_contracts"),
     ("patterns", "bounds"),
     ("bounds", "convert"),
+    ("trait_contracts", "convert"),
     ("convert", "traits"),
     ("traits", "infer"),
     ("infer", "state"),

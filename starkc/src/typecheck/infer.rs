@@ -12,13 +12,9 @@
 //! unify against what, and how the failure is rendered. AS6 froze that boundary and AS7 does not
 //! reopen it.
 
-use super::state::{single_segment_name, PublishedEnv, TypeChecker};
+use super::state::TypeChecker;
 use super::types::is_integer_primitive;
-use super::types::{
-    substitute_ty, CallableDeclId, CallableSigTy, CallableUse, CalleeSelection, DispatchProvenance,
-    ExtensionTy, FnSigTy, GenericEnvironment, PendingUse, ReceiverAdjustment, ReceiverBinding, Ty,
-    TypeVarId,
-};
+use super::types::{substitute_ty, ExtensionTy, FnSigTy, Ty, TypeVarId};
 
 use crate::ast::Primitive;
 use crate::diag::Diagnostic;
@@ -27,7 +23,7 @@ use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{
     DType, Device, DeviceVar, Shape, TensorKind, TensorTy, UnifyError,
 };
-use crate::hir::{self, ExprId, ItemId, Res};
+use crate::hir::{self, CoreType, ItemId};
 use crate::literal;
 use crate::source::Span;
 use std::collections::HashMap;
@@ -841,230 +837,6 @@ impl TypeChecker<'_> {
             other => other,
         }
     }
-    pub(super) fn instantiate_sig(
-        &mut self,
-        item_id: ItemId,
-        sig: FnSigTy,
-        turbofish: Option<&hir::GenericArgs>,
-        use_expr: Option<ExprId>,
-        span: Span,
-    ) -> FnSigTy {
-        let item = self.hir.item(item_id);
-        let generics = match &item.kind {
-            hir::ItemKind::Fn(def) => &def.sig.generics,
-            _ => return sig,
-        };
-
-        if generics.is_empty() {
-            if turbofish.is_some() {
-                self.diags.push(
-                    Diagnostic::error("generic arguments provided for non-generic function", span)
-                        .with_code("E0101"),
-                );
-            }
-            let fresh = self.freshen_call_sig(sig, span);
-            // **AS3: a non-generic call is published too.**
-            //
-            // `callable_instantiations` records nothing here — there is no environment to record —
-            // which is why `push_callable_env` reports "not pushed" and the interpreter falls
-            // through. Under totality that absence is indistinguishable from "no record exists",
-            // and the whole point is that an execution site finding no record is an internal
-            // compiler error rather than a licence to scan. So the environment is an explicitly
-            // EMPTY `Static(vec![])`.
-            if let (Some(expr_id), hir::ItemKind::Fn(def)) =
-                (use_expr, &self.hir.item(item_id).kind)
-            {
-                let body = def.body;
-                let use_ = CallableUse {
-                    selection: CalleeSelection::Static {
-                        declaration: CallableDeclId::Item(item_id),
-                        body,
-                    },
-                    environment: GenericEnvironment::Static(Vec::new()),
-                    receiver_adjustment: ReceiverAdjustment::None,
-                    receiver_binding: ReceiverBinding::None,
-                    signature: CallableSigTy {
-                        receiver: None,
-                        params: fresh.params.clone(),
-                        ret: fresh.ret.clone(),
-                    },
-                    provenance: DispatchProvenance::Direct,
-                };
-                self.publish_callable_use(expr_id, use_);
-            }
-            return fresh;
-        }
-
-        let mut pending_use: Option<PendingUse> = None;
-        let mut map = HashMap::new();
-        if let Some(args) = turbofish {
-            let has_tensor_kind = generics.iter().any(|param| {
-                param.bounds.iter().any(|bound| {
-                    bound.res == Res::Err
-                        && single_segment_name(&bound.path, self)
-                            .and_then(tensor_syntax::tensor_param_kind)
-                            .is_some()
-                })
-            });
-            if has_tensor_kind {
-                self.tensor_error(
-                    "explicit tensor-kind function arguments are reserved for tensor operation typing; use inference here",
-                    span,
-                );
-            }
-            if args.args.len() != generics.len() {
-                self.diags.push(
-                    Diagnostic::error(
-                        format!(
-                            "generic parameters mismatch: expected {} generic arguments, found {}",
-                            generics.len(),
-                            args.args.len()
-                        ),
-                        span,
-                    )
-                    .with_code("E0101"),
-                );
-            }
-
-            for (param, arg) in generics.iter().zip(&args.args) {
-                // DEV-101: the generic parameter NAME is declared by the callee, so its span is
-                // only meaningful against the callee's file (`item_text`) — reading it with
-                // `self.text` (the CALLER's file) produced a wrong string for a cross-file/
-                // cross-package callee, so this key never matched the `Ty::Param(name)` recorded in
-                // `fn_sigs` (built under the callee's file) and the parameter stayed unsubstituted.
-                // The turbofish ARGUMENT below is the caller's, so it stays on `self.file`.
-                let param_name = self.item_text(item_id, param.name).to_string();
-                let arg_ty = match arg {
-                    hir::GenericArg::Type(t) => self.convert_hir_type(*t),
-                    _ => Ty::Error,
-                };
-
-                let trait_bounds = param
-                    .bounds
-                    .iter()
-                    .filter(|bound| bound.res != Res::Err)
-                    .cloned()
-                    .collect();
-                let enclosing = self.current_generic_env();
-                self.bounds_checks
-                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
-                map.insert(param_name, arg_ty);
-            }
-        } else {
-            for param in generics {
-                // DEV-101: callee-declared name → callee's file.
-                let param_name = self.item_text(item_id, param.name).to_string();
-                let var = self.new_type_var();
-                let trait_bounds = param
-                    .bounds
-                    .iter()
-                    .filter(|bound| bound.res != Res::Err)
-                    .cloned()
-                    .collect();
-                let enclosing = self.current_generic_env();
-                self.bounds_checks
-                    .push((var.clone(), trait_bounds, span, enclosing));
-                map.insert(param_name, var);
-            }
-        }
-
-        // WP-C4.5c: record the ordered instantiation for MIR monomorphisation, keyed by the
-        // referencing path expression. Fresh inference variables recorded here resolve through
-        // `subst` by the time `analyze` grounds and publishes the table; any that remain
-        // undetermined are rejected there (E0004 — TYPE-GENERIC-001 / TYPE-FN-002, DEV-064).
-        // Tensor-kinded parameters (`Dim`/`DType`/`Device` bounds) unify through the tensor
-        // context, not value-type substitution — those functions are extension territory and
-        // are neither recorded nor subject to the undetermined-instantiation rejection.
-        let has_tensor_kinded_param = generics.iter().any(|param| {
-            param.bounds.iter().any(|bound| {
-                bound.res == Res::Err
-                    && single_segment_name(&bound.path, self)
-                        .and_then(tensor_syntax::tensor_param_kind)
-                        .is_some()
-            })
-        });
-        if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
-            // A3c-S: the same instantiation as a provenance-carrying environment. A free function
-            // has no impl, no trait and no `Self`, so this is the degenerate case of the table —
-            // recorded through the same path so there is one answer to what a generic call means
-            // rather than one table for free functions and another for methods.
-            if let hir::ItemKind::Fn(def) = &self.hir.item(item_id).kind {
-                let body = def.body;
-                let own_names: Vec<String> = generics
-                    .iter()
-                    .map(|param| self.item_text(item_id, param.name).to_string())
-                    .collect();
-                let env_map = map.clone();
-                self.publish_callable_env(PublishedEnv {
-                    call_expr: expr_id,
-                    body,
-                    self_ty: None,
-                    impl_names: &[],
-                    own_names: &own_names,
-                    own_is_method: false,
-                    map: &env_map,
-                });
-                // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
-                // rather than verify. **Deferred to the end of this function**, because the
-                // signature must be the INSTANTIATED one: publishing `sig` here recorded
-                // `params: [Param("T")]` against an environment saying `T = Int32`, so §3.4's
-                // invariant failed the moment the test stopped skipping generic uses.
-                let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
-                pending_use = Some((expr_id, body, bindings));
-            }
-        }
-
-        // Associated-type equality bindings participate in substitution, so a
-        // return such as `I::Item` becomes concrete at each instantiation of
-        // `fn first<I: Iterator<Item = Int32>>(...)`.
-        for param in generics {
-            // DEV-101: the parameter name and the associated-binding name are both callee-declared,
-            // so they read against the callee's file. (The binding TYPE `ty` is converted below;
-            // for a cross-file callee whose binding type names a callee-local type, that conversion
-            // still reads `self.file` — covered by the cross-package associated-type work, not the
-            // core unbounded/inference fix.)
-            let param_name = self.item_text(item_id, param.name).to_string();
-            for bound in &param.bounds {
-                if let Some(args) = &bound.args {
-                    for arg in &args.args {
-                        if let hir::GenericArg::Binding { name, ty } = arg {
-                            let binding = self.convert_hir_type(*ty);
-                            let binding = self.instantiate_ty(&binding, &map);
-                            map.insert(
-                                format!("{param_name}::{}", self.item_text(item_id, *name)),
-                                binding,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        let params: Vec<Ty> = sig
-            .params
-            .iter()
-            .map(|p| self.instantiate_ty_deferring_projections(p, &map, span))
-            .collect();
-        let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
-
-        let instantiated = self.freshen_call_sig(FnSigTy { params, ret }, span);
-        if let Some((expr_id, body, bindings)) = pending_use {
-            self.publish_named_use(
-                expr_id,
-                body,
-                bindings,
-                ReceiverAdjustment::None,
-                ReceiverBinding::None,
-                CallableSigTy {
-                    receiver: None,
-                    params: instantiated.params.clone(),
-                    ret: instantiated.ret.clone(),
-                },
-                DispatchProvenance::Direct,
-            );
-        }
-        instantiated
-    }
     /// WP-C6.2c: resolve any associated-type projection reachable in `ty`. A `Ty::Param("X::Item")`
     /// whose base `X` names a bound param with an explicit binding is replaced from `binding_map`;
     /// one whose base resolves to a concrete nominal is replaced from the program-wide
@@ -1257,6 +1029,128 @@ impl TypeChecker<'_> {
             )),
             // Fn types and everything else fall back to the non-deferring instantiation.
             _ => self.instantiate_ty(ty, map),
+        }
+    }
+}
+
+impl TypeChecker<'_> {
+    // AS7 correction: `ty_to_string` resolves before it renders, so it belongs with `resolve`.
+    pub(super) fn ty_to_string(&self, ty: &Ty) -> String {
+        let ty = self.resolve(ty);
+        match ty {
+            Ty::Primitive(p) => p.name().to_string(),
+            Ty::Struct(id, args) => {
+                let item = self.hir.item(id);
+                if let hir::ItemKind::Struct { name, .. } = &item.kind {
+                    self.format_nominal(id, *name, &args)
+                } else {
+                    "Struct".to_string()
+                }
+            }
+            Ty::Enum(id, args) => {
+                let item = self.hir.item(id);
+                if let hir::ItemKind::Enum { name, .. } = &item.kind {
+                    self.format_nominal(id, *name, &args)
+                } else {
+                    "Enum".to_string()
+                }
+            }
+            Ty::Core(core, args) => {
+                let name = match core {
+                    CoreType::String => "String",
+                    CoreType::Vec => "Vec",
+                    CoreType::Box => "Box",
+                    CoreType::Option => "Option",
+                    CoreType::Result => "Result",
+                    CoreType::Range => "Range",
+                    CoreType::RangeInclusive => "RangeInclusive",
+                    CoreType::CharsIter => "CharsIter",
+                    CoreType::SplitIter => "SplitIter",
+                    CoreType::VecIter => "VecIter",
+                    CoreType::HashMap => "HashMap",
+                    CoreType::HashSet => "HashSet",
+                    CoreType::KeysIter => "KeysIter",
+                    CoreType::ValuesIter => "ValuesIter",
+                    CoreType::Iter => "Iter",
+                    CoreType::MapIter => "MapIter",
+                    CoreType::FilterIter => "FilterIter",
+                    CoreType::Random => "Random",
+                    CoreType::IOError => "IOError",
+                    CoreType::File => "File",
+                    CoreType::Ordering => "Ordering",
+                };
+                if args.is_empty() {
+                    name.to_string()
+                } else {
+                    format!(
+                        "{}<{}>",
+                        name,
+                        args.iter()
+                            .map(|arg| self.ty_to_string(arg))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
+            Ty::Ref { mutable, inner } => {
+                let prefix = if mutable { "&mut " } else { "&" };
+                format!("{}{}", prefix, self.ty_to_string(&inner))
+            }
+            Ty::Tuple(elems) => {
+                let el_strs: Vec<String> = elems.iter().map(|e| self.ty_to_string(e)).collect();
+                format!("({})", el_strs.join(", "))
+            }
+            Ty::Array(elem, len) => {
+                format!("[{}; {}]", self.ty_to_string(&elem), len)
+            }
+            Ty::Slice(elem) => {
+                format!("[{}]", self.ty_to_string(&elem))
+            }
+            Ty::Fn { params, ret } => {
+                let p_strs: Vec<String> = params.iter().map(|p| self.ty_to_string(p)).collect();
+                format!("fn({}) -> {}", p_strs.join(", "), self.ty_to_string(&ret))
+            }
+            Ty::Range(elem) => format!("Range<{}>", self.ty_to_string(&elem)),
+            Ty::Param(name) => name.clone(),
+            Ty::Never => "!".to_string(),
+            Ty::Infer(id) => format!("_infer_{}", id.0),
+            Ty::Extension(ext) => match ext.as_ref() {
+                ExtensionTy::Tensor(tensor) => self.tensor_ctx.display_tensor(tensor),
+                ExtensionTy::Model(model) => {
+                    let item = self.hir.item(model.item_id);
+                    if let hir::ItemKind::Model(def) = &item.kind {
+                        self.text(def.name).to_string()
+                    } else {
+                        "Model".to_string()
+                    }
+                }
+                ExtensionTy::ModelError => tensor_syntax::TensorTypeConstructor::ModelError
+                    .name()
+                    .to_string(),
+            },
+            Ty::Error => "{error}".to_string(),
+        }
+    }
+}
+
+impl TypeChecker<'_> {
+    // AS7 correction: the nominal renderer goes with `ty_to_string`, which resolves.
+    // AS7 Packet 6: the nominal-type renderer belongs with `ty_to_string`, a state service.
+    /// DEV-069: `item` is the nominal's DECLARING item — its name span is only meaningful
+    /// against its own file, which is not necessarily the file being checked.
+    pub(super) fn format_nominal(&self, item: ItemId, name: Span, args: &[Ty]) -> String {
+        let name = self.item_text(item, name);
+        if args.is_empty() {
+            name.to_string()
+        } else {
+            format!(
+                "{}<{}>",
+                name,
+                args.iter()
+                    .map(|arg| self.ty_to_string(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
 }
