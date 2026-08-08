@@ -1,5 +1,55 @@
 # STARK Compiler STATE
 
+## CD-389 — Campaign B approved, Sprint 4 in execution, AS6 open (2026-08-08)
+
+**Where compiler work actually stands. Read this before anything below it.**
+
+```text
+Campaign A          PASS — closed, CI-confirmed. Do not reopen.
+Campaign B          APPROVED for execution, 2026-08-08 (AS6-AS8 as designed)
+Current sprint      Sprint 4 — AS6, then AS7, then AS8
+Current packet      AS6, extension quarantine — IN EXECUTION, NOT CLOSED
+Active branch       wp-arch-stability/sprint-4
+Gate track          C0-C10: see the CD records below; C8 CLOSED (CD-385)
+```
+
+**AS6's position.** Six packets have landed. The tensor extension's *semantic authority* and its
+*surface vocabulary* are out of Core:
+
+```text
+architectural discovery        DONE   46ae2ec
+builtin/catalogue quarantine   DONE   fe80129
+runtime/lowering boundary      DONE   33cb0a7
+tensor type-system boundary    DONE   62ef6b0 (rules), 9147073 (authority, 15-service context)
+parser residual audit          DONE   5190d1b   CI green, 28/28 jobs
+exit-criterion cleanup         DONE   6050efa   model-decl split, vocabulary tables, forcing lint
+AS6 exit qualification         OPEN   <- the only thing between here and AS6 CLOSED
+```
+
+**AS6 is NOT closed and nothing downstream may say it is.** Closure requires the published exit
+criteria and Tier-2/CI qualification on the exact head. The owner approval of Campaign B ratifies
+the landed work as *execution*; it does not substitute for that evidence.
+
+**The finding this packet contributes.** Exit criterion 2 — "central Core modules do not contain
+open-ended tensor spelling tables or method catalogues" — is the only one of AS6's five with **no
+behavioural signature**. Criteria 1 and 3 are pinned in both directions by the session-isolation
+suite; criterion 2 is not pinned by anything that runs. It therefore decayed silently, and residue
+survived three packets that each reported their surface clean: `resolve.rs` kept a 15-name
+vocabulary table, and a census found the tensor type-constructor spellings in **three** places and
+the element-type spellings in **four**. `starkc/tests/as6_core_module_vocabulary.rs` is the
+structural check that now pins it — the deliverable the work package listed and no implementation
+packet had built.
+
+**Carry into AS7:** a structural criterion needs a structural check committed with the cut, not a
+procedure and not a reviewer's grep. AS7's criterion 2 ("dependency direction documented and
+cycle-free") has the same shape and should get its executable check before the modularisation
+starts.
+
+**Branch note.** Sprint 4's AS6 packets began on `wp-arch-stability/sprint-3` to preserve the active
+execution state after Campaign A closed; from `6050efa` execution continues on
+`wp-arch-stability/sprint-4`. History is retained, not rewritten. See
+`WP-ARCHITECTURE-STABILIZATION.md` §1.
+
 ## CD-385 — Gate C8 CLOSED, deliberately short on one requirement (2026-08-06)
 
 **Owner ruling. `STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` is the record.**

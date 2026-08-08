@@ -1,10 +1,10 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprints 1 and 2 CLOSED, AS0 CLOSED. Sprint 3 (AS3 → AS4) open.** The Sprint 1 opening items, AS0 (partial), AS1a and
-AS2 were approved in session on 2026-08-06, landed on `wp-arch-stability/sprint-1`, and passed their
-Tier-3 closeout (`STARKLANG/docs/compiler/audits/AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green). Campaign A's remainder and Campaign B remain **reserved** and require a
-second owner decision, which the AS0 report now enables — see §1.
-**Date:** 2026-08-06.
+**Status:** **IN EXECUTION — Sprints 1, 2 and 3 CLOSED. Campaign A PASS. Sprint 4 (AS6 → AS7 → AS8)
+in execution on `wp-arch-stability/sprint-4`.** Campaign B was **APPROVED by owner decision on
+2026-08-08** (§1). AS6 is in execution and has not closed: it must still satisfy its published exit
+criteria and Tier-2/CI qualification. AS7 may begin only after AS6 closes; AS8 is ordered after AS7.
+**Date:** 2026-08-06, status reconciled 2026-08-08.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
 project roadmap. `ROADMAP.md` remains the only live platform plan. If the later campaigns are
@@ -103,19 +103,53 @@ pipeline.
 | Scope | Status | Integration gate |
 | --- | --- | --- |
 | Cranelift retirement, manifest strictness audit | **APPROVED, DELIVERED** (2026-08-06) | none; an isolated build/test-surface retirement and a read-only measurement, both audit-gated (§5) |
-| AS0 | **CLOSED 2026-08-07** — item 6 `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md`, item 7 `AS0-RB0-PREDICATE-INVENTORY.md`, item 10 deferred to AS8/C10 by owner decision. All items done or explicitly deferred, which is AS0 §7's exit condition | discharged; Campaign A now needs only AS3 and AS4 |
+| AS0 | **CLOSED 2026-08-07** — item 6 `AS0-CALLABLE-EXECUTION-SITE-INVENTORY.md`, item 7 `AS0-RB0-PREDICATE-INVENTORY.md`, item 10 deferred to AS8/C10 by owner decision. All items done or explicitly deferred, which is AS0 §7's exit condition | discharged; Campaign A subsequently closed PASS |
 | AS1a | **APPROVED, DELIVERED** | none; defect packet |
 | AS2 | **APPROVED, DELIVERED** | none |
 | Sprint 1 Tier-3 closeout | **PASS** — `AS-SPRINT1-CLOSEOUT.md`, CI 24/24 green on `7012080` | discharged; Sprint 2 may open |
 | Sprint 2 Tier-3 closeout | **PASS** — `AS-SPRINT2-CLOSEOUT.md`; AS1b and AS5 closed, CI green 24/24 on `59bd1ca` | discharged; **Sprint 3 may open** |
 | AS1b | **CLOSED 2026-08-07** — i, ii(a–e) and iii; owner-accepted at `a6107fb`. See `AS1B-OPENING-ANALYSIS.md` §9 | none |
-| remainder of Campaign A (AS3, AS4) | **RESERVED** — decision now due on the AS0 report | before structured-concurrency compiler/runtime work |
+| remainder of Campaign A (AS3, AS4) | **CLOSED** — Campaign A exits **PASS**, CI-confirmed. The AS0 report discharged the decision this row was waiting on | discharged; the structured-concurrency gate below is satisfied |
 | AS5 | **CLOSED 2026-08-07** — a–g. See `AS-SPRINT2-CLOSEOUT.md` | none |
-| Campaign B remainder (AS6–AS8) | **RESERVED**; C8 is settled (CLOSED, CD-385), so AS8 is unblocked on that axis | before C10 release qualification |
+| Campaign B remainder (AS6–AS8) | **APPROVED for execution, 2026-08-08** — the whole of Campaign B as already designed, not AS6 alone. C8 is settled (CLOSED, CD-385), so AS8 is unblocked on that axis | before C10 release qualification |
 
 No calendar estimate is attached before the inventories exist. Planning is expressed in bounded
 packets, and each packet exits only on its evidence. `ROADMAP.md` §2.2's work-in-progress limit
 remains binding: only one major compiler/runtime packet is active at once.
+
+### OWNER DECISION — 2026-08-08: Campaign B approved
+
+> Campaign B remainder is **APPROVED for execution**.
+>
+> AS6 work already landed on the architecture-stabilization branch is **ratified as execution under
+> this approval**; no implementation is being retroactively reclassified as qualification evidence.
+>
+> AS6 must still satisfy its published exit criteria and Tier-2/CI qualification before closure.
+>
+> AS7 may begin only after AS6 closes.
+> AS8 remains ordered after AS7 and certifies the frozen AS6/AS7 result.
+> Campaign B still exits only after AS6, AS7 and AS8 close.
+
+Approved as **AS6–AS8, the already-designed Campaign B** — deliberately not AS6 alone, which would
+have created a second artificial owner gate before AS7 without adding evidence. This is governance
+reconciliation, not a change in technical scope.
+
+**Why it was needed.** The reservation had become indefensible against the record: AS6 had several
+landed implementation packets while the approval boundary still read `RESERVED`. A reader could not
+tell whether the work was authorised. Resolving it *before* qualification keeps qualification
+answering one question — does AS6 satisfy its technical exit contract? — rather than simultaneously
+repairing who authorised it.
+
+### Branch transition — Sprint 3 → Sprint 4
+
+> Sprint 4 AS6 packets began on `wp-arch-stability/sprint-3` after Campaign A closure, to preserve
+> the active architecture-stabilization execution state. From commit `6050efa`, Sprint 4 execution
+> continues on `wp-arch-stability/sprint-4`. **History is retained rather than rewritten.**
+
+The AS6 packets that landed on the Sprint 3-named branch are `46ae2ec`, `fe80129`, `33cb0a7`,
+`62ef6b0`, `46e6cc8`, `ad8fce5`, `a84ee92`, `6037dfc`, `9147073` (2C), `5190d1b` (4C) and `6050efa`
+(4D). Nothing about them is rebased, renamed or force-moved: making the branch history
+aesthetically correct would create more governance risk than the one-line record it removes.
 
 ### Execution units
 
@@ -131,7 +165,7 @@ section names its own tier-2 boundaries.
 | 1 | Cranelift retirement, AS0, AS1a, AS2 | Isolated build-hygiene commit; targeted provenance and characterization checkpoints; then the driver-consolidation marathon and one formal sprint closeout |
 | 2 | AS1b, AS5 | Long implementation runs, with SourceId diagnostic tests and the JSON corpus as separate checkpoints |
 | 3 | AS3, then AS4 | Deliberately incremental. AS3's semantic-complete checkpoint authorises AS4; both close formally at the Sprint 3 closeout |
-| 4 | AS6, AS7, then AS8 | Extension-isolation checkpoint, then the modularisation marathon, then assurance written against the finished result |
+| 4 | AS6, AS7, then AS8 | **IN EXECUTION** (`wp-arch-stability/sprint-4`). Extension-isolation checkpoint, then the modularisation marathon, then assurance written against the finished result |
 
 Which packets tolerate long uninterrupted implementation runs is a **property of the packet, not of
 the sprint**. AS2 and AS7 are the two genuine refactoring marathons: their failure modes are largely
