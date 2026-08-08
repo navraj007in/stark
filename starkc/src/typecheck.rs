@@ -1235,54 +1235,63 @@ pub fn analyze(hir: &Hir) -> TypeCheckResult {
     analyze_with_options(hir, LanguageOptions::CORE)
 }
 
+/// AS7 Packet 1: the constructor extracted from `analyze_with_options`, unchanged.
+/// Behaviour-identical — it exists so the ambient-state harness can build a checker without
+/// duplicating sixty field initialisers, and because `state.rs` will own it.
+impl<'a> TypeChecker<'a> {
+    fn new(hir: &'a Hir, options: LanguageOptions) -> Self {
+        TypeChecker {
+            hir,
+            options,
+            diags: Vec::new(),
+            subst: HashMap::new(),
+            int_literal_vars: HashMap::new(),
+            display_checks: Vec::new(),
+            display_plans: Vec::new(),
+            try_checks: Vec::new(),
+            var_count: 0,
+            expr_types: HashMap::new(),
+            local_types: HashMap::new(),
+            local_mutability: HashMap::new(),
+            struct_fields: HashMap::new(),
+            aggregate_field_types: HashMap::new(),
+            enum_variants: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            callable_sigs: HashMap::new(),
+            callable_envs: HashMap::new(),
+            callable_uses: Vec::new(),
+            callable_uses_by_expr: HashMap::new(),
+            display_uses: BTreeMap::new(),
+            body_decls: None,
+            const_types: HashMap::new(),
+            alias_stack: Vec::new(),
+            layout_queries: HashMap::new(),
+            bound_trait_calls: HashMap::new(),
+            current_self_ty: None,
+            current_assoc_types: HashMap::new(),
+            assoc_projections: HashMap::new(),
+            projection_obligations: Vec::new(),
+            current_fn_ret: None,
+            loop_nesting: 0,
+            loop_contexts: Vec::new(),
+            current_fn_generics: None,
+            current_impl_generics: None,
+            current_trait_id: None,
+            current_module: None,
+            bounds_checks: Vec::new(),
+            tensor_ctx: UnifyCtx::new(),
+            dim_scope: HashMap::new(),
+            dtype_scope: HashMap::new(),
+            device_scope: HashMap::new(),
+            generic_kinds: HashMap::new(),
+            suppress_tensor_diagnostics: false,
+            allow_half_type: false,
+        }
+    }
+}
+
 pub fn analyze_with_options(hir: &Hir, options: LanguageOptions) -> TypeCheckResult {
-    let mut checker = TypeChecker {
-        hir,
-        options,
-        diags: Vec::new(),
-        subst: HashMap::new(),
-        int_literal_vars: HashMap::new(),
-        display_checks: Vec::new(),
-        display_plans: Vec::new(),
-        try_checks: Vec::new(),
-        var_count: 0,
-        expr_types: HashMap::new(),
-        local_types: HashMap::new(),
-        local_mutability: HashMap::new(),
-        struct_fields: HashMap::new(),
-        aggregate_field_types: HashMap::new(),
-        enum_variants: HashMap::new(),
-        fn_sigs: HashMap::new(),
-        callable_sigs: HashMap::new(),
-        callable_envs: HashMap::new(),
-        callable_uses: Vec::new(),
-        callable_uses_by_expr: HashMap::new(),
-        display_uses: BTreeMap::new(),
-        body_decls: None,
-        const_types: HashMap::new(),
-        alias_stack: Vec::new(),
-        layout_queries: HashMap::new(),
-        bound_trait_calls: HashMap::new(),
-        current_self_ty: None,
-        current_assoc_types: HashMap::new(),
-        assoc_projections: HashMap::new(),
-        projection_obligations: Vec::new(),
-        current_fn_ret: None,
-        loop_nesting: 0,
-        loop_contexts: Vec::new(),
-        current_fn_generics: None,
-        current_impl_generics: None,
-        current_trait_id: None,
-        current_module: None,
-        bounds_checks: Vec::new(),
-        tensor_ctx: UnifyCtx::new(),
-        dim_scope: HashMap::new(),
-        dtype_scope: HashMap::new(),
-        device_scope: HashMap::new(),
-        generic_kinds: HashMap::new(),
-        suppress_tensor_diagnostics: false,
-        allow_half_type: false,
-    };
+    let mut checker = TypeChecker::new(hir, options);
 
     checker.check_crate();
     let expr_types = checker
@@ -13359,6 +13368,114 @@ mod tests {
         let mut type_diags = check(&hir);
         all_diags.append(&mut type_diags);
         all_diags
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // AS7 Packet 1 — the ambient-state harness.
+    //
+    // The AS7 opening inventory (3f18e49) found no ambient defect and two LATENT sites: the
+    // ambient state is correct today, and `current_fn_ret`/`current_fn_generics` are correct only
+    // because item checking never nests. AS7's file splitting is the change most likely to break
+    // that invariant.
+    //
+    // This harness exists BEFORE the conversion, for the reason AS6 paid to learn: a quarantine
+    // — or here, a scoped context — that silently restores the wrong value produces PLAUSIBLE
+    // wrong answers, not crashes, and has no behavioural signature at all.
+    //
+    // Two of the assertions below deliberately pin the CURRENT, invariant-dependent behaviour.
+    // They are written to FAIL when AS7 Packet 2 converts those fields to save/restore, and that
+    // failure is the evidence the conversion happened. This is the pattern AS0 used against
+    // AS1a: commit the assertion that describes today, and let the fix flip it.
+    // ---------------------------------------------------------------------------------------
+
+    /// The six ambient fields that already save and restore must **nest**: an inner scope must
+    /// see its own value, and leaving it must restore the outer one — not clear it, and not leak.
+    #[test]
+    fn as7_saved_ambient_fields_nest_correctly() {
+        let file = Arc::new(SourceFile::new("t.stark".to_string(), String::new()));
+        let (tree, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&tree, file.clone());
+        let mut tc = TypeChecker::new(&hir, LanguageOptions::default());
+
+        let outer = Ty::Primitive(Primitive::Int32);
+        let inner = Ty::Primitive(Primitive::Bool);
+
+        // current_self_ty — the `.replace()` / restore pattern used at eight sites.
+        assert_eq!(tc.current_self_ty, None, "entry state");
+        let save_outer = tc.current_self_ty.replace(outer.clone());
+        assert_eq!(tc.current_self_ty, Some(outer.clone()), "outer scope installed");
+        let save_inner = tc.current_self_ty.replace(inner.clone());
+        assert_eq!(tc.current_self_ty, Some(inner), "inner scope installed");
+        tc.current_self_ty = save_inner;
+        assert_eq!(
+            tc.current_self_ty,
+            Some(outer),
+            "leaving the inner scope must RESTORE the outer value, not clear it"
+        );
+        tc.current_self_ty = save_outer;
+        assert_eq!(tc.current_self_ty, None, "original state restored");
+
+        // current_trait_id and current_impl_generics use the same shape.
+        let a = tc.current_trait_id.replace(ItemId(1));
+        let b = tc.current_trait_id.replace(ItemId(2));
+        assert_eq!(tc.current_trait_id, Some(ItemId(2)));
+        tc.current_trait_id = b;
+        assert_eq!(tc.current_trait_id, Some(ItemId(1)), "outer trait restored");
+        tc.current_trait_id = a;
+        assert_eq!(tc.current_trait_id, None);
+    }
+
+    /// **Pins the first latent site.** `check_fn_def` sets `current_fn_ret` and then CLEARS it to
+    /// `None` rather than restoring the previous value. That is correct only because
+    /// `check_fn_def`'s three call sites — free functions, impl methods, trait default methods —
+    /// all sit in the single Pass-2 item loop and never nest.
+    ///
+    /// AS7 Packet 2 converts this to save/restore. **When it does, this test fails**, and the
+    /// assertion below should be replaced by the nesting assertion above.
+    #[test]
+    fn as7_current_fn_ret_is_cleared_not_restored_pending_packet_2() {
+        let file = Arc::new(SourceFile::new("t.stark".to_string(), String::new()));
+        let (tree, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&tree, file.clone());
+        let mut tc = TypeChecker::new(&hir, LanguageOptions::default());
+
+        // Simulate the nesting AS7's splitting could introduce, using today's set/clear pattern.
+        tc.current_fn_ret = Some(Ty::Primitive(Primitive::Int32)); // outer function
+        tc.current_fn_ret = Some(Ty::Primitive(Primitive::Bool)); // inner function
+        tc.current_fn_ret = None; // inner leaves, as check_fn_def does
+
+        assert_eq!(
+            tc.current_fn_ret, None,
+            "TODAY: the outer return type is LOST, not restored. Safe only because item checking \
+             never nests. AS7 Packet 2 must make this restore `Some(Int32)`; when it does, this \
+             assertion is the one that fails and must be flipped."
+        );
+    }
+
+    /// **Pins the second latent site.** `current_module` is assigned once per item at the top of
+    /// the Pass-2 loop, before the item `match`, so it dominates every branch and no item can
+    /// inherit a stale module. It is never saved or restored. Same conclusion: correct today,
+    /// correct only by dominance, and AS7 Packet 2 converts it to an entered/left item scope.
+    #[test]
+    fn as7_current_module_is_assigned_per_item_not_restored_pending_packet_2() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck.rs"))
+            .expect("own source")
+            .replace("\r\n", "\n");
+        // Production code only — this test's own search literal lives in the test module and
+        // would otherwise match itself, which is how the first run of it failed. `rfind`, not
+        // `find`: this file has an earlier inline test module at ~line 384, so the first marker
+        // would truncate almost the whole file and the check would pass vacuously.
+        let production = match source.rfind("#[cfg(test)]") {
+            Some(i) => &source[..i],
+            None => source.as_str(),
+        };
+        let assignments = production.matches("self.current_module =").count();
+        assert_eq!(
+            assignments, 1,
+            "current_module is written in exactly one place today (the Pass-2 loop header, which \
+             dominates every item branch). A second write means the dominance argument no longer \
+             holds and the field needs a real scope."
+        );
     }
 
     /// DEV-051: a trait default method body calling another method of the same trait through
