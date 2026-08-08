@@ -671,6 +671,12 @@ Campaign A passes only when AS0, AS1a, AS2, AS1b, AS3 and AS4 are complete and o
 exit report must classify each criterion PASS, FAIL, DEFERRED-BY-DECISION or NOT-APPLICABLE and
 include command-level evidence.
 
+**Exit report drafted 2026-08-08: `audits/CAMPAIGN-A-EXIT-REPORT.md`, verdict CANDIDATE-PASS.**
+All six packets are complete; 26 of 32 criteria PASS, four are PARTIAL and await an owner ruling
+(§8 of the report), and the remaining two are carried from the sprint closeouts. The gate is **not**
+passed and the binding restriction on structured-concurrency compiler/runtime work remains in force
+until the owner rules and CI is green on the head commit.
+
 **Reserved project-roadmap decision, not approved by Sprint 1:** the AS0 report now exists, so the owner
 must decide whether to amend the project roadmap so structured-concurrency compiler/runtime
 implementation may not begin until Campaign A passes. Package work not dependent on new compiler
