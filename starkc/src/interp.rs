@@ -1637,6 +1637,8 @@ struct Interpreter<'a> {
     /// PROC-STREAM-001 requires of two separate streams.
     stderr: String,
     copy_items: HashSet<ItemId>,
+    /// Nominals with a user destructor, by resolved identity (DEV-210's published authority).
+    drop_items: HashSet<ItemId>,
     pending_propagation: Option<Value>,
     const_cache: HashMap<ItemId, Value>,
     const_stack: Vec<ItemId>,
@@ -2027,6 +2029,7 @@ impl<'a> Interpreter<'a> {
         // WP-C6.1g-a: the interpreter's Copy set is the same structural+impl eligibility the
         // checker and MIR use (OWN-COPY-001, amended), so all three engines agree.
         let copy_items = crate::typecheck::copy_eligible_types(hir);
+        let drop_items = crate::typecheck::nominals_with_destructor(hir);
         Self {
             hir,
             file,
@@ -2035,6 +2038,7 @@ impl<'a> Interpreter<'a> {
             output: String::new(),
             stderr: String::new(),
             copy_items,
+            drop_items,
             pending_propagation: None,
             const_cache: HashMap::new(),
             const_stack: Vec::new(),
@@ -7702,6 +7706,25 @@ impl<'a> Interpreter<'a> {
         // says "remains initialized in the hidden scrutinee". So the value really is complete, and
         // complete is exactly what its destructor requires.
         let kind = &self.hir.pat(pat).kind;
+        // A bound value MOVED into the binding; the arm's scope destroys it. Decided BEFORE the
+        // whole-value rule below — the first version of that rule ran first and destroyed a bound
+        // `Drop` element a second time.
+        if matches!(kind, hir::PatKind::Binding { .. }) {
+            return Ok(());
+        }
+        // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
+        //
+        // PAT-DROP-001 destroys "every still-owned, unbound component of the hidden scrutinee", and
+        // the decomposition below implements that — but for a type carrying its own `Drop`,
+        // decomposing is what makes that destructor never run at all.
+        //
+        // Sound because DEV-211 refuses any binding that would MOVE a component out of such a
+        // value: every binding reaching here copied a `Copy` component, which PAT-DROP-001 says
+        // "remains initialized in the hidden scrutinee". The value is complete, which is what its
+        // destructor requires.
+        if nominal_item(&value).is_some_and(|item| self.drop_items.contains(&item)) {
+            return self.drop_value(value);
+        }
         match kind {
             hir::PatKind::Binding { .. } => Ok(()),
             hir::PatKind::TupleVariant { pats, .. } => {

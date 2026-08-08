@@ -150,8 +150,8 @@ fn a_drop_enum_payload_cannot_move_out_of_a_match() {
     );
 }
 
-/// **DEV-212, OPEN.** Matching a `Drop` enum with a `Copy` payload runs the arm and **never runs
-/// the type's destructor** — in both engines. Nothing moves out, so the value is complete and
+/// **DEV-212.** Matching a `Drop` enum with a `Copy` payload must run the type's own destructor.
+/// It did not, in either engine — Nothing moves out, so the value is complete and
 /// PAT-DROP-001's "still-owned components destroyed exactly once" should reach the nominal's own
 /// `Drop`; decomposing into components is what skips it.
 ///
@@ -168,7 +168,7 @@ fn a_drop_enum_payload_cannot_move_out_of_a_match() {
 /// and both halves were withdrawn rather than leave the engines disagreeing. The remaining
 /// question is why the MIR arm-end drop does not fire for a user-`Drop` enum scrutinee.
 #[test]
-fn dev212_a_drop_enum_destructor_is_skipped_by_a_match() {
+fn a_copy_payload_of_a_drop_enum_still_runs_the_destructor() {
     assert_eq!(
         both_engines(
             "drop_enum_copy.stark",
@@ -176,9 +176,8 @@ fn dev212_a_drop_enum_destructor_is_skipped_by_a_match() {
              fn main() { let e = E::A(7); \
              match e { E::A(n) => println(n), E::B => println(0) } }"
         ),
-        "7\n",
-        "DEV-212 is OPEN: the destructor should run and does not. When this fails because \
-         `dtor` now appears, the defect is fixed — update this test, do not relax it."
+        "7\ndtor\n",
+        "nothing moves out, so the value is complete and its own destructor must run"
     );
 }
 

@@ -6456,7 +6456,7 @@ instead of asserting that a table is populated.
 - **Evidence:** `as4_hostile_combinations` — the move is refused, and a `Copy` payload of the same
   enum still matches, so the rule does not read as "cannot match a `Drop` enum".
 
-## DEV-212 — a `match` skips a `Drop` nominal's own destructor [OPEN, 2026-08-08]
+## DEV-212 — a `match` skipped a `Drop` nominal's own destructor [CLOSED, 2026-08-08]
 
 - **Rule:** PAT-DROP-001 / OWN-PARTIAL-001 — a value consumed by a match is destroyed exactly once,
   and a type with its own destructor requires the complete value.
@@ -6469,11 +6469,14 @@ instead of asserting that a table is populated.
   running. The matching MIR change (`drop_whole_scrutinee_at_arm_end` in place of
   `consume_unbound_leaves`) did **not** take effect, and both halves were withdrawn rather than
   leave the two engines disagreeing.
-- **Open question, narrow:** why the MIR arm-end drop does not fire for a user-`Drop` enum
-  scrutinee. The HIR repair is known-good and can be reapplied once MIR matches.
-- **Marker, not an endorsement:** `dev212_a_drop_enum_destructor_is_skipped_by_a_match` asserts the
-  CURRENT behaviour so the suite stays green and the defect stays visible. It fails the moment
-  either engine is repaired, and its message says the assertion is wrong on purpose.
-- **Campaign A consequence:** this blocks PASS. A destructor that silently does not run is a
-  correctness defect, and "the engines agree" is satisfied only in the sense that both agree on the
-  wrong answer.
+- **The MIR half was in the wrong function**, and that is the finding worth keeping. It was written
+  into `lower_arms_consuming`; an instrumented probe printed **nothing**, which revealed that enum
+  matches take their own lowering route — `lower_enum_match` → `consume_variant_payload`. Two
+  match-lowering paths exist, and a fix applied to one of them silently does nothing to the other.
+  A test would not have found this: the code compiled, ran, and changed no behaviour.
+- **Repair, both engines.** HIR: `drop_unbound` destroys a value whose nominal has a destructor
+  whole, guarded AFTER the `Binding` check. MIR: `lower_enum_match` binds the pattern and registers
+  a whole-scrutinee arm-end drop instead of consuming the payload piecewise.
+- **Evidence:** `a_copy_payload_of_a_drop_enum_still_runs_the_destructor` requires HIR and MIR to
+  agree on `7\ndtor\n`, alongside the DEV-211 case asserting the move is refused — so the pair
+  distinguishes "destructor runs" from "cannot match a `Drop` enum at all".

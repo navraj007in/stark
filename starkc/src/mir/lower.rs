@@ -10823,15 +10823,43 @@ impl<'a> FnLowerer<'a> {
             // C4.5d match-drop: consume the active variant's payload — bound fields into
             // registered binding locals, unbound droppable fields into registered temps — so
             // the scrutinee is fully accounted for and everything drops at arm end.
-            self.consume_variant_payload(
-                enum_ref,
-                &scrut_args,
-                scrut.clone(),
-                mode,
-                variant as u32,
-                pat,
-                span,
-            )?;
+            // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
+            //
+            // Consuming the payload piecewise is right for a droppable enum WITHOUT its own
+            // `Drop` — every field still owes a destructor. For one that has a destructor,
+            // decomposing is precisely what makes that destructor never run: `match e` printed the
+            // arm and nothing else. Sound because DEV-211 refuses any binding that would MOVE a
+            // component out of such a value, so the scrutinee here is still complete.
+            // **The narrow question, and the third wrong turn on DEV-212 was using the broad one.**
+            //
+            // `ty_has_user_drop` answers "does this type contain a user destructor ANYWHERE",
+            // including in a nested payload — so it is true of `Option<Droppable>` and
+            // `Result<Droppable, _>`, whose payloads must still be decomposed. Firing the
+            // whole-value branch for those moved a scrutinee that `bind_pattern` had already partly
+            // moved, and the verifier rejected fourteen cases with `MIR-0007: move from
+            // possibly-moved place`.
+            //
+            // The question here is narrower: does the ENUM ITSELF declare a destructor? Only then
+            // is the value required to stay complete, and only then must it be destroyed whole.
+            let own_destructor = match enum_ref {
+                EnumRef::User(item) => self.type_has_drop_impl(item),
+                _ => false,
+            };
+            let enum_ty = MirTy::Enum(enum_ref, scrut_args.clone());
+            if mode == MatchMode::Consuming && own_destructor {
+                self.bind_pattern(pat, &scrut, &enum_ty, mode, span)?;
+                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &enum_ty, span)?;
+            } else {
+                self.consume_variant_payload(
+                    enum_ref,
+                    &scrut_args,
+                    scrut.clone(),
+                    mode,
+                    variant as u32,
+                    pat,
+                    span,
+                )?;
+            }
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
         }
         Ok(())
@@ -10884,10 +10912,25 @@ impl<'a> FnLowerer<'a> {
             // the pattern DISCARDS still owes a destructor. The unbound walk runs first so that
             // arm-end drops (reverse registration order) destroy the bindings first and the
             // discarded leaves after, which is the order the oracle produces (DEV-080).
-            if mode == MatchMode::Consuming {
+            // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
+            //
+            // Decomposition is right for a droppable AGGREGATE — whatever the pattern discards
+            // still owes a destructor. It is wrong for a type carrying its own `Drop`, because
+            // decomposing is what makes that destructor never run.
+            //
+            // Registered AFTER `bind_pattern`, unlike the unbound walk: the helper MOVES the
+            // scrutinee into a temp, so running it first would leave `bind_pattern` reading a
+            // moved-from place. Sound because DEV-211 refuses any binding that would move a
+            // component out of such a value — every binding here copied a `Copy` component, and
+            // PAT-DROP-001 says a copied component "remains initialized in the hidden scrutinee".
+            let whole = mode == MatchMode::Consuming && self.ty_has_user_drop(&scrut_ty);
+            if mode == MatchMode::Consuming && !whole {
                 self.consume_unbound_leaves(pat, &scrut, &scrut_ty, span)?;
             }
             self.bind_pattern(pat, &scrut, &scrut_ty, mode, span)?;
+            if whole {
+                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &scrut_ty, span)?;
+            }
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
             self.current = fail;
         }
@@ -12004,10 +12047,14 @@ impl<'a> FnLowerer<'a> {
         scrut_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
+        // **Discovery FIRST.** `ty_requires_drop_glue` asks whether a user destructor is known for
+        // this type, and `discover_drop_impls` is what makes it known. Asking before discovering
+        // answers "no glue" for a type whose `Drop` impl this lowering has not yet walked — and the
+        // helper then silently does nothing, which is a destructor that never runs.
+        self.discover_drop_impls(scrut_ty)?;
         if !self.ty_requires_drop_glue(scrut_ty, span)? {
             return Ok(());
         }
-        self.discover_drop_impls(scrut_ty)?;
         let value = self.read_place(scrut, scrut_ty, span)?;
         let tmp = self.new_temp(scrut_ty.clone());
         self.emit(
