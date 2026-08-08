@@ -13594,7 +13594,7 @@ mod tests {
     #[test]
     fn as7_no_ambient_field_is_cleared_on_scope_exit() {
         let source =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck.rs"))
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck/mod.rs"))
                 .expect("own source")
                 .replace("\r\n", "\n");
         // `rfind`, not `find`: this file has an earlier inline test module, so the first marker
