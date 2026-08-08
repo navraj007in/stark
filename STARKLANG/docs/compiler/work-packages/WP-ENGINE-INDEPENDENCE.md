@@ -1,7 +1,7 @@
 # WP-ENGINE-INDEPENDENCE
 
 **Document type:** Bounded compiler assurance work package.
-**Status:** **APPROVED for execution, 2026-08-09** — owner ruling CD-392. Specified as an AS0
+**Status:** **EXECUTED — EI0-EI6 complete, 2026-08-09.** Approved by owner ruling CD-392. Specified as an AS0
 subpacket; **AS0 remains closed** and is not reopened. Execution is transferred administratively to
 the **AS8 assurance phase**, which is the packet's primary consumer. Approved **without redesign**:
 the EI0–EI6 taxonomy and the five output artefacts below remain canonical, and AS8 may not select
@@ -198,7 +198,9 @@ STARKLANG/docs/compiler/RUSTC-ASSUMPTION-INVENTORY.md             EI3      DONE 
 STARKLANG/docs/compiler/ENGINE-RISK-PROFILES.md                   EI4      DONE 2026-08-09
 STARKLANG/docs/compiler/engine-shared-fate.json                   EI1      DONE 2026-08-09
 STARKLANG/docs/compiler/ENGINE-MUTATION-TARGETS.md                EI5      DONE 2026-08-09
-                                                                  EI6      OPEN — AS8/C10 closure
+STARKLANG/docs/compiler/ENGINE-PUBLIC-CLAIM-CALIBRATION.md        EI6      DONE 2026-08-09
+                                                                           (wording approved;
+                                                                           website/C10 consume it)
 ```
 
 This file is the work packet. The remaining files are execution outputs.
