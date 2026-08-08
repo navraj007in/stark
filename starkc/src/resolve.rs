@@ -8,30 +8,13 @@ use crate::source::{SourceFile, Span};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
 
-/// A single-segment name reserved by the `tensor` extension: element types,
-/// tensor/device type constructors, and the `Dim`/`DType` kinds. Used to give
-/// a focused "requires extension `tensor`" diagnostic in Core-only mode and to
-/// suppress "undefined type" for these names under the extension (their full
-/// resolution lands in M4.2).
+/// A single-segment name the `tensor` extension owns. Used to give a focused "requires extension
+/// `tensor`" diagnostic in Core-only mode and to suppress "undefined type" for these names under
+/// the extension (their full resolution lands in M4.2).
+///
+/// AS6 exit qualification: the table itself is the extension's, and lives with it.
 fn extension_reserved_name(name: &str) -> Option<&'static str> {
-    match name {
-        "Dim" => Some("`Dim` kind"),
-        "DType" => Some("`DType` kind"),
-        "Device" => Some("`Device` kind"),
-        "Float16" => Some("`Float16` element type"),
-        "BFloat16" => Some("`BFloat16` element type"),
-        "Tensor" => Some("`Tensor` type"),
-        "TensorDyn" => Some("`TensorDyn` type"),
-        "TensorAny" => Some("`TensorAny` type"),
-        "Cpu" => Some("`Cpu` device type"),
-        "Cuda" => Some("`Cuda` device type"),
-        "ByteRange" => Some("`ByteRange` value range"),
-        "UnitRange" => Some("`UnitRange` value range"),
-        "Normalized" => Some("`Normalized` value range"),
-        "Unspecified" => Some("`Unspecified` value range"),
-        "ModelError" => Some("`ModelError` type"),
-        _ => None,
-    }
+    crate::extensions::tensor::syntax::extension_type_name(name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

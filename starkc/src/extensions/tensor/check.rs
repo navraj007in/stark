@@ -19,7 +19,7 @@
 //! its absence — `TypeChecker`'s own members are private to the `typecheck` module, so nothing
 //! here can reach anything the trait does not name.
 
-use crate::ast::Primitive;
+use crate::ast::{PortDir, Primitive};
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::Poly;
 use crate::extensions::tensor::rules::{
@@ -1732,5 +1732,131 @@ pub(crate) fn model_predict_result(outputs: Vec<Ty>) -> Ty {
         outputs.into_iter().next().expect("length checked")
     } else {
         Ty::Tuple(outputs)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Model DECLARATION validity (AS6 packet 4D-A).
+//
+// Owner ruling, 2026-08-08: `check_model_def` is not wholly Core. Converting written type syntax
+// is Core machinery, but *what a model declaration is allowed to say* — its generics must be
+// `Dim`, its ports must be `Tensor` or `TensorDyn`, its port names must be distinct, and it must
+// have at least one of each direction — is extension policy, and the work package puts
+// extension-owned rules *and diagnostics* behind the sealed module.
+//
+// The split therefore runs the other way from the one 2C rejected. Rather than widening
+// `TensorCheckCtx` by six to let the extension do Core's HIR walk, Core normalises the declaration
+// — enters the generic scope, classifies each parameter, converts each port type — and hands over
+// already-typed facts. The rules below need `diags`, `resolve` and `ty_to_string`: **three
+// services, all already in the context. The interface does not widen at all.**
+//
+// It is staged rather than lifted, for the same reason `check_model_method_call` was.
+// `convert_hir_type` can itself emit (a malformed `Tensor<...>` port), and the original order is
+// per port: duplicate-name diagnostic, then conversion diagnostics, then port-type diagnostic. So
+// Core drives the loop and calls two entry points around its own conversion, which reproduces that
+// interleaving exactly instead of approximating it.
+
+/// Accumulates the cross-port facts a model declaration's rules need.
+pub(crate) struct ModelDeclCheck {
+    port_names: std::collections::HashSet<String>,
+    inputs: usize,
+    outputs: usize,
+}
+
+impl Default for ModelDeclCheck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ModelDeclCheck {
+    pub(crate) fn new() -> Self {
+        Self {
+            port_names: std::collections::HashSet::new(),
+            inputs: 0,
+            outputs: 0,
+        }
+    }
+
+    /// A model's generic parameters carry dimensions and nothing else.
+    pub(crate) fn check_generic_kind(
+        cx: &mut dyn TensorCheckCtx,
+        kind: Option<super::syntax::TensorParamKind>,
+        name_span: Span,
+    ) {
+        if kind != Some(super::syntax::TensorParamKind::Dim) {
+            cx.diags().push(
+                Diagnostic::error(
+                    "model generic parameters must have kind `Dim` (e.g. `<N: Dim>`)",
+                    name_span,
+                )
+                .with_code("E0211"),
+            );
+        }
+    }
+
+    /// Port names are distinct, and each port counts toward its direction's total.
+    ///
+    /// Called before Core converts the port's written type, because a conversion diagnostic must
+    /// not overtake the duplicate-name diagnostic for the same port.
+    pub(crate) fn declare_port(
+        &mut self,
+        cx: &mut dyn TensorCheckCtx,
+        name: &str,
+        name_span: Span,
+        dir: PortDir,
+    ) {
+        if !self.port_names.insert(name.to_string()) {
+            cx.diags().push(
+                Diagnostic::error(format!("duplicate port name `{name}`"), name_span)
+                    .with_code("E0211"),
+            );
+        }
+        match dir {
+            PortDir::Input => self.inputs += 1,
+            PortDir::Output => self.outputs += 1,
+        }
+    }
+
+    /// Models carry tensors across their boundary and nothing else. `Ty::Error` is already
+    /// diagnosed and is passed over in silence.
+    pub(crate) fn check_port_type(&mut self, cx: &mut dyn TensorCheckCtx, ty: &Ty, span: Span) {
+        let resolved = cx.resolve(ty);
+        let allowed = match &resolved {
+            Ty::Extension(ext) => matches!(
+                ext.as_ref(),
+                ExtensionTy::Tensor(TensorKind::Tensor(_) | TensorKind::TensorDyn(_))
+            ),
+            Ty::Error => return,
+            _ => false,
+        };
+        if !allowed {
+            let display = cx.ty_to_string(ty);
+            cx.diags().push(
+                Diagnostic::error(
+                    format!(
+                        "invalid port type `{display}`: models allow only `Tensor` and `TensorDyn` ports"
+                    ),
+                    span,
+                )
+                .with_code("E0211"),
+            );
+        }
+    }
+
+    /// A model with no inputs or no outputs is not a model.
+    pub(crate) fn finish(self, cx: &mut dyn TensorCheckCtx, name_span: Span) {
+        if self.inputs == 0 {
+            cx.diags().push(
+                Diagnostic::error("model must declare at least one input port", name_span)
+                    .with_code("E0211"),
+            );
+        }
+        if self.outputs == 0 {
+            cx.diags().push(
+                Diagnostic::error("model must declare at least one output port", name_span)
+                    .with_code("E0211"),
+            );
+        }
     }
 }

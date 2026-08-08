@@ -667,11 +667,10 @@ pub enum PortDir {
 }
 
 impl PortDir {
+    /// AS6: the spelling belongs to the extension that owns model ports, and the parser matches
+    /// against the same table, so parse and print cannot drift.
     pub fn keyword(self) -> &'static str {
-        match self {
-            PortDir::Input => "input",
-            PortDir::Output => "output",
-        }
+        crate::extensions::tensor::syntax::port_keyword(self)
     }
 }
 

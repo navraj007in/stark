@@ -644,3 +644,132 @@ tensor type-system boundary    DONE   (62ef6b0 rules, 9147073 authority)
 parser residual audit          DONE   (4C)
 qualification                  OPEN   — the last AS6 packet
 ```
+
+
+---
+
+# Packet 4D — exit-criterion cleanup (owner-directed, 2026-08-08)
+
+**Two owner rulings opened this packet, and both overturned a position recorded above.** They are
+restated here in full because the sections they correct remain in the document.
+
+## Ruling 1 — `check_model_def` is split, not left in Core
+
+Group 2C recommended leaving `check_model_def` wholly in Core on the grounds that moving it would
+widen `TensorCheckCtx` from 15 to 21. **Rejected.** The work package puts extension-owned names,
+type rules, methods *and diagnostics* behind sealed tensor modules, and `check_model_def` still
+decided extension policy: model generics must be `Dim`, ports may only be `Tensor`/`TensorDyn`,
+port names must be distinct, and a model must have at least one input and one output.
+
+The error in 2C's reasoning was to treat the function as indivisible. Split by phase — the same
+split 2C itself established — the interface does not widen **at all**:
+
+```text
+Core                                   extensions::tensor
+  enter generic scope
+  classify each parameter        ──▶     generic-kind validity
+  extract name / direction / span ──▶    duplicate port rule
+  convert port type              ──▶     allowed port-type rule
+                                         ≥1 input, ≥1 output
+                                 ◀──    diagnostics, published by Core
+```
+
+The rules need `diags`, `resolve` and `ty_to_string` — **three services, all already among the
+fifteen. Zero widening.** 2C's own measurement (six new services) was of moving the function
+*whole*, which was never the right cut.
+
+**Staged, not hoisted**, for the reason `check_model_method_call` was: `convert_hir_type` can emit
+(a malformed `Tensor<...>` port), and the original per-port order is duplicate-name diagnostic →
+conversion diagnostics → port-type diagnostic. Core drives the loop and calls `declare_port` before
+its conversion and `check_port_type` after, reproducing that interleaving exactly rather than
+approximating it.
+
+## Ruling 2 — criterion 2 FAILED on `5190d1b`
+
+`resolve.rs` still opened with a 15-name `extension_reserved_name` table — `Dim`, `DType`,
+`Device`, `Float16`, `Tensor`, `TensorDyn`, `Cpu`, `Cuda`, the value ranges, `ModelError` — the
+same architectural shape 4C had just removed from `parser.rs`. Three smaller vocabulary
+authorities were also still in `typecheck.rs`: the `Dim`/`DType`/`Device` classifier, the
+`Cpu`/`Cuda` classifier, and the value-range classifier.
+
+The instruction was precise and is what made this bounded: **move classification tables, not the
+functions that use them.** Core keeps HIR traversal, written-type conversion, scope lookup, const
+extraction and inference; the extension owns `"Dim"` → kind, `"Cpu"` → device constructor,
+`"ByteRange"` → value-range state, reserved name → description.
+
+## What the census found beyond the ruling's list
+
+4D-D re-ran criterion 2 across parser, resolve, typecheck, hir, interp and deploy/lower. It found
+**four more** authorities the ruling had not enumerated:
+
+| Site | What it was |
+| --- | --- |
+| `typecheck.rs` `build_tensor_type` | a four-arm **type-constructor table** — `"TensorAny"`, `"TensorDyn"`, `"Tensor"`, `"ModelError"` — dispatching on the spelling and repeating it in every arity diagnostic |
+| `typecheck.rs` `ty_to_string` | `ExtensionTy::ModelError => "ModelError"` |
+| `mir/lower.rs` | `ItemKind::Model(_) => "model"` |
+| `deploy/lower.rs` | a **third** copy of the type-constructor spellings in `deploy_ty_from_ast`, and a **fourth** copy of the element-type spellings in `dtype_by_name` |
+
+The type-constructor set existed in three places and the dtype-name set in four. Both are now one
+table each, in `extensions/tensor/syntax.rs`, with round-trip tests pinning that the parse and
+print directions cannot drift.
+
+## The result
+
+`extensions/tensor/syntax.rs` grew from 95 lines to the extension's full surface vocabulary:
+
+```text
+MODEL_KEYWORD  port_direction  port_keyword          model syntax
+extension_primitive  dtype_by_name  dtype_of_primitive    element types
+opens_shape_position  tensor_type_constructor             type constructors
+tensor_param_kind  device_constructor  value_range_state  kinds, devices, ranges
+extension_type_name  reserved_type_note                   owned and reserved names
+TENSOR_PARAM_KIND_EXPECTATION  DEVICE_EXPECTATION
+VALUE_RANGE_EXPECTATION                                   the phrases that recite them
+```
+
+The three `*_EXPECTATION` constants matter as much as the tables. A diagnostic that says
+"expected `Cpu`, `Cuda<N>`, or a `Device` parameter" *is* the vocabulary, and leaving it in Core
+would mean a fourth device constructor lands with Core still reciting a list of two.
+
+## 4D-E — the forcing function AS6 asked for and never built
+
+The work package lists a deliverable none of the four implementation packets produced:
+
+> Add dependency/lint tests preventing new tensor imports in designated Core-only modules.
+
+`starkc/tests/as6_core_module_vocabulary.rs` is it. Three tests over sixteen files:
+
+1. **no Core module spells an extension name** — the vocabulary is read back out of
+   `extensions/tensor/syntax.rs` itself, so a name added there is automatically a name Core may not
+   spell;
+2. **the three surfaces AS6's inventory found clean stay at zero**;
+3. **AS6 introduced no `pub` item** in the modules it created (criterion 4).
+
+It checks *string literals*, not reference counts, because 4C demonstrated that counts move the
+wrong way: moving 21 spellings out of `parser.rs` **raised** its match count from 225 to 227.
+
+**The exemption list is a ledger, not a skip-list.** The assertion is set equality, so a new
+violation fails *and so does removing an accepted one without updating the list*. Four entries,
+each with its reason:
+
+```text
+ast.rs "Float16"/"BFloat16"   Primitive::name — exhaustive rendering of a CLOSED Core enum.
+                              Adding a dtype means adding a Primitive variant, which the compiler
+                              forces everywhere; it is not a table that grows silently. Sealing it
+                              is the cut fe80129 made for hir::Builtin's 33 variants and is wider
+                              than AS6 scoped.
+deploy/ir.rs "TensorAny"      Display for DeployTy, the deployment IR's own closed enum.
+deploy/emit.rs "Tensor"       the GENERATED RUST host's type name. It coincides with the STARK
+                              spelling; it is not one.
+```
+
+## Method note
+
+The lint earned its place before it was committed. A shell census run first reported **zero**
+spelling literals across eleven Core files; the loop had passed an unsplit `$FILES` variable (zsh
+does not word-split unquoted variables), so `grep` matched nothing and the empty output read as a
+clean result. The test found `ast.rs` immediately.
+
+That is the fourth time in this sprint a proxy that resembled the question has produced a
+confident wrong answer — after `self.method(`, `ends_with("Drop")` and `ty_has_user_drop`. The
+compensating discipline is the same each time: make the check executable and let it run.

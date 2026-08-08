@@ -5931,7 +5931,7 @@ impl<'a> FnLowerer<'a> {
                 ItemKind::Use { .. } => "use",
                 ItemKind::Const { .. } => "const",
                 ItemKind::TypeAlias { .. } => "type alias",
-                ItemKind::Model(_) => "model",
+                ItemKind::Model(_) => crate::extensions::tensor::syntax::MODEL_KEYWORD,
                 ItemKind::Fn(_) => "function",
             };
             let item_name = item_name_text(self.hir, self.meta, item).unwrap_or("<unnamed>");

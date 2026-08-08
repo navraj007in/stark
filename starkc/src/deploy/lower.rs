@@ -884,9 +884,14 @@ impl<'a> Lowerer<'a> {
             hir::TypeKind::Ref { inner, .. } => self.deploy_ty_from_ast(*inner, span),
             hir::TypeKind::Path { path, args, .. } => {
                 let name = text(self.file, path.span).trim().to_string();
-                match name.as_str() {
-                    "TensorAny" => Some(DeployTy::TensorAny),
-                    "Tensor" => {
+                // AS6 packet 4D-D: the tensor constructor spellings are the extension's; what a
+                // deployment pipeline may carry is this module's.
+                use crate::extensions::tensor::syntax::{
+                    tensor_type_constructor, TensorTypeConstructor as Ctor,
+                };
+                match tensor_type_constructor(name.as_str()) {
+                    Some(Ctor::TensorAny) => return Some(DeployTy::TensorAny),
+                    Some(Ctor::Tensor) => {
                         let args = args.as_ref()?;
                         let dtype_arg = args.args.first()?;
                         let dtype = self.dtype_from_arg(dtype_arg, span)?;
@@ -898,8 +903,11 @@ impl<'a> Lowerer<'a> {
                         for d in &shape.dims {
                             dims.push(self.deploy_dim_from_expr(d, span)?);
                         }
-                        Some(DeployTy::Tensor(TensorShape { dtype, dims }))
+                        return Some(DeployTy::Tensor(TensorShape { dtype, dims }));
                     }
+                    Some(Ctor::TensorDyn) | Some(Ctor::ModelError) | None => {}
+                }
+                match name.as_str() {
                     "Result" => {
                         let args = args.as_ref()?;
                         let hir::GenericArg::Type(ok) = args.args.first()? else {
@@ -1127,23 +1135,10 @@ fn primitive_dtype(p: crate::ast::Primitive) -> Option<DType> {
     })
 }
 
+/// AS6 packet 4D-D: the deployment lowering kept a fourth copy of the element-type spellings.
+/// The table is the extension's.
 fn dtype_by_name(name: &str) -> Option<DType> {
-    Some(match name {
-        "Int8" => DType::Int8,
-        "Int16" => DType::Int16,
-        "Int32" => DType::Int32,
-        "Int64" => DType::Int64,
-        "UInt8" => DType::UInt8,
-        "UInt16" => DType::UInt16,
-        "UInt32" => DType::UInt32,
-        "UInt64" => DType::UInt64,
-        "Float16" => DType::Float16,
-        "BFloat16" => DType::BFloat16,
-        "Float32" => DType::Float32,
-        "Float64" => DType::Float64,
-        "Bool" => DType::Bool,
-        _ => return None,
-    })
+    crate::extensions::tensor::syntax::dtype_by_name(name)
 }
 
 fn builtin_name(b: Builtin) -> &'static str {

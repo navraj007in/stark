@@ -11,6 +11,7 @@ use crate::extensions::tensor::check as tensor_check;
 use crate::extensions::tensor::check::TensorCheckCtx;
 use crate::extensions::tensor::dim::{DimVar, Poly};
 use crate::extensions::tensor::rules::TENSOR_OPS;
+use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::extensions::tensor::types::{
     DType, Device, DeviceVar, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx,
     UnifyError,
@@ -124,6 +125,29 @@ enum GenericKind {
     Dim,
     DType,
     Device,
+}
+
+impl GenericKind {
+    /// The tensor kind this parameter carries, if any. `Type` is the ordinary Core case and has
+    /// no tensor kind.
+    fn as_tensor_param(self) -> Option<tensor_syntax::TensorParamKind> {
+        match self {
+            GenericKind::Type => None,
+            GenericKind::Dim => Some(tensor_syntax::TensorParamKind::Dim),
+            GenericKind::DType => Some(tensor_syntax::TensorParamKind::DType),
+            GenericKind::Device => Some(tensor_syntax::TensorParamKind::Device),
+        }
+    }
+}
+
+impl From<tensor_syntax::TensorParamKind> for GenericKind {
+    fn from(kind: tensor_syntax::TensorParamKind) -> Self {
+        match kind {
+            tensor_syntax::TensorParamKind::Dim => GenericKind::Dim,
+            tensor_syntax::TensorParamKind::DType => GenericKind::DType,
+            tensor_syntax::TensorParamKind::Device => GenericKind::Device,
+        }
+    }
 }
 
 struct TensorParamScopes {
@@ -2741,7 +2765,9 @@ impl<'a> TypeChecker<'a> {
                         "Model".to_string()
                     }
                 }
-                ExtensionTy::ModelError => "ModelError".to_string(),
+                ExtensionTy::ModelError => tensor_syntax::TensorTypeConstructor::ModelError
+                    .name()
+                    .to_string(),
             },
             Ty::Error => "{error}".to_string(),
         }
@@ -2996,15 +3022,16 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Ty> {
         let empty: &[hir::GenericArg] = &[];
         let arg_list = args.map_or(empty, |a| a.args.as_slice());
-        match name {
-            "TensorAny" => {
-                self.tensor_arity("TensorAny", 0, arg_list.len(), span);
+        let constructor = tensor_syntax::tensor_type_constructor(name)?;
+        match constructor {
+            tensor_syntax::TensorTypeConstructor::TensorAny => {
+                self.tensor_arity(constructor.name(), 0, arg_list.len(), span);
                 Some(Ty::Extension(Box::new(ExtensionTy::Tensor(
                     TensorKind::TensorAny,
                 ))))
             }
-            "TensorDyn" => {
-                self.tensor_arity("TensorDyn", 1, arg_list.len(), span);
+            tensor_syntax::TensorTypeConstructor::TensorDyn => {
+                self.tensor_arity(constructor.name(), 1, arg_list.len(), span);
                 let dtype = match arg_list.first() {
                     Some(hir::GenericArg::Type(t)) => self.tensor_dtype(*t, span),
                     _ => {
@@ -3016,7 +3043,7 @@ impl<'a> TypeChecker<'a> {
                     TensorKind::TensorDyn(dtype),
                 ))))
             }
-            "Tensor" => {
+            tensor_syntax::TensorTypeConstructor::Tensor => {
                 if !(2..=4).contains(&arg_list.len()) {
                     self.tensor_error(
                         &format!(
@@ -3073,11 +3100,10 @@ impl<'a> TypeChecker<'a> {
                     }),
                 ))))
             }
-            "ModelError" => {
-                self.tensor_arity("ModelError", 0, arg_list.len(), span);
+            tensor_syntax::TensorTypeConstructor::ModelError => {
+                self.tensor_arity(constructor.name(), 0, arg_list.len(), span);
                 Some(Ty::Extension(Box::new(ExtensionTy::ModelError)))
             }
-            _ => None,
         }
     }
 
@@ -3258,8 +3284,8 @@ impl<'a> TypeChecker<'a> {
                         );
                         return self.tensor_ctx.fresh_device();
                     }
-                    match spelling {
-                        Some("Cpu") => {
+                    match spelling.and_then(tensor_syntax::device_constructor) {
+                        Some(tensor_syntax::DeviceConstructor::Cpu) => {
                             if args.as_ref().is_some_and(|a| !a.args.is_empty()) {
                                 self.tensor_error(
                                     "`Cpu` does not take arguments",
@@ -3268,11 +3294,14 @@ impl<'a> TypeChecker<'a> {
                             }
                             Device::Cpu
                         }
-                        Some("Cuda") => {
+                        Some(tensor_syntax::DeviceConstructor::Cuda) => {
                             self.build_cuda_device(args.as_ref(), self.hir.ty(*ty).span)
                         }
-                        _ => {
-                            self.tensor_error("unknown tensor device; expected `Cpu`, `Cuda<N>`, or a `Device` parameter", self.hir.ty(*ty).span);
+                        None => {
+                            self.tensor_error(
+                                tensor_syntax::DEVICE_EXPECTATION,
+                                self.hir.ty(*ty).span,
+                            );
                             self.tensor_ctx.fresh_device()
                         }
                     }
@@ -3304,15 +3333,12 @@ impl<'a> TypeChecker<'a> {
             None => ValueRange::Unspecified,
             Some(hir::GenericArg::Binding { ty, .. }) => {
                 if let hir::TypeKind::Path { path, .. } = &self.hir.ty(*ty).kind {
-                    match single_segment_name(path, self) {
-                        Some("Unspecified") => ValueRange::Unspecified,
-                        Some("ByteRange") => ValueRange::ByteRange,
-                        Some("UnitRange") => ValueRange::UnitRange,
-                        Some("Normalized") => ValueRange::Normalized,
-                        _ => {
+                    match single_segment_name(path, self).and_then(tensor_syntax::value_range_state)
+                    {
+                        Some(state) => state,
+                        None => {
                             self.tensor_error(
-                                "unknown value range; expected `ByteRange`, `UnitRange`, \
-                                 `Normalized`, or `Unspecified`",
+                                tensor_syntax::VALUE_RANGE_EXPECTATION,
                                 self.hir.ty(*ty).span,
                             );
                             ValueRange::Unspecified
@@ -3412,21 +3438,13 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .filter(|bound| bound.res == Res::Err)
             .filter_map(|bound| single_segment_name(&bound.path, self))
-            .filter_map(|name| match name {
-                "Dim" => Some(GenericKind::Dim),
-                "DType" => Some(GenericKind::DType),
-                "Device" => Some(GenericKind::Device),
-                _ => None,
-            })
+            .filter_map(|name| tensor_syntax::tensor_param_kind(name).map(GenericKind::from))
             .collect::<Vec<_>>();
         if extension_bounds.is_empty() {
             return GenericKind::Type;
         }
         if generic.bounds.len() != 1 || extension_bounds.len() != 1 {
-            self.tensor_error(
-                "tensor kind parameters must have exactly one of `Dim`, `DType`, or `Device` and no trait bounds",
-                generic.name,
-            );
+            self.tensor_error(tensor_syntax::TENSOR_PARAM_KIND_EXPECTATION, generic.name);
         }
         extension_bounds[0]
     }
@@ -7712,10 +7730,9 @@ impl<'a> TypeChecker<'a> {
             let has_tensor_kind = generics.iter().any(|param| {
                 param.bounds.iter().any(|bound| {
                     bound.res == Res::Err
-                        && matches!(
-                            single_segment_name(&bound.path, self),
-                            Some("Dim" | "DType" | "Device")
-                        )
+                        && single_segment_name(&bound.path, self)
+                            .and_then(tensor_syntax::tensor_param_kind)
+                            .is_some()
                 })
             });
             if has_tensor_kind {
@@ -7790,10 +7807,9 @@ impl<'a> TypeChecker<'a> {
         let has_tensor_kinded_param = generics.iter().any(|param| {
             param.bounds.iter().any(|bound| {
                 bound.res == Res::Err
-                    && matches!(
-                        single_segment_name(&bound.path, self),
-                        Some("Dim" | "DType" | "Device")
-                    )
+                    && single_segment_name(&bound.path, self)
+                        .and_then(tensor_syntax::tensor_param_kind)
+                        .is_some()
             })
         });
         if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
@@ -13101,6 +13117,10 @@ impl TypeChecker<'_> {
         )
     }
 
+    /// AS6 packet 4D-A: Core normalises the declaration — enters the generic scope, classifies
+    /// each parameter, converts each written port type — and the extension decides whether what
+    /// the declaration says is *allowed*. Staged rather than hoisted so that a conversion
+    /// diagnostic cannot overtake the duplicate-name diagnostic for the same port.
     fn check_model_def(&mut self, _item_id: ItemId, def: &hir::ModelDef) {
         if !self.options.tensor() {
             self.diags.push(Diagnostic::error(
@@ -13110,81 +13130,21 @@ impl TypeChecker<'_> {
             return;
         }
 
-        let mut inputs_count = 0;
-        let mut outputs_count = 0;
-        let mut port_names = HashSet::new();
-
         let saved = self.enter_tensor_param_scope(&def.generics);
 
-        // Verify generic parameter kinds
         for g in &def.generics {
             let kind = self.generic_kind(g);
-            if kind != GenericKind::Dim {
-                self.diags.push(
-                    Diagnostic::error(
-                        "model generic parameters must have kind `Dim` (e.g. `<N: Dim>`)",
-                        g.name,
-                    )
-                    .with_code("E0211"),
-                );
-            }
+            tensor_check::ModelDeclCheck::check_generic_kind(self, kind.as_tensor_param(), g.name);
         }
 
+        let mut declaration = tensor_check::ModelDeclCheck::new();
         for port in &def.ports {
             let name = self.text(port.name).to_string();
-            if !port_names.insert(name.clone()) {
-                self.diags.push(
-                    Diagnostic::error(format!("duplicate port name `{}`", name), port.name)
-                        .with_code("E0211"),
-                );
-            }
-
-            match port.dir {
-                crate::ast::PortDir::Input => inputs_count += 1,
-                crate::ast::PortDir::Output => outputs_count += 1,
-            }
-
+            declaration.declare_port(self, &name, port.name, port.dir);
             let ty = self.convert_hir_type(port.ty);
-            match self.resolve(&ty) {
-                Ty::Extension(ext) => match ext.as_ref() {
-                    ExtensionTy::Tensor(TensorKind::Tensor(_) | TensorKind::TensorDyn(_)) => {
-                        // Valid
-                    }
-                    _ => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("invalid port type `{}`: models allow only `Tensor` and `TensorDyn` ports", self.ty_to_string(&ty)),
-                                port.span,
-                            )
-                            .with_code("E0211"),
-                        );
-                    }
-                },
-                Ty::Error => {}
-                _ => {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!("invalid port type `{}`: models allow only `Tensor` and `TensorDyn` ports", self.ty_to_string(&ty)),
-                            port.span,
-                        )
-                        .with_code("E0211"),
-                    );
-                }
-            }
+            declaration.check_port_type(self, &ty, port.span);
         }
-
-        if inputs_count == 0 {
-            self.diags.push(
-                Diagnostic::error("model must declare at least one input port", def.name)
-                    .with_code("E0211"),
-            );
-        }
-        if outputs_count == 0 {
-            self.diags.push(
-                Diagnostic::error("model must declare at least one output port", def.name)
-                    .with_code("E0211"),
-            );
-        }
+        declaration.finish(self, def.name);
 
         self.exit_tensor_param_scope(saved);
     }
