@@ -107,4 +107,10 @@ impl TypeChecker<'_> {
             }
         })
     }
+
+    // AS7 Packet 10: the HIR-facing entry point belongs with the layer it fronts.
+    pub(super) fn satisfies_bound(&mut self, ty: &Ty, bound: &hir::TraitRef) -> bool {
+        let bound_name = self.text(bound.path.span).to_string();
+        self.satisfies_bound_parts(ty, &bound_name, Some(bound.res), bound.args.clone())
+    }
 }
