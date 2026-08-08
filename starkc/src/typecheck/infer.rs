@@ -12,13 +12,22 @@
 //! unify against what, and how the failure is rendered. AS6 froze that boundary and AS7 does not
 //! reopen it.
 
-use super::state::TypeChecker;
+use super::state::{single_segment_name, PublishedEnv, TypeChecker};
 use super::types::is_integer_primitive;
-use super::types::{substitute_ty, ExtensionTy, Ty, TypeVarId};
+use super::types::{
+    substitute_ty, CallableDeclId, CallableSigTy, CallableUse, CalleeSelection, DispatchProvenance,
+    ExtensionTy, FnSigTy, GenericEnvironment, PendingUse, ReceiverAdjustment, ReceiverBinding, Ty,
+    TypeVarId,
+};
+
 use crate::ast::Primitive;
 use crate::diag::Diagnostic;
-use crate::extensions::tensor::types::{Shape, TensorKind, TensorTy, UnifyError};
-use crate::hir::{self};
+use crate::extensions::tensor::dim::DimVar;
+use crate::extensions::tensor::syntax as tensor_syntax;
+use crate::extensions::tensor::types::{
+    DType, Device, DeviceVar, Shape, TensorKind, TensorTy, UnifyError,
+};
+use crate::hir::{self, ExprId, ItemId, Res};
 use crate::literal;
 use crate::source::Span;
 use std::collections::HashMap;
@@ -764,5 +773,490 @@ impl TypeChecker<'_> {
         let id = TypeVarId(self.var_count);
         self.var_count += 1;
         Ty::Infer(id)
+    }
+}
+
+impl TypeChecker<'_> {
+    pub(super) fn freshen_call_ty(
+        &mut self,
+        ty: Ty,
+        dims: &mut HashMap<DimVar, DimVar>,
+        dtypes: &mut HashMap<u32, DType>,
+        devices: &mut HashMap<DeviceVar, Device>,
+        span: Span,
+    ) -> Ty {
+        match ty {
+            Ty::Extension(ext) => match &*ext {
+                ExtensionTy::Tensor(kind) => {
+                    match self
+                        .tensor_ctx
+                        .freshen_tensor(kind, dims, dtypes, devices, span)
+                    {
+                        Ok(kind) => Ty::Extension(Box::new(ExtensionTy::Tensor(kind))),
+                        Err(error) => {
+                            self.emit_tensor_unify_error(&error, span);
+                            Ty::Error
+                        }
+                    }
+                }
+                ExtensionTy::Model(model) => {
+                    Ty::Extension(Box::new(ExtensionTy::Model(model.clone())))
+                }
+                ExtensionTy::ModelError => Ty::Extension(Box::new(ExtensionTy::ModelError)),
+            },
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable,
+                inner: Box::new(self.freshen_call_ty(*inner, dims, dtypes, devices, span)),
+            },
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| self.freshen_call_ty(item, dims, dtypes, devices, span))
+                    .collect(),
+            ),
+            Ty::Core(core, items) => Ty::Core(
+                core,
+                items
+                    .into_iter()
+                    .map(|item| self.freshen_call_ty(item, dims, dtypes, devices, span))
+                    .collect(),
+            ),
+            Ty::Array(item, len) => Ty::Array(
+                Box::new(self.freshen_call_ty(*item, dims, dtypes, devices, span)),
+                len,
+            ),
+            Ty::Slice(item) => Ty::Slice(Box::new(
+                self.freshen_call_ty(*item, dims, dtypes, devices, span),
+            )),
+            Ty::Fn { params, ret } => Ty::Fn {
+                params: params
+                    .into_iter()
+                    .map(|param| self.freshen_call_ty(param, dims, dtypes, devices, span))
+                    .collect(),
+                ret: Box::new(self.freshen_call_ty(*ret, dims, dtypes, devices, span)),
+            },
+            Ty::Range(item) => Ty::Range(Box::new(
+                self.freshen_call_ty(*item, dims, dtypes, devices, span),
+            )),
+            other => other,
+        }
+    }
+    pub(super) fn instantiate_sig(
+        &mut self,
+        item_id: ItemId,
+        sig: FnSigTy,
+        turbofish: Option<&hir::GenericArgs>,
+        use_expr: Option<ExprId>,
+        span: Span,
+    ) -> FnSigTy {
+        let item = self.hir.item(item_id);
+        let generics = match &item.kind {
+            hir::ItemKind::Fn(def) => &def.sig.generics,
+            _ => return sig,
+        };
+
+        if generics.is_empty() {
+            if turbofish.is_some() {
+                self.diags.push(
+                    Diagnostic::error("generic arguments provided for non-generic function", span)
+                        .with_code("E0101"),
+                );
+            }
+            let fresh = self.freshen_call_sig(sig, span);
+            // **AS3: a non-generic call is published too.**
+            //
+            // `callable_instantiations` records nothing here — there is no environment to record —
+            // which is why `push_callable_env` reports "not pushed" and the interpreter falls
+            // through. Under totality that absence is indistinguishable from "no record exists",
+            // and the whole point is that an execution site finding no record is an internal
+            // compiler error rather than a licence to scan. So the environment is an explicitly
+            // EMPTY `Static(vec![])`.
+            if let (Some(expr_id), hir::ItemKind::Fn(def)) =
+                (use_expr, &self.hir.item(item_id).kind)
+            {
+                let body = def.body;
+                let use_ = CallableUse {
+                    selection: CalleeSelection::Static {
+                        declaration: CallableDeclId::Item(item_id),
+                        body,
+                    },
+                    environment: GenericEnvironment::Static(Vec::new()),
+                    receiver_adjustment: ReceiverAdjustment::None,
+                    receiver_binding: ReceiverBinding::None,
+                    signature: CallableSigTy {
+                        receiver: None,
+                        params: fresh.params.clone(),
+                        ret: fresh.ret.clone(),
+                    },
+                    provenance: DispatchProvenance::Direct,
+                };
+                self.publish_callable_use(expr_id, use_);
+            }
+            return fresh;
+        }
+
+        let mut pending_use: Option<PendingUse> = None;
+        let mut map = HashMap::new();
+        if let Some(args) = turbofish {
+            let has_tensor_kind = generics.iter().any(|param| {
+                param.bounds.iter().any(|bound| {
+                    bound.res == Res::Err
+                        && single_segment_name(&bound.path, self)
+                            .and_then(tensor_syntax::tensor_param_kind)
+                            .is_some()
+                })
+            });
+            if has_tensor_kind {
+                self.tensor_error(
+                    "explicit tensor-kind function arguments are reserved for tensor operation typing; use inference here",
+                    span,
+                );
+            }
+            if args.args.len() != generics.len() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "generic parameters mismatch: expected {} generic arguments, found {}",
+                            generics.len(),
+                            args.args.len()
+                        ),
+                        span,
+                    )
+                    .with_code("E0101"),
+                );
+            }
+
+            for (param, arg) in generics.iter().zip(&args.args) {
+                // DEV-101: the generic parameter NAME is declared by the callee, so its span is
+                // only meaningful against the callee's file (`item_text`) — reading it with
+                // `self.text` (the CALLER's file) produced a wrong string for a cross-file/
+                // cross-package callee, so this key never matched the `Ty::Param(name)` recorded in
+                // `fn_sigs` (built under the callee's file) and the parameter stayed unsubstituted.
+                // The turbofish ARGUMENT below is the caller's, so it stays on `self.file`.
+                let param_name = self.item_text(item_id, param.name).to_string();
+                let arg_ty = match arg {
+                    hir::GenericArg::Type(t) => self.convert_hir_type(*t),
+                    _ => Ty::Error,
+                };
+
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
+                let enclosing = self.current_generic_env();
+                self.bounds_checks
+                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
+                map.insert(param_name, arg_ty);
+            }
+        } else {
+            for param in generics {
+                // DEV-101: callee-declared name → callee's file.
+                let param_name = self.item_text(item_id, param.name).to_string();
+                let var = self.new_type_var();
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
+                let enclosing = self.current_generic_env();
+                self.bounds_checks
+                    .push((var.clone(), trait_bounds, span, enclosing));
+                map.insert(param_name, var);
+            }
+        }
+
+        // WP-C4.5c: record the ordered instantiation for MIR monomorphisation, keyed by the
+        // referencing path expression. Fresh inference variables recorded here resolve through
+        // `subst` by the time `analyze` grounds and publishes the table; any that remain
+        // undetermined are rejected there (E0004 — TYPE-GENERIC-001 / TYPE-FN-002, DEV-064).
+        // Tensor-kinded parameters (`Dim`/`DType`/`Device` bounds) unify through the tensor
+        // context, not value-type substitution — those functions are extension territory and
+        // are neither recorded nor subject to the undetermined-instantiation rejection.
+        let has_tensor_kinded_param = generics.iter().any(|param| {
+            param.bounds.iter().any(|bound| {
+                bound.res == Res::Err
+                    && single_segment_name(&bound.path, self)
+                        .and_then(tensor_syntax::tensor_param_kind)
+                        .is_some()
+            })
+        });
+        if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
+            // A3c-S: the same instantiation as a provenance-carrying environment. A free function
+            // has no impl, no trait and no `Self`, so this is the degenerate case of the table —
+            // recorded through the same path so there is one answer to what a generic call means
+            // rather than one table for free functions and another for methods.
+            if let hir::ItemKind::Fn(def) = &self.hir.item(item_id).kind {
+                let body = def.body;
+                let own_names: Vec<String> = generics
+                    .iter()
+                    .map(|param| self.item_text(item_id, param.name).to_string())
+                    .collect();
+                let env_map = map.clone();
+                self.publish_callable_env(PublishedEnv {
+                    call_expr: expr_id,
+                    body,
+                    self_ty: None,
+                    impl_names: &[],
+                    own_names: &own_names,
+                    own_is_method: false,
+                    map: &env_map,
+                });
+                // AS3 Boundary 1: the same decision, published in the form an engine can CONSUME
+                // rather than verify. **Deferred to the end of this function**, because the
+                // signature must be the INSTANTIATED one: publishing `sig` here recorded
+                // `params: [Param("T")]` against an environment saying `T = Int32`, so §3.4's
+                // invariant failed the moment the test stopped skipping generic uses.
+                let bindings = Self::env_bindings(&None, &[], &own_names, false, &env_map);
+                pending_use = Some((expr_id, body, bindings));
+            }
+        }
+
+        // Associated-type equality bindings participate in substitution, so a
+        // return such as `I::Item` becomes concrete at each instantiation of
+        // `fn first<I: Iterator<Item = Int32>>(...)`.
+        for param in generics {
+            // DEV-101: the parameter name and the associated-binding name are both callee-declared,
+            // so they read against the callee's file. (The binding TYPE `ty` is converted below;
+            // for a cross-file callee whose binding type names a callee-local type, that conversion
+            // still reads `self.file` — covered by the cross-package associated-type work, not the
+            // core unbounded/inference fix.)
+            let param_name = self.item_text(item_id, param.name).to_string();
+            for bound in &param.bounds {
+                if let Some(args) = &bound.args {
+                    for arg in &args.args {
+                        if let hir::GenericArg::Binding { name, ty } = arg {
+                            let binding = self.convert_hir_type(*ty);
+                            let binding = self.instantiate_ty(&binding, &map);
+                            map.insert(
+                                format!("{param_name}::{}", self.item_text(item_id, *name)),
+                                binding,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let params: Vec<Ty> = sig
+            .params
+            .iter()
+            .map(|p| self.instantiate_ty_deferring_projections(p, &map, span))
+            .collect();
+        let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
+
+        let instantiated = self.freshen_call_sig(FnSigTy { params, ret }, span);
+        if let Some((expr_id, body, bindings)) = pending_use {
+            self.publish_named_use(
+                expr_id,
+                body,
+                bindings,
+                ReceiverAdjustment::None,
+                ReceiverBinding::None,
+                CallableSigTy {
+                    receiver: None,
+                    params: instantiated.params.clone(),
+                    ret: instantiated.ret.clone(),
+                },
+                DispatchProvenance::Direct,
+            );
+        }
+        instantiated
+    }
+    /// WP-C6.2c: resolve any associated-type projection reachable in `ty`. A `Ty::Param("X::Item")`
+    /// whose base `X` names a bound param with an explicit binding is replaced from `binding_map`;
+    /// one whose base resolves to a concrete nominal is replaced from the program-wide
+    /// `assoc_projections` table. Recurses so projections nested inside aggregates are resolved.
+    pub(super) fn normalize_projections(&self, ty: &Ty, binding_map: &HashMap<String, Ty>) -> Ty {
+        match ty {
+            Ty::Param(name) if name.contains("::") => {
+                if let Some(bound) = binding_map.get(name) {
+                    return bound.clone();
+                }
+                if let Some((base, assoc)) = name.split_once("::") {
+                    // The base may itself be a bound param carrying a concrete binding: normalise it
+                    // first (e.g. `Self` already rewritten to a nominal-bearing param upstream).
+                    for ((nominal, aname), bound) in &self.assoc_projections {
+                        if aname == assoc && self.nominal_name(*nominal) == base {
+                            return bound.clone();
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.normalize_projections(inner, binding_map)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.normalize_projections(e, binding_map))
+                    .collect(),
+            ),
+            Ty::Array(elem, len) => Ty::Array(
+                Box::new(self.normalize_projections(elem, binding_map)),
+                *len,
+            ),
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_projections(elem, binding_map))),
+            Ty::Range(elem) => Ty::Range(Box::new(self.normalize_projections(elem, binding_map))),
+            other => other.clone(),
+        }
+    }
+    /// WP-C6.2c: discharge every deferred projection obligation whose base variable has grounded to
+    /// a nominal, binding its placeholder to the impl's associated-type binding. Obligations whose
+    /// base is still open are retained. Called eagerly after each call's arguments unify (so an
+    /// immediate use like `build(H {}).v` sees a concrete type) and once more at the end of
+    /// checking to catch bases that only ground later.
+    pub(super) fn discharge_ready_projections(&mut self) {
+        if self.projection_obligations.is_empty() {
+            return;
+        }
+        let obligations = std::mem::take(&mut self.projection_obligations);
+        let mut retained = Vec::new();
+        for (proj_var, base_var, assoc, span) in obligations {
+            let nominal = match self.resolve(&Ty::Infer(base_var)) {
+                Ty::Struct(id, _) | Ty::Enum(id, _) => Some(id),
+                _ => None,
+            };
+            match nominal.and_then(|n| self.assoc_projections.get(&(n, assoc.clone())).cloned()) {
+                Some(bound) => {
+                    let _ = self.unify(Ty::Infer(proj_var), bound, span);
+                }
+                None => retained.push((proj_var, base_var, assoc, span)),
+            }
+        }
+        self.projection_obligations = retained;
+    }
+}
+
+impl TypeChecker<'_> {
+    /// DEV-139: the full generic environment the current body is checked in — the impl's
+    /// parameters followed by the function's own.
+    ///
+    /// Deferred trait-bound obligations capture this and replay it at drain time. DEV-067(a)
+    /// introduced that capture so a caller's own `T: Ord` could discharge a callee's `T: Ord`,
+    /// but it captured `current_fn_generics` ALONE, so an obligation raised inside
+    /// `impl<T: Ord> Pair<T>` replayed against half its environment and failed. Capturing the
+    /// combined list here means the drain needs no second field to restore.
+    pub(super) fn current_generic_env(&self) -> Vec<hir::GenericParam> {
+        self.current_impl_generics
+            .iter()
+            .flatten()
+            .chain(self.current_fn_generics.iter().flatten())
+            .cloned()
+            .collect()
+    }
+    pub(super) fn freshen_call_sig(&mut self, sig: FnSigTy, span: Span) -> FnSigTy {
+        let mut dims = HashMap::new();
+        let mut dtypes = HashMap::new();
+        let mut devices = HashMap::new();
+        let params = sig
+            .params
+            .into_iter()
+            .map(|param| self.freshen_call_ty(param, &mut dims, &mut dtypes, &mut devices, span))
+            .collect();
+        let ret = self.freshen_call_ty(sig.ret, &mut dims, &mut dtypes, &mut devices, span);
+        FnSigTy { params, ret }
+    }
+    /// WP-C6.2c: like [`Self::instantiate_ty`], but a projection `T::Item` whose base substitutes
+    /// to an inference variable (the concrete type is fixed only by unifying a call argument) is
+    /// replaced with a fresh variable and a deferred obligation, resolved once the base grounds.
+    pub(super) fn instantiate_ty_deferring_projections(
+        &mut self,
+        ty: &Ty,
+        map: &HashMap<String, Ty>,
+        span: Span,
+    ) -> Ty {
+        match ty {
+            Ty::Param(name) => {
+                if let Some(target) = map.get(name) {
+                    return target.clone();
+                }
+                if let Some((base, assoc)) = name.split_once("::") {
+                    match map.get(base) {
+                        Some(Ty::Struct(id, _) | Ty::Enum(id, _)) => {
+                            if let Some(bound) =
+                                self.assoc_projections.get(&(*id, assoc.to_string()))
+                            {
+                                return bound.clone();
+                            }
+                        }
+                        Some(Ty::Infer(base_var)) => {
+                            let base_var = *base_var;
+                            let assoc = assoc.to_string();
+                            let proj = self.new_type_var();
+                            if let Ty::Infer(pid) = proj {
+                                self.projection_obligations
+                                    .push((pid, base_var, assoc, span));
+                            }
+                            return proj;
+                        }
+                        _ => {}
+                    }
+                }
+                ty.clone()
+            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.instantiate_ty_deferring_projections(inner, map, span)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.instantiate_ty_deferring_projections(e, map, span))
+                    .collect(),
+            ),
+            Ty::Array(elem, len) => Ty::Array(
+                Box::new(self.instantiate_ty_deferring_projections(elem, map, span)),
+                *len,
+            ),
+            Ty::Slice(elem) => Ty::Slice(Box::new(
+                self.instantiate_ty_deferring_projections(elem, map, span),
+            )),
+            Ty::Range(elem) => Ty::Range(Box::new(
+                self.instantiate_ty_deferring_projections(elem, map, span),
+            )),
+            // Fn types and everything else fall back to the non-deferring instantiation.
+            _ => self.instantiate_ty(ty, map),
+        }
     }
 }

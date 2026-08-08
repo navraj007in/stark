@@ -19,12 +19,15 @@
 //! outside it — because the passes still being extracted read them directly. Narrowing that is a
 //! later packet's work, not this one's.
 
+use super::types::bound_receiver_ty;
+use super::types::BoundMethod;
 use super::types::{
     BoundsCheck, CallableDeclId, CallableInstantiation, CallableSigTy, CallableUse, CallableUseId,
     CalleeSelection, DeferredDisplayPlan, DispatchProvenance, DisplayPath, ExtensionTy, FnSigTy,
     GenericBinder, GenericEnvironment, GenericKind, LoopContext, ReceiverAdjustment,
     ReceiverBinding, Ty, TypeVarId, VariantTy,
 };
+use crate::ast::Primitive;
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::DimVar;
 use crate::extensions::tensor::syntax as tensor_syntax;
@@ -627,4 +630,267 @@ pub(super) struct PublishedEnv<'a> {
     pub(super) own_names: &'a [String],
     pub(super) own_is_method: bool,
     pub(super) map: &'a HashMap<String, Ty>,
+}
+
+impl TypeChecker<'_> {
+    /// Record each field's DECLARED type, instantiated for this literal's type arguments.
+    ///
+    /// AS3 Packet 5. The `AggregateField` boundary needs the type the *nominal declares* for the
+    /// field, not the type of the expression that produced the value — the second would compare a
+    /// value against its own producer and assert nothing. `expected` is the nominal's parametric
+    /// field map and `map` is the substitution the literal's arguments determine, which is exactly
+    /// what `check_field_initializers` unifies against; publishing here rather than re-deriving
+    /// keeps the boundary reading the same answer the checker enforced.
+    ///
+    /// Shorthand initialisers (`W { v }`) are covered for free: the key is the FIELD NAME, so a
+    /// field with no initialiser expression still has a published type.
+    pub(super) fn publish_aggregate_field_types(
+        &mut self,
+        expr_id: ExprId,
+        expected: &HashMap<String, Ty>,
+        map: &HashMap<String, Ty>,
+    ) {
+        let concrete = expected
+            .iter()
+            .map(|(name, ty)| (name.clone(), self.instantiate_ty(ty, map)))
+            .collect();
+        self.aggregate_field_types.insert(expr_id, concrete);
+    }
+    /// The `Eq::eq` a core container method runs on its elements, published against the container
+    /// call.
+    ///
+    /// The method list is explicit rather than "anything that might compare": publishing a use the
+    /// renderer never executes would make the totality claim false, which is the same discipline
+    /// the `Display` walk's STOP rule follows.
+    pub(super) fn publish_core_element_eq_use(
+        &mut self,
+        call_expr: ExprId,
+        receiver: &Ty,
+        method: &str,
+    ) {
+        // **Publish for every container method, not a hand-listed subset.**
+        //
+        // The first version listed the methods believed to compare elements and omitted `get_mut`,
+        // so `map.get_mut(&k)` fell back to STRUCTURAL comparison and silently retrieved the wrong
+        // entry — caught by `hash_collections_use_language_eq_for_keys`, whose whole purpose is a
+        // user `Eq` that disagrees with structural equality.
+        //
+        // The asymmetry decides it: an unused entry costs a table slot, while a missing one is a
+        // wrong answer. That is the opposite of the Display walk's STOP rule, and deliberately so —
+        // there, over-publishing would falsify a claim about what the renderer executes; here the
+        // claim is only "if this call compares elements, this is the body", which stays true
+        // whether or not it does.
+        let _ = method;
+        let mut receiver = self.resolve(receiver);
+        while let Ty::Ref { inner, .. } = receiver {
+            receiver = self.resolve(&inner);
+        }
+        // The compared type: a map compares KEYS, a set and a Vec compare elements.
+        let element = match &receiver {
+            Ty::Core(CoreType::HashMap, args) => args.first().cloned(),
+            Ty::Core(CoreType::HashSet | CoreType::Vec, args) => args.first().cloned(),
+            _ => None,
+        };
+        let Some(element) = element else { return };
+        // `publish_operator_use` already handles "not a user nominal" and "no `Eq` impl" by
+        // publishing nothing, and handles a bounded parameter through DEV-191's branch.
+        self.publish_operator_use(call_expr, &element, "Eq", "eq", hir::CoreTrait::Eq);
+    }
+    pub(super) fn publish_display_bound(
+        &mut self,
+        root: ExprId,
+        param_name: &str,
+        path: DisplayPath,
+    ) {
+        let candidates = self.bound_method_candidates(param_name, "fmt");
+        let Some(BoundMethod::Core {
+            core_trait: core @ hir::CoreTrait::Display,
+            method: contract,
+            ..
+        }) = candidates.into_iter().find(|c| {
+            matches!(
+                c,
+                BoundMethod::Core {
+                    core_trait: hir::CoreTrait::Display,
+                    ..
+                }
+            )
+        })
+        else {
+            return;
+        };
+        let self_ty = Ty::Param(param_name.to_string());
+        let ret = match contract.ret {
+            None => Ty::Primitive(Primitive::Unit),
+            Some(term) => self.contract_ty_to_ty(term, &self_ty, &[]),
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Bound {
+                trait_: hir::BoundTrait::Core(core),
+                member: contract.name.to_string(),
+                self_ty: self_ty.clone(),
+                trait_args: Vec::new(),
+                method_args: Vec::new(),
+            },
+            environment: GenericEnvironment::FromBoundSelection,
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            signature: CallableSigTy {
+                receiver: bound_receiver_ty(contract.receiver.as_ref(), self_ty),
+                params: Vec::new(),
+                ret,
+            },
+            provenance: DispatchProvenance::Bound {
+                trait_: hir::BoundTrait::Core(core),
+            },
+        };
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+    pub(super) fn publish_display_static(
+        &mut self,
+        root: ExprId,
+        ty: &Ty,
+        path: DisplayPath,
+        span: Span,
+    ) {
+        let Some((impl_item, member, body, substitution)) =
+            self.operator_impl_member(ty, "Display", "fmt")
+        else {
+            return;
+        };
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            environment: GenericEnvironment::Static(self.impl_dispatch_bindings(impl_item, ty)),
+            // `Display::fmt(&self)` borrows; the renderer holds the value and lends it.
+            receiver_adjustment: ReceiverAdjustment::Shared { derefs: 0 },
+            receiver_binding: ReceiverBinding::Shared,
+            // §3.4: the INSTANTIATED signature, so `impl<T> Display for W<T>` publishes `&W<Int32>`
+            // rather than the declaration's `&W<T>`.
+            signature: CallableSigTy {
+                receiver: receiver
+                    .as_ref()
+                    .map(|ty| self.instantiate_ty(ty, &substitution)),
+                params: params
+                    .iter()
+                    .map(|ty| self.instantiate_ty(ty, &substitution))
+                    .collect(),
+                ret: self.instantiate_ty(&ret, &substitution),
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Display,
+            },
+        };
+        let _ = span;
+        let id = self.publish_callable_use(root, use_);
+        self.display_uses.insert((root, path), id);
+    }
+    /// Publish the `Iterator::next` use a `for` loop selects.
+    ///
+    /// Uses `resolve_user_iterator` — the SAME selection the element type came from — so there is
+    /// one answer to "which `next` does this loop run", not two that must agree.
+    pub(super) fn publish_iterator_use(&mut self, for_expr: ExprId, iter_ty: &Ty) {
+        let iter_ty = self.resolve(iter_ty);
+        if !matches!(iter_ty, Ty::Struct(..) | Ty::Enum(..)) {
+            return;
+        }
+        let Some(selection) = self.resolve_user_iterator(&iter_ty) else {
+            return;
+        };
+        let (impl_item, member, body) = (selection.impl_item, selection.member, selection.body);
+        let Some((receiver, params, ret)) = self.declared_member_signature(impl_item, member)
+        else {
+            return;
+        };
+        // Instantiated against the impl's substitution: `impl<T> Iterator for Repeat<T>` publishes
+        // a `next` returning `Option<Int32>` for `Repeat<Int32>`, not `Option<T>`.
+        let receiver = receiver.map(|ty| self.instantiate_ty(&ty, &selection.substitutions));
+        let params: Vec<Ty> = params
+            .iter()
+            .map(|ty| self.instantiate_ty(ty, &selection.substitutions))
+            .collect();
+        let ret = self.instantiate_ty(&ret, &selection.substitutions);
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static {
+                declaration: CallableDeclId::ImplMember { impl_item, member },
+                body,
+            },
+            // The impl's generic environment, RETAINED. Publishing an empty one here was the
+            // second defect the hardening review found.
+            environment: GenericEnvironment::Static(selection.bindings),
+            // `Iterator::next(&mut self)` advances the iterator, so the loop takes an exclusive
+            // borrow of the iterator place — no dereferencing.
+            receiver_adjustment: ReceiverAdjustment::Exclusive { derefs: 0 },
+            receiver_binding: ReceiverBinding::Exclusive,
+            signature: CallableSigTy {
+                receiver,
+                params,
+                ret,
+            },
+            provenance: DispatchProvenance::CoreTrait {
+                core: hir::CoreTrait::Iterator,
+            },
+        };
+        self.publish_callable_use(for_expr, use_);
+    }
+    /// WP-C1.3: whether `ty` satisfies the compiler-known operator-desugaring bound `required`
+    /// ("Num" | "Eq" | "Ord"). Recurses into `Ty::Core` container type arguments (`Option<T>`,
+    /// `Result<T, E>`, `Vec<T>`, `Box<T>`) so e.g. `Option<Int32> == Option<Int32>` type-checks
+    /// -- container types have no `Ty::Core` arm at all before this WP, so every `==`/`<` on any
+    /// of these normatively "essential" standard-library types (06-Standard-Library.md) was
+    /// unconditionally rejected. `HashMap`/`HashSet`/iterator/`Random`/`IOError` CoreTypes are
+    /// deliberately excluded: they are not normatively specified as Eq/Ord-comparable, and
+    /// giving them one now would be new semantics, not a bug fix (Charter rule 4).
+    /// Publish the `CallableUse` for an operator that dispatches to a user body (AS3 Boundary 3).
+    ///
+    /// Only user nominals reach a user body: primitives have built-in operator meaning (DEV-075),
+    /// and a `Ty::Core` composite compares element-wise through the runtime rather than through one
+    /// selected callable. Publishing nothing for those is correct — they are not callable uses.
+    /// The `Bound` half of [`Self::publish_operator_use`]: `a == b` where `a: T` and `T: Eq`.
+    ///
+    /// The signature comes from the Core trait's own contract — the same `CoreTraitMethod` table a
+    /// user `impl` is checked against — rather than from `Eq::eq -> Bool` written in by hand. There
+    /// is deliberately no second statement of what these operators mean.
+    /// **AS3 Boundary 4: the `Display` dispatch plan for one `println` argument.**
+    ///
+    /// Walks the argument's STATIC type in the shape `display_deep` and `emit_display_value`
+    /// already render (`AS3-DISPLAY-CHARACTERIZATION.md` §2.3), publishing one use per position
+    /// that reaches a user body.
+    ///
+    /// **The STOP rule is the load-bearing part.** `println(W<A>)` prints `W!`, not a `W!`
+    /// containing an `A!`: the outer nominal's own `fmt` runs and the renderer does not descend
+    /// into its fields. So the walk stops at the first nominal with a `Display` impl. Descending
+    /// further would publish uses no engine executes, and a totality claim over those would be
+    /// false.
+    /// Queue one expression that renders through `Display`, with the generic scope it was
+    /// written in. Called by `println`-family arguments and by interpolation fields alike.
+    pub(super) fn record_display_plan(&mut self, root: ExprId, ty: Ty) {
+        self.display_plans.push(DeferredDisplayPlan {
+            root,
+            ty,
+            generic_scope: (
+                self.current_fn_generics.clone(),
+                self.current_impl_generics.clone(),
+            ),
+        });
+    }
+}
+
+impl TypeChecker<'_> {
+    /// The declared name of a nominal (struct/enum) item, read against its declaring file.
+    pub(super) fn nominal_name(&self, item: ItemId) -> String {
+        match &self.hir.item(item).kind {
+            hir::ItemKind::Struct { name, .. } | hir::ItemKind::Enum { name, .. } => {
+                self.item_text(item, *name).to_string()
+            }
+            _ => String::new(),
+        }
+    }
 }

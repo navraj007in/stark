@@ -15,6 +15,9 @@ use super::types::ordered_primitive;
 use super::types::receiver_source;
 use super::types::strip_ref;
 use super::types::UserIteratorSelection;
+use super::types::{
+    bound_receiver_ty, BoundMethod, ContractTy, CoreTraitContract, CoreTraitMethod,
+};
 use super::types::{is_float_primitive, is_numeric, standard_display_type, standard_hash_type};
 use super::types::{
     CallableDeclId, CallableSigTy, DispatchProvenance, ExtensionTy, GenericBinder,
@@ -24,7 +27,7 @@ use crate::diag::Diagnostic;
 use crate::source::Span;
 
 use crate::ast::Primitive;
-use crate::hir::{self, BlockId, CoreType, ExprId, Hir, ItemId, Res, TypeId};
+use crate::hir::{self, BlockId, BoundTrait, CoreType, ExprId, Hir, ItemId, Res, TypeId};
 use std::collections::{HashMap, HashSet};
 
 /// Why a trait relation holds **for a nominal type**. `Impl` carries the selected impl so that the
@@ -2619,47 +2622,6 @@ pub(super) fn contract_ty_source(ty: ContractTy) -> String {
     }
 }
 
-/// A Core trait's complete implementation contract.
-pub(super) struct CoreTraitContract {
-    /// Every method the trait declares. All are required — no Core trait has a defaulted method.
-    pub(super) methods: &'static [CoreTraitMethod],
-    /// Associated types the implementation must declare.
-    pub(super) assoc_types: &'static [&'static str],
-}
-
-/// A Core trait method's required shape. Core v1 declares no method-level generics on any of
-/// these, so an impl that introduces one is malformed by construction.
-pub(super) struct CoreTraitMethod {
-    pub(super) name: &'static str,
-    pub(super) receiver: Option<hir::Receiver>,
-    pub(super) params: &'static [ContractTy],
-    /// `None` is a `Unit` return (`06-Standard-Library.md`: `fn drop(&mut self);`).
-    pub(super) ret: Option<ContractTy>,
-}
-
-/// One type position in a Core trait's declared signature.
-///
-/// These are the *contract's* terms, not the implementation's. Each is rendered into the same key
-/// format `signature_type_key` produces for a written type, so one comparison serves both a
-/// user-declared trait (whose declaration is an HIR item) and a Core trait (which has none).
-#[derive(Clone, Copy)]
-pub(super) enum ContractTy {
-    /// `Self` — the implementing type.
-    SelfTy,
-    /// `&Self`.
-    RefSelf,
-    Bool,
-    UInt64,
-    /// The prelude `String`.
-    StringTy,
-    /// The prelude `Ordering`.
-    Ordering,
-    /// `Option<Self::Name>` — the associated type the impl declared.
-    OptionAssoc(&'static str),
-    /// The trait's own generic argument at this position, as written in `impl Trait<..> for T`.
-    TraitArg(usize),
-}
-
 /// The contract for `core_trait`, or `None` when this trait's implementation shape is not modelled.
 ///
 /// **`None` is a scope statement, not an oversight.** `Index`/`IndexMut`/`TryFrom`/`Error`/
@@ -2846,4 +2808,393 @@ impl TypeChecker<'_> {
             self.resolve(ty)
         })
     }
+}
+
+impl TypeChecker<'_> {
+    pub(super) fn bound_method_candidates(&self, p_name: &str, name: &str) -> Vec<BoundMethod> {
+        // WP-C6.2b-F5: consult the method's own generics AND the enclosing impl's generics, so
+        // a bound written on the impl head (`impl<T: Sh> W<T>`) is visible in the method body.
+        let mut generics = self.current_fn_generics.clone().unwrap_or_default();
+        if let Some(impl_generics) = &self.current_impl_generics {
+            generics.extend(impl_generics.iter().cloned());
+        }
+        let mut seen: Vec<BoundTrait> = Vec::new();
+        let mut candidates: Vec<BoundMethod> = Vec::new();
+        for param in &generics {
+            if self.text(param.name) != p_name {
+                continue;
+            }
+            for bound in &param.bounds {
+                // DEV-BOUND-TRAIT-IDENTITY: the identity comes from the RESOLVER, never from
+                // how the bound was spelled. See `hir::resolved_bound_trait` for the three
+                // failures the previous spelling-based lookup produced.
+                let Some(bound_trait) = hir::resolved_bound_trait(self.hir, bound) else {
+                    continue;
+                };
+                // `T: Display + Display` names one trait, not two: a repeated bound must not
+                // manufacture an ambiguity.
+                if seen.contains(&bound_trait) {
+                    continue;
+                }
+                seen.push(bound_trait);
+                match bound_trait {
+                    BoundTrait::User(trait_id) => {
+                        if let Some(sig) = self.find_trait_method_sig(trait_id, name) {
+                            candidates.push(BoundMethod::User { trait_id, sig });
+                        }
+                    }
+                    BoundTrait::Core(core_trait) => {
+                        if let Some(method) = core_trait_bound_method(core_trait, name) {
+                            candidates.push(BoundMethod::Core {
+                                core_trait,
+                                method,
+                                trait_args: trait_ref_type_args(bound),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        candidates
+    }
+    /// The traits behind a set of candidates, as they read in a diagnostic.
+    pub(super) fn bound_trait_list(&self, candidates: &[BoundMethod]) -> String {
+        let names: Vec<String> = candidates
+            .iter()
+            .map(|candidate| match candidate {
+                BoundMethod::User { trait_id, .. } => {
+                    let hir::ItemKind::Trait { name, .. } = &self.hir.item(*trait_id).kind else {
+                        return "<trait>".to_string();
+                    };
+                    self.item_text(*trait_id, *name).to_string()
+                }
+                BoundMethod::Core { core_trait, .. } => {
+                    core_trait_source_name(*core_trait).to_string()
+                }
+            })
+            .collect();
+        names.join(" and ")
+    }
+    /// The declared signature of an impl member, converted — receiver, parameters and result.
+    ///
+    /// AS3 Boundary 3: the operator publication reads the signature it publishes rather than
+    /// asserting one, so `callable_uses` and `callable_types` describe the same declaration.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn declared_member_signature(
+        &mut self,
+        impl_item: ItemId,
+        member: u32,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Impl { items, self_ty, .. } = &self.hir.item(impl_item).kind else {
+            return None;
+        };
+        let hir::ImplItem::Fn { def, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        // Take the ids out of the borrow before converting: `convert_hir_type` needs `&mut self`,
+        // and `FnDef` is not `Clone`, so the borrow has to end rather than be copied.
+        let receiver_form = def.sig.receiver;
+        let param_ids: Vec<hir::TypeId> = def.sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = def.sig.ret;
+        let self_ty_id = *self_ty;
+
+        let self_ty = self.convert_hir_type(self_ty_id);
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty);
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => self.convert_hir_type(id),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+    /// Looks up trait `trait_id`'s own declared signature for method `name_str` (a required
+    /// method or another default), without needing any concrete `impl` -- used both for a
+    /// bounded generic type parameter's method call and for `self.other_method()` called from
+    /// inside a trait's own default-method body (DEV-051), where in either case the receiver's
+    /// type is an abstract placeholder (`Ty::Param`), not a real struct/enum, so there is no
+    /// `impl` to match against yet.
+    pub(super) fn find_trait_method_sig(
+        &self,
+        trait_id: ItemId,
+        name_str: &str,
+    ) -> Option<hir::FnSig> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        // DEV-069: the trait's method names belong to the TRAIT's declaring file.
+        items.iter().find_map(|trait_item| match trait_item {
+            hir::TraitItem::Method { sig, .. }
+                if self.item_text(trait_id, sig.name) == name_str =>
+            {
+                Some(sig.clone())
+            }
+            _ => None,
+        })
+    }
+    pub(super) fn trait_default_member(
+        &self,
+        trait_id: ItemId,
+        member: u32,
+    ) -> Option<(ItemId, u32, BlockId)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method {
+            body: Some(body), ..
+        } = items.get(member as usize)?
+        else {
+            return None;
+        };
+        Some((trait_id, member, *body))
+    }
+    /// The trait's own default body for `member`, as an (owner, member, body) triple shaped like
+    /// [`Self::operator_impl_member`]'s. Used when an implementor accepts the default and there is
+    /// therefore no impl member to find.
+    /// A TRAIT method's declared signature, with `Self` bound to the concrete receiver. The
+    /// trait-default counterpart of [`Self::declared_member_signature`], which reads an impl.
+    pub(super) fn trait_member_signature(
+        &mut self,
+        trait_id: ItemId,
+        member: u32,
+        self_ty: &Ty,
+    ) -> Option<(Option<Ty>, Vec<Ty>, Ty)> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        let hir::TraitItem::Method { sig, .. } = items.get(member as usize)? else {
+            return None;
+        };
+        let receiver_form = sig.receiver;
+        let param_ids: Vec<hir::TypeId> = sig.params.iter().map(|p| p.ty).collect();
+        let ret_form = sig.ret;
+        let receiver = bound_receiver_ty(receiver_form.as_ref(), self_ty.clone());
+        let params = param_ids
+            .into_iter()
+            .map(|id| self.convert_hir_type(id))
+            .collect();
+        let ret = match ret_form {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(id) => Self::subst_self_ty(self.convert_hir_type(id), self_ty),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        Some((receiver, params, ret))
+    }
+    /// DEV-DISPLAY-DISPATCH: every trait in scope — user-declared or compiler-known — that
+    /// declares a method-callable `name`, named as it would be written in a bound.
+    ///
+    /// Both kinds are consulted, and neither is preferred: the point of the missing-bound
+    /// diagnostic is to name the trait the programmer must write, and a compiler-known trait is
+    /// written in a bound exactly like any other.
+    pub(super) fn traits_declaring_method(&self, name: &str) -> Vec<String> {
+        let mut providers = Vec::new();
+        for (index, item) in self.hir.items.iter().enumerate() {
+            let trait_id = ItemId(index as u32);
+            let hir::ItemKind::Trait {
+                name: trait_name, ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let declares = self.find_trait_method_sig(trait_id, name).is_some();
+            if declares {
+                let spelled = self.item_text(trait_id, *trait_name).to_string();
+                if !providers.contains(&spelled) {
+                    providers.push(spelled);
+                }
+            }
+        }
+        for core_trait in all_core_traits() {
+            if core_trait_bound_method(core_trait, name).is_some() {
+                let spelled = core_trait_source_name(core_trait).to_string();
+                if !providers.contains(&spelled) {
+                    providers.push(spelled);
+                }
+            }
+        }
+        providers
+    }
+    /// WP-C6.2b-F1: enforce member/field visibility. `defining_item` is the item that owns the
+    /// member (the impl block for a method/associated fn, the struct/enum for a field/variant).
+    /// A non-`pub` member is accessible only from its own defining module (private is exact-module,
+    /// matching `resolve::item_is_visible_from`). Returns true if accessible; otherwise emits E0207
+    /// and returns false.
+    /// WP-C6.2b-F1: whether a struct field is declared `pub`. Missing struct/field → treat as
+    /// public (an unrelated error already fired, or it is a tuple/core type).
+    pub(super) fn struct_field_is_pub(&self, struct_id: ItemId, field: &str) -> bool {
+        if let hir::ItemKind::Struct { fields, .. } = &self.hir.item(struct_id).kind {
+            for f in fields {
+                if self.item_text(struct_id, f.name) == field {
+                    return f.is_pub;
+                }
+            }
+        }
+        true
+    }
+    /// The impl's generic parameters bound to the rendered type's arguments — the "instantiated
+    /// environment" requirement the Iterator hardening established after publishing an empty one.
+    pub(super) fn impl_dispatch_bindings(
+        &mut self,
+        impl_item: ItemId,
+        ty: &Ty,
+    ) -> Vec<(GenericBinder, Ty)> {
+        let hir::ItemKind::Impl {
+            self_ty, generics, ..
+        } = &self.hir.item(impl_item).kind
+        else {
+            return Vec::new();
+        };
+        let (self_ty, generics) = (*self_ty, generics.clone());
+        let parametric = self.impl_self_ty_with_args(impl_item, self_ty);
+        let Some(map) = self.match_impl_type(&parametric, ty, &generics) else {
+            return Vec::new();
+        };
+        let impl_names: Vec<String> = generics
+            .iter()
+            .map(|param| self.item_text(impl_item, param.name).to_string())
+            .collect();
+        // `env_bindings`, not a second construction of the same list: `Display::fmt` declares no
+        // generics of its own, so the method half is empty and `Self` is the rendered type.
+        Self::env_bindings(&Some(ty.clone()), &impl_names, &[], true, &map)
+    }
+    /// WP-C6.2c: associated-type projections pinned by explicit binding constraints in scope
+    /// (`T: Holder<Item = Int32>` yields `"T::Item" -> Int32`), gathered from the current function's
+    /// and enclosing impl's generic parameters.
+    pub(super) fn assoc_binding_map(&mut self) -> HashMap<String, Ty> {
+        let mut generics = self.current_fn_generics.clone().unwrap_or_default();
+        if let Some(impl_generics) = &self.current_impl_generics {
+            generics.extend(impl_generics.iter().cloned());
+        }
+        let mut map = HashMap::new();
+        for param in &generics {
+            let pname = self.text(param.name).to_string();
+            for bound in &param.bounds {
+                let Some(bound_args) = &bound.args else {
+                    continue;
+                };
+                for arg in &bound_args.args {
+                    if let hir::GenericArg::Binding { name, ty } = arg {
+                        let key = format!("{}::{}", pname, self.text(*name));
+                        let bty = self.convert_hir_type(*ty);
+                        map.insert(key, bty);
+                    }
+                }
+            }
+        }
+        map
+    }
+    /// DEV-DISPLAY-DISPATCH: a Core trait contract term as a checker type, with `Self` bound to
+    /// the receiver. `Self::Item` becomes the projection `T::Item`, which the caller normalises
+    /// against the bindings in scope — the same treatment a user trait's `Self::Item` gets.
+    pub(super) fn contract_ty_to_ty(
+        &mut self,
+        term: ContractTy,
+        self_ty: &Ty,
+        trait_args: &[Ty],
+    ) -> Ty {
+        match term {
+            ContractTy::SelfTy => self_ty.clone(),
+            ContractTy::RefSelf => Ty::Ref {
+                mutable: false,
+                inner: Box::new(self_ty.clone()),
+            },
+            ContractTy::Bool => Ty::Primitive(Primitive::Bool),
+            ContractTy::UInt64 => Ty::Primitive(Primitive::UInt64),
+            ContractTy::StringTy => Ty::Primitive(Primitive::String),
+            ContractTy::Ordering => Ty::Core(CoreType::Ordering, Vec::new()),
+            ContractTy::OptionAssoc(assoc) => {
+                let base = match self_ty {
+                    Ty::Param(name) => name.clone(),
+                    other => self.ty_to_string(other),
+                };
+                Ty::Core(
+                    CoreType::Option,
+                    vec![Ty::Param(format!("{base}::{assoc}"))],
+                )
+            }
+            // An unwritten argument (`T: Into` with no `<..>`) has no type to name. `Ty::Error`
+            // is the checker's "already reported / do not cascade" type, and the missing argument
+            // is reported where the bound is written, not here.
+            ContractTy::TraitArg(index) => trait_args.get(index).cloned().unwrap_or(Ty::Error),
+        }
+    }
+}
+
+/// The method a compiler-known trait contributes to a bound, if it declares one by this name and
+/// that method is callable with method syntax.
+///
+/// **`receiver.is_some()` is the whole filter.** `Default::default()` and `From::from(v)` have no
+/// receiver, so no `x.default()` spelling exists to resolve; they are reached through their
+/// qualified paths, which DEV-052 already handles. Nothing here keys on a method NAME — the
+/// contract's own shape decides.
+pub(super) fn core_trait_bound_method(
+    core_trait: hir::CoreTrait,
+    name: &str,
+) -> Option<&'static CoreTraitMethod> {
+    let contract = core_trait_contract(core_trait)?;
+    let methods: &'static [CoreTraitMethod] = contract.methods;
+    methods
+        .iter()
+        .find(|method| method.name == name && method.receiver.is_some())
+}
+
+/// The written type arguments of a trait reference (`T: Into<Int32>` → `[Int32]`), skipping the
+/// argument forms that do not name a type.
+pub(super) fn trait_ref_type_args(bound: &hir::TraitRef) -> Vec<hir::TypeId> {
+    let Some(args) = &bound.args else {
+        return Vec::new();
+    };
+    args.args
+        .iter()
+        .filter_map(|arg| match arg {
+            hir::GenericArg::Type(ty) => Some(*ty),
+            // An associated-type binding constrains a projection, it does not fill an argument
+            // position; a const or a tensor shape argument is not a type at all.
+            hir::GenericArg::Const(_)
+            | hir::GenericArg::Binding { .. }
+            | hir::GenericArg::Shape(_) => None,
+        })
+        .collect()
+}
+
+/// Every compiler-known trait, in declaration order.
+pub(super) fn all_core_traits() -> Vec<hir::CoreTrait> {
+    let mut traits = vec![hir::CoreTrait::Copy];
+    while let Some(next) = next_core_trait(*traits.last().expect("non-empty")) {
+        traits.push(next);
+    }
+    traits
+}
+
+/// The `CoreTrait` following `current` in declaration order, or `None` at the end of the enum.
+///
+/// This exists so [`all_core_traits`] can enumerate the compiler-known traits **without a list
+/// that can fall behind the enum**. The match is total: adding a `CoreTrait` variant is a
+/// compile error here, which is the no-wildcard discipline applied to an enumeration rather than
+/// to a dispatch.
+pub(super) fn next_core_trait(current: hir::CoreTrait) -> Option<hir::CoreTrait> {
+    use hir::CoreTrait as CT;
+    let next = match current {
+        CT::Copy => CT::Drop,
+        CT::Drop => CT::Eq,
+        CT::Eq => CT::Ord,
+        CT::Ord => CT::Num,
+        CT::Num => CT::Clone,
+        CT::Clone => CT::Hash,
+        CT::Hash => CT::Default,
+        CT::Default => CT::Display,
+        CT::Display => CT::Error,
+        CT::Error => CT::From,
+        CT::From => CT::Into,
+        CT::Into => CT::TryFrom,
+        CT::TryFrom => CT::Index,
+        CT::Index => CT::IndexMut,
+        CT::IndexMut => CT::Iterator,
+        CT::Iterator => CT::FromIterator,
+        CT::FromIterator => return None,
+    };
+    Some(next)
 }

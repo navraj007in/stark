@@ -1015,3 +1015,139 @@ pub(super) fn receiver_source(receiver: Option<hir::Receiver>) -> &'static str {
         Some(hir::Receiver::RefMut) => "&mut self",
     }
 }
+pub(super) type MethodCandidate<'a> = (&'a hir::FnDef, bool, HashMap<String, Ty>, Ty, bool, ItemId);
+
+/// The receiver type a declaration BINDS, formed the way A3b forms it.
+///
+/// AS3 Boundary 2 hardening, second correction. The publication recorded the instantiated `Self`
+/// bare, while `callable_types` records the receiver **as the body binds it** — `&Self` for
+/// `&self`, `&mut Self` for `&mut self`. So the two disagreed on every borrowing method, and §3.4's
+/// invariant would have failed on all of them. It did, the moment the test stopped skipping
+/// generics.
+///
+/// This mirrors `check_fn_def`'s construction rather than re-deriving it, so the two cannot drift.
+pub(super) fn bound_receiver_ty(receiver: Option<&hir::Receiver>, self_ty: Ty) -> Option<Ty> {
+    match receiver? {
+        hir::Receiver::Value => Some(self_ty),
+        hir::Receiver::Ref => Some(Ty::Ref {
+            mutable: false,
+            inner: Box::new(self_ty),
+        }),
+        hir::Receiver::RefMut => Some(Ty::Ref {
+            mutable: true,
+            inner: Box::new(self_ty),
+        }),
+    }
+}
+
+/// What the CALL SITE did to the receiver, from TYPE-METHOD-002's peel count and the form the
+/// selected declaration binds.
+///
+/// AS3 Boundary 2 hardening. Every named-dispatch publication passed `ReceiverAdjustment::None`,
+/// so the field existed and published nothing — a consumer would have received
+/// `binding = Shared, adjustment = None` and still had to work out the receiver semantics itself.
+///
+/// `derefs` is how many leading `&`/`&mut` method resolution removed before matching. A receiver
+/// of `&&mut T` calling a `&self` method is two derefs and a shared adjustment; `T` calling `self`
+/// is zero derefs by value.
+pub(super) fn receiver_adjustment_for(
+    derefs: u8,
+    outermost_ref_is_mut: bool,
+    binding: ReceiverBinding,
+) -> ReceiverAdjustment {
+    match binding {
+        ReceiverBinding::None => ReceiverAdjustment::None,
+        ReceiverBinding::ByValue => ReceiverAdjustment::ByValue,
+        ReceiverBinding::Shared => ReceiverAdjustment::Shared { derefs },
+        ReceiverBinding::Exclusive => {
+            // An exclusive binding reached through a shared reference would be a borrow error the
+            // checker has already rejected; recording the outermost form keeps the two answers
+            // consistent rather than asserting one from the other.
+            let _ = outermost_ref_is_mut;
+            ReceiverAdjustment::Exclusive { derefs }
+        }
+    }
+}
+
+// AS7 Packet 9b: dispatch metadata. `state` publishes it and `traits` produces it, so it
+// belongs at the bottom with the other result types rather than above either of them.
+/// One method a bound contributes, with enough of its declaration to check a call.
+pub(super) enum BoundMethod {
+    User {
+        trait_id: ItemId,
+        sig: hir::FnSig,
+    },
+    Core {
+        core_trait: hir::CoreTrait,
+        /// Borrowed from [`core_trait_contract`], the same table user `impl` blocks are checked
+        /// against. There is deliberately no second registry of Core-trait signatures: what a
+        /// bound makes callable is by construction what an implementation must provide.
+        method: &'static CoreTraitMethod,
+        /// The bound's own written type arguments (`T: Into<Int32>`), for `ContractTy::TraitArg`.
+        trait_args: Vec<hir::TypeId>,
+    },
+}
+
+// AS7 Packet 9b: Core trait CONTRACT DATA. `traits` owns the function that selects a
+// contract; the contract itself is data that `BoundMethod` embeds, so it lives at the bottom.
+/// A Core trait method's required shape. Core v1 declares no method-level generics on any of
+/// these, so an impl that introduces one is malformed by construction.
+pub(super) struct CoreTraitMethod {
+    pub(super) name: &'static str,
+    pub(super) receiver: Option<hir::Receiver>,
+    pub(super) params: &'static [ContractTy],
+    /// `None` is a `Unit` return (`06-Standard-Library.md`: `fn drop(&mut self);`).
+    pub(super) ret: Option<ContractTy>,
+}
+/// A Core trait's complete implementation contract.
+pub(super) struct CoreTraitContract {
+    /// Every method the trait declares. All are required — no Core trait has a defaulted method.
+    pub(super) methods: &'static [CoreTraitMethod],
+    /// Associated types the implementation must declare.
+    pub(super) assoc_types: &'static [&'static str],
+}
+/// One type position in a Core trait's declared signature.
+///
+/// These are the *contract's* terms, not the implementation's. Each is rendered into the same key
+/// format `signature_type_key` produces for a written type, so one comparison serves both a
+/// user-declared trait (whose declaration is an HIR item) and a Core trait (which has none).
+#[derive(Clone, Copy)]
+pub(super) enum ContractTy {
+    /// `Self` — the implementing type.
+    SelfTy,
+    /// `&Self`.
+    RefSelf,
+    Bool,
+    UInt64,
+    /// The prelude `String`.
+    StringTy,
+    /// The prelude `Ordering`.
+    Ordering,
+    /// `Option<Self::Name>` — the associated type the impl declared.
+    OptionAssoc(&'static str),
+    /// The trait's own generic argument at this position, as written in `impl Trait<..> for T`.
+    TraitArg(usize),
+}
+pub(super) fn is_cast_numeric(p: Primitive) -> bool {
+    is_numeric(p) || matches!(p, Primitive::Float16 | Primitive::BFloat16)
+}
+
+/// A deferred callable-use publication: the call expression, the body it selected, and the generic
+/// environment — held until the instantiated signature exists (AS3 Boundary 2).
+pub(super) type PendingUse = (ExprId, BlockId, Vec<(GenericBinder, Ty)>);
+
+pub(super) fn type_is_sized(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(Primitive::Str) | Ty::Slice(_) => false,
+        Ty::Ref { .. } => true,
+        Ty::Tuple(types) => types.iter().all(type_is_sized),
+        Ty::Array(element, _) => type_is_sized(element),
+        Ty::Struct(_, arguments) | Ty::Enum(_, arguments) => arguments.iter().all(type_is_sized),
+        Ty::Core(CoreType::Box, arguments) => arguments.first().is_some_and(type_is_sized),
+        Ty::Core(_, arguments) => arguments.iter().all(type_is_sized),
+        Ty::Fn { params, ret } => params.iter().all(type_is_sized) && type_is_sized(ret),
+        Ty::Range(element) => type_is_sized(element),
+        Ty::Extension(_) | Ty::Primitive(_) | Ty::Never | Ty::Param(_) | Ty::Infer(_) => true,
+        Ty::Error => true,
+    }
+}
