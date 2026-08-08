@@ -8588,7 +8588,10 @@ impl<'a> FnLowerer<'a> {
             return false;
         }
         match ty {
-            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
+            // AS4 item 3: `args` is bound in the OUTER pattern. It used to be recovered by a
+            // nested re-destructure ending in `_ => unreachable!()`, which is unreachable by
+            // construction but reads as a property-bearing wildcard to every exhaustiveness audit.
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 if self.type_has_drop_impl(*item) {
                     return true;
                 }
@@ -8598,10 +8601,7 @@ impl<'a> FnLowerer<'a> {
                     self.tables,
                     self.meta,
                     *item,
-                    match ty {
-                        MirTy::Struct(_, a) | MirTy::Enum(_, a) => a,
-                        _ => unreachable!(),
-                    },
+                    args,
                     self.providers,
                 ) {
                     Ok(NominalFields::Struct(tys)) => tys
@@ -12562,48 +12562,45 @@ mod as4_drop_predicate_inventory {
         ]
     }
 
-    /// **RB0 Q1 — the iterator drop-glue asymmetry, pinned with its evidence.**
+    /// **RB0 Q1 — DECIDED (CD-388): every constructible iterator requires no drop glue.**
     ///
-    /// RB0 asked for a per-iterator evidence packet and an individual decision. The packet is in
-    /// `AS4-RB0-Q1-ITERATORS.md`; the finding is that **the asymmetry has no basis in the
-    /// representations**:
+    /// The asymmetry RB0 asked about was historical, not semantic. All four iterators `mir_ty` can
+    /// construct as `MirTy::Core` are the same shape — a borrowed cursor owning nothing:
     ///
     /// ```text
-    /// VecIter<'a,T>   { slice: &'a [T], index: usize }    borrowed cursor, owns nothing
-    /// KeysIter<'a,K>  { keys:  &'a [K], index: usize }    borrowed cursor, owns nothing
-    /// Iter<T>         emits AS KeysIter                   borrowed cursor, owns nothing
-    /// CharsIter<'a>   { inner: std::str::Chars<'a> }      borrowed cursor, owns nothing
+    /// VecIter<'a,T>   { slice: &'a [T], index: usize }
+    /// KeysIter<'a,K>  { keys:  &'a [K], index: usize }
+    /// Iter<T>         emits AS KeysIter (DEV-116-B)
+    /// CharsIter<'a>   { inner: std::str::Chars<'a> }
     /// ```
     ///
-    /// None has a Rust `Drop`; all four plan as `DropPlan::Noop`. Yet `CharsIter` answers `false`
-    /// (CD-387) and the other three answer `true`.
+    /// None owns an allocation or resource, none has a Rust `Drop`, all plan as `DropPlan::Noop`.
+    /// CD-387 ruled `CharsIter` on that reasoning; CD-388 extends it to the other three after
+    /// `AS4-RB0-Q1-ITERATORS.md` measured them.
     ///
-    /// **Observationally inert, which is why it is pinned rather than repaired here.** The plan is
-    /// `Noop` either way, so the difference costs a drop unit and a drop flag, not correctness.
-    /// Making them agree changes MIR shape, so it is behavioural and owes its own CD (RB0 exit
-    /// criterion 5). This test makes the inconsistency a recorded fact that cannot drift while that
-    /// decision is pending.
+    /// **This test earned its keep**: it was written to fail by name if any of the three changed
+    /// without a CD, and it did exactly that when the change was made — forcing the decision record
+    /// to be written rather than the behaviour to drift. It now pins the decided answers.
     #[test]
-    fn rb0_q1_the_iterator_asymmetry_is_pinned_with_its_evidence() {
+    fn rb0_q1_every_constructible_iterator_requires_no_drop_glue() {
         use crate::hir::CoreType;
         use crate::mir::drop_rule::core_requires_drop_glue;
 
-        // The four iterators that `mir_ty` can actually construct as `MirTy::Core`.
-        assert!(
-            !core_requires_drop_glue(CoreType::CharsIter),
-            "CD-387: a borrowed `&str` cursor requires no glue"
-        );
-        for other in [CoreType::VecIter, CoreType::KeysIter, CoreType::Iter] {
+        for cursor in [
+            CoreType::CharsIter,
+            CoreType::VecIter,
+            CoreType::KeysIter,
+            CoreType::Iter,
+        ] {
             assert!(
-                core_requires_drop_glue(other),
-                "{other:?} still answers `true`. It is the SAME shape as CharsIter — a borrowed \
-                 cursor owning nothing, with no Rust `Drop` and a `Noop` drop plan — so if this \
-                 has been changed to `false`, RB0 Q1 was decided and needs its CD and its entry in \
-                 AS4-RB0-Q1-ITERATORS.md."
+                !core_requires_drop_glue(cursor),
+                "{cursor:?} is a borrowed cursor owning nothing (CD-387/CD-388). Reverting it \
+                 needs its own decision record and an update to AS4-RB0-Q1-ITERATORS.md."
             );
         }
         // The iterators `mir_ty` cannot construct keep the verifier's historical answer, per the
-        // AS4-DROP-AUTHORITY consolidation rule for unreachable representations.
+        // AS4-DROP-AUTHORITY consolidation rule for unreachable representations. CD-388 did NOT
+        // extend to them: with no representation to inspect there is no evidence to decide on.
         for unreachable in [
             CoreType::SplitIter,
             CoreType::ValuesIter,

@@ -127,7 +127,18 @@ pub(crate) fn core_requires_drop_glue(core: CoreType) -> bool {
         // CD-387 (DEV-195): a borrowed `&str` cursor yielding `Char` by value. The native runtime
         // wraps `std::str::Chars<'a>` and the backend emits it as intrinsically borrow-carrying, so
         // it owns nothing destruction could release.
-        CoreType::CharsIter => false,
+        // **CD-388 (RB0 Q1): every constructible iterator is a borrowed cursor owning nothing.**
+        //
+        // `VecIter<'a,T>{slice,index}`, `KeysIter<'a,K>{keys,index}`, `Iter` (emits AS `KeysIter`)
+        // and `CharsIter<'a>{inner: Chars<'a>}` are the same shape: no owned allocation, no
+        // resource, no Rust `Drop`, and `DropPlan::Noop`. CD-387 ruled `CharsIter` requires no glue
+        // on exactly that reasoning; `AS4-RB0-Q1-ITERATORS.md` measured the other three and found
+        // no basis for the historical asymmetry.
+        //
+        // Effect: fewer drop units and flags in generated MIR. No observable change to any program
+        // — the plan was `Noop` either way — which is why this needed its own CD rather than
+        // riding along with the authority merge.
+        CoreType::CharsIter | CoreType::VecIter | CoreType::KeysIter | CoreType::Iter => false,
         // **Legacy representation, deliberately `true`.** DEV-196: `mir_ty` refuses `Core(File)`
         // outright, so no source program produces it and this preserves the verifier's answer with
         // no behavioural constituency to disturb. A11 sends `File` to `HostResource`, whose `Drop`
@@ -144,12 +155,9 @@ pub(crate) fn core_requires_drop_glue(core: CoreType) -> bool {
         | CoreType::Range
         | CoreType::RangeInclusive
         | CoreType::SplitIter
-        | CoreType::VecIter
         | CoreType::HashMap
         | CoreType::HashSet
-        | CoreType::KeysIter
         | CoreType::ValuesIter
-        | CoreType::Iter
         | CoreType::MapIter
         | CoreType::FilterIter
         | CoreType::Random

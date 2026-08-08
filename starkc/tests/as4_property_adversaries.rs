@@ -170,12 +170,21 @@ fn a_conditionally_moved_droppable_is_dropped_exactly_once_on_both_paths() {
 // (oracle-refused) and host resources (interpreter-inaccessible), rather than quietly dropped from
 // item 4's scope.
 
-/// Pins the native limitation itself, so item 4's coverage gap is a fact in the suite rather than
-/// an absence. Fails when native gains support — at which point the two adversaries this replaced
-/// should be restored as ordinary three-engine cases.
+/// Pins the native limitation **by actually invoking native generation**, so item 4's coverage gap
+/// is a fact in the suite rather than an absence.
+///
+/// **This test previously did not reach native at all.** It asserted checker acceptance, HIR
+/// execution and MIR lowering, then stopped — and its name claimed a native deferral it never
+/// exercised. Reviewer finding: an evidence defect of exactly the kind this packet keeps hunting,
+/// in this packet's own suite. It now calls `emit_native_debug` and asserts the named refusal.
+///
+/// Fails when native gains support — at which point the two adversaries this replaced should be
+/// restored as ordinary three-engine cases.
 #[test]
 fn a_vec_of_droppables_is_deferred_by_the_native_backend() {
+    use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
     use starkc::mir::lower::lower_program;
+    use starkc::mir::verify::verify_program;
     use starkc::options::LanguageOptions;
     use starkc::session::CompilerSession;
     use starkc::source::SourceFile;
@@ -202,13 +211,43 @@ fn a_vec_of_droppables_is_deferred_by_the_native_backend() {
         "the element is destroyed when the Vec is"
     );
 
-    // MIR lowering succeeds; it is the NATIVE backend that defers, which is why this is a backend
-    // limitation and not a drop-rule defect.
-    if let Err(error) = lower_program(checked.hir(), checked.tables(), checked.root_source()) {
-        panic!(
-            "MIR lowering must accept a Vec of droppables, got: {}",
+    // MIR lowering and verification both accept it, which locates the limit in the BACKEND.
+    let mir = match lower_program(checked.hir(), checked.tables(), checked.root_source()) {
+        Ok(mir) => mir,
+        Err(error) => panic!(
+            "MIR lowering must accept a Vec of droppables: {}",
             error.what
-        );
+        ),
+    };
+    let verified = verify_program(&mir).expect("the verifier must accept it");
+
+    // **And native generation refuses it, by name.**
+    let target_dir = std::env::temp_dir().join(format!(
+        "as4_vec_droppable_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&target_dir);
+    let options = NativeBuildOptions {
+        target_dir: target_dir.clone(),
+        target_contract: "stark-64-v1".to_string(),
+        profile: Default::default(),
+        target_triple: None,
+    };
+    let outcome = emit_native_debug(&verified, &options);
+    let _ = std::fs::remove_dir_all(&target_dir);
+    match outcome {
+        Err(diagnostic) => {
+            let rendered = format!("{diagnostic:?}");
+            assert!(
+                rendered.contains("destructor-in-runtime-collection"),
+                "the refusal must be the named deferral, got: {rendered}"
+            );
+        }
+        Ok(_) => panic!(
+            "the native backend now ACCEPTS a `Vec` whose element carries a user destructor. \
+             Restore the two three-engine adversaries this test stands in for, and delete this one."
+        ),
     }
 }
 

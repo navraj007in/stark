@@ -5414,7 +5414,7 @@ conclusions, one of which reached a permanent record before being retracted.
   failed at once. An early return out of a function whose value is recorded by its *caller-side*
   epilogue is never a local edit.
 
-## DEV-121 — CLASS CLOSED (AS3 work item 6 / exit criterion 5, 2026-08-07)
+## DEV-121 — CLASS CLOSED (AS3 work item 6 / exit criterion 5, 2026-08-07) — **WITHDRAWN 2026-08-08, see below**
 
 Exit criterion 5 required *"a class-level evidence statement, not one regression case."* This is it.
 
@@ -5654,3 +5654,75 @@ no evidence behind it in either direction.
 
 **Pinned by** `as4_vecclear_divergence::dev196_a_vec_of_core_file_cannot_be_lowered_at_all`, which
 fails loudly — naming the safety question — the day `Core(File)` starts lowering.
+
+
+## DEV-121 — REOPENED (owner ruling, 2026-08-08)
+
+**The 2026-08-07 "CLASS CLOSED" entry above is premature and is withdrawn.** No new DEV number:
+same class, still open.
+
+### The contradiction
+
+That entry declared the class closed while, in its own final paragraph, listing struct fields,
+indexed slots and non-binding values as uncovered. It promoted one claim into a larger one:
+
+```text
+what was proved     every known view-producing intrinsic is exercised, and the narrow
+                    INV-VALUE-REP-001 now runs at four binding positions
+
+what was claimed    the type -> runtime-representation defect class is closed
+```
+
+Those are not the same statement, and `WP-VALUE-REP-TOTAL` defines the class by the second.
+
+### What is actually enforced
+
+| | Function | Checks | Production callers |
+| --- | --- | --- | ---: |
+| the class's named mechanism | `interp::check_value_for_ty` | the total `Ty` → `Value` relation | **0** |
+| its only wrapper | `interp::check_local_value` | ditto, per local | **0** — `#[allow(dead_code)]` |
+| what runs | `interp::check_value_representation` | INV-VALUE-REP-001 only — a `&[T]`/`&str` binding must not hold owned `Vec`/`String` | 5 |
+
+`check_value_for_ty` is an **executable specification with no production caller**. `37f07ca` records
+that A4's enforcement attempt was reverted and the relation would stay unwired until callable-use
+totality existed; `WP-VALUE-REP-TOTAL` still says "no boundary is wired". AS3 has now removed that
+blocker, so the wiring is unblocked — not done.
+
+### What the narrow work is worth
+
+Kept, and reclassified. The producer audit and the extended `INV-VALUE-REP-001` are
+**defence-in-depth evidence**, not the class authority:
+
+```text
+total relation           semantic enforcement          (unwired — this is the class)
+view-producer inventory  producer-specific adversary   (real, and stays)
+```
+
+A producer/verifier relationship, not duplicate authority — provided the narrow rule stops being an
+independent *semantic* rule once the total one is wired.
+
+### Closure conditions
+
+1. Wire `check_value_for_ty` as the **one** production relation; do not add a third validator.
+2. **Inventory every value boundary first**, exact-set, in AS3's style: parameters, receivers,
+   returns, propagation, `let`/`match`/loop bindings, assignment, field writes, element/index
+   writes, aggregate fields, and inline values entering builtins and runtime operations.
+3. Every applicable boundary calls the total relation, with the expected `Ty` taken from
+   **checker-published** types and signatures — never reconstructed from the runtime value.
+4. Retire `check_value_representation` as an independent semantic rule: delete it after migrating
+   callers, or make it a trivial delegate. Campaign A must not exit with two `Ty`→`Value`
+   authorities.
+5. Remove `#[allow(dead_code)]` from the total path, so deadness is compiler-visible.
+6. Mutation-prove across **several producer classes** — owned/view, reference/pointee, function
+   value, aggregate/container — not just `String::bytes()`.
+7. An exact boundary-inventory test, so a new HIR value-storage or transfer form forces an explicit
+   decision instead of silently bypassing validation.
+
+**The warning that matters:** replacing the current five calls with `check_value_for_ty` and
+declaring victory would repeat the same mistake with a broader predicate. *The inventory of where
+values cross typed boundaries is as important as the relation itself.*
+
+### Effect
+
+AS3 exit criteria **#3 and #5 are both FAIL** until this closes. `CAMPAIGN-A-EXIT-REPORT.md` §3.1
+carries the detail; Campaign A's gate is held on this one item.
