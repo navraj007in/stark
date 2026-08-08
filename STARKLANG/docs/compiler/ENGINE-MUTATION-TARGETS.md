@@ -5,6 +5,12 @@ prerequisite. Inputs: EI1 register, EI2 evidence audit, EI3 rustc inventory, EI4
 
 **Status: EI5 COMPLETE. AS8's mutation lane is unblocked.**
 
+> **AMENDED 2026-08-09 after AS8 ran batches 0/1/1b/1c/6 — `AS8-MUTATION-FINDINGS.md`.** Two
+> defects in this document are corrected at the end: the **Selected tests** column omitted the
+> `HAND_AUTHORED` front-end controls (which is how two mutations were recorded as surviving when a
+> suite in the tree kills them), and the **trial record format**, though it requires
+> `killer independence`, gave the harness no way to determine it.
+
 AS8 assigns its own trial IDs (`AS8-MUT-NNN`) and **must reference the `ESF-`/`RA-`/`EV-`
 identifiers below**. It may not introduce a semantic classification independent of the register.
 
@@ -75,7 +81,7 @@ targets with the same shape and lower risk.
 
 | Trial target | Tag | Recommended mutation | Selected tests | Expected independent control | Survivor consequence |
 | --- | --- | --- | --- | --- | --- |
-| `ESF-TRAP-001` `mir::TrapCategory` assignment | `SHARED_AUTHORITY` | Assign the *wrong existing category* at one trap site — overflow reported as division-by-zero | `three_engine_differential` (`oracle_category`), `c6-corpus` (`expected_trap_category`), `cd139_float_division` | **None.** EI2-R3: the same enum is the implementation's vocabulary, the differential's expectation and the corpus manifest's | Expected survivor. Confirms EI2-R3 and becomes an immediate residual |
+| ~~`ESF-TRAP-001`~~ **SUPERSEDED — split into `ESF-TRAP-001a`/`001b`; this row's prediction was falsified by AS8-MUT-007, see the correction below** `mir::TrapCategory` assignment | `SHARED_AUTHORITY` | Assign the *wrong existing category* at one trap site — overflow reported as division-by-zero | `three_engine_differential` (`oracle_category`), `c6-corpus` (`expected_trap_category`), `cd139_float_division` | **None.** EI2-R3: the same enum is the implementation's vocabulary, the differential's expectation and the corpus manifest's | Expected survivor. Confirms EI2-R3 and becomes an immediate residual |
 
 ### Batch 7 — rustc-sensitive lowering decisions *(priority 7)*
 
@@ -129,3 +135,76 @@ consequence        none | residual | DEV-NNN candidate
 `killer independence` is a required field, not optional: a kill credited to
 `CROSS_ENGINE_DERIVED` evidence is a weaker result than a kill credited to `SPEC_DERIVED`, and
 recording them identically would erase the distinction this whole packet exists to draw.
+
+---
+
+## AS8 correction (2026-08-09) — what the trials showed about this document
+
+### Defect 1 — the Selected-tests column only listed suites that RUN ENGINES
+
+Batch 1's rows selected `three_engine_differential`, `mir_differential`, `copy_canon_matrix` and
+`c6-corpus`. Every one of those either runs engines or enumerates the implementation. The suite
+that actually kills a `ESF-COPY-001` mutation is a **front-end** test that appears in none of them:
+
+```text
+starkc/tests/c61f_structural_copy.rs   13 tests, HAND_AUTHORED from OWN-COPY-001
+
+    AS8-MUT-005  SURVIVED the differential   ->  AS8-MUT-010 KILLED by ONE named test
+    AS8-MUT-006  SURVIVED the differential   ->  AS8-MUT-011 KILLED by ONE named test
+```
+
+The "Expected independent control" column said *"None expected"* for `ESF-COPY-001`, and the
+survivor consequence was to be an *"immediate AS8 residual and a DEV candidate"*. Following that
+instruction literally would have opened a residual against a rule the tree already guards.
+
+**Binding rule added:** a mutation target's selected tests must include **every suite that names
+the authority**, not only the suites that execute it. Where a front-end authority is being mutated,
+a front-end control is the FIRST suite to select, not an afterthought.
+
+### Defect 2 — `killer independence` was required and unobtainable
+
+The trial record format below makes `killer independence` a required field for a good reason, and
+the harness recorded only `KILLED`/`SURVIVED`. Batch 1's two surprises could not be classified
+without re-running by hand — and the classification turned out to be the entire finding:
+
+```text
+MUT-001/002   CROSS_ENGINE_DERIVED   the HIR oracle disagreed with MIR about destructors
+MUT-009/010/011  HAND_AUTHORED       a spec-derived front-end control refused the wrong rule
+```
+
+Those are very different results and a kill count erases the difference. The harness now captures
+the failing test names and the first divergence message; both findings in
+`AS8-MUTATION-FINDINGS.md` are conclusions from divergence TEXT, not from a pass/fail bit.
+
+### Defect 3 — Batch 6's prediction was wrong because the authority was one row and is two
+
+Batch 6 predicted an expected survivor for `ESF-TRAP-001`, on EI2-R3's claim that a
+mis-categorisation is invisible everywhere. Measured:
+
+```text
+MUT-007   wrong category, MIR PATH ONLY      predicted survivor   KILLED, 4 tests
+              "MIR IntegerOverflow vs oracle message 'division by zero'"
+MUT-008   vocabulary no-op                   SURVIVED as designed
+```
+
+Assignment is duplicated (28 sites in `interp.rs`, 30 across the MIR path) and therefore visible;
+only the **vocabulary** is shared. Batch 6's row is superseded by `ESF-TRAP-001a`/`001b`.
+
+### Revised predictions for the batches not yet run
+
+```text
+Batch 2  ESF-COPY-002  `&mut` reports Copy over MirTy      KILLED expected — but note MUT-006
+                                                           showed the front-end form survives the
+                                                           differential; select c61f_* as well
+         ESF-TYPE-001  Unit/() canonicalisation            unchanged: EV-SPEC-FIXTURES is the control
+Batch 3  ESF-TRAIT-001 Core trait contract receiver        SURVIVOR still expected. MUT-003
+                                                           confirmed copy_canon_matrix is a
+                                                           transcription, so it is not a control
+                                                           here either. SELECT gate4a_prelude_traits
+                                                           and any hand-authored trait fixture first
+Batch 8  EV-COPY-MATRIX is a transcription                 ANSWERED EARLY by MUT-003, which survived
+                                                           the matrix while killing the differential.
+                                                           Batch 8's first row may be closed as
+                                                           demonstrated rather than re-run
+```
+

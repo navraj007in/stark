@@ -3,9 +3,16 @@
 **Packet:** `WP-ENGINE-INDEPENDENCE.md`, approved 2026-08-09 (CD-392), executed as an AS8
 prerequisite. **AS0 remains closed.**
 
-**Status: EI0 COMPLETE — vocabulary frozen. EI1 COMPLETE — 10 entries. EI2 COMPLETE — see
-`ENGINE-EVIDENCE-INDEPENDENCE.md`; `ESF-PROV-001`'s `UNKNOWN` is closed there and this file's row
-is superseded by the JSON register's updated entry.**
+**Status: EI0 COMPLETE — vocabulary frozen. EI1 COMPLETE — **11 entries** after the `ESF-TRAP-001`
+split. EI2 COMPLETE — see `ENGINE-EVIDENCE-INDEPENDENCE.md`; `ESF-PROV-001`'s `UNKNOWN` is closed
+there and this file's row is superseded by the JSON register's updated entry.**
+
+> **AMENDED 2026-08-09 by AS8 mutation trials — `AS8-MUTATION-FINDINGS.md`.** Two rows were wrong
+> and are corrected below, both by measurement rather than re-reading:
+> **`ESF-TRAP-001` was one entry and is two** (vocabulary is invisible; per-site assignment is
+> not — MUT-007 was caught by the HIR oracle), and **`ESF-COPY-001` has an independent control**
+> the audit missed, `c61f_structural_copy` (MUT-009/010/011 all killed by it). The original rows
+> are preserved struck through in the JSON register's history field.
 
 ---
 
@@ -105,13 +112,14 @@ Ten authorities, each measured against the three engines rather than assumed. `h
 
 ## The finding, before the table
 
-**Six of ten authorities are INVISIBLE to differential comparison across all three engines**, which
+**Six of eleven authorities are INVISIBLE to differential comparison across all three engines**, which
 means three-engine agreement about them corroborates nothing:
 
 ```text
 ESF-COPY-001   nominal Copy eligibility     one front-end computation, all three consume it
 ESF-DROP-001   destructor eligibility       likewise
-ESF-TRAP-001   trap categorisation          one enum, all three match on it
+ESF-TRAP-001a  trap category VOCABULARY     one enum, all three match on it
+               (ESF-TRAP-001b, per-site ASSIGNMENT, is PARTIALLY_VISIBLE — AS8)
 ESF-RES-001    HostResource typing          one MirTy carrier, all three consume it
 ESF-TYPE-001   Unit/() canonicalisation     canonicalised once, before any engine sees it
 ESF-TRAIT-001  Core trait contracts         one table, consumed through resolved calls
@@ -128,8 +136,13 @@ ESF-DROP-002   drop plan and order          the backend is an APPLICATION of mir
 One is `PARTIALLY_VISIBLE` (`ESF-NUM-001`) and one is `UNKNOWN` (`ESF-PROV-001`).
 
 ```text
-visibility   INVISIBLE 6 | INVISIBLE_MIR_NATIVE 2 | PARTIALLY_VISIBLE 1 | UNKNOWN 1
-risk         critical 2  | high 4                 | medium 3           | UNKNOWN 1
+BEFORE AS8   visibility   INVISIBLE 6 | INVISIBLE_MIR_NATIVE 2 | PARTIALLY_VISIBLE 1 | UNKNOWN 1
+             risk         critical 2  | high 4                 | medium 3           | UNKNOWN 1
+
+AFTER  AS8   visibility   INVISIBLE 6 | INVISIBLE_MIR_NATIVE 2 | PARTIALLY_VISIBLE 2 | UNKNOWN 1
+             risk         critical 1  | high 4                 | medium 4           | UNKNOWN 1
+             11 entries: ESF-TRAP-001 became 001a + 001b; ESF-COPY-001 critical -> high on a
+             measured control; ESF-TRAP-001b high -> medium on a measured oracle
 ```
 
 Two of those three carry a documented history of exactly this defect: **CD-065** records that the
@@ -142,11 +155,12 @@ is what this register exists to make explicit rather than accidental.
 
 | ID | Semantic fact | Category | hir | mir | native | rustc | Visibility | Evidence | Independent evidence | Residual | Risk |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ESF-COPY-001` | Which nominal types are `Copy`-eligible | `SHARED_PREDICATE` | DIRECT — `interp.rs:2031` calls `typecheck::copy_eligible_types` | INDIRECT — via the eligibility set threaded into `TypeContext` | INDIRECT — same set, via `TypeContext` | none | **INVISIBLE** | `SPEC_DERIVED` (03 Copy/Drop rules) + `HAND_AUTHORED` (`copy_canon_matrix`) | `copy_canon_matrix` enumerates from the checker's own arms — see residual | **The matrix is enumerated FROM the implementation, so it is `IMPLEMENTATION_GENERATED` for the eligibility question even though hand-authored.** No spec-derived control isolates a wrong eligibility set | **critical** |
+| `ESF-COPY-001` | Which nominal types are `Copy`-eligible | `SHARED_PREDICATE` | DIRECT — `interp.rs:2031` calls `typecheck::copy_eligible_types` | INDIRECT — via the eligibility set threaded into `TypeContext` | INDIRECT — same set, via `TypeContext` | none | **INVISIBLE to the engines** — and that is not the whole picture: the control is a FRONT-END test, not an engine | `SPEC_DERIVED` (03 Copy/Drop rules) + **`HAND_AUTHORED` (`c61f_structural_copy`, 13 tests)** | **`c61f_structural_copy` IS an independent control** — it pins the negative surface by behaviour (reuse after move is E0100), not by enumerating the checker's arms. MUT-009/010/011 each killed by it, one of them by a single named test | `copy_canon_matrix` remains `IMPLEMENTATION_GENERATED` and is a DRIFT DETECTOR, not evidence for the rule (MUT-003 survived it). **AS8-R1: a wrong Copy rule with no drop consequence is invisible to every DIFFERENTIAL suite** — MUT-005 and MUT-006 survived with zero killers | **high** (was critical) |
 | `ESF-COPY-002` | Structural `Copy` over a `MirTy` | `SHARED_PREDICATE` | NONE — the HIR engine classifies over `Ty`, not `MirTy` | DIRECT — `TypeContext::is_copy`, `mir::mir_ty_is_copy` | DIRECT — `emit_types::mir_ty_is_copy` is a one-line delegate to `types.is_copy` | none | **INVISIBLE (mir↔native)**, PARTIALLY_VISIBLE vs hir | `CROSS_ENGINE_DERIVED` | three-engine differential can still separate hir from the pair | mir/native agreement here is **not** independent; CD-065 consolidated a prior duplicate | **high** |
 | `ESF-DROP-001` | Which nominals have a destructor | `SHARED_PREDICATE` | DIRECT — `interp.rs:2032` | INDIRECT — via lowering | INDIRECT — via lowering | none | **INVISIBLE** | `SPEC_DERIVED` (03/05) | `borrowck.rs` consumes the same authority at three sites — a fourth consumer, not a control | no control derives destructor eligibility independently of the front end | **critical** |
 | `ESF-DROP-002` | Drop plan: order, array direction, variant payloads | `SHARED_LOWERING` | NONE — the HIR engine has its own destruction walk | DIRECT — `mir::drop_plan::plan_for` | DIRECT — `emit_bodies` calls `drop_plan::plan_for`; CD-062 records it as an APPLICATION of the canonical plan | none | **INVISIBLE (mir↔native)** | `CROSS_ENGINE_DERIVED` | hir's independent walk is the only control | if the canonical plan is wrong, mir and native agree while being wrong together | **high** |
-| `ESF-TRAP-001` | Trap categorisation | `SHARED_ERROR_MAPPING` | DIRECT — `mir::TrapCategory`, 32 uses in `interp.rs` | DIRECT | DIRECT — `emit_program`, `emit_bodies` | none | **INVISIBLE** | `SPEC_DERIVED` (traps always trap, in every build mode) | conformance fixtures assert trap *occurrence*; category naming is inherited | a mis-categorised trap is invisible to all three engines | **high** |
+| `ESF-TRAP-001a` | Trap category **vocabulary** — the `TrapCategory` enum itself | `SHARED_ERROR_MAPPING` | DIRECT | DIRECT | DIRECT | none | **INVISIBLE** | `SPEC_DERIVED` (traps always trap, in every build mode) | **none, and none is constructible** | If the enum names the wrong concept or omits one, every engine AND the corpus manifest are wrong together. **This cannot be posed as a source mutation at all** (MUT-008 is the honest no-op that marks the boundary). AS8-R2 | **high** |
+| `ESF-TRAP-001b` | Trap category **assignment** at each trap site | `SHARED_ERROR_MAPPING` | DIRECT — **28 assignment sites in `interp.rs`, all 10 categories** | DIRECT — **30 sites across `mir/lower.rs` + `mir/interp.rs`, all 10 categories** | DIRECT — 3 sites; the remainder inherited from the runtime | none | **PARTIALLY_VISIBLE** | `CROSS_ENGINE_DERIVED` — `oracle_category` | **the HIR oracle is a real control here.** The same operation is categorised twice, INDEPENDENTLY, in two files. MUT-007 changed division-by-zero on the MIR path only and was killed by 4 tests: *"MIR IntegerOverflow vs oracle message 'division by zero'"* | A categorisation changed IDENTICALLY in both files is still invisible; only one-sided error is caught | **medium** (was high) |
 | `ESF-RES-001` | Host resource typing and identity | `SHARED_TYPE_TABLE` | DIRECT — `interp.rs` | DIRECT — `HostResourceNominal`/`HostResourceTy` in `mir/mod.rs` | DIRECT — `emit_types`, `emit_bodies` | none | **INVISIBLE** | `EXTERNALLY_DERIVED` — provider loopback tests exercise real peers | `C7.8 provider metadata/unit/resource/loopback` on three platforms | resource *typing* is shared even though behaviour is externally tested | **medium** |
 | `ESF-PROV-001` | Provider call signatures | `SHARED_PROVIDER_SCHEMA` | UNKNOWN — not measured | DIRECT — `mir::provider_sig::signature` | INDIRECT — `emit_provider` | `RUSTC_ASSUMPTION` on the ABI boundary — EI3 | UNKNOWN | `EXTERNALLY_DERIVED` (loopback) | `mir/verify.rs` is the only in-tree consumer of `provider_sig::signature` | **hir dependency UNMEASURED — per EI0 this is UNKNOWN, not NONE, and cannot be cited as independence** | **UNKNOWN** |
 | `ESF-TYPE-001` | `Unit` and `()` are one type (TYPE-PRIM-001) | `SHARED_NORMALIZATION` | INDIRECT — consumes the canonicalised `Ty` | INDIRECT — `mir/lower.rs:1719` records MIR has one empty-tuple spelling | INDIRECT | none | **INVISIBLE** | `SPEC_DERIVED` (03 TYPE-PRIM-001) | spec fixtures | canonicalisation happens once, in `typecheck::types::unit_or_tuple`; no engine can disagree | **medium** |
@@ -166,7 +180,7 @@ ESF-DROP-002   independent control for these two, and for ESF-DROP-002 it walks 
                structure — so its agreement is weaker than a matching implementation would be.
 ```
 
-**Eight of ten entries are INVISIBLE to some engine pair, and six of those to all three.** That is
+**Eight of eleven entries are INVISIBLE to some engine pair, and six of those to all three.** That is
 the shared-fate result EI1 exists to produce, and it is the input EI4 ranks and EI5
 turns into mutation targets — a mutation in an INVISIBLE authority is exactly the mutation a
 three-engine differential cannot catch.

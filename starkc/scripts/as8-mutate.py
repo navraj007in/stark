@@ -119,6 +119,85 @@ BATCHES = {
                   "NOT Copy -- duplicating a &mut breaks the one-&mut-XOR-many-& rule. Self-consistent "
                   "in the same sense; no destructor authority is contradicted."),
     ],
+    # ------------------------------------------------- EI5 Batch 1c (the control EI2 missed) --
+    # Batch 1b's survivors were credited to "no independent control exists for ESF-COPY-001".
+    # That was EI2's finding and EI5's Selected-tests column repeated it. BOTH ARE WRONG.
+    #
+    #     starkc/tests/c61f_structural_copy.rs   13 tests, HAND_AUTHORED from OWN-COPY-001
+    #         c61g_mutable_reference_field_stays_move           <- the control for MUT-006
+    #         c251_a_zero_variant_enum_is_not_structurally_copy <- the control for MUT-005
+    #         c61g_mixed_copy_and_non_copy_fields_stays_move    <- the control for MUT-004
+    #
+    # It pins the NEGATIVE surface by behaviour (reuse after move is E0100), not by enumerating
+    # the implementation's arms, so it is a genuine control in EI0's sense. It was never in any
+    # selected test set. Batch 1c is Batch 1b with that suite added and the predictions FLIPPED:
+    # if these kill, the survivors were an artefact of test selection, not a gap in the tree.
+    "1c": [
+        dict(id="AS8-MUT-009", target="ESF-COPY-001", tag="SHARED_AUTHORITY",
+             authority="typecheck::traits::copy_eligible_types", expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="            if field_tys\n                .iter()\n                .all(|t| field_ty_copy_eligible(hir, *t, &eligible))\n            {",
+             repl="            if true\n            {",
+             tests=["--test", "c61f_structural_copy"],
+             note="BATCH 1C RE-RUN AGAINST THE CONTROL SUITE. Drops the all-fields-Copy requirement, so a struct holding a non-Copy field "
+                  "becomes structurally Copy. 03 requires all fields Copy. The Copy+Drop exclusion "
+                  "is LEFT INTACT, so this is wrong WITHOUT setting two authorities against each "
+                  "other -- the isolated form of MUT-001."),
+        dict(id="AS8-MUT-010", target="ESF-COPY-001", tag="SHARED_AUTHORITY",
+             authority="typecheck::traits::copy_eligible_types", expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="                hir::ItemKind::Enum { variants, .. } if variants.is_empty() => continue,",
+             repl="                hir::ItemKind::Enum { variants, .. } if variants.is_empty() => Vec::new(),",
+             tests=["--test", "c61f_structural_copy"],
+             note="BATCH 1C RE-RUN AGAINST THE CONTROL SUITE. Reverts CD-251/OWN-COPY-001: a ZERO-VARIANT enum becomes vacuously Copy again. "
+                  "This is a REAL HISTORICAL DEFECT, not an invented one -- the code comment records "
+                  "that it broke exactly-once close for host resources. Self-consistent: it sets no "
+                  "two authorities against each other."),
+        dict(id="AS8-MUT-011", target="ESF-COPY-001", tag="SHARED_AUTHORITY",
+             authority="typecheck::traits::is_copy_with_impls", expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="        Ty::Ref { mutable: false, .. } | Ty::Never | Ty::Error => true,",
+             repl="        Ty::Ref { .. } | Ty::Never | Ty::Error => true,",
+             tests=["--test", "c61f_structural_copy"],
+             note="BATCH 1C RE-RUN AGAINST THE CONTROL SUITE. `&mut T` reports Copy. 03 makes shared references Copy and exclusive references "
+                  "NOT Copy -- duplicating a &mut breaks the one-&mut-XOR-many-& rule. Self-consistent "
+                  "in the same sense; no destructor authority is contradicted."),
+    ],
+    # ----------------------------------------------------- EI5 Batch 6 (trap categorisation) --
+    # EI2-R3 and the register both say a mis-categorised trap is "invisible to every mechanism in
+    # the tree", and rank ESF-TRAP-001 INVISIBLE on that basis. The measurement says otherwise:
+    #
+    #     interp.rs        28 assignment sites, all 10 categories
+    #     mir/lower.rs +   30 assignment sites, all 10 categories
+    #     mir/interp.rs
+    #     backend           3 assignment sites (the rest are inherited from the runtime)
+    #
+    # The VOCABULARY is shared -- one enum, and the corpus manifest states expectations in it.
+    # The ASSIGNMENT is not: the same operation is categorised twice, independently, in two files.
+    # These two trials separate them, and their predictions differ, which is the point.
+    "6": [
+        dict(id="AS8-MUT-007", target="ESF-TRAP-001b", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="trap category ASSIGNMENT — mir/lower.rs only (one-sided)",
+             file="src/mir/lower.rs",
+             find="            BinOp::Div => (CheckedOp::Div, TrapCategory::DivideByZero),",
+             repl="            BinOp::Div => (CheckedOp::Div, TrapCategory::IntegerOverflow),",
+             tests=["--test", "three_engine_differential", "--test", "mir_differential"],
+             note="Division by zero reported as IntegerOverflow ON THE MIR PATH ONLY. interp.rs "
+                  "still assigns DivideByZero at its own site, so `oracle_category` should "
+                  "disagree. Predicted KILLED -- which, if it holds, means assignment is "
+                  "PARTIALLY_VISIBLE and the register's INVISIBLE is wrong."),
+        dict(id="AS8-MUT-008", target="ESF-TRAP-001a", tag="SHARED_AUTHORITY", expect="SURVIVED",
+             authority="trap category VOCABULARY — the enum both engines match on",
+             file="src/mir/mod.rs",
+             find="    DivideByZero,",
+             repl="    DivideByZero, // vocabulary probe\n",
+             tests=["--test", "three_engine_differential", "--test", "mir_differential"],
+             note="A NO-OP on the vocabulary, paired with MUT-007 to keep the file honest. The "
+                  "real vocabulary question cannot be posed as a source mutation at all: if the "
+                  "enum names the WRONG CONCEPT, every engine and the corpus manifest are wrong "
+                  "together and no in-tree mechanism can disagree. That is the residual EI2-R3 "
+                  "should state, and it is NARROWER than what it currently says."),
+    ],
 }
 
 def run(cmd, **kw):
@@ -145,7 +224,13 @@ def extract_killers(text):
     EI5 makes `killer independence` a required field, so a bare KILLED is not a usable record:
     a kill by engine disagreement and a kill by the front end rejecting the corpus are different
     results, and they look identical in a pass/fail count."""
+    # `cargo test --quiet` prints dots, not "test NAME ... FAILED", so the per-test line is
+    # absent and only the trailing `failures:` block names anything. Parse that block.
     failed = sorted(set(re.findall(r"^test (\S+) \.\.\. FAILED$", text, re.M)))
+    if not failed:
+        for block in re.findall(r"^failures:\n((?:    \S+\n)+)", text, re.M):
+            failed.extend(line.strip() for line in block.splitlines() if line.strip())
+        failed = sorted(set(failed))
     panic = re.search(r"panicked at [^\n]+\n(.+?)(?=\nnote:|\ntest |\Z)", text, re.S)
     return failed, (panic.group(1).strip()[:600] if panic else "")
 
@@ -201,7 +286,7 @@ def main():
             print(f"      killed by {r['killer_count']} test(s), first: {r['killers'][0] if r['killers'] else '?'}")
             for line in r["divergence"].splitlines()[:6]:
                 print(f"        {line}")
-        if r["verdict"] == "UNEXPECTED" and verbose and r.get("detail"):
+        if r["verdict"] == "UNEXPECTED" and a.verbose and r.get("detail"):
             print(f"      {r['detail'][:400]}")
         records.append(r)
     if a.json:

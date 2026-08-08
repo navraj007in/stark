@@ -26,10 +26,16 @@
       "rustc": "none",
       "visibility": "INVISIBLE",
       "evidence": "SPEC_DERIVED+HAND_AUTHORED",
-      "independent_evidence": "copy_canon_matrix (see residual)",
-      "residual": "matrix enumerated FROM the implementation; no spec-derived control isolates a wrong eligibility set",
-      "risk": "critical",
-      "review_trigger": "any change to Copy impl collection or field eligibility"
+      "independent_evidence": "c61f_structural_copy (13 tests, HAND_AUTHORED from OWN-COPY-001) \u2014 killed AS8-MUT-009/010/011",
+      "residual": "AS8-R1: a wrong Copy rule with NO drop consequence is invisible to every DIFFERENTIAL suite (MUT-005, MUT-006 survived with zero killers). The control is a FRONT-END test, not an engine. copy_canon_matrix remains IMPLEMENTATION_GENERATED and is a drift detector, not evidence (MUT-003 survived it).",
+      "risk": "high",
+      "review_trigger": "any change to Copy impl collection or field eligibility",
+      "amended": "2026-08-09 AS8 \u2014 demoted from critical; control identified by measurement, see AS8-MUTATION-FINDINGS.md",
+      "superseded_fields": {
+        "visibility_note": "engines still cannot see it; the control is front-end",
+        "risk_was": "critical",
+        "independent_evidence_was": "copy_canon_matrix (see residual)"
+      }
     },
     {
       "id": "ESF-COPY-002",
@@ -80,8 +86,8 @@
       "review_trigger": "any change to drop_plan::plan_for or array_order"
     },
     {
-      "id": "ESF-TRAP-001",
-      "fact": "Trap categorisation",
+      "id": "ESF-TRAP-001a",
+      "fact": "Trap category VOCABULARY \u2014 the TrapCategory enum itself",
       "category": "SHARED_ERROR_MAPPING",
       "owner": "mir::TrapCategory",
       "hir": "DIRECT",
@@ -90,10 +96,28 @@
       "rustc": "none",
       "visibility": "INVISIBLE",
       "evidence": "SPEC_DERIVED",
-      "independent_evidence": "conformance fixtures assert trap OCCURRENCE; category naming is inherited",
-      "residual": "a mis-categorised trap is invisible to all three engines",
+      "independent_evidence": "none, and none is constructible",
+      "residual": "AS8-R2: if the enum names the wrong concept or omits one, every engine AND the corpus manifest are wrong together. Cannot be posed as a source mutation (MUT-008 is the honest no-op).",
       "risk": "high",
-      "review_trigger": "any change to TrapCategory variants or their assignment"
+      "review_trigger": "any change to the TrapCategory variant set",
+      "amended": "2026-08-09 AS8 \u2014 split from ESF-TRAP-001"
+    },
+    {
+      "id": "ESF-TRAP-001b",
+      "fact": "Trap category ASSIGNMENT at each trap site",
+      "category": "SHARED_ERROR_MAPPING",
+      "owner": "interp.rs (28 sites) / mir::lower + mir::interp (30 sites) / backend (3 sites)",
+      "hir": "DIRECT",
+      "mir": "DIRECT",
+      "native": "DIRECT",
+      "rustc": "none",
+      "visibility": "PARTIALLY_VISIBLE",
+      "evidence": "CROSS_ENGINE_DERIVED",
+      "independent_evidence": "the HIR oracle \u2014 assignment happens twice, independently. AS8-MUT-007 killed by 4 tests",
+      "residual": "a category changed IDENTICALLY in both files is still invisible; only one-sided error is caught",
+      "risk": "medium",
+      "review_trigger": "any change to a trap category assignment at a site",
+      "amended": "2026-08-09 AS8 \u2014 split from ESF-TRAP-001; demoted from high on measured evidence"
     },
     {
       "id": "ESF-RES-001",
@@ -175,5 +199,6 @@
       "risk": "high",
       "review_trigger": "any change to a Core trait contract"
     }
-  ]
+  ],
+  "amended": "2026-08-09 \u2014 AS8 mutation trials; see STARKLANG/docs/compiler/AS8-MUTATION-FINDINGS.md"
 }

@@ -5,6 +5,13 @@
 **Status: EI6 COMPLETE — approved wording published below; three corrections required, one
 addition required.**
 
+> **AMENDED 2026-08-09 after AS8's mutation trials.** One word of the approved wording was
+> measurably too broad: *"trap categories"* is now *"the trap category vocabulary"*. AS8-MUT-007
+> showed that a trap category ASSIGNED WRONGLY IN ONE ENGINE **is** caught by agreement — the
+> categories are assigned twice, independently (28 sites in the HIR interpreter, 30 across the MIR
+> path). Only the vocabulary is genuinely uncorroborable. Copy and destructor eligibility are
+> unchanged and were confirmed: AS8-MUT-005 and MUT-006 survived every differential suite.
+
 ---
 
 ## The good news first: the prohibited claim is not made anywhere
@@ -68,8 +75,8 @@ BEFORE  Each case also pins its expected result against the specification, so th
 AFTER   Agreement alone is not the standard: conformance cases are pinned against the
         specification, not against each other, so engines agreeing on the wrong answer fails.
         Where a rule is decided once and shared by every engine — Copy eligibility, destructor
-        eligibility, trap categories — agreement cannot corroborate it, and those rules are
-        tracked and separately checked rather than counted as three confirmations.
+        eligibility, the trap category vocabulary — agreement cannot corroborate it, and those
+        rules are tracked and separately checked rather than counted as three confirmations.
 ```
 
 ## Correction 3 — the supporting anecdote is load-bearing and should stay, verbatim
