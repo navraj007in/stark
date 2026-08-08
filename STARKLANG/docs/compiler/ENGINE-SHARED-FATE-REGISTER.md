@@ -3,7 +3,9 @@
 **Packet:** `WP-ENGINE-INDEPENDENCE.md`, approved 2026-08-09 (CD-392), executed as an AS8
 prerequisite. **AS0 remains closed.**
 
-**Status: EI0 COMPLETE — vocabulary frozen. EI1 COMPLETE — first register published, 10 entries.**
+**Status: EI0 COMPLETE — vocabulary frozen. EI1 COMPLETE — 10 entries. EI2 COMPLETE — see
+`ENGINE-EVIDENCE-INDEPENDENCE.md`; `ESF-PROV-001`'s `UNKNOWN` is closed there and this file's row
+is superseded by the JSON register's updated entry.**
 
 ---
 
