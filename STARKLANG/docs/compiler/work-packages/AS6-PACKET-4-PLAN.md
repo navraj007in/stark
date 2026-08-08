@@ -121,6 +121,73 @@ general Ty/inference model.
 The tensor subsystem merely *using* many checker services is an implementation problem — design the
 narrow context and continue.
 
+## Packet 4A — the inventory (complete, 2026-08-08)
+
+**The 946 reference count overstated the work, in the same direction packet 3 did.** Classified,
+the checker's tensor code falls into three groups, and the integration surface is already narrow.
+
+### 1. Extension rule, zero Core dependency — moves untouched
+
+Lines 13026–13479, roughly 450 lines: `TensorGenericSchema`, `TensorDTypeRule`,
+`TensorDeviceRule`, `TensorShapeRule`, `TensorResultRule`, `TensorOpDescriptor`, the `TENSOR_OPS`
+static table, `BroadcastError`.
+
+These are **standalone types and a table, not methods on `TypeChecker`**. Nothing holds them in Core
+but the file they sit in.
+
+### 2. Extension rule needing Core services — moves behind the context
+
+`check_tensor_op` (1333 lines) and the tensor/model/device builders and unifiers:
+`build_tensor_type`, `build_device`, `build_cuda_device`, `tensor_dtype`, `dtype_to_ty`,
+`unify_tensor_types`, `emit_tensor_unify_error`, `ground_tensor_dims`, `check_tensor_refine`,
+`check_model_def`, `check_model_method_call`, `enter/exit_tensor_param_scope`, `TensorParamScopes`.
+
+### 3. Boundary glue — stays in Core
+
+**Each entry point has exactly one caller:**
+
+```text
+check_tensor_builtin_call   1
+check_tensor_method_call    1
+check_tensor_refine         1
+build_tensor_type           1
+check_model_method_call     0
+```
+
+The integration surface is five call sites, not a web.
+
+### The context design, measured rather than guessed
+
+This is the question the ruling flagged as decisive — whether the extracted tensor checker would
+need `&mut TypeChecker` and therefore constitute nominal movement. Across all 1333 lines of
+`check_tensor_op`, the **Core** services actually used are:
+
+```text
+resolve                 unify                  check_expr
+extract_const_int       extract_const_int_list extract_dim_generic
+get_fix_suggestion      combine_value_range
+```
+
+Eight, each used one to four times. Everything else it calls — `build_shape`, `tensor_dtype`,
+`dtype_to_ty`, `build_device`, `shape_volume`, `broadcast_to_check` — is a **tensor method calling
+another tensor method**, and moves with it.
+
+So the narrow internal context is genuinely narrow: about eight borrowed services. The dependency
+direction the ruling requires is achievable without redesigning the `Ty`/inference model, which
+means **the single owner-stop condition does not apply** and 4B proceeds as implementation.
+
+### Revised 4B estimate
+
+```text
+~450 lines   move untouched (group 1)
+~1400 lines  move behind an eight-service context (group 2)
+5 call sites become the boundary (group 3)
+```
+
+Bounded work, not a 946-site migration. Note the lesson packet 3 already taught: reference counts
+mislead in the *helpful* direction too — 175 sites collapsed to a handful of boundaries once the
+requirement was "move it behind rather than respell it".
+
 ## Revised AS6 status
 
 ```text
