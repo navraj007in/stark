@@ -1,0 +1,26 @@
+[
+  {
+    "spec_id": "MUT-SELFTEST-LIVE",
+    "result": "KILLED",
+    "seconds": 28.5,
+    "detail": "",
+    "target": "harness self-test",
+    "tag": "ENGINE_LOCAL",
+    "authority": "n/a \u2014 harness calibration",
+    "expected": "KILLED",
+    "note": "Int8 stops reporting as an integer. A real semantic disturbance; must be detected.",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "spec_id": "MUT-SELFTEST-NOOP",
+    "result": "SURVIVED",
+    "seconds": 22.3,
+    "detail": "",
+    "target": "harness self-test",
+    "tag": "ENGINE_LOCAL",
+    "authority": "n/a \u2014 harness calibration",
+    "expected": "SURVIVED",
+    "note": "Introduces a binding and uses it. Semantically identical; must NOT be detected.",
+    "verdict": "CONFIRMED"
+  }
+]
