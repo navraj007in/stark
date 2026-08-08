@@ -3,5 +3,8 @@
 //! registration/capability boundary so a Core-only checker never needs to know
 //! about tensor constructors.
 
+pub mod builtins;
+pub use builtins::{builtin_named, owns_builtin};
+
 pub mod dim;
 pub mod types;

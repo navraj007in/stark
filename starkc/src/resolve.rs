@@ -2145,39 +2145,6 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "None" => Some(Builtin::None),
         "Ok" => Some(Builtin::Ok),
         "Err" => Some(Builtin::Err),
-        "zeros" => Some(Builtin::TensorZeros),
-        "ones" => Some(Builtin::TensorOnes),
-        "full" => Some(Builtin::TensorFull),
-        "from_vec" => Some(Builtin::TensorFromVec),
-        "add" => Some(Builtin::TensorAdd),
-        "sub" => Some(Builtin::TensorSub),
-        "mul" => Some(Builtin::TensorMul),
-        "div" => Some(Builtin::TensorDiv),
-        "min" => Some(Builtin::TensorMin),
-        "max" => Some(Builtin::TensorMax),
-        "eq" => Some(Builtin::TensorEq),
-        "ne" => Some(Builtin::TensorNe),
-        "lt" => Some(Builtin::TensorLt),
-        "le" => Some(Builtin::TensorLe),
-        "gt" => Some(Builtin::TensorGt),
-        "ge" => Some(Builtin::TensorGe),
-        "broadcast_to" => Some(Builtin::TensorBroadcastTo),
-        "matmul" => Some(Builtin::TensorMatMul),
-        "batch_matmul" => Some(Builtin::TensorBatchMatMul),
-        "concat" => Some(Builtin::TensorConcat),
-        "permute" => Some(Builtin::TensorPermute),
-        "reshape" => Some(Builtin::TensorReshape),
-        "slice_axis" => Some(Builtin::TensorSliceAxis),
-        "transpose" => Some(Builtin::TensorTranspose),
-        "sum_axis" => Some(Builtin::TensorSumAxis),
-        "mean_axis" => Some(Builtin::TensorMeanAxis),
-        "argmax" => Some(Builtin::TensorArgMax),
-        "sum" => Some(Builtin::TensorSum),
-        "softmax" => Some(Builtin::TensorSoftmax),
-        "cast" => Some(Builtin::TensorCast),
-        "to_device" => Some(Builtin::TensorToDevice),
-        "scale_255" => Some(Builtin::TensorScale255),
-        "normalize" => Some(Builtin::TensorNormalize),
         // Phase 4E: Math (bare names that don't collide with the tensor
         // extension's bare `min`/`max`; those are `math::min`/`math::max`,
         // resolved via the qualified-path table in `resolve_path_relative`).
@@ -2202,47 +2169,23 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "trunc" => Some(Builtin::Trunc),
         "eprint" => Some(Builtin::Eprint),
         "eprintln" => Some(Builtin::Eprintln),
-        _ => None,
+        // **AS6: the extension's spelling table lives with the extension.**
+        //
+        // Exit criterion 2 names this exactly — "central Core modules do not contain open-ended
+        // tensor spelling tables". Thirty-three `name => Builtin::Tensor*` arms sat here, in
+        // Core's resolver, and every new tensor operation would have added one more. Consulted
+        // last, so every Core name above still decides first.
+        _ => crate::extensions::tensor::builtin_named(name),
     }
 }
 
+/// Whether `b` is an extension-owned tensor operation.
+///
+/// AS6: the CATALOGUE moved to `extensions::tensor`; this stays as the Core-side name the
+/// resolver's gate reads, so the gate keeps reading as a Core concern while the list of what
+/// counts belongs to the extension that owns it.
 pub fn is_tensor_builtin(b: Builtin) -> bool {
-    matches!(
-        b,
-        Builtin::TensorZeros
-            | Builtin::TensorOnes
-            | Builtin::TensorFull
-            | Builtin::TensorFromVec
-            | Builtin::TensorAdd
-            | Builtin::TensorSub
-            | Builtin::TensorMul
-            | Builtin::TensorDiv
-            | Builtin::TensorMin
-            | Builtin::TensorMax
-            | Builtin::TensorEq
-            | Builtin::TensorNe
-            | Builtin::TensorLt
-            | Builtin::TensorLe
-            | Builtin::TensorGt
-            | Builtin::TensorGe
-            | Builtin::TensorBroadcastTo
-            | Builtin::TensorMatMul
-            | Builtin::TensorBatchMatMul
-            | Builtin::TensorConcat
-            | Builtin::TensorPermute
-            | Builtin::TensorReshape
-            | Builtin::TensorSliceAxis
-            | Builtin::TensorTranspose
-            | Builtin::TensorSumAxis
-            | Builtin::TensorMeanAxis
-            | Builtin::TensorArgMax
-            | Builtin::TensorSum
-            | Builtin::TensorSoftmax
-            | Builtin::TensorCast
-            | Builtin::TensorToDevice
-            | Builtin::TensorScale255
-            | Builtin::TensorNormalize
-    )
+    crate::extensions::tensor::owns_builtin(b)
 }
 
 fn resolve_core_type(name: &str) -> Option<CoreType> {
