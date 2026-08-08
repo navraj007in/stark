@@ -546,6 +546,28 @@ impl Value {
 /// boundary in A4 is a deliberate edit here rather than a new string literal. It appears in the
 /// diagnostic because "expected `&[UInt8]`, found owned `Vec`" is far cheaper to act on when it
 /// also says whether that happened at a parameter or a return.
+/// **How an invocation's generic environment is supplied.** Explicit in every case: a callable with
+/// no generics is [`InvocationEnv::Empty`], not missing metadata, so "nothing to install" and
+/// "nobody installed it" stay distinguishable — the confusion DEV-197 lived in.
+enum InvocationEnv {
+    /// Not generic, and encloses no instantiation.
+    Empty,
+    /// The checker published an instantiation against this call expression.
+    Published(ExprId),
+    /// Concrete bindings a specialiser produced (bound dispatch, trait defaults).
+    Concrete(Vec<(crate::typecheck::GenericBinder, Ty)>),
+    /// A function value's captured bindings, already concrete at capture time (DEV-178).
+    /// Installed through the pre-existing `push_captured_env`, not a second helper.
+    Captured(FunctionValue),
+}
+
+/// A callable selected together with the environment it must run under. Constructing one is the
+/// only way to reach [`Interpreter::execute_body`].
+struct ResolvedInvocation {
+    callable: Callable,
+    environment: InvocationEnv,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepBoundary {
     LetBinding,
@@ -1344,7 +1366,15 @@ fn run_item_here(
     let callable = interpreter
         .item_callable(item)
         .ok_or_else(|| RuntimeError::new("item is not executable", span))?;
-    interpreter.call_callable(callable, None, Vec::new(), span)?;
+    interpreter.invoke_callable(
+        ResolvedInvocation {
+            callable,
+            environment: InvocationEnv::Empty,
+        },
+        None,
+        Vec::new(),
+        span,
+    )?;
     Ok(Execution {
         output: interpreter.output,
         status: 0,
@@ -1660,7 +1690,15 @@ impl<'a> Interpreter<'a> {
         let callable = self.item_callable(main).ok_or_else(|| {
             RuntimeError::new("'main' is not executable", self.hir.item(main).span)
         })?;
-        let result = self.call_callable(callable, None, Vec::new(), self.hir.item(main).span)?;
+        let result = self.invoke_callable(
+            ResolvedInvocation {
+                callable,
+                environment: InvocationEnv::Empty,
+            },
+            None,
+            Vec::new(),
+            self.hir.item(main).span,
+        )?;
         main_result_to_status(result, self.hir.item(main).span)
     }
 
@@ -1675,7 +1713,66 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn call_callable(
+    /// **AS3 Packet 1: the ONE invocation authority.**
+    ///
+    /// Rule 1 — *no executable callable body without an invocation authority*. Body, generic
+    /// environment and published signature must be established **atomically** before execution.
+    ///
+    /// The pattern this replaces —
+    ///
+    /// ```text
+    /// push environment
+    /// call_callable(...)
+    /// ```
+    ///
+    /// — put the first step on each call site, and DEV-197 is what that costs: two dispatch paths
+    /// omitted it, ran their bodies with `T` unbound, and looked correct because no boundary
+    /// consulted the callee's declared types. An environment a caller can forget is not an
+    /// invariant.
+    ///
+    /// [`Self::execute_body`] is the raw executor; this is its only production caller.
+    fn invoke_callable(
+        &mut self,
+        invocation: ResolvedInvocation,
+        receiver: Option<Value>,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let ResolvedInvocation {
+            callable,
+            environment,
+        } = invocation;
+        // Installed FIRST and live for the whole call, so every boundary below resolves
+        // `Ty::Param` against the callee's own instantiation.
+        let _env = self.install_invocation_env(&environment, span)?;
+        self.execute_body(callable, receiver, args, span)
+    }
+
+    /// Install an invocation's environment. Every variant is explicit: "this callable has no
+    /// generics" is [`InvocationEnv::Empty`], never absent metadata.
+    fn install_invocation_env(
+        &mut self,
+        environment: &InvocationEnv,
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        match environment {
+            InvocationEnv::Empty => Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            }),
+            InvocationEnv::Published(call_expr) => self.push_callable_env(*call_expr, span),
+            InvocationEnv::Concrete(bindings) => self.push_resolved_env(bindings, span),
+            // **One authority for captured bindings.** `push_captured_env` already existed; a
+            // second helper doing the same job was a duplicate introduced during the Return
+            // wiring, and is deleted.
+            InvocationEnv::Captured(callee) => Ok(self.push_captured_env(callee)),
+        }
+    }
+
+    /// **The raw body executor.** Its only production caller is [`Self::invoke_callable`], because
+    /// reaching it directly is how a body comes to run without its generic environment (DEV-197).
+    /// Do not add a second caller; route through the authority.
+    fn execute_body(
         &mut self,
         callable: Callable,
         receiver: Option<Value>,
@@ -3638,9 +3735,16 @@ impl<'a> Interpreter<'a> {
                         // `push_generic_frame` bound only a free function's own parameters and did
                         // not compose with an enclosing instantiation; `push_callable_env` does
                         // both, so a generic call inside a generic body now resolves too.
-                        let _frame = self.push_callable_env(callee, span)?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Published(callee),
+                            },
+                            None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
@@ -3678,9 +3782,16 @@ impl<'a> Interpreter<'a> {
                         // the declared type; the RETURN boundary did, immediately, on its first run.
                         // AS3 criterion 2 says every dispatch installs the checker-selected
                         // environment — this one did not.
-                        let _frame = self.push_callable_env(callee, span)?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Published(callee),
+                            },
+                            None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
@@ -3710,9 +3821,16 @@ impl<'a> Interpreter<'a> {
                             // discarded them, so `let f: fn(Int32) -> Int32 = identity;` ran
                             // `identity<T>`'s body with `T` unbound. Invisible until the RETURN
                             // boundary consulted the declared type.
-                            let _frame = self.push_function_value_env(&callee.bindings, span)?;
-                            self.call_callable(callable, None, values, span)
-                                .map(Flow::Value)
+                            self.invoke_callable(
+                                ResolvedInvocation {
+                                    callable,
+                                    environment: InvocationEnv::Captured(callee.clone()),
+                                },
+                                None,
+                                values,
+                                span,
+                            )
+                            .map(Flow::Value)
                         }
                         Err(propagated) => Ok(Flow::Propagate(propagated)),
                     }
@@ -3735,8 +3853,16 @@ impl<'a> Interpreter<'a> {
                         let callable = self
                             .item_callable(callee.item)
                             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 }
@@ -3897,32 +4023,6 @@ impl<'a> Interpreter<'a> {
         // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
         // boundary.
         self.push_bindings(&env.bindings, span)
-    }
-
-    /// **A4: install the instantiation a FUNCTION VALUE carries.**
-    ///
-    /// `FunctionValue::bindings` are already concrete `Ty`s recorded where the value was created
-    /// (DEV-178), so unlike the published-environment paths there is nothing further to resolve.
-    fn push_function_value_env(
-        &mut self,
-        bindings: &[(String, Ty)],
-        span: Span,
-    ) -> Result<GenericFrame, RuntimeError> {
-        if bindings.is_empty() {
-            return Ok(GenericFrame {
-                frames: self.generic_frames.clone(),
-                pushed: false,
-            });
-        }
-        let mut concrete: HashMap<String, Ty> = HashMap::new();
-        for (name, ty) in bindings {
-            concrete.insert(name.clone(), self.concrete_runtime_ty(ty, span)?);
-        }
-        self.generic_frames.borrow_mut().push(concrete);
-        Ok(GenericFrame {
-            frames: self.generic_frames.clone(),
-            pushed: true,
-        })
     }
 
     /// **AS3 Boundary 4: install a generic environment the SPECIALISER produced.**
@@ -4544,10 +4644,15 @@ impl<'a> Interpreter<'a> {
                 // A3c-S: the callee's generic environment, live for the whole call. The guard's
                 // `Drop` covers traps, propagation and internal failures, which a manual pop after
                 // `?` would not.
-                let _env = match &bound_env {
-                    Some(bindings) => self.push_resolved_env(bindings, span)?,
-                    None => self.push_callable_env(expr_id, span)?,
+                // **Packet 1: an explicit environment, chosen once.** A `Bound` selection carries
+                // the specialiser's concrete bindings; everything else consumes what the checker
+                // published against this call expression. Both go through one installer, so the
+                // choice is visible rather than spread across two call sites.
+                let environment = match bound_env {
+                    Some(bindings) => InvocationEnv::Concrete(bindings),
+                    None => InvocationEnv::Published(expr_id),
                 };
+                let _env = self.install_invocation_env(&environment, span)?;
                 self.call_user_method(method, receiver_place, receiver_value, values, span)
                     .map(Flow::Value)
             }
@@ -5223,18 +5328,42 @@ impl<'a> Interpreter<'a> {
             return match (receiver, name) {
                 (Value::Option(option), "map") => match option {
                     Some(value) => {
-                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            None,
+                            vec![*value],
+                            span,
+                        )?;
                         Ok(Value::Option(Some(Box::new(mapped))))
                     }
                     None => Ok(Value::Option(None)),
                 },
                 (Value::Option(option), "and_then") => match option {
-                    Some(value) => self.call_callable(callable, None, vec![*value], span),
+                    Some(value) => self.invoke_callable(
+                        ResolvedInvocation {
+                            callable: callable.clone(),
+                            environment: InvocationEnv::Captured(callee.clone()),
+                        },
+                        None,
+                        vec![*value],
+                        span,
+                    ),
                     None => Ok(Value::Option(None)),
                 },
                 (Value::Result(result), "map") => match result {
                     Ok(value) => {
-                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            None,
+                            vec![*value],
+                            span,
+                        )?;
                         Ok(Value::Result(Ok(Box::new(mapped))))
                     }
                     Err(error) => Ok(Value::Result(Err(error))),
@@ -5242,12 +5371,28 @@ impl<'a> Interpreter<'a> {
                 (Value::Result(result), "map_err") => match result {
                     Ok(value) => Ok(Value::Result(Ok(value))),
                     Err(error) => {
-                        let mapped = self.call_callable(callable, None, vec![*error], span)?;
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            None,
+                            vec![*error],
+                            span,
+                        )?;
                         Ok(Value::Result(Err(Box::new(mapped))))
                     }
                 },
                 (Value::Result(result), "and_then") => match result {
-                    Ok(value) => self.call_callable(callable, None, vec![*value], span),
+                    Ok(value) => self.invoke_callable(
+                        ResolvedInvocation {
+                            callable: callable.clone(),
+                            environment: InvocationEnv::Captured(callee.clone()),
+                        },
+                        None,
+                        vec![*value],
+                        span,
+                    ),
                     Err(error) => Ok(Value::Result(Err(error))),
                 },
                 (_, _) => Err(RuntimeError::new(
@@ -7173,8 +7318,15 @@ impl<'a> Interpreter<'a> {
         // expression.** The instantiation was selected at the coercion; this call site knows only
         // the function's type. `_env` lives for the whole call and its `Drop` covers traps,
         // propagation and internal failures.
-        let _env = self.push_captured_env(&callee);
-        self.call_callable(callable, None, values, span)
+        self.invoke_callable(
+            ResolvedInvocation {
+                callable,
+                environment: InvocationEnv::Captured(callee),
+            },
+            None,
+            values,
+            span,
+        )
     }
 
     /// Install a function value's captured environment for the duration of its call.
@@ -8787,7 +8939,15 @@ mod tests {
 
         interp.pending_propagation = Some(Value::Int(7));
         let error = interp
-            .call_callable(callable, None, Vec::new(), interp.file.synthetic_span())
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                None,
+                Vec::new(),
+                interp.file.synthetic_span(),
+            )
             .err()
             .expect("a parked propagation must not cross into a call");
 
@@ -8813,7 +8973,15 @@ mod tests {
 
         assert!(interp.pending_propagation.is_none());
         assert!(interp
-            .call_callable(callable, None, Vec::new(), interp.file.synthetic_span())
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                None,
+                Vec::new(),
+                interp.file.synthetic_span(),
+            )
             .is_ok());
         assert!(
             interp.pending_propagation.is_none(),
@@ -10722,7 +10890,15 @@ mod tests {
             .item_callable(item_id)
             .unwrap_or_else(|| panic!("'{function_name}' is not callable"));
         interpreter
-            .call_callable(callable, None, Vec::new(), span)
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                None,
+                Vec::new(),
+                span,
+            )
             .unwrap_or_else(|error| panic!("evaluating '{function_name}' failed: {error:?}"))
     }
 

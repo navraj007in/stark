@@ -5751,3 +5751,21 @@ carries the detail; Campaign A's gate is held on this one item.
 - **Bearing on AS3 criterion 2:** that criterion was recorded PASS in the first exit report. It was
   passing on the paths its tests covered; these two were not covered. The criterion is only sound
   once the boundaries that *consume* the environment exist — which is DEV-121's wiring.
+
+## DEV-197 — UPDATE: a third site, in the class the audit flagged as high-risk
+
+Packet 1's migration found a third dispatch path executing a body with **no** generic environment:
+the **`Option`/`Result` combinators** (`map`, `and_then`, `map_err`, `unwrap_or_else`), which take a
+`Value::Function` and called the raw executor directly.
+
+Same violated invariant as the other two — *a callee body ran without its checker-selected
+environment* — so it extends DEV-197 rather than taking a new number.
+
+**Mutation-proved, unlike the first two.** With the combinators installing `InvocationEnv::Empty`
+instead of the function value's captured bindings, `Some(5).map(wrap)` on `fn wrap<T>(x: T) -> T`
+fails at the call. The environment is load-bearing there; this is not precautionary wiring.
+
+**Also found: a duplicate installer I had introduced.** `push_function_value_env`, added while
+wiring the Return boundary, did the same job as the pre-existing `push_captured_env`. Deleted;
+`InvocationEnv::Captured` carries the `FunctionValue` and installs through the original authority.
+Adding a second helper for an existing semantic job is exactly what AS4 spent its packets removing.
