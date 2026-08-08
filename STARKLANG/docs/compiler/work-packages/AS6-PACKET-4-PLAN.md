@@ -243,3 +243,61 @@ AS6 is roughly **65–75% complete**, not the 90+% it looked before the inventor
 AS6's semantics require it. AS7 inherits a large semantic-ownership boundary already cut, a
 dependency direction already proven, and a large chunk already out of `typecheck.rs`. The total
 sprint estimate does not rise as much as 946 references suggest.
+
+
+---
+
+# Group 2A — the `check_expr` edge classification (complete, 2026-08-08)
+
+**Result: the one-directional design survives the code. Three edges, zero semantic recursion.**
+
+| Site | Classification |
+| --- | --- |
+| `check_tensor_op` +38 | **argument evaluation**, already hoisted — a `for arg in args` loop filling `actual_ops` before any rule runs |
+| `check_tensor_refine` +9 | **error recovery** — the result is discarded, and the function then diagnoses that value arguments are not allowed |
+| `check_model_method_call` +98 | **argument evaluation**, but interleaved with the compatibility check rather than hoisted |
+
+## The ordering caution has a concrete answer
+
+`check_tensor_op` validates the call's **form** before typing any argument, each failure returning
+`Ty::Error` early:
+
+```text
+descriptor lookup             -> unknown tensor operation
+receiver && !descriptor.method -> not a method
+!receiver && !standalone       -> requires a receiver
+────────────────────────────────  then check_expr on the arguments
+```
+
+That order is externally observable in diagnostics, and the phase split preserves it without
+special handling: form validation and argument evaluation are **both** Core-side preparation. Only
+the rules that follow move.
+
+## The one site needing care
+
+`check_model_method_call`'s `check_expr` sits inside a `zip` over instantiated model inputs, so
+hoisting it must not reorder argument diagnostics against compatibility diagnostics. Per the
+ruling, externally observable diagnostic behaviour is preserved — this site is staged, not simply
+lifted.
+
+## Consequence
+
+2B proceeds as designed: `TensorCheckInput` carries already-typed arguments, no extension-owned
+function receives an `ExprId` to typecheck, and `check_expr` is not in the context. The owner-stop
+condition is **not** triggered — no tensor rule requires conditionally typechecking a previously
+unchecked expression.
+
+## The design rule this establishes
+
+```text
+A narrow dependency surface is necessary but not sufficient.
+
+AS6 also requires one-directional semantic control:
+Core may enter extension checking;
+extension checking must not recursively enter the general Core expression checker.
+```
+
+`resolve`, `unify`, `ty_to_string`, constant extraction and value-range operations are **capability**
+dependencies and are acceptable. `check_expr` is a **control-flow re-entry** edge and is not. Those
+two were wrongly treated as equivalent members of one context, and separating them is the finding —
+not the fact that the count doubled.
