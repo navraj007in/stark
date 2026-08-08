@@ -5726,3 +5726,28 @@ values cross typed boundaries is as important as the relation itself.*
 
 AS3 exit criteria **#3 and #5 are both FAIL** until this closes. `CAMPAIGN-A-EXIT-REPORT.md` §3.1
 carries the detail; Campaign A's gate is held on this one item.
+
+## DEV-197 — two dispatch paths ran a callee body with its generic environment missing [CLOSED at creation, A4 boundary wiring, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2 — *implicit and explicit dispatch install the checker-selected
+  generic environment in the HIR oracle*.
+- **Defect, two paths:**
+  - `Res::AssociatedFn` — `Stack::identity<T>(6)` called `call_callable` with **no**
+    `push_callable_env`, unlike the `Res::Item` path beside it. The body ran with `T` unbound.
+  - **function values** — `let f: fn(Int32) -> Int32 = identity; f(41)` discarded
+    `FunctionValue::bindings`, which DEV-178 had put on the value *precisely because* a function
+    value's instantiation cannot be recovered from the call site (`Ty::Fn` cannot say which one
+    produced it). The body ran with `T` unbound.
+- **Why nothing observed it:** no boundary consulted the callee's declared type, so an unbound `T`
+  had nothing to be wrong against. Both bodies were `identity`-shaped and returned their argument
+  unchanged, so the missing environment could not alter the answer either.
+- **Found by:** wiring the **first** value boundary — `RepBoundary::Return`, checking a returned
+  value against `callable_types[body].ret`. Both defects fired on its first run.
+- **Repair:** the associated-fn path pushes `push_callable_env(callee, span)` like its neighbour;
+  the function-value path pushes `push_function_value_env(&callee.bindings, span)`, a new installer
+  for bindings that are already concrete and need no resolution.
+- **Evidence:** `--lib` 538, `three_engine_differential` 109, `mir_differential` 132,
+  `cross_package_generics`, `dev176_generic_callable_context`, `as3_callable_use_exactness`.
+- **Bearing on AS3 criterion 2:** that criterion was recorded PASS in the first exit report. It was
+  passing on the paths its tests covered; these two were not covered. The criterion is only sound
+  once the boundaries that *consume* the environment exist — which is DEV-121's wiring.

@@ -1754,8 +1754,19 @@ impl<'a> Interpreter<'a> {
         }
         self.cleanup_current_frame()?;
         self.frames.pop();
+        // **A4 probe: the RETURN boundary against the checker-published signature.**
+        let declared_ret = self
+            .tables
+            .callable_types
+            .get(&callable.body)
+            .map(|sig| sig.ret.clone());
         match flow {
-            Flow::Value(value) | Flow::Return(value) => Ok(value),
+            Flow::Value(value) | Flow::Return(value) => {
+                if let Some(ret) = &declared_ret {
+                    self.check_value_for_ty(ret, &value, span, RepBoundary::Return)?;
+                }
+                Ok(value)
+            }
             Flow::Propagate(value) => Ok(value),
             Flow::Break(_) | Flow::Continue => {
                 Err(RuntimeError::new("loop control escaped a function", span))
@@ -3645,6 +3656,14 @@ impl<'a> Interpreter<'a> {
                             .ok_or_else(|| {
                                 RuntimeError::new("associated function not found", span)
                             })?;
+                        // **A4: install the instantiation, as the `Res::Item` path already does.**
+                        //
+                        // This path pushed no generic environment, so `Stack::identity<T>(6)` ran
+                        // its body with `T` unbound. Nothing observed it while no boundary consulted
+                        // the declared type; the RETURN boundary did, immediately, on its first run.
+                        // AS3 criterion 2 says every dispatch installs the checker-selected
+                        // environment — this one did not.
+                        let _frame = self.push_callable_env(callee, span)?;
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
                     }
@@ -3668,6 +3687,15 @@ impl<'a> Interpreter<'a> {
                             let callable = self.item_callable(callee.item).ok_or_else(|| {
                                 RuntimeError::new("expression is not callable", span)
                             })?;
+                            // **A4: install the instantiation the VALUE carries.**
+                            //
+                            // DEV-178 put `bindings` on `FunctionValue` precisely because a
+                            // function value's instantiation cannot be recovered from the call
+                            // site — `Ty::Fn` cannot say which one produced it. This path then
+                            // discarded them, so `let f: fn(Int32) -> Int32 = identity;` ran
+                            // `identity<T>`'s body with `T` unbound. Invisible until the RETURN
+                            // boundary consulted the declared type.
+                            let _frame = self.push_function_value_env(&callee.bindings, span)?;
                             self.call_callable(callable, None, values, span)
                                 .map(Flow::Value)
                         }
@@ -3854,6 +3882,32 @@ impl<'a> Interpreter<'a> {
         // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
         // boundary.
         self.push_bindings(&env.bindings, span)
+    }
+
+    /// **A4: install the instantiation a FUNCTION VALUE carries.**
+    ///
+    /// `FunctionValue::bindings` are already concrete `Ty`s recorded where the value was created
+    /// (DEV-178), so unlike the published-environment paths there is nothing further to resolve.
+    fn push_function_value_env(
+        &mut self,
+        bindings: &[(String, Ty)],
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        if bindings.is_empty() {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
+        let mut concrete: HashMap<String, Ty> = HashMap::new();
+        for (name, ty) in bindings {
+            concrete.insert(name.clone(), self.concrete_runtime_ty(ty, span)?);
+        }
+        self.generic_frames.borrow_mut().push(concrete);
+        Ok(GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed: true,
+        })
     }
 
     /// **AS3 Boundary 4: install a generic environment the SPECIALISER produced.**
