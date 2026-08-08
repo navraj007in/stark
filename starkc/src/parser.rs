@@ -21,6 +21,7 @@
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
+use crate::extensions::tensor::syntax as tensor_syntax;
 use crate::lexer::{tokenize, Kw, Token, TokenKind};
 use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
@@ -920,7 +921,7 @@ impl Parser<'_> {
     /// (`model.predict(x)`), since `model <ident>` is never a Core expression.
     fn at_model_item(&self) -> bool {
         self.peek().kind == TokenKind::Ident
-            && self.text(self.peek().span) == "model"
+            && self.text(self.peek().span) == tensor_syntax::MODEL_KEYWORD
             && self.peek2() == TokenKind::Ident
     }
 
@@ -1206,11 +1207,7 @@ impl Parser<'_> {
         if !self.tensor_enabled() || self.peek().kind != TokenKind::Ident {
             return None;
         }
-        match self.text(self.peek().span) {
-            "Float16" => Some(Primitive::Float16),
-            "BFloat16" => Some(Primitive::BFloat16),
-            _ => None,
-        }
+        tensor_syntax::extension_primitive(self.text(self.peek().span))
     }
 
     /// Classify a `[...]` group in generic-argument position without consuming
@@ -1444,22 +1441,7 @@ impl Parser<'_> {
             };
             if self.tensor_enabled() && path.segments.len() == 1 {
                 let name = self.text(path.segments[0].span);
-                let reserved = match name {
-                    "QInt8" | "QUInt8" | "QInt16" | "Quantized" => {
-                        Some("quantized dtypes are reserved in `tensor` v0.1")
-                    }
-                    "NCHW" | "NHWC" | "RowMajor" | "ColumnMajor" | "TensorLayout" => {
-                        Some("memory layout types are reserved in `tensor` v0.1")
-                    }
-                    "PeakMemory" | "MemoryProfile" => {
-                        Some("peak-memory deployment constraints are reserved in `tensor` v0.1")
-                    }
-                    "Gradient" | "Grad" | "Tape" | "Autodiff" => {
-                        Some("training and autodiff types are reserved in `tensor` v0.1")
-                    }
-                    _ => None,
-                };
-                if let Some(message) = reserved {
+                if let Some(message) = tensor_syntax::reserved_type_note(name) {
                     self.error(message, path.span);
                 }
             }
@@ -1470,7 +1452,7 @@ impl Parser<'_> {
             // types until a later semantic extension signature says otherwise.
             let single_ident_is_shape = self.tensor_enabled()
                 && path.segments.len() == 1
-                && self.text(path.segments[0].span) == "Tensor";
+                && tensor_syntax::opens_shape_position(self.text(path.segments[0].span));
             let args = if self.at(TokenKind::Lt) {
                 self.generic_args(single_ident_is_shape)
             } else {
@@ -2823,7 +2805,9 @@ impl Parser<'_> {
             TokenKind::Keyword(Kw::Use) => self.parse_use()?,
             TokenKind::Keyword(Kw::Mod) => self.parse_mod()?,
             // `model` (D4) is a contextual keyword lexed as an identifier.
-            TokenKind::Ident if self.text(self.peek().span) == "model" => self.parse_model()?,
+            TokenKind::Ident if self.text(self.peek().span) == tensor_syntax::MODEL_KEYWORD => {
+                self.parse_model()?
+            }
             _ => {
                 self.expected("an item");
                 return None;
@@ -2904,15 +2888,21 @@ impl Parser<'_> {
 
     fn parse_model_port(&mut self) -> Option<ModelPort> {
         let lo = self.peek().span.lo;
-        let dir = if self.at(TokenKind::Ident) && self.text(self.peek().span) == "input" {
-            self.bump();
-            PortDir::Input
-        } else if self.at(TokenKind::Ident) && self.text(self.peek().span) == "output" {
-            self.bump();
-            PortDir::Output
-        } else {
-            self.expected("`input` or `output`");
-            return None;
+        let dir = match self.peek().kind {
+            TokenKind::Ident => match tensor_syntax::port_direction(self.text(self.peek().span)) {
+                Some(dir) => {
+                    self.bump();
+                    dir
+                }
+                None => {
+                    self.expected("`input` or `output`");
+                    return None;
+                }
+            },
+            _ => {
+                self.expected("`input` or `output`");
+                return None;
+            }
         };
         let name = self.expect_ident("a port name")?;
         self.expect(TokenKind::Colon, "`:`");

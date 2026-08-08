@@ -551,3 +551,96 @@ tensor type-system boundary    DONE   (62ef6b0 rules, 2C authority)
 parser residual audit          OPEN   — 4C
 qualification                  OPEN
 ```
+
+
+---
+
+# Packet 4C — the parser residual audit (2026-08-08)
+
+## The classification
+
+`parser.rs` is 4027 lines and matches `tensor|dtype|device|model|shape` 227 times. **159 of those
+are in code, and 80 of the 159 are inside the `#[cfg(test)]` module** that starts at line 3258. The
+production surface is **79 references**, and they fall into the four groups 4C named:
+
+| Group | What it is | Verdict |
+| --- | --- | --- |
+| **enablement** | seven `tensor_enabled()` gates | **stays** — this *is* the C9.1 per-session mechanism |
+| **grammar recognition** | `ShapeGroupKind` and `shape_group_kind`'s bounded scan to the matching `]`; `single_bracket_elem_is_type`; `shape_arg`'s bracket/comma structure; the `dim_expr`/`dim_add`/`dim_mul`/`dim_atom` precedence family; `generic_args`' three-way bracket dispatch; `at_model_item`'s `Ident Ident` lookahead; `parse_model`/`parse_model_port`'s brace-and-semicolon structure | **stays** — parsing *is* dispatch |
+| **AST construction** | `GenericArg::Shape`, `ShapeArg`, `DimExprKind::{Lit,Var,Binary,Error}`, `ItemKind::Model`, `ModelDef`, `ModelPort`, `PortDir`, `TypeKind::Primitive` | **stays** — `ast`-owned node kinds, and the harness already established criterion 1 holds for `ast.rs` |
+| **semantic knowledge** | **21 hardcoded tensor spellings at 6 sites** | **moves** |
+
+## The structural test: the parser passes it
+
+> *Does a new tensor syntax form require edits in many unrelated places?*
+
+**No.** Every one of the four groups is reached through a single function. A new shape form is one
+edit in `shape_arg`; a new dimension operator is one edit in the `dim_*` family; a new model clause
+is one edit in `parse_model`. The dispatch is centralised, which is the correct structure for a
+recursive-descent parser and is explicitly not something AS6 asks to change (exit criterion 4
+forbids the plugin architecture that "fixing" this would produce).
+
+## But it failed criterion 2, and that is a different question
+
+> *Central Core modules do not contain open-ended tensor spelling tables or method catalogues.*
+
+The spellings, before:
+
+```text
+site                            spellings
+parse_type reserved table        15   QInt8 QUInt8 QInt16 Quantized | NCHW NHWC RowMajor
+                                      ColumnMajor TensorLayout | PeakMemory MemoryProfile |
+                                      Gradient Grad Tape Autodiff
+at_extension_primitive            2   Float16 BFloat16
+single_ident_is_shape             1   Tensor
+at_model_item                     1   model
+parse_item dispatch               1   model
+parse_model_port                  2   input output
+```
+
+The 15-entry reserved table is the same shape as the two tables AS6 has already moved — fe80129's
+resolver spelling table and 62ef6b0's `TENSOR_OPS`. Reserving a name is a statement about the
+extension's roadmap, not about Core's grammar: the forms parse identically either way, and every
+future dtype, layout, deployment constraint or autodiff type added to the reservation list widened
+a `match` inside Core's `parse_type`.
+
+## The cut
+
+`extensions/tensor/syntax.rs`, 95 lines, five items:
+
+```rust
+MODEL_KEYWORD                  the model item's contextual keyword
+port_direction(name)           -> Option<PortDir>
+extension_primitive(name)      -> Option<Primitive>      Float16 / BFloat16
+opens_shape_position(name)     -> bool                   which constructor opens a shape position
+reserved_type_note(name)       -> Option<&'static str>   the v0.1 reservation list
+```
+
+Six call sites in `parser.rs`; **zero of the 21 spellings remain in its production code.** The
+parser keeps every decision about *shape* — how a `[...]` group is disambiguated, how a dimension
+expression associates, where a model's ports may appear. What it no longer keeps is the extension's
+*vocabulary*.
+
+`opens_shape_position` names exactly one constructor today. That is the point: a second
+shape-carrying constructor is now added in `extensions/tensor/`, not in Core's `parse_type`.
+
+## What this measurement does **not** say
+
+`parser.rs`'s occurrence count went **up**, 225 → 227, because `tensor_syntax::` is itself a match.
+
+That is the ruling's point made concrete, and it is worth recording as evidence rather than as an
+aside: had the packet been optimising `grep Tensor parser.rs == 0`, this commit would have scored
+as a regression. Against the measure the ruling actually set — *no tensor semantic decision is
+owned by Core* — it moves 21 spellings out and the reference count is not evidence of anything.
+
+## Status
+
+```text
+architectural discovery        DONE   (46ae2ec)
+builtin/catalogue quarantine   DONE   (fe80129)
+runtime/lowering boundary      DONE   (33cb0a7)
+tensor type-system boundary    DONE   (62ef6b0 rules, 9147073 authority)
+  └─ model DECLARATION slice   RECOMMEND LEAVING IN CORE — evidence in group 2C
+parser residual audit          DONE   (4C)
+qualification                  OPEN   — the last AS6 packet
+```

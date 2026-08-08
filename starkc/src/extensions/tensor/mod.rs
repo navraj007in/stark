@@ -6,6 +6,7 @@
 pub mod builtins;
 pub mod check;
 pub mod rules;
+pub mod syntax;
 pub use builtins::{builtin_named, owns_builtin, TensorBuiltin};
 
 pub mod dim;
