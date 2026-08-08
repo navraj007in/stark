@@ -2,6 +2,12 @@
 
 **Verdict: PASS on all five exit criteria. Unconditional — exact-head CI green.**
 
+> **CRITERION 2's PASS BELOW IS SUPERSEDED — see §9, added 2026-08-09 (CD-393).** The forcing
+> test that produced it observed 36 of 234 methods and five violations were live under its
+> green, including the `traits -> convert` cycle §2 records as broken. **Everything above §9 is
+> preserved exactly as written on 2026-08-08**, including the sentences now known to be wrong;
+> §9 carries the repaired detector, the repair, and the re-qualification.
+
 **Head:** `977b7a3`. **Date:** 2026-08-08. **Branch:** `wp-arch-stability/as7-modularization`,
 worktree `/Users/nexper/Documents/GitHub/stark-as7`, forked from `3f18e49`.
 **Authority:** Campaign B approved for execution 2026-08-08; AS6 CLOSED (CD-390) 2026-08-08.
@@ -211,3 +217,92 @@ Propagation follows the order AS6 established: `COMPILER-STATE.md` first, then
 
 **AS8 may open.** It is assurance written against the frozen AS6/AS7 result and cannot be batched
 with the work it challenges.
+
+---
+
+## 9. Criterion 2 correction and re-qualification (2026-08-09, CD-393)
+
+**Added after the fact under owner instruction. Sections 1–8 are unmodified.**
+
+### The detector was blind to 85% of its input
+
+`method_owners()` in `as7_module_dependencies` recognised an enumerated list of visibility
+prefixes — `fn`, `pub fn`, `pub(crate) fn` — and not `pub(super) fn`, which is what nearly every
+method AS7 extracted was given.
+
+```text
+methods the ownership map saw   36 of 234      about 15%
+```
+
+The repair stops enumerating and strips **any** visibility qualifier, `pub(...)` included. With it,
+criterion 2 went RED with five violations:
+
+```text
+traits -> convert     the Packet 7 cycle §2 records as broken by the `bounds` ruling
+infer  -> convert
+state  -> body
+state  -> infer
+state  -> traits
+```
+
+### Why §2's account of Packet 7 was wrong
+
+The owner ruling on Packet 7 rejected a permitted cycle and introduced `bounds`. That ruling was
+applied to the **explicit references** and never to the **methods** — conversion-dependent trait
+machinery stayed in `traits` and went on calling `convert_hir_type`. §2 records the cycle as
+discharged because the check that would have contradicted it could not see method calls.
+
+### The negative control that did not exist
+
+Packet 1's proof injected `use super::X`, which exercises the explicit-reference detector alone.
+The method-ownership detector — the half that matters for a packet whose entire content is moving
+methods — was never injected against. **A check with two mechanisms needs a negative control per
+mechanism**, and §6's lesson (*a check that does not cover the thing being claimed cannot support
+the claim*) is exactly this, applied one level lower than it was written.
+
+The missing proof now exists: injecting `self.convert_hir_type(id)` into `traits.rs` yields
+`typecheck/traits.rs -> typecheck/convert.rs is not permitted`, and green returns on removal.
+
+### The repair
+
+`trait_contracts.rs` (1,191 lines) holds the eight methods that must know what a written type
+means, above `convert`. Identity and impl selection stay in `traits` and convert nothing.
+
+The three `state` edges were a misclassification of my own: the publication family was placed in
+`state` because publication writes storage — classifying by **effect** rather than by **need**.
+Each resolves, instantiates or selects trait candidates first.
+
+```text
+types <- state <- infer <- traits <- convert <- {bounds, trait_contracts} <- patterns/body <- items <- mod
+
+body 4,842 | traits 2,043 | mod 1,846 | trait_contracts 1,191 | infer 1,156
+types 1,153 | items 986 | convert 901 | state 569 | patterns 429 | bounds 116
+```
+
+Eleven modules. `state` 896 -> 569. Figures are `wc -l`; §5's "596 production" for `mod.rs` used a
+method the report does not state and that I could not reproduce (474 by brace-matching its four
+inline `#[cfg(test)]` modules, at both heads), so totals are used here instead.
+
+### Re-qualified result
+
+```text
+2 dependency direction documented and cycle-free   PASS   234 of 234 methods owned, 4/4 green
+1 no semantic behaviour change                     PASS   PROVED: the whitespace-stripped line
+                                                          multiset over typecheck/ is identical
+                                                          across the repair but for imports,
+                                                          module docs, `impl` wrappers, comments
+3 internals not accidentally public                PASS   crate::typecheck API 31 -> 31, same set
+4 build/dependency surface unchanged               PASS   no manifest change
+5 size reported, never the criterion                      the repair ADDED a module
+```
+
+759 tests across 18 targets, 0 failed; clippy `--workspace --all-features --all-targets -D
+warnings` clean; conformance baseline clean.
+
+### The measurement this qualification should have carried
+
+**How much of its input did the check observe?** Not "did it pass", and not "did it fail on an
+injected violation" — 36-of-234 would have been visible on day one to anyone who printed the size
+of the ownership map. Checker coverage is now a required figure in any qualification that rests on
+an executable check.
+

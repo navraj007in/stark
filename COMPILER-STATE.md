@@ -1,5 +1,108 @@
 # STARK Compiler STATE
 
+## CD-393 — AS7 criterion 2 re-qualified; CD-391's PASS is superseded, its closure stands (2026-08-09)
+
+**Owner-directed correction. CD-391 is not rewritten — it is preserved as written and superseded
+here.** AS7 was closed on a criterion-2 PASS that the forcing test was not capable of producing.
+
+### What CD-391 claimed, and why it was not true
+
+> *"dependency direction documented and cycle-free — PASS, regenerated at the exact head"*
+
+`as7_module_dependencies` derives module ownership for each method by parsing `impl` blocks, and
+its parser recognised an ENUMERATED LIST of visibility prefixes: `fn`, `pub fn`, `pub(crate) fn`.
+It did not recognise **`pub(super) fn`** — the visibility essentially every method extracted by AS7
+was given. The ownership map therefore covered **36 of 234 methods, about 15%**, and the other 85%
+of the graph was unobserved. The test was green because it was looking at almost nothing.
+
+Five real violations were live under that green:
+
+```text
+traits -> convert     the Packet 7 cycle the owner ruling was supposed to have broken
+infer  -> convert
+state  -> body
+state  -> infer
+state  -> traits
+```
+
+**The Packet 7 edge is the serious one.** The owner ruling on Packet 7 rejected a permitted cycle
+and added `bounds` as an orchestration layer. That ruling was correctly applied to the EXPLICIT
+REFERENCES and never applied to the METHODS: conversion-dependent trait machinery stayed in
+`traits` and kept calling `convert_hir_type`, so `convert <-> traits` was never actually gone. The
+audit's own text records the ruling as discharged. It was not.
+
+### Why the forcing test could not catch its own blindness
+
+Packet 1 proved the checker fails on an injected violation — by adding `use super::X`. That
+exercises the **explicit-reference** detector. The **method-ownership** detector was never injected
+against, so the one half of the check that mattered for a packet that moves methods was the half
+with no negative control. **A check with two mechanisms needs a negative control per mechanism.**
+
+That proof now exists. Injecting `self.convert_hir_type(id)` into `traits.rs` produces
+`typecheck/traits.rs -> typecheck/convert.rs is not permitted`, and green returns on removal.
+
+### The repair
+
+`trait_contracts.rs` (1,191 lines) carries the eight methods that must know what a WRITTEN type
+means — `validate_impl_rules`, `check_core_trait_impl`, `associated_fn_type`,
+`build_trait_impl_index`, `contract_ty`, `declared_member_signature`, `trait_member_signature`,
+`assoc_binding_map` — and sits above `convert`. Trait identity and impl selection stay in `traits`
+and convert nothing; `core_method_signature` is deliberately not among the movers.
+
+The three `state` edges were **my own misclassification, and the more instructive failure.** The
+publication family was put in `state` because "publication writes storage" — classifying those
+functions BY THEIR EFFECT rather than BY WHAT THEY NEED. Each resolves, instantiates or selects
+trait candidates before writing. The decision of what to publish belongs with the caller, and
+those functions ARE that decision. Five `publish_*` moved to `body`, `ty_to_string` and
+`format_nominal` to `infer`, `instantiate_sig` to `body` where its only caller is.
+
+```text
+types <- state <- infer <- traits <- convert <- {bounds, trait_contracts} <- patterns/body <- items <- mod
+
+body 4,842 | traits 2,043 | mod 1,846 | types 1,153 | trait_contracts 1,191
+infer 1,156 | items 986 | convert 901 | state 569 | patterns 429 | bounds 116
+```
+
+Eleven modules, not ten. `state` fell from 896 to 569, which measures how much non-storage work had
+been put there. *(Figures are `wc -l`. CD-391 additionally quoted "mod.rs 596 production"; that
+number was produced by a method the record does not state and I could not reproduce — excluding
+mod.rs's four inline `#[cfg(test)]` modules by brace matching gives 474 at both heads. The totals
+are stated here instead, because they are unambiguous.)*
+
+### Criterion 2 — re-qualified
+
+```text
+2 dependency direction documented and cycle-free   PASS   with the REPAIRED detector: 234 of 234
+                                                          methods owned, eleven modules, 4/4 green
+```
+
+Criteria 1, 3, 4 and 5 are unaffected and re-checked rather than assumed:
+
+```text
+1 no semantic behaviour change      PASS   PROVED, not asserted: the whitespace-stripped line
+                                           multiset over all of typecheck/ across the repair is
+                                           identical but for imports, module docs, `impl` wrappers
+                                           and comments. A pure move preserves the multiset
+3 internals not accidentally public PASS   public API of crate::typecheck: 31 -> 31, IDENTICAL SET
+4 build/dependency surface          PASS   no manifest change
+5 size reported, never the criterion       the repair ADDED a module and grew the total
+```
+
+Local evidence at the repaired head: 759 tests across 18 targets, 0 failed; clippy
+`--workspace --all-features --all-targets -- -D warnings` clean; conformance baseline clean.
+
+### What AS8 inherits from this, beyond the five edges
+
+**CD-391's own "finding AS8 inherits" section listed four blind checkers and drew the right
+lesson — and this is a fifth instance of that same lesson, found after the record was written.**
+The sentence it offered, *a check that does not cover the thing being claimed cannot support the
+claim*, was correct and insufficiently applied: nobody asked what fraction of the input the check
+covered. **Coverage of the checker itself is now a required measurement, not an inference from a
+green run.** 36-of-234 is the number that should have been on the qualification and was not.
+
+**Next:** AS8 resumes. EI trap classification, the EI2 evidence inventory and the EI4/EI5 rankings
+are corrected under the same instruction and recorded separately.
+
 ## CD-392 — WP-ENGINE-INDEPENDENCE approved, transferred to AS8; AS0 stays closed (2026-08-09)
 
 **Owner ruling. A governance gap, resolved prospectively rather than by rewriting history.**
@@ -55,6 +158,11 @@ This matters here specifically because EI5 itself warns that even a *killed* sha
 mutation is insufficient unless the killing evidence is independently derived.
 
 ## CD-391 — AS7 CLOSED, qualification PASS (2026-08-08)
+
+> **SUPERSEDED IN PART by CD-393 (2026-08-09).** Criterion 2's PASS below was produced by a
+> forcing test that observed 36 of 234 methods; five violations were live under it. The
+> closure stands and the record is preserved as written — read CD-393 for the corrected
+> criterion-2 result and the repaired module graph.
 
 **`STARKLANG/docs/compiler/audits/AS7-EXIT-QUALIFICATION.md` is the record.**
 
