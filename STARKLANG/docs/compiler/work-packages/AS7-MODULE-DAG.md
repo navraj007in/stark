@@ -4,6 +4,12 @@
 requires the dependency direction to be *documented* and cycle-free, and because the rule below is
 what stops a marathon from re-litigating its own design.
 
+> **AMENDED 2026-08-09 (CD-393) — see "The corrected DAG" at the end.** The revised DAG below was
+> declared but not enforced: the forcing test's ownership parser saw 36 of 234 methods, and the
+> `traits -> convert` edge this document forbids was live in the shipped split. The amendment adds
+> an **eleventh** module, `trait_contracts`, and moves three `state` edges. Everything above the
+> amendment is preserved as decided on 2026-08-08.
+
 ## The module set
 
 ```text
@@ -202,3 +208,68 @@ dtype_from_primitive    -> delete or delegate. AS6 already established the exten
                           authority `tensor_syntax::dtype_of_primitive`; do not create a second
                           mapping in the new Core modules.
 ```
+
+---
+
+## The corrected DAG (2026-08-09, CD-393)
+
+**The `bounds` ruling was right and was applied to only half the code.** It split *complete written
+bound satisfaction* out of `traits` by moving the explicit references. The **methods** stayed:
+`validate_impl_rules`, `check_core_trait_impl`, `associated_fn_type`, `build_trait_impl_index`,
+`contract_ty`, `declared_member_signature`, `trait_member_signature` and `assoc_binding_map` all
+went on calling `convert_hir_type` from inside `traits`, so `convert <-> traits` never actually
+closed. The forcing test could not contradict it because it did not parse `pub(super) fn`.
+
+Those eight methods form a coherent layer, and it is the same distinction one level down:
+
+```text
+traits            "Does this type stand in this trait relation, and which impl says so?"
+trait_contracts   "What does this WRITTEN type mean, in a trait position?"
+```
+
+`trait_contracts` sits **above** `convert` and may depend on `convert`, `traits`, `infer`, `state`,
+`types`. `traits` keeps trait identity and impl selection, converts nothing, and **still holds
+`core_method_signature`** — that arm table is trait identity, not conversion, so it did not move.
+
+```text
+types <- state <- infer <- traits <- convert <- {bounds, trait_contracts} <- patterns/body <- items <- mod
+```
+
+```text
+traits           may depend on  types, state, infer
+                 MUST NOT       convert, trait_contracts, bounds, body, items
+convert          may depend on  types, state, infer, traits
+bounds           may depend on  types, state, infer, traits, convert
+trait_contracts  may depend on  types, state, infer, traits, convert
+```
+
+### Three `state` edges, and the classification error behind them
+
+`state -> body`, `state -> infer` and `state -> traits` were live for a different reason, and it is
+worth stating plainly because the rule was already written down and applied backwards.
+
+Packets 9a/9b put the publication family in `state` on the reasoning that **publication writes
+storage**. That classifies a function by its **effect**. The DAG classifies by **what a function
+needs**: each `publish_*` resolves, instantiates or selects trait candidates *before* it writes, and
+that is work `state` may not do. The decision of what to publish belongs with the caller, and those
+functions are that decision.
+
+```text
+publish_* x5                  -> body
+ty_to_string, format_nominal  -> infer     rendering resolves first
+instantiate_sig               -> body      converts written types; its only caller is there
+```
+
+`state` fell from 896 lines to 569, which measures how much non-storage work had accumulated there.
+
+### The enforcement rule this document now carries
+
+Criterion 2 is satisfied by an executable check, so the check's **coverage** is part of the claim:
+
+```text
+methods owned by the map / methods in typecheck    234 / 234 as of CD-393
+```
+
+A green run over a partial map is not evidence. The forcing test prints this ratio, and any future
+qualification citing it must cite the ratio with it.
+

@@ -241,6 +241,102 @@ fn method_owners(modules: &BTreeMap<String, String>) -> BTreeMap<String, String>
 }
 
 /// **The check.** Every observed edge must be permitted by the declared DAG.
+/// Names the ownership map cannot distinguish. The map is keyed by method name, which is sound
+/// only while names are unique across modules. `substitutions` is declared in two modules, so the
+/// later scan overwrites the earlier and one of them has its edges attributed to the wrong owner.
+/// Recorded rather than silently tolerated: a growing list means the map's key is wrong.
+const ACCEPTED_NAME_COLLISIONS: &[&str] = &["substitutions"];
+
+/// **The coverage of the check is part of the claim it supports.**
+///
+/// CD-393: the ownership parser recognised an enumerated list of visibility prefixes that omitted
+/// `pub(super) fn`, so it observed 36 of 234 methods and reported green while five violations were
+/// live. Nothing failed, because a check that sees almost nothing agrees with almost anything.
+///
+/// A negative control does not catch this: inject a violation into one of the 36 visible methods
+/// and the check dutifully fails. What was never measured is HOW MUCH OF ITS INPUT THE CHECK SAW.
+/// This test measures exactly that and fails if it regresses, so the blindness cannot come back
+/// quietly the next time a visibility form is introduced.
+#[test]
+fn the_ownership_map_covers_every_method_it_claims_to() {
+    let modules = present_modules();
+    if modules.len() < 2 {
+        return;
+    }
+    let owners = method_owners(&modules);
+    let declared = declared_fn_count(&modules);
+    let collisions = declared.saturating_sub(owners.len());
+
+    println!(
+        "ownership map coverage: {} of {} fn declarations owned ({} name collision(s))",
+        owners.len(),
+        declared,
+        collisions
+    );
+
+    assert!(
+        declared > 0,
+        "no fn declarations were scanned at all — the parser is broken, not the code"
+    );
+    assert_eq!(
+        owners.len() + ACCEPTED_NAME_COLLISIONS.len(),
+        declared,
+        "the ownership map owns {} of {} scanned fn declarations. Every declaration must be owned \
+         except the {} recorded name collision(s) ({:?}). A shortfall means the parser is blind to \
+         a declaration form — which is how CD-393 happened — and every edge in this file is then \
+         unproven, INCLUDING the ones that pass.",
+        owners.len(),
+        declared,
+        ACCEPTED_NAME_COLLISIONS.len(),
+        ACCEPTED_NAME_COLLISIONS
+    );
+}
+
+/// Counts `fn` declarations with the SAME scan `method_owners` uses, so the two cannot drift.
+/// Any divergence between this count and the map's size is a name collision, not a parse miss.
+fn declared_fn_count(modules: &BTreeMap<String, String>) -> usize {
+    let mut n = 0;
+    for src in modules.values() {
+        let mut in_trait_impl = false;
+        let mut depth = 0i32;
+        for line in production_code(src).lines() {
+            let t = line.trim_start();
+            if t.starts_with("impl ") && t.contains(" for ") {
+                in_trait_impl = true;
+                depth = 0;
+            }
+            if in_trait_impl {
+                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if depth <= 0 && line.contains('}') {
+                    in_trait_impl = false;
+                }
+                continue;
+            }
+            let after_vis = if let Some(rest) = t.strip_prefix("pub") {
+                match rest.strip_prefix('(') {
+                    Some(inner) => match inner.find(')') {
+                        Some(close) => inner[close + 1..].trim_start(),
+                        None => continue,
+                    },
+                    None => rest.trim_start(),
+                }
+            } else {
+                t
+            };
+            let Some(rest) = after_vis.strip_prefix("fn ") else {
+                continue;
+            };
+            if let Some(name) = rest.split('(').next() {
+                let name = name.trim();
+                if !name.is_empty() && !name.contains(char::is_whitespace) {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
 #[test]
 fn observed_dependencies_respect_the_declared_direction() {
     let modules = present_modules();

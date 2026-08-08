@@ -31,7 +31,7 @@ library: `starkc` (`src/main.rs`), `stark` (`src/bin/stark.rs`), `starkide`
 | `ast.rs` | 746 | Arena-allocated AST (typed IDs, not references/lifetimes; names as `Span`s; no grouping-paren nodes). | n/a (populated by parser) | `Ast { types, exprs, stmts, items, pats, blocks, dims, root, item_files: HashMap<ItemId, Arc<SourceFile>>, synthetic_spans }` (`ast.rs:32-46`) | `alloc_*`/accessor methods (`ast.rs:660-707`) |
 | `resolve.rs` | 2,753 | Name resolution + AST→HIR lowering (PLAN.md M2.1): module tree, path/import/glob resolution, builtin/primitive/core-trait/core-type resolution, tensor-extension name gating (**the extension's own name table lives in `extensions/tensor/syntax.rs`; the resolver calls it** — AS6). | `&Ast`, `Arc<SourceFile>`, `LanguageOptions` | `(Hir, Vec<Diagnostic>)` | `resolve(ast, file)` (`resolve.rs:84`, Core-only), `resolve_with_options(ast, file, options)` (`resolve.rs:89`), `is_tensor_builtin(b)` (`resolve.rs:2170`, delegating to `extensions::tensor::owns_builtin`) |
 | `hir.rs` | 680 | High-level IR — the desugared representation every pass after resolution uses exclusively. | n/a (populated by resolve) | `Hir { types, exprs, stmts, items, pats, blocks, root, item_files, ... }` | allocator/accessor methods mirroring `ast.rs` (`hir.rs:597-637`) |
-| `typecheck/` | 596 in `mod.rs`, 15,184 across ten modules | **The pass, split by semantic ownership (AS7).** `mod.rs` is a facade: module declarations, the four entry points, and the `TensorCheckCtx` impl that publishes Core services to the tensor extension. Invokes `flow::check` and `borrowck::check` as sub-passes at the end. | `&Hir`, `LanguageOptions` | `TypeCheckResult { diagnostics, tables: TypeTables { expr_types, local_types, local_mutability } }` | `check(hir)`, `check_with_options(hir, options)`, `analyze(hir)`, `analyze_with_options(hir, options)` (true root entry) |
+| `typecheck/` | 1,846 in `mod.rs`, 15,232 across eleven modules | **The pass, split by semantic ownership (AS7).** `mod.rs` is a facade: module declarations, the four entry points, and the `TensorCheckCtx` impl that publishes Core services to the tensor extension. Invokes `flow::check` and `borrowck::check` as sub-passes at the end. | `&Hir`, `LanguageOptions` | `TypeCheckResult { diagnostics, tables: TypeTables { expr_types, local_types, local_mutability } }` | `check(hir)`, `check_with_options(hir, options)`, `analyze(hir)`, `analyze_with_options(hir, options)` (true root entry) |
 | `flow.rs` | 403 | Definite-assignment / assignment-mutability data-flow analysis, kept separate from type inference. | `&Hir`, `Arc<SourceFile>` (**unused**, see §4), `&HashMap<ExprId, Ty>` | `Vec<Diagnostic>` | `check(hir, _file, expr_types)` (`flow.rs:21`) |
 | `borrowck.rs` | 900 | Borrow checker / ownership pass (PLAN.md M2.4): active-borrow and moved-place tracking, one-`&mut`-XOR-many-`&`. | `&Hir`, `Arc<SourceFile>` (single file, see §4), `&HashMap<ExprId,Ty>`, `&HashMap<LocalId,Ty>` | `Vec<Diagnostic>` | `check(hir, file, expr_types, local_types)` (`borrowck.rs:47`, whole-crate), `check_fn(...)` (`:68`), `check_snippet(...)` (`:89`) |
 | `interp.rs` | 3,464 | Gate-3 tree-walking interpreter over typed HIR; deterministic `BTreeMap`-backed `HashMap`/`HashSet` runtime value (see §3). | `&Hir`, `Arc<SourceFile>`, `&TypeTables` | `Result<Execution { output: String }, RuntimeError { message, span }>` | `run(hir, file, tables)` (`interp.rs:397`, runs `main`), `run_item(hir, file, tables, item)` (`:412`, used by `test_runner`) |
@@ -139,25 +139,31 @@ Dependency direction, enforced by `starkc/tests/as7_module_dependencies.rs` and 
 `STARKLANG/docs/compiler/work-packages/AS7-MODULE-DAG.md`:
 
 ```text
-types <- state <- infer <- traits <- convert <- bounds <- patterns/body <- items <- mod
+types <- state <- infer <- traits <- convert <- {bounds, trait_contracts} <- patterns/body <- items <- mod
 ```
 
 A module may depend on anything reachable **below** it and on nothing else. The check derives edges
 from explicit references *and* from `TypeChecker` method ownership, because Rust's inherent-method
 resolution hides dependencies from the import graph entirely.
 
+**The ownership half needs its coverage checked, not just its verdict.** Until CD-393 its parser
+recognised an enumerated list of visibility prefixes that omitted `pub(super) fn` and saw 36 of 234
+methods, reporting green over five live violations. `the_ownership_map_covers_every_method_it_claims_to`
+now asserts the map owns every scanned declaration bar recorded name collisions.
+
 | Module | Lines | Owns |
 | --- | ---: | --- |
 | `types.rs` | 1,153 | `Ty`, `ExtensionTy`, `ModelTy`, `TypeVarId`, `TypeTables`, the result and dispatch metadata types, and pure functions of the representation |
-| `state.rs` | 896 | `TypeChecker` storage and **every scoped ambient context** — each saves and restores, none clears to a default; source text and the publication of callable/display uses |
-| `infer.rs` | 1,262 | substitution, `resolve`, `unify`, type equality, inference variables and defaulting, grounding, instantiation, and the tensor-unification bridge |
-| `traits.rs` | 3,200 | trait identity and impl selection, Core trait contracts, coherence, associated types. **No HIR type conversion** — that would close the `convert ↔ traits` cycle AS7 stopped on |
+| `state.rs` | 569 | `TypeChecker` storage and **every scoped ambient context** — each saves and restores, none clears to a default; source text. **Not publication** (CD-393): the `publish_*` family resolves and selects before it writes, so it belongs with its caller |
+| `infer.rs` | 1,156 | substitution, `resolve`, `unify`, type equality, inference variables and defaulting, grounding, instantiation, and the tensor-unification bridge |
+| `traits.rs` | 2,043 | trait identity and impl selection, coherence, `core_method_signature`. **No HIR type conversion** — that would close the `convert ↔ traits` cycle AS7 stopped on |
+| `trait_contracts.rs` | 1,191 | trait machinery that must know what a **written** type means: impl-rule validation, Core trait contract checking, associated-function typing, the trait-impl index. Sits **above** `convert` (CD-393) — the eight methods that kept the cycle alive after Packet 7's ruling reached only the explicit references |
 | `convert.rs` | 901 | written type syntax → `Ty`: HIR types, generic arguments, generic-parameter scopes, and the tensor written-type bridge |
 | `bounds.rs` | 116 | complete written-bound satisfaction, including associated-type bindings. The orchestration layer the original decomposition was missing |
 | `patterns.rs` | 429 | pattern typing and binding, subsumption, irrefutability |
-| `body.rs` | 4,396 | expression, statement and block checking; calls, operators, control flow; **`resolve_method` lives here** because it evaluates the receiver and arguments |
+| `body.rs` | 4,842 | expression, statement and block checking; calls, operators, control flow; **`resolve_method` lives here** because it evaluates the receiver and arguments |
 | `items.rs` | 986 | the item passes — `check_crate`, fn/struct/enum/impl/trait/model declarations, public-API reachability, layout tables |
-| `mod.rs` | 596 | facade only: re-exports, the four entry points, the AS6 `TensorCheckCtx` impl |
+| `mod.rs` | 1,846 | facade only: re-exports, the four entry points, the AS6 `TensorCheckCtx` impl. Most of the file is four inline `#[cfg(test)]` modules; 474 lines are production |
 
 `crate::typecheck::{Ty, TypeTables, analyze, …}` resolve exactly as before — AS7 required **no
 import migration** anywhere in the crate. The submodules are private; nothing reaches them except
