@@ -2,8 +2,16 @@
 
 **Gate:** `WP-ARCHITECTURE-STABILIZATION.md` §5, "Campaign A exit gate".
 **Branch:** `wp-arch-stability/sprint-3`. **Date:** 2026-08-08. **Head:** `2858dc7`.
-**Status:** **CANDIDATE-PASS. Gate held for one substantive reason: AS3 #3 FAILS.**
-Owner rulings of 2026-08-08 applied throughout.
+**Status:** **CANDIDATE-PASS.** AS3 #2, #3 and #5 are **PASS-CANDIDATE** as of the second owner
+ruling of 2026-08-08: their substantive evidence now exists, and what remains is repository-backed
+confirmation (CI on the pushed head) and the final adversarial audit. Owner rulings of 2026-08-08
+applied throughout.
+
+**Why `PASS-CANDIDATE` rather than PASS or FAIL.** Holding a criterion at FAIL because CI has not
+yet reported would misdescribe it: the implementation, the exact-set evidence and the mutation
+evidence are all complete and green locally. Recording it PASS would overstate it in the other
+direction. The owner ruling introduces the third state for exactly this gap, and the audit is what
+closes it.
 
 > Campaign A passes only when AS0, AS1a, AS2, AS1b, AS3 and AS4 are complete and owner-reviewed. The
 > exit report must classify each criterion PASS, FAIL, DEFERRED-BY-DECISION or NOT-APPLICABLE and
@@ -14,9 +22,9 @@ rulings. All four are now classified in the gate's own vocabulary:
 
 | Criterion | Ruling | Classification |
 | --- | --- | --- |
-| AS3 #3 — total type→`Value` enforcement | **HOLD** | **FAIL** |
-| AS3 #5 — DEV-121 class closure | closure premature; **reopen DEV-121** | **FAIL** |
-| AS3 #2 — environment installation | DEV-197 disproved the universal claim | **FAIL — requalification in progress** |
+| AS3 #3 — total type→`Value` enforcement | HOLD, then **promote once the evidence exists** | **PASS-CANDIDATE** |
+| AS3 #5 — DEV-121 class closure | closure premature; **reopen DEV-121** | **PASS-CANDIDATE** (DEV-121 **CLOSED-CANDIDATE**) |
+| AS3 #2 — environment installation | DEV-197 disproved the universal claim; requalify | **PASS-CANDIDATE** |
 | AS4 #1 — one authority per type property | accept as scoped | **PASS** (§4.1) |
 | AS4 #3 — new variants force revisit | accept as scoped, evidence closure required | **PASS** (§4.2) |
 | AS4 #4 — three-engine adversaries | deferred for structurally unavailable lanes | **DEFERRED-BY-DECISION** |
@@ -52,10 +60,10 @@ here. AS0 exited when its items 6 and 7 landed and item 10 was deferred by owner
 | # | Criterion | Verdict | Evidence |
 | --- | --- | --- | --- |
 | 1 | Every executable user-callable use has exactly one record; duplicates and omissions fail an invariant test | **PASS** | `as3_callable_use_exactness` (9 tests). Expectations derived from HIR shape + `expr_types`, never from the table under test. Mutation-tested 4 ways: disabling the operator publisher fails 4/9, the bound publisher 7/9, the Display walk 1, a double publication 1 |
-| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **FAIL — requalification in progress** | Recorded PASS in the first draft. **DEV-197 disproved the universal claim**: `Res::AssociatedFn` and the function-value path both ran callee bodies with no environment installed. Both are fixed, but the previous evidence did not establish "every dispatch", and we do not yet know they were the last. Requalifies when the boundaries that CONSUME the environment are wired — see #3 |
-| 3 | The total type-to-`Value` relation is enforced at parameters, returns, receiver boundaries, bindings **and typed mutation without exemptions** | **FAIL** | See §3.1. The remainder is larger than the first draft stated |
+| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **PASS-CANDIDATE** | Requalified by **omission**, not by asserting a table has an entry — see §3.2. Seven dispatch-class controls (D1–D7) each remove the environment at the single installation point and require the run to fail; each witness answers `size_of::<T>()`, so the instantiation is load-bearing rather than incidental. Three structural pins hold the shape for future edits. The requalification found **DEV-202** |
+| 3 | The total type-to-`Value` relation is enforced at parameters, returns, receiver boundaries, bindings **and typed mutation without exemptions** | **PASS-CANDIDATE** | 12 of 12 `RepBoundary` variants `Wired`, pinned executably by `dev121_boundary_inventory`; four-class producer-mutation evidence proves each wire forces its defect class; the one remaining missing-metadata escape (inside `bind_typed_local`) is closed. See §3.1a |
 | 4 | The frozen corpus and all engine comparisons remain green | **PASS (pending CI on head)** | Locally: `mir_differential` 132, `three_engine_differential` 109, `c6_generated_corpus`, `c6_metamorphic`, external sample suite 39/39. See §7 |
-| 5 | DEV-121 closes only with a class-level evidence statement, not one regression case | **FAIL** | The 2026-08-07 closure was **premature and is withdrawn** (owner ruling). It proved every known view-producing intrinsic is exercised and that the narrow `INV-VALUE-REP-001` runs at four binding positions — real evidence, but not the class, which is defined by the total relation that #3 shows is unwired. The producer audit is retained as **defence-in-depth**, not authority. DEV-121 **REOPENED** |
+| 5 | DEV-121 closes only with a class-level evidence statement, not one regression case | **PASS-CANDIDATE** (DEV-121 **CLOSED-CANDIDATE**) | The 2026-08-07 closure was **premature and is withdrawn** (owner ruling). It proved every known view-producing intrinsic is exercised and that the narrow `INV-VALUE-REP-001` runs at four binding positions — real evidence, but not the class, which is defined by the total relation that #3 shows is unwired. The producer audit is retained as **defence-in-depth**, not authority. DEV-121 **REOPENED** |
 
 ### 3.0 The dependency DEV-197 exposed
 
@@ -83,6 +91,64 @@ that depends on it, and until this packet nothing did.
 
 It is also why AS3 #2 cannot stand as PASS on its previous evidence, and why #2 and #3 requalify
 together.
+
+### 3.2 AS3 #2 — requalified by omission (2026-08-08)
+
+The criterion was recorded PASS once before, on tests that asserted the environment table had an
+entry. DEV-197 is what that missed: **nine** dispatch sites installed no environment at all and
+every test passed, because the bodies involved never mentioned their own generic parameters. An
+environment that is never consulted cannot be observed to be absent.
+
+So the requalification proves the claim by **removing** the environment and requiring failure.
+
+**The eight properties, and where each is evidenced.**
+
+| # | Property | Evidence |
+| --- | --- | --- |
+| P1 | One body-entry authority | `p1_exactly_one_production_body_executor` — `eval_block(callable.body)` occurs exactly once; `p1_the_raw_executor_is_called_only_by_the_authority` |
+| P2 | Environment is an explicit state, never absent | `p2_every_invocation_environment_variant_is_explicit` — exhaustive over `InvocationEnv`, so a new variant fails to compile until it is described |
+| P3 | Published dispatch consumes the published environment | D1, D2, D3 |
+| P4 | Bound dispatch is atomic — body and environment from one specialiser call | D5 |
+| P5 | Function values install their captured bindings | D6 |
+| P6 | Environment dominates the typed call boundaries | `p6_typed_boundaries_run_while_the_environment_is_active` (behavioural: a `&W<T>` receiver would fail on a *correct* program if read first) plus the structural pin that the install precedes the body and the guard is bound, not dropped |
+| P7 | Missing environment metadata fails loudly | every control asserts `FailureClass::InternalInvariant` — never Empty, a skip, a default, or a reconstruction |
+| P8 | Nested calls install and restore | D7 and `p8_a_callees_environment_does_not_outlive_it` |
+
+**The seven dispatch-class controls.** Each removes the environment at the single installation
+point, and each asserts three things — that the witness passes unmutated *with the answer its
+instantiation determines*, that the mutation was **reached**, and that the run then fails as an
+internal invariant.
+
+| Class | Witness | Unmutated answer |
+| --- | --- | --- |
+| D1 free generic function | `width<T>(x: T)` | `8` |
+| D2 generic associated function | `S::width<T>` | `8` |
+| D3 generic inherent method | `s.width<T>` | `8` |
+| D4 operator into a generic impl | `impl<T> Eq for W<T>` | `1` |
+| D5 bound trait dispatch | `impl<T> Sz for P<T>` through `S: Sz` | `8` |
+| D6 function value | `let f: fn(Float64) -> Int32 = width` | `8` |
+| D7 nested generic calls | `outer<Float64>` calling `inner<Int32>` | `848` |
+
+Two choices in that table are deliberate, and both are corrections of how DEV-197 hid:
+
+- **Every witness answers `size_of::<T>()`.** DEV-197's original two defects were invisible because
+  both bodies returned their argument unchanged, so an unbound `T` changed no answer. A control
+  with that property would reproduce the blindness it is testing for.
+- **D7 uses contrasting instantiations** — `T = Float64`, `U = Int32`, answer `848`. A restoration
+  bug answers `844`. Identical bindings would let a stale frame pass by coincidence.
+
+**Requiring the mutation to be REACHED is not a formality.** A control whose witness never touches
+the installer would detect nothing and look like a pass — which is the failure mode of the evidence
+this requalification replaces.
+
+**What it found: DEV-202.** `call_method` chose the environment, **installed it**, and then passed
+it to `call_user_method`, which routes through the authority — which installs it again. The
+redundancy is not the problem; the scope is. The outer guard was live while the *caller's* receiver
+place was still being resolved and materialized, so caller-side work ran under the callee's
+instantiation — the same scope error P6 exists to prevent, in the other direction. It produced no
+wrong answer, because both installations push identical bindings. That is precisely the class AS3
+#2 was reopened to find: a defect of the architecture claim rather than of any current output, and
+the reason the pin counts installation points instead of checking that a table is populated.
 
 ### 3.1a AS3 #3 — progress since this report (updated 2026-08-08)
 

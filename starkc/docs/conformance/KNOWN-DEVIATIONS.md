@@ -6104,3 +6104,25 @@ as `InternalInvariant`; every caller is a language-level binding and the checker
 
 The permissive helper had **no remaining callers, production or test**, and is deleted rather than
 renamed: a permissive path parked in the file is one a future funnel can pick up by accident.
+
+## DEV-202 — the method-call path installed the callee's environment twice [CLOSED at creation, 2026-08-08]
+
+- **Rule:** AS3 exit criterion 2, and P6 of its requalification — the callee's environment is
+  installed by the authority, and is active for the callee's work and nothing else.
+- **Defect:** `call_method` chose the environment, **installed it**, and then passed it to
+  `call_user_method`, which routes through the invocation authority — which installs it again. Every
+  method call therefore pushed the callee's instantiation onto the generic frame stack twice.
+- **The redundancy is not the problem; the SCOPE is.** The outer guard was live while the CALLER's
+  receiver place was still being resolved and materialized. Caller-side work running under the
+  callee's instantiation is the same scope error P6 exists to prevent, running in the other
+  direction — and the outer install predates the authority, so nothing had reviewed its extent
+  since the extent changed.
+- **Why it produced no wrong answer:** the two installations push identical bindings, so a lookup
+  during the overlap resolves the same way it would have. It is a defect of the *architecture
+  claim*, not of any current output — which is exactly the class AS3 #2 was reopened to find, and
+  exactly why the requalification pins the number of installation points rather than asserting a
+  table has an entry.
+- **Found by:** the AS3 #2 structural pin `the_installer_is_the_single_environment_entry_point`,
+  which requires exactly one call to `install_invocation_env` and found two.
+- **Repair:** the call site chooses the environment; the authority installs it. That split is what
+  the authority was created for.

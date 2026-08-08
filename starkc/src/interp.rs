@@ -599,6 +599,25 @@ pub(crate) enum ProducerMutation {
     WrongAggregateField,
 }
 
+/// **Test-only environment mutation — AS3 #2 requalification.**
+///
+/// AS3 criterion 2 claims that every dispatch class installs the checker-selected generic
+/// environment. The claim is only meaningful if OMITTING the environment is observable, and
+/// DEV-197 is the standing proof that it often was not: nine dispatch sites installed nothing at
+/// all and every test passed, because the bodies involved never mentioned their own parameters.
+///
+/// So the requalification does not assert that a table has an entry. It removes the environment at
+/// the single installation point and requires the run to fail — once per dispatch class, on a
+/// witness whose behaviour genuinely depends on the instantiation.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EnvMutation {
+    /// The environment is selected and delivered, and then not installed — exactly DEV-197's
+    /// shape. Not "install the wrong bindings": an absent environment is the failure the
+    /// architecture is claimed to prevent.
+    DropEnvironment,
+}
+
 /// **Where a body's `self` comes from, before it is materialized.**
 ///
 /// Materialization belongs to the invocation authority rather than to each caller, because the
@@ -1349,24 +1368,48 @@ pub fn run(
     on_interpreter_stack(move || run_here(hir, file, tables))
 }
 
-/// [`run`] with one producer mutation armed, for the DEV-121 class evidence. Test-only.
+/// What a test armed for one execution. Both axes are independent: a producer mutation corrupts a
+/// VALUE, an environment mutation removes an INSTANTIATION.
 #[cfg(test)]
-pub(crate) fn run_with_mutation(
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Mutations {
+    pub(crate) producer: Option<ProducerMutation>,
+    pub(crate) env: Option<EnvMutation>,
+}
+
+/// One mutated execution, with the evidence that the mutation was actually reached.
+#[cfg(test)]
+pub(crate) struct MutatedRun {
+    pub(crate) result: Result<Execution, RuntimeError>,
+    /// **Why this is reported rather than assumed.** A dispatch-class control whose witness never
+    /// reaches the installation point would "detect" nothing and look like a pass. Requiring a
+    /// non-zero count is what makes each of the seven classes evidence about ITS OWN path.
+    pub(crate) env_mutations_applied: usize,
+}
+
+/// [`run`] with mutations armed, for the DEV-121 and AS3 #2 evidence. Test-only.
+#[cfg(test)]
+pub(crate) fn run_mutated(
     hir: &Hir,
     file: crate::source::RegisteredSource,
     tables: &TypeTables,
-    mutation: Option<ProducerMutation>,
-) -> Result<Execution, RuntimeError> {
+    mutations: Mutations,
+) -> MutatedRun {
     on_interpreter_stack(move || {
         let mut interpreter = Interpreter::new(hir, file, tables);
-        interpreter.mutation = mutation;
-        let (status, exit_stderr) = interpreter.run_main()?;
-        let stderr = format!("{}{exit_stderr}", interpreter.stderr);
-        Ok(Execution {
-            output: interpreter.output,
+        interpreter.mutation = mutations.producer;
+        interpreter.env_mutation = mutations.env;
+        let outcome = interpreter.run_main();
+        let env_mutations_applied = interpreter.env_mutations_applied;
+        let result = outcome.map(|(status, exit_stderr)| Execution {
+            output: interpreter.output.clone(),
             status,
-            stderr,
-        })
+            stderr: format!("{}{exit_stderr}", interpreter.stderr),
+        });
+        MutatedRun {
+            result,
+            env_mutations_applied,
+        }
     })
 }
 
@@ -1529,6 +1572,13 @@ struct Interpreter<'a> {
     /// The one producer mutation armed for this execution, if any. See [`ProducerMutation`].
     #[cfg(test)]
     mutation: Option<ProducerMutation>,
+    /// The environment mutation armed for this execution, if any. See [`EnvMutation`].
+    #[cfg(test)]
+    env_mutation: Option<EnvMutation>,
+    /// How many times the environment mutation actually fired. A dispatch-class control that
+    /// never reached the installation point would otherwise "pass" by testing nothing.
+    #[cfg(test)]
+    env_mutations_applied: usize,
 }
 
 /// RAII guard for one entry of [`Interpreter::generic_frames`].
@@ -1674,6 +1724,10 @@ impl<'a> Interpreter<'a> {
             generic_frames: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             #[cfg(test)]
             mutation: None,
+            #[cfg(test)]
+            env_mutation: None,
+            #[cfg(test)]
+            env_mutations_applied: 0,
         }
     }
 
@@ -1960,6 +2014,15 @@ impl<'a> Interpreter<'a> {
         environment: &InvocationEnv,
         span: Span,
     ) -> Result<GenericFrame, RuntimeError> {
+        // AS3 #2 control: deliver the environment and then fail to install it.
+        #[cfg(test)]
+        if self.env_mutation == Some(EnvMutation::DropEnvironment) {
+            self.env_mutations_applied += 1;
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
         match environment {
             InvocationEnv::Empty => Ok(GenericFrame {
                 frames: self.generic_frames.clone(),
@@ -5070,18 +5133,21 @@ impl<'a> Interpreter<'a> {
         };
         match self.eval_call_arguments(args)? {
             Ok(values) => {
-                // A3c-S: the callee's generic environment, live for the whole call. The guard's
-                // `Drop` covers traps, propagation and internal failures, which a manual pop after
-                // `?` would not.
                 // **Packet 1: an explicit environment, chosen once.** A `Bound` selection carries
                 // the specialiser's concrete bindings; everything else consumes what the checker
-                // published against this call expression. Both go through one installer, so the
-                // choice is visible rather than spread across two call sites.
+                // published against this call expression.
+                //
+                // **DEV-202: this site used to INSTALL it as well, and then pass it on.** The
+                // authority installs it too, so every method call pushed the callee's
+                // instantiation twice — and, worse, the outer guard was live while the CALLER's
+                // receiver place was still being resolved and materialized. Caller-side work under
+                // the callee's environment is the same scope error P6 exists to prevent, running
+                // in the other direction. Choosing the environment here and installing it there is
+                // the split the authority was created for.
                 let environment = match bound_env {
                     Some(bindings) => InvocationEnv::Concrete(bindings),
                     None => InvocationEnv::Published(expr_id),
                 };
-                let _env = self.install_invocation_env(&environment, span)?;
                 self.call_user_method(method, receiver_place, environment, values, span)
                     .map(Flow::Value)
             }
@@ -9964,6 +10030,18 @@ mod tests {
         source: &str,
         mutation: Option<ProducerMutation>,
     ) -> Result<Execution, RuntimeError> {
+        execute_mutated(
+            source,
+            Mutations {
+                producer: mutation,
+                env: None,
+            },
+        )
+        .result
+    }
+
+    /// `execute`, with any combination of mutations armed for this run only.
+    fn execute_mutated(source: &str, mutations: Mutations) -> MutatedRun {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, parse_diags) = parse(&file, ParseMode::Program);
         assert!(parse_diags.is_empty(), "parse diagnostics: {parse_diags:?}");
@@ -9984,7 +10062,7 @@ mod tests {
         let registered = hir
             .source_named(&file.name)
             .expect("the parse registered this file");
-        run_with_mutation(&hir, registered, &checked.tables, mutation)
+        run_mutated(&hir, registered, &checked.tables, mutations)
     }
 
     // ---------------------------------------------------------------------------------------
@@ -10147,6 +10225,244 @@ mod tests {
                 .output,
             "3\n",
             "passing `None` must be identical to not arming at all"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // AS3 #2 REQUALIFICATION — environment installation, proved by omission
+    // ---------------------------------------------------------------------------------------
+    //
+    // The criterion was recorded PASS once before on tests that asserted a table had an entry.
+    // DEV-197 is what that missed: nine dispatch sites installed no environment at all and every
+    // test passed, because the bodies involved never mentioned their own parameters. An
+    // environment that is never consulted cannot be observed to be absent.
+    //
+    // So this requalification proves the claim by OMISSION. Each of the seven dispatch classes gets
+    // a witness whose answer genuinely depends on its instantiation — `size_of::<T>()`, which is
+    // 8 for `Float64` and 4 for `Int32` — and the environment is then removed at the single
+    // installation point. Three things must hold for each class:
+    //
+    //   1. the witness passes unmutated, with the instantiation-dependent answer;
+    //   2. the mutation is REACHED — a control that never reaches the installer would "detect"
+    //      nothing and look like a pass, which is precisely how DEV-197 hid;
+    //   3. the run fails as `InternalInvariant` — never Empty, never a skip, never a default.
+
+    /// The three-step check every dispatch-class control runs. Returns the mutated run's error.
+    fn environment_omission_must_be_observable(
+        class: &str,
+        source: &str,
+        expected_output: &str,
+    ) -> RuntimeError {
+        // 1. The witness genuinely passes, with the answer its instantiation determines.
+        let clean = execute(source)
+            .unwrap_or_else(|error| panic!("{class}: witness must run clean: {error:?}"));
+        assert_eq!(
+            clean.output, expected_output,
+            "{class}: the witness must depend on its instantiation, or removing the environment \
+             cannot be observed — that is exactly how DEV-197 stayed hidden"
+        );
+
+        // 2 and 3. Remove the environment at the installation point.
+        let run = execute_mutated(
+            source,
+            Mutations {
+                producer: None,
+                env: Some(EnvMutation::DropEnvironment),
+            },
+        );
+        assert!(
+            run.env_mutations_applied > 0,
+            "{class}: the installation point was never reached, so this control tests nothing \
+             about this dispatch class"
+        );
+        let error = run.result.err().unwrap_or_else(|| {
+            panic!(
+                "{class}: the environment was removed and the program still succeeded — \
+                    omission is unobservable for this dispatch class"
+            )
+        });
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "{class}: a missing environment is a compiler defect, never a language trap: {}",
+            error.message
+        );
+        error
+    }
+
+    /// **D1 — free generic function.** `Static` selection, `Static` environment.
+    #[test]
+    fn d1_a_free_generic_function_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D1",
+            "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+             fn main() { println(width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D2 — generic associated function.** One of the two paths DEV-197 was opened for.
+    #[test]
+    fn d2_a_generic_associated_function_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D2",
+            "struct S { v: Int32 } \
+             impl S { fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } } \
+             fn main() { println(S::width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D3 — generic inherent method.**
+    #[test]
+    fn d3_a_generic_inherent_method_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D3",
+            "struct S { v: Int32 } \
+             impl S { fn width<T>(&self, x: T) -> Int32 { size_of::<T>() as Int32 } } \
+             fn main() { let s = S { v: 0 }; println(s.width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D4 — operator dispatch into a generic impl.**
+    ///
+    /// This class already has real-world evidence: DEV-201 was exactly this defect, shipped, and
+    /// caught by the receiver boundary as a MISSED TRAP against MIR. The control is added anyway
+    /// so the requalification is reproducible rather than resting on history.
+    #[test]
+    fn d4_operator_dispatch_into_a_generic_impl_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D4",
+            "struct W<T> { v: T } \
+             impl<T> Eq for W<T> { fn eq(&self, other: &W<T>) -> Bool { size_of::<T>() == 8 } } \
+             fn main() { let a = W { v: 1.5 }; let b = W { v: 2.5 }; \
+                         if a == b { println(1); } else { println(0); } }",
+            "1\n",
+        );
+    }
+
+    /// **D5 — bound trait dispatch.** The body and environment come from the shared specialiser
+    /// atomically; removing the environment must not leave the body running.
+    #[test]
+    fn d5_bound_trait_dispatch_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D5",
+            "trait Sz { fn sz(&self) -> Int32; } \
+             struct P<T> { v: T } \
+             impl<T> Sz for P<T> { fn sz(&self) -> Int32 { size_of::<T>() as Int32 } } \
+             fn use_it<S: Sz>(s: S) -> Int32 { s.sz() } \
+             fn main() { println(use_it(P { v: 1.5 })); }",
+            "8\n",
+        );
+    }
+
+    /// **D6 — function value.** DEV-178 put the bindings on the VALUE precisely because
+    /// `Ty::Fn` cannot say which instantiation produced it, and DEV-197 found the call site
+    /// discarding them.
+    ///
+    /// The witness is deliberately NOT identity-shaped. DEV-197's original two defects were
+    /// invisible because both bodies returned their argument unchanged, so an unbound `T` changed
+    /// no answer; a control with that property would reproduce the blindness it is testing for.
+    #[test]
+    fn d6_a_function_value_needs_its_captured_bindings() {
+        environment_omission_must_be_observable(
+            "D6",
+            "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+             fn main() { let f: fn(Float64) -> Int32 = width; println(f(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D7 — nested generic calls, which tests RESTORATION as well as installation.**
+    ///
+    /// `outer<T = Float64>` calls `inner<U = Int32>` and then reads `size_of::<T>()` again. The
+    /// witness answers `848`: 8 before, 4 inside, 8 after. A stale frame would answer `844`, and
+    /// the two instantiations are deliberately different so that a restoration bug cannot pass by
+    /// coincidence.
+    #[test]
+    fn d7_nested_generic_calls_install_and_restore() {
+        environment_omission_must_be_observable(
+            "D7",
+            "fn inner<U>(x: U) -> Int32 { size_of::<U>() as Int32 } \
+             fn outer<T>(x: T) -> Int32 { \
+                 let a = size_of::<T>() as Int32; \
+                 let m = inner(1); \
+                 let b = size_of::<T>() as Int32; \
+                 a * 100 + m * 10 + b \
+             } \
+             fn main() { println(outer(1.5)); }",
+            "848\n",
+        );
+    }
+
+    /// **P8, stated as its own assertion.** D7's witness passing is the restoration proof, but it
+    /// is worth failing loudly on its own: `848` means the caller's `T` survived a callee that
+    /// installed a different one, and `844` means it did not.
+    #[test]
+    fn p8_a_callees_environment_does_not_outlive_it() {
+        let execution = execute(
+            "fn inner<U>(x: U) -> Int32 { size_of::<U>() as Int32 } \
+             fn outer<T>(x: T) -> Int32 { \
+                 let a = size_of::<T>() as Int32; \
+                 let m = inner(1); \
+                 let b = size_of::<T>() as Int32; \
+                 a * 100 + m * 10 + b \
+             } \
+             fn main() { println(outer(1.5)); }",
+        )
+        .expect("must run");
+        assert_eq!(
+            execution.output, "848\n",
+            "the caller's instantiation must be restored after a callee installed a different \
+             one: 8 before, 4 inside, 8 after"
+        );
+    }
+
+    /// **P2 — an invocation's environment is an explicit state, never an absent one.**
+    ///
+    /// Exhaustive on purpose: adding an `InvocationEnv` variant fails to compile here until
+    /// someone states what it means and confirms the installer handles it. That is the forcing
+    /// function, not the assertion below.
+    #[test]
+    fn p2_every_invocation_environment_variant_is_explicit() {
+        fn describe(env: &InvocationEnv) -> &'static str {
+            match env {
+                InvocationEnv::Empty => "explicitly no generics — not absent metadata",
+                InvocationEnv::Published(_) => "the environment published at this call expression",
+                InvocationEnv::Concrete(_) => {
+                    "bindings the checker or specialiser already resolved"
+                }
+                InvocationEnv::Captured(_) => "bindings the function value carries (DEV-178)",
+            }
+        }
+        let variants = [InvocationEnv::Empty, InvocationEnv::Concrete(Vec::new())];
+        for env in &variants {
+            assert!(!describe(env).is_empty());
+        }
+    }
+
+    /// **P6 — the environment is installed BEFORE the typed call boundaries read anything.**
+    ///
+    /// Not a source-order assertion: D4's receiver type is `&W<T>`, so if the receiver boundary ran
+    /// before installation it would see an unsubstituted `T` on a correct program. It does not —
+    /// the unmutated witness passes — and when the environment is removed, that is exactly the
+    /// boundary that catches it.
+    #[test]
+    fn p6_typed_boundaries_run_while_the_environment_is_active() {
+        let error = environment_omission_must_be_observable(
+            "P6",
+            "struct W<T> { v: T } \
+             impl<T> Eq for W<T> { fn eq(&self, other: &W<T>) -> Bool { size_of::<T>() == 8 } } \
+             fn main() { let a = W { v: 1.5 }; let b = W { v: 2.5 }; \
+                         if a == b { println(1); } else { println(0); } }",
+            "1\n",
+        );
+        assert!(
+            error.message.contains(RepBoundary::Receiver.as_str()),
+            "a receiver typed `&W<T>` must be read against the callee's own instantiation, so \
+             removing it fails at the receiver boundary. Got: {}",
+            error.message
         );
     }
 
