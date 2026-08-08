@@ -7690,6 +7690,17 @@ impl<'a> Interpreter<'a> {
             // (including the container's own `Drop` impl, if any).
             return self.drop_value(value);
         }
+        // **DEV-212: a nominal with its OWN destructor is destroyed whole, never decomposed.**
+        //
+        // PAT-DROP-001 destroys "every still-owned, unbound component of the hidden scrutinee",
+        // and the decomposition below implements exactly that — but for a type carrying its own
+        // `Drop`, decomposing is what makes the type's destructor never run at all. `match e` on
+        // an `impl Drop` enum printed the arm and nothing else, in BOTH engines.
+        //
+        // Sound because DEV-211 now refuses any binding that would MOVE a component out of such a
+        // value: the only bindings that reach here copied a `Copy` component, which PAT-DROP-001
+        // says "remains initialized in the hidden scrutinee". So the value really is complete, and
+        // complete is exactly what its destructor requires.
         let kind = &self.hir.pat(pat).kind;
         match kind {
             hir::PatKind::Binding { .. } => Ok(()),

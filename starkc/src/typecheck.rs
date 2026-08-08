@@ -12830,10 +12830,46 @@ fn is_copy_primitive(primitive: Primitive) -> bool {
 /// Per-instance genericity is handled at the query, not here: this set answers "is `struct H` ever
 /// `Copy`", and `is_copy_with_impls`/`is_copy_type` additionally require every type argument to be
 /// `Copy` (`args.all(is_copy)`), so `H<&P>` is `Copy` while `H<String>` is not, from one set.
-pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+/// **AS4: the single authority for "does this nominal have a user destructor?"**
+///
+/// Answered by RESOLVED IDENTITY — `Res::CoreTrait(CoreTrait::Drop)` — never by the trait's
+/// spelling. CD-379 settled that rule for `Display`; DEV-210 is the same defect found in the borrow
+/// checker, which asked whether the written trait name `.ends_with("Drop")` and so refused a legal
+/// partial move on any type implementing a user trait called `MyDrop`.
+///
+/// Extracted from `copy_eligible_types`, which already computed exactly this set for its own use
+/// and kept it private. Publishing it costs nothing and removes the incentive to write a third
+/// scan: every consumer of "has a destructor" now reads one answer.
+pub fn nominals_with_destructor(hir: &Hir) -> HashSet<ItemId> {
     let mut drop_items: HashSet<ItemId> = HashSet::new();
+    for item in hir.items.iter() {
+        let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            self_ty,
+            ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        if trait_ref.res != Res::CoreTrait(hir::CoreTrait::Drop) {
+            continue;
+        }
+        if let hir::TypeKind::Path {
+            res: Res::Item(target),
+            ..
+        } = &hir.ty(*self_ty).kind
+        {
+            drop_items.insert(*target);
+        }
+    }
+    drop_items
+}
+
+pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+    // One authority, consulted rather than repeated: this scan used to compute `drop_items` inline.
+    let drop_items = nominals_with_destructor(hir);
     let mut eligible: HashSet<ItemId> = HashSet::new();
-    for (idx, item) in hir.items.iter().enumerate() {
+    for item in hir.items.iter() {
         if let hir::ItemKind::Impl {
             trait_: Some(trait_ref),
             self_ty,
@@ -12845,19 +12881,12 @@ pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
                 ..
             } = &hir.ty(*self_ty).kind
             {
-                match trait_ref.res {
-                    // An explicit `impl Copy` seeds the set; its field validity is checked
-                    // separately (a `Copy`+non-`Copy`-field type is a reported error).
-                    Res::CoreTrait(hir::CoreTrait::Copy) => {
-                        eligible.insert(*target);
-                    }
-                    Res::CoreTrait(hir::CoreTrait::Drop) => {
-                        drop_items.insert(*target);
-                    }
-                    _ => {}
+                // An explicit `impl Copy` seeds the set; its field validity is checked separately
+                // (a `Copy`+non-`Copy`-field type is a reported error).
+                if trait_ref.res == Res::CoreTrait(hir::CoreTrait::Copy) {
+                    eligible.insert(*target);
                 }
             }
-            let _ = idx;
         }
     }
     // Fixpoint: a nominal joins the set once all its fields are eligible under the current set.

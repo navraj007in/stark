@@ -6419,3 +6419,61 @@ DEV-201 and DEV-202 were found after the class was believed closed, both by the 
 behaviour. They are recorded under their own numbers because each was a distinct defect, but they
 are the same shape, and their discovery is the reason the requalification pins installation points
 instead of asserting that a table is populated.
+
+## DEV-210 — the borrow checker identified `Drop` by spelling, not identity [CLOSED at creation, 2026-08-08]
+
+- **Rule:** CD-379 — a core trait is satisfied by RESOLVED IDENTITY. A user trait merely *named*
+  like a core one does not satisfy it.
+- **Defect:** `borrowck::local_has_drop` scanned the impl set and asked whether the written trait
+  name `.ends_with("Drop")`. So `impl MyDrop for S` made `S` "implement `Drop`", and a legal partial
+  move out of one of its fields was refused with E0100. **Valid Core rejected because a user trait's
+  name ended in four particular letters.**
+- **Three answers existed** to "does this nominal have a user destructor": the interpreter's (by
+  `Res::CoreTrait(Drop)` — correct), MIR/native's `TypeContext::drop_impls` (correct), and this one.
+- **The repair was not to fix the string test.** `copy_eligible_types` already computed exactly this
+  set, by identity, and kept it private — so the borrow checker had written a second, weaker answer
+  to a question the checker was already answering correctly. `nominals_with_destructor` is now
+  published; `copy_eligible_types` consults it rather than repeating the scan.
+- **Evidence:** `as4_destructor_authority` — a real destructor still refuses the move (the control),
+  no destructor permits it, `MyDrop` and `DropLike` do not count, the published set contains exactly
+  the nominal that declares a destructor, and enums are covered.
+
+## DEV-211 — a matched component could move out of a `Drop` nominal [CLOSED at creation, 2026-08-08]
+
+- **Rule:** OWN-PARTIAL-001 — *"Moving a field from a type that implements `Drop` is prohibited,
+  because its destructor requires the complete value."*
+- **Defect:** `match e { E::A(s) => … }` on an owned `impl Drop` enum was **accepted**, and the
+  destructor then never ran: PAT-DROP-001 destroys the *unbound* components, so decomposing left
+  nothing to run the type's own `Drop`.
+- **Both engines agreed**, so this was a front-end conformance defect rather than an engine
+  divergence. The checker had the rule for struct fields (`local_has_drop`, at a projection move)
+  and never applied it to a matched component.
+- **Repair:** `reject_moves_out_of_drop_scrutinee`, a sibling of the existing
+  `reject_moves_out_of_borrow` walk — same prohibition, different reason, so the diagnostics can
+  each say what they mean rather than sharing a mode flag.
+- **Blast radius measured before implementing:** no first-party package uses `impl Drop`; three
+  sample files do, none in this shape.
+- **Evidence:** `as4_hostile_combinations` — the move is refused, and a `Copy` payload of the same
+  enum still matches, so the rule does not read as "cannot match a `Drop` enum".
+
+## DEV-212 — a `match` skips a `Drop` nominal's own destructor [OPEN, 2026-08-08]
+
+- **Rule:** PAT-DROP-001 / OWN-PARTIAL-001 — a value consumed by a match is destroyed exactly once,
+  and a type with its own destructor requires the complete value.
+- **Defect:** `match e { E::A(n) => … }` on an `impl Drop` enum with a **`Copy`** payload runs the
+  arm and **never runs the destructor**. Nothing moves out, so the value is complete; decomposing it
+  into components is what skips the nominal's own `Drop`. Present in **both** HIR and MIR.
+- **Attempted and withdrawn.** Destroying the value whole in `drop_unbound` caused a DOUBLE drop:
+  the guard ran before the `Binding` arm and destroyed components that had already moved into their
+  bindings. Reordering it after that check fixed the HIR side cleanly — `--lib` green, destructor
+  running. The matching MIR change (`drop_whole_scrutinee_at_arm_end` in place of
+  `consume_unbound_leaves`) did **not** take effect, and both halves were withdrawn rather than
+  leave the two engines disagreeing.
+- **Open question, narrow:** why the MIR arm-end drop does not fire for a user-`Drop` enum
+  scrutinee. The HIR repair is known-good and can be reapplied once MIR matches.
+- **Marker, not an endorsement:** `dev212_a_drop_enum_destructor_is_skipped_by_a_match` asserts the
+  CURRENT behaviour so the suite stays green and the defect stays visible. It fails the moment
+  either engine is repaired, and its message says the assertion is wrong on purpose.
+- **Campaign A consequence:** this blocks PASS. A destructor that silently does not run is a
+  correctness defect, and "the engines agree" is satisfied only in the sense that both agree on the
+  wrong answer.

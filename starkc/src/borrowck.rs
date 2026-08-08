@@ -53,6 +53,9 @@ pub struct BorrowChecker<'a> {
     expr_types: &'a HashMap<ExprId, Ty>,
     local_types: &'a HashMap<LocalId, Ty>,
     copy_types: HashSet<ItemId>,
+    /// Nominals with a user destructor, by RESOLVED identity (DEV-210). Read from the checker's
+    /// authority rather than rescanned here.
+    drop_items: HashSet<ItemId>,
 
     // Active borrow tracking
     active_borrows: Vec<Borrow>,
@@ -82,6 +85,7 @@ pub fn check(
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -105,6 +109,7 @@ pub fn check_fn(
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -128,6 +133,7 @@ pub fn check_snippet(
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -278,6 +284,85 @@ impl<'a> BorrowChecker<'a> {
     /// borrowed scrutinee. Wildcards, literals, and path (unit-variant) patterns bind nothing
     /// and stay legal — matching by reference is fine, it is only *taking ownership* that is
     /// not — as does any `Copy` binding, which copies rather than moves.
+    /// Whether the scrutinee's own type is a nominal carrying a user destructor.
+    ///
+    /// Reads the published authority (DEV-210), not a private scan.
+    fn scrutinee_nominal_has_drop(&self, scrutinee: hir::ExprId) -> bool {
+        match self.expr_types.get(&scrutinee) {
+            Some(Ty::Struct(id, _) | Ty::Enum(id, _)) => self.drop_items.contains(id),
+            _ => false,
+        }
+    }
+
+    /// DEV-211's walk. Structurally the same as [`Self::reject_moves_out_of_borrow`] — a different
+    /// reason for the same prohibition, so it is a sibling rather than a flag on that one: the
+    /// diagnostics must say different things, and a shared walk with a mode parameter would make
+    /// both messages harder to get right than either is separately.
+    fn reject_moves_out_of_drop_scrutinee(&mut self, pat: hir::PatId) {
+        let node = self.hir.pat(pat);
+        let span = node.span;
+        match &node.kind {
+            hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => {}
+            hir::PatKind::Binding { local, .. } => {
+                let is_non_copy = self
+                    .local_types
+                    .get(local)
+                    .is_some_and(|ty| !self.is_copy_type(ty));
+                if is_non_copy {
+                    self.push_diag(
+                        Diagnostic::error(
+                            format!(
+                                "cannot move '{}' out of a value whose type implements Drop: the \
+                                 destructor requires the complete value (OWN-PARTIAL-001)",
+                                self.text(span)
+                            ),
+                            span,
+                        )
+                        .with_code("E0100")
+                        .with_label("match through a reference, or bind a Copy component"),
+                    );
+                }
+            }
+            hir::PatKind::TupleVariant { pats, .. }
+            | hir::PatKind::Tuple(pats)
+            | hir::PatKind::Array(pats) => {
+                for pat in pats {
+                    self.reject_moves_out_of_drop_scrutinee(*pat);
+                }
+            }
+            hir::PatKind::Struct { fields, .. } => {
+                let fields: Vec<(Option<hir::PatId>, Option<LocalId>, Span)> = fields
+                    .iter()
+                    .map(|field| (field.pat, field.local, field.name))
+                    .collect();
+                for (pat, local, name) in fields {
+                    match (pat, local) {
+                        (Some(pat), _) => self.reject_moves_out_of_drop_scrutinee(pat),
+                        (None, Some(local)) => {
+                            let is_non_copy = self
+                                .local_types
+                                .get(&local)
+                                .is_some_and(|ty| !self.is_copy_type(ty));
+                            if is_non_copy {
+                                self.push_diag(
+                                    Diagnostic::error(
+                                        "cannot move a field out of a value whose type implements \
+                                         Drop: the destructor requires the complete value \
+                                         (OWN-PARTIAL-001)",
+                                        name,
+                                    )
+                                    .with_code("E0100"),
+                                );
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+            hir::PatKind::Error => {}
+        }
+    }
+
     fn reject_moves_out_of_borrow(&mut self, pat: hir::PatId) {
         let node = self.hir.pat(pat);
         let span = node.span;
@@ -847,6 +932,23 @@ impl<'a> BorrowChecker<'a> {
                 if self.scrutinee_reads_through_ref(*scrutinee) {
                     for arm in arms {
                         self.reject_moves_out_of_borrow(arm.pat);
+                    }
+                } else if self.scrutinee_nominal_has_drop(*scrutinee) {
+                    // **DEV-211: OWN-PARTIAL-001 applies to a matched component too.**
+                    //
+                    // "Moving a field from a type that implements `Drop` is prohibited, because its
+                    // destructor requires the complete value." A `match` that binds a non-`Copy`
+                    // payload out of an owned `Drop` nominal is that move — the destructor cannot
+                    // then run on a complete value, and PAT-DROP-001 destroys only the *unbound*
+                    // components, so nothing runs the type's own destructor at all.
+                    //
+                    // Measured before repairing: `impl Drop for E` with `match e { E::A(s) => … }`
+                    // printed the arm and never the destructor, in BOTH the HIR oracle and MIR.
+                    // The engines agreed, so this was a front-end conformance defect rather than an
+                    // engine divergence — the checker had the rule for struct fields
+                    // (`local_has_drop`) and never applied it to a matched component.
+                    for arm in arms {
+                        self.reject_moves_out_of_drop_scrutinee(arm.pat);
                     }
                 }
                 let moved_before = self.moved_places.clone();
@@ -1506,37 +1608,22 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// **DEV-210: answered by identity, not by spelling.**
+    ///
+    /// This scanned the impl set itself and asked whether the written trait name
+    /// `.ends_with("Drop")` — so `impl MyDrop for S` made `S` "implement `Drop`", and a legal
+    /// partial move out of one of its fields was refused with E0100. Valid Core, rejected, because
+    /// a user trait's name happened to end in four particular letters. CD-379 settled the identity
+    /// rule for `Display`; this is the same defect, and the fix is to stop having a private answer
+    /// at all.
     fn local_has_drop(&self, local: LocalId) -> bool {
         let Some(ty) = self.local_types.get(&local) else {
             return false;
         };
-        let item_id = match ty {
-            Ty::Struct(id, _) | Ty::Enum(id, _) => *id,
-            _ => return false,
-        };
-        // DEV-069: the trait name written on each impl belongs to that impl's own file.
-        self.hir.items.iter().enumerate().any(|(idx, item)| {
-            let impl_id = hir::ItemId(idx as u32);
-            let hir::ItemKind::Impl {
-                trait_: Some(trait_ref),
-                self_ty,
-                ..
-            } = &item.kind
-            else {
-                return false;
-            };
-            let is_drop = self
-                .item_text(impl_id, trait_ref.path.span)
-                .ends_with("Drop");
-            let matches_type = matches!(
-                &self.hir.ty(*self_ty).kind,
-                hir::TypeKind::Path {
-                    res: Res::Item(id),
-                    ..
-                } if *id == item_id
-            );
-            is_drop && matches_type
-        })
+        match ty {
+            Ty::Struct(id, _) | Ty::Enum(id, _) => self.drop_items.contains(id),
+            _ => false,
+        }
     }
 
     fn check_return_escape(&mut self, expr_id: ExprId) {
