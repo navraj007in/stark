@@ -21,19 +21,24 @@
 //! hir.rs           38        diagnostics 0
 //! ```
 //!
+//! Those figures are the inventory **as this harness was written** (46ae2ec) and are left as the
+//! record of the starting position; they are not maintained. The current measurement, and the
+//! method used to take it, live in `STARKLANG/docs/compiler/work-packages/AS6-PACKET-4-PLAN.md`.
+//!
 //! For `ast.rs` and `hir.rs` specifically, exit criterion 1 — *"Core-only sessions load no
 //! tensor-owned name or semantic rule"* — **already holds**, which this file pins. `ast.rs`'s
 //! references are almost entirely doc comments on syntactic forms Core and the extension **share**
 //! (`DimExpr`, the `Item = T` binding form reused for `device = D`, index lists); sharing a form is
 //! not a leak, and rewriting those comments would remove information without changing behaviour.
 //!
-//! What remains open for this surface is criterion 2 — *"central Core modules do not contain
-//! open-ended tensor spelling tables or method catalogues"*. `hir::Builtin` carries **33
-//! `Tensor*` variants**. That is a catalogue in a central Core module, and relocating it behind a
-//! sealed `extensions::tensor` type is real work with a wide blast radius (every match arm in the
-//! resolver, checker, interpreter and MIR lowering). It is not attempted here: this file is the
-//! harness that must exist **before** the move, so the move can be shown not to have broken the
-//! extension.
+//! What was open for this surface when the harness was written was criterion 2 — *"central Core
+//! modules do not contain open-ended tensor spelling tables or method catalogues"*: `hir::Builtin`
+//! then carried **33 `Tensor*` variants**, a catalogue in a central Core module. That move has
+//! since been made — `hir::Builtin` now carries the single sealed variant
+//! `Tensor(extensions::tensor::TensorBuiltin)` (fe80129, 33cb0a7) — and the tensor *semantic*
+//! authority followed it out of the checker in packet 4B (62ef6b0 and group 2C). This file is the
+//! harness that had to exist **before** those moves, so each could be shown not to have broken the
+//! extension; every case here is still a pair, and that is what it is for.
 
 use starkc::options::LanguageOptions;
 use starkc::session::CompilerSession;

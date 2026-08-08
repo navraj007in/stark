@@ -4,6 +4,7 @@
 //! about tensor constructors.
 
 pub mod builtins;
+pub mod check;
 pub mod rules;
 pub use builtins::{builtin_named, owns_builtin, TensorBuiltin};
 

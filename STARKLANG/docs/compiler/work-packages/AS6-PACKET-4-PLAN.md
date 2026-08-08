@@ -228,6 +228,8 @@ requirement was "move it behind rather than respell it".
 
 ## Revised AS6 status
 
+*(Superseded by "Group 2C — Status" at the end of this document; kept as the position after 4A.)*
+
 ```text
 architectural discovery        DONE   (46ae2ec)
 builtin/catalogue quarantine   DONE   (fe80129)
@@ -237,7 +239,7 @@ parser residual audit          OPEN   — probably small
 qualification                  OPEN
 ```
 
-AS6 is roughly **65–75% complete**, not the 90+% it looked before the inventory.
+AS6 was, at that point, roughly **65–75% complete**, not the 90+% it looked before the inventory.
 
 **The compensating point:** packet 4 pulls forward part of AS7's modularisation in the one place
 AS6's semantics require it. AS7 inherits a large semantic-ownership boundary already cut, a
@@ -388,3 +390,164 @@ model DECLARATION checking    pulls in the type-conversion machinery — evaluat
 Extracting the first three gives the boundary AS6 wants at a seven-service surface. Whether
 `check_model_def` follows is a judgement about where model *declaration* validation belongs, and
 should be decided on its own evidence rather than by grouping.
+
+
+---
+
+# Group 2C — the tensor semantic authority extracted (2026-08-08)
+
+`starkc/src/extensions/tensor/check.rs`, 1736 lines. `typecheck.rs` 15,937 → 14,472.
+
+## What moved, and what Core kept
+
+| Entry point | Core keeps | Extension takes |
+| --- | --- | --- |
+| `check_tensor_op` | `TENSOR_OPS` lookup, call-form validation, argument evaluation, publish | the 1290-line post-evaluation remainder |
+| `check_tensor_refine` | the `check_expr` loop and the "no value arguments" error | what a refinement produces (82 lines) |
+| `check_model_method_call` | HIR walk, declaration scope, port conversion, freshening, argument evaluation | method surface, `.predict` arity, the per-argument borrowed-tensor rule, the result shape |
+
+Also moved, because they are tensor semantics that only the rule block calls: `broadcast_shapes`,
+`broadcast_to_check`, `can_broadcast_to`, `shape_volume`, `dtype_to_ty`, `get_fix_suggestion`.
+
+`check_model_def` was left in Core, per 2B's finding. Measured against the context 2C actually
+built — rather than against 4A's guess — the case for leaving it is stronger than 2B thought:
+
+```text
+check_model_def   87 lines, 1 caller, no check_expr
+services          diags · ty_to_string · resolve        already in TensorCheckCtx
+                  convert_hir_type · generic_kind · options · text
+                  enter_tensor_param_scope · exit_tensor_param_scope    SIX new members
+```
+
+Six new services — 15 → 21, a 40% wider interface — for one 87-line function with one caller, and
+five of the six exist to *convert written type syntax and manage the declaration scope*, which is
+Core machinery by the same rule that kept `build_shape` and friends in Core. Nothing in
+`check_model_def` decides a dtype, shape, device or broadcast; it validates that a written model
+declaration is well-formed. **Recommendation: leave it in Core and close AS6 without it**, recording
+that as a decision rather than an omission. Call this 2D if it is taken up; the evidence above is
+the whole of it.
+
+## The context is fifteen services, not seven — and 2B's seven was measured wrong twice
+
+2B's table listed seven Core services and nine tensor-owned helpers "moving with the block". Two of
+those classifications did not survive compilation:
+
+```text
+get_fix_suggestion   listed CORE       — is pure tensor semantics (tensor_ctx + broadcast_to_check).
+                                         Moved. Removes itself from the surface.
+build_shape          listed tensor-owned, "moves with the block"
+build_device         listed tensor-owned, "moves with the block"
+tensor_dtype         listed tensor-owned, "moves with the block"
+extract_dim_generic  listed tensor-owned, "moves with the block"
+                                       — none of them can move. Each reads the generic-parameter
+                                         scope tables (`dim_scope`/`dtype_scope`/`device_scope`),
+                                         `hir`, `text`, `convert_hir_type` or `allow_half_type`,
+                                         and each has callers outside the block.
+```
+
+The four that cannot move are **written-type-syntax conversion**, which the same plan already ruled
+Core machinery when it deferred `check_model_def` ("converting written type syntax is Core
+machinery"). So they stay in Core and are offered as services, and the classification is at least
+consistent across the two decisions.
+
+`TensorCheckCtx`, in full:
+
+| Group | Services |
+| --- | --- |
+| diagnostics | `diags`, `tensor_error` |
+| Core type machinery | `resolve`, `unify`, `ty_to_string` |
+| constants and ranges | `extract_const_int`, `extract_const_int_list`, `extract_dim_generic`, `combine_value_range`, `value_range_of` |
+| written syntax → tensor objects | `build_shape`, `build_refine_shape`, `build_device`, `tensor_dtype` |
+| extension state held by the host | `tensor_state` |
+
+**Fifteen — the same order of magnitude as the sixteen-service design 4A withdrew.** That is the
+honest number, and it is also the reason the count was never the criterion. What separates this
+design from the withdrawn one is not size:
+
+```text
+withdrawn   16 services, one of which was check_expr  -> bidirectional control
+this        15 services, none of which is check_expr  -> one-directional
+```
+
+Every member reads Core state, converts written syntax, or emits. None of them re-enters expression
+checking, and none of them can be made to: `TypeChecker`'s fields and methods are private to the
+`typecheck` module, so `extensions::tensor::check` can reach **only** what the trait names. The
+boundary is compiler-enforced, not conventional.
+
+## Diagnostic order is preserved, and one site had to be staged to keep it
+
+`check_tensor_op` and `check_tensor_refine` needed nothing: form validation and argument evaluation
+were already a contiguous Core-side prefix.
+
+`check_model_method_call`'s `check_expr` sat inside the `zip` over instantiated ports (2A's "one
+site needing care"). Hoisting it would have reordered every argument diagnostic ahead of every port
+diagnostic. Instead the **extension rule was made per-argument**: Core evaluates argument *i*, then
+immediately calls `check_model_predict_arg` for argument *i*. Interleaving is unchanged, and
+`check_expr` still never appears on the extension side.
+
+One deliberate behaviour-neutral change: the "corresponding model port declared at …" note is now
+built eagerly and passed in, rather than built lazily inside the failure branch. It is still
+attached only on unification failure.
+
+## How the move was verified — not by reading it
+
+The remainder's 1276-line rule block was moved mechanically and then **proved unchanged** (the
+other 14 lines are the `get_tensor_kind` closure, rewritten as the `tensor_kind_of` free function
+because a closure capturing `cx` would have conflicted with the mutable borrows around it). Both the
+original
+(`git show HEAD:…`) and the extracted copy were normalised (comments stripped, rustfmt's line
+breaks and trailing commas collapsed, the rename `self.X` → `cx.X` reversed) and compared as byte
+strings.
+
+```text
+orig 22925   new 22925   IDENTICAL
+```
+
+`check_tensor_refine` was verified the same way (1690 == 1690, IDENTICAL, modulo the `range = R`
+lookup folded into the new `value_range_of` service). `check_model_method_call` was rewritten by
+hand and its diff is four relocations and two comments, nothing else.
+
+This is the answer to the method note 4A recorded three times: a proxy for the question is not the
+question. "It still compiles" would not have caught a dropped match arm in 1276 lines; a normalised
+identity comparison does.
+
+## The old path is gone, not merely bypassed
+
+```text
+get_fix_suggestion  dtype_to_ty  broadcast_shapes
+broadcast_to_check  can_broadcast_to  shape_volume     0 occurrences in typecheck.rs
+TensorShapeRule  TensorDTypeRule  TensorDeviceRule
+TensorGenericSchema  TensorResultRule  BroadcastError  0 occurrences in typecheck.rs
+TENSOR_OPS                                             1 occurrence  (the lookup at the boundary)
+```
+
+The glob `use crate::extensions::tensor::rules::*` was narrowed to `TENSOR_OPS` so a future rule
+type cannot silently re-enter Core.
+
+## Residual, and what 4C inherits
+
+Case-insensitive `tensor|dtype|device|model` occurrences in `typecheck.rs`: **1152 → 698**.
+
+The 698 are one coherent slice, not scattered residue: **tensor type *construction* and model
+*declaration*** — `build_tensor_type`, `build_shape`, `build_device`, `build_cuda_device`,
+`tensor_dtype`, `enter`/`exit_tensor_param_scope`, `unify_tensor_types`,
+`emit_tensor_unify_error`, `ground_tensor_dims`, `freshen_call_ty`, `check_model_def`, the
+`convert_hir_type` tensor arms, and the `TensorCheckCtx` impl itself.
+
+That is precisely the boundary the ruling said may legitimately remain (`typecheck.rs` "may
+legitimately end up containing … references at the integration boundary"), plus the declaration
+slice this packet recommends leaving there. **No tensor semantic *decision* — dtype, shape, device,
+schema, broadcasting, model calling convention — is owned by Core any more**, which is the measure
+the ruling said to optimise.
+
+## Status
+
+```text
+architectural discovery        DONE   (46ae2ec)
+builtin/catalogue quarantine   DONE   (fe80129)
+runtime/lowering boundary      DONE   (33cb0a7)
+tensor type-system boundary    DONE   (62ef6b0 rules, 2C authority)
+  └─ model DECLARATION slice   RECOMMEND LEAVING IN CORE — evidence above; owner call
+parser residual audit          OPEN   — 4C
+qualification                  OPEN
+```

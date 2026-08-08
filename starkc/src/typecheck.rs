@@ -1,11 +1,16 @@
 //! Type checking, mutability, and definite assignment validation pass for STARK (PLAN.md M2.2).
 
-// AS6 packet 4B group 1: the tensor operation rules moved to the extension; the
-// checker still reads them until group 2 moves `check_tensor_op` after them.
+// AS6 packet 4B group 2C: the tensor semantic authority lives in
+// `extensions::tensor::check`. What remains here is the integration boundary — locating an
+// operation in `TENSOR_OPS`, validating the call form, evaluating arguments, and publishing the
+// type the extension decided — plus the `TensorCheckCtx` impl that names, exhaustively, the Core
+// services the extension is allowed to use.
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::diag::Diagnostic;
+use crate::extensions::tensor::check as tensor_check;
+use crate::extensions::tensor::check::TensorCheckCtx;
 use crate::extensions::tensor::dim::{DimVar, Poly};
-use crate::extensions::tensor::rules::*;
+use crate::extensions::tensor::rules::TENSOR_OPS;
 use crate::extensions::tensor::types::{
     DType, Device, DeviceVar, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx,
     UnifyError,
@@ -8399,83 +8404,8 @@ impl<'a> TypeChecker<'a> {
         if !args.is_empty() {
             self.tensor_error("`refine` takes no value arguments", call_span);
         }
-        let Some(generic_args) = turbofish else {
-            self.tensor_error("`refine` requires an explicit target shape", name_span);
-            return Ty::Error;
-        };
-
-        // A `refine` boundary may also assign the initial value range with an
-        // optional `range = R` binding; the remaining args are positional.
-        let range_arg = generic_args.args.iter().find(
-            |a| matches!(a, hir::GenericArg::Binding { name, .. } if self.text(*name) == "range"),
-        );
-        let range = self.build_value_range(range_arg, generic_args.span);
-        let positional: Vec<hir::GenericArg> = generic_args
-            .args
-            .iter()
-            .filter(|a| !matches!(a, hir::GenericArg::Binding { .. }))
-            .cloned()
-            .collect();
-
-        let (dtype, shape) = match base {
-            Ty::Extension(ext) => match &*ext {
-                ExtensionTy::Tensor(TensorKind::TensorDyn(dtype)) => match positional.as_slice() {
-                    [hir::GenericArg::Shape(shape)] => (*dtype, self.build_refine_shape(shape)),
-                    _ => {
-                        self.tensor_error(
-                            "`TensorDyn<T>::refine` expects exactly one shape argument",
-                            generic_args.span,
-                        );
-                        return Ty::Error;
-                    }
-                },
-                ExtensionTy::Tensor(TensorKind::TensorAny) => match positional.as_slice() {
-                    [hir::GenericArg::Type(dtype), hir::GenericArg::Shape(shape)] => (
-                        self.tensor_dtype(*dtype, generic_args.span),
-                        self.build_refine_shape(shape),
-                    ),
-                    _ => {
-                        self.tensor_error(
-                            "`TensorAny::refine` expects a dtype and a shape",
-                            generic_args.span,
-                        );
-                        return Ty::Error;
-                    }
-                },
-                ExtensionTy::Tensor(TensorKind::Tensor(_)) => {
-                    self.tensor_error(
-                        "`refine` is valid only on `TensorDyn` or `TensorAny`",
-                        name_span,
-                    );
-                    return Ty::Error;
-                }
-                _ => {
-                    self.tensor_error(
-                        "`refine` receiver must be `TensorDyn` or `TensorAny`",
-                        name_span,
-                    );
-                    return Ty::Error;
-                }
-            },
-            Ty::Error => return Ty::Error,
-            _ => {
-                self.tensor_error(
-                    "`refine` receiver must be `TensorDyn` or `TensorAny`",
-                    name_span,
-                );
-                return Ty::Error;
-            }
-        };
-
-        let tensor = Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-            TensorTy {
-                dtype,
-                shape,
-                device: self.tensor_ctx.fresh_device(),
-                range,
-            },
-        ))));
-        Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
+        // AS6 packet 4B group 2C: what a refinement produces is tensor semantics.
+        tensor_check::eval_tensor_refine(self, base, turbofish, name_span)
     }
 
     fn associated_fn_type(
@@ -13055,58 +12985,6 @@ impl TypeChecker<'_> {
         self.check_tensor_op(name, Some(receiver), turbofish, args, call_span)
     }
 
-    fn get_fix_suggestion(&mut self, expected: &TensorKind, found: &TensorKind) -> Option<String> {
-        let (TensorKind::Tensor(expected), TensorKind::Tensor(found)) = (expected, found) else {
-            return None;
-        };
-        let dtype_differs = match (expected.dtype, found.dtype) {
-            (DType::Var(_), _) | (_, DType::Var(_)) => false,
-            (left, right) => left != right,
-        };
-        let device_differs = match (expected.device, found.device) {
-            (Device::Var(_), _) | (_, Device::Var(_)) => false,
-            (left, right) => left != right,
-        };
-        let shape_differs = expected.shape.dims != found.shape.dims;
-
-        match (dtype_differs, device_differs, shape_differs) {
-            (true, false, false) => Some(format!(
-                "cast the second tensor with `.cast::<{}>()`",
-                expected.dtype.name()
-            )),
-            (false, true, false) => Some(format!(
-                "move the second tensor with `.to_device::<{}>()`",
-                expected.device
-            )),
-            (false, false, true) if self.can_broadcast_to(&found.shape, &expected.shape) => {
-                let target = self.tensor_ctx.display_shape(&expected.shape);
-                Some(format!(
-                    "broadcast the second tensor with `.broadcast_to::<{target}>()`"
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    fn dtype_to_ty(&self, dtype: DType) -> Ty {
-        match dtype {
-            DType::Int8 => Ty::Primitive(Primitive::Int8),
-            DType::Int16 => Ty::Primitive(Primitive::Int16),
-            DType::Int32 => Ty::Primitive(Primitive::Int32),
-            DType::Int64 => Ty::Primitive(Primitive::Int64),
-            DType::UInt8 => Ty::Primitive(Primitive::UInt8),
-            DType::UInt16 => Ty::Primitive(Primitive::UInt16),
-            DType::UInt32 => Ty::Primitive(Primitive::UInt32),
-            DType::UInt64 => Ty::Primitive(Primitive::UInt64),
-            DType::Float16 => Ty::Primitive(Primitive::Float16),
-            DType::Float32 => Ty::Primitive(Primitive::Float32),
-            DType::Float64 => Ty::Primitive(Primitive::Float64),
-            DType::BFloat16 => Ty::Primitive(Primitive::BFloat16),
-            DType::Bool => Ty::Primitive(Primitive::Bool),
-            DType::Var(_) => Ty::Error,
-        }
-    }
-
     fn extract_const_int(&self, arg: &hir::GenericArg) -> Option<i64> {
         match arg {
             hir::GenericArg::Const(span) => self.text(*span).parse::<i64>().ok(),
@@ -13168,119 +13046,6 @@ impl TypeChecker<'_> {
         }
     }
 
-    /// Right-aligned NumPy-style broadcast of two shapes. On success returns the
-    /// result shape; on failure returns the result-aligned axis at which the two
-    /// dimensions are neither provably equal nor a literal `1`.
-    fn broadcast_shapes(&mut self, sa: &Shape, sb: &Shape, span: Span) -> Result<Shape, usize> {
-        let rank_a = sa.rank();
-        let rank_b = sb.rank();
-        let rank_out = std::cmp::max(rank_a, rank_b);
-        let mut dims_out = Vec::with_capacity(rank_out);
-        let mut spans_out = Vec::with_capacity(rank_out);
-
-        for trailing in 0..rank_out {
-            let index_a = rank_a.checked_sub(trailing + 1);
-            let index_b = rank_b.checked_sub(trailing + 1);
-            let dim_a = index_a.map(|index| &sa.dims[index]);
-            let dim_b = index_b.map(|index| &sb.dims[index]);
-            let span_a = index_a
-                .and_then(|index| sa.spans.get(index).copied())
-                .unwrap_or(span);
-            let span_b = index_b
-                .and_then(|index| sb.spans.get(index).copied())
-                .unwrap_or(span);
-
-            match (dim_a, dim_b) {
-                (Some(da), Some(db)) => {
-                    let resolved_a = self
-                        .tensor_ctx
-                        .resolve_dim(da)
-                        .unwrap_or_else(|_| da.clone());
-                    let resolved_b = self
-                        .tensor_ctx
-                        .resolve_dim(db)
-                        .unwrap_or_else(|_| db.clone());
-
-                    if resolved_a == resolved_b {
-                        dims_out.push(resolved_a);
-                        spans_out.push(span_a);
-                    } else if resolved_a.as_constant() == Some(1) {
-                        dims_out.push(resolved_b);
-                        spans_out.push(span_b);
-                    } else if resolved_b.as_constant() == Some(1) {
-                        dims_out.push(resolved_a);
-                        spans_out.push(span_a);
-                    } else {
-                        // Broadcasting is proof-based: unrelated variables do
-                        // not become equal merely because an operation wants
-                        // them to. Only equality already established by the
-                        // surrounding type constraints is accepted here. Report
-                        // the axis aligned to the result shape.
-                        return Err(rank_out - 1 - trailing);
-                    }
-                }
-                (Some(da), None) => {
-                    dims_out.push(da.clone());
-                    spans_out.push(span_a);
-                }
-                (None, Some(db)) => {
-                    dims_out.push(db.clone());
-                    spans_out.push(span_b);
-                }
-                (None, None) => unreachable!(),
-            }
-        }
-
-        dims_out.reverse();
-        spans_out.reverse();
-        Ok(Shape::with_spans(dims_out, spans_out))
-    }
-
-    /// Whether `source` can be explicitly broadcast to `target`. On failure
-    /// distinguishes a rank mismatch from a specific target-aligned axis that
-    /// cannot be expanded.
-    fn broadcast_to_check(&mut self, source: &Shape, target: &Shape) -> Result<(), BroadcastError> {
-        if source.rank() > target.rank() {
-            return Err(BroadcastError::Rank {
-                source: source.rank(),
-                target: target.rank(),
-            });
-        }
-        for trailing in 0..source.rank() {
-            let source_index = source.rank() - 1 - trailing;
-            let target_index = target.rank() - 1 - trailing;
-            let source_dim = self
-                .tensor_ctx
-                .resolve_dim(&source.dims[source_index])
-                .unwrap_or_else(|_| source.dims[source_index].clone());
-            let target_dim = self
-                .tensor_ctx
-                .resolve_dim(&target.dims[target_index])
-                .unwrap_or_else(|_| target.dims[target_index].clone());
-            if source_dim != target_dim && source_dim.as_constant() != Some(1) {
-                return Err(BroadcastError::Axis {
-                    result_axis: target_index,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Boolean form for callers that only need the yes/no answer (e.g. fix
-    /// suggestions).
-    fn can_broadcast_to(&mut self, source: &Shape, target: &Shape) -> bool {
-        self.broadcast_to_check(source, target).is_ok()
-    }
-
-    fn shape_volume(&mut self, shape: &Shape) -> Result<Poly, ()> {
-        let mut volume = Poly::constant(1);
-        for dimension in &shape.dims {
-            let resolved = self.tensor_ctx.resolve_dim(dimension).map_err(|_| ())?;
-            volume = volume.mul(&resolved).map_err(|_| ())?;
-        }
-        Ok(volume)
-    }
-
     fn check_tensor_op(
         &mut self,
         op_name: &str,
@@ -13322,1296 +13087,18 @@ impl TypeChecker<'_> {
             actual_ops.push(self.check_expr(*arg));
         }
 
-        let get_tensor_kind = |ty: &Ty| -> Option<TensorKind> {
-            let resolved = self.resolve(ty);
-            let tensor_ty = match resolved {
-                Ty::Ref { inner, .. } => self.resolve(&inner),
-                other => other,
-            };
-            match tensor_ty {
-                Ty::Extension(ext) => match &*ext {
-                    ExtensionTy::Tensor(kind) => Some(kind.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        if actual_ops.len() != descriptor.arity {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of arguments to `{op_name}`: expected {}, found {}",
-                        descriptor.arity,
-                        actual_ops.len()
-                    ),
-                    span,
-                )
-                .with_code("E0005"),
-            );
-            return Ty::Error;
-        }
-
-        let generic_arity = turbofish.map_or(0, |generic_args| generic_args.args.len());
-        if generic_arity != descriptor.generics.arity() {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of generic arguments to `{op_name}`: expected {}, found {generic_arity}",
-                        descriptor.generics.arity()
-                    ),
-                    turbofish.map_or(span, |generic_args| generic_args.span),
-                )
-                .with_code("E0213"),
-            );
-            return Ty::Error;
-        }
-
-        debug_assert!(match descriptor.device {
-            TensorDeviceRule::Fresh => matches!(
-                descriptor.shape,
-                TensorShapeRule::Construct | TensorShapeRule::FromVec
-            ),
-            TensorDeviceRule::Match => descriptor.arity == 2,
-            TensorDeviceRule::Preserve | TensorDeviceRule::Target => descriptor.arity == 1,
-        });
-        debug_assert!(match descriptor.dtype {
-            TensorDTypeRule::Construct => matches!(
-                descriptor.generics,
-                TensorGenericSchema::DTypeAndShape | TensorGenericSchema::DTypeAndDim
-            ),
-            TensorDTypeRule::Cast => descriptor.generics == TensorGenericSchema::DType,
-            TensorDTypeRule::ArgMax
-            | TensorDTypeRule::Compare
-            | TensorDTypeRule::Match
-            | TensorDTypeRule::Preserve => true,
-        });
-
-        if !matches!(
-            descriptor.shape,
-            TensorShapeRule::Construct | TensorShapeRule::FromVec
-        ) {
-            for (index, operand) in actual_ops.iter().enumerate() {
-                if receiver.is_some() && index == 0 {
-                    continue;
-                }
-                if !matches!(self.resolve(operand), Ty::Ref { mutable: false, .. }) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "tensor operand {} of `{op_name}` must be borrowed (for example `&tensor`)",
-                                index + 1
-                            ),
-                            span,
-                        )
-                        .with_code("E0005"),
-                    );
-                    return Ty::Error;
-                }
-            }
-        }
-
-        match descriptor.shape {
-            TensorShapeRule::Construct => {
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!(
-                                    "`{}` requires explicit type and shape generic arguments",
-                                    op_name
-                                ),
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 2 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "`{}` expects 2 generic arguments, found {}",
-                                op_name,
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "first generic argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-                let shape = match &g_args.args[1] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "second generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                if op_name == "full" {
-                    let val_ty = actual_ops[0].clone();
-                    let expected_val_ty = self.dtype_to_ty(dtype);
-                    let _ = self.unify(expected_val_ty, val_ty, span);
-                }
-
-                Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                    TensorTy {
-                        dtype,
-                        shape,
-                        device: self.tensor_ctx.fresh_device(),
-                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                    },
-                ))))
-            }
-            TensorShapeRule::FromVec => {
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "`from_vec` requires explicit type and dimension generic arguments",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 2 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "`from_vec` expects 2 generic arguments, found {}",
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "first generic argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-                let dim_poly = match &g_args.args[1] {
-                    hir::GenericArg::Shape(s) => {
-                        let shape = self.build_shape(s);
-                        if shape.dims.len() != 1 {
-                            self.diags.push(Diagnostic::error(
-                                "from_vec dimension argument must have rank 1",
-                                s.span,
-                            ));
-                            Poly::constant(1)
-                        } else {
-                            shape.dims[0].clone()
-                        }
-                    }
-                    _ => Poly::constant(1),
-                };
-
-                let val_ty = actual_ops[0].clone();
-                let expected_val_ty = Ty::Core(CoreType::Vec, vec![self.dtype_to_ty(dtype)]);
-                let _ = self.unify(expected_val_ty, val_ty, span);
-
-                let tensor = Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                    TensorTy {
-                        dtype,
-                        shape: Shape::new(vec![dim_poly]),
-                        device: self.tensor_ctx.fresh_device(),
-                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                    },
-                ))));
-                Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
-            }
-            TensorShapeRule::Elementwise => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            let mut diag = Diagnostic::error(
-                                format!(
-                                    "tensor element type mismatch: expected `{}`, found `{}`",
-                                    ta.dtype.name(),
-                                    tb.dtype.name()
-                                ),
-                                span,
-                            )
-                            .with_code("E0212");
-                            if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                diag = diag.with_note(fix);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            let mut diag = Diagnostic::error(
-                                format!(
-                                    "tensor device mismatch: expected `{:?}`, found `{:?}`",
-                                    ta.device, tb.device
-                                ),
-                                span,
-                            )
-                            .with_code("E0212");
-                            if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                diag = diag.with_note(fix);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        let out_shape = match self.broadcast_shapes(&ta.shape, &tb.shape, span) {
-                            Ok(s) => s,
-                            Err(result_axis) => {
-                                let lhs = self.tensor_ctx.display_shape(&ta.shape);
-                                let rhs = self.tensor_ctx.display_shape(&tb.shape);
-                                let mut diag = Diagnostic::error(
-                                    "tensor shapes cannot be broadcast together",
-                                    span,
-                                )
-                                .with_code("E0212")
-                                .with_note(format!("left shape: {lhs}"))
-                                .with_note(format!("right shape: {rhs}"))
-                                .with_note(format!(
-                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
-                                ));
-                                for origin in
-                                    self.tensor_ctx.dim_origin_notes(&[&ta.shape, &tb.shape])
-                                {
-                                    diag = diag.with_note(origin);
-                                }
-                                if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
-                                    diag = diag.with_note(fix);
-                                }
-                                self.diags.push(diag);
-                                return Ty::Error;
-                            }
-                        };
-
-                        let out_dtype = if descriptor.result == TensorResultRule::BoolTensor {
-                            DType::Bool
-                        } else {
-                            ta.dtype
-                        };
-
-                        // Elementwise ops must not merge incompatible value-range
-                        // states. An `Unspecified` operand is neutral (a bare
-                        // constant); two different *specified* ranges are an error.
-                        let out_range = match self.combine_value_range(ta.range, tb.range) {
-                            Some(r) => r,
-                            None => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!(
-                                            "`{}` cannot merge tensors with value ranges `{}` and `{}`",
-                                            descriptor.name, ta.range, tb.range
-                                        ),
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: out_dtype,
-                                shape: out_shape,
-                                device: ta.device,
-                                range: out_range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::BroadcastTo => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "`broadcast_to` requires explicit shape generic argument",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "`broadcast_to` expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_shape = match &g_args.args[0] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        if let Err(err) = self.broadcast_to_check(&t.shape, &target_shape) {
-                            let source = self.tensor_ctx.display_shape(&t.shape);
-                            let target = self.tensor_ctx.display_shape(&target_shape);
-                            let mut diag =
-                                Diagnostic::error("cannot `broadcast_to` the target shape", span)
-                                    .with_code("E0212")
-                                    .with_note(format!("source shape: {source}"))
-                                    .with_note(format!("target shape: {target}"));
-                            diag = match err {
-                                BroadcastError::Rank {
-                                    source: s,
-                                    target: t,
-                                } => diag.with_note(format!(
-                                    "rank mismatch: source rank {s} exceeds target rank {t}"
-                                )),
-                                BroadcastError::Axis { result_axis } => diag.with_note(format!(
-                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
-                                )),
-                            };
-                            for origin in
-                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
-                            {
-                                diag = diag.with_note(origin);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: target_shape,
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::MatMul => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if ta.shape.rank() != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "matmul first argument must be rank 2, found rank {}",
-                                    ta.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if tb.shape.rank() != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "matmul second argument must be rank 2, found rank {}",
-                                    tb.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("matmul dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("matmul device mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[1], &tb.shape.dims[0], 0)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[1]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(vec![
-                                    ta.shape.dims[0].clone(),
-                                    tb.shape.dims[1].clone(),
-                                ]),
-                                device: ta.device,
-                                // matmul mixes values across the contracted
-                                // axis, so any input value range is no longer
-                                // meaningful: the result is Unspecified.
-                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::BatchMatMul => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        if ta.shape.rank() != 3 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul first argument must be rank 3, found rank {}",
-                                    ta.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if tb.shape.rank() != 3 {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul second argument must be rank 3, found rank {}",
-                                    tb.shape.rank()
-                                ),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("batch_matmul dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("batch_matmul device mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[0], &tb.shape.dims[0], 0)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[0]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "batch_matmul batch dimension mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-                        if self
-                            .tensor_ctx
-                            .unify_dim(&ta.shape.dims[2], &tb.shape.dims[1], 1)
-                            .is_err()
-                        {
-                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[2]);
-                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[1]);
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "batch_matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(vec![
-                                    ta.shape.dims[0].clone(),
-                                    ta.shape.dims[1].clone(),
-                                    tb.shape.dims[2].clone(),
-                                ]),
-                                device: ta.device,
-                                // See matmul: the contracted product is not a
-                                // value-range-preserving operation.
-                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Concat => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("first argument must be a tensor", span));
-                    return Ty::Error;
-                };
-                let Some(kb) = get_tensor_kind(&actual_ops[1]) else {
-                    self.diags
-                        .push(Diagnostic::error("second argument must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "concat requires explicit axis generic argument",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "concat expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "concat axis must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match (&ka, &kb) {
-                    (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
-                        let rank = ta.shape.rank();
-                        if tb.shape.rank() != rank {
-                            self.diags.push(Diagnostic::error(
-                                "concat tensors must have equal rank",
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("concat axis {} is out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_dtype(ta.dtype, tb.dtype).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("concat dtype mismatch", span));
-                            return Ty::Error;
-                        }
-                        if self.tensor_ctx.unify_device(ta.device, tb.device).is_err() {
-                            self.diags
-                                .push(Diagnostic::error("concat device mismatch", span));
-                            return Ty::Error;
-                        }
-                        let mut out_dims = Vec::new();
-                        for i in 0..rank {
-                            if i as i64 == axis {
-                                let sum_dim = match ta.shape.dims[i].add(&tb.shape.dims[i]) {
-                                    Ok(d) => d,
-                                    Err(_) => {
-                                        self.diags.push(Diagnostic::error(
-                                            "concat dimension overflow",
-                                            span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                };
-                                out_dims.push(sum_dim);
-                            } else {
-                                if self
-                                    .tensor_ctx
-                                    .unify_dim(&ta.shape.dims[i], &tb.shape.dims[i], i)
-                                    .is_err()
-                                {
-                                    self.diags.push(Diagnostic::error(
-                                        format!(
-                                            "concat dimension mismatch at axis {}: {} and {}",
-                                            i, ta.shape.dims[i], tb.shape.dims[i]
-                                        ),
-                                        span,
-                                    ));
-                                    return Ty::Error;
-                                }
-                                out_dims.push(ta.shape.dims[i].clone());
-                            }
-                        }
-
-                        // Concat joins two tensors, so their value ranges must
-                        // combine like an elementwise op (Unspecified neutral).
-                        let out_range = match self.combine_value_range(ta.range, tb.range) {
-                            Some(r) => r,
-                            None => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!(
-                                            "`concat` cannot merge tensors with value ranges `{}` and `{}`",
-                                            ta.range, tb.range
-                                        ),
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: ta.dtype,
-                                shape: Shape::new(out_dims),
-                                device: ta.device,
-                                range: out_range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Permute => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("permute requires explicit target index list", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "permute expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let permutation = match self.extract_const_int_list(&g_args.args[0]) {
-                    Some(p) => p,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "permute argument must be a constant integer list",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if permutation.len() != rank {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "permute length mismatch: expected list of length {}, found {}",
-                                    rank,
-                                    permutation.len()
-                                ),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        let mut seen = HashSet::new();
-                        for &idx in &permutation {
-                            if idx < 0 || idx >= rank as i64 {
-                                self.diags.push(Diagnostic::error(
-                                    format!("index {} is out of range for rank {}", idx, rank),
-                                    g_args.span,
-                                ));
-                                return Ty::Error;
-                            }
-                            if !seen.insert(idx) {
-                                self.diags.push(Diagnostic::error(
-                                    format!("duplicate index {} in permute list", idx),
-                                    g_args.span,
-                                ));
-                                return Ty::Error;
-                            }
-                        }
-
-                        let mut out_dims = Vec::new();
-                        for &idx in &permutation {
-                            out_dims.push(t.shape.dims[idx as usize].clone());
-                        }
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(out_dims),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Reshape => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("reshape requires explicit target shape", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "reshape expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_shape = match &g_args.args[0] {
-                    hir::GenericArg::Shape(s) => self.build_shape(s),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "generic argument must be a shape",
-                            g_args.span,
-                        ));
-                        Shape::default()
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let (source_volume, target_volume) = match (
-                            self.shape_volume(&t.shape),
-                            self.shape_volume(&target_shape),
-                        ) {
-                            (Ok(source), Ok(target)) => (source, target),
-                            _ => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        "reshape element-count calculation overflowed",
-                                        span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        if source_volume != target_volume {
-                            let source_shape = self.tensor_ctx.display_shape(&t.shape);
-                            let target_display = self.tensor_ctx.display_shape(&target_shape);
-                            let source_product = self.tensor_ctx.shape_product_display(&t.shape);
-                            let target_product =
-                                self.tensor_ctx.shape_product_display(&target_shape);
-                            let mut diag =
-                                Diagnostic::error("reshape cannot preserve element count", span)
-                                    .with_code("E0212")
-                                    .with_note(format!("source shape: {source_shape}"))
-                                    .with_note(format!("target shape: {target_display}"))
-                                    .with_note(format!(
-                                        "required: {source_product} == {target_product}"
-                                    ));
-                            for origin in
-                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
-                            {
-                                diag = diag.with_note(origin);
-                            }
-                            self.diags.push(diag);
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: target_shape,
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::SliceAxis => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "slice_axis requires AXIS, START, LEN generic arguments",
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 3 {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "slice_axis expects 3 generic arguments, found {}",
-                                g_args.args.len()
-                            ),
-                            g_args.span,
-                        )
-                        .with_code("E0213"),
-                    );
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "AXIS must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-                let Some(start) = self.extract_dim_generic(&g_args.args[1], "START") else {
-                    return Ty::Error;
-                };
-                let Some(len) = self.extract_dim_generic(&g_args.args[2], "LEN") else {
-                    return Ty::Error;
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("axis {} out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        let axis_len = self
-                            .tensor_ctx
-                            .resolve_dim(&t.shape.dims[axis as usize])
-                            .unwrap_or_else(|_| t.shape.dims[axis as usize].clone());
-                        let start = self.tensor_ctx.resolve_dim(&start).unwrap_or(start);
-                        let len = self.tensor_ctx.resolve_dim(&len).unwrap_or(len);
-                        let end = match start.add(&len) {
-                            Ok(end) => end,
-                            Err(_) => {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        "slice dimension arithmetic overflowed",
-                                        g_args.span,
-                                    )
-                                    .with_code("E0212"),
-                                );
-                                return Ty::Error;
-                            }
-                        };
-                        let exact = end == axis_len;
-                        let literal_within_bounds = match (
-                            start.as_constant(),
-                            len.as_constant(),
-                            axis_len.as_constant(),
-                            end.as_constant(),
-                        ) {
-                            (Some(start), Some(len), Some(axis_len), Some(end)) => {
-                                start >= 0 && len >= 0 && end <= axis_len
-                            }
-                            _ => false,
-                        };
-                        if !exact && !literal_within_bounds {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "cannot prove slice constraint `{start} + {len} == {axis_len}`"
-                                    ),
-                                    g_args.span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-
-                        let mut out_dims = t.shape.dims.clone();
-                        out_dims[axis as usize] = len;
-
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(out_dims),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::ReduceAxis | TensorShapeRule::Softmax => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("`{}` requires explicit axis generic argument", op_name),
-                                span,
-                            )
-                            .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        format!("`{}` expects exactly 1 generic argument", op_name),
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let axis = match self.extract_const_int(&g_args.args[0]) {
-                    Some(a) => a,
-                    None => {
-                        self.diags.push(Diagnostic::error(
-                            "AXIS must be a constant integer",
-                            g_args.span,
-                        ));
-                        return Ty::Error;
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if axis < 0 || axis >= rank as i64 {
-                            self.diags.push(Diagnostic::error(
-                                format!("axis {} is out of range for rank {}", axis, rank),
-                                g_args.span,
-                            ));
-                            return Ty::Error;
-                        }
-
-                        if descriptor.shape == TensorShapeRule::Softmax {
-                            // Softmax preserves shape/dtype/device but produces
-                            // probabilities, not the input's image values, so the
-                            // value range does not carry through.
-                            Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                                TensorTy {
-                                    dtype: t.dtype,
-                                    shape: t.shape.clone(),
-                                    device: t.device,
-                                    range:
-                                        crate::extensions::tensor::types::ValueRange::Unspecified,
-                                },
-                            ))))
-                        } else {
-                            let mut out_dims = t.shape.dims.clone();
-                            out_dims.remove(axis as usize);
-
-                            let out_dtype = if descriptor.result == TensorResultRule::Int64Tensor {
-                                DType::Int64
-                            } else {
-                                t.dtype
-                            };
-
-                            Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                                TensorTy {
-                                    dtype: out_dtype,
-                                    shape: Shape::new(out_dims),
-                                    device: t.device,
-                                    // Reductions (incl. softmax/argmax) change
-                                    // the meaning of the values, so the input
-                                    // value range does not carry through.
-                                    range:
-                                        crate::extensions::tensor::types::ValueRange::Unspecified,
-                                },
-                            ))))
-                        }
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::FullReduce => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: t.dtype,
-                            shape: Shape::new(Vec::new()),
-                            device: t.device,
-                            // A full reduction to a scalar drops the value range.
-                            range: crate::extensions::tensor::types::ValueRange::Unspecified,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Cast => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("cast requires explicit target type", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "cast expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_dtype = match &g_args.args[0] {
-                    hir::GenericArg::Type(t) => self.tensor_dtype(*t, g_args.span),
-                    _ => {
-                        self.diags.push(Diagnostic::error(
-                            "cast argument must be a type",
-                            g_args.span,
-                        ));
-                        DType::Float32
-                    }
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: target_dtype,
-                            shape: t.shape.clone(),
-                            device: t.device,
-                            range: t.range,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::RangeTransition { from, to } => {
-                use crate::extensions::tensor::types::DType as TDType;
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        // The transition operations are defined on Float32 values.
-                        if !matches!(t.dtype, TDType::Float32 | TDType::Var(_)) {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "`{}` requires a Float32 tensor, found {}",
-                                        descriptor.name,
-                                        t.dtype.name()
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
-                            return Ty::Error;
-                        }
-                        // The receiver must already carry the source value range.
-                        if t.range != from {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "`{}` requires a `{from}` tensor, found `{}`",
-                                        descriptor.name, t.range
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212")
-                                .with_note(format!(
-                                    "`{}` transitions the value range `{from}` -> `{to}`",
-                                    descriptor.name
-                                )),
-                            );
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: t.shape.clone(),
-                                device: t.device,
-                                range: to,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::ToDevice => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-                let g_args = match turbofish {
-                    Some(g) => g,
-                    None => {
-                        self.diags.push(
-                            Diagnostic::error("to_device requires explicit target device", span)
-                                .with_code("E0213"),
-                        );
-                        return Ty::Error;
-                    }
-                };
-                if g_args.args.len() != 1 {
-                    self.diags.push(Diagnostic::error(
-                        "to_device expects exactly 1 generic argument",
-                        g_args.span,
-                    ));
-                    return Ty::Error;
-                }
-                let target_device = self.build_device(Some(&g_args.args[0]), g_args.span);
-
-                match &ka {
-                    TensorKind::Tensor(t) => Ty::Extension(Box::new(ExtensionTy::Tensor(
-                        TensorKind::Tensor(TensorTy {
-                            dtype: t.dtype,
-                            shape: t.shape.clone(),
-                            device: target_device,
-                            range: t.range,
-                        }),
-                    ))),
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-            TensorShapeRule::Transpose => {
-                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
-                    self.diags
-                        .push(Diagnostic::error("receiver must be a tensor", span));
-                    return Ty::Error;
-                };
-
-                match &ka {
-                    TensorKind::Tensor(t) => {
-                        let rank = t.shape.rank();
-                        if rank != 2 {
-                            self.diags.push(Diagnostic::error(
-                                format!("transpose expects a rank-2 tensor, found rank {}", rank),
-                                span,
-                            ));
-                            return Ty::Error;
-                        }
-                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                            TensorTy {
-                                dtype: t.dtype,
-                                shape: Shape::new(vec![
-                                    t.shape.dims[1].clone(),
-                                    t.shape.dims[0].clone(),
-                                ]),
-                                device: t.device,
-                                range: t.range,
-                            },
-                        ))))
-                    }
-                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
-                }
-            }
-        }
+        // AS6 packet 4B group 2C: Core's half is done — the operation is located, the call form
+        // is validated, and every argument expression has been evaluated. Every dtype, shape,
+        // device, schema and broadcasting decision from here on is the extension's.
+        tensor_check::eval_tensor_op(
+            self,
+            op_name,
+            descriptor,
+            receiver.is_some(),
+            turbofish,
+            actual_ops,
+            span,
+        )
     }
 
     fn check_model_def(&mut self, _item_id: ItemId, def: &hir::ModelDef) {
@@ -14702,6 +13189,17 @@ impl TypeChecker<'_> {
         self.exit_tensor_param_scope(saved);
     }
 
+    /// The `range = R` binding of a generic argument list, if any.
+    fn value_range_of(
+        &mut self,
+        generic_args: &hir::GenericArgs,
+    ) -> crate::extensions::tensor::types::ValueRange {
+        let range_arg = generic_args.args.iter().find(
+            |a| matches!(a, hir::GenericArg::Binding { name, .. } if self.text(*name) == "range"),
+        );
+        self.build_value_range(range_arg, generic_args.span)
+    }
+
     fn check_model_method_call(
         &mut self,
         model: &ModelTy,
@@ -14710,11 +13208,10 @@ impl TypeChecker<'_> {
         name_span: Span,
         call_span: Span,
     ) -> Ty {
-        if name != "predict" {
-            self.diags.push(Diagnostic::error(
-                format!("model type has no method named `{}`", name),
-                name_span,
-            ));
+        // AS6 packet 4B group 2C: a model's method surface, its `.predict(...)` calling
+        // convention and its result shape are model semantics; Core keeps the HIR walk, the
+        // declaration scope, the freshening and the argument evaluation.
+        if !tensor_check::check_model_method_name(self, name, name_span) {
             return Ty::Error;
         }
 
@@ -14736,18 +13233,7 @@ impl TypeChecker<'_> {
             .filter(|p| p.dir == crate::ast::PortDir::Output)
             .collect();
 
-        if args.len() != inputs.len() {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "wrong number of arguments for `.predict(...)`: expected {}, found {}",
-                        inputs.len(),
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .with_code("E0005"),
-            );
+        if !tensor_check::check_model_predict_arity(self, inputs.len(), args.len(), call_span) {
             return Ty::Error;
         }
 
@@ -14797,53 +13283,102 @@ impl TypeChecker<'_> {
             })
             .collect::<Vec<_>>();
 
+        // Argument evaluation stays here and stays interleaved: the extension rule runs once per
+        // argument, immediately after that argument is checked, so diagnostic order is unchanged.
         for (arg_expr_id, (expected_port_ty, port_decl_span)) in
             args.iter().zip(instantiated_inputs)
         {
             let arg_ty = self.check_expr(*arg_expr_id);
-            match self.resolve(&arg_ty) {
-                Ty::Ref { inner, .. } => {
-                    let diagnostic_count = self.diags.len();
-                    if self
-                        .unify(
-                            expected_port_ty.clone(),
-                            *inner.clone(),
-                            self.hir.expr(*arg_expr_id).span,
-                        )
-                        .is_err()
-                    {
-                        let declared_at =
-                            self.hir.sources.get(port_decl_span.source).map(|source| {
-                                let (line, column) = source.line_col(port_decl_span.lo);
-                                format!(
-                                    "corresponding model port declared at {}:{line}:{column}",
-                                    source.name
-                                )
-                            });
-                        if let (Some(note), Some(diagnostic)) =
-                            (declared_at, self.diags.get_mut(diagnostic_count))
-                        {
-                            diagnostic.notes.push(note);
-                        }
-                    }
-                }
-                _ => {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!("mismatched types: expected a borrowed tensor (e.g. `&tensor`), found `{}`", self.ty_to_string(&arg_ty)),
-                            self.hir.expr(*arg_expr_id).span,
-                        )
-                        .with_code("E0005"),
-                    );
-                }
-            }
+            let arg_span = self.hir.expr(*arg_expr_id).span;
+            let port_note = self.hir.sources.get(port_decl_span.source).map(|source| {
+                let (line, column) = source.line_col(port_decl_span.lo);
+                format!(
+                    "corresponding model port declared at {}:{line}:{column}",
+                    source.name
+                )
+            });
+            tensor_check::check_model_predict_arg(
+                self,
+                arg_ty,
+                expected_port_ty,
+                arg_span,
+                port_note,
+            );
         }
 
-        if instantiated_outputs.len() == 1 {
-            instantiated_outputs[0].clone()
-        } else {
-            Ty::Tuple(instantiated_outputs)
-        }
+        tensor_check::model_predict_result(instantiated_outputs)
+    }
+}
+
+/// AS6 packet 4B group 2C: the Core services the tensor semantic rules may use, and the whole of
+/// what they may use. `check_expr` is deliberately not among them — the tensor checker consumes
+/// checked expression types, it does not cause expression checking.
+impl TensorCheckCtx for TypeChecker<'_> {
+    fn diags(&mut self) -> &mut Vec<Diagnostic> {
+        &mut self.diags
+    }
+
+    fn tensor_error(&mut self, message: &str, span: Span) {
+        TypeChecker::tensor_error(self, message, span)
+    }
+
+    fn resolve(&self, ty: &Ty) -> Ty {
+        TypeChecker::resolve(self, ty)
+    }
+
+    fn unify(&mut self, a: Ty, b: Ty, span: Span) -> Result<(), ()> {
+        TypeChecker::unify(self, a, b, span)
+    }
+
+    fn ty_to_string(&self, ty: &Ty) -> String {
+        TypeChecker::ty_to_string(self, ty)
+    }
+
+    fn extract_const_int(&self, arg: &hir::GenericArg) -> Option<i64> {
+        TypeChecker::extract_const_int(self, arg)
+    }
+
+    fn extract_const_int_list(&mut self, arg: &hir::GenericArg) -> Option<Vec<i64>> {
+        TypeChecker::extract_const_int_list(self, arg)
+    }
+
+    fn extract_dim_generic(&mut self, arg: &hir::GenericArg, label: &str) -> Option<Poly> {
+        TypeChecker::extract_dim_generic(self, arg, label)
+    }
+
+    fn combine_value_range(
+        &self,
+        a: crate::extensions::tensor::types::ValueRange,
+        b: crate::extensions::tensor::types::ValueRange,
+    ) -> Option<crate::extensions::tensor::types::ValueRange> {
+        TypeChecker::combine_value_range(self, a, b)
+    }
+
+    fn value_range_of(
+        &mut self,
+        generic_args: &hir::GenericArgs,
+    ) -> crate::extensions::tensor::types::ValueRange {
+        TypeChecker::value_range_of(self, generic_args)
+    }
+
+    fn build_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        TypeChecker::build_shape(self, shape)
+    }
+
+    fn build_refine_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        TypeChecker::build_refine_shape(self, shape)
+    }
+
+    fn build_device(&mut self, arg: Option<&hir::GenericArg>, span: Span) -> Device {
+        TypeChecker::build_device(self, arg, span)
+    }
+
+    fn tensor_dtype(&mut self, ty_id: TypeId, span: Span) -> DType {
+        TypeChecker::tensor_dtype(self, ty_id, span)
+    }
+
+    fn tensor_state(&mut self) -> &mut UnifyCtx {
+        &mut self.tensor_ctx
     }
 }
 
