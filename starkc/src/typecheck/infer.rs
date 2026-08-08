@@ -696,4 +696,66 @@ impl TypeChecker<'_> {
         }
         Ok(true)
     }
+
+    // AS7 Packet 7: moved to the layer that owns the question.
+    pub(super) fn types_equal(&self, t1: &Ty, t2: &Ty) -> bool {
+        self.types_equal_inner(t1, t2, false)
+    }
+
+    /// DEV-134: `types_equal` has **no `Ty::Param` arm** — two occurrences of the SAME type
+    /// parameter fall to `_ => false` and compare unequal. That is invisible to its existing
+    /// callers, which are coherence/overlap paths where `Ty::Param` is either pre-handled
+    /// (`types_may_overlap` matches it first) or where a conservative `false` is the safe answer.
+    ///
+    /// It is NOT safe for `?`, which must accept `fn f<E>(..) -> Result<_, E>` propagating into
+    /// `fn g<E>(..) -> Result<_, E>`. So the rule is written ONCE, here, and the `Ty::Param`
+    /// behaviour is a parameter rather than a second copy of the structural walk — DEV-128 and
+    /// DEV-130 are both "the rule was written twice and the copies drifted", and this avoids
+    /// adding a third.
+    ///
+    /// Name equality is the correct test at the `?` site specifically: the operand's type has
+    /// already been instantiated at its call site, so a `Ty::Param` surviving in it belongs to
+    /// the enclosing function — the same scope as the return type it is being compared against.
+    /// Widening `types_equal` itself was rejected: it would change coherence and overlap results
+    /// for a defect that has no demonstrated symptom there.
+    pub(super) fn types_equal_inner(&self, t1: &Ty, t2: &Ty, params_equal_by_name: bool) -> bool {
+        let t1 = self.resolve(t1);
+        let t2 = self.resolve(t2);
+        match (&t1, &t2) {
+            (Ty::Param(n1), Ty::Param(n2)) if params_equal_by_name => n1 == n2,
+            (Ty::Primitive(p1), Ty::Primitive(p2)) => p1 == p2,
+            (Ty::Struct(s1, args1), Ty::Struct(s2, args2)) => {
+                s1 == s2
+                    && args1.len() == args2.len()
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
+            }
+            (Ty::Enum(e1, args1), Ty::Enum(e2, args2)) => {
+                e1 == e2
+                    && args1.len() == args2.len()
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
+            }
+            (Ty::Core(c1, args1), Ty::Core(c2, args2)) => {
+                c1 == c2
+                    && args1.len() == args2.len()
+                    && args1.iter().zip(args2).all(|(left, right)| {
+                        self.types_equal_inner(left, right, params_equal_by_name)
+                    })
+            }
+            (
+                Ty::Ref {
+                    mutable: m1,
+                    inner: i1,
+                },
+                Ty::Ref {
+                    mutable: m2,
+                    inner: i2,
+                },
+            ) => m1 == m2 && self.types_equal_inner(i1, i2, params_equal_by_name),
+            _ => false,
+        }
+    }
 }

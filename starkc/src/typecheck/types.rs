@@ -879,3 +879,71 @@ pub(super) fn is_integer_primitive(p: Primitive) -> bool {
             | Primitive::UInt64
     )
 }
+
+// AS7 Packet 7: moved to the layer that owns the question.
+/// DEV-075: the primitive float types. CD-015 (WP-C2.9) froze that primitive floats implement
+/// none of `Eq`/`Ord`/`Hash`; ordered float COMPARISON operators remain available as built-in
+/// primitive operations (IEEE), which is a separate thing from the trait.
+pub(super) fn is_float_primitive(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Float16 | Primitive::BFloat16 | Primitive::Float32 | Primitive::Float64
+    )
+}
+pub(super) fn is_numeric(p: Primitive) -> bool {
+    is_integer(p) || matches!(p, Primitive::Float32 | Primitive::Float64)
+}
+pub(super) fn standard_display_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(primitive) => matches!(
+            primitive,
+            Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64
+                | Primitive::Float32
+                | Primitive::Float64
+                | Primitive::Bool
+                | Primitive::Char
+                | Primitive::Unit
+                | Primitive::String
+                | Primitive::Str
+        ),
+        Ty::Core(CoreType::Ordering | CoreType::IOError, args) => args.is_empty(),
+        Ty::Ref { inner, .. } => standard_display_type(inner),
+        _ => false,
+    }
+}
+pub(super) fn standard_hash_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(primitive) => !matches!(
+            primitive,
+            Primitive::Float16 | Primitive::BFloat16 | Primitive::Float32 | Primitive::Float64
+        ),
+        Ty::Tuple(elements) => elements.iter().all(standard_hash_type),
+        Ty::Array(element, _) => standard_hash_type(element),
+        Ty::Core(CoreType::Vec | CoreType::Option, args) => {
+            args.len() == 1 && args.iter().all(standard_hash_type)
+        }
+        Ty::Core(CoreType::Result, args) => args.len() == 2 && args.iter().all(standard_hash_type),
+        Ty::Ref { inner, .. } => standard_hash_type(inner),
+        _ => false,
+    }
+}
+pub(super) fn is_integer(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Int8
+            | Primitive::Int16
+            | Primitive::Int32
+            | Primitive::Int64
+            | Primitive::UInt8
+            | Primitive::UInt16
+            | Primitive::UInt32
+            | Primitive::UInt64
+    )
+}

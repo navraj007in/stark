@@ -305,13 +305,6 @@ impl<'a> TypeChecker<'a> {
         self.current_fn_generics = saved.1;
     }
 
-    pub(super) fn exit_tensor_param_scope(&mut self, saved: TensorParamScopes) {
-        self.dim_scope = saved.dims;
-        self.dtype_scope = saved.dtypes;
-        self.device_scope = saved.devices;
-        self.generic_kinds = saved.kinds;
-    }
-
     // AS7 Packet 6: source text and type rendering read the checker's own storage, so they are
     // state services. The dependency checker found `infer` and `state` reaching into `mod` for
     // them once its ownership map was repaired.
@@ -456,5 +449,17 @@ impl<'a> TypeChecker<'a> {
     /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
     pub(super) fn item_text(&self, _item: ItemId, span: Span) -> &str {
         self.text(span)
+    }
+}
+
+// AS7 Packet 7: moved to the layer that owns the question.
+/// The single-segment name of a path, if it has exactly one segment.
+pub(super) fn single_segment_name<'t>(
+    path: &crate::ast::Path,
+    checker: &'t TypeChecker,
+) -> Option<&'t str> {
+    match path.segments.as_slice() {
+        [seg] => Some(checker.text(seg.span)),
+        _ => None,
     }
 }

@@ -31,24 +31,30 @@ use std::path::PathBuf;
 
 /// The approved decomposition (owner decision, 2026-08-08). Frozen for the packet.
 const MODULES: &[&str] = &[
-    "mod", "types", "state", "infer", "convert", "traits", "patterns", "body", "items",
+    "mod", "types", "state", "infer", "traits", "convert", "bounds", "patterns", "body", "items",
 ];
 
-/// The approved dependency DAG, as direct `depends-on` edges. A module may depend on anything
-/// **reachable below it**, which the reachability closure below computes; it may depend on nothing
-/// else.
+/// **Revised in Packet 7 by owner ruling, after this test fired.** The original cut put trait
+/// IDENTITY and complete written-BOUND satisfaction in one module, making `convert` and `traits` a
+/// strongly connected pair: converting `HashMap<K, V>` must prove `K: Hash + Eq`, and proving
+/// `Iterator<Item = Foo>` must convert the written `Item`. Both directions are real. The modules
+/// do not need a cycle — the missing layer was the orchestration, now `bounds`.
 ///
 /// ```text
-///   types <- state <- infer <- convert <- traits, patterns <- body <- items <- mod
+///   types <- state <- infer <- traits <- convert <- bounds <- patterns/body <- items
 /// ```
+///
+/// This graph must REJECT `traits -> convert`, `traits -> bounds` and `convert -> bounds`, and
+/// PERMIT `convert -> traits`, `bounds -> convert` and `bounds -> traits`.
 const DECLARED_EDGES: &[(&str, &str)] = &[
     ("mod", "items"),
     ("items", "body"),
-    ("body", "traits"),
     ("body", "patterns"),
-    ("traits", "convert"),
-    ("patterns", "convert"),
-    ("convert", "infer"),
+    ("body", "bounds"),
+    ("patterns", "bounds"),
+    ("bounds", "convert"),
+    ("convert", "traits"),
+    ("traits", "infer"),
     ("infer", "state"),
     ("state", "types"),
 ];

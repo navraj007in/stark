@@ -104,3 +104,101 @@ starkc/src/extensions/tensor/check.rs    ONLY if import paths must change; its s
 
 The concern is not hypothetical: `git worktree list` shows a parallel `stark-c79` worktree live in
 this repository at the time AS7 opened.
+
+---
+
+# CORRECTION — the stop condition fired in Packet 7 (owner ruling, 2026-08-08)
+
+**The decomposition above was wrong at one edge, and the pre-move dependency check found it before
+the split fossilised it.** The original module set is preserved exactly as frozen; this section
+records what the evidence overturned and why. It was not always the plan.
+
+## What the evidence showed
+
+Extracting `convert.rs` produced a violation that is **not** extraction friction:
+
+```text
+convert_hir_type            (convert)  converting HashMap<K,V> must check K: Hash + Eq
+   -> check_builtin_type_bounds
+        -> satisfies_bound_parts       (traits)   mod.rs:9419
+             -> convert_hir_type       (convert)  mod.rs:9538-9539
+```
+
+`satisfies_bound_parts` converts written types when it checks an **associated-type binding** —
+`Iterator<Item = Foo>` requires converting the actual and the expected `Item` before comparing
+them. Both directions are load-bearing:
+
+```text
+convert -> traits   what `HashMap<K,V>` MEANS depends on whether K satisfies a bound
+traits -> convert   whether a bound holds depends on what the types written IN the bound mean
+```
+
+That is the real shape of a language with bounded generics and associated-type bindings.
+`check_builtin_type_bounds` has exactly one caller, so there was nothing incidental to delete.
+
+## The conceptual mistake
+
+The original cut put **trait identity/selection** and **complete written-bound satisfaction** in one
+`traits` module. They are different layers:
+
+```text
+traits    "Does this type satisfy this trait identity? Which impl makes that true?"
+bounds    "Does it satisfy this complete written constraint, including `Item = Foo`?"
+```
+
+The modules do not need a cycle. **The missing layer was the orchestration of the two operations.**
+
+## The revised DAG
+
+```text
+types <- state <- infer <- traits <- convert <- bounds <- patterns/body/items
+```
+
+```text
+traits    may depend on  types, state, infer
+          MUST NOT       convert, bounds, body, items
+convert   may depend on  types, state, infer, traits
+bounds    may depend on  types, state, infer, traits, convert
+```
+
+`traits` answers only whether the trait relation exists, returning a witness
+(`BoundWitness::{No, Yes, Impl(ItemId)}`). **No HIR type conversion is permitted there.**
+`bounds` owns the HIR-facing operation: ask `traits` for the witness; if there are associated
+bindings and the witness is an impl, look up that impl's associated types, convert actual and
+expected, compare.
+
+`check_builtin_type_bounds` moves to **`convert.rs`** and stays at the same point during
+conversion, so approach C's diagnostic-order and timing risk is not incurred.
+
+## Constraints on the extraction
+
+- **Preserve the asymmetries.** The generic-parameter branch may behave differently from the
+  concrete-impl branch. **Do not improve it while extracting.** Anything that looks like a
+  semantic deficiency is recorded separately unless it meets the live-defect pre-emption rule.
+- **Do not touch the `assoc_projections` authority.** Its key is `(implementing nominal,
+  associated-type name)`, whereas this path selects a particular trait impl *first*; those are not
+  obviously equivalent when several traits expose the same associated name. Use the same selected
+  impl and the same actual/expected conversion ordering the existing code uses. This decomposition
+  repair is not an associated-type authority redesign.
+
+## Rejected alternatives
+
+```text
+B  permit a convert <-> traits cycle    NO — criterion 2 becomes documentary, not enforced
+C  move builtin bound validation out
+   of conversion                        NO — unnecessary diagnostic/timing risk
+D  merge convert + traits               NO for now — the SCC is caused by ONE higher-level
+                                        associated-binding operation, so merging the whole
+                                        responsibility is too coarse. D returns only if trait
+                                        IDENTITY itself proves to need HIR conversion, which is
+                                        not what the evidence says.
+```
+
+## The two trivial edges, ruled
+
+```text
+validate_generic_arity  -> convert.rs   validation of written generic application
+dtype_from_primitive    -> delete or delegate. AS6 already established the extension-owned
+                          authority `tensor_syntax::dtype_of_primitive`; do not create a second
+                          mapping in the new Core modules.
+```
