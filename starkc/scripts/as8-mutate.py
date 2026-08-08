@@ -192,6 +192,143 @@ BATCHES = {
                   "rule IDs at all, so no citation links it to TYPE-PRIM-001. This trial decides "
                   "it by measurement instead of by reading the manifest."),
     ],
+    # --------------------------------------- EI5 Batch 3 (generic compatibility / trait tables) --
+    "3": [
+        dict(id="AS8-MUT-014", target="ESF-TRAIT-001", tag="SHARED_AUTHORITY", expect="SURVIVED",
+             authority="typecheck::traits::core_trait_contract — receiver",
+             file="src/typecheck/traits.rs",
+             find='name: "eq",\n                receiver: Some(Ref),',
+             repl='name: "eq",\n                receiver: Some(Value),',
+             tests=["--test", "copy_canon_matrix", "--test", "conformance",
+                    "--test", "gate4a_prelude_traits", "--test", "three_engine_differential"],
+             note="`Eq::eq` declared to take `self` by value rather than `&self`. 06 fixes the "
+                  "receiver. EI5 expects a survivor because copy_canon_matrix enumerates FROM "
+                  "core_method_signature — and MUT-003 has since demonstrated that suite is a "
+                  "transcription, so the prediction now rests on measurement, not inference."),
+        dict(id="AS8-MUT-015", target="ESF-TRAIT-001", tag="SHARED_AUTHORITY", expect="SURVIVED",
+             authority="typecheck::traits::core_trait_contract — return type",
+             file="src/typecheck/traits.rs",
+             find="ret: Some(ContractTy::Ordering),",
+             repl="ret: Some(ContractTy::Bool),",
+             tests=["--test", "copy_canon_matrix", "--test", "conformance",
+                    "--test", "gate4a_prelude_traits", "--test", "three_engine_differential"],
+             note="`Ord::cmp` declared to return Bool rather than Ordering. A maximal disturbance "
+                  "of a Core trait contract's return type."),
+    ],
+    # ------------------------------------------- EI5 Batch 4 (provider and resource mappings) --
+    "4": [
+        dict(id="AS8-MUT-016", target="ESF-PROV-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::provider_sig::signature",
+             file="src/mir/provider_sig.rs",
+             find="    Ok((tys, PROVIDER_STATUS_TY))",
+             repl="    tys.reverse();\n    Ok((tys, PROVIDER_STATUS_TY))",
+             tests=["--test", "a10_provider_resolve", "--test", "a10_provider_call",
+                    "--test", "a10_provider_verify", "--test", "a10_provider_resource"],
+             note="Provider parameter order reversed. EV-PROVIDER-LOOP is EXTERNALLY_DERIVED — "
+                  "live peers — so EI5 expects a real kill here. Two engines only (EI2-R2): the "
+                  "interpreters have no host access, so there is no third-engine control."),
+        dict(id="AS8-MUT-017", target="ESF-RES-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::mir_ty_is_copy — HostResource arm",
+             file="src/mir/mod.rs",
+             find="        MirTy::HostResource(_) => false,",
+             repl="        MirTy::HostResource(_) => true,",
+             tests=["--test", "dev146_resource_borrow_weakening", "--test", "c788_resource_lifecycle",
+                    "--test", "a10_provider_resource", "--test", "a11_host_resource"],
+             note="A host resource classified Copy-eligible — THE EXACT A11/CD-234 SHAPE THE CODE "
+                  "COMMENT WARNS ABOUT, which records that a wildcard here made a resource Copy "
+                  "with three silent consequences. A survivor would mean that warning is "
+                  "unenforced by anything."),
+    ],
+    # ------------------------------------------------ EI5 Batch 5 (canonicalisation helpers) --
+    "5": [
+        # PREFLIGHT FINDING, 2026-08-09. The original single anchor matched TWICE: `is_integer`
+        # and `is_integer_primitive` are BYTE-IDENTICAL, both `pub(super)`, both in types.rs, both
+        # answering "is this primitive an integer". A duplicated shared authority inside ONE
+        # module -- the CD-065 shape the register exists to catch. The harness replaces the FIRST
+        # occurrence, so this trial would silently have mutated the other function and reported
+        # the result under the wrong name. Each copy now gets its own trial, and the PAIR of
+        # results says which consumers each copy actually reaches.
+        dict(id="AS8-MUT-018", target="ESF-TYPE-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="typecheck::types::is_integer (copy 1 of 2)",
+             file="src/typecheck/types.rs",
+             find='pub(super) fn is_integer(p: Primitive) -> bool {\n    matches!(\n        p,\n        Primitive::Int8\n            | Primitive::Int16\n            | Primitive::Int32\n            | Primitive::Int64\n            | Primitive::UInt8\n            | Primitive::UInt16\n            | Primitive::UInt32\n            | Primitive::UInt64\n    )\n}',
+             repl='pub(super) fn is_integer(p: Primitive) -> bool {\n    matches!(\n        p,\n        Primitive::Int8\n            | Primitive::Int16\n            | Primitive::Int32\n            | Primitive::Int64\n            | Primitive::UInt8\n            | Primitive::UInt16\n            | Primitive::UInt32\n    )\n}',
+             tests=["--test", "conformance", "--test", "three_engine_differential",
+                    "--test", "mir_differential"],
+             note="UInt64 stops reporting as an integer, in `is_integer` ONLY."),
+        dict(id="AS8-MUT-024", target="ESF-TYPE-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="typecheck::types::is_integer_primitive (copy 2 of 2)",
+             file="src/typecheck/types.rs",
+             find='pub(super) fn is_integer_primitive(p: Primitive) -> bool {\n    matches!(\n        p,\n        Primitive::Int8\n            | Primitive::Int16\n            | Primitive::Int32\n            | Primitive::Int64\n            | Primitive::UInt8\n            | Primitive::UInt16\n            | Primitive::UInt32\n            | Primitive::UInt64\n    )\n}',
+             repl='pub(super) fn is_integer_primitive(p: Primitive) -> bool {\n    matches!(\n        p,\n        Primitive::Int8\n            | Primitive::Int16\n            | Primitive::Int32\n            | Primitive::Int64\n            | Primitive::UInt8\n            | Primitive::UInt16\n            | Primitive::UInt32\n    )\n}',
+             tests=["--test", "conformance", "--test", "three_engine_differential",
+                    "--test", "mir_differential"],
+             note="The SAME mutation applied to the duplicate. If the two trials differ, the "
+                  "copies are reached by different consumers and the duplication is a live "
+                  "divergence risk; if either survives, that copy is unguarded."),
+        dict(id="AS8-MUT-019", target="ESF-TYPE-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="typecheck::types::strip_ref",
+             file="src/typecheck/types.rs",
+             find="    let mut current = ty;\n    while let Ty::Ref { inner, .. } = current {",
+             repl="    let mut current = ty;\n    if let Ty::Ref { inner, .. } = current {",
+             tests=["--test", "conformance", "--test", "three_engine_differential",
+                    "--test", "mir_differential", "--test", "c61f_nested_refs"],
+             note="`strip_ref` stops at ONE level. TYPE-METHOD-002 makes nested-reference "
+                  "receivers normative — auto-deref removes one leading `&` AT A TIME — so this "
+                  "should break nested-reference method resolution. c61f_nested_refs is selected "
+                  "under the AS8 rule: it names the behaviour even though it is not a "
+                  "differential suite."),
+    ],
+    # --------------------------------------- EI5 Batch 7 (rustc-sensitive lowering decisions) --
+    # EI3's finding: overflow, shift and drop order were CONVERTED from rustc assumptions into
+    # STARK decisions. These mutations hand each one back to rustc, which is the only way to test
+    # whether the conversion is load-bearing or decorative.
+    "7": [
+        dict(id="AS8-MUT-020", target="RA-OVERFLOW", tag="BACKEND_ASSUMPTION", expect="KILLED",
+             authority="backend::emit_checked_expr — the destination-width range check",
+             file="src/backend/generated_rust/emit_bodies.rs",
+             find='"match {checked} {{ Some(__v) if __v >= {min} && __v <= {max} => __v as ',
+             repl='"match {checked} {{ Some(__v) => __v as ',
+             tests=["--test", "three_engine_differential", "--test", "mir_differential"],
+             note="Drops the destination-width range check from arithmetic emission, so an "
+                  "i128-representable result is cast down with `as` instead of trapping — i.e. "
+                  "overflow behaviour re-delegated to the build. EI3 records `overflow-checks` as "
+                  "'RECORDED RATHER THAN RELIED UPON'; this tests that claim. HIR and MIR trap "
+                  "independently of the generated Rust, so a survivor would contradict EI3."),
+        dict(id="AS8-MUT-021", target="RA-SHIFT", tag="BACKEND_ASSUMPTION", expect="KILLED",
+             authority="backend::emit_checked_expr — STARK's own shift-count check",
+             file="src/backend/generated_rust/emit_bodies.rs",
+             find="if __count < 0 || __count >= {width} {{ ",
+             repl="if false {{ ",
+             tests=["--test", "three_engine_differential", "--test", "mir_differential"],
+             note="Removes STARK's shift-count check, leaving Rust's `checked_shl`, WHICH "
+                  "VALIDATES ONLY THE SHIFT COUNT AGAINST i128 and not against the destination "
+                  "width. This is EI3's one documented divergence between the two languages. A "
+                  "survivor means no test distinguishes STARK's shift rule from Rust's."),
+        dict(id="AS8-MUT-022", target="RA-DROP", tag="BACKEND_ASSUMPTION", expect="KILLED",
+             authority="mir::drop_plan::array_order",
+             file="src/mir/drop_plan.rs",
+             find="pub fn array_order(len: u64) -> impl Iterator<Item = u64> {\n    (0..len).rev()\n}",
+             repl="pub fn array_order(len: u64) -> impl Iterator<Item = u64> {\n    (0..len).rev().rev()\n}",
+             tests=["--test", "three_engine_differential", "--test", "mir_differential"],
+             note="Array destruction order reversed. mir and native SHARE this plan (ESF-DROP-002), "
+                  "so the HIR engine's independent destruction walk is the ONLY control. A "
+                  "survivor means that lone control does not reach array drop order."),
+    ],
+    # ------------------------------------------- EI5 Batch 8 (correlated evidence generators) --
+    "8": [
+        dict(id="AS8-MUT-023", target="EV-CORPUS-C6", tag="EVIDENCE_SHARED", expect="KILLED",
+             authority="the C6 corpus's expected_trap_category, vs a real semantic change",
+             file="src/mir/lower.rs",
+             find="            BinOp::Div => (CheckedOp::Div, TrapCategory::DivideByZero),",
+             repl="            BinOp::Div => (CheckedOp::Div, TrapCategory::IntegerOverflow),",
+             tests=["--test", "c6_generated_corpus"],
+             note="The MUT-007 mutation, run against THE CORPUS ALONE. EI5 asks whether the "
+                  "corpus 'detects semantic change' or merely 'detects corpus change'. Its cases "
+                  "carry expected_trap_category, so a kill here means the corpus pins semantics "
+                  "independently of the engines agreeing. EV-COPY-MATRIX, Batch 8's other row, is "
+                  "ALREADY ANSWERED by MUT-003 — it survived, so it is a transcription."),
+    ],
     # ----------------------------------------------------- EI5 Batch 6 (trap categorisation) --
     # EI2-R3 and the register both say a mis-categorised trap is "invisible to every mechanism in
     # the tree", and rank ESF-TRAP-001 INVISIBLE on that basis. The measurement says otherwise:
