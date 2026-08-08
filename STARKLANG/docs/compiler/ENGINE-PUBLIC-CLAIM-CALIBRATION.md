@@ -58,8 +58,9 @@ AFTER   Three engines, four configurations, one answer
 EI2 measured what is actually spec-derived:
 
 ```text
-EV-SPEC-FIXTURES   SPEC_DERIVED, strongest control in the tree — but covers PARSE and SEMANTIC
-                   CLASSIFICATION, not runtime semantics
+EV-SPEC-FIXTURES   SPEC_DERIVED, the strongest FRONT-END control — but covers PARSE and SEMANTIC
+                   CLASSIFICATION, not runtime semantics, and (AS8-R5, measured 2026-08-09) not
+                   type IDENTITY either: AS8-MUT-013 reverted TYPE-PRIM-001 and this suite passed
 EV-CORPUS-C6       handwritten + generated; every case states its expectation in the SHARED trap
                    vocabulary (mir::TrapCategory), so a corpus case cannot contradict ESF-TRAP-001
 EV-DIFF-*          CROSS_ENGINE_DERIVED against the HIR oracle

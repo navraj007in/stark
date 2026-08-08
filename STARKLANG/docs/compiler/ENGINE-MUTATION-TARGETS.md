@@ -56,8 +56,8 @@ Ranking follows the packet's priority rule; tags are the frozen four.
 
 | Trial target | Tag | Recommended mutation | Selected tests | Expected independent control | Survivor consequence |
 | --- | --- | --- | --- | --- | --- |
-| `ESF-COPY-002` `mir::TypeContext::is_copy` | `SHARED_AUTHORITY` | `MirTy::Ref { mutable: true }` reports `Copy` | `mir_differential`, `three_engine_differential`, `copy_canon_matrix`, `dev146_*` | **HIR engine** — it classifies over `Ty`, not `MirTy`, so it should disagree | If it survives, the hir↔mir differential is not exercising the case; residual against `EV-DIFF-*` coverage rather than against the rule |
-| `ESF-TYPE-001` `typecheck::types::unit_or_tuple` | `SHARED_AUTHORITY` | Return `Ty::Tuple(vec![])` instead of `Primitive::Unit` — the exact pre-TYPE-PRIM-001 defect | `spec fixture conformance`, `conformance`, `three_engine_differential` | **`EV-SPEC-FIXTURES`** — spec-derived, the strongest control in the tree | A survivor would mean the spec fixtures do not cover TYPE-PRIM-001's own rule, which would be a notable gap given the rule has a fixture history |
+| ~~`ESF-COPY-002`~~ **RUN — AS8-MUT-012 SURVIVED; the survivor consequence below is the correct reading (AS8-R6)** `mir::TypeContext::is_copy` | `SHARED_AUTHORITY` | `MirTy::Ref { mutable: true }` reports `Copy` | `mir_differential`, `three_engine_differential`, `copy_canon_matrix`, `dev146_*` | **HIR engine** — it classifies over `Ty`, not `MirTy`, so it should disagree | If it survives, the hir↔mir differential is not exercising the case; residual against `EV-DIFF-*` coverage rather than against the rule |
+| ~~`ESF-TYPE-001`~~ **RUN AND FALSIFIED — AS8-MUT-013 SURVIVED with the fixture suite in the selection; see the Batch 2 correction below** `typecheck::types::unit_or_tuple` | `SHARED_AUTHORITY` | Return `Ty::Tuple(vec![])` instead of `Primitive::Unit` — the exact pre-TYPE-PRIM-001 defect | `spec fixture conformance`, `conformance`, `three_engine_differential` | **`EV-SPEC-FIXTURES`** — spec-derived, the strongest control in the tree | A survivor would mean the spec fixtures do not cover TYPE-PRIM-001's own rule, which would be a notable gap given the rule has a fixture history |
 
 ### Batch 3 — generic compatibility and trait tables *(priority 3)*
 
@@ -190,13 +190,26 @@ MUT-008   vocabulary no-op                   SURVIVED as designed
 Assignment is duplicated (28 sites in `interp.rs`, 30 across the MIR path) and therefore visible;
 only the **vocabulary** is shared. Batch 6's row is superseded by `ESF-TRAP-001a`/`001b`.
 
+### Batch 2, RUN 2026-08-09 — both predictions falsified
+
+```text
+MUT-012  ESF-COPY-002  `&mut` reports Copy over MirTy   predicted KILLED   SURVIVED, 0 killers
+MUT-013  ESF-TYPE-001  reverts TYPE-PRIM-001            predicted KILLED   SURVIVED, 0 killers
+```
+
+**MUT-012 is a coverage gap and this document called it correctly** — the row's survivor
+consequence ("the hir↔mir differential is not exercising the case; residual against `EV-DIFF-*`
+coverage rather than against the rule") is the right reading and stands as AS8-R6.
+
+**MUT-013 falsifies this document's confidence in `EV-SPEC-FIXTURES`.** The row predicted a kill by
+"the strongest control in the tree" and warned that a survivor "would mean the spec fixtures do not
+cover TYPE-PRIM-001's own rule". They do not. The suite WAS in the selection —
+`spec_conformance ... ok` — and passed. The fixtures classify by what the front end accepts and
+rejects; reverting the canonicalisation makes no program fail to compile. AS8-R5.
+
 ### Revised predictions for the batches not yet run
 
 ```text
-Batch 2  ESF-COPY-002  `&mut` reports Copy over MirTy      KILLED expected — but note MUT-006
-                                                           showed the front-end form survives the
-                                                           differential; select c61f_* as well
-         ESF-TYPE-001  Unit/() canonicalisation            unchanged: EV-SPEC-FIXTURES is the control
 Batch 3  ESF-TRAIT-001 Core trait contract receiver        SURVIVOR still expected. MUT-003
                                                            confirmed copy_canon_matrix is a
                                                            transcription, so it is not a control

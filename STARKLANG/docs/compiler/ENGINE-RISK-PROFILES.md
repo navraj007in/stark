@@ -154,7 +154,11 @@ ESF-TRAP-001a  high      INVISIBLE all three   NO CONTROL IS CONSTRUCTIBLE — r
 ESF-DROP-001   critical  INVISIBLE all three   no control; detected only via Copy CONTRADICTION
 ESF-TRAIT-001  high      INVISIBLE all three   control is IMPLEMENTATION_GENERATED (MUT-003
                                                confirms copy_canon_matrix is a transcription)
-ESF-COPY-002   high      INVISIBLE mir/native  hir is the only control
+ESF-TYPE-001   HIGH      INVISIBLE all three   *** PROMOTED FROM MEDIUM ***
+                                               its recorded control does not control it:
+                                               MUT-013 survived with the fixtures selected
+ESF-COPY-002   high      INVISIBLE mir/native  hir is the only control IN PRINCIPLE; MUT-012
+                                               shows the case is unexercised (AS8-R6)
 ESF-DROP-002   high      INVISIBLE mir/native  hir walks a different structure
 ESF-PROV-001   high      INVISIBLE mir/native  two engines only; external loopback is the control
 ESF-COPY-001   HIGH      INVISIBLE to engines  *** DEMOTED FROM CRITICAL ***

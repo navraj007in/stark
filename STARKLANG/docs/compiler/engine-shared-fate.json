@@ -49,9 +49,10 @@
       "visibility": "INVISIBLE_MIR_NATIVE",
       "evidence": "CROSS_ENGINE_DERIVED",
       "independent_evidence": "hir engine classifies over Ty, not MirTy",
-      "residual": "mir/native agreement is inherited; CD-065 consolidated a prior duplicate",
+      "residual": "AS8-R6: the hir control exists in principle and is UNEXERCISED \u2014 MUT-012 survived every selected suite with zero killers. Coverage gap, not authority gap",
       "risk": "high",
-      "review_trigger": "any change to TypeContext::is_copy or its delegate"
+      "review_trigger": "any change to TypeContext::is_copy or its delegate",
+      "amended": "2026-08-09 AS8 \u2014 control confirmed unexercised"
     },
     {
       "id": "ESF-DROP-001",
@@ -162,10 +163,15 @@
       "rustc": "none",
       "visibility": "INVISIBLE",
       "evidence": "SPEC_DERIVED",
-      "independent_evidence": "spec fixtures",
-      "residual": "canonicalisation happens once; no engine can disagree",
-      "risk": "medium",
-      "review_trigger": "any change to tuple construction or MirTy::Unit lowering"
+      "independent_evidence": "NONE \u2014 AS8-MUT-013 survived with the spec fixtures in the selection",
+      "residual": "AS8-R5: the fixtures classify by what the front end accepts and rejects; TYPE-PRIM-001 is about type identity and breaking it makes no program fail to compile",
+      "risk": "high",
+      "review_trigger": "any change to tuple construction or MirTy::Unit lowering",
+      "amended": "2026-08-09 AS8 \u2014 promoted from medium; recorded control falsified by measurement",
+      "superseded_fields": {
+        "risk_was": "medium",
+        "independent_evidence_was": "spec fixtures"
+      }
     },
     {
       "id": "ESF-NUM-001",

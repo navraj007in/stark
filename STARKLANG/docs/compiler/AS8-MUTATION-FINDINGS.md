@@ -29,6 +29,8 @@ than reinterpreted afterwards.
 | `AS8-MUT-011` | `ESF-COPY-001` | = MUT-006, **vs `c61f_structural_copy`** | KILLED | KILLED | **CONFIRMED** | 1 | **`HAND_AUTHORED`** |
 | `AS8-MUT-007` | `ESF-TRAP-001b` | wrong category, **MIR path only** | KILLED | KILLED | **CONFIRMED** | 4 | `CROSS_ENGINE_DERIVED` |
 | `AS8-MUT-008` | `ESF-TRAP-001a` | vocabulary no-op | SURVIVED | SURVIVED | **CONFIRMED** | 0 | — |
+| `AS8-MUT-012` | `ESF-COPY-002` | `&mut T` reports `Copy` **over `MirTy`** | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-013` | `ESF-TYPE-001` | `()` stops canonicalising to `Unit` (reverts TYPE-PRIM-001) | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
 
 Per EI5, kill rates are **not pooled**. Every trial above is `SHARED_AUTHORITY`, so the meaningful
 split is by killer independence, not by tag:
@@ -36,8 +38,14 @@ split is by killer independence, not by tag:
 ```text
 killed by CROSS_ENGINE_DERIVED evidence   4   MUT-001, 002, 004, 007
 killed by HAND_AUTHORED spec controls     3   MUT-009, 010, 011
-survived everything selected              4   MUT-003, 005, 006, 008
+survived everything selected              6   MUT-003, 005, 006, 008, 012, 013
 ```
+
+**Five of thirteen predictions were wrong, and they were wrong in BOTH directions** — three
+predicted survivors were killed, two predicted kills survived. That ratio is the packet's most
+useful single number: EI5's predictions were reasoned from EI2's reading of the evidence base, and
+they are right about as often as they are wrong. Nothing in the register earns belief until it has
+been mutated.
 
 ## Finding 1 — the differential detects a Copy *contradiction*, never a Copy *error*
 
@@ -132,6 +140,75 @@ The genuine residual is **narrower and cannot be posed as a source mutation at a
 names the wrong concept, or omits one, every engine and the corpus manifest are wrong together and
 nothing in the tree can disagree. MUT-008 is the honest no-op that marks the boundary.
 
+---
+
+## Finding 4 — the "strongest control in the tree" does not cover the rule EI5 aimed at it
+
+`EV-SPEC-FIXTURES` is `SPEC_DERIVED`, and EI2, EI4 and EI5 all name it the strongest control
+available. EI5's Batch 2 row predicted it would kill a `ESF-TYPE-001` mutation and said what a
+survivor would mean:
+
+> *"A survivor would mean the spec fixtures do not cover TYPE-PRIM-001's own rule, which would be a
+> notable gap given the rule has a fixture history."*
+
+**MUT-013 survived.** `unit_or_tuple` was reverted so `()` no longer canonicalises to `Unit` — the
+exact pre-TYPE-PRIM-001 defect — and `conformance` passed, spec fixtures included
+(`spec_conformance ... ok`; the suite was in the selection, not omitted). Zero killers.
+
+The reason is structural and worth stating, because it limits what `EV-SPEC-FIXTURES` can ever
+control: **the fixtures classify programs by parse and semantic OUTCOME — accepted, rejected, which
+diagnostic — and TYPE-PRIM-001 is about type IDENTITY.** Reverting the canonicalisation makes no
+program fail to compile. It changes an internal representation that no fixture asserts, and the
+divergence would only surface where the two spellings are distinguished downstream.
+
+```text
+EV-SPEC-FIXTURES controls   what the front end ACCEPTS AND REJECTS
+it does not control         which internal type a construct canonicalises to
+```
+
+That is a narrower reading of the tree's best control than any EI document has, and it was
+obtainable only by mutating.
+
+## Finding 5 — `ESF-COPY-002` is unexercised, and EI5 predicted this correctly
+
+MUT-012 made `&mut T` report `Copy` over `MirTy`. EI5 predicted a kill on the ground that the HIR
+engine classifies over `Ty` rather than `MirTy` and should disagree. It survived `mir_differential`,
+`three_engine_differential` and `c61f_structural_copy` alike, with zero killers.
+
+EI5's own survivor consequence is the right reading and needs no revision:
+
+> *"If it survives, the hir↔mir differential is not exercising the case; residual against
+> `EV-DIFF-*` coverage rather than against the rule."*
+
+**This is a coverage gap, not an authority gap.** No differential case duplicates a `&mut` and
+observes the consequence. It pairs instructively with MUT-006 — the same rule broken on the
+front-end side, also a survivor, but killed instantly by `c61f_structural_copy`. The front-end form
+has a control; the MIR form has none, and neither engine notices.
+
+## The corpus census (AS8-R3)
+
+`starkc/scripts/as8-control-census.py`, keyed on **normative rule IDs rather than function names**,
+because `c61f_structural_copy.rs` never mentions `copy_eligible_types` — it cites OWN-COPY-001. A
+symbol census finds tests that touch the implementation and misses every test that pins the rule,
+which is the only kind that can act as a control.
+
+```text
+ESF-COPY-001/002   c61f_structural_copy.rs                            confirmed by MUT-009/010/011
+ESF-RES-001        a11_host_resource, c788_resource_lifecycle,        FIVE front-end controls;
+                   dev146_resource_borrow_weakening,                  EI2 recorded only the
+                   dev151_resource_method_dispatch,                   EXTERNALLY_DERIVED loopback
+                   dev153_slice_parameter_in_resource_method
+seven others       none found by rule citation
+```
+
+**Stated limitation, in the script and here.** It finds tests that CITE a rule ID. The spec-fixture
+manifest carries no rule IDs at all, so EI5's claim that `EV-SPEC-FIXTURES` controls `ESF-TYPE-001`
+could be neither confirmed nor refuted by census — and MUT-013 then refuted it by measurement.
+Absence of a hit is not evidence of absence of a control; where the census reports NONE, the honest
+response is a trial.
+
+---
+
 ## What this changes
 
 ```text
@@ -161,6 +238,19 @@ AS8-R3  EI2/EI4/EI5 each independently missed an in-tree control. The evidence a
 
 AS8-R4  `copy_canon_matrix` is confirmed a transcription (MUT-003 survived). It should be
         described as a DRIFT DETECTOR, not as evidence for the Copy rule.
+
+AS8-R5  EV-SPEC-FIXTURES does not control TYPE-PRIM-001 (MUT-013 survived with the suite in the
+        selection). The fixtures classify programs by what the front end ACCEPTS AND REJECTS;
+        TYPE-PRIM-001 is about type IDENTITY, and reverting it makes no program fail to compile.
+        The tree's strongest control is narrower than three EI documents claim.
+
+AS8-R6  ESF-COPY-002 is unexercised: no differential case duplicates a `&mut` and observes the
+        consequence (MUT-012 survived every selected suite). A COVERAGE residual against
+        EV-DIFF-*, not an authority residual — EI5 predicted this reading and it stands.
+
+AS8-R7  Five of thirteen EI5 predictions were falsified, in BOTH directions. Every error traces
+        to reasoning about the evidence base by reading it rather than by mutating it. No
+        register entry should be cited as controlled or uncontrolled until it has been mutated.
 ```
 
 ## Method note — the harness had to be repaired mid-packet, twice
@@ -175,3 +265,5 @@ Recorded because both defects had the shape this packet exists to find.
    in flight committed AS8-MUT-002 to a pushed branch, and every C6.5 job failed on it. The
    harness now refuses a target that differs from HEAD before the trial and after the restore.
    **A mutation harness is a parallel writer inside your own session.**
+
+---

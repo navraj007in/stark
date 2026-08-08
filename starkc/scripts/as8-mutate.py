@@ -163,6 +163,35 @@ BATCHES = {
                   "NOT Copy -- duplicating a &mut breaks the one-&mut-XOR-many-& rule. Self-consistent "
                   "in the same sense; no destructor authority is contradicted."),
     ],
+    # ---------------------------------- EI5 Batch 2 (shared type and representation predicates) --
+    # Selected tests follow the rule AS8 added to EI5: EVERY suite that NAMES the authority, not
+    # only the suites that execute it. That rule is why `c61f_structural_copy` appears on the
+    # ESF-COPY-002 row -- its omission is exactly how MUT-005/006 were recorded as survivors.
+    "2": [
+        dict(id="AS8-MUT-012", target="ESF-COPY-002", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="mir::mir_ty_is_copy",
+             file="src/mir/mod.rs",
+             find="        MirTy::Ref { mutable, .. } => !*mutable,",
+             repl="        MirTy::Ref { .. } => true,",
+             tests=["--test", "mir_differential", "--test", "three_engine_differential",
+                    "--test", "c61f_structural_copy"],
+             note="`&mut T` reports Copy OVER MirTy. EI5 predicted KILLED because the HIR engine "
+                  "classifies over `Ty`, not `MirTy`, so it should disagree. Note MUT-006 is the "
+                  "same rule broken on the FRONT-END side and it survived the differential "
+                  "entirely -- if this one is killed, the difference is which engine still holds "
+                  "the correct answer, not the rule's visibility."),
+        dict(id="AS8-MUT-013", target="ESF-TYPE-001", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="typecheck::types::unit_or_tuple",
+             file="src/typecheck/types.rs",
+             find="    if elems.is_empty() {\n        Ty::Primitive(Primitive::Unit)\n    } else {\n        Ty::Tuple(elems)\n    }",
+             repl="    if elems.is_empty() {\n        Ty::Tuple(Vec::new())\n    } else {\n        Ty::Tuple(elems)\n    }",
+             tests=["--test", "conformance", "--test", "three_engine_differential"],
+             note="Reverts TYPE-PRIM-001: `()` stops canonicalising to `Unit`. EI5 predicted "
+                  "KILLED by EV-SPEC-FIXTURES, the strongest control in the tree. THE CENSUS "
+                  "CANNOT CONFIRM THAT CLAIM -- the spec-fixture manifest carries no normative "
+                  "rule IDs at all, so no citation links it to TYPE-PRIM-001. This trial decides "
+                  "it by measurement instead of by reading the manifest."),
+    ],
     # ----------------------------------------------------- EI5 Batch 6 (trap categorisation) --
     # EI2-R3 and the register both say a mis-categorised trap is "invisible to every mechanism in
     # the tree", and rank ESF-TRAP-001 INVISIBLE on that basis. The measurement says otherwise:
