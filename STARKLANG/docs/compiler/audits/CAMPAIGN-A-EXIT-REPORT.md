@@ -2,11 +2,13 @@
 
 **Gate:** `WP-ARCHITECTURE-STABILIZATION.md` §5, "Campaign A exit gate".
 **Branch:** `wp-arch-stability/sprint-3`. **Date:** 2026-08-08. **Head:** `2858dc7`.
-**Status:** **PASS, pending one CI lane.** The final adversarial audit is complete —
-`CAMPAIGN-A-FINAL-ADVERSARIAL-AUDIT.md`, audited head `36b3dfc` — and every hard exit condition
-holds except the last, which is a lane result rather than an open question: `fmt, clippy, test
-(windows-x64)` was still reporting when this was written. Every other job on `36b3dfc` is green
-across both workflows and all three platforms.
+**Status:** **CAMPAIGN A — PASS** (2026-08-08). Every exit condition is satisfied, including
+repository-backed CI: `f55bcc4` completed **both workflows with zero failing jobs**, enumerated by
+name. The final adversarial audit is `CAMPAIGN-A-FINAL-ADVERSARIAL-AUDIT.md`; Sprint 4's closure is
+`SPRINT-4-CLOSURE.md`.
+
+AS3 #1–#5 **PASS**. DEV-121 **CLOSED**. DEV-197 class **CLOSED**. AS4's seven scoped properties
+**PASS**, with three deferments unchanged and explicitly restated (§4.0a) rather than promoted.
 
 **What the audit did to the earlier candidacy.** AS3 #2, #3 and #5 were PASS-CANDIDATE pending
 falsification. The audit found **seven further defects** (DEV-203 … DEV-209) and repaired all of

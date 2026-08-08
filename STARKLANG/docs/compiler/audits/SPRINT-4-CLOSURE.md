@@ -121,21 +121,33 @@ unavailable lanes. Sprint 4 verified the first two have not silently widened int
 
 ## 8. Verdict
 
-Every Campaign A exit condition is satisfied by work that has landed, **except the last**:
+Every Campaign A exit condition is satisfied, including the last:
 
 ```text
-[ ] exact pushed head CI is green
+[x] exact pushed head CI is green
 ```
 
-That is a lane result, not an open question — and it is deliberately not being pre-empted. The
-final verdict is issued in `CAMPAIGN-A-EXIT-REPORT.md` when CI on `627cadf` reports, by
-**enumerating failing jobs by name** rather than reading a run-level conclusion.
-
-If it reports clean:
+**`f55bcc4` — both workflows completed, zero failing jobs**, enumerated by name rather than read
+from a run-level conclusion. `04f0391` is likewise fully green. The heads above it (`627cadf`,
+`5fd9d69`, `46ae2ec`) are documentation and test-only.
 
 ```text
+AS3 #1 PASS      AS3 #4 PASS      DEV-121  CLOSED
+AS3 #2 PASS      AS3 #5 PASS      DEV-197  class CLOSED
+AS3 #3 PASS                       AS4      7 properties PASS, 3 deferments unchanged
+
 CAMPAIGN A — PASS
 ```
 
-If it does not, the finding is repaired under §13's policy — ordinary implementation work, not an
-architecture reopening — and the verdict follows the repair.
+**Discovery stops here.** The architecture-stabilization gate is satisfied; the posture becomes
+*preserve the established authorities while building capabilities*. A future compiler bug is not
+grounds for another architecture campaign — that threshold is evidence an established authority is
+**structurally incapable** of expressing required semantics, and nothing in Sprints 3 or 4 met it.
+Twenty-one defects were found across the two sprints (DEV-183, DEV-187 … DEV-212); every one was a
+violation of a rule the architecture already stated, repaired at an authority that already existed.
+
+Structured concurrency may proceed under these invariants.
+
+**What remains in the programme is not Campaign A.** `WP-ARCHITECTURE-STABILIZATION.md`'s own
+Sprint 4 is AS6, AS7 and AS8 — Campaign B/C work. AS6 packet 1 (the two-directional isolation
+harness and the inventory) landed in `46ae2ec`; the rest is scoped there.
