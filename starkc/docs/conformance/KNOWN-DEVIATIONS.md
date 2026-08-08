@@ -6367,3 +6367,55 @@ Some / Ok / Err
 - **Application witnesses left unchanged.** `stark-url` is 20/20 and the external sample suite's
   `pkg/05-data-modelling` runs again. Rewriting valid code to avoid a compiler defect would turn
   "an application exposed a missing capability" into "an application learned a workaround".
+
+## DEV-121 — CLOSED (owner ruling, 2026-08-08)
+
+Reopened on 2026-08-07 because the first closure was premature: it proved that every known
+view-producing intrinsic was exercised and that a *narrow* rule ran at four binding positions. That
+is a regression case, not a class.
+
+The class statement is now this:
+
+| Closure claim | Evidence |
+| --- | --- |
+| one canonical `Ty` → `Value` relation | `value_matches_ty`, exhaustive with no permissive wildcard; the narrow `check_value_representation` is **deleted**, not merely unused |
+| 12 of 12 runtime boundaries wired | `dev121_boundary_inventory`, whose progress pin asserts the exact set |
+| an exact-set forcing inventory | `classify` is exhaustive over `RepBoundary`; a new variant does not compile until it is classified |
+| no permissive typed-local metadata escape | `bind_typed_local` looks up `local_types` itself; absence is `InternalInvariant` |
+| producer-side coverage | `RepBoundary::ExpressionResult` at `expect_value`, with the direct-`eval_expr` census exact and every site named |
+| owned/view mutation | `String::as_str` / `Vec::as_slice` emitting owned storage → refused at `ExpressionResult` |
+| reference mutation | a `&self` receiver binding the pointee by value → refused at `Receiver` |
+| function-value mutation | a function item coercing to a non-function → refused at `ExpressionResult` |
+| aggregate mutation | a declared field receiving a mis-represented value → refused at `AggregateField` |
+| metadata-removal mutations | deleting any of the five published tables → `InternalInvariant` |
+
+Each mutation modifies a **producer**, never the predicate: corrupting `check_value_for_ty` would
+only show that the predicate detects an artificial mismatch. Each requires the witness to run clean
+unmutated, and each requires the failure to **name the intended boundary** — a mutation caught by
+the wrong wire is a failure, not a pass.
+
+**What the class cost to close, stated because it is the useful part of the record.** Wiring the
+boundaries found DEV-197 (nine dispatch sites), DEV-198, DEV-199, DEV-200, DEV-201, DEV-202,
+DEV-203, DEV-204, DEV-205, DEV-206, DEV-207, DEV-208 and DEV-209. None changed a visible answer
+before it was found. That is the defect class DEV-121 named: metadata and representation
+disagreeing on programs that work.
+
+## DEV-197 — CLASS CLOSED (2026-08-08)
+
+*"A callee body ran without its checker-selected generic environment."* Nine sites across three
+discovery events, each found by making something mandatory rather than by reading code — wiring the
+`Return` boundary, routing `call_callable` through the authority, and making the environment a
+required parameter of method dispatch.
+
+Closed on the AS3 #2 requalification: seven dispatch classes (free generic function, generic
+associated function, generic inherent method, operator into a generic impl, bound trait dispatch,
+function value, nested generic call), each proved by **removing** the environment and requiring the
+run to fail — with the mutation asserted to have been *reached*, and every witness answering
+`size_of::<T>()` so the instantiation is load-bearing. Structural pins hold the shape: one body
+executor, one caller of the raw executor, one environment installer, and an exhaustive
+`InvocationEnv` match.
+
+DEV-201 and DEV-202 were found after the class was believed closed, both by the pins rather than by
+behaviour. They are recorded under their own numbers because each was a distinct defect, but they
+are the same shape, and their discovery is the reason the requalification pins installation points
+instead of asserting that a table is populated.

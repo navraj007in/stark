@@ -2,16 +2,18 @@
 
 **Gate:** `WP-ARCHITECTURE-STABILIZATION.md` §5, "Campaign A exit gate".
 **Branch:** `wp-arch-stability/sprint-3`. **Date:** 2026-08-08. **Head:** `2858dc7`.
-**Status:** **CANDIDATE-PASS.** AS3 #2, #3 and #5 are **PASS-CANDIDATE** as of the second owner
-ruling of 2026-08-08: their substantive evidence now exists, and what remains is repository-backed
-confirmation (CI on the pushed head) and the final adversarial audit. Owner rulings of 2026-08-08
-applied throughout.
+**Status:** **PASS, pending one CI lane.** The final adversarial audit is complete —
+`CAMPAIGN-A-FINAL-ADVERSARIAL-AUDIT.md`, audited head `36b3dfc` — and every hard exit condition
+holds except the last, which is a lane result rather than an open question: `fmt, clippy, test
+(windows-x64)` was still reporting when this was written. Every other job on `36b3dfc` is green
+across both workflows and all three platforms.
 
-**Why `PASS-CANDIDATE` rather than PASS or FAIL.** Holding a criterion at FAIL because CI has not
-yet reported would misdescribe it: the implementation, the exact-set evidence and the mutation
-evidence are all complete and green locally. Recording it PASS would overstate it in the other
-direction. The owner ruling introduces the third state for exactly this gap, and the audit is what
-closes it.
+**What the audit did to the earlier candidacy.** AS3 #2, #3 and #5 were PASS-CANDIDATE pending
+falsification. The audit found **seven further defects** (DEV-203 … DEV-209) and repaired all of
+them; the criteria are recorded PASS on the repaired head rather than on the head that was
+audited. That the audit found defects is not an argument against closure — every one was a
+violation of a rule the architecture already stated, repaired at an authority that already existed,
+with no new representation, type rule, execution funnel or place system.
 
 > Campaign A passes only when AS0, AS1a, AS2, AS1b, AS3 and AS4 are complete and owner-reviewed. The
 > exit report must classify each criterion PASS, FAIL, DEFERRED-BY-DECISION or NOT-APPLICABLE and
@@ -22,9 +24,9 @@ rulings. All four are now classified in the gate's own vocabulary:
 
 | Criterion | Ruling | Classification |
 | --- | --- | --- |
-| AS3 #3 — total type→`Value` enforcement | HOLD, then **promote once the evidence exists** | **PASS-CANDIDATE** |
-| AS3 #5 — DEV-121 class closure | closure premature; **reopen DEV-121** | **PASS-CANDIDATE** (DEV-121 **CLOSED-CANDIDATE**) |
-| AS3 #2 — environment installation | DEV-197 disproved the universal claim; requalify | **PASS-CANDIDATE** |
+| AS3 #3 — total type→`Value` enforcement | HOLD, then promote once the evidence exists | **PASS** |
+| AS3 #5 — DEV-121 class closure | closure premature; **reopen DEV-121** | **PASS** (DEV-121 **CLOSED**) |
+| AS3 #2 — environment installation | DEV-197 disproved the universal claim; requalify | **PASS** |
 | AS4 #1 — one authority per type property | accept as scoped | **PASS** (§4.1) |
 | AS4 #3 — new variants force revisit | accept as scoped, evidence closure required | **PASS** (§4.2) |
 | AS4 #4 — three-engine adversaries | deferred for structurally unavailable lanes | **DEFERRED-BY-DECISION** |
@@ -60,10 +62,10 @@ here. AS0 exited when its items 6 and 7 landed and item 10 was deferred by owner
 | # | Criterion | Verdict | Evidence |
 | --- | --- | --- | --- |
 | 1 | Every executable user-callable use has exactly one record; duplicates and omissions fail an invariant test | **PASS** | `as3_callable_use_exactness` (9 tests). Expectations derived from HIR shape + `expr_types`, never from the table under test. Mutation-tested 4 ways: disabling the operator publisher fails 4/9, the bound publisher 7/9, the Display walk 1, a double publication 1 |
-| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **PASS-CANDIDATE** | Requalified by **omission**, not by asserting a table has an entry — see §3.2. Seven dispatch-class controls (D1–D7) each remove the environment at the single installation point and require the run to fail; each witness answers `size_of::<T>()`, so the instantiation is load-bearing rather than incidental. Three structural pins hold the shape for future edits. The requalification found **DEV-202** |
-| 3 | The total type-to-`Value` relation is enforced at parameters, returns, receiver boundaries, bindings **and typed mutation without exemptions** | **PASS-CANDIDATE** | 12 of 12 `RepBoundary` variants `Wired`, pinned executably by `dev121_boundary_inventory`; four-class producer-mutation evidence proves each wire forces its defect class; the one remaining missing-metadata escape (inside `bind_typed_local`) is closed. See §3.1a |
-| 4 | The frozen corpus and all engine comparisons remain green | **PASS (pending CI on head)** | Locally: `mir_differential` 132, `three_engine_differential` 109, `c6_generated_corpus`, `c6_metamorphic`, external sample suite 39/39. See §7 |
-| 5 | DEV-121 closes only with a class-level evidence statement, not one regression case | **PASS-CANDIDATE** (DEV-121 **CLOSED-CANDIDATE**) | The 2026-08-07 closure was **premature and is withdrawn** (owner ruling). It proved every known view-producing intrinsic is exercised and that the narrow `INV-VALUE-REP-001` runs at four binding positions — real evidence, but not the class, which is defined by the total relation that #3 shows is unwired. The producer audit is retained as **defence-in-depth**, not authority. DEV-121 **REOPENED** |
+| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **PASS** | Requalified by **omission**, not by asserting a table has an entry — see §3.2. Seven dispatch-class controls (D1–D7) each remove the environment at the single installation point and require the run to fail; each witness answers `size_of::<T>()`, so the instantiation is load-bearing rather than incidental. Three structural pins hold the shape for future edits. The requalification found **DEV-202** |
+| 3 | The total type-to-`Value` relation is enforced at parameters, returns, receiver boundaries, bindings **and typed mutation without exemptions** | **PASS** | 12 of 12 `RepBoundary` variants `Wired`, pinned executably by `dev121_boundary_inventory`; four-class producer-mutation evidence proves each wire forces its defect class; the one remaining missing-metadata escape (inside `bind_typed_local`) is closed. See §3.1a |
+| 4 | The frozen corpus and all engine comparisons remain green | **PASS** | On `36b3dfc`: `cargo test` 209 targets / 2 743 tests / 0 failures, `mir_differential` 132, `three_engine_differential` 109, external sample suite **39/39 at the pinned commit**, `stark-url` 20/20. **Two corpus edits are recorded, not silent** — see §3.3 |
+| 5 | DEV-121 closes only with a class-level evidence statement, not one regression case | **PASS** (DEV-121 **CLOSED**) | The 2026-08-07 closure was **premature and is withdrawn** (owner ruling). It proved every known view-producing intrinsic is exercised and that the narrow `INV-VALUE-REP-001` runs at four binding positions — real evidence, but not the class, which is defined by the total relation that #3 shows is unwired. The producer audit is retained as **defence-in-depth**, not authority. DEV-121 **REOPENED** |
 
 ### 3.0 The dependency DEV-197 exposed
 
@@ -91,6 +93,38 @@ that depends on it, and until this packet nothing did.
 
 It is also why AS3 #2 cannot stand as PASS on its previous evidence, and why #2 and #3 requalify
 together.
+
+### 3.3 AS3 #4 — the corpus moved twice, and both edits are recorded
+
+A frozen corpus that changes silently is worthless as evidence, so both edits this campaign made to
+it are stated here with the defect that forced them.
+
+| Case | Edit | Forced by |
+| --- | --- | --- |
+| `examples/gate3/05_core_min.stark` | `println(values[0..2])` → `println(&values[0..2])` | **DEV-206** |
+| `stark-samples pkg/05-data-modelling` | **none — the compiler was repaired instead** | **DEV-209** |
+
+The Gate 3 example encoded an invalid program that was accepted only because `Display` eligibility
+had the `[T]` / `&[T]` polarity reversed. Correcting the example is the last step of the chain, not
+a weakening of the corpus:
+
+```text
+frozen example
+      ↓ new invariant proves it depended on invalid acceptance
+DEV-206 established
+      ↓ checker repaired toward the existing language rule
+example corrected to the valid spelling
+      ↓
+whole frozen corpus requalified — 39/39
+```
+
+The sample-suite case is the opposite and more important precedent: it was **valid** STARK that the
+oracle could not run, and the ruling was to repair the compiler and leave the application untouched.
+Rewriting it would have converted "an application exposed a missing capability" into "an application
+learned a compiler workaround" — the behaviour a stabilised architecture exists to prevent.
+
+Requalification after both: external sample suite **39/39** at pinned `b3b28e757f38d691e...`,
+`stark-url` **20/20**, `mir_differential` 132, `three_engine_differential` 109.
 
 ### 3.2 AS3 #2 — requalified by omission (2026-08-08)
 
