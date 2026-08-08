@@ -21,8 +21,9 @@
 
 use super::types::{
     BoundsCheck, CallableDeclId, CallableInstantiation, CallableSigTy, CallableUse, CallableUseId,
-    DeferredDisplayPlan, DisplayPath, ExtensionTy, FnSigTy, GenericKind, LoopContext, Ty,
-    TypeVarId, VariantTy,
+    CalleeSelection, DeferredDisplayPlan, DispatchProvenance, DisplayPath, ExtensionTy, FnSigTy,
+    GenericBinder, GenericEnvironment, GenericKind, LoopContext, ReceiverAdjustment,
+    ReceiverBinding, Ty, TypeVarId, VariantTy,
 };
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::DimVar;
@@ -462,4 +463,168 @@ pub(super) fn single_segment_name<'t>(
         [seg] => Some(checker.text(seg.span)),
         _ => None,
     }
+}
+
+impl TypeChecker<'_> {
+    pub(super) fn publish_callable_env(&mut self, published: PublishedEnv<'_>) {
+        let PublishedEnv {
+            call_expr,
+            body,
+            self_ty,
+            impl_names,
+            own_names,
+            own_is_method,
+            map,
+        } = published;
+        let bindings = Self::env_bindings(&self_ty, impl_names, own_names, own_is_method, map);
+        self.callable_envs
+            .insert(call_expr, CallableInstantiation { body, bindings });
+    }
+    /// Publish a `CallableUse` for a named-dispatch site (AS3 Boundary 2).
+    ///
+    /// Takes the same inputs the instantiation table already receives, so the two are built from
+    /// one decision rather than two.
+    #[allow(clippy::too_many_arguments, dead_code)] // consumed by Boundary 2.
+    pub(super) fn publish_named_use(
+        &mut self,
+        call_expr: ExprId,
+        body: BlockId,
+        bindings: Vec<(GenericBinder, Ty)>,
+        receiver_adjustment: ReceiverAdjustment,
+        receiver_binding: ReceiverBinding,
+        signature: CallableSigTy,
+        provenance: DispatchProvenance,
+    ) {
+        let Some(declaration) = self.decl_for_body(body) else {
+            // **A body with no declaration is an internal inconsistency, and is reported as one.**
+            //
+            // This used to `return`, which turned the inconsistency into MISSING METADATA — the
+            // precise thing AS3's rule forbids, since an execution site finding no record must be
+            // an internal compiler error rather than a licence to fall through and scan. Silently
+            // omitting a use would have made the totality invariant unenforceable by construction.
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "internal compiler error: callable body {body:?} belongs to no item, impl                          member or trait member, so no CallableUse can be published for it"
+                    ),
+                    self.hir.expr(call_expr).span,
+                )
+                .with_code("E9001"),
+            );
+            return;
+        };
+        let use_ = CallableUse {
+            selection: CalleeSelection::Static { declaration, body },
+            environment: GenericEnvironment::Static(bindings),
+            receiver_adjustment,
+            receiver_binding,
+            signature,
+            provenance,
+        };
+        self.publish_callable_use(call_expr, use_);
+    }
+}
+
+impl TypeChecker<'_> {
+    /// **A3c-S: record the generic environment the checker selected for one callable use.**
+    ///
+    /// `map` is the substitution the caller already built while selecting the callable — impl
+    /// parameters from candidate selection, then the callable's own parameters. `self_ty` is the
+    /// impl's or trait's `Self`. All of it is already computed at every call site; before this it
+    /// was discarded except for one positional slice, which is why impl generics, trait generics
+    /// and `Self` never reached execution (DEV-176).
+    ///
+    /// Binders are recorded with their origin so consumers can derive an ordered view (MIR) or a
+    /// name view (the oracle) from one stored answer rather than from separate tables.
+    /// **Names arrive already resolved, and that is DEV-101's rule, not a convenience.** A generic
+    /// parameter's name is a span into the file that DECLARED it, so a cross-package callee's
+    /// parameters must be read with `item_text` against the callee's file — reading them with the
+    /// caller's `decl_text` yields a different string, every `map` lookup misses, and the
+    /// environment silently publishes as empty. Resolving names inside this helper is exactly how
+    /// that regression happened, so the caller supplies them.
+    /// The declaration a body belongs to, built once and cached.
+    ///
+    /// AS3: `CallableDeclId` needs the impl/trait member position, which the HIR expresses only by
+    /// index into the owner's `items`. Deriving it per publication site would mean four scans
+    /// written four ways; deriving it once means one.
+    ///
+    /// **This is a lookup, not a selection.** The body is already the checker's own answer — this
+    /// only says which declaration that answer came from.
+    #[allow(dead_code)] // consumed by Boundary 2, which is the next commit.
+    pub(super) fn decl_for_body(&mut self, body: BlockId) -> Option<CallableDeclId> {
+        if self.body_decls.is_none() {
+            let mut map: HashMap<BlockId, CallableDeclId> = HashMap::new();
+            for (index, item) in self.hir.items.iter().enumerate() {
+                let owner = ItemId(index as u32);
+                match &item.kind {
+                    hir::ItemKind::Fn(def) => {
+                        map.insert(def.body, CallableDeclId::Item(owner));
+                    }
+                    hir::ItemKind::Impl { items, .. } => {
+                        for (member, impl_item) in items.iter().enumerate() {
+                            if let hir::ImplItem::Fn { def, .. } = impl_item {
+                                map.insert(
+                                    def.body,
+                                    CallableDeclId::ImplMember {
+                                        impl_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    hir::ItemKind::Trait { items, .. } => {
+                        for (member, trait_item) in items.iter().enumerate() {
+                            if let hir::TraitItem::Method { body: Some(b), .. } = trait_item {
+                                map.insert(
+                                    *b,
+                                    CallableDeclId::TraitMember {
+                                        trait_item: owner,
+                                        member: member as u32,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.body_decls = Some(map);
+        }
+        self.body_decls
+            .as_ref()
+            .and_then(|map| map.get(&body))
+            .copied()
+    }
+    /// **AS3: publish one callable use.** The single point at which the checker's selection becomes
+    /// something an engine may consume.
+    ///
+    /// Returns the id so a caller that needs to refer to the use later can. Ungrounded types are
+    /// fine here — `analyze` grounds every published use once, at the end, the same way it grounds
+    /// `callable_instantiations`.
+    pub(super) fn publish_callable_use(
+        &mut self,
+        expr: ExprId,
+        use_: CallableUse,
+    ) -> CallableUseId {
+        let id = CallableUseId(self.callable_uses.len() as u32);
+        self.callable_uses.push(use_);
+        self.callable_uses_by_expr.entry(expr).or_default().push(id);
+        id
+    }
+}
+
+/// One call site's inputs to [`Checker::publish_callable_env`].
+///
+/// A struct rather than seven positional parameters: the two name slices are the same type and
+/// differ only in which declaration they came from, so an argument-order slip would compile and
+/// publish an environment with impl and method binders exchanged.
+pub(super) struct PublishedEnv<'a> {
+    pub(super) call_expr: ExprId,
+    pub(super) body: BlockId,
+    pub(super) self_ty: Option<Ty>,
+    pub(super) impl_names: &'a [String],
+    pub(super) own_names: &'a [String],
+    pub(super) own_is_method: bool,
+    pub(super) map: &'a HashMap<String, Ty>,
 }

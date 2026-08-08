@@ -967,3 +967,51 @@ pub(super) fn convert_float_suffix(suffix: crate::lexer::FloatSuffix) -> Primiti
         crate::lexer::FloatSuffix::F64 => Primitive::Float64,
     }
 }
+/// WP-C4.7-6.2: primitive types that have a total order AND a working ordered comparison in
+/// both execution engines, so `a.cmp(&b)` can never disagree with `a < b`.
+///
+/// Excluded, deliberately:
+/// - **Floats** — CD-015 (WP-C2.9) froze that primitive floats do not implement `Eq`/`Ord`/
+///   `Hash`, so `1.0.cmp(&2.0)` must stay rejected.
+/// - **`Unit`** — nothing to order.
+/// - **`Bool`** — per DEV-075's owner specification decision, `Bool` implements `Eq` and `Hash`
+///   but NOT `Ord`: its ordered operators and `Bool::cmp` are compile-time errors.
+///
+/// `Char` IS included (DEV-075): it is totally ordered by Unicode scalar value.
+pub(super) fn ordered_primitive(ty: &Ty) -> bool {
+    matches!(
+        strip_ref(ty),
+        Ty::Primitive(
+            Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64
+                | Primitive::Char
+                | Primitive::String
+                | Primitive::Str
+        )
+    )
+}
+
+/// The receiver type with any leading references removed (method receivers auto-deref).
+pub(super) fn strip_ref(ty: &Ty) -> &Ty {
+    let mut current = ty;
+    while let Ty::Ref { inner, .. } = current {
+        current = inner;
+    }
+    current
+}
+
+/// How a receiver form reads in a diagnostic.
+pub(super) fn receiver_source(receiver: Option<hir::Receiver>) -> &'static str {
+    match receiver {
+        None => "no receiver",
+        Some(hir::Receiver::Value) => "self",
+        Some(hir::Receiver::Ref) => "&self",
+        Some(hir::Receiver::RefMut) => "&mut self",
+    }
+}
