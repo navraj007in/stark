@@ -5259,39 +5259,10 @@ impl<'a> Interpreter<'a> {
             Builtin::MathPi | Builtin::MathE => {
                 Err(RuntimeError::new("PI/E are constants, not callable", span))
             }
-            Builtin::TensorZeros
-            | Builtin::TensorOnes
-            | Builtin::TensorFull
-            | Builtin::TensorFromVec
-            | Builtin::TensorAdd
-            | Builtin::TensorSub
-            | Builtin::TensorMul
-            | Builtin::TensorDiv
-            | Builtin::TensorMin
-            | Builtin::TensorMax
-            | Builtin::TensorEq
-            | Builtin::TensorNe
-            | Builtin::TensorLt
-            | Builtin::TensorLe
-            | Builtin::TensorGt
-            | Builtin::TensorGe
-            | Builtin::TensorBroadcastTo
-            | Builtin::TensorMatMul
-            | Builtin::TensorBatchMatMul
-            | Builtin::TensorConcat
-            | Builtin::TensorPermute
-            | Builtin::TensorReshape
-            | Builtin::TensorSliceAxis
-            | Builtin::TensorTranspose
-            | Builtin::TensorSumAxis
-            | Builtin::TensorMeanAxis
-            | Builtin::TensorArgMax
-            | Builtin::TensorSum
-            | Builtin::TensorSoftmax
-            | Builtin::TensorCast
-            | Builtin::TensorScale255
-            | Builtin::TensorNormalize
-            | Builtin::TensorToDevice => Err(RuntimeError::new(
+            // AS6: one refusal, not thirty-three patterns for it. The oracle has no tensor
+            // runtime at all, so the answer does not vary by operation — and enumerating them here
+            // made Core's interpreter carry the extension's catalogue to say so.
+            Builtin::Tensor(_) => Err(RuntimeError::new(
                 "tensor operations are not supported in the Core interpreter",
                 span,
             )),

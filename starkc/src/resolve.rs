@@ -2338,7 +2338,7 @@ mod tests {
 
     /// WP-C1.2 regression test for DEV-004: bare `min`/`max` in a struct-literal shorthand
     /// field, with no local/module item of that name in scope, used to resolve unconditionally
-    /// to the tensor extension's `Builtin::TensorMin`/`TensorMax` even in Core-only mode
+    /// to the tensor extension's `TensorBuiltin::Min`/`Max` even in Core-only mode
     /// (`resolve_unqualified` was missing the `options.tensor()` gate `resolve_path_relative`
     /// already had). Confirms Core-only mode now correctly reports "undefined variable"
     /// instead, and that extension mode still resolves it to the tensor builtin (no regression

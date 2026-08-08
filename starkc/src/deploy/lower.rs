@@ -10,6 +10,7 @@
 use crate::ast::{DimBinOp, UnOp};
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::types::{DType, TensorKind};
+use crate::extensions::tensor::TensorBuiltin;
 use crate::hir::{
     self, Builtin, DimExpr, ExprId, ExprKind, Hir, ItemId, ItemKind, LocalId, Res, TypeId,
 };
@@ -603,7 +604,7 @@ impl<'a> Lowerer<'a> {
                 let src = self.one_arg(args, span, ctx)?;
                 self.emit(ctx, DeployOp::WrapOk { src }, call_eid, span)
             }
-            Builtin::TensorFull => {
+            Builtin::Tensor(TensorBuiltin::Full) => {
                 let (dtype, dims) = self.type_and_shape_args(turbofish, span)?;
                 let scalar = self.scalar_arg(args, dtype, span)?;
                 self.emit(
@@ -617,7 +618,7 @@ impl<'a> Lowerer<'a> {
                     span,
                 )
             }
-            Builtin::TensorConcat => {
+            Builtin::Tensor(TensorBuiltin::Concat) => {
                 let axis = self.axis_arg(turbofish, span)?;
                 if args.len() != 2 {
                     self.error("`concat` expects two tensor arguments", span);
@@ -1148,13 +1149,10 @@ fn dtype_by_name(name: &str) -> Option<DType> {
 fn builtin_name(b: Builtin) -> &'static str {
     // Best-effort label for diagnostics.
     match b {
-        Builtin::TensorZeros => "zeros",
-        Builtin::TensorOnes => "ones",
-        Builtin::TensorFromVec => "from_vec",
-        Builtin::TensorAdd => "add",
-        Builtin::TensorMul => "mul",
-        Builtin::TensorMatMul => "matmul",
-        Builtin::TensorReshape => "reshape",
+        // AS6: the deployment lowering kept a third copy of the spelling table. It reads the
+        // extension's own accessor now, which is exhaustive — a new operation cannot arrive here
+        // unnamed.
+        Builtin::Tensor(op) => op.op_name(),
         _ => "operation",
     }
 }

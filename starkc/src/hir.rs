@@ -52,41 +52,13 @@ pub enum Builtin {
     None,
     Ok,
     Err,
-    TensorZeros,
-    TensorOnes,
-    TensorFull,
-    TensorFromVec,
-    TensorAdd,
-    TensorSub,
-    TensorMul,
-    TensorDiv,
-    TensorMin,
-    TensorMax,
-    TensorEq,
-    TensorNe,
-    TensorLt,
-    TensorLe,
-    TensorGt,
-    TensorGe,
-    TensorBroadcastTo,
-    TensorMatMul,
-    TensorBatchMatMul,
-    TensorConcat,
-    TensorPermute,
-    TensorReshape,
-    TensorSliceAxis,
-    TensorTranspose,
-    TensorSumAxis,
-    TensorMeanAxis,
-    TensorArgMax,
-    TensorSum,
-    TensorSoftmax,
-    TensorCast,
-    TensorToDevice,
-    /// `scale_255()` — value-range transition ByteRange -> UnitRange (Gate 7).
-    TensorScale255,
-    /// `normalize()` — value-range transition UnitRange -> Normalized (Gate 7).
-    TensorNormalize,
+    /// **AS6: the tensor extension's operations, behind one Core-owned variant.**
+    ///
+    /// Thirty-three `Tensor*` variants sat here, making this Core enum the extension's method
+    /// catalogue — criterion 2's "open-ended ... method catalogues" in a central Core module. The
+    /// set lives with the extension now, and Core's phases dispatch once rather than thirty-three
+    /// times.
+    Tensor(crate::extensions::tensor::TensorBuiltin),
     SizeOf,
     AlignOf,
     Swap,

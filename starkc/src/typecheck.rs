@@ -1907,39 +1907,10 @@ impl<'a> TypeChecker<'a> {
                     ret: Box::new(Ty::Core(CoreType::Result, vec![value, error])),
                 }
             }
-            Builtin::TensorZeros
-            | Builtin::TensorOnes
-            | Builtin::TensorFull
-            | Builtin::TensorFromVec
-            | Builtin::TensorAdd
-            | Builtin::TensorSub
-            | Builtin::TensorMul
-            | Builtin::TensorDiv
-            | Builtin::TensorMin
-            | Builtin::TensorMax
-            | Builtin::TensorEq
-            | Builtin::TensorNe
-            | Builtin::TensorLt
-            | Builtin::TensorLe
-            | Builtin::TensorGt
-            | Builtin::TensorGe
-            | Builtin::TensorBroadcastTo
-            | Builtin::TensorMatMul
-            | Builtin::TensorBatchMatMul
-            | Builtin::TensorConcat
-            | Builtin::TensorPermute
-            | Builtin::TensorReshape
-            | Builtin::TensorSliceAxis
-            | Builtin::TensorTranspose
-            | Builtin::TensorSumAxis
-            | Builtin::TensorMeanAxis
-            | Builtin::TensorArgMax
-            | Builtin::TensorSum
-            | Builtin::TensorSoftmax
-            | Builtin::TensorCast
-            | Builtin::TensorScale255
-            | Builtin::TensorNormalize
-            | Builtin::TensorToDevice => Ty::Fn {
+            // AS6: one arm, not thirty-three patterns for one behaviour. Every tensor
+            // operation's *signature* is refined by the extension's own rules
+            // (`check_tensor_op`); Core only needs to know a call is a call.
+            Builtin::Tensor(_) => Ty::Fn {
                 params: vec![],
                 ret: Box::new(self.new_type_var()),
             },
@@ -13514,42 +13485,13 @@ impl TypeChecker<'_> {
         args: &[ExprId],
         span: Span,
     ) -> Ty {
-        let op_name = match builtin {
-            Builtin::TensorZeros => "zeros",
-            Builtin::TensorOnes => "ones",
-            Builtin::TensorFull => "full",
-            Builtin::TensorFromVec => "from_vec",
-            Builtin::TensorAdd => "add",
-            Builtin::TensorSub => "sub",
-            Builtin::TensorMul => "mul",
-            Builtin::TensorDiv => "div",
-            Builtin::TensorMin => "min",
-            Builtin::TensorMax => "max",
-            Builtin::TensorEq => "eq",
-            Builtin::TensorNe => "ne",
-            Builtin::TensorLt => "lt",
-            Builtin::TensorLe => "le",
-            Builtin::TensorGt => "gt",
-            Builtin::TensorGe => "ge",
-            Builtin::TensorBroadcastTo => "broadcast_to",
-            Builtin::TensorMatMul => "matmul",
-            Builtin::TensorBatchMatMul => "batch_matmul",
-            Builtin::TensorConcat => "concat",
-            Builtin::TensorPermute => "permute",
-            Builtin::TensorReshape => "reshape",
-            Builtin::TensorSliceAxis => "slice_axis",
-            Builtin::TensorTranspose => "transpose",
-            Builtin::TensorSumAxis => "sum_axis",
-            Builtin::TensorMeanAxis => "mean_axis",
-            Builtin::TensorArgMax => "argmax",
-            Builtin::TensorSum => "sum",
-            Builtin::TensorSoftmax => "softmax",
-            Builtin::TensorCast => "cast",
-            Builtin::TensorToDevice => "to_device",
-            Builtin::TensorScale255 => "scale_255",
-            Builtin::TensorNormalize => "normalize",
-            _ => return Ty::Error,
+        // AS6: the spelling table belonged to the extension, not to Core's checker — the same
+        // criterion-2 shape the resolver's table had. `TensorBuiltin::op_name` is exhaustive, so a
+        // new operation cannot reach here unnamed.
+        let Builtin::Tensor(op) = builtin else {
+            return Ty::Error;
         };
+        let op_name = op.op_name();
         self.check_tensor_op(op_name, None, turbofish, args, span)
     }
 
