@@ -176,12 +176,50 @@ So the narrow internal context is genuinely narrow: about eight borrowed service
 direction the ruling requires is achievable without redesigning the `Ty`/inference model, which
 means **the single owner-stop condition does not apply** and 4B proceeds as implementation.
 
+### CORRECTION (2026-08-08): the service count was measured wrong
+
+4A's "eight Core services" figure came from grepping `self.method(` inside `check_tensor_op`. That
+pattern is blind to **field access and non-call uses of `self`**, so three helpers
+(`shape_volume`, `broadcast_to_check`, `dtype_to_ty`) looked context-free, were moved as free
+functions, and failed to compile — `shape_volume` reads `self.tensor_ctx`. The slice was reverted.
+
+Re-measured over every `self.X` occurrence across all twelve tensor functions:
+
+```text
+36  distinct self.X
+20  tensor-owned — move with the code
+16  CORE surface
+```
+
+The Core surface is:
+
+```text
+fields    diags · hir · options
+methods   check_expr · convert_hir_type · resolve · unify · text · ty_to_string
+          extract_const_int · extract_const_int_list · combine_value_range
+          build_value_range · generic_kind · get_fix_suggestion · allow_half_type
+```
+
+**Sixteen, not eight** — double the estimate, though still narrow beside `&mut TypeChecker`, which
+exposes hundreds of members. The ruling's dependency-direction requirement remains achievable.
+
+**The one design constraint this exposes: `check_expr`.** A tensor rule calling it means the
+context must permit **re-entry into the general expression checker**, so the extracted module
+cannot simply borrow inert data — it needs a callback into Core, and the borrow discipline around
+that is the real work in group 2, not the line count.
+
+**Method note, because this mistake has now recurred three times in one sprint:** measure a
+dependency by attempting compilation, not by pattern-matching call syntax. `self.method(` is a
+proxy for "uses the checker"; it is not the question. The same shape produced DEV-210's
+`ends_with("Drop")`, DEV-212's `ty_has_user_drop`, and this.
+
 ### Revised 4B estimate
 
 ```text
-~450 lines   move untouched (group 1)
-~1400 lines  move behind an eight-service context (group 2)
-5 call sites become the boundary (group 3)
+~455 lines   moved untouched — DONE, 62ef6b0
+~1400 lines  move behind a SIXTEEN-service context, one of which is `check_expr`
+             and therefore requires re-entry into Core (group 2, open)
+5 call sites become the boundary (group 3, open)
 ```
 
 Bounded work, not a 946-site migration. Note the lesson packet 3 already taught: reference counts
