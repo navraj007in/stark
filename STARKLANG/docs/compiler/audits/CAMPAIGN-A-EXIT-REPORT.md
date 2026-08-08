@@ -16,6 +16,7 @@ rulings. All four are now classified in the gate's own vocabulary:
 | --- | --- | --- |
 | AS3 #3 — total type→`Value` enforcement | **HOLD** | **FAIL** |
 | AS3 #5 — DEV-121 class closure | closure premature; **reopen DEV-121** | **FAIL** |
+| AS3 #2 — environment installation | DEV-197 disproved the universal claim | **FAIL — requalification in progress** |
 | AS4 #1 — one authority per type property | accept as scoped | **PASS** (§4.1) |
 | AS4 #3 — new variants force revisit | accept as scoped, evidence closure required | **PASS** (§4.2) |
 | AS4 #4 — three-engine adversaries | deferred for structurally unavailable lanes | **DEFERRED-BY-DECISION** |
@@ -35,7 +36,7 @@ opening inventory and with the programme's no-broad-cleanup rule.
 | AS1a — canonical package source identity | 5 | **PASS** | `AS-SPRINT1-CLOSEOUT.md` |
 | AS2 — one semantic pipeline | 5 | **PASS** | `AS-SPRINT1-CLOSEOUT.md` |
 | AS1b — source-aware semantic metadata | 5 | **PASS** | `AS-SPRINT2-CLOSEOUT.md` |
-| AS3 — total callable-use metadata | 5 | **3 PASS, 2 FAIL** | §3, §3.1 |
+| AS3 — total callable-use metadata | 5 | **2 PASS, 3 FAIL** | §3, §3.1 |
 | AS4 — one authority per type property | 5 | **4 PASS, 1 DEFERRED-BY-DECISION** | §4 |
 
 AS5 is Campaign **B** and is not a gate condition; it is complete (`AS-SPRINT2-CLOSEOUT.md`).
@@ -51,10 +52,37 @@ here. AS0 exited when its items 6 and 7 landed and item 10 was deferred by owner
 | # | Criterion | Verdict | Evidence |
 | --- | --- | --- | --- |
 | 1 | Every executable user-callable use has exactly one record; duplicates and omissions fail an invariant test | **PASS** | `as3_callable_use_exactness` (9 tests). Expectations derived from HIR shape + `expr_types`, never from the table under test. Mutation-tested 4 ways: disabling the operator publisher fails 4/9, the bound publisher 7/9, the Display walk 1, a double publication 1 |
-| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **PASS** | `push_resolved_env` installs the specialiser's bindings; `as3_fallback_removal::dev194_*`. DEV-194 was exactly this criterion failing, found by CI |
+| 2 | Implicit and explicit dispatch install the checker-selected generic environment in the HIR oracle | **FAIL — requalification in progress** | Recorded PASS in the first draft. **DEV-197 disproved the universal claim**: `Res::AssociatedFn` and the function-value path both ran callee bodies with no environment installed. Both are fixed, but the previous evidence did not establish "every dispatch", and we do not yet know they were the last. Requalifies when the boundaries that CONSUME the environment are wired — see #3 |
 | 3 | The total type-to-`Value` relation is enforced at parameters, returns, receiver boundaries, bindings **and typed mutation without exemptions** | **FAIL** | See §3.1. The remainder is larger than the first draft stated |
 | 4 | The frozen corpus and all engine comparisons remain green | **PASS (pending CI on head)** | Locally: `mir_differential` 132, `three_engine_differential` 109, `c6_generated_corpus`, `c6_metamorphic`, external sample suite 39/39. See §7 |
 | 5 | DEV-121 closes only with a class-level evidence statement, not one regression case | **FAIL** | The 2026-08-07 closure was **premature and is withdrawn** (owner ruling). It proved every known view-producing intrinsic is exercised and that the narrow `INV-VALUE-REP-001` runs at four binding positions — real evidence, but not the class, which is defined by the total relation that #3 shows is unwired. The producer audit is retained as **defence-in-depth**, not authority. DEV-121 **REOPENED** |
+
+### 3.0 The dependency DEV-197 exposed
+
+Wiring the **first** value boundary found two defects that no test had seen, and the reason is
+structural rather than incidental:
+
+```text
+CallableUse / environment publication
+             |
+   environment installation
+             |
+      callee body executes
+             |
+ typed boundary consumes the result
+             |
+   ONLY HERE can a wrong environment become observable
+```
+
+Both DEV-197 sites — `Res::AssociatedFn` and the function-value path — ran bodies with `T` unbound.
+Neither produced a wrong answer: both fixtures were `identity`-shaped, so the missing environment
+could not change the output. **That makes them stronger architecture evidence, not weaker.** They
+show why ordinary differential testing can be green while the interpreter is internally
+inconsistent: wrong metadata becomes observable only when another semantic consumer asks a question
+that depends on it, and until this packet nothing did.
+
+It is also why AS3 #2 cannot stand as PASS on its previous evidence, and why #2 and #3 requalify
+together.
 
 ### 3.1 AS3 #3 — FAIL, and the first draft understated it
 

@@ -1754,17 +1754,32 @@ impl<'a> Interpreter<'a> {
         }
         self.cleanup_current_frame()?;
         self.frames.pop();
-        // **A4 probe: the RETURN boundary against the checker-published signature.**
+        // **The RETURN boundary, against the checker-published signature.**
+        //
+        // A missing signature is an INVARIANT VIOLATION, not an exemption. A3b's claim is that
+        // every executable body has a published signature; an `Option` here would reintroduce
+        // exactly the "missing metadata means skip validation" pattern AS3 spent this sprint
+        // deleting, and would let any future body that loses its entry quietly stop being checked.
         let declared_ret = self
             .tables
             .callable_types
             .get(&callable.body)
-            .map(|sig| sig.ret.clone());
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                        "missing callable signature for executable body {:?} — A3b publishes one \
+                         for every executable body, so this is a publication defect, not a \
+                         callable class to exempt",
+                        callable.body
+                    ),
+                    span,
+                )
+            })?
+            .ret
+            .clone();
         match flow {
             Flow::Value(value) | Flow::Return(value) => {
-                if let Some(ret) = &declared_ret {
-                    self.check_value_for_ty(ret, &value, span, RepBoundary::Return)?;
-                }
+                self.check_value_for_ty(&declared_ret, &value, span, RepBoundary::Return)?;
                 Ok(value)
             }
             Flow::Propagate(value) => Ok(value),
