@@ -6317,3 +6317,53 @@ against the relation. DEV-206 is the proof that mattered: one of the four had th
 - **Found by:** the value-context property's control — the half that requires every context to
   ACCEPT the reference form. Without that direction the property would have been satisfied by
   rejecting slices everywhere, and this defect would have been invisible.
+
+## DEV-209 — a prelude `Option`/`Result` payload was not a place [CLOSED, owner ruling 2026-08-08]
+
+- **Rule:** PAT-BIND-001 — when a scrutinee is read through a reference, a binding to a non-`Copy`
+  component receives `&C`, borrowing the component **in place**; the referent is never moved. The
+  rule is **uniform** over variant payloads, struct fields and tuple elements.
+- **Defect:** the checker published `&String` for `match *r { Some(s) => … }`; the oracle bound an
+  owned `String` — moving out of a borrow. The user-enum equivalent was correct, so this was the
+  prelude path being the poor relation of the user path, the same shape as DEV-205.
+- **Not a limitation to accept, and not the program's fault.** MIR executes the same program and
+  prints correctly, so the **oracle was the outlier**. The old comment recorded the narrowing
+  deliberately — a `Box<Value>` payload has no `Projection` to name — and that reasoning was sound
+  only while nothing compared the two answers.
+- **Three resolutions were considered and two rejected by owner ruling:** rejecting at the checker
+  would narrow the *language* to fit one engine's value model; a named oracle limitation would make
+  a first-party package oracle-ineligible over one missing projection. Neither is proportionate when
+  the feature is normative, the checker supports it, MIR supports it, and the repair is local.
+- **Repair:** the payload is slot-backed, exactly like every other component.
+
+```text
+Some / Ok / Err
+ └── payload slot
+      ├── Some(Value)   live
+      └── None          moved out
+```
+
+  `Projection::VariantPayload(n)` names it — deliberately **not** `Index(0)`, because `Index`
+  carries bounds-trap classification and an absent payload behind a matched discriminant is an
+  invariant violation, not an index trap.
+
+- **One discipline for 84 migrated sites, not 84 opinions.** `require_live_payload` for any
+  operation needing a complete `Some`/`Ok`/`Err` — an empty slot there is `InternalInvariant`,
+  because the ownership checker is what prevents reading moved storage, and inventing a runtime
+  "use of moved value" category would describe a compiler defect as a language outcome.
+  `take_payload`/`own_payload` only for operations that genuinely move: `?`, `unwrap`,
+  `unwrap_or`, consuming combinators, owned pattern bindings, destruction.
+- **A forcing function fired mid-migration:** adding the projection broke `write_place`'s exhaustive
+  boundary match, which would not compile until a payload write was classified. It is `FieldWrite`
+  — a positionally named component of an aggregate, not an element of a runtime-sized container.
+- **Evidence:** `dev209_prelude_payload_place`, 13 cases — borrow semantics for `Some`/`Ok`/`Err`,
+  the referent surviving the match, `Copy` payload still by value, an exclusive source still binding
+  shared, prelude/user-enum **parity** for both shapes, consumption through
+  `unwrap`/`unwrap_or`/`map`/`?`/owned match, `Display` for all four shapes, and lifecycle:
+  destroyed exactly once, a moved payload not destroyed twice, a borrowed payload still destroyed by
+  its owner.
+- **Mutation control:** restoring the old by-value fallback reproduces
+  `expected &String, found String` at `MatchBinding`; restoring the repair returns all 13 to green.
+- **Application witnesses left unchanged.** `stark-url` is 20/20 and the external sample suite's
+  `pkg/05-data-modelling` runs again. Rewriting valid code to avoid a compiler defect would turn
+  "an application exposed a missing capability" into "an application learned a workaround".

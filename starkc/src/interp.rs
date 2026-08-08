@@ -393,8 +393,15 @@ enum Value {
     },
     Vec(Vec<Option<Value>>),
     Boxed(Box<Option<Value>>),
-    Option(Option<Box<Value>>),
-    Result(Result<Box<Value>, Box<Value>>),
+    /// **DEV-209: the payload is SLOT-backed, like every other component.**
+    ///
+    /// `Box<Value>` could not be named by a `Projection`, so PAT-BIND-001's "a binding to a
+    /// non-`Copy` component receives `&C`, borrowing the component in place" had no storage to
+    /// point at for a prelude payload — and the borrowed matcher fell back to the owned rule,
+    /// moving out of a borrow. The rule is uniform over variant payloads, struct fields and tuple
+    /// elements; the specialised representation was what failed to preserve a language-level place.
+    Option(Option<Box<Option<Value>>>),
+    Result(Result<Box<Option<Value>>, Box<Option<Value>>>),
     Range {
         start: i128,
         end: i128,
@@ -987,10 +994,10 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Boxed(value) => write!(f, "Box({})", display_slot(value)),
-            Value::Option(Some(value)) => write!(f, "Some({value})"),
+            Value::Option(Some(value)) => write!(f, "Some({})", display_slot(value)),
             Value::Option(None) => write!(f, "None"),
-            Value::Result(Ok(value)) => write!(f, "Ok({value})"),
-            Value::Result(Err(value)) => write!(f, "Err({value})"),
+            Value::Result(Ok(value)) => write!(f, "Ok({})", display_slot(value)),
+            Value::Result(Err(value)) => write!(f, "Err({})", display_slot(value)),
             Value::Range {
                 start,
                 end,
@@ -1184,6 +1191,54 @@ impl PartialOrd for Value {
     }
 }
 
+/// **DEV-209: read a prelude payload that must be present.**
+///
+/// The slot's `None` is the representation of a MOVE, and the ownership checker is what prevents a
+/// program from reading moved storage. So an operation that requires a complete `Some`/`Ok`/`Err`
+/// and finds an empty slot has been handed a value the checker should have rejected: that is an
+/// `InternalInvariant`, not a new runtime outcome. Introducing a "use of moved value" trap here
+/// would invent a language-level category to describe a compiler defect.
+fn require_live_payload<'a>(
+    slot: &'a Option<Value>,
+    context: &'static str,
+    span: Span,
+) -> Result<&'a Value, RuntimeError> {
+    slot.as_ref().ok_or_else(|| {
+        RuntimeError::internal(
+            format!("{context}: the variant's payload has already been moved out"),
+            span,
+        )
+    })
+}
+
+/// **DEV-209: take a prelude payload, for an operation that genuinely consumes it.**
+///
+/// `unwrap`, `?`, an owned pattern binding, a consuming combinator and destruction are moves, and
+/// `Some(v) -> None` is how the move is represented. Only code intentionally performing one should
+/// call this; everything else uses [`require_live_payload`].
+fn take_payload(
+    slot: &mut Option<Value>,
+    context: &'static str,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    slot.take().ok_or_else(|| {
+        RuntimeError::internal(
+            format!("{context}: the variant's payload has already been moved out"),
+            span,
+        )
+    })
+}
+
+/// [`take_payload`] for an OWNED payload box — the by-value match form, which is how most
+/// consuming operations receive it.
+fn own_payload(
+    mut slot: Box<Option<Value>>,
+    context: &'static str,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    take_payload(&mut slot, context, span)
+}
+
 fn display_slot(value: &Option<Value>) -> String {
     value
         .as_ref()
@@ -1215,6 +1270,13 @@ enum Projection {
     /// prevents structural mutation, so the position cannot change while the
     /// projection is usable.
     MapIndex(usize),
+    /// **DEV-209: the payload of a prelude `Option`/`Result`.**
+    ///
+    /// Named rather than spelled `Index(0)` on purpose. `Index` carries INDEXING semantics — its
+    /// projection failure is classified as an index-out-of-bounds trap (`projection_failure`) —
+    /// and an absent payload behind a discriminant that already matched is not an index trap. It
+    /// is an invariant violation, and the two must not report as the same thing.
+    VariantPayload(usize),
 }
 
 /// DEV-065: an out-of-range `Index` projection is the language's index-out-of-bounds TRAP
@@ -1233,6 +1295,10 @@ fn projection_failure(projection: &Projection, span: Span) -> RuntimeError {
         // Not a language trap: reaching a moved-out field means the compiler let something through
         // that it should have rejected, or the interpreter lost track of a move.
         Projection::Field(_) => RuntimeError::internal("use of moved or invalid field", span),
+        // Not an index trap: the discriminant already matched, so the payload must be there.
+        Projection::VariantPayload(_) => {
+            RuntimeError::internal("a matched variant's payload is absent", span)
+        }
     }
 }
 
@@ -1330,11 +1396,19 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
     }
 
     match value {
-        Value::Result(Ok(value)) => Ok((checked_status(*value, span)?, String::new())),
-        Value::Result(Err(message)) => match *message {
-            Value::String(message) | Value::Str(message) => Ok((1, format!("{message}\n"))),
-            _ => Err(RuntimeError::new("entrypoint error is not a String", span)),
-        },
+        Value::Result(Ok(value)) => Ok((
+            checked_status(
+                own_payload(value, "the entrypoint's Ok payload", span)?,
+                span,
+            )?,
+            String::new(),
+        )),
+        Value::Result(Err(message)) => {
+            match own_payload(message, "the entrypoint's Err payload", span)? {
+                Value::String(message) | Value::Str(message) => Ok((1, format!("{message}\n"))),
+                _ => Err(RuntimeError::new("entrypoint error is not a String", span)),
+            }
+        }
         value => Ok((checked_status(value, span)?, String::new())),
     }
 }
@@ -1806,7 +1880,7 @@ fn probe_value(kind: ValueKind, ty: &Ty) -> Value {
         ValueKind::Vec => Value::Vec(Vec::new()),
         ValueKind::Boxed => Value::Boxed(Box::new(None)),
         ValueKind::Option => Value::Option(None),
-        ValueKind::Result => Value::Result(Ok(Box::new(Value::Unit))),
+        ValueKind::Result => Value::Result(Ok(Box::new(Some(Value::Unit)))),
         ValueKind::Range => Value::Range {
             start: 0,
             end: 0,
@@ -1905,9 +1979,15 @@ impl<'a> Interpreter<'a> {
                 Value::Boxed(Box::new(default_inner))
             }
             Value::Option(_) => Value::Option(None),
+            // A default mirrors the shape, INCLUDING whether the payload is still there: a moved
+            // payload's default is still moved.
             Value::Result(res) => match res {
-                Ok(val) => Value::Result(Ok(Box::new(self.default_value_for(val)))),
-                Err(err) => Value::Result(Err(Box::new(self.default_value_for(err)))),
+                Ok(val) => Value::Result(Ok(Box::new(
+                    (**val).as_ref().map(|value| self.default_value_for(value)),
+                ))),
+                Err(err) => Value::Result(Err(Box::new(
+                    (**err).as_ref().map(|value| self.default_value_for(value)),
+                ))),
             },
             Value::Range {
                 start: _,
@@ -3204,9 +3284,17 @@ impl<'a> Interpreter<'a> {
             hir::ExprKind::Try(inner) => {
                 let value = self.expect_value(*inner)?;
                 match value {
-                    Value::Option(Some(value)) => Ok(Flow::Value(*value)),
+                    Value::Option(Some(value)) => Ok(Flow::Value(own_payload(
+                        value,
+                        "`?` on a `Some`",
+                        expr.span,
+                    )?)),
                     Value::Option(None) => Ok(Flow::Propagate(Value::Option(None))),
-                    Value::Result(Ok(value)) => Ok(Flow::Value(*value)),
+                    Value::Result(Ok(value)) => Ok(Flow::Value(own_payload(
+                        value,
+                        "`?` on an `Ok`",
+                        expr.span,
+                    )?)),
                     Value::Result(Err(value)) => Ok(Flow::Propagate(Value::Result(Err(value)))),
                     _ => Err(RuntimeError::new(
                         "'?' requires Option or Result",
@@ -4952,7 +5040,7 @@ impl<'a> Interpreter<'a> {
             Builtin::CharFromU32 => {
                 let code = u32_arg(args.pop(), span)?;
                 Ok(Value::Option(
-                    char::from_u32(code).map(|ch| Box::new(Value::Char(ch))),
+                    char::from_u32(code).map(|ch| Box::new(Some(Value::Char(ch)))),
                 ))
             }
             Builtin::VecNew => Ok(Value::Vec(Vec::new())),
@@ -4971,21 +5059,21 @@ impl<'a> Interpreter<'a> {
                 Some(Value::Boxed(value)) => Ok((*value).unwrap_or(Value::Unit)),
                 _ => Err(RuntimeError::new("Box::into_inner expects Box", span)),
             },
-            Builtin::Some => Ok(Value::Option(args.pop().map(Box::new))),
+            Builtin::Some => Ok(Value::Option(args.pop().map(|value| Box::new(Some(value))))),
             Builtin::None => Ok(Value::Option(None)),
-            Builtin::Ok => Ok(Value::Result(Ok(Box::new(
+            Builtin::Ok => Ok(Value::Result(Ok(Box::new(Some(
                 args.pop().unwrap_or(Value::Unit),
-            )))),
-            Builtin::Err => Ok(Value::Result(Err(Box::new(
+            ))))),
+            Builtin::Err => Ok(Value::Result(Err(Box::new(Some(
                 args.pop().unwrap_or(Value::Unit),
-            )))),
+            ))))),
             Builtin::ReadFile => {
                 let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::read_to_string(path) {
-                    Ok(value) => Value::Result(Ok(Box::new(Value::String(value)))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(value) => Value::Result(Ok(Box::new(Some(Value::String(value))))),
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             Builtin::WriteFile => {
@@ -4995,10 +5083,10 @@ impl<'a> Interpreter<'a> {
                 let content = self.string_arg_deref(args.pop(), span)?;
                 let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
-                    Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(()) => Value::Result(Ok(Box::new(Some(Value::Unit)))),
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             Builtin::FileOpen | Builtin::FileCreate => {
@@ -5009,10 +5097,12 @@ impl<'a> Interpreter<'a> {
                     std::fs::File::create(path)
                 };
                 Ok(match result {
-                    Ok(file) => Value::Result(Ok(Box::new(Value::File(FileResource::new(file))))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(file) => {
+                        Value::Result(Ok(Box::new(Some(Value::File(FileResource::new(file))))))
+                    }
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             // -- Phase 4E: Math constants and functions --
@@ -5558,7 +5648,7 @@ impl<'a> Interpreter<'a> {
                         };
                         let mut place = receiver_place.clone();
                         place.projections.push(Projection::MapIndex(index));
-                        Ok(Some(Value::Option(Some(Box::new(Value::Ref(place))))))
+                        Ok(Some(Value::Option(Some(Box::new(Some(Value::Ref(place)))))))
                     }
                     "insert" => {
                         if arguments.len() < 2 {
@@ -5577,7 +5667,7 @@ impl<'a> Interpreter<'a> {
                             // The stored key remains; ownership of the newly supplied equal key
                             // is consumed by the call and must be destroyed.
                             self.drop_value(key)?;
-                            Ok(Some(Value::Option(old.map(Box::new))))
+                            Ok(Some(Value::Option(old.map(|value| Box::new(Some(value))))))
                         } else {
                             match self.place_value_mut(receiver_place, span)? {
                                 Value::HashMap(map) => map.0.push((key, Some(value))),
@@ -5596,7 +5686,9 @@ impl<'a> Interpreter<'a> {
                                 _ => unreachable!(),
                             };
                         self.drop_value(stored_key)?;
-                        Ok(Some(Value::Option(value.map(Box::new))))
+                        Ok(Some(Value::Option(
+                            value.map(|value| Box::new(Some(value))),
+                        )))
                     }
                     "contains_key" => Ok(Some(Value::Bool(position.is_some()))),
                     "clear" => {
@@ -5858,7 +5950,7 @@ impl<'a> Interpreter<'a> {
                 return Err(RuntimeError::new("File::close expects File", span));
             };
             resource.0.borrow_mut().take();
-            return Ok(Value::Result(Ok(Box::new(Value::Unit))));
+            return Ok(Value::Result(Ok(Box::new(Some(Value::Unit)))));
         }
         // DEV-076 (WP-C4.7-8.1 prerequisite): `unwrap_or` CONSUMES the receiver and discards
         // exactly one of the two values — the payload or the default. It has to be intercepted
@@ -5883,15 +5975,16 @@ impl<'a> Interpreter<'a> {
             return match receiver {
                 Value::Option(Some(payload)) => {
                     self.drop_value(default)?;
-                    Ok(*payload)
+                    own_payload(payload, "`unwrap_or` on a `Some`", span)
                 }
                 Value::Option(None) => Ok(default),
                 Value::Result(Ok(payload)) => {
                     self.drop_value(default)?;
-                    Ok(*payload)
+                    own_payload(payload, "`unwrap_or` on an `Ok`", span)
                 }
                 Value::Result(Err(error)) => {
-                    self.drop_value(*error)?;
+                    let error = own_payload(error, "`unwrap_or` on an `Err`", span)?;
+                    self.drop_value(error)?;
                     Ok(default)
                 }
                 other => Err(RuntimeError::new(
@@ -5934,10 +6027,14 @@ impl<'a> Interpreter<'a> {
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
                             ReceiverSource::None,
-                            vec![*value],
+                            vec![own_payload(
+                                value,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
                             span,
                         )?;
-                        Ok(Value::Option(Some(Box::new(mapped))))
+                        Ok(Value::Option(Some(Box::new(Some(mapped)))))
                     }
                     None => Ok(Value::Option(None)),
                 },
@@ -5948,7 +6045,11 @@ impl<'a> Interpreter<'a> {
                             environment: InvocationEnv::Captured(callee.clone()),
                         },
                         ReceiverSource::None,
-                        vec![*value],
+                        vec![own_payload(
+                            value,
+                            "a consuming combinator's payload",
+                            span,
+                        )?],
                         span,
                     ),
                     None => Ok(Value::Option(None)),
@@ -5961,10 +6062,14 @@ impl<'a> Interpreter<'a> {
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
                             ReceiverSource::None,
-                            vec![*value],
+                            vec![own_payload(
+                                value,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
                             span,
                         )?;
-                        Ok(Value::Result(Ok(Box::new(mapped))))
+                        Ok(Value::Result(Ok(Box::new(Some(mapped)))))
                     }
                     Err(error) => Ok(Value::Result(Err(error))),
                 },
@@ -5977,10 +6082,14 @@ impl<'a> Interpreter<'a> {
                                 environment: InvocationEnv::Captured(callee.clone()),
                             },
                             ReceiverSource::None,
-                            vec![*error],
+                            vec![own_payload(
+                                error,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
                             span,
                         )?;
-                        Ok(Value::Result(Err(Box::new(mapped))))
+                        Ok(Value::Result(Err(Box::new(Some(mapped)))))
                     }
                 },
                 (Value::Result(result), "and_then") => match result {
@@ -5990,7 +6099,11 @@ impl<'a> Interpreter<'a> {
                             environment: InvocationEnv::Captured(callee.clone()),
                         },
                         ReceiverSource::None,
-                        vec![*value],
+                        vec![own_payload(
+                            value,
+                            "a consuming combinator's payload",
+                            span,
+                        )?],
                         span,
                     ),
                     Err(error) => Ok(Value::Result(Err(error))),
@@ -6039,9 +6152,9 @@ impl<'a> Interpreter<'a> {
             let resource = resource.clone();
             let mut file = resource.0.borrow_mut();
             let Some(file) = file.as_mut() else {
-                return Ok(Value::Result(Err(Box::new(Value::IOError(
+                return Ok(Value::Result(Err(Box::new(Some(Value::IOError(
                     IOErrorKind::InvalidInput,
-                )))));
+                ))))));
             };
             let io_result: Result<(), std::io::Error> = match name {
                 "read_to_string" => {
@@ -6049,7 +6162,7 @@ impl<'a> Interpreter<'a> {
                     match file.read_to_end(&mut bytes) {
                         Ok(_) => match String::from_utf8(bytes) {
                             Ok(text) => {
-                                return Ok(Value::Result(Ok(Box::new(Value::String(text)))))
+                                return Ok(Value::Result(Ok(Box::new(Some(Value::String(text))))))
                             }
                             Err(_) => Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
@@ -6063,7 +6176,7 @@ impl<'a> Interpreter<'a> {
                     let text = string_arg(values.next(), span)?;
                     match file.write(text.as_bytes()) {
                         Ok(count) => {
-                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                            return Ok(Value::Result(Ok(Box::new(Some(Value::Int(count as i128))))))
                         }
                         Err(error) => Err(error),
                     }
@@ -6072,16 +6185,16 @@ impl<'a> Interpreter<'a> {
                     let bytes = self.file_bytes_arg(values.next(), span)?;
                     match file.write(&bytes) {
                         Ok(count) => {
-                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                            return Ok(Value::Result(Ok(Box::new(Some(Value::Int(count as i128))))))
                         }
                         Err(error) => Err(error),
                     }
                 }
                 _ => unreachable!(),
             };
-            return Ok(Value::Result(Err(Box::new(Value::IOError(
+            return Ok(Value::Result(Err(Box::new(Some(Value::IOError(
                 IOErrorKind::from_io_error(&io_result.unwrap_err()),
-            )))));
+            ))))));
         }
         // WP-C1.3 (2026-07-17): generic `.clone()` for every core-type value. `Value` already
         // derives Rust `Clone` (a deep/structural copy, which is exactly STARK's Clone semantics
@@ -6125,7 +6238,9 @@ impl<'a> Interpreter<'a> {
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
-                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
+                    return Ok(Value::Option(
+                        position.map(|_| Box::new(Some(Value::Ref(place)))),
+                    ));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -6134,7 +6249,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Option(
                         self.place_value(&place, span)
                             .ok()
-                            .map(|_| Box::new(Value::Ref(place))),
+                            .map(|_| Box::new(Some(Value::Ref(place)))),
                     ));
                 }
             }
@@ -6154,7 +6269,9 @@ impl<'a> Interpreter<'a> {
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
-                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
+                    return Ok(Value::Option(
+                        position.map(|_| Box::new(Some(Value::Ref(place)))),
+                    ));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -6163,7 +6280,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Option(
                         self.place_value(&place, span)
                             .ok()
-                            .map(|_| Box::new(Value::Ref(place))),
+                            .map(|_| Box::new(Some(Value::Ref(place)))),
                     ));
                 }
             }
@@ -6224,7 +6341,7 @@ impl<'a> Interpreter<'a> {
             let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
             let iter_mut = self.place_value_mut(&place, span)?;
             *iter_mut = updated_iter;
-            return Ok(Value::Option(next_val.map(Box::new)));
+            return Ok(Value::Option(next_val.map(|value| Box::new(Some(value)))));
         }
         if name == "extend" {
             let iter_arg = values
@@ -6446,7 +6563,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let iter_mut = self.place_value_mut(&place, span)?;
                 *iter_mut = iter_val;
-                return Ok(Value::Option(Some(Box::new(acc))));
+                return Ok(Value::Option(Some(Box::new(Some(acc)))));
             } else {
                 let iter_mut = self.place_value_mut(&place, span)?;
                 *iter_mut = iter_val;
@@ -6524,7 +6641,7 @@ impl<'a> Interpreter<'a> {
             }
             let iter_mut = self.place_value_mut(&place, span)?;
             *iter_mut = iter_val;
-            return Ok(Value::Option(found.map(Box::new)));
+            return Ok(Value::Option(found.map(|value| Box::new(Some(value)))));
         }
         if name == "map" {
             let place = receiver_place.clone();
@@ -6603,7 +6720,7 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Unit)
                 }
                 "pop" => Ok(Value::Option(
-                    string.pop().map(|ch| Box::new(Value::Char(ch))),
+                    string.pop().map(|ch| Box::new(Some(Value::Char(ch)))),
                 )),
                 "clear" => {
                     string.clear();
@@ -6642,7 +6759,7 @@ impl<'a> Interpreter<'a> {
                 "find" => Ok(Value::Option(
                     string
                         .find(&string_arg(values.next(), span)?)
-                        .map(|index| Box::new(Value::Int(index as i128))),
+                        .map(|index| Box::new(Some(Value::Int(index as i128)))),
                 )),
                 "replace" => {
                     let from = string_arg(values.next(), span)?;
@@ -6733,7 +6850,9 @@ impl<'a> Interpreter<'a> {
                     vector.push(values.next());
                     Ok(Value::Unit)
                 }
-                "pop" => Ok(Value::Option(vector.pop().flatten().map(Box::new))),
+                "pop" => Ok(Value::Option(
+                    vector.pop().flatten().map(|value| Box::new(Some(value))),
+                )),
                 "insert" => {
                     let index = usize_arg(values.next(), span)?;
                     if index > vector.len() {
@@ -6785,7 +6904,7 @@ impl<'a> Interpreter<'a> {
             Value::Option(option) => match name {
                 "is_some" => Ok(Value::Bool(option.is_some())),
                 "is_none" => Ok(Value::Bool(option.is_none())),
-                "unwrap" => option.take().map(|value| *value).ok_or_else(|| {
+                "unwrap" => option.take().and_then(|value| *value).ok_or_else(|| {
                     // R-01/CD-141 shape: STATE the category rather than leaving it to prose
                     // matching. `oracle_category` refused these outright with a stale "Option/Result
                     // are WP-C5.3c" message, so a corpus case for OPT-UNWRAP could not be compared
@@ -6798,7 +6917,8 @@ impl<'a> Interpreter<'a> {
                 }),
                 "unwrap_or" => Ok(option
                     .take()
-                    .map_or_else(|| values.next().unwrap_or(Value::Unit), |value| *value)),
+                    .and_then(|value| *value)
+                    .unwrap_or_else(|| values.next().unwrap_or(Value::Unit))),
                 _ => Err(RuntimeError::new(
                     format!("unsupported Option method '{name}'"),
                     span,
@@ -6807,16 +6927,16 @@ impl<'a> Interpreter<'a> {
             Value::Result(result) => match name {
                 "is_ok" => Ok(Value::Bool(result.is_ok())),
                 "is_err" => Ok(Value::Bool(result.is_err())),
-                "unwrap" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                    Ok(value) => Ok(*value),
+                "unwrap" => match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(value) => own_payload(value, "`unwrap` on an `Ok`", span),
                     Err(error) => Err(RuntimeError::with_category(
-                        format!("called unwrap on Err({error})"),
+                        format!("called unwrap on Err({})", display_slot(&error)),
                         span,
                         crate::mir::TrapCategory::UnwrapErr,
                     )),
                 },
-                "unwrap_or" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                    Ok(value) => Ok(*value),
+                "unwrap_or" => match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(value) => own_payload(value, "`unwrap_or` on an `Ok`", span),
                     Err(_) => Ok(values.next().unwrap_or(Value::Unit)),
                 },
                 _ => Err(RuntimeError::new(
@@ -6833,14 +6953,18 @@ impl<'a> Interpreter<'a> {
                         .next()
                         .ok_or_else(|| RuntimeError::new("HashMap::insert expects value", span))?;
                     Ok(Value::Option(
-                        map.insert(k, Some(v)).flatten().map(Box::new),
+                        map.insert(k, Some(v))
+                            .flatten()
+                            .map(|value| Box::new(Some(value))),
                     ))
                 }
                 "remove" => {
                     let k = values.next().ok_or_else(|| {
                         RuntimeError::new("HashMap::remove expects key ref", span)
                     })?;
-                    Ok(Value::Option(map.remove(&k).flatten().map(Box::new)))
+                    Ok(Value::Option(
+                        map.remove(&k).flatten().map(|value| Box::new(Some(value))),
+                    ))
                 }
                 "contains_key" => {
                     let k = values.next().ok_or_else(|| {
@@ -7178,13 +7302,12 @@ impl<'a> Interpreter<'a> {
     /// (literals, discriminants, arities) read through the place and are unaffected — a test never
     /// moves anything, so reading it by value was never the defect.
     ///
-    /// **Scope, stated rather than approximated.** A prelude `Option`/`Result` payload is stored as
-    /// `Box<Value>` rather than in a slot, so no `Projection` names it and it cannot be borrowed in
-    /// place. Those payloads fall back to the owned rule here, and creating a reference to a
-    /// temporary clone instead is refused deliberately: it would give the binding a referent the
-    /// program cannot observe mutations through, which is worse than a stated narrowing. Every
-    /// other component — struct field, tuple element, array element, and user-enum variant payload
-    /// — borrows in place.
+    /// **Uniform over every component (DEV-209).** Struct field, tuple element, array element,
+    /// user-enum payload — and, since the prelude payload became slot-backed,
+    /// `Option`/`Result` too. That last one was a stated narrowing for as long as `Box<Value>` had
+    /// no `Projection` to name it, and the narrowing was the defect: PAT-BIND-001 is uniform over
+    /// variant payloads, struct fields and tuple elements, so a specialised runtime representation
+    /// that could not participate was the thing that had to change.
     fn match_pattern_borrowed(
         &mut self,
         pat: PatId,
@@ -7247,8 +7370,29 @@ impl<'a> Interpreter<'a> {
                         }
                         Ok(true)
                     }
-                    // `Option`/`Result` payloads are not slot-backed; see this function's header.
-                    // The owned rule applies, and the component binds by value.
+                    // **DEV-209: the prelude payload borrows in place, like every other
+                    // component.** It used to fall back to the owned rule here — moving out of a
+                    // borrow — because `Box<Value>` had no `Projection` to name it. It is
+                    // slot-backed now, so PAT-BIND-001 has the storage it always required.
+                    (Res::Builtin(Builtin::Some), Value::Option(Some(_)))
+                    | (Res::Builtin(Builtin::Ok), Value::Result(Ok(_))) => {
+                        let Some(sub) = pats.first() else {
+                            return Ok(true);
+                        };
+                        let mut child = place.clone();
+                        child.projections.push(Projection::VariantPayload(0));
+                        self.match_pattern_borrowed(*sub, &child, bindings)
+                    }
+                    (Res::Builtin(Builtin::Err), Value::Result(Err(_))) => {
+                        let Some(sub) = pats.first() else {
+                            return Ok(true);
+                        };
+                        let mut child = place.clone();
+                        child.projections.push(Projection::VariantPayload(1));
+                        self.match_pattern_borrowed(*sub, &child, bindings)
+                    }
+                    // A discriminant that does not match, and every non-prelude shape, still reads
+                    // through the owned matcher: a test moves nothing.
                     _ => self.match_pattern(pat, &value, bindings),
                 }
             }
@@ -7420,13 +7564,13 @@ impl<'a> Interpreter<'a> {
                         },
                     ) if item == actual && variant == actual_variant => fields.clone(),
                     (Res::Builtin(Builtin::Some), Value::Option(Some(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (Res::Builtin(Builtin::Ok), Value::Result(Ok(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (Res::Builtin(Builtin::Err), Value::Result(Err(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (
                         Res::Builtin(Builtin::IOErrorOther),
@@ -7553,8 +7697,8 @@ impl<'a> Interpreter<'a> {
                 let pats = pats.clone();
                 let payloads: Vec<Option<Value>> = match value {
                     Value::Enum { fields, .. } => fields,
-                    Value::Option(Some(inner)) => vec![Some(*inner)],
-                    Value::Result(Ok(inner)) | Value::Result(Err(inner)) => vec![Some(*inner)],
+                    Value::Option(Some(inner)) => vec![*inner],
+                    Value::Result(Ok(inner)) | Value::Result(Err(inner)) => vec![*inner],
                     Value::IOError(IOErrorKind::Other(msg)) => vec![Some(Value::String(msg))],
                     _ => return Ok(()),
                 };
@@ -7711,10 +7855,14 @@ impl<'a> Interpreter<'a> {
         } else {
             let (next, updated) = self.iterator_step(current, Some(iterator_place), span)?;
             *self.place_value_mut(iterator_place, span)? = updated;
-            Value::Option(next.map(Box::new))
+            Value::Option(next.map(|value| Box::new(Some(value))))
         };
         match next {
-            Value::Option(Some(value)) => Ok(Some(*value)),
+            Value::Option(Some(value)) => Ok(Some(own_payload(
+                value,
+                "`Iterator::next` returned a `Some`",
+                span,
+            )?)),
             Value::Option(None) => Ok(None),
             _ => Err(RuntimeError::new("Iterator::next must return Option", span)),
         }
@@ -8600,6 +8748,7 @@ impl<'a> Interpreter<'a> {
             Value::Option(Some(inner)) => {
                 let step = DisplayStep::OptionSome;
                 let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering a `Some`", span)?;
                 let text =
                     self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
                 Ok(format!("Some({text})"))
@@ -8608,6 +8757,7 @@ impl<'a> Interpreter<'a> {
             Value::Result(Ok(inner)) => {
                 let step = DisplayStep::ResultOk;
                 let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering an `Ok`", span)?;
                 let text =
                     self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
                 Ok(format!("Ok({text})"))
@@ -8615,6 +8765,7 @@ impl<'a> Interpreter<'a> {
             Value::Result(Err(inner)) => {
                 let step = DisplayStep::ResultErr;
                 let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering an `Err`", span)?;
                 let text =
                     self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
                 Ok(format!("Err({text})"))
@@ -8718,6 +8869,10 @@ impl<'a> Interpreter<'a> {
             // A map entry is an element of a container exactly as an indexed slot is; the two
             // differ in how the position is found, not in what the write means.
             Some(Projection::Index(_) | Projection::MapIndex(_)) => RepBoundary::ElementWrite,
+            // DEV-209: a variant's payload is a COMPONENT of an aggregate, named positionally
+            // rather than by identifier — the same kind of write as a struct field, and not an
+            // element of a container, whose count varies at runtime.
+            Some(Projection::VariantPayload(_)) => RepBoundary::FieldWrite,
         };
         let declared = self
             .tables
@@ -8805,9 +8960,12 @@ impl<'a> Interpreter<'a> {
             }
             Value::Option(value) => value
                 .as_deref()
+                .and_then(Option::as_ref)
                 .is_none_or(|value| self.value_is_copy(value)),
             Value::Result(value) => match value {
-                Ok(value) | Err(value) => self.value_is_copy(value),
+                Ok(value) | Err(value) => (**value)
+                    .as_ref()
+                    .is_none_or(|value| self.value_is_copy(value)),
             },
             // DEV-087 (WP-C4.7-9 corpus): a `Value::Slice` IS a shared reference — `&[T]` — and
             // shared references are `Copy` (03-Type-System; `Value::Ref` above is treated the
@@ -8977,13 +9135,21 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Value::Option(child) => {
-                if let Some(child) = child.take() {
-                    self.drop_value(*child)?;
+                if let Some(mut child) = child.take() {
+                    if let Some(child) = child.take() {
+                        self.drop_value(child)?;
+                    }
                 }
             }
-            Value::Result(result) => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                Ok(child) | Err(child) => self.drop_value(*child)?,
-            },
+            Value::Result(result) => {
+                match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(mut child) | Err(mut child) => {
+                        if let Some(child) = child.take() {
+                            self.drop_value(child)?;
+                        }
+                    }
+                }
+            }
             Value::HashMap(map) => {
                 for (key, child) in std::mem::take(&mut map.0).into_iter().rev() {
                     if let Some(child) = child {
@@ -9135,10 +9301,14 @@ fn rebase_frame_refs(
             }
         }
         Value::Option(Some(inner)) => {
-            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            if let Some(inner) = inner.as_mut() {
+                rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            }
         }
         Value::Result(Ok(inner)) | Value::Result(Err(inner)) => {
-            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            if let Some(inner) = inner.as_mut() {
+                rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            }
         }
         Value::MapIter(inner, _) | Value::FilterIter(inner, _) => {
             rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
@@ -9161,6 +9331,10 @@ fn rebase_frame_refs(
 
 fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<Value>> {
     match (value, projection) {
+        // DEV-209: the prelude payload, now a slot like every other component.
+        (Value::Option(Some(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Ok(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Err(slot)), Projection::VariantPayload(1)) => Some(slot),
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get(name),
         // WP-C7.9 Packet C: a tuple-variant payload is slot-backed like any other component, but
@@ -9186,6 +9360,10 @@ fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<V
 
 fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a mut Option<Value>> {
     match (value, projection) {
+        // DEV-209, matching `project`.
+        (Value::Option(Some(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Ok(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Err(slot)), Projection::VariantPayload(1)) => Some(slot),
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get_mut(name),
         // WP-C7.9 Packet C, matching `project`: the positional payload of a tuple variant.
@@ -9423,16 +9601,21 @@ fn standard_hash(
             }
             (Value::Option(value), Ty::Core(hir::CoreType::Option, types)) if types.len() == 1 => {
                 let mut bytes = vec![0x04, u8::from(value.is_some())];
-                if let Some(value) = value {
+                if let Some(value) = value.as_deref().and_then(Option::as_ref) {
                     frame(&mut bytes, encode(value, &types[0])?);
                 }
                 Some(bytes)
             }
             (Value::Result(value), Ty::Core(hir::CoreType::Result, types)) if types.len() == 2 => {
                 let mut bytes = vec![0x05, u8::from(value.is_err())];
-                match value {
-                    Ok(value) => frame(&mut bytes, encode(value, &types[0])?),
-                    Err(value) => frame(&mut bytes, encode(value, &types[1])?),
+                match value
+                    .as_ref()
+                    .map(|v| (**v).as_ref())
+                    .map_err(|v| (**v).as_ref())
+                {
+                    Ok(Some(value)) => frame(&mut bytes, encode(value, &types[0])?),
+                    Err(Some(value)) => frame(&mut bytes, encode(value, &types[1])?),
+                    Ok(None) | Err(None) => return None,
                 }
                 Some(bytes)
             }
@@ -9555,12 +9738,22 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         | (Value::Array(left), Value::Array(right))
         | (Value::Vec(left), Value::Vec(right)) => slots_equal(left, right),
         (Value::Option(left), Value::Option(right)) => match (left, right) {
-            (Some(left), Some(right)) => values_equal(left, right),
+            (Some(left), Some(right)) => match (left.as_ref(), right.as_ref()) {
+                (Some(left), Some(right)) => values_equal(left, right),
+                (None, None) => true,
+                _ => false,
+            },
             (None, None) => true,
             _ => false,
         },
         (Value::Result(left), Value::Result(right)) => match (left, right) {
-            (Ok(left), Ok(right)) | (Err(left), Err(right)) => values_equal(left, right),
+            (Ok(left), Ok(right)) | (Err(left), Err(right)) => {
+                match (left.as_ref(), right.as_ref()) {
+                    (Some(left), Some(right)) => values_equal(left, right),
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
             _ => false,
         },
         (Value::Boxed(left), Value::Boxed(right)) => match (left.as_ref(), right.as_ref()) {
