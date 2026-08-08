@@ -1,5 +1,59 @@
 # STARK Compiler STATE
 
+## CD-392 — WP-ENGINE-INDEPENDENCE approved, transferred to AS8; AS0 stays closed (2026-08-09)
+
+**Owner ruling. A governance gap, resolved prospectively rather than by rewriting history.**
+
+`WP-ENGINE-INDEPENDENCE.md` was specified as an **AS0 assurance subpacket** and AS0's work section
+instructed its execution, describing the shared-fate register, evidence audit and engine-risk
+profiles as AS0 outputs. **Those outputs were omitted from AS0's binding exit criteria**, so AS0
+closed without them — while AS8 explicitly requires *consuming* them and forbids repeating the
+inventory under a second taxonomy. AS8's opening inventory (73c562d) found the packet still
+`PROPOSED` with none of its five artefacts in existence.
+
+```text
+AS0 historical closure                  KEEP CLOSED
+WP-ENGINE-INDEPENDENCE status           APPROVED, without redesign
+Execution context                       transferred administratively to the AS8 assurance phase
+Existing EI0-EI6 taxonomy and outputs   remain canonical
+AS8 mutation target selection           BLOCKED until EI5 publishes the ranked list
+A second AS8 engine taxonomy            PROHIBITED
+Other AS8 evidence work                 MAY PROCEED in parallel
+```
+
+**This ruling changes scheduling and ownership only.** It does not alter compiler semantics and does
+not reopen Campaign A.
+
+**The full packet runs, not a minimal subset.** EI0 freezes the classification vocabulary before the
+register is built; EI5's ranking includes `RUSTC_ASSUMPTION` and rustc-sensitive lowering, which
+EI3 supplies. Executing only EI1/EI2/EI4/EI5 would leave EI3 dangling and reproduce this same
+dependency debt at C10.
+
+```text
+EI0 vocabulary -> EI1 register -> EI2 evidence audit -> EI3 rustc/backend assumptions
+    -> EI4 risk profiles -> EI5 ranked mutation targets    ===> AS8 mutation work unblocked
+EI6 public claim calibration completes during AS8/C10 closure
+```
+
+**AS8 trials reference EI authority IDs.** AS8 may assign its own trial IDs; it may not invent a
+semantic classification independent of the shared-fate register.
+
+**The evidence invariant is now binding on AS8**, promoted from the requirement recorded at AS8
+opening:
+
+> **No evidence mechanism may support a claim until its ability to distinguish success from failure
+> has itself been demonstrated.**
+
+For mutation testing, before any real batch is reported: a **known-live mutant MUST be killed** and
+a **known-equivalent/no-op mutant MUST survive** — proving the harness detects a real semantic
+disturbance *and* does not merely fail whenever source changes. Likewise a coverage number declares
+its target crates/files first, an LSP benchmark names and pins its representative projects first,
+and a mutation kill rate declares its exact target population and tags first. Otherwise the
+denominator is movable and the number is weak evidence.
+
+This matters here specifically because EI5 itself warns that even a *killed* shared-authority
+mutation is insufficient unless the killing evidence is independently derived.
+
 ## CD-391 — AS7 CLOSED, qualification PASS (2026-08-08)
 
 **`STARKLANG/docs/compiler/audits/AS7-EXIT-QUALIFICATION.md` is the record.**

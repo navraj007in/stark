@@ -1,7 +1,16 @@
 # WP-ENGINE-INDEPENDENCE
 
 **Document type:** Bounded compiler assurance work package.
-**Status:** PROPOSED — AS0 subpacket; owner approval required before execution.
+**Status:** **APPROVED for execution, 2026-08-09** — owner ruling CD-392. Specified as an AS0
+subpacket; **AS0 remains closed** and is not reopened. Execution is transferred administratively to
+the **AS8 assurance phase**, which is the packet's primary consumer. Approved **without redesign**:
+the EI0–EI6 taxonomy and the five output artefacts below remain canonical, and AS8 may not select
+source-mutation targets until EI5 publishes the ranked list.
+
+**Execution order is the packet's own and is not a minimal subset.** EI0 freezes the vocabulary
+before the register is built, and EI5's ranking includes `RUSTC_ASSUMPTION` and rustc-sensitive
+lowering, which EI3 supplies — so running only EI1/EI2/EI4/EI5 would leave EI3 dangling and
+reproduce the same dependency debt at C10. EI6 completes during AS8/C10 closure.
 **Filed:** 2026-08-02. **Reconciled:** 2026-08-06.
 **Parent programme:** `WP-ARCHITECTURE-STABILIZATION.md` AS0.
 **Primary consumers:** AS0's architecture report, AS5 protocol/version work, AS8 mutation and

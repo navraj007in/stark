@@ -5,6 +5,15 @@ opens by establishing what already exists rather than by producing anything.
 
 **Head:** `8712937`, immediately after AS7 CLOSED (CD-391). **Date:** 2026-08-08.
 
+> **RESOLVED 2026-08-09 by owner ruling CD-392.** Option A approved: `WP-ENGINE-INDEPENDENCE` is
+> **APPROVED without redesign** and its execution transferred administratively to the AS8 assurance
+> phase. **AS0 remains closed and is not reopened.** The full EI0–EI6 packet runs, not a minimal
+> subset — EI0 freezes the vocabulary before the register is built, and EI5's ranking includes
+> `RUSTC_ASSUMPTION` and rustc-sensitive lowering, which EI3 supplies. AS8 may not select
+> source-mutation targets until EI5 publishes the ranked list, and may not invent a second taxonomy.
+> AS8's other evidence lanes proceed in parallel. The blocker analysis below is preserved as the
+> record of why the ruling was needed.
+
 ## The blocker, stated first
 
 AS8's **first work item** is:
@@ -40,7 +49,7 @@ B  AS8 selects its own mutation targets, which is exactly the second taxonomy th
    forbids and which WP-ENGINE-INDEPENDENCE §0 exists to prevent
 ```
 
-**This is an owner decision and I have not made it.** It is not a technical obstacle — AS8 could
+**This was an owner decision, taken as option A — see the banner above.** It was not made here. It is not a technical obstacle — AS8 could
 pick mutation targets tomorrow — it is a governance one: the packet says not to, and the reason it
 says not to is that two competing engine-risk taxonomies would make every later independence claim
 ambiguous.
