@@ -184,7 +184,7 @@ fn observed_dependencies_respect_the_declared_direction() {
         let allowed = permitted(m);
         let mut observed: BTreeSet<String> = BTreeSet::new();
 
-        // 1. explicit references
+        // 1. explicit references to a sibling module
         for other in MODULES {
             if other == m {
                 continue;
@@ -196,6 +196,32 @@ fn observed_dependencies_respect_the_declared_direction() {
             ] {
                 if code.contains(&pattern) {
                     observed.insert((*other).to_string());
+                }
+            }
+        }
+
+        // 1b. references to items that still live in `mod.rs` itself.
+        //
+        // This half was missing from the first version of this test and let a REAL violation
+        // through: `use super::VariantFields` in `types.rs` is a `types -> mod` dependency, but
+        // the loop above only matches `use super::<declared-module>`, and `use super::mod` is not
+        // something anyone can write. During an extraction that is the *most common* dependency
+        // there is, because everything not yet extracted still lives in `mod.rs` — so the checker
+        // would have passed vacuously through every remaining packet. Caught by deliberately
+        // introducing the violation and observing that nothing failed.
+        if *m != "mod" {
+            for marker in ["use super::", "super::"] {
+                let mut rest = code.as_str();
+                while let Some(i) = rest.find(marker) {
+                    rest = &rest[i + marker.len()..];
+                    let segment: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    // `super::{a, b}` and `super::*` name items too; the glob is banned elsewhere.
+                    if segment.is_empty() || !MODULES.contains(&segment.as_str()) {
+                        observed.insert("mod".to_string());
+                    }
                 }
             }
         }
