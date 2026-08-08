@@ -261,6 +261,89 @@ wiring it to the eleven boundaries and deciding the place-oriented ones.
 | 4 | Resource, iterator, reference, generic-drop and partial-move adversaries pass across HIR, MIR and native | **DEFERRED-BY-DECISION** (unavailable lanes only) | §4.3 |
 | 5 | Any behavioural correction receives its own decision record; AS4 does not disguise one | **PASS** | CD-386 (DEV-188), CD-387 (DEV-195). The drop-authority merge and the reference merge were verified behaviour-neutral *before* implementation. RB0 Q1's recommended change is **deferred to its own CD** rather than folded in |
 
+### 3.4 Sprint 4 Phase 3 — convergence qualification (2026-08-08)
+
+Run against the tree at `f55bcc4`, after DEV-210, DEV-211 and DEV-212.
+
+| Suite | Result |
+| --- | --- |
+| `cargo test --lib` | 558 |
+| `mir_differential` | 132 |
+| `native_c6_1_ownership` | 24 |
+| `as4_hostile_combinations` | 12 |
+| `as4_destructor_authority` | 6 |
+| **first-party package qualification** | **53 packages, 0 failures** |
+| **external sample suite** @ pinned `b3b28e757f38d691e…` | **39/39** |
+| `fmt`, `clippy --workspace --all-features --all-targets -D warnings` | clean |
+
+**The two application suites are the ones that mattered here**, because DEV-211 introduced a new
+*rejection* — moving a component out of a `Drop` nominal. A new refusal cannot be qualified by
+compiler tests alone: it changes what programs compile, and the question is whether any real one
+relied on the old acceptance. Blast radius was measured before implementing (no first-party package
+uses `impl Drop`; three sample files do), and re-measured after: 53 packages and 39 sample cases
+unchanged.
+
+**Repository-backed:** `04f0391` (DEV-210, DEV-211) completed **success** on both workflows.
+`d047e13` was red — `MIR-0007` in `mir_differential` and `native_c6_1_ownership` — from an abandoned
+edit left in the general match path when DEV-212's fix moved to the enum path; `f55bcc4` removes it
+and is the head under test.
+
+### 4.0 Sprint 4 re-census (2026-08-08) — and the family that was not consolidated
+
+AS4's property inventory was re-audited from **production structure**, not from its tests, because
+Sprint 3's own lesson is that a passing suite is not evidence a second answer is absent.
+
+| # | Property | Authority | Verdict |
+| ---: | --- | --- | --- |
+| 1 | Copy eligibility | `is_copy_type_with` (checker) / `mir_ty_is_copy` (MIR) | **PASS** — borrowck, typecheck, lowering and the backend all delegate |
+| 2 | Runtime drop glue | `drop_rule::requires_drop_glue_with` | **PASS** — verifier, lowering and the free fn all delegate |
+| 3 | User-defined destruction | `nominals_with_destructor` | **PASS as of this sprint** — see below |
+| 4 | Stored-reference containment | `reference_rule::stores_a_reference` | **PASS** |
+| 5 | Borrow-lifetime carrying | `emit_types::mentions_a_reference` | **PASS** — a near neighbour of #4, not a duplicate: they differ only on `FnPtr`, and the difference is live and tested |
+| 6 | User-nominal containment | `lower::ty_mentions_user_nominal` | **PASS** — single predicate, exhaustive, two consumers |
+| 7 | Runtime representation | `value_matches_ty` | **PASS** — consolidated in Sprint 3; the value-context question derives from it rather than duplicating it |
+
+**Property 3 had three answers, and the borrow checker's was materially weaker.** It identified
+`Drop` by asking whether the written trait name `.ends_with("Drop")` — so `impl MyDrop for S` gave
+`S` a destructor it did not have, and a legal partial move out of one of its fields was refused.
+**Valid Core rejected on spelling** (DEV-210), the CD-379 identity class in a new place. The repair
+was not a better string test: `copy_eligible_types` already computed the set by resolved identity
+and kept it private, so the checker was already answering correctly and the borrow checker had
+written a second, weaker answer beside it.
+
+Consolidating it exposed two further defects, both in consumers rather than in the authority:
+
+- **DEV-211** — moving a component out of an owned `Drop` nominal was accepted, which
+  OWN-PARTIAL-001 prohibits; the checker had the rule for struct fields and never applied it to a
+  matched component.
+- **DEV-212** — a `match` skipped a `Drop` nominal's own destructor even when nothing moved out, in
+  **both** engines. Repaired in HIR and MIR.
+
+**Three wrong turns on DEV-212 are recorded in the ledger**, and they share one mistake: reaching
+for a predicate that was *nearby* rather than establishing which types reach the site.
+`ty_has_user_drop` ("contains a destructor anywhere, including a nested payload") in place of
+`type_has_drop_impl` ("this nominal declares one") fired the whole-value branch for
+`Option<Droppable>` and cost fourteen `MIR-0007` failures. That is the same shape as DEV-210, one
+sprint later — which is the argument for AS4's second requirement, that an authority's **name say
+which question it answers**, not merely that one authority exist.
+
+### 4.0a The approved deferments, stated rather than promoted
+
+A deferment is not a PASS with a softer word, and Sprint 4 did not convert one. Each is restated
+here with the condition that would reopen it.
+
+| Deferment | Status | Reopens when |
+| --- | --- | --- |
+| **Generic user `Drop` in the HIR oracle** | DEFERRED-BY-DECISION | Destruction reaches `drop_value` with a `Value` and recovers the nominal through `nominal_item`, so `Wrapper<String>` and `Wrapper<Int32>` are indistinguishable — the type arguments that selected the impl are gone. The oracle **refuses** rather than guesses (`OracleLimitation::GenericDrop`), classified `internal` so the differential harness cannot read it as a language outcome. MIR and native retain the arguments and execute it correctly. Reopens if Campaign A, or a first-party package, needs it |
+| **Native drop glue for `Vec`/`Box` of a custom-destruction element** | DEFERRED-BY-DECISION | The proper solution is generated deterministic drop-glue helpers keyed by concrete `MirTy`, with recursive helpers **named** rather than recursively expanded. Not implemented merely to clear a documented deferment. Sprint 4 confirmed HIR and MIR still agree for these shapes (`a_vec_of_droppables_agrees_between_hir_and_mir`), so the deferment remains native-only and has not widened |
+| **AS4 #4 — three-engine adversaries on structurally unavailable lanes** | DEFERRED-BY-DECISION | Unchanged from the 2026-08-08 ruling |
+
+**Sprint 4 checked that neither of the first two had silently widened**, which is the risk a
+deferment carries: the hostile suite exercises `Box` of a droppable and `Vec` of a droppable through
+HIR and MIR and requires agreement, and a generic wrapper answering `Drop` **per instantiation**
+(`W<Int32>` needs no destruction, `W<R>` destroys its field exactly once). A deferment that had
+crept into the other engines would fail there rather than in a future user's program.
+
 ### 4.1 AS4 #1 — the seven scoped properties, each with one authority
 
 Scope is the approved AS4/RB0 inventory, per the owner ruling, not every type-related helper.
