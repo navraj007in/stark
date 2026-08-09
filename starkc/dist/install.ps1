@@ -10,14 +10,29 @@ param(
 $ErrorActionPreference = "Stop"
 $PackageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageBin = Join-Path $PackageDir "bin"
-$PackageRuntime = Join-Path $PackageDir "lib\stark\stark-runtime"
-$PackageProviderAbi = Join-Path $PackageDir "lib\stark\stark-provider-abi"
 $PackageManifest = Join-Path $PackageDir "manifest.json"
+
+# The mirror layout writes the runtime under `starkc\`; packages built before that move wrote it
+# flat. Accept either, so this installer can still lay down an older package -- and, more to the
+# point, so it does not reject a CURRENT one.
+function Find-PayloadCrate {
+    param([string]$PackageDir, [string]$CrateName)
+    foreach ($relative in @("lib\stark\starkc\$CrateName", "lib\stark\$CrateName")) {
+        $candidate = Join-Path $PackageDir $relative
+        if (Test-Path (Join-Path $candidate "Cargo.toml") -PathType Leaf) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+$PackageRuntime = Find-PayloadCrate $PackageDir "stark-runtime"
+$PackageProviderAbi = Find-PayloadCrate $PackageDir "stark-provider-abi"
 
 if (-not (Test-Path (Join-Path $PackageBin "stark.exe") -PathType Leaf) -or
     -not (Test-Path $PackageManifest -PathType Leaf) -or
-    -not (Test-Path (Join-Path $PackageRuntime "Cargo.toml") -PathType Leaf) -or
-    -not (Test-Path (Join-Path $PackageProviderAbi "Cargo.toml") -PathType Leaf)) {
+    -not $PackageRuntime -or
+    -not $PackageProviderAbi) {
     throw "install.ps1 must be run from an extracted STARK release package"
 }
 

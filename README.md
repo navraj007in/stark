@@ -341,9 +341,11 @@ payload replaces the manifest with it. Release archives are unsigned; a public d
 needs a signed manifest, a trusted release key, signature verification before installation, and
 platform notarisation. None of that exists yet.
 
-The package also does **not** carry the first-party STARK packages or their provider crates. A clean
-machine can build ordinary Core programs; building an HTTP or TLS program still means obtaining
-those sources separately, as below.
+The package **does** carry the six first-party native provider crates, under
+`lib/stark/packages/<name>/native`, so a clean machine builds clock, filesystem, environment,
+random, TCP/DNS and TLS programs from a stock install. It does **not** carry the first-party STARK
+*packages* — the `.stark` libraries themselves — so depending on one still means obtaining its
+sources, as below.
 
 #### By hand, from this checkout
 
@@ -648,10 +650,10 @@ The following areas remain incomplete or intentionally deferred:
   accepts but no engine can build is worse than one it refuses. Iterate a borrow (`v.iter()`) in a
   `for` loop; implementing the combinators needs MIR adapter types and is scheduled work, not a
   rejection of the feature;
-* **a releasable distribution.** Installer Phase I is implemented, but the payload does not carry
-  the first-party packages or their providers, a clean machine cannot yet build an HTTP or TLS
-  program offline, and the archives are unsigned — `manifest.json` establishes integrity, never
-  authenticity;
+* **a releasable distribution.** Installer Phase I is implemented and the payload now carries the
+  native provider crates, but it does not carry the first-party STARK packages, so a clean machine
+  still cannot build an HTTP or TLS *program* offline without their sources, and the archives are
+  unsigned — `manifest.json` establishes integrity, never authenticity;
 * networking beyond an HTTP/1.1 client — no server, no HTTP/2 or HTTP/3, no connection reuse, no
   proxies, no streaming bodies, and `connect_timeout` is accepted and ignored (DEV-165);
 * structured concurrency and persistent storage (scheduled in [`ROADMAP.md`](ROADMAP.md));
