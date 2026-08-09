@@ -408,7 +408,22 @@ jobs:
           # installer changed, and `stark doctor` is the check that does not have to be kept in
           # step by hand -- it reads the manifest and re-hashes every file the package shipped.
           "$RUNNER_TEMP/stark-install/bin/stark" doctor
-          test -f "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime/src/lib.rs"
+          # The payload MIRRORS THE REPOSITORY: runtime under `starkc/`, providers under
+          # `packages/`. This assertion has to move whenever the packager's layout moves -- it did
+          # not last time, which is what the comment above is about, so it is written once here and
+          # reused by both negative controls below.
+          #
+          # MERGE RESOLUTION (integration, 2026-08-09): this branch asserted the FLAT path
+          # `lib/stark/current/lib/stark/stark-runtime/...`. On the merged tree that assertion is
+          # WRONG and the job would fail: `scripts/build-release.py` writes the runtime to
+          # `starkc_root / "stark-runtime"`, and its own summary line says
+          # "Installed runtime: lib/stark/starkc/stark-runtime". The mirror path is kept, and it is
+          # a variable because the negative control below moves the same directory.
+          installed_runtime="$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/starkc/stark-runtime"
+          test -f "$installed_runtime/src/lib.rs"
+          # Kept from this branch: an EXTERNAL package, built against the installed toolchain with
+          # a declared capability set. The c5-native-workspace fixture below declares no
+          # capabilities, so it links no provider and cannot notice a missing provider payload.
           mkdir -p "$RUNNER_TEMP/external-toolchain-package/src"
           cat > "$RUNNER_TEMP/external-toolchain-package/starkpkg.json" <<'JSON'
           {"name":"external-app","version":"0.1.0","entry":"src/main.stark","capabilities":["filesystem-read","filesystem-write"],"dependencies":{"stark_io":{"package":"stark-io","version":"0.1.0"}}}
@@ -429,6 +444,23 @@ jobs:
             "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
             ./target/stark/debug/app
           )
+          # The fixture above declares NO capabilities, so it links no provider and would pass
+          # against a package that shipped none -- which is exactly how the missing-providers
+          # defect reached a release while this job stayed green. A capability-declaring program
+          # is the only thing that exercises the provider payload.
+          #
+          # `stark-env-consumer` is the choice because its provider crate depends on nothing but
+          # `stark-provider-abi`: a TLS consumer would drag pinned crates.io packages in and turn
+          # an offline provider test into a network test.
+          #
+          # The probe variable is what the consumer asserts on, so running it proves the provider
+          # READ THE ENVIRONMENT rather than merely linking: the program panics on a missing or
+          # mismatched value.
+          (
+            cd ../packages/stark-env-consumer
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+            STARK_ENV_CONSUMER_PROBE=Codex ./target/stark/debug/stark-env-consumer
+          )
       # The negative half, and the one that makes the positive half mean something: with the
       # installed runtime REMOVED and the checkout still present, the same command must FAIL.
       # If it succeeded, the build above proved nothing about which runtime it used.
@@ -438,8 +470,9 @@ jobs:
         env:
           STARK_REQUIRE_INSTALLED_RUNTIME: "1"
         run: |
-          test -d "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
-          mv "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
+          installed_runtime="$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/starkc/stark-runtime"
+          test -d "$installed_runtime"
+          mv "$installed_runtime" "$RUNNER_TEMP/runtime-hidden"
           test -f stark-runtime/Cargo.toml   # the checkout IS still here, at the compiled-in path
           set +e
           (
@@ -448,7 +481,7 @@ jobs:
           ) >"$RUNNER_TEMP/negative.out" 2>&1
           status=$?
           set -e
-          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/runtime-hidden" "$installed_runtime"
           cat "$RUNNER_TEMP/negative.out"
           if [ $status -eq 0 ]; then
             echo "FAIL: installed stark built with no installed runtime — it fell back to the checkout" >&2
@@ -462,6 +495,43 @@ jobs:
             exit 1
           fi
           echo "installed stark refused to build without its installed runtime, for that reason (exit $status)"
+      # The provider half of the same experiment. `provider_repo_root` promises that THE RUNTIME
+      # DECIDES where providers come from -- so with the installed provider removed and the
+      # checkout's `packages/stark-env/native` still present, the build must FAIL rather than
+      # quietly reach into the checkout. A silent fallback here would mean the positive test above
+      # proves only that a provider exists SOMEWHERE on the machine, which is precisely the
+      # condition that let a provider-less archive ship.
+      - name: Installed providers cannot fall back to the checkout (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          STARK_REQUIRE_INSTALLED_RUNTIME: "1"
+        run: |
+          installed_provider="$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/packages/stark-env"
+          test -d "$installed_provider/native"
+          mv "$installed_provider" "$RUNNER_TEMP/provider-hidden"
+          test -f ../packages/stark-env/native/Cargo.toml   # the checkout provider IS still here
+          set +e
+          (
+            cd ../packages/stark-env-consumer
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+          ) >"$RUNNER_TEMP/provider-negative.out" 2>&1
+          status=$?
+          set -e
+          mv "$RUNNER_TEMP/provider-hidden" "$installed_provider"
+          cat "$RUNNER_TEMP/provider-negative.out"
+          if [ $status -eq 0 ]; then
+            echo "FAIL: built a capability program with no installed provider — it fell back to the checkout" >&2
+            exit 1
+          fi
+          # As above: any non-zero exit would pass the check, including one for an unrelated
+          # reason. The diagnostic has to name the missing provider crate for this to be a
+          # controlled experiment.
+          if ! grep -q "provider crate" "$RUNNER_TEMP/provider-negative.out"; then
+            echo "FAIL: build failed (exit $status) but not for the missing installed provider" >&2
+            exit 1
+          fi
+          echo "installed stark refused to build without its installed provider, for that reason (exit $status)"
       # The same two halves on Windows. The variable is set for the smoke and REMOVED afterwards
       # (in `finally`, so a thrown error still restores it) rather than left set for the rest of
       # the job, where it would silently change the behaviour of any later step.
@@ -481,7 +551,8 @@ jobs:
           # made install.ps1 reject a correct package.
           & (Join-Path $prefix "bin/stark.exe") doctor
           if ($LASTEXITCODE -ne 0) { throw "installed toolchain failed doctor" }
-          if (-not (Test-Path (Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime/src/lib.rs"))) {
+          # Mirror layout: runtime under `starkc/`, providers under `packages/`.
+          if (-not (Test-Path (Join-Path $prefix "lib/stark/current/lib/stark/starkc/stark-runtime/src/lib.rs"))) {
             throw "installed native runtime is missing"
           }
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
@@ -514,12 +585,29 @@ jobs:
             Pop-Location
             Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
           }
+          # The fixture above declares no capabilities and so links no provider. Build a
+          # capability-declaring program too, or the provider payload is never exercised.
+          # The probe variable is what the consumer asserts on, so running it proves the provider
+          # READ THE ENVIRONMENT rather than merely linking.
+          $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
+          $env:STARK_ENV_CONSUMER_PROBE = "Codex"
+          Push-Location ../packages/stark-env-consumer
+          try {
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed stark failed to build a capability program" }
+            & ".\target\stark\debug\stark-env-consumer.exe"
+            if ($LASTEXITCODE -ne 0) { throw "provider-backed artifact failed" }
+          } finally {
+            Pop-Location
+            Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
+            Remove-Item Env:\STARK_ENV_CONSUMER_PROBE -ErrorAction SilentlyContinue
+          }
       - name: Installed runtime cannot fall back to the checkout (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
-          $runtime = Join-Path $prefix "lib/stark/current/lib/stark/stark-runtime"
+          $runtime = Join-Path $prefix "lib/stark/current/lib/stark/starkc/stark-runtime"
           $hidden = Join-Path $env:RUNNER_TEMP "runtime-hidden"
           if (-not (Test-Path $runtime)) { throw "installed runtime was expected to exist" }
           Move-Item $runtime $hidden
@@ -549,6 +637,38 @@ jobs:
           # step reports failure having asserted exactly what it set out to assert — the first run
           # of this check logged "refused ... (exit 1)" and then failed the job on that same 1.
           # The bash branch does not need it: its last command is the echo, which exits 0.
+          exit 0
+      - name: Installed providers cannot fall back to the checkout (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
+          $provider = Join-Path $prefix "lib/stark/current/lib/stark/packages/stark-env"
+          $hidden = Join-Path $env:RUNNER_TEMP "provider-hidden"
+          if (-not (Test-Path (Join-Path $provider "native"))) { throw "installed provider was expected to exist" }
+          Move-Item $provider $hidden
+          # The checkout provider IS still present.
+          if (-not (Test-Path "../packages/stark-env/native/Cargo.toml")) { throw "checkout provider is missing" }
+          $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
+          Push-Location ../packages/stark-env-consumer
+          try {
+            $output = & (Join-Path $prefix "bin/stark.exe") build --locked --offline 2>&1
+            $status = $LASTEXITCODE
+            $output | ForEach-Object { Write-Host $_ }
+          } finally {
+            Pop-Location
+            Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
+            Move-Item $hidden $provider
+          }
+          if ($status -eq 0) {
+            throw "built a capability program with no installed provider -- it fell back to the checkout"
+          }
+          if ($output -join "`n" -notmatch "provider crate") {
+            throw "build failed (exit $status) but not for the missing installed provider"
+          }
+          Write-Host "installed stark refused to build without its installed provider, for that reason (exit $status)"
+          # Same $LASTEXITCODE trap as the step above -- the deliberate failure would otherwise
+          # become the step's exit code.
           exit 0
 
   fixture-conformance:

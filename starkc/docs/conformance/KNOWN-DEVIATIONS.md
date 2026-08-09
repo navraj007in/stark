@@ -24,6 +24,7 @@
 | `DEV-195` | 2 | L5520 | **L5557** |  DEV-195 RULING (owner, CD-387, 2026-08-07) |
 | `DEV-196` | 2 | L5595 | **L5620** |  DEV-196 — ANSWERED by measurement (2026-08-07) |
 | `DEV-206` | 2 | L6186 | **L6201** | DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLO |
+| `DEV-213` | 2 | L46 | **L6566** | DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI |
 
 *Derived by `as8-reconcile-deviations.py`; no status is asserted here that the file does not
 already state in its own last heading for that deviation.*
@@ -6609,3 +6610,397 @@ contributed an uninitialized path; repeated `let _` declarations collided. Block
 when their reachable path diverges, flow joins ignore diverging branches, `_` is not published as a
 binding, and both HIR/MIR propagation preserve a return from a value-position arm. Three exact
 programs agree across HIR, MIR and native in `three_engine_differential`.
+## DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI
+
+**Repaired under Gate C10's C10-P packet (OD-4, CD-395).** The deviation's first heading, above,
+stands unedited: this file is append-only and that entry was correct when written.
+
+### What was wrong
+
+`ServerState::compilation_cache` is keyed by URI and each value owns a **whole-package**
+`ProjectAnalysis`. Three facts composed into a wrong answer:
+
+```text
+one full ProjectAnalysis cached PER OPEN URI
+update_document removed ONLY the edited URI's entry
+handle_workspace_symbol merges symbols from EVERY cached analysis
+```
+
+So a rename in `child.stark` left `main.stark`'s analysis — which describes the *whole package,
+including `child`* — carrying the old name, and `workspace/symbol` answered with both.
+
+### The repair
+
+`CompilationResult` gains `package_root: Option<PathBuf>`, stamped at compile time from the
+manifest the analysis was built against. `ServerState::invalidate_package_of` drops the URI's entry
+and every sibling entry sharing that package root. It is called from `open_document`,
+`update_document` **and** `close_document`, because all three change the overlay set that the
+package's analysis is computed from — not only the edit path where the defect was demonstrated.
+
+Two deliberate choices, recorded because each is the kind of thing a later reader will question:
+
+- **The package is read from the cache, not the filesystem.** The entry being invalidated already
+  recorded which package it analysed, so an edit stays a pure in-memory operation. A URI with no
+  cached entry has no siblings to find — the correct answer, not a missed case, because nothing
+  stale can exist for a package this server never analysed.
+- **`None` never matches `None`.** Single-file analyses carry no package root, and two unrelated
+  loose files must not invalidate each other.
+
+`package_root_for_document` is one function with two callers rather than two copies of "which
+package is this URI in" — a second copy is exactly the duplicated-authority shape `AS8-DA-*`
+catalogues.
+
+### Evidence, including the negative control
+
+`as8_editing_one_file_leaves_other_uris_cached_analyses_stale` is **renamed to
+`dev213_editing_one_file_invalidates_every_analysis_of_its_package` and its polarity flipped**,
+exactly as AS8's own assertion message instructed. It is not deleted: what it pins is the same fact
+either way — what `workspace/symbol` can see after a single-file edit.
+
+**The test was proved capable of failing before its pass was believed** (Gate C10's binding rule,
+inherited from AS8). With the sibling sweep disabled and single-URI removal restored, it fails with
+the defect's exact signature:
+
+```text
+DEV-213: `alpha_symbol` was renamed and must not survive in ANY cached analysis of this
+package ... got ["alpha_symbol", "renamed_symbol"]
+```
+
+The control was then removed and the restore verified byte-identical before the pass was recorded.
+
+Extended beyond AS8's case: after the sweep, recompiling the sibling must answer with the new name
+and only the new name — so the repair is shown to be an *invalidation* rather than a purge that
+merely hides the stale entry by emptying the cache.
+
+```text
+cargo test --manifest-path starkc/Cargo.toml --lib lsp::     48 passed, 0 failed
+cargo test --manifest-path starkc/Cargo.toml --lib          569 passed, 0 failed
+cargo clippy --workspace --all-features --all-targets -D warnings   exit 0, zero warnings
+cargo fmt --check                                            clean
+```
+
+### What this closure does NOT claim
+
+`workspace/symbol` is now correct under the multi-file editing pattern AS8 demonstrated. **It is
+not a claim that the LSP is correct**, and C8 is not reopened. `DEV-012` — seven advertised
+features with protocol evidence only — is separate and remains open; and `GATE-C8-CLOSURE.md` §4's
+standing limit still applies: protocol validation checks verdicts, not values, and DEV-182 survived
+it.
+
+**The standing qualification recorded when DEV-213 was filed is DISCHARGED.** Claims about
+`workspace/symbol` correctness under multi-file editing no longer need to be stated as qualified,
+within the bound above.
+
+## DEV-214 — a left-associative operator chain aborts the compiler with a stack overflow (OPEN, found by C10-B, 2026-08-09)
+
+**Demonstrated at HEAD.** `cargo run --manifest-path starkc/Cargo.toml --example c10b_repro -- 250`
+aborts with `fatal runtime error: stack overflow` (SIGABRT). Not a diagnostic, not a panic with a
+message — process death.
+
+### What is wrong
+
+The parser **has** a recursion guard: `MAX_DEPTH = 200` in `parser.rs`, reported as *"this code is
+nested too deeply to parse"*. It bounds **syntactic nesting** — parentheses, blocks, calls — because
+those are what recurse in a recursive-descent parser.
+
+A left-associative operator chain does **not** recurse in the parser. `parser.rs` implements *"the
+16-level precedence table literally (one function per level)"*, and each level is a `loop` that
+folds operands iteratively. `1 + 1 + 1 + ...` therefore never increments `depth`, and the guard
+never fires.
+
+**The AST it builds is nonetheless `n` deep**, and every recursive walk downstream of the parser
+descends it:
+
+```text
+parse + resolve             survive at n = 2000
++ typecheck                 overflows between n = 240 and n = 500
+full analyze_project        the walk that dies first
+```
+
+> **The guard bounds the nesting the parser recursed through, not the depth of the tree it
+> produced.** Those coincide for parentheses and diverge for operator chains.
+
+### Severity — it is worse than the headline number
+
+The threshold scales with the thread's stack. Measured with `examples/c10b_thread.rs`, macOS-arm64:
+
+```text
+8 MiB stack   a process main thread                       n = 240 OK,  n = 250 ABORTS
+2 MiB stack   Rust's default for a SPAWNED thread, and
+              what `cargo test` gives each test           n =  60 OK,  n =  65 ABORTS
+```
+
+~30 KB of stack per AST level. **On a default-stack thread, sixty-five `+` operators kill the
+process.** That matters because the LSP analyses on a server thread and the interpreter runs on a
+spawned thread — an embedding is on the low number, not the high one.
+
+`1 + 1 + ...` is a stand-in for the shape, not the only instance. Any left-associative chain
+qualifies: string concatenation, a long boolean condition, a numeric sum in generated or
+machine-written code. Sixty-five terms is not an exotic program.
+
+### Contrast, which is what makes this a GAP rather than an absence
+
+```text
+(((((...1...)))))  300 deep   ->  REJECTED, "this code is nested too deeply to parse"
+1 + 1 + ... + 1     65 terms  ->  SIGABRT
+```
+
+The bounded-failure behaviour the robustness gate asks for already exists. It is simply not
+reachable by this input shape.
+
+### Impact
+
+- **Compiler correctness:** none — no wrong answer is produced.
+- **Robustness / availability:** a valid, ordinary program aborts the compiler. Under C10-B's gate
+  (*no panic, no hang, bounded failure*) this is a **FAIL**, and it is the only one C10-B found.
+- **Security (C10-C surface S13, denial of service):** a hostile or merely generated source file
+  kills any process that compiles it. For a batch build that is a failed build; for a
+  long-running LSP server it is a crash.
+
+### Why C10-B did NOT repair it — and this is the disciplined answer, not reluctance
+
+Every available fix changes something an autonomous session may not change:
+
+1. **Count chain depth against `MAX_DEPTH`.** The effective limit becomes ~200 terms, so
+   expressions of 200–245 terms **that compile today would start being rejected**. That is a change
+   to the normative accepted/rejected program set — **CE1/CE2**, Charter §2.2, and C10 plan stop
+   condition 5.
+2. **Convert the recursive walks to an explicit worklist.** Correct, and a structural change to the
+   type checker and index builders — far outside a qualification campaign (plan §3.2).
+3. **Raise the stack, or run analysis on a large spawned thread.** An architectural decision about
+   where the compiler runs, and it does not remove the cliff — it moves it.
+
+**Owner decision required.** The choice between "reject deep chains cleanly" and "support them" is
+a language-surface decision, and the first option needs a number that only the owner can set.
+
+### Evidence
+
+```text
+starkc/tests/c10b_robustness.rs
+  t9_dev214_operator_chain_depth_is_unguarded_and_the_safe_boundary_holds
+      pins the SAFE side at 40 terms, below the lowest measured cliff, and pins the CONTRASTING
+      300-deep paren nesting as REJECTED so the guard's existence is part of the record
+starkc/examples/c10b_repro.rs      the failing side, as an example rather than a test: a stack
+                                   overflow aborts the whole test binary
+starkc/examples/c10b_thread.rs     the stack-size dependence
+```
+
+The failing side is deliberately **not** a test. It cannot be one: SIGABRT takes every other test in
+the binary with it.
+
+---
+
+# OD-7 adjudication (owner ruling, 2026-08-09) — the eight unsettled statuses, and six entries this ledger never had
+
+**Authority:** owner ruling OD-7, recorded during C10-A1/C10-B. C10-0 enumerated eight deviations
+whose last heading did not settle their status, and six that were OPEN in `COMPILER-STATE.md` and
+owned **no heading here at all**. Both are resolved below.
+
+**Nothing historical is rewritten.** Every entry below is a NEW, dated heading; the originals stand
+exactly as written, in this append-only file and in `COMPILER-STATE.md`.
+
+## DEV-005 — OPEN, ACCEPTED RELEASE DEVIATION (OD-7, 2026-08-09)
+
+`starkc check` permits warnings where `starkc run` refuses any diagnostic. A **usability/CLI-policy
+inconsistency with no safety impact**, and the specification does not mandate the policy.
+
+```text
+status       OPEN
+owner        a future bounded CLI-consistency packet
+C10 repair   NO
+C10-Q        PERMITTED as a named tooling deviation
+```
+
+**Condition attached by the owner:** *one current-head reproduction is required before C10-Q.* The
+entry is old enough that an incidental later change may already have removed it, and a release must
+not name a deviation that no longer exists.
+
+## DEV-010 — CLOSED (OD-7, 2026-08-09). Stale ledger status, not a release deviation
+
+The recorded defect was that hover, definition and references were **protocol stubs**. Gate C8
+established compiler-derived semantic services, and those three features are precisely the ones the
+owner interactively validated (`GATE-C8-CLOSURE.md` §2). The deviation describes a compiler that no
+longer exists.
+
+## DEV-011 — ACCEPTED-INDEFINITELY (OD-7, 2026-08-09). Not OPEN, and not "fixed"
+
+Doc comments are trivia rather than AST/HIR metadata. **The entry itself records that no explicit
+normative requirement demands otherwise.**
+
+```text
+status       ACCEPTED-INDEFINITELY
+reason       an implementation/tooling representation choice; no current normative violation
+reopen if    a future documented semantic or tooling requirement cannot be satisfied from
+             trivia and reassociation
+```
+
+Recorded this way deliberately: C10 must not classify a representation preference as a conformance
+defect, and must not claim it was fixed.
+
+## DEV-020 — CLOSED (OD-7, 2026-08-09). Confirmed design
+
+`pub use` of a private item exposes it: the visibility of a re-export is the visibility of the
+re-export. Already recorded in C1 as confirmed design rather than a defect.
+
+## DEV-021 — CLOSED (OD-7, 2026-08-09). Verified correct
+
+Cross-package coherence checking was **verified working**. The entry records a verification, not a
+continuing defect.
+
+## DEV-083 — OPEN, ACCEPTED-DEFERRED (OD-7, 2026-08-09). Real, and it constrains the claim
+
+A concrete position in an impl head cannot match a receiver type argument that is still unresolved.
+Native planning carried this forward as a known front-end limitation and required **deterministic
+rejection** rather than pretended support.
+
+```text
+status          OPEN
+classification  supported-surface limitation
+C10 repair      NO
+release         permitted ONLY if explicitly listed
+future owner    a bounded inference / method-resolution packet
+```
+
+**It constrains the Core v1 Compiler Stable claim; it does not block C10.**
+
+## DEV-179 — DORMANT (OD-7, 2026-08-09). Not closed, and not counted as live
+
+`MapIter`/`FilterIter` discard a generic callback's instantiation. **Unreachable while iterator
+`map`/`filter` remains refused by `E0105`** — a feature-activation prerequisite, not an active
+conformance failure.
+
+```text
+status       DORMANT
+release      does not block the current supported scope
+trigger      MUST be resolved before iterator map/filter becomes accepted
+```
+
+Not closed, because the hazardous implementation is still there. Removed from the live
+current-defect count, because nothing can reach it.
+
+## DEV-196 — CLOSED / RETIRED AS A LIVE DEFECT (OD-7, 2026-08-09)
+
+Measurement showed legacy `Core(File)` is not ordinarily lowerable from source at all — even
+binding the returned `File` is rejected before MIR lowering. The real provider path uses explicit
+resource-close semantics, not this legacy `Drop` path.
+
+**The reachability regression test is KEPT**, because it guards the premise:
+
+```text
+if Core(File) ever becomes ordinarily lowerable
+    -> DEV-196's dormant hazard becomes relevant again, and that test is what will say so
+```
+
+---
+
+# The six entries this ledger never had (OD-7 backfill, 2026-08-09)
+
+C10-0 finding **F3**: these six were OPEN in `COMPILER-STATE.md` and owned no heading here, so a
+mechanical C10-Q check reading this file alone would have missed six genuine deviations.
+
+**Status is carried across unchanged, and the `COMPILER-STATE.md` records remain authoritative for
+detail.** This backfill restores the structured ledger; it does not re-adjudicate anything.
+
+## DEV-156 — `stark fmt` evicts member doc comments (OPEN; backfilled OD-7, 2026-08-09)
+
+A doc comment on a struct **field** is relocated after the struct. Recorded in `COMPILER-STATE.md`.
+
+## DEV-157 — the native backend has no representation for `MirTy::Never` (OPEN; backfilled OD-7, 2026-08-09)
+
+`Err(_) => panic(..)` in match-arm **value** position has no native representation.
+
+## DEV-159 — a native build can race its own dependency build (OPEN; backfilled OD-7, 2026-08-09)
+
+Reported by an outside reviewer: a first native build of an HTTP program can race the build of its
+own dependencies.
+
+## DEV-160 — place-granular borrows, whole-value projections (OPEN; backfilled OD-7, 2026-08-09)
+
+The borrow checker is place-granular (DEV-154); whole-slot borrows for disjoint projections remain
+open. Guarded in CI by the `DEV-160 raw slot primitives under Miri` job.
+
+## DEV-161 — an ambient `CARGO_TARGET_DIR` breaks every native build (OPEN; backfilled OD-7, 2026-08-09)
+
+Cargo's default output is `<manifest dir>/target`, which is where the generated crate expects it. An
+exported `CARGO_TARGET_DIR` redirects it and the build fails. **An operational trap for any session
+that sets the variable globally** — including a mutation or coverage run.
+
+## DEV-162 — reading through a whole-value accessor (OPEN; backfilled OD-7, 2026-08-09)
+
+A read through a whole-value accessor on partially-moved storage. Sibling to DEV-158 (CLOSED) and
+DEV-160 (OPEN).
+
+## DEV-214 — REPAIRED under OD-9, with one criterion that cannot be met at MAX_DEPTH = 200 (2026-08-09)
+
+**Owner ruling OD-9 authorised the bounded repair.** The entry above stands unedited.
+
+### What was done
+
+`ast::max_expr_depth` computes the deepest expression tree **iteratively** — a forward
+dynamic-programming pass over the expression arena, iterated to a fixpoint rather than assuming the
+parser's child-before-parent allocation order. A recursive measurement would have overflowed on
+exactly the input it exists to reject.
+
+`analyze_project` enforces `parser::MAX_DEPTH` — **the same 200, now `pub`; no second limit was
+invented** — after parsing and before resolution, emitting `E0209` blamed on the deepest
+expression's own span. `each_child_expr` has **no `_ =>` arm**, so adding an `ExprKind` variant is a
+compile error rather than a silent hole.
+
+**One thing the first attempt got wrong, recorded because it is the interesting part.**
+`query::QueryIndex::build` walks the expression arena recursively and runs **unconditionally** —
+errors do not stop it, because a stale-but-present index is what lets an editor answer while a file
+is broken. So the guard fired, resolution and type checking were skipped, and the index then walked
+the same deep tree and aborted anyway. It is now skipped for over-limit input. `build_source_map`
+was checked and never touches `exprs`, so only the one consumer is short-circuited.
+
+### Measured result
+
+```text
+depth        8 MiB (process main thread)   2 MiB (spawned thread / LSP / cargo test)
+<= 60        accepted                      accepted
+61..=200     accepted                      ABORTS      <- residual, see below
+> 200        E0209, one diagnostic         E0209, one diagnostic
+```
+
+**The unbounded hole is closed.** 201, 250, 1,000 and 10,000 terms all produce exactly one
+diagnostic on a 2 MiB stack, where before the repair 65 terms killed the process.
+
+### The criterion that cannot be met, and why it is not a shortfall in the repair
+
+OD-9 required both *"a 200-term chain is still accepted"* and *"no stack overflow even on a 2 MiB
+thread"*. **Those cannot both hold at `MAX_DEPTH = 200`**: a 200-deep expression needs roughly 6 MiB
+of stack in the downstream walks, and the ruling forbids reducing the limit.
+
+So the residual is the window `61..=200` **on a small stack only** — depths the limit permits that a
+2 MiB thread cannot carry. Closing it needs one of three things, each an owner decision rather than
+an implementation choice:
+
+```text
+a stack-aware effective limit    lower the bound when analysis runs on a small stack
+iterative downstream walks       the broad refactoring OD-9 and plan §3.2 both forbid
+a documented minimum stack       state the requirement and let embedders meet it
+```
+
+**Recorded as OPEN-RESIDUAL rather than as DEV-214 remaining open**: the defect OD-9 named —
+unbounded depth reaching recursive passes — is fixed and verified on the small stack.
+
+### Evidence
+
+`starkc/tests/dev214_expression_depth.rs`, 9 tests. Every over-limit case runs on a **2 MiB thread**,
+because C10-B established the cliff scales with the stack and a main-thread test would have reported
+a threshold four times too generous. A regression surfaces as a failed `join`, not as a SIGABRT that
+takes the binary down.
+
+```text
+40 terms                     accepted, 2 MiB
+200 terms (exactly the limit) accepted, 8 MiB — and the residual test pins why not 2 MiB
+201 terms                     E0209, deterministic across runs, 2 MiB
+1,000 / 10,000 terms          E0209, no overflow, 2 MiB
+300 nested parentheses        still rejected BY THE PARSER — the contrast is preserved
+rejection is not a cascade    exactly one diagnostic; no partial semantic analysis
+the diagnostic has a real span inside the source, code E0209
+wide-but-shallow shapes       2,000-element tuple, 2,000 locals, 1,500 fields — unaffected
+```
+
+`cargo test --lib` 569 passed; `c10b_robustness` 12; `c10c_security` 5; `conformance` 3; clippy
+`--workspace --all-features --all-targets -D warnings` exit 0; `fmt --check` clean.

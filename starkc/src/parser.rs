@@ -566,7 +566,13 @@ struct Parser<'a> {
     depth_reported: bool,
 }
 
-const MAX_DEPTH: u32 = 200;
+/// The compiler's structural-depth limit, and there is exactly ONE of them.
+///
+/// `pub` since DEV-214 (OD-9): `ast::max_expr_depth` enforces the SAME limit over the AST the
+/// parser produced. The owner ruling is explicit that no second numeric limit may be invented —
+/// the defect was that this bound measured only one of the two ways depth arises, not that its
+/// value was wrong.
+pub const MAX_DEPTH: u32 = 200;
 
 impl Parser<'_> {
     /// WP-FMT-001: build a `FormatString` expression from the whole-literal token at `span`.
