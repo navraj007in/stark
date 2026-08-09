@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-E (perf), C10-F (policy)  Blocked: none  [C10-Q gated on integration]
+Gate: C10  Next: C10-F (policy)  Blocked: none  [C10-Q gated on toolchain-branch integration]
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, P, A1, A2, B, C, **D COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-E, C10-F, then integration before C10-Q |
+| **Active packet** | C10-0, P, A1, A2, B, C, D, **E COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-F, then integration before C10-Q |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -328,6 +328,58 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
 
+### C10-E, same day — the phase split, and DEV-213's residual measured rather than argued
+
+`audits/C10-E-PERFORMANCE-BASELINE.md`; data `benchmarks/c10/darwin-arm64.json`. Candidate
+`01ba608`, Darwin-arm64, rustc 1.93.0. **Baselines only — no threshold proposed, nothing optimised.**
+
+**Workload integrity is verified before any timing is taken**: 7 workloads, 16 files, 0 drift
+against `FROZEN.json`. The harness exits rather than measure a drifted workload, because a baseline
+against a changed workload looks comparable and is not.
+
+**E2 — the phase split `c7-baseline.py` cannot produce.** Type checking dominates at **44–59%**;
+lexing is a flat ~6.5% everywhere. `w06_multi_package` is the only workload where resolution rises
+(26.8%) and checking falls — the one workload with a package graph.
+
+**E2.1 — scaling is mildly superlinear, and recorded rather than acted on.** 64x the input costs
+**117x** the time (~`O(n^1.17)`), with the growth concentrated in checking: its share climbs 52% ->
+75% from 100 to 6,400 functions. 234 ms for 6,400 functions blocks nothing; investigating it is a
+separate approved packet (§12.3).
+
+**E4 — the finding. An edit now costs about a cold open.**
+
+```text
+modules   cold open   edit -> diagnostic   workspace symbol
+      4      548 us              510 us               1 us
+      8      937 us            1,051 us               3 us
+     16    1,808 us            1,869 us               4 us
+     32    3,162 us            3,185 us               8 us
+```
+
+`edit -> diagnostic` tracks `cold open` at every size. **That is C10-P's residual, quantified**:
+package-scoped invalidation drops every cached analysis of the package, so the first query after an
+edit pays for a full re-analysis. C10-P declared this before measuring it — *"invalidation is now
+more eager… no before/after was taken here and none is claimed"* — and at 3.2 ms for 32 modules it
+is inside interactive latency, so **nothing here argues for reverting or optimising the repair.**
+
+**AS8's 22 ms / 181 ms are NOT used as a before/after.** They describe a different architecture (one
+analysis per URI, invalidated per URI) measured with a different harness on a differently-shaped
+package. The numbers here are smaller; that is not evidence of a speedup and is not claimed as one.
+
+**E6 — one platform.** Darwin-arm64 measured; Linux-x64 and Windows-x64 **NOT MEASURED**. The
+harnesses are portable (platform in the filename, RSS unit in the payload, because macOS reports
+bytes and Linux kilobytes) but no CI job runs them. **C10-Q may not generalise these to the platform
+matrix**; the concrete next step is a CI job uploading `benchmarks/c10/<platform>.json`.
+
+**OD-8 appendix — EMPTY, and the reason is availability rather than scope.** No `.onnx` file exists
+in the tree: `gate4/manifest.toml` records that ONNX fixtures "are generated deterministically by
+test code", and `gate5/fetch-input.sh` downloads its reference image from the network, with deploy
+additionally needing ONNX Runtime. Import/verify could be timed by driving the generator; **deploy
+cannot be timed offline at all.** Measuring a third of the appendix and labelling it
+"import/verify/deploy" would be worse than measuring none. **OWNER DECISION:** authorise driving the
+generator for import/verify and record deploy as unmeasurable offline, or accept the empty appendix
+with this explanation as the reason. Either satisfies OD-8; guessing does not.
+
 ### C10-D, same day — a control built, and a C10-A2 claim refuted by measurement
 
 `C10-MUTATION-LEDGER.md`. Baseline `51ca1af`.
@@ -350,8 +402,11 @@ true, verify says false"*; restore verified identical. Six classifiers went `fn`
 **A fourth pair the register does not list.** `AS8-DA` catalogues Vec/Box/Slice.
 `is_map_runtime` / `is_map_runtime_fn` is a fourth of identical shape, found by enumerating the
 classifiers rather than reading the register — exactly what `AS8-DUPLICATE-AUTHORITIES.md` predicts
-when it calls itself "a lower bound, not an inventory". Candidate `AS8-DA-007`; **allocation
-deferred to consolidation** per the ID ruling below.
+when it calls itself "a lower bound, not an inventory". Allocated as **`C10-DA-001`**, not
+`AS8-DA-007`: AS8 is closed and did not find this, and numbering it into AS8's sequence would
+rewrite who discovered what. **The known duplicated-authority population goes from six to seven
+without touching the closed AS8 result.** (The ID-deferral ruling below is about `CD-*`/`DEV-*`
+numbers that could collide with the parallel branch; this namespace is C10's own.)
 
 **C10D-MUT-001 refutes a C10-A2 claim.** A2 concluded from counting that lexical negative evidence
 is "DENSE … these rules are controlled". Deleting `"mut" => Mut` from the keyword table left **all

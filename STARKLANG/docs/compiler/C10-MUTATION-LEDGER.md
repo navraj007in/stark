@@ -72,8 +72,29 @@ reimplemented with different names, a different match order, or an equivalent-bu
 expression is invisible to it."* **This is that warning coming true.** The parity control covers all
 four, so the gap is closed as well as recorded.
 
-**Candidate `AS8-DA-007`** — allocation deferred to consolidation, per the owner ruling that IDs are
-assigned against a frozen `develop` (see `COMPILER-STATE.md`, integration hazard).
+### `C10-DA-001` — allocated here, and deliberately NOT called `AS8-DA-007`
+
+**Owner ruling, 2026-08-09.** The ID-deferral rule is about `CD-*`/`DEV-*` numbers that could
+collide with the parallel toolchain branch. This is neither: it is a new register entry in a
+namespace C10 owns, so it is allocated now.
+
+**And it is not `AS8-DA-007`. AS8 is closed, and AS8 did not find this.** Numbering it into AS8's
+sequence would rewrite who discovered what.
+
+```text
+C10-DA-001   Which `RuntimeFn`s are Map operations
+             A   mir::interp::is_map_runtime
+             B   mir::verify::is_map_runtime_fn
+             intended relationship   as AS8-DA-002/003/004 — the verifier checks what the
+                                     interpreter executes, and an independent table is what lets
+                                     it disagree
+             found by                C10-D, exhaustive enumeration of the classifiers
+             disposition             KEEP SEPARATE + exhaustive parity control (C10D-CTL-001)
+```
+
+**This extends the known duplicated-authority population from six to seven without rewriting the
+closed AS8 result.** `AS8-DA-001..006` stand exactly as recorded; `C10-DA-001` is the seventh, and
+its provenance says so.
 
 ---
 

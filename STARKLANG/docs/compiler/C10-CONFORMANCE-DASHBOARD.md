@@ -121,17 +121,40 @@ SYNTACTIC    parser.rs in-module tests   47 test fns, only 5 asserting a rejecti
              -> negative evidence is THIN, and this is a real finding rather than a bookkeeping gap
 ```
 
-> **CORRECTED 2026-08-09 by C10-D (`C10D-MUT-001`).** This section originally concluded from the
-> lexical counts that *"negative evidence is DENSE. These rules are controlled; the attribution is
-> missing."* **Mutation refuted it.** Deleting `"mut" => Mut` from the lexer's keyword table left
-> **all 26 `lexer.rs` tests passing** — including `keywords_reserved_and_idents`, a test named for
-> exactly that rule. The kill came from `conformance` and `gate2_valid`, by programs ceasing to
-> parse.
->
-> **The count was real; the inference was wrong.** Those 32 assertions cover literal forms, escapes
-> and malformed input — not keyword identity. Inferring control from a count of assertions is
-> measuring the wrong property, and I did it in the same session that recorded EI2 making precisely
-> that error. Keyword identity is controlled **coarsely, by parse failure** — see `C10-R1`.
+### The lexical conclusion, in the four states it passed through
+
+**All four are kept.** Git history can recover the old sentence; a qualification record should not
+require archaeology to explain why a conclusion changed. Same discipline as `C10-THREAT-MODEL.md`
+§2a.
+
+```text
+1  ORIGINAL CONCLUSION   (C10-A2)
+     "negative evidence is DENSE. These rules are controlled; the attribution is missing."
+     Basis: lexer.rs has 26 test fns and 32 error assertions.
+
+2  CHALLENGE             (C10-D, C10D-MUT-001)
+     delete `"mut" => Mut` from the keyword table
+       lexer.rs unit suite      26 / 26 PASS   <- including keywords_reserved_and_idents,
+                                                  a test named for exactly this rule
+       conformance              FAIL
+       gate2_valid              11 of 56 FAIL
+     Every kill was a program ceasing to PARSE. No lexical assertion fired.
+
+3  WITHDRAWAL
+     The measurement was valid; the INFERENCE was not. 32 assertions measured lexical testing
+     DENSITY — literal forms, escapes, malformed input — not keyword-to-token IDENTITY.
+     Inferring control from an assertion count measures the wrong property, and C10-A2 did it in
+     the same session that recorded EI2 doing the same thing.
+
+4  CURRENT CONCLUSION    C10-R1
+     keyword MEMBERSHIP    has coarse downstream control — remove a word from the keyword set
+                           and every program using it stops parsing
+     keyword IDENTITY      is NOT independently pinned. Nothing establishes that `mut` maps to
+                           TokenKind::Mut rather than to some other valid keyword token
+     class                 assurance/evidence-quality residual, population C.
+                           NO DEV — this is not evidence of a misclassification in the
+                           implementation, and none has been demonstrated
+```
 
 **One `parse-fail` fixture in the entire corpus.** Charter §1.6 rule 15 requires that "positive and
 negative evidence travel together — every semantic rule needs valid and invalid cases where

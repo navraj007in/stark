@@ -1520,6 +1520,111 @@ mod tests {
     ///
     /// This is why the AS8 profile measured the duplication: the cost is the visible half, and
     /// this is the half that changes an answer.
+    /// C10-E / E4 — LSP latency against the POST-DEV-213 implementation.
+    ///
+    /// **`#[ignore]` on purpose.** It is a measurement, not an assertion: it has no pass/fail
+    /// condition beyond completing, and a timing test in the ordinary suite would fail on a loaded
+    /// machine and teach nothing. Run it deliberately:
+    ///
+    /// ```text
+    /// cargo test --manifest-path starkc/Cargo.toml --lib c10e_lsp_latency -- --ignored --nocapture
+    /// ```
+    ///
+    /// **Why AS8's numbers cannot be reused.** AS8 measured 22 ms for one whole-package analysis
+    /// and 181 ms for eight open URIs, against a cache holding one analysis PER OPEN URI that
+    /// invalidated only the edited one. C10-P made invalidation per PACKAGE. **The architecture is
+    /// different, so AS8's figures are historical context and NOT a before/after** — a comparison
+    /// needs a demonstrably identical harness and workload, and this is not one.
+    ///
+    /// It measures the three latencies E4 names: cold open + analyse, edit -> diagnostic (the
+    /// `didChange` path, and the one the repair made more expensive), and the workspace-symbol
+    /// query that was returning stale names.
+    #[test]
+    #[ignore = "measurement, not an assertion — see C10-E"]
+    fn c10e_lsp_latency() {
+        fn median(mut v: Vec<u128>) -> u128 {
+            v.sort_unstable();
+            v[v.len() / 2]
+        }
+        let reps = 5usize;
+        println!("modules  cold_open_us  edit_to_diagnostic_us  workspace_symbol_us");
+        for modules in [4usize, 8, 16, 32] {
+            let dir = std::env::temp_dir().join(format!(
+                "c10e_lsp_{}_{}_{}",
+                std::process::id(),
+                modules,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let src = dir.join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                dir.join("starkpkg.json"),
+                r#"{"name":"perf","version":"0.1.0","entry":"src/main.stark"}"#,
+            )
+            .unwrap();
+            let mods: String = (0..modules).map(|i| format!("mod m{i};\n")).collect();
+            std::fs::write(src.join("main.stark"), format!("{mods}fn main() {{ }}\n")).unwrap();
+            for i in 0..modules {
+                std::fs::write(
+                    src.join(format!("m{i}.stark")),
+                    format!("pub fn sym_{i}(x: Int32) -> Int32 {{ x + {i} }}\n"),
+                )
+                .unwrap();
+            }
+            let main_uri = path_to_file_uri(&src.join("main.stark"));
+            let child_uri = path_to_file_uri(&src.join("m0.stark"));
+            let main_text = std::fs::read_to_string(src.join("main.stark")).unwrap();
+            let child_text = std::fs::read_to_string(src.join("m0.stark")).unwrap();
+
+            let (mut cold, mut edit, mut ws) = (Vec::new(), Vec::new(), Vec::new());
+            for r in 0..reps {
+                let mut server = Server::new();
+                server
+                    .state
+                    .open_document(main_uri.clone(), 1, main_text.clone());
+                let t = std::time::Instant::now();
+                server.compile_document(&main_uri);
+                cold.push(t.elapsed().as_micros());
+
+                // Several URIs of one package open — the shape DEV-213 was about.
+                server
+                    .state
+                    .open_document(child_uri.clone(), 1, child_text.clone());
+                server.compile_document(&child_uri);
+
+                let edited = format!("pub fn sym_renamed_{r}(x: Int32) -> Int32 {{ x }}\n");
+                let t = std::time::Instant::now();
+                server.state.update_document(child_uri.clone(), 2, edited);
+                server.compile_document(&child_uri);
+                edit.push(t.elapsed().as_micros());
+
+                let t = std::time::Instant::now();
+                let found: usize = server
+                    .state
+                    .compilation_cache
+                    .values()
+                    .map(|c| c.analysis.workspace_symbols("sym").len())
+                    .sum();
+                ws.push(t.elapsed().as_micros());
+                assert!(
+                    found > 0,
+                    "workspace_symbols returned nothing for {modules} modules"
+                );
+            }
+            println!(
+                "{:>7}  {:>12}  {:>21}  {:>19}",
+                modules,
+                median(cold),
+                median(edit),
+                median(ws)
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn dev213_editing_one_file_invalidates_every_analysis_of_its_package() {
         let package_dir = std::env::temp_dir().join(format!(
