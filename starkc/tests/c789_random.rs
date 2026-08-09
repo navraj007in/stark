@@ -12,7 +12,7 @@ fn random() -> ProviderSet {
     ProviderSet::select(
         provider_registry::first_party(),
         &host_triple(),
-        &["random".to_string()],
+        &["randomness".to_string()],
     )
     .expect("random provider selects for host")
 }
@@ -24,7 +24,7 @@ fn random_capability_resolves_to_first_party_provider() {
     assert_eq!(set.providers()[0].crate_name, "stark-random-native");
 
     let call = set
-        .resolve("random", "stark_random_secure_fill")
+        .resolve("randomness", "stark_random_secure_fill")
         .expect("secure fill resolves");
     assert_eq!(call.function.params, vec![AbiParam::BufferInOut]);
     assert!(!call.function.may_block);
@@ -34,7 +34,7 @@ fn random_capability_resolves_to_first_party_provider() {
 #[test]
 fn random_status_vocabulary_is_bounded() {
     let call = random()
-        .resolve("random", "stark_random_secure_fill")
+        .resolve("randomness", "stark_random_secure_fill")
         .expect("secure fill resolves");
 
     let declared: Vec<(u32, String)> = call
@@ -130,7 +130,7 @@ fn random_secure_and_deterministic_execute_from_source() {
   "name": "c789_random_exec",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["random"],
+  "capabilities": ["randomness"],
   "dependencies": {
     "stark_random": {
       "package": "stark-random",

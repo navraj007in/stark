@@ -3953,6 +3953,36 @@ impl<'a> FnLowerer<'a> {
                     place.projection.push(Projection::Deref);
                     return self.read_place(place, &ty, span);
                 }
+                // DEV-172: `-<int literal>` lowers as ONE constant.
+                //
+                // Lowered as two, the magnitude is emitted with the target's own suffix and then
+                // negated — `((128i8) as i128).checked_neg()` — and `128i8` is not a value `i8` can
+                // hold, so rustc rejects the generated crate outright. The minimum of every signed
+                // width was unbuildable for that reason. Folding here matches what the checker and
+                // the HIR interpreter do for the same pair.
+                //
+                // This is NOT an optimisation and must not be left to one. The MIR optimiser
+                // happened to const-fold this shape, so a native build with optimisation ON
+                // succeeded while the same program with `--no-mir-opt` did not — the engines
+                // disagreed on whether a program was buildable, which is exactly what the
+                // three-engine comparison exists to catch.
+                if matches!(op, UnOp::Neg) {
+                    let operand_expr = self.hir.expr(*operand);
+                    if let hir::ExprKind::Lit(Lit::Int { base, suffix }) = operand_expr.kind {
+                        let operand_span = operand_expr.span;
+                        let magnitude =
+                            literal::parse_int_literal(self.text(operand_span), base, suffix)
+                                .ok_or_else(|| LowerError {
+                                    what: "unparseable integer literal".to_string(),
+                                    span: operand_span,
+                                })?;
+                        let negated = magnitude.checked_neg().ok_or_else(|| LowerError {
+                            what: "integer literal too large to negate".to_string(),
+                            span,
+                        })?;
+                        return Ok(Operand::Const(Constant::Int(negated, ty)));
+                    }
+                }
                 let inner = self.lower_expr_to_operand(*operand)?;
                 match op {
                     UnOp::Not => {
@@ -12063,11 +12093,15 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         match dest {
             Some(place) => {
-                let value = self.lower_expr_to_operand(body)?;
-                self.emit(
-                    Statement::Assign(place.clone(), Rvalue::Use(value)),
-                    self.info(span),
-                );
+                if matches!(self.tables.expr_types.get(&body), Some(Ty::Never)) {
+                    self.lower_unit_expr(body)?;
+                } else {
+                    let value = self.lower_expr_to_operand(body)?;
+                    self.emit(
+                        Statement::Assign(place.clone(), Rvalue::Use(value)),
+                        self.info(span),
+                    );
+                }
             }
             None => {
                 self.lower_expr_operand_or_unit(body)?;
@@ -12109,11 +12143,15 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         match dest {
             Some(place) => {
-                let value = self.lower_expr_to_operand(body)?;
-                self.emit(
-                    Statement::Assign(place.clone(), Rvalue::Use(value)),
-                    self.info(span),
-                );
+                if matches!(self.tables.expr_types.get(&body), Some(Ty::Never)) {
+                    self.lower_unit_expr(body)?;
+                } else {
+                    let value = self.lower_expr_to_operand(body)?;
+                    self.emit(
+                        Statement::Assign(place.clone(), Rvalue::Use(value)),
+                        self.info(span),
+                    );
+                }
             }
             None => {
                 self.lower_expr_operand_or_unit(body)?;

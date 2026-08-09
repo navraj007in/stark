@@ -421,7 +421,7 @@ fn test_source() -> starkc::source::RegisteredSource {
 fn close_decl(name: &str, is_close_for: Option<&str>, params: Vec<AbiParam>) -> FunctionDecl {
     FunctionDecl {
         name: name.to_string(),
-        capability: "tcp".to_string(),
+        capability: "network-client".to_string(),
         params,
         is_close_for: is_close_for.map(|s| s.to_string()),
         may_block: false,
@@ -437,7 +437,7 @@ fn call_for(decl: FunctionDecl, provider: &str) -> ValidatedProviderCall {
             semver: (0, 1, 0),
             abi_version: "0.1".to_string(),
         },
-        capability: "tcp".to_string(),
+        capability: "network-client".to_string(),
         function: decl,
         target_triple: "aarch64-apple-darwin".to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),

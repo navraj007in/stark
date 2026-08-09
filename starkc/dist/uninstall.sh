@@ -25,8 +25,15 @@ if [ -L "$prefix/lib/stark/current" ]; then
 fi
 rm -f "$prefix/lib/stark/current"
 rm -f "$prefix/lib/stark/uninstall.sh"
+# Pre-versioned installations wrote their payload directly under `lib/stark` rather than into
+# `versions/<v>`, so the removal above does not reach it. Named explicitly — never a glob — because
+# `$prefix` is caller-supplied and `lib/stark` may hold things this installer did not write.
 rm -rf "$prefix/lib/stark/stark-runtime"
 rm -rf "$prefix/lib/stark/stark-provider-abi"
+rm -rf "$prefix/lib/stark/starkc"
+for legacy_provider in stark-env stark-file stark-net stark-random stark-time stark-tls; do
+    rm -rf "$prefix/lib/stark/$legacy_provider"
+done
 rmdir "$prefix/lib/stark/versions" 2>/dev/null || true
 rmdir "$prefix/lib/stark" 2>/dev/null || true
 

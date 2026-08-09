@@ -180,7 +180,7 @@ export const packages = {
     { area: 'Networking', items: 'net (TCP + DNS) · tls · http-core · http-parser · http-serialize · http-client' },
   ],
   capabilities:
-    'Reaching outside the process is declared, never assumed. A package names the capability it needs — clock, filesystem, process environment, random, TCP/DNS, TLS — and a native provider crate satisfies it when the program is built. The interpreters have no host access at all, so anything that touches the network or the disk runs through stark build, never stark run.',
+    'Reaching outside the process is derived, envelope-checked, and provider-backed. Capability vocabulary v1 distinguishes filesystem read/write, environment read, network client/listen, clock, randomness, process execution, and native code. The root manifest approves the transitive derived set. The interpreters have no host access, so host-backed code runs through stark build, never stark run.',
   code: `use stark_http_client::default_config;
 use stark_http_client::error_text;
 use stark_http_client::fetch;

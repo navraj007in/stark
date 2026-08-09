@@ -26,8 +26,22 @@ if (Test-Path $Current) {
     Remove-Item $Current -Recurse -Force -ErrorAction SilentlyContinue
 }
 Remove-Item (Join-Path $InstallLib "versions") -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $InstallLib "stark-runtime") -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $InstallLib "stark-provider-abi") -Recurse -Force -ErrorAction SilentlyContinue
+# Pre-versioned installations wrote their payload directly under `lib\stark` rather than into
+# `versions\<v>`, so the removal above does not reach it. Named explicitly -- never a wildcard --
+# because `$Prefix` is caller-supplied and `lib\stark` may hold what this installer did not write.
+foreach ($Legacy in @(
+    "stark-runtime",
+    "stark-provider-abi",
+    "starkc",
+    "stark-env",
+    "stark-file",
+    "stark-net",
+    "stark-random",
+    "stark-time",
+    "stark-tls"
+)) {
+    Remove-Item (Join-Path $InstallLib $Legacy) -Recurse -Force -ErrorAction SilentlyContinue
+}
 Remove-Item (Join-Path $InstallLib "uninstall.ps1") -Force -ErrorAction SilentlyContinue
 
 if (-not $KeepPath) {

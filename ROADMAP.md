@@ -20,8 +20,8 @@ Two governance tracks remain **live alongside** it and are **not** superseded:
 
 | Track | Document | Why it is still live |
 | --- | --- | --- |
-| Compiler gates C0–C10 | `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` (+ `COMPILER-CHARTER.md`, `COMPILER-STATE.md`) | Gate C9 is OPEN. This roadmap does not define C9/C10 exit criteria, and §11 below assumes a functioning compiler-correctness lane. |
-| Architecture stabilization | `STARKLANG/docs/compiler/work-packages/WP-ARCHITECTURE-STABILIZATION.md` | **Campaign A is a binding entry gate on §6 (Phase 4, structured concurrency)** as of 2026-08-07 — see §6.0. Sprints 1 and 2 are complete; AS3 and AS4 remain. It governs no package or application work, and blocks nothing in this roadmap except the concurrency campaign. |
+| Compiler gates C0–C10 | `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` (+ `COMPILER-CHARTER.md`, `COMPILER-STATE.md`) | **Updated 2026-08-09 (CD-395).** Gate **C10 (release qualification) is OPEN**; C9 Part A is closed and **Part B is DEFERRED** pending second-artifact evidence, which does **not** block C10. This roadmap does not define C9/C10 exit criteria, and §11 below assumes a functioning compiler-correctness lane. |
+| ~~Architecture stabilization~~ | `STARKLANG/docs/compiler/work-packages/WP-ARCHITECTURE-STABILIZATION.md` | **COMPLETE 2026-08-09 — all four sprints CLOSED; Campaign A PASS, Campaign B EXITED PASS.** The row previously read *"Sprints 1 and 2 are complete; AS3 and AS4 remain"*, which was true when written and is now stale — corrected under CD-395 (OD-6). **§6.0's binding entry gate on Phase 4 is therefore SATISFIED**; the gate text itself stands unrewritten, with the satisfaction recorded at §6.0. The programme is retained as a historical record and schedules no further work. |
 | ~~HTTP client HC0–HC13~~ | `STARKLANG/docs/compiler/work-packages/WP-HTTP-CLIENT-ROADMAP.md` | **CLOSED 2026-08-03 (CD-375, corrected CD-376).** HC13 delivered the Tier-1 qualification this row was waiting on, so §1's "completed platform capability" claim is now paid for. The track is no longer live. What it did NOT settle is release readiness — DEV-165 (`connect_timeout` accepted and ignored) still blocks a public release, and does not belong to this track. The installer blocker has narrowed rather than cleared — see §1. |
 
 Current compiler position always comes from `COMPILER-STATE.md` (repo root), never from
@@ -700,6 +700,20 @@ STARK can host a bounded, useful REST API with deterministic ownership and clean
 
 This is a **binding platform gate**, not a proposal. It was approved on 2026-08-07 after two sprints
 of `WP-ARCHITECTURE-STABILIZATION.md` produced the evidence for it.
+
+> ### GATE SATISFIED — 2026-08-09 (CD-395, OD-6)
+>
+> **Campaign A exited PASS**, and Campaign B exited PASS after it; all four sprints of
+> `WP-ARCHITECTURE-STABILIZATION.md` are CLOSED. AS0, AS1a, AS2, AS1b, AS3 and AS4 are closed and
+> owner-reviewed, which is exactly what this gate asked for.
+>
+> **The requirement above is not removed and not rewritten.** It stands as the decision that was
+> made, and this note records that it has since been met — two records, not one edited record. A
+> reader arriving at Phase 4 needs both: what was demanded, and that it was delivered.
+>
+> Evidence: `audits/CAMPAIGN-A-EXIT-REPORT.md`, `audits/CAMPAIGN-B-EXIT-REPORT.md`,
+> `audits/AS-SPRINT4-CLOSEOUT.md`. Phase 4 is unblocked by this gate; it remains subject to every
+> other constraint in §6 and to `ROADMAP.md` §2.2's work-in-progress limits.
 
 ### Why the evidence justifies a gate
 

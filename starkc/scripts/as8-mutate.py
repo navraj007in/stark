@@ -652,11 +652,25 @@ def trial(spec, verbose):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--batch", required=True)
+    ap.add_argument("--batch", required=True,
+                    help='a batch key, or "select" with --only')
+    ap.add_argument("--only",
+                    help="comma-separated trial ids, selected ACROSS batches. Added for C10's "
+                         "§8.2a re-runs: when a merge moves an authority or a control, the trials "
+                         "needing re-running do not line up with AS8's batches, and duplicating "
+                         "their definitions into a new batch would create a second copy that can "
+                         "drift from the first")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--json", help="write the trial record here")
     a = ap.parse_args()
-    specs = BATCHES.get(a.batch)
+    if a.only:
+        wanted = {t.strip() for t in a.only.split(",") if t.strip()}
+        specs = [s for batch in BATCHES.values() for s in batch if s["id"] in wanted]
+        missing = wanted - {s["id"] for s in specs}
+        if missing:
+            sys.exit(f"unknown trial id(s): {sorted(missing)}")
+    else:
+        specs = BATCHES.get(a.batch)
     if not specs:
         sys.exit(f"unknown batch {a.batch}; defined: {sorted(BATCHES)}")
     records, ok = [], True

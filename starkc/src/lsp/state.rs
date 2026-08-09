@@ -3,6 +3,7 @@
 use crate::analysis::ProjectAnalysis;
 use crate::options::LanguageOptions;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Server state with open documents and compilation cache.
 pub struct ServerState {
@@ -32,6 +33,17 @@ pub struct CompilationResult {
     pub version: i32,
     pub analysis: ProjectAnalysis,
     pub last_compiled_at: std::time::SystemTime,
+    /// DEV-213. The package this URI's analysis covers, when it covers one.
+    ///
+    /// `analysis` is a WHOLE-PACKAGE `ProjectAnalysis`, not an analysis of `uri` alone, and the
+    /// cache holds one per open URI. Two open files of one package therefore hold two analyses
+    /// that each describe BOTH files, so invalidating only the edited URI leaves the other
+    /// carrying a pre-edit view of the file that was just edited. Recording the package here is
+    /// what lets `invalidate_package_of` find the siblings.
+    ///
+    /// `None` for a single-file analysis (no manifest above it). A `None` never matches another
+    /// `None`: two unrelated loose files share no package and must not invalidate each other.
+    pub package_root: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -60,8 +72,9 @@ impl ServerState {
                 text,
             },
         );
-        // Invalidate cache for this document
-        self.compilation_cache.remove(&uri);
+        // DEV-213: opening adds an overlay, which changes the input to every analysis of this
+        // package -- not only this URI's.
+        self.invalidate_package_of(&uri);
     }
 
     /// Update a document.
@@ -69,15 +82,44 @@ impl ServerState {
         if let Some(doc) = self.open_documents.get_mut(&uri) {
             doc.version = version;
             doc.text = text;
-            // Invalidate cache for this document
-            self.compilation_cache.remove(&uri);
+            // DEV-213: this is the `didChange` path, and the one the defect was demonstrated on.
+            self.invalidate_package_of(&uri);
         }
     }
 
     /// Close a document.
     pub fn close_document(&mut self, uri: &str) {
         self.open_documents.remove(uri);
+        // DEV-213: closing REMOVES an overlay, which changes the package's analysis input just as
+        // opening one does.
+        self.invalidate_package_of(uri);
+    }
+
+    /// DEV-213 -- drop `uri`'s cached analysis, and every sibling analysis of the same package.
+    ///
+    /// **Why a whole-package sweep rather than one entry.** Each cache value owns a whole-package
+    /// `ProjectAnalysis`. `handle_workspace_symbol` merges symbols across every cached value, so a
+    /// sibling that was never invalidated contributes its pre-edit view of the edited file and the
+    /// response contains a name that no longer exists. Removing only `uri` is what made
+    /// `as8_editing_one_file_leaves_other_uris_cached_analyses_stale` pass at HEAD.
+    ///
+    /// The package is read from the CACHE rather than from the filesystem: the entry being
+    /// invalidated already recorded which package it analysed, so this stays a pure in-memory
+    /// operation on a hot editor path. A URI with no cached entry has no siblings to find, which
+    /// is the correct answer rather than a missed case -- nothing stale can exist for a package
+    /// this server has not analysed.
+    fn invalidate_package_of(&mut self, uri: &str) {
+        let package = self
+            .compilation_cache
+            .get(uri)
+            .and_then(|cached| cached.package_root.clone());
         self.compilation_cache.remove(uri);
+        if let Some(package) = package {
+            // `Some(p) == Some(p)` only. Single-file analyses carry `None` and are never swept in
+            // as siblings of one another.
+            self.compilation_cache
+                .retain(|_, cached| cached.package_root.as_ref() != Some(&package));
+        }
     }
 
     /// Get an open document.

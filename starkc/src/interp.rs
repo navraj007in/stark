@@ -2659,11 +2659,17 @@ impl<'a> Interpreter<'a> {
             },
             hir::StmtKind::Let { local, init, .. } => {
                 let value = if let Some(init) = init {
-                    let value = self.expect_value(*init)?;
-                    if let Some(propagated) = self.pending_propagation.take() {
-                        return Ok(Flow::Propagate(propagated));
+                    match self.eval_expr(*init)? {
+                        Flow::Value(value) => {
+                            self.check_expr_value(*init, &value)?;
+                            Some(value)
+                        }
+                        // A diverging initializer never binds the local. Preserve the control flow
+                        // exactly as a statement-position expression would; converting it to a
+                        // placeholder Unit is what made a return-ending match arm trap in the HIR
+                        // interpreter after the type checker correctly accepted it as `!`.
+                        flow => return Ok(flow),
                     }
-                    Some(value)
                 } else {
                     None
                 };
@@ -3099,6 +3105,44 @@ impl<'a> Interpreter<'a> {
                 Ok(Flow::Value(Value::String(out)))
             }
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
+            // DEV-172: `-<int literal>` is ONE literal, evaluated as one.
+            //
+            // Evaluated as two, the magnitude is normalised against the negated literal's own
+            // static type first — `128` checked against `Int8` — and traps before the negation
+            // that would have made it representable. Folding here mirrors what the checker does
+            // for the same pair, so the two agree by construction rather than by coincidence.
+            //
+            // Only a DIRECT literal operand folds. `-(x)` and `-(1 + 1)` keep the ordinary path,
+            // where each step's own overflow check is the correct one.
+            hir::ExprKind::Unary {
+                op: UnOp::Neg,
+                operand,
+            } if matches!(
+                self.hir.expr(*operand).kind,
+                hir::ExprKind::Lit(Lit::Int { .. })
+            ) =>
+            {
+                let operand_expr = self.hir.expr(*operand);
+                let hir::ExprKind::Lit(lit) = operand_expr.kind else {
+                    unreachable!("guarded by the match arm above")
+                };
+                let magnitude = self.eval_lit_signed(lit, operand_expr.span, true)?;
+                let Value::Int(magnitude) = magnitude else {
+                    unreachable!("an integer literal evaluates to an integer")
+                };
+                let negated = magnitude.checked_neg().ok_or_else(|| {
+                    RuntimeError::with_category(
+                        "integer overflow",
+                        expr.span,
+                        crate::mir::TrapCategory::IntegerOverflow,
+                    )
+                })?;
+                Ok(Flow::Value(self.normalize_numeric(
+                    Value::Int(negated),
+                    expr_id,
+                    expr.span,
+                )?))
+            }
             hir::ExprKind::Unary { op, operand } => {
                 let value = match op {
                     UnOp::Ref { .. } => {
@@ -3629,6 +3673,16 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_lit(&self, lit: Lit, span: Span) -> Result<Value, RuntimeError> {
+        self.eval_lit_signed(lit, span, false)
+    }
+
+    /// `eval_lit`, told whether a unary `-` applies to this literal.
+    ///
+    /// DEV-172: the defence-in-depth suffix check below range-checks the value the program
+    /// denotes, and for `-128i8` that is `-128`, not `128`. Passing the sign in keeps this
+    /// mirror faithful to the checker's — which now folds the same pair — instead of rejecting
+    /// exactly the minimum of each signed width.
+    fn eval_lit_signed(&self, lit: Lit, span: Span, negated: bool) -> Result<Value, RuntimeError> {
         let text = self.text(span);
         let value = literal::eval_lit_value(lit, text, &self.hir.str_lits)
             .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
@@ -3646,7 +3700,12 @@ impl<'a> Interpreter<'a> {
             },
         ) = (&value, lit)
         {
-            if !literal::int_suffix_range_contains(s, *value) {
+            let denoted = if negated {
+                value.checked_neg()
+            } else {
+                Some(*value)
+            };
+            if !denoted.is_some_and(|value| literal::int_suffix_range_contains(s, value)) {
                 return Err(RuntimeError::new("integer literal out of range", span));
             }
         }

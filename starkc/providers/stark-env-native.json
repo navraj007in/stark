@@ -6,7 +6,7 @@
     "identity": "stark-std-env",
     "crate": "stark-env-native",
     "crate_path": "stark-env/native",
-    "capabilities": ["process.args", "process.env"],
+    "capabilities": ["environment-read"],
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
@@ -17,22 +17,22 @@
     "functions": [
       {
         "symbol": "stark_env_args_len",
-        "capability": "process.args",
+        "capability": "environment-read",
         "params": [{ "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_env_args_fill",
-        "capability": "process.args",
+        "capability": "environment-read",
         "params": [{ "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_env_var_len",
-        "capability": "process.env",
+        "capability": "environment-read",
         "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_env_var_fill",
-        "capability": "process.env",
+        "capability": "environment-read",
         "params": [{ "form": "buffer_in" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
       }
     ]

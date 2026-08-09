@@ -532,9 +532,20 @@ impl TypeChecker<'_> {
         }
 
         let result = if let Some(tail_expr) = block.tail {
-            self.check_expr(tail_expr)
-        } else {
+            let tail_ty = self.check_expr(tail_expr);
+            if reachable {
+                tail_ty
+            } else {
+                Ty::Never
+            }
+        } else if reachable {
             Ty::Primitive(Primitive::Unit)
+        } else {
+            // A block whose final reachable statement returns, breaks, continues, or otherwise
+            // diverges has type `!`, not `Unit`. This matters when the block is a match arm or an
+            // if branch in value position: `!` is the coercion source accepted by every expected
+            // type, whereas `Unit` spuriously rejects the whole expression.
+            Ty::Never
         };
         self.dim_scope = saved_dim_scope;
         result
@@ -871,6 +882,16 @@ impl TypeChecker<'_> {
                 // (Int32 vs Int64) -- the lexer sees only token shape, never a target type.
                 Lit::Int { base, suffix } => {
                     let value = literal::parse_int_literal(self.text(expr.span), *base, *suffix);
+                    // DEV-172: if this literal is the direct operand of a unary `-`, the value the
+                    // program denotes is its NEGATION, and that is what every check below must
+                    // range-check. Without this, `128` is checked against `Int8` and refused, so
+                    // `-128` — the value 03-Type-System.md names as `Int8`'s minimum — cannot be
+                    // written. The same argument applies to every signed width.
+                    let value = if self.negated_int_literal == Some(expr_id) {
+                        value.and_then(|value| value.checked_neg())
+                    } else {
+                        value
+                    };
                     if let Some(s) = suffix {
                         if let Some(value) = value {
                             if !literal::int_suffix_range_contains(*s, value) {
@@ -1071,7 +1092,13 @@ impl TypeChecker<'_> {
                 | Res::ParamAssoc(..) => Ty::Error,
             },
             hir::ExprKind::Unary { op, operand } => {
+                // DEV-172: announce the negation BEFORE descending, so the literal arm range-checks
+                // the negated value. Cleared immediately after, so it can never leak to a sibling.
+                if matches!(op, UnOp::Neg) {
+                    self.negated_int_literal = Some(*operand);
+                }
                 let op_ty = self.check_expr(*operand);
+                self.negated_int_literal = None;
                 match op {
                     UnOp::Neg => {
                         match self.resolve(&op_ty) {

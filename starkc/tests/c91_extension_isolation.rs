@@ -1,3 +1,17 @@
+//! Gate C9.1 — extension-isolation conformance.
+//!
+//! **Normative rule: `EXT-ISOLATION-001`** — *"How are post-v1 extensions prevented from silently
+//! changing Core v1 behavior?"* (`spec/CORE-V1-FUTURE-BOUNDARIES.md` §Extension Isolation).
+//!
+//! The rule id is cited here because of C10-A2. `CORE-V1-COMPLETENESS.md` records this rule's
+//! evidence as `none; none` while these five tests have run in CI on every push since C9.1 closed
+//! — and C10-A2's resolver, which keys on normative rule ids rather than symbol names, could not
+//! find them either, because nothing in this file named the rule it pins.
+//!
+//! **That is the whole lesson in one file.** A control that does not name its rule is invisible to
+//! every mechanical audit, so it gets recorded as absent and then re-litigated. One line of
+//! provenance is the difference between "no evidence exists" and "here is the evidence".
+
 use std::process::Command;
 
 use starkc::analysis::{analyze_project, ProjectInput};
@@ -61,6 +75,8 @@ fn command_output(bin: &str, args: &[&str], cwd: &std::path::Path) -> std::proce
         .unwrap_or_else(|error| panic!("run {bin} {args:?}: {error}"))
 }
 
+/// EXT-ISOLATION-001, positive AND negative: extension syntax is REJECTED in Core-only and
+/// ACCEPTED only when the extension is enabled.
 #[test]
 fn c91_core_default_rejects_tensor_constructs_and_tensor_accepts_them() {
     let core = analyze(TENSOR_DECL, LanguageOptions::CORE);
@@ -80,6 +96,8 @@ fn c91_core_default_rejects_tensor_constructs_and_tensor_accepts_them() {
     );
 }
 
+/// EXT-ISOLATION-001: one session's extension set cannot leak into another's — the clause that
+/// makes isolation a property of the compiler rather than of call order.
 #[test]
 fn c91_sequential_and_parallel_analyses_do_not_share_extension_state() {
     let tensor_first = analyze(TENSOR_DECL, LanguageOptions::with_tensor());
@@ -114,6 +132,8 @@ fn c91_sequential_and_parallel_analyses_do_not_share_extension_state() {
         .is_empty());
 }
 
+/// EXT-ISOLATION-001: unknown and duplicate extension configuration behaves consistently instead
+/// of silently enabling or ignoring a surface.
 #[test]
 fn c91_cli_extension_config_rejects_unknown_and_duplicates() {
     for args in [
@@ -150,6 +170,8 @@ fn c91_cli_extension_config_rejects_unknown_and_duplicates() {
     }
 }
 
+/// EXT-ISOLATION-001: every entry point — package build, formatter, doc generator, test runner —
+/// is Core-only by default, not merely the one the compiler happens to be invoked through.
 #[test]
 fn c91_package_and_tool_entry_points_are_core_only_without_extension_surface() {
     let root = temp_package("tool_core", TENSOR_DECL);
@@ -202,6 +224,7 @@ fn c91_package_and_tool_entry_points_are_core_only_without_extension_surface() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// EXT-ISOLATION-001: a package module cannot inherit enablement from an unrelated session.
 #[test]
 fn c91_package_modules_do_not_leak_tensor_enablement_from_other_sessions() {
     let root = temp_package("module_core", "mod tensor_mod;\nfn main() { }\n");

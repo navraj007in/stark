@@ -235,7 +235,7 @@ fn a_foreign_abi_version_is_rejected() {
 #[test]
 fn function_from_another_capability_is_rejected() {
     let mut call = valid_call();
-    call.function.capability = "filesystem".to_string();
+    call.function.capability = "filesystem-read".to_string();
     expect_code(
         &program(
             call,
@@ -340,7 +340,7 @@ fn independent_invariant_failures_are_all_reported() {
     let mut call = valid_call();
     call.target_triple = "riscv64gc-unknown-linux-gnu".to_string();
     call.provider.abi_version = "0.2".to_string();
-    call.function.capability = "filesystem".to_string();
+    call.function.capability = "filesystem-read".to_string();
 
     let errors = match mir::verify::verify_program(&program(
         call,

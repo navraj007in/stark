@@ -118,10 +118,9 @@ pub fn provider_overlays_for_analysis(
             required
         )));
     };
-    let set = ProviderSet::select(crate::provider_registry::first_party(), triple, &required)
-        .map_err(|errors| {
-            BuildCommandError::Capability(render_capability_errors(&errors, triple))
-        })?;
+    let set = ProviderSet::select(providers_referenced_by(graph), triple, &required).map_err(
+        |errors| BuildCommandError::Capability(render_capability_errors(&errors, triple)),
+    )?;
     Ok(provider_layer_for_build(graph, Some(&set))?.overlays)
 }
 
@@ -129,11 +128,57 @@ fn required_capabilities(graph: &PackageGraph) -> Vec<String> {
     let mut caps: Vec<String> = graph
         .packages
         .values()
-        .flat_map(|p| p.capabilities.iter().cloned())
+        .flat_map(|package| {
+            package
+                .provider_api
+                .functions
+                .iter()
+                .map(|binding| binding.capability.clone())
+                .chain(
+                    package
+                        .provider_api
+                        .resources
+                        .iter()
+                        .map(|binding| binding.capability.clone()),
+                )
+        })
         .collect();
     caps.sort();
     caps.dedup();
     caps
+}
+
+/// Provider admission follows referenced interfaces, not the root's upper-bound envelope. This is
+/// what keeps an underived declaration legal without linking every provider that happens to share
+/// the role (for example both TCP and TLS under `network-client`).
+fn providers_referenced_by(graph: &PackageGraph) -> Vec<crate::provider_resolve::DeclaredProvider> {
+    let symbols: std::collections::BTreeSet<&str> = graph
+        .packages
+        .values()
+        .flat_map(|package| package.provider_api.functions.iter())
+        .map(|binding| binding.symbol.as_str())
+        .collect();
+    let resources: std::collections::BTreeSet<&str> = graph
+        .packages
+        .values()
+        .flat_map(|package| package.provider_api.resources.iter())
+        .map(|binding| binding.resource.as_str())
+        .collect();
+    crate::provider_registry::first_party()
+        .into_iter()
+        .filter(|provider| {
+            provider
+                .metadata
+                .functions
+                .iter()
+                .any(|function| symbols.contains(function.name.as_str()))
+                || provider
+                    .metadata
+                    .resource_types
+                    .iter()
+                    .any(|resource| resources.contains(resource.as_str()))
+        })
+        .collect()
 }
 
 /// Selects the providers for the declared capabilities, or fails the build.
@@ -143,12 +188,13 @@ fn required_capabilities(graph: &PackageGraph) -> Vec<String> {
 /// each of those would make the produced binary depend on something other than what the program
 /// asked for.
 fn select_provider_set(
+    graph: &PackageGraph,
     required: &[String],
     target: Option<&str>,
     toolchain: &crate::native_toolchain::ToolchainInfo,
 ) -> Result<ProviderSet, BuildCommandError> {
     let triple = target.unwrap_or(toolchain.host_triple.as_str());
-    ProviderSet::select(crate::provider_registry::first_party(), triple, required)
+    ProviderSet::select(providers_referenced_by(graph), triple, required)
         .map_err(|errors| BuildCommandError::Capability(render_capability_errors(&errors, triple)))
 }
 
@@ -699,7 +745,7 @@ pub fn build_current_package(
     } else {
         let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
             .map_err(BuildCommandError::Toolchain)?;
-        let set = select_provider_set(&required, options.target.as_deref(), &toolchain)?;
+        let set = select_provider_set(&graph, &required, options.target.as_deref(), &toolchain)?;
         probed = Some(toolchain);
         Some(set)
     };

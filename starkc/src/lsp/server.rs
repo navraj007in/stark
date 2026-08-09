@@ -5,12 +5,22 @@ use crate::diag::{DiagnosticBatch, StructuredDiagnostic};
 use crate::package::{find_package_root, PackageGraph};
 use crate::source::{SourceFile, Span};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::protocol::*;
 use super::state::*;
+
+/// The largest `Content-Length` the framing layer will accept, in bytes.
+///
+/// DEV-186. This bounds the TRANSPORT, and is a different authority from `json::MAX_DEPTH`, which
+/// bounds recursion inside the parser. A depth limit cannot help here: the parser never runs.
+///
+/// 64 MiB is chosen to sit far above any legitimate LSP payload — the largest real messages are
+/// whole-document syncs, and a 64 MiB source file is not a thing this compiler can usefully open —
+/// while being small enough that committing it is survivable.
+pub const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
 
 /// LSP server
 pub struct Server {
@@ -59,8 +69,44 @@ impl Server {
             // Read content
             if let Some(content_length_str) = headers.get("Content-Length") {
                 if let Ok(content_length) = content_length_str.parse::<usize>() {
-                    let mut content = vec![0u8; content_length];
-                    reader.read_exact(&mut content)?;
+                    // DEV-186. `Content-Length` is a claim made by the peer, and it used to be
+                    // honoured by allocating that many bytes BEFORE reading any of them and before
+                    // the JSON parser ran. `Content-Length: 9999999999999` therefore committed the
+                    // memory on the strength of a header field. `usize` parsing bounds the NUMBER,
+                    // not the ALLOCATION.
+                    //
+                    // Two changes, and both are needed. The cap rejects an absurd claim outright.
+                    // `take` + `read_to_end` then grows the buffer as bytes ACTUALLY ARRIVE, so a
+                    // peer that advertises the maximum and sends ten bytes allocates ten bytes'
+                    // worth of growth, not the maximum. A cap alone would still allocate the cap.
+                    if content_length > MAX_CONTENT_LENGTH {
+                        // A DETERMINISTIC PROTOCOL ERROR, not a quiet shutdown. An over-large
+                        // frame is the peer violating the contract, and the caller must be able to
+                        // tell that apart from an orderly disconnect.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Content-Length {content_length} exceeds the maximum of \
+                                 {MAX_CONTENT_LENGTH} bytes"
+                            ),
+                        ));
+                    }
+
+                    let mut content = Vec::new();
+                    let read = (&mut reader)
+                        .take(content_length as u64)
+                        .read_to_end(&mut content)?;
+                    if read != content_length {
+                        // The stream ended mid-body. `read_exact` surfaced this as
+                        // `UnexpectedEof` before DEV-186, and it still must: C10-B's T9 pins
+                        // BOUNDED FAILURE as the property, and a short body reported as success
+                        // is indistinguishable from an orderly disconnect. Bounding the
+                        // allocation must not cost the signal.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!("body ended after {read} of {content_length} bytes"),
+                        ));
+                    }
 
                     if let Ok(message_text) = String::from_utf8(content) {
                         match parse_message(&message_text) {
@@ -325,20 +371,33 @@ impl Server {
                 version: doc.version,
                 analysis,
                 last_compiled_at: std::time::SystemTime::now(),
+                // DEV-213: recorded so `invalidate_package_of` can find this analysis's siblings
+                // without touching the filesystem on an edit.
+                package_root: self.package_root_for_document(&doc),
             };
 
             self.state.cache_compilation_result(result);
         }
     }
 
-    fn package_input_for_document(&self, doc: &OpenDocument) -> Option<ProjectInput> {
+    /// The package root a document belongs to, or `None` for a loose single file.
+    ///
+    /// DEV-213 needs this in two places -- to build the project input, and to stamp the cache
+    /// entry so invalidation can find siblings. It is one function rather than two so the two
+    /// callers cannot answer the question differently; a second copy of "which package is this
+    /// URI in" is exactly the duplicated-authority shape `AS8-DA-*` catalogues.
+    fn package_root_for_document(&self, doc: &OpenDocument) -> Option<PathBuf> {
         let path = file_uri_to_path(&doc.uri)?;
         let dir = if path.is_dir() {
             path.as_path()
         } else {
             path.parent()?
         };
-        let manifest = find_package_root(dir).ok()?;
+        find_package_root(dir).ok()
+    }
+
+    fn package_input_for_document(&self, doc: &OpenDocument) -> Option<ProjectInput> {
+        let manifest = self.package_root_for_document(doc)?;
         let graph = PackageGraph::load_from_root_with_modes(&manifest, false, true).ok()?;
         let overlays = self.open_document_overlays();
         Some(ProjectInput::package_with_overlays(graph, overlays))
@@ -1497,6 +1556,87 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
 
+    use super::{Server, MAX_CONTENT_LENGTH};
+    use std::io::Cursor;
+
+    /// DEV-186 — an absurd `Content-Length` is refused BEFORE the body is allocated.
+    ///
+    /// The header advertises ~10 TB and the body is empty. Pre-DEV-186 this reached
+    /// `vec![0u8; content_length]` and committed the allocation on the peer's word alone. The
+    /// test asserts the run RETURNS; if the cap is removed it either aborts the process on
+    /// allocation failure or drives the machine into swap, and there is no assertion that can
+    /// observe that politely — which is exactly why the bound belongs before the allocation.
+    #[test]
+    fn dev186_absurd_content_length_is_refused_before_allocating() {
+        let input = "Content-Length: 9999999999999\r\n\r\n";
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        let result = server.run(Cursor::new(input.as_bytes().to_vec()), &mut output);
+        let error = result.expect_err("an over-large frame is a protocol error");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            output.is_empty(),
+            "nothing should be answered for a frame that was never read"
+        );
+    }
+
+    /// DEV-186 — the boundary itself, from both sides.
+    ///
+    /// One byte over the cap is refused. The cap is not asserted to be any particular number:
+    /// the test derives both cases from `MAX_CONTENT_LENGTH`, so retuning the constant does not
+    /// silently invalidate it.
+    #[test]
+    fn dev186_the_cap_is_the_boundary() {
+        let over = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH + 1);
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        let error = server
+            .run(Cursor::new(over.into_bytes()), &mut output)
+            .expect_err("one byte over the cap is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(output.is_empty(), "an over-cap frame is never answered");
+    }
+
+    /// DEV-186 — a peer that advertises a large body and sends a short one is not trusted either.
+    ///
+    /// This is the half a cap alone does not fix. The advertised length is UNDER the cap and so
+    /// passes it, but the body is ten bytes. `take` + `read_to_end` grows with the bytes that
+    /// actually arrive, so the buffer follows the stream rather than the claim.
+    #[test]
+    fn dev186_an_under_cap_lie_allocates_only_what_arrives() {
+        let mut input = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH - 1).into_bytes();
+        input.extend_from_slice(b"0123456789");
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        // BOUNDED FAILURE, not silence: a body shorter than advertised is `UnexpectedEof`, the
+        // same as before DEV-186. C10-B's T9 pins this, and bounding the allocation must not cost
+        // the signal that distinguishes a truncated frame from an orderly disconnect.
+        let error = server
+            .run(Cursor::new(input), &mut output)
+            .expect_err("a truncated body is an error, not success");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(output.is_empty(), "a truncated frame is never answered");
+    }
+
+    /// DEV-186 control — an ordinary message still round-trips.
+    ///
+    /// Without this, every assertion above is satisfiable by a server that refuses everything.
+    #[test]
+    fn dev186_a_normal_message_is_still_served() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(Cursor::new(input.into_bytes()), &mut output)
+            .expect("a well-formed frame is served");
+        let text = String::from_utf8(output).expect("responses are utf-8");
+        assert!(
+            text.contains("Content-Length:") && text.contains("capabilities"),
+            "an initialize request should be answered with capabilities, got: {text}"
+        );
+    }
+
     /// **AS8 — one `ProjectAnalysis` per open URI, invalidated per URI, merged across URIs.**
     ///
     /// `ServerState::compilation_cache` is keyed by URI and each value owns a WHOLE-PACKAGE
@@ -1507,8 +1647,113 @@ mod tests {
     ///
     /// This is why the AS8 profile measured the duplication: the cost is the visible half, and
     /// this is the half that changes an answer.
+    /// C10-E / E4 — LSP latency against the POST-DEV-213 implementation.
+    ///
+    /// **`#[ignore]` on purpose.** It is a measurement, not an assertion: it has no pass/fail
+    /// condition beyond completing, and a timing test in the ordinary suite would fail on a loaded
+    /// machine and teach nothing. Run it deliberately:
+    ///
+    /// ```text
+    /// cargo test --manifest-path starkc/Cargo.toml --lib c10e_lsp_latency -- --ignored --nocapture
+    /// ```
+    ///
+    /// **Why AS8's numbers cannot be reused.** AS8 measured 22 ms for one whole-package analysis
+    /// and 181 ms for eight open URIs, against a cache holding one analysis PER OPEN URI that
+    /// invalidated only the edited one. C10-P made invalidation per PACKAGE. **The architecture is
+    /// different, so AS8's figures are historical context and NOT a before/after** — a comparison
+    /// needs a demonstrably identical harness and workload, and this is not one.
+    ///
+    /// It measures the three latencies E4 names: cold open + analyse, edit -> diagnostic (the
+    /// `didChange` path, and the one the repair made more expensive), and the workspace-symbol
+    /// query that was returning stale names.
     #[test]
-    fn as8_editing_one_file_leaves_other_uris_cached_analyses_stale() {
+    #[ignore = "measurement, not an assertion — see C10-E"]
+    fn c10e_lsp_latency() {
+        fn median(mut v: Vec<u128>) -> u128 {
+            v.sort_unstable();
+            v[v.len() / 2]
+        }
+        let reps = 5usize;
+        println!("modules  cold_open_us  edit_to_diagnostic_us  workspace_symbol_us");
+        for modules in [4usize, 8, 16, 32] {
+            let dir = std::env::temp_dir().join(format!(
+                "c10e_lsp_{}_{}_{}",
+                std::process::id(),
+                modules,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let src = dir.join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                dir.join("starkpkg.json"),
+                r#"{"name":"perf","version":"0.1.0","entry":"src/main.stark"}"#,
+            )
+            .unwrap();
+            let mods: String = (0..modules).map(|i| format!("mod m{i};\n")).collect();
+            std::fs::write(src.join("main.stark"), format!("{mods}fn main() {{ }}\n")).unwrap();
+            for i in 0..modules {
+                std::fs::write(
+                    src.join(format!("m{i}.stark")),
+                    format!("pub fn sym_{i}(x: Int32) -> Int32 {{ x + {i} }}\n"),
+                )
+                .unwrap();
+            }
+            let main_uri = path_to_file_uri(&src.join("main.stark"));
+            let child_uri = path_to_file_uri(&src.join("m0.stark"));
+            let main_text = std::fs::read_to_string(src.join("main.stark")).unwrap();
+            let child_text = std::fs::read_to_string(src.join("m0.stark")).unwrap();
+
+            let (mut cold, mut edit, mut ws) = (Vec::new(), Vec::new(), Vec::new());
+            for r in 0..reps {
+                let mut server = Server::new();
+                server
+                    .state
+                    .open_document(main_uri.clone(), 1, main_text.clone());
+                let t = std::time::Instant::now();
+                server.compile_document(&main_uri);
+                cold.push(t.elapsed().as_micros());
+
+                // Several URIs of one package open — the shape DEV-213 was about.
+                server
+                    .state
+                    .open_document(child_uri.clone(), 1, child_text.clone());
+                server.compile_document(&child_uri);
+
+                let edited = format!("pub fn sym_renamed_{r}(x: Int32) -> Int32 {{ x }}\n");
+                let t = std::time::Instant::now();
+                server.state.update_document(child_uri.clone(), 2, edited);
+                server.compile_document(&child_uri);
+                edit.push(t.elapsed().as_micros());
+
+                let t = std::time::Instant::now();
+                let found: usize = server
+                    .state
+                    .compilation_cache
+                    .values()
+                    .map(|c| c.analysis.workspace_symbols("sym").len())
+                    .sum();
+                ws.push(t.elapsed().as_micros());
+                assert!(
+                    found > 0,
+                    "workspace_symbols returned nothing for {modules} modules"
+                );
+            }
+            println!(
+                "{:>7}  {:>12}  {:>21}  {:>19}",
+                modules,
+                median(cold),
+                median(edit),
+                median(ws)
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn dev213_editing_one_file_invalidates_every_analysis_of_its_package() {
         let package_dir = std::env::temp_dir().join(format!(
             "as8_lsp_stale_{}_{}",
             std::process::id(),
@@ -1552,7 +1797,8 @@ mod tests {
         );
 
         // Rename the symbol, and recompile ONLY the edited URI — which is exactly what
-        // `didChange` does.
+        // `didChange` does. Before DEV-213's repair this left `main.stark`'s whole-package
+        // analysis untouched and still carrying the OLD name.
         server.state.update_document(
             child_uri.clone(),
             2,
@@ -1573,14 +1819,39 @@ mod tests {
             merged.iter().any(|name| name == "renamed_symbol"),
             "the edited URI's analysis must see the new name; got {merged:?}"
         );
-        // THE FINDING. `main.stark`'s cached analysis was never invalidated, so it still carries
-        // the pre-edit symbol, and the merged workspace answer contains a name that no longer
-        // exists in the package.
+        // DEV-213, REPAIRED. This assertion is AS8's, with its polarity flipped exactly as AS8's
+        // own message instructed -- the test is not deleted, because what it pins is the same
+        // fact either way: what `workspace/symbol` can see after a single-file edit.
+        //
+        // `alpha_symbol` no longer exists anywhere in the package. Before the repair,
+        // `main.stark`'s never-invalidated whole-package analysis still carried it and the merged
+        // response contained BOTH names. Now the edit sweeps every analysis of the package, so the
+        // only surviving answer is the one that is true.
         assert!(
-            merged.iter().any(|name| name == "alpha_symbol"),
-            "AS8 expects the STALE name to still be present via main.stark's un-invalidated \
-             analysis. If this assertion fails the defect is fixed and this test should become \
-             its regression test with the polarity flipped; got {merged:?}"
+            !merged.iter().any(|name| name == "alpha_symbol"),
+            "DEV-213: `alpha_symbol` was renamed and must not survive in ANY cached analysis of \
+             this package. Its presence means a sibling URI's whole-package analysis outlived the \
+             edit -- the exact defect AS8 demonstrated; got {merged:?}"
+        );
+        // The sweep must be an invalidation, not a purge of the whole cache: unrelated packages
+        // and loose files keep their analyses. `main.stark` is recompiled on demand, so a
+        // subsequent request answers correctly rather than answering nothing.
+        server.compile_document(&main_uri);
+        let after: Vec<String> = server
+            .state
+            .compilation_cache
+            .values()
+            .flat_map(|cached| cached.analysis.workspace_symbols("symbol"))
+            .map(|symbol| symbol.name.clone())
+            .collect();
+        assert!(
+            after.iter().any(|name| name == "renamed_symbol"),
+            "after recompiling the sibling, the package's only symbol must be the new one; \
+             got {after:?}"
+        );
+        assert!(
+            !after.iter().any(|name| name == "alpha_symbol"),
+            "the stale name must not reappear once the sibling is recompiled; got {after:?}"
         );
 
         let _ = std::fs::remove_dir_all(&package_dir);

@@ -2,12 +2,170 @@
 //! functions. Each arm renders the runtime call as a Rust expression from the already-emitted
 //! argument expressions; the assignment/slot wrapping around it is `emit_bodies`' concern.
 //!
-//! WP-C6.3a activated the String/str and str-output surface. The remaining `RuntimeFn` groups
-//! (Vec, Box, slices, iterators, HashMap, formatting of non-string values) land with their
-//! sub-packages and stay `Unsupported` until then.
+//! The surface is fully classified below. `VecReplace` remains the sole known exclusion until its
+//! WP-C6.3b implementation lands; every other current `RuntimeFn` is lowerable.
 
 use super::{emit_types, BackendDiagnostic};
 use crate::mir::{MirTy, RuntimeFn};
+
+/// The generated-Rust backend's machine-readable runtime surface.
+///
+/// This exhaustive match is deliberately owned beside the emitter and consumed by `stark check`.
+/// Adding a `RuntimeFn` therefore forces an explicit lowerable/excluded decision here at compile
+/// time instead of letting the front end and backend silently acquire different surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeSupport {
+    Lowerable,
+    Excluded {
+        work_package: &'static str,
+        construct: &'static str,
+    },
+}
+
+pub const fn native_support(rt: RuntimeFn) -> NativeSupport {
+    match rt {
+        RuntimeFn::PrintlnInt64
+        | RuntimeFn::PrintlnUInt64
+        | RuntimeFn::PrintlnBool
+        | RuntimeFn::PrintlnFloat64
+        | RuntimeFn::PrintFloat32
+        | RuntimeFn::PrintlnFloat32
+        | RuntimeFn::PrintInt64
+        | RuntimeFn::PrintUInt64
+        | RuntimeFn::PrintBool
+        | RuntimeFn::PrintFloat64
+        | RuntimeFn::PrintlnStr
+        | RuntimeFn::PrintStr
+        | RuntimeFn::StringNew
+        | RuntimeFn::StringFromStr
+        | RuntimeFn::StringLen
+        | RuntimeFn::StringIsEmpty
+        | RuntimeFn::StringPushStr
+        | RuntimeFn::StringClear
+        | RuntimeFn::StringAsStr
+        | RuntimeFn::StringClone
+        | RuntimeFn::StringContains
+        | RuntimeFn::StrLen
+        | RuntimeFn::StrIsEmpty
+        | RuntimeFn::StrToString
+        | RuntimeFn::StrBytes
+        | RuntimeFn::StrSubstring
+        | RuntimeFn::StrEq
+        | RuntimeFn::StrCmp
+        | RuntimeFn::FmtInt64
+        | RuntimeFn::FmtUInt64
+        | RuntimeFn::FmtBool
+        | RuntimeFn::FmtFloat64
+        | RuntimeFn::FmtFloat32
+        | RuntimeFn::FmtChar
+        | RuntimeFn::FmtUnit
+        | RuntimeFn::FmtPad
+        | RuntimeFn::FmtIntSpec
+        | RuntimeFn::FmtUIntSpec
+        | RuntimeFn::FmtFloat64Spec
+        | RuntimeFn::FmtFloat32Spec
+        | RuntimeFn::VecNew
+        | RuntimeFn::VecWithCapacity
+        | RuntimeFn::VecPush
+        | RuntimeFn::VecPop
+        | RuntimeFn::VecLen
+        | RuntimeFn::VecIsEmpty
+        | RuntimeFn::VecIndexGet
+        | RuntimeFn::VecRemove
+        | RuntimeFn::VecClear
+        | RuntimeFn::BoxNew
+        | RuntimeFn::BoxIntoInner
+        | RuntimeFn::VecGetRef
+        | RuntimeFn::VecGetMutRef
+        | RuntimeFn::CharsIterNew
+        | RuntimeFn::CharsIterNext
+        | RuntimeFn::SliceNew
+        | RuntimeFn::SliceNewMut
+        | RuntimeFn::SliceLen
+        | RuntimeFn::SliceIsEmpty
+        | RuntimeFn::VecIterNew
+        | RuntimeFn::VecIterNext
+        | RuntimeFn::HashMapNew
+        | RuntimeFn::HashMapInsert
+        | RuntimeFn::HashMapGet
+        | RuntimeFn::HashMapLen
+        | RuntimeFn::HashMapIsEmpty
+        | RuntimeFn::HashMapContainsKey
+        | RuntimeFn::HashMapRemove
+        | RuntimeFn::HashMapClear
+        | RuntimeFn::HashMapKeysIterNew
+        | RuntimeFn::HashMapKeysIterNext
+        | RuntimeFn::HashSetNew
+        | RuntimeFn::HashSetInsert
+        | RuntimeFn::HashSetRemove
+        | RuntimeFn::HashSetContains
+        | RuntimeFn::HashSetLen
+        | RuntimeFn::HashSetIsEmpty
+        | RuntimeFn::HashSetClear
+        | RuntimeFn::HashSetIterNew
+        | RuntimeFn::HashSetIterNext
+        | RuntimeFn::PrintlnChar
+        | RuntimeFn::PrintChar
+        | RuntimeFn::CharFromU32
+        | RuntimeFn::StringPushChar
+        | RuntimeFn::StringPopChar
+        | RuntimeFn::EprintlnStr
+        | RuntimeFn::EprintStr
+        | RuntimeFn::EprintlnInt64
+        | RuntimeFn::EprintInt64
+        | RuntimeFn::EprintlnUInt64
+        | RuntimeFn::EprintUInt64
+        | RuntimeFn::EprintlnBool
+        | RuntimeFn::EprintBool
+        | RuntimeFn::EprintlnFloat64
+        | RuntimeFn::EprintFloat64
+        | RuntimeFn::EprintlnFloat32
+        | RuntimeFn::EprintFloat32
+        | RuntimeFn::EprintlnChar
+        | RuntimeFn::EprintChar => NativeSupport::Lowerable,
+        RuntimeFn::VecReplace => NativeSupport::Excluded {
+            work_package: "WP-C6.3b",
+            construct: "Vec index assignment (`v[i] = value`)",
+        },
+    }
+}
+
+pub fn unsupported_message(rt: RuntimeFn) -> Option<String> {
+    match native_support(rt) {
+        NativeSupport::Lowerable => None,
+        NativeSupport::Excluded {
+            work_package,
+            construct,
+        } => Some(format!(
+            "native target cannot lower {construct}: RuntimeFn {rt:?} is a known exclusion ({work_package})"
+        )),
+    }
+}
+
+/// Known native-surface exclusions used by the author-facing `stark check` command.
+/// One entry is returned per source location so two ordinary assignments are both actionable.
+pub fn exclusions_in_program(
+    program: &crate::mir::MirProgram,
+) -> Vec<(RuntimeFn, crate::source::Span, String)> {
+    let mut exclusions = Vec::new();
+    for body in &program.bodies {
+        for block in &body.blocks {
+            let (terminator, source) = &block.terminator;
+            if let crate::mir::Terminator::Call {
+                callee: crate::mir::Callee::Runtime(rt),
+                ..
+            } = terminator
+            {
+                if let Some(message) = unsupported_message(*rt) {
+                    exclusions.push((*rt, source.span, message));
+                }
+            }
+        }
+    }
+    exclusions.sort_by_key(|(rt, span, _)| (span.source.as_u32(), span.lo, format!("{rt:?}")));
+    exclusions.dedup_by_key(|(rt, span, _)| (span.source.as_u32(), span.lo, format!("{rt:?}")));
+    exclusions
+}
 
 /// WP-C6.3b (DEV-107): the user source location of the call being emitted, resolved at COMPILE time
 /// from the terminator's own `SourceInfo` (every terminator carries one, `Call` included).
@@ -42,6 +200,9 @@ pub fn emit_runtime_call(
     // WP-C6.3d: how a map op decides key identity (`None` for every non-map op).
     key_eq: Option<&str>,
 ) -> Result<String, BackendDiagnostic> {
+    if let Some(message) = unsupported_message(rt) {
+        return Err(BackendDiagnostic::Unsupported(message));
+    }
     use RuntimeFn::*;
     let eq = || {
         key_eq.ok_or_else(|| {
@@ -332,12 +493,7 @@ pub fn emit_runtime_call(
             dest_ty,
         )?,
 
-        other => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "RuntimeFn {other:?} has no generated-Rust representation yet -- it lands with its \
-                 WP-C6.3 sub-package (Vec/Box/slices/iterators/HashMap/formatting)"
-            )))
-        }
+        VecReplace => unreachable!("native_support rejects known exclusions before emission"),
     })
 }
 

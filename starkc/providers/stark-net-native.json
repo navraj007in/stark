@@ -6,7 +6,7 @@
     "identity": "stark-std-net",
     "crate": "stark-net-native",
     "crate_path": "stark-net/native",
-    "capabilities": ["tcp", "dns"],
+    "capabilities": ["network-client", "network-listen"],
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
@@ -18,65 +18,65 @@
     "functions": [
       {
         "symbol": "stark_tcp_listener_bind",
-        "capability": "tcp",
+        "capability": "network-listen",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "tcp_listener" }]
       },
       {
         "symbol": "stark_tcp_listener_accept",
-        "capability": "tcp",
+        "capability": "network-listen",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "tcp_listener" }, { "form": "handle_out", "resource": "tcp_stream" }]
       },
       {
         "symbol": "stark_tcp_stream_connect",
-        "capability": "tcp",
+        "capability": "network-client",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "tcp_stream" }]
       },
       {
         "symbol": "stark_tcp_stream_read",
-        "capability": "tcp",
+        "capability": "network-client",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_tcp_stream_write",
-        "capability": "tcp",
+        "capability": "network-client",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_tcp_listener_close",
-        "capability": "tcp",
+        "capability": "network-listen",
         "close_for": "tcp_listener",
         "params": [{ "form": "handle_consumed", "resource": "tcp_listener" }]
       },
       {
         "symbol": "stark_tcp_stream_close",
-        "capability": "tcp",
+        "capability": "network-client",
         "close_for": "tcp_stream",
         "params": [{ "form": "handle_consumed", "resource": "tcp_stream" }]
       },
       {
         "symbol": "stark_tcp_stream_set_read_timeout",
-        "capability": "tcp",
+        "capability": "network-client",
         "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "scalar_in", "type": "u64" }]
       },
       {
         "symbol": "stark_tcp_stream_set_write_timeout",
-        "capability": "tcp",
+        "capability": "network-client",
         "params": [{ "form": "handle_borrowed", "resource": "tcp_stream" }, { "form": "scalar_in", "type": "u64" }]
       },
       {
         "symbol": "stark_dns_resolve_len",
-        "capability": "dns",
+        "capability": "network-client",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_dns_resolve_fill",
-        "capability": "dns",
+        "capability": "network-client",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "u64" }]
       }

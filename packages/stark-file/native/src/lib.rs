@@ -1006,12 +1006,15 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["filesystem".to_string()],
+            capabilities: vec![
+                "filesystem-read".to_string(),
+                "filesystem-write".to_string(),
+            ],
             resource_types: vec![file.clone(), io_file.clone()],
             functions: vec![
                 FunctionDecl {
                     name: "stark_file_open".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -1023,7 +1026,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_file_create".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -1035,7 +1038,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_file_read".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: file.clone(),
@@ -1049,7 +1052,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_file_write".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: file.clone(),
@@ -1062,7 +1065,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_file_complete".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::HandleBorrowed {
                         resource_type: file.clone(),
                     }],
@@ -1071,7 +1074,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_file_close".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: file.clone(),
                     }],
@@ -1080,7 +1083,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_open".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -1092,7 +1095,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_create".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -1104,7 +1107,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_read".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: io_file.clone(),
@@ -1118,7 +1121,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_write".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: io_file.clone(),
@@ -1131,7 +1134,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_complete".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::HandleBorrowed {
                         resource_type: io_file.clone(),
                     }],
@@ -1140,7 +1143,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_close".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: io_file.clone(),
                     }],
@@ -1149,7 +1152,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_open_options".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::ScalarIn(ScalarTy::U32),
@@ -1162,7 +1165,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_seek".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: io_file.clone(),
@@ -1176,7 +1179,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_sync".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::HandleBorrowed {
                         resource_type: io_file.clone(),
                     }],
@@ -1185,7 +1188,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_set_len".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: io_file.clone(),
@@ -1197,7 +1200,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_metadata".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: io_file.clone(),
@@ -1217,7 +1220,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iopath_metadata".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::ScalarOut(ScalarTy::U8),
@@ -1235,7 +1238,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iopath_exists".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::ScalarOut(ScalarTy::Bool),
@@ -1246,21 +1249,21 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iofile_remove".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::BufferIn],
                     is_close_for: None,
                     may_block: true,
                 },
                 FunctionDecl {
                     name: "stark_iofile_rename".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::BufferIn, AbiParam::BufferIn],
                     is_close_for: None,
                     may_block: true,
                 },
                 FunctionDecl {
                     name: "stark_iofile_copy".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::BufferIn,
@@ -1271,21 +1274,21 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_iodir_create".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::BufferIn],
                     is_close_for: None,
                     may_block: true,
                 },
                 FunctionDecl {
                     name: "stark_iodir_remove".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-write".to_string(),
                     params: vec![AbiParam::BufferIn],
                     is_close_for: None,
                     may_block: true,
                 },
                 FunctionDecl {
                     name: "stark_iodir_list".to_string(),
-                    capability: "filesystem".to_string(),
+                    capability: "filesystem-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::BufferInOut,

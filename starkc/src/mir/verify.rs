@@ -2940,7 +2940,9 @@ fn variant_payload(
         .and_then(|variants| variants.get(variant as usize).cloned())
 }
 
-fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(
         rt,
@@ -2962,17 +2964,23 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
 }
 
 /// 0.1-A7 (WP-C4.7-6.1): the `Box<T>` group. Schematic in `T`, resolved from the argument.
-fn is_box_runtime_fn(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_box_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(rt, BoxNew | BoxIntoInner)
 }
 
-fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)
 }
 
-fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(
         rt,

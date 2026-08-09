@@ -941,3 +941,179 @@ pub struct FieldPat {
     /// `None` is the shorthand (binds the field to a same-named variable).
     pub pat: Option<PatId>,
 }
+
+/// DEV-214 (OD-9) — the deepest expression tree in this AST, computed **iteratively**.
+///
+/// # Why this exists
+///
+/// The parser bounds recursion with [`crate::parser::MAX_DEPTH`], which is what stops
+/// `(((((...1...)))))` from overflowing the stack: each nesting level is a recursive call, so the
+/// counter rises with the nesting.
+///
+/// A left-associative operator chain never recurses in the parser. The precedence table is
+/// implemented as one `loop` per level, so `1 + 1 + 1 + ...` folds iteratively and the counter
+/// never moves — **but the tree it builds is as deep as the chain is long.** Every recursive walk
+/// downstream (type checking, and the index building in `analyze_project`) then descends that
+/// depth and the process dies with a stack overflow, at ~65 terms on a 2 MiB thread stack and
+/// ~250 on 8 MiB.
+///
+/// The bug was never the limit's VALUE. It was that the limit measured *the nesting the parser
+/// recursed through* rather than *the depth of the tree that nesting produced*. This function
+/// measures the second, against the same limit.
+///
+/// # Why the measurement itself is iterative
+///
+/// A recursive depth-measuring pass would overflow on exactly the input it exists to reject —
+/// the guard would die measuring the thing it guards. So this is a forward dynamic-programming
+/// pass over the expression arena:
+///
+/// ```text
+/// depth[i] = 1 + max(depth[child] for child in children(i))
+/// ```
+///
+/// A child is allocated before its parent (the parser builds sub-expressions first, and
+/// [`Ast::alloc_expr`] pushes), so one left-to-right pass normally suffices. That ordering is a
+/// property of the parser rather than of the type, so it is **iterated to a fixpoint instead of
+/// assumed** — bounded by `MAX_PASSES`, after which the answer is reported as saturated rather
+/// than guessed. No recursion at any point.
+///
+/// # Blocks are deliberately not traversed
+///
+/// `if`/`while`/`loop`/`for` bodies are [`BlockId`]s, and block nesting *does* raise the parser's
+/// counter, so it is already bounded. Every expression in every block still appears in this arena
+/// and is scored, so a deep chain inside a block is caught wherever it sits — what is not counted
+/// is the block nesting itself, because it is not this guard's gap to close.
+impl Ast {
+    /// [`max_expr_depth`] as a method, for the one call site in `analyze_project`.
+    pub fn max_expr_depth_of_program(&self) -> (u32, Option<ExprId>) {
+        max_expr_depth(self)
+    }
+}
+
+pub fn max_expr_depth(ast: &Ast) -> (u32, Option<ExprId>) {
+    /// One pass is enough when children precede parents. A second proves the fixpoint. The rest
+    /// are headroom for an allocation order this function does not want to depend on.
+    const MAX_PASSES: usize = 4;
+
+    let n = ast.exprs.len();
+    if n == 0 {
+        return (0, None);
+    }
+    let mut depth = vec![1u32; n];
+
+    for _ in 0..MAX_PASSES {
+        let mut changed = false;
+        for i in 0..n {
+            let mut best = 0u32;
+            each_child_expr(&ast.exprs[i].kind, |child| {
+                let c = child.0 as usize;
+                if c < n {
+                    best = best.max(depth[c]);
+                }
+            });
+            let candidate = best.saturating_add(1);
+            if candidate > depth[i] {
+                depth[i] = candidate;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // The deepest node's span is what a diagnostic should blame -- "somewhere in this file" is
+    // not a useful answer for an expression the reader has to find and break up.
+    let mut best = (0u32, None);
+    for (i, d) in depth.into_iter().enumerate() {
+        if d > best.0 {
+            best = (d, Some(ExprId(i as u32)));
+        }
+    }
+    best
+}
+
+/// Every directly-nested expression of one expression, for [`max_expr_depth`].
+///
+/// **There is deliberately no `_ =>` arm.** A catch-all would silently score a new variant's
+/// children as absent, and the guard would quietly stop guarding whatever that variant nests —
+/// which is the shape `AS8-DA-006` records as "the sixth `MirTy` catch-all to swallow this
+/// variant". Adding an `ExprKind` variant must be a compile error here.
+fn each_child_expr(kind: &ExprKind, mut f: impl FnMut(ExprId)) {
+    match kind {
+        // Leaves, and the block-carrying forms whose nesting the parser already bounds.
+        ExprKind::Lit(_)
+        | ExprKind::Path { .. }
+        | ExprKind::Loop { .. }
+        | ExprKind::Block(_)
+        | ExprKind::Error => {}
+        // A format string's fields are parsed as their own expressions.
+        ExprKind::FormatString { segments } => {
+            for seg in segments {
+                // No catch-all here either, for the same reason as the outer match.
+                match seg {
+                    FormatSegment::Literal { .. } => {}
+                    FormatSegment::Field { expr, .. } => f(*expr),
+                }
+            }
+        }
+        ExprKind::Unary { operand, .. } => f(*operand),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            f(*lhs);
+            f(*rhs);
+        }
+        ExprKind::Assign { lhs, rhs, .. } => {
+            f(*lhs);
+            f(*rhs);
+        }
+        ExprKind::Range { lo, hi, .. } => {
+            f(*lo);
+            f(*hi);
+        }
+        ExprKind::Cast { expr, .. } => f(*expr),
+        ExprKind::Call { callee, args } => {
+            f(*callee);
+            for a in args {
+                f(*a);
+            }
+        }
+        ExprKind::Field { base, .. } => f(*base),
+        ExprKind::TupleField { base, .. } => f(*base),
+        ExprKind::Index { base, index } => {
+            f(*base);
+            f(*index);
+        }
+        ExprKind::Try(e) => f(*e),
+        ExprKind::Tuple(items) | ExprKind::Array(items) => {
+            for e in items {
+                f(*e);
+            }
+        }
+        ExprKind::Repeat { value, count } => {
+            f(*value);
+            f(*count);
+        }
+        ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                // Shorthand (`S { x }`) carries no expression of its own.
+                if let Some(e) = field.expr {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::If { cond, else_, .. } => {
+            f(*cond);
+            if let Some(e) = else_ {
+                f(*e);
+            }
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            f(*scrutinee);
+            for arm in arms {
+                f(arm.body);
+            }
+        }
+        ExprKind::While { cond, .. } => f(*cond),
+        ExprKind::For { iter, .. } => f(*iter),
+    }
+}

@@ -67,6 +67,16 @@ pub struct TypeChecker<'a> {
     /// 'Int32'". These vars are integer-KINDED: they unify only with primitive integer types,
     /// and binding one range-checks the value.
     pub(super) int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
+
+    /// DEV-172 — the integer literal that is the direct operand of a unary `-`, if the checker is
+    /// currently descending into one.
+    ///
+    /// A negative literal is parsed as negation applied to a POSITIVE literal, so the magnitude
+    /// used to reach the range check is `128`, not `-128`. Checked against `Int8` that magnitude is
+    /// out of range, and the same argument refuses the minimum of every signed width. The operand
+    /// is recorded here before it is checked so the `Lit::Int` arm can range-check the value the
+    /// program actually denotes.
+    pub(super) negated_int_literal: Option<ExprId>,
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
     pub(super) display_checks: Vec<(Ty, Span)>,
@@ -200,6 +210,7 @@ impl<'a> TypeChecker<'a> {
             diags: Vec::new(),
             subst: HashMap::new(),
             int_literal_vars: HashMap::new(),
+            negated_int_literal: None,
             display_checks: Vec::new(),
             display_plans: Vec::new(),
             try_checks: Vec::new(),
