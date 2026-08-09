@@ -127,11 +127,11 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["random".to_string()],
+            capabilities: vec!["randomness".to_string()],
             resource_types: vec![],
             functions: vec![FunctionDecl {
                 name: "stark_random_secure_fill".to_string(),
-                capability: "random".to_string(),
+                capability: "randomness".to_string(),
                 params: vec![AbiParam::BufferInOut],
                 is_close_for: None,
                 may_block: false,

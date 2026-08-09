@@ -249,6 +249,10 @@ pub struct Package {
     pub entry: PathBuf,
     pub manifest_path: PathBuf,
     pub dependencies: HashMap<String, Dependency>,
+    /// Version of the durable capability vocabulary used by this manifest. Version 1 is the only
+    /// vocabulary currently defined. Capability-free manifests default to v1 for compatibility;
+    /// manifests that declare an envelope serialize the field explicitly.
+    pub capability_vocabulary: u64,
     /// WP-C7.8 (CD-212, Packet 5): the host capabilities this package requires, e.g. `["clock"]`.
     ///
     /// **Declaration is the only admission route.** Packet 5's trust boundary forbids implicit
@@ -585,7 +589,26 @@ impl Package {
             }
         }
 
-        // WP-C7.8: `"capabilities": ["clock", "env"]`. Rejected rather than ignored when
+        let capability_vocabulary = match obj.get("capability_vocabulary") {
+            Some(JsonValue::Number(number)) => number
+                .as_u64()
+                .filter(|version| *version == 1)
+                .ok_or_else(|| {
+                    format!(
+                        "'capability_vocabulary' in manifest '{}' must be the integer 1",
+                        path.display()
+                    )
+                })?,
+            Some(_) => {
+                return Err(format!(
+                    "'capability_vocabulary' in manifest '{}' must be the integer 1",
+                    path.display()
+                ))
+            }
+            None => 1,
+        };
+
+        // WP-C7.8: `"capabilities": ["clock", "environment-read"]`. Rejected rather than ignored when
         // malformed -- a typo'd capability that silently vanished would surface much later as a
         // build failure naming a capability nobody could find a requirement for.
         let mut capabilities: Vec<String> = Vec::new();
@@ -623,6 +646,7 @@ impl Package {
             entry,
             manifest_path: path.to_path_buf(),
             dependencies,
+            capability_vocabulary,
             capabilities,
             provider_api,
         })
@@ -667,12 +691,16 @@ pub fn find_package_root(start_dir: &Path) -> Result<PathBuf, String> {
 pub struct LockfilePackage {
     pub name: String,
     pub version: Version,
+    /// Auditable acquisition origin. Path dependencies use the canonical absolute directory;
+    /// registry dependencies use `registry`. Older lockfiles omit this and are upgraded on write.
+    pub source: Option<String>,
     pub sha256: String,
     pub dependencies: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Lockfile {
+    pub capability_vocabulary: u64,
     pub packages: HashMap<String, LockfilePackage>,
 }
 
@@ -711,6 +739,15 @@ impl Lockfile {
                 .as_str()
                 .ok_or("sha256 must be string")?
                 .to_string();
+            let source = pkg_obj
+                .get("source")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or("source must be string")
+                        .map(str::to_string)
+                })
+                .transpose()?;
 
             let mut dependencies = HashMap::new();
             if let Some(deps_val) = pkg_obj.get("dependencies") {
@@ -731,17 +768,36 @@ impl Lockfile {
                 LockfilePackage {
                     name,
                     version,
+                    source,
                     sha256,
                     dependencies,
                 },
             );
         }
-        Ok(Self { packages })
+        let capability_vocabulary = obj
+            .get("capability_vocabulary")
+            .map(|value| {
+                value
+                    .as_number()
+                    .and_then(|number| number.as_u64())
+                    .filter(|version| *version == 1)
+                    .ok_or("capability_vocabulary must be the integer 1")
+            })
+            .transpose()?
+            .unwrap_or(1);
+        Ok(Self {
+            capability_vocabulary,
+            packages,
+        })
     }
 
     pub fn serialize(&self) -> String {
         let mut lines = Vec::new();
         lines.push("{".to_string());
+        lines.push(format!(
+            "  \"capability_vocabulary\": {},",
+            self.capability_vocabulary
+        ));
         lines.push("  \"packages\": [".to_string());
 
         let mut sorted_packages: Vec<&LockfilePackage> = self.packages.values().collect();
@@ -759,6 +815,12 @@ impl Lockfile {
                 "      \"version\": \"{}.{}.{}\",",
                 pkg.version.major, pkg.version.minor, pkg.version.patch
             ));
+            if let Some(source) = &pkg.source {
+                lines.push(format!(
+                    "      \"source\": \"{}\",",
+                    json_string_contents(source)
+                ));
+            }
             lines.push(format!("      \"sha256\": \"{}\",", pkg.sha256));
             lines.push("      \"dependencies\": {".to_string());
 
@@ -776,6 +838,22 @@ impl Lockfile {
         lines.push("}".to_string());
         lines.join("\n")
     }
+}
+
+fn json_string_contents(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c <= '\u{1f}' => escaped.push_str(&format!("\\u{:04x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 struct FileData {
@@ -987,6 +1065,8 @@ impl PackageGraph {
             &mut resolved_packages,
         )?;
 
+        graph.enforce_root_capability_envelope()?;
+
         // If not in locked mode, write the updated lockfile
         if !locked {
             let mut lock_pkgs = HashMap::new();
@@ -995,10 +1075,24 @@ impl PackageGraph {
                     continue;
                 }
 
-                let sha256 = if let Some(resolved_meta) = resolved_packages.get(pkg_name) {
-                    resolved_meta.sha256.clone()
+                let (source, sha256) = if let Some(resolved_meta) = resolved_packages.get(pkg_name)
+                {
+                    (Some("registry".to_string()), resolved_meta.sha256.clone())
                 } else {
-                    "".to_string()
+                    let directory = pkg.manifest_path.parent().ok_or_else(|| {
+                        format!(
+                            "manifest '{}' has no package directory",
+                            pkg.manifest_path.display()
+                        )
+                    })?;
+                    if is_within_workspace(directory, &graph.workspace_root) {
+                        (None, String::new())
+                    } else {
+                        (
+                            Some(format!("path:{}", directory.display())),
+                            calculate_dir_sha256(directory)?,
+                        )
+                    }
                 };
 
                 let mut dependencies = HashMap::new();
@@ -1030,12 +1124,14 @@ impl PackageGraph {
                     LockfilePackage {
                         name: pkg_name.clone(),
                         version: pkg.version.clone(),
+                        source,
                         sha256,
                         dependencies,
                     },
                 );
             }
             let new_lock = Lockfile {
+                capability_vocabulary: 1,
                 packages: lock_pkgs,
             };
 
@@ -1084,13 +1180,6 @@ impl PackageGraph {
             match &dependency.source {
                 DependencySource::Path(dep_dir) => {
                     let dep_manifest = dep_dir.join("starkpkg.json");
-                    if !is_within_workspace(&dep_manifest, &self.workspace_root) {
-                        return Err(format!(
-                            "dependency '{}' of package '{}' resolves to '{}' which is outside the permitted workspace '{}'",
-                            dep_alias, package_name, dep_manifest.display(), self.workspace_root.display()
-                        ));
-                    }
-
                     if let Some(existing) = self.packages.get(dep_alias) {
                         if existing.manifest_path != dep_manifest {
                             return Err(format!(
@@ -1249,6 +1338,62 @@ impl PackageGraph {
 
     pub fn load_from_root(root_manifest_path: &Path) -> Result<Self, String> {
         Self::load_from_root_with_modes(root_manifest_path, false, false)
+    }
+
+    /// WP-P1.6: the root application approves the conservative transitive capability closure.
+    /// Provider bindings are the current compiler-emitted host-interface references: every bound
+    /// function/resource contributes, regardless of reachability, and the diagnostic preserves
+    /// the package plus exact interface path that introduced the capability.
+    fn enforce_root_capability_envelope(&self) -> Result<(), String> {
+        let root = self
+            .packages
+            .get(&self.root_package_name)
+            .ok_or("package graph has no root package")?;
+        let mut contributors: Vec<(&str, &str, String)> = Vec::new();
+        for (alias, package) in &self.packages {
+            for binding in &package.provider_api.functions {
+                contributors.push((
+                    binding.capability.as_str(),
+                    alias.as_str(),
+                    format!("provider_api.functions.{}", binding.item_path),
+                ));
+            }
+            for binding in &package.provider_api.resources {
+                contributors.push((
+                    binding.capability.as_str(),
+                    alias.as_str(),
+                    format!("provider_api.resources.{}", binding.nominal),
+                ));
+            }
+        }
+        contributors.sort();
+        contributors.dedup();
+
+        let missing: Vec<_> = contributors
+            .into_iter()
+            .filter(|(capability, _, _)| {
+                !root
+                    .capabilities
+                    .iter()
+                    .any(|declared| declared == capability)
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let details = missing
+            .iter()
+            .map(|(capability, package, interface)| {
+                format!(
+                    "  capability '{capability}' derived by package '{package}' from interface reference '{interface}'"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!(
+            "root package '{}' does not declare the complete transitive capability envelope:\n{details}\nadd the named capabilities to its \"capabilities\" array (capability vocabulary v1)",
+            self.root_package_name
+        ))
     }
 }
 

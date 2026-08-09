@@ -209,17 +209,20 @@ actually *call* the surface it declares.
 | Networking | `stark-net` (TCP + DNS), `stark-tls` |
 | HTTP | `stark-http-core`, `stark-http-parser`, `stark-http-serialize`, `stark-http-client` |
 
-**Host access is capability-declared and provider-backed.** A package that needs the outside world
-names the capability in its manifest, and a native provider crate satisfies it at build time:
+**Host access is derived, envelope-checked, and provider-backed.** The compiler derives authority
+from every host-interface reference in the resolved graph (conservatively, without dead-code
+narrowing). The root manifest's versioned `capabilities` list is an upper-bound envelope; `stark
+check` and `stark build` reject a derived capability outside it and name the contributing package
+and interface. A declaration that is not currently derived remains legal.
 
 | Capability | Provider crate | Declared by |
 | --- | --- | --- |
 | `clock` | `stark-time/native` | `stark-time` |
-| `filesystem` | `stark-file/native` | `stark-io` |
-| `process.env`, `process.args` | `stark-env/native` | `stark-env` |
-| `random` | `stark-random/native` | `stark-random` |
-| `tcp`, `dns` | `stark-net/native` | `stark-net`, `stark-http-client` |
-| `tls` | `stark-tls/native` | `stark-tls`, `stark-http-client` |
+| `filesystem-read`, `filesystem-write` | `stark-file/native` | `stark-io` |
+| `environment-read` | `stark-env/native` | `stark-env` |
+| `randomness` | `stark-random/native` | `stark-random` |
+| `network-client`, `network-listen` | `stark-net/native` | `stark-net`, server applications |
+| `network-client` | `stark-tls/native` | `stark-tls`, `stark-http-client` |
 
 **Capability-backed packages run only through `stark build`.** The reference and MIR interpreters
 have no host access at all — they cannot open a socket or read a clock — so `stark run` will not
@@ -257,8 +260,9 @@ fn main() {
 }
 ```
 
-The package declaring this needs `"capabilities": ["tcp", "dns", "tls"]` in its `starkpkg.json`, a
-path dependency on `stark-http-client` installed beside it (see
+The package declaring this needs `"capability_vocabulary": 1` and
+`"capabilities": ["clock", "network-client"]` in its `starkpkg.json`, a path dependency on
+`stark-http-client` (see
 [Installing the toolchain](#installing-the-toolchain)), and `stark build` — not `stark run`.
 
 What it does **not** do is stated as plainly: no HTTP/2 or HTTP/3, no connection reuse, no
@@ -393,9 +397,9 @@ Without that root, a package declaring a capability builds only from inside a ch
 is deliberately environment-free: no variable is consulted, and the search is the enclosing
 checkout first, then the installed toolchain's own directory.
 
-To depend on a first-party STARK package, install its sources **beside your own package** and name
-it by path. The path may be absolute or relative, but it must resolve inside the workspace, and the
-workspace is the *parent directory of your package* — nothing above it is reachable:
+Path dependencies may be absolute or relative and may resolve outside the package's parent
+directory. `stark.lock` records their canonical resolved directory and a deterministic content hash,
+so that filesystem reach is visible and changes are auditable. A sibling layout remains convenient:
 
 ```text
 projects/

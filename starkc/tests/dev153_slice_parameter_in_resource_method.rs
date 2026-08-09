@@ -92,23 +92,23 @@ fn provider_layer() -> String {
     let set = ProviderSet::select(
         provider_registry::first_party(),
         &host_triple(),
-        &["tcp".into()],
+        &["network-client".into()],
     )
     .expect("tcp provider selects for host");
     let connect = set
-        .resolve("tcp", "stark_tcp_stream_connect")
+        .resolve("network-client", "stark_tcp_stream_connect")
         .expect("connect resolves");
     let connect_sig = derive(
         "connect_raw",
-        "tcp",
+        "network-client",
         &connect.function,
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
-        &BTreeMap::from([("tcp".to_string(), "RawNetError".to_string())]),
+        &BTreeMap::from([("network-client".to_string(), "RawNetError".to_string())]),
     )
     .expect("connect signature derives");
     synthesize_with_resources(
         &[connect_sig],
-        &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
+        &BTreeMap::from([("network-client".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
         &BTreeMap::new(),
     )

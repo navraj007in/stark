@@ -2,12 +2,13 @@
   "name": "stark-get",
   "version": "0.1.0",
   "entry": "src/main.stark",
+  "capability_vocabulary": 1,
   "capabilities": [
-    "process.args",
-    "tcp",
-    "dns",
-    "tls",
-    "filesystem"
+    "clock",
+    "environment-read",
+    "filesystem-read",
+    "filesystem-write",
+    "network-client"
   ],
   "dependencies": {
     "stark_args": { "package": "stark-args", "path": "../stark-args", "version": "0.1.0" },

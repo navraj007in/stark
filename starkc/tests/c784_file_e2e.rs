@@ -63,7 +63,10 @@ fn filesystem() -> ProviderSet {
     ProviderSet::select(
         provider_registry::first_party(),
         &host_triple(),
-        &["filesystem".to_string()],
+        &[
+            "filesystem-read".to_string(),
+            "filesystem-write".to_string(),
+        ],
     )
     .expect("filesystem must be available on this host")
 }
@@ -347,8 +350,12 @@ fn entry_body(path: &str) -> MirBody {
 }
 
 fn resolve(function: &str) -> ValidatedProviderCall {
+    let capability = match function {
+        "stark_file_create" | "stark_file_write" | "stark_file_complete" => "filesystem-write",
+        _ => "filesystem-read",
+    };
     filesystem()
-        .resolve("filesystem", function)
+        .resolve(capability, function)
         .unwrap_or_else(|e| panic!("{function} must resolve: {e:#?}"))
 }
 

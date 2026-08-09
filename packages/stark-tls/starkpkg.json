@@ -2,9 +2,8 @@
   "name": "stark-tls",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": [
-    "tls"
-  ],
+  "capability_vocabulary": 1,
+  "capabilities": ["clock", "network-client"],
   "dependencies": {
     "stark_net": {
       "package": "stark-net",
@@ -19,11 +18,11 @@
   },
   "provider_api": {
     "errors": {
-      "tls": "RawTlsError"
+      "network-client": "RawTlsError"
     },
     "resources": {
       "TlsStream": {
-        "capability": "tls",
+        "capability": "network-client",
         "resource": "tls_stream"
       }
     },
@@ -35,27 +34,27 @@
     },
     "functions": {
       "tls_stream_connect_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_connect"
       },
       "tls_stream_read_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_read"
       },
       "tls_stream_write_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_write"
       },
       "tls_stream_set_read_timeout_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_set_read_timeout"
       },
       "tls_stream_set_write_timeout_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_set_write_timeout"
       },
       "tls_stream_peer_version_raw": {
-        "capability": "tls",
+        "capability": "network-client",
         "symbol": "stark_tls_stream_peer_version"
       }
     }

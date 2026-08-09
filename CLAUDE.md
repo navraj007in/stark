@@ -133,9 +133,11 @@ conflict table.
   are pre-pivot prototypes and must not be extended for Core v1 work.
 - Packages and host access: **28 first-party packages live under `packages/`** (moved there
   2026-08-04), each with a `*-consumer` package that must actually *call* its declared surface.
-  A package reaching outside the process declares a capability in `starkpkg.json` — `clock`,
-  `filesystem`, `process.env`/`process.args`, `random`, `tcp`/`dns`, `tls` — satisfied at build
-  time by a native provider crate at `packages/<name>/native`. **Capability-backed packages build
+  Host authority uses capability vocabulary v1 — `filesystem-read`, `filesystem-write`,
+  `environment-read`, `network-client`, `network-listen`, `clock`, `randomness`,
+  `process-execution`, `native-code`. References derive a conservative transitive set, which the
+  root `starkpkg.json` declaration must envelope; native providers satisfy it at build time.
+  **Capability-backed packages build
   with `stark build` and cannot run under `stark run`**: the interpreters have no host access at
   all. An HTTP/1.1 and HTTPS client written in STARK closed 2026-08-03 (HC0–HC13).
 - Distribution: Installer Phase I is implemented — release archives, platform installers, a
@@ -197,10 +199,9 @@ re-deriving the rules:
   added/renumbered block must be re-triaged in the same change.
 - New language features land in the spec first, extensions second, README
   last. The archive is never updated for new features.
-- **Packages live under `packages/`, and dependency paths must stay siblings.** The workspace root
-  is the *parent directory* of a package (`package.rs` `get_workspace_root`), so a dependency
-  outside `packages/` is refused by name. Every first-party manifest therefore uses plain
-  `../stark-<name>` paths.
+- **Packages live under `packages/`, but external path dependencies are supported.** Paths are
+  canonicalized and their resolved directory plus content hash is recorded in `stark.lock`.
+  First-party manifests still use plain `../stark-<name>` paths so the repository is relocatable.
 - **Provider crates are depth-sensitive.** `packages/<name>/native/Cargo.toml` reaches the ABI
   through `../../../starkc/stark-provider-abi`, and `include_str!` in provider sources needs a
   further level (`../../../../starkc/providers/*.json`) because it resolves relative to the source

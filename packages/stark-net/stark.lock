@@ -1,4 +1,5 @@
 {
+  "capability_vocabulary": 1,
   "packages": [
     {
       "name": "stark_time",

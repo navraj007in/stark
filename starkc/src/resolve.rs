@@ -1485,7 +1485,8 @@ impl<'a> Resolver<'a> {
                 let ty = ty.map(|t| self.lower_type(t));
 
                 let var_name = self.text(*name).to_string();
-                if self.scopes.last().unwrap().contains_key(&var_name) {
+                let is_discard = var_name == "_";
+                if !is_discard && self.scopes.last().unwrap().contains_key(&var_name) {
                     self.push_diag(
                         Diagnostic::error(
                             format!(
@@ -1500,10 +1501,15 @@ impl<'a> Resolver<'a> {
                 }
 
                 let local = self.alloc_local();
-                self.scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert(var_name, Res::Local(local));
+                // `_` is a discard, not a name. Allocate a local so the existing ownership and
+                // drop machinery still observes the initializer, but do not publish it into the
+                // lexical scope; repeated discards therefore cannot collide or be referenced.
+                if !is_discard {
+                    self.scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(var_name, Res::Local(local));
+                }
                 hir::StmtKind::Let {
                     mutable: *mutable,
                     name: *name,

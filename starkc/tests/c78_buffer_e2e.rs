@@ -292,7 +292,7 @@ fn program(name: &str) -> MirProgram {
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
-        provider_calls: vec![resolve("process.env", "stark_env_var_len")],
+        provider_calls: vec![resolve("environment-read", "stark_env_var_len")],
         resource_bindings: Vec::new(),
         provider_closes: Vec::new(),
     }

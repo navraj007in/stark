@@ -12063,11 +12063,15 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         match dest {
             Some(place) => {
-                let value = self.lower_expr_to_operand(body)?;
-                self.emit(
-                    Statement::Assign(place.clone(), Rvalue::Use(value)),
-                    self.info(span),
-                );
+                if matches!(self.tables.expr_types.get(&body), Some(Ty::Never)) {
+                    self.lower_unit_expr(body)?;
+                } else {
+                    let value = self.lower_expr_to_operand(body)?;
+                    self.emit(
+                        Statement::Assign(place.clone(), Rvalue::Use(value)),
+                        self.info(span),
+                    );
+                }
             }
             None => {
                 self.lower_expr_operand_or_unit(body)?;
@@ -12109,11 +12113,15 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         match dest {
             Some(place) => {
-                let value = self.lower_expr_to_operand(body)?;
-                self.emit(
-                    Statement::Assign(place.clone(), Rvalue::Use(value)),
-                    self.info(span),
-                );
+                if matches!(self.tables.expr_types.get(&body), Some(Ty::Never)) {
+                    self.lower_unit_expr(body)?;
+                } else {
+                    let value = self.lower_expr_to_operand(body)?;
+                    self.emit(
+                        Statement::Assign(place.clone(), Rvalue::Use(value)),
+                        self.info(span),
+                    );
+                }
             }
             None => {
                 self.lower_expr_operand_or_unit(body)?;

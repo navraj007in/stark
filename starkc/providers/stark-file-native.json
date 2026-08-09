@@ -6,7 +6,7 @@
     "identity": "stark-std-file",
     "crate": "stark-file-native",
     "crate_path": "stark-file/native",
-    "capabilities": ["filesystem"],
+    "capabilities": ["filesystem-read", "filesystem-write"],
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
@@ -18,153 +18,153 @@
     "functions": [
       {
         "symbol": "stark_file_open",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "file" }]
       },
       {
         "symbol": "stark_file_create",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "file" }]
       },
       {
         "symbol": "stark_file_read",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "file" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "bool" }]
       },
       {
         "symbol": "stark_file_write",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "file" }, { "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_file_complete",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "file" }]
       },
       {
         "symbol": "stark_file_close",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "close_for": "file",
         "params": [{ "form": "handle_consumed", "resource": "file" }]
       },
       {
         "symbol": "stark_iofile_open",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_create",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_read",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "bool" }]
       },
       {
         "symbol": "stark_iofile_write",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }, { "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_iofile_complete",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_close",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "close_for": "io_file",
         "params": [{ "form": "handle_consumed", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_open_options",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "scalar_in", "type": "u32" }, { "form": "handle_out", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_seek",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }, { "form": "scalar_in", "type": "u8" }, { "form": "scalar_in", "type": "i64" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_iofile_sync",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }]
       },
       {
         "symbol": "stark_iofile_set_len",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }, { "form": "scalar_in", "type": "u64" }]
       },
       {
         "symbol": "stark_iofile_metadata",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "handle_borrowed", "resource": "io_file" }, { "form": "scalar_out", "type": "u8" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }]
       },
       {
         "symbol": "stark_iopath_metadata",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "u8" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "i64" }, { "form": "scalar_out", "type": "bool" }]
       },
       {
         "symbol": "stark_iopath_exists",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "scalar_out", "type": "bool" }, { "form": "scalar_out", "type": "u8" }]
       },
       {
         "symbol": "stark_iofile_remove",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }]
       },
       {
         "symbol": "stark_iofile_rename",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "buffer_in" }]
       },
       {
         "symbol": "stark_iofile_copy",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "buffer_in" }, { "form": "scalar_out", "type": "u64" }]
       },
       {
         "symbol": "stark_iodir_create",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }]
       },
       {
         "symbol": "stark_iodir_remove",
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "may_block": true,
         "params": [{ "form": "buffer_in" }]
       },
       {
         "symbol": "stark_iodir_list",
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "may_block": true,
         "params": [{ "form": "buffer_in" }, { "form": "buffer_in_out" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "u64" }, { "form": "scalar_out", "type": "bool" }]
       }

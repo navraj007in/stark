@@ -476,12 +476,30 @@ fn test_duplicate_package_names_rejected() {
 }
 
 #[test]
-fn test_workspace_boundary_rejected() {
+fn test_external_path_dependency_is_allowed_and_audited_in_lockfile() {
     let workspace = setup_temp_workspace("boundary");
     let app_dir = workspace.join("app");
     std::fs::create_dir_all(app_dir.join("src")).unwrap();
     std::fs::write(app_dir.join("src/main.stark"), "fn main() {}").unwrap();
 
+    let outside_dir = workspace
+        .parent()
+        .unwrap()
+        .join(format!("stark_external_dep_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    std::fs::create_dir_all(outside_dir.join("src")).unwrap();
+    std::fs::write(
+        outside_dir.join("src/lib.stark"),
+        "pub fn answer() -> Int32 { 42 }",
+    )
+    .unwrap();
+    std::fs::write(
+        outside_dir.join("starkpkg.json"),
+        r#"{"name":"outside","version":"0.1.0","entry":"src/lib.stark"}"#,
+    )
+    .unwrap();
+
+    let relative = PathBuf::from("../..").join(outside_dir.file_name().unwrap());
     std::fs::write(
         app_dir.join("starkpkg.json"),
         r#"{
@@ -489,19 +507,94 @@ fn test_workspace_boundary_rejected() {
         "version": "0.1.0",
         "entry": "src/main.stark",
         "dependencies": {
-            "outside": { "path": "../../" }
+            "outside": { "path": "__OUTSIDE__" }
         }
-    }"#,
+    }"#
+        .replace("__OUTSIDE__", &relative.to_string_lossy()),
     )
     .unwrap();
 
-    let result = PackageGraph::load_from_root(&app_dir.join("starkpkg.json"));
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .contains("outside the permitted workspace"));
+    PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap();
+    let lock = std::fs::read_to_string(app_dir.join("stark.lock")).unwrap();
+    let canonical = outside_dir.canonicalize().unwrap();
+    assert!(
+        lock.contains(&format!("path:{}", canonical.display())),
+        "lockfile must record the canonical external path: {lock}"
+    );
+    assert!(
+        !lock.contains("\"sha256\": \"\""),
+        "path content must be hashed: {lock}"
+    );
 
+    let _ = std::fs::remove_dir_all(&outside_dir);
     let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn root_capability_envelope_is_transitive_actionable_and_allows_spare_authority() {
+    let workspace = setup_temp_workspace("capability_envelope");
+    let app = workspace.join("app");
+    let middle = workspace.join("middle");
+    let host = workspace.join("host");
+    for directory in [&app, &middle, &host] {
+        std::fs::create_dir_all(directory.join("src")).unwrap();
+    }
+    std::fs::write(app.join("src/main.stark"), "fn main() {}").unwrap();
+    std::fs::write(middle.join("src/lib.stark"), "pub fn pure() {}").unwrap();
+    std::fs::write(host.join("src/lib.stark"), "pub fn wrapper() {}").unwrap();
+    std::fs::write(
+        middle.join("starkpkg.json"),
+        r#"{
+          "name":"middle","version":"0.1.0","entry":"src/lib.stark",
+          "dependencies":{"host":{"path":"../host"}}
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        host.join("starkpkg.json"),
+        r#"{
+          "name":"host","version":"0.1.0","entry":"src/lib.stark",
+          "capability_vocabulary":1,"capabilities":["clock"],
+          "provider_api":{
+            "errors":{"clock":"RawClockError"},
+            "functions":{"clock_now_raw":{"capability":"clock","symbol":"stark_time_monotonic_now_ns"}}
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let write_root = |capabilities: &str| {
+        std::fs::write(
+            app.join("starkpkg.json"),
+            format!(
+                r#"{{
+                  "name":"app","version":"0.1.0","entry":"src/main.stark",
+                  "capability_vocabulary":1,"capabilities":[{capabilities}],
+                  "dependencies":{{"middle":{{"path":"../middle"}}}}
+                }}"#
+            ),
+        )
+        .unwrap();
+    };
+
+    write_root("");
+    let error = PackageGraph::load_from_root(&app.join("starkpkg.json")).unwrap_err();
+    assert!(error.contains("capability 'clock'"), "{error}");
+    assert!(error.contains("package 'host'"), "{error}");
+    assert!(
+        error.contains("provider_api.functions.clock_now_raw"),
+        "{error}"
+    );
+
+    write_root("\"clock\"");
+    PackageGraph::load_from_root(&app.join("starkpkg.json")).unwrap();
+
+    // The declaration is an upper bound, not an equality: unused authority remains an audit
+    // signal and does not reject the package.
+    write_root("\"clock\",\"randomness\"");
+    PackageGraph::load_from_root(&app.join("starkpkg.json")).unwrap();
+
+    let _ = std::fs::remove_dir_all(workspace);
 }
 
 #[test]

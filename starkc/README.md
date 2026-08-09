@@ -127,7 +127,8 @@ are still found.
 This payload carries the compiler, its runtime, the provider ABI **and** the
 first-party native provider crates, under `lib/stark/packages/<name>/native` —
 mirroring the repository's `packages/` directory — so a program declaring a
-host capability (clock, filesystem, environment, random, TCP/DNS or TLS) builds
+host capability (capability vocabulary v1: filesystem read/write, environment read, network
+client/listen, clock, randomness, process execution or native code) builds
 from a stock installation with nothing installed separately.
 
 Both depths are required, not cosmetic. A provider crate reaches the ABI

@@ -532,9 +532,20 @@ impl TypeChecker<'_> {
         }
 
         let result = if let Some(tail_expr) = block.tail {
-            self.check_expr(tail_expr)
-        } else {
+            let tail_ty = self.check_expr(tail_expr);
+            if reachable {
+                tail_ty
+            } else {
+                Ty::Never
+            }
+        } else if reachable {
             Ty::Primitive(Primitive::Unit)
+        } else {
+            // A block whose final reachable statement returns, breaks, continues, or otherwise
+            // diverges has type `!`, not `Unit`. This matters when the block is a match arm or an
+            // if branch in value position: `!` is the coercion source accepted by every expected
+            // type, whereas `Unit` spuriously rejects the whole expression.
+            Ty::Never
         };
         self.dim_scope = saved_dim_scope;
         result

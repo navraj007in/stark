@@ -179,7 +179,7 @@ fn program() -> MirProgram {
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
-        provider_calls: vec![resolve("process.args", "stark_env_args_len")],
+        provider_calls: vec![resolve("environment-read", "stark_env_args_len")],
         resource_bindings: Vec::new(),
         provider_closes: Vec::new(),
     }
@@ -258,9 +258,9 @@ fn stark_env_args_len_executes_natively() {
 fn the_buffer_carrying_calls_declare_correctly() {
     let mut program = program();
     program.provider_calls = vec![
-        resolve("process.env", "stark_env_var_len"),
-        resolve("process.env", "stark_env_var_fill"),
-        resolve("process.args", "stark_env_args_fill"),
+        resolve("environment-read", "stark_env_var_len"),
+        resolve("environment-read", "stark_env_var_fill"),
+        resolve("environment-read", "stark_env_args_fill"),
     ];
 
     // Declarations are emitted from the call RECORDS, independently of any body, which is what

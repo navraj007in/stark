@@ -26,7 +26,10 @@ use starkc::provider_resolve::ProviderSet;
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
 fn filesystem() -> Vec<String> {
-    vec!["filesystem".to_string()]
+    vec![
+        "filesystem-read".to_string(),
+        "filesystem-write".to_string(),
+    ]
 }
 
 fn selected() -> ProviderSet {
@@ -34,9 +37,16 @@ fn selected() -> ProviderSet {
         .expect("filesystem must be available on a Tier-1 target")
 }
 
+fn capability(function: &str) -> &'static str {
+    match function {
+        "stark_file_create" | "stark_file_write" | "stark_file_complete" => "filesystem-write",
+        _ => "filesystem-read",
+    }
+}
+
 fn planned(function: &str) -> starkc::provider_bind::ProviderBindingPlan {
     let call = selected()
-        .resolve("filesystem", function)
+        .resolve(capability(function), function)
         .unwrap_or_else(|e| panic!("{function} must resolve: {e:#?}"));
     plan(
         ProviderCallId(0),
@@ -102,7 +112,7 @@ fn the_whole_file_surface_plans() {
         assert!(
             p.covers(
                 selected()
-                    .resolve("filesystem", function)
+                    .resolve(capability(function), function)
                     .unwrap()
                     .function
                     .params
@@ -173,7 +183,9 @@ fn ordinary_operations_borrow_the_handle() {
 fn complete_is_recoverable_and_close_consumes() {
     let set = selected();
 
-    let complete = set.resolve("filesystem", "stark_file_complete").unwrap();
+    let complete = set
+        .resolve("filesystem-write", "stark_file_complete")
+        .unwrap();
     assert!(
         complete.function.is_close_for.is_none(),
         "complete is not the close function"
@@ -183,7 +195,7 @@ fn complete_is_recoverable_and_close_consumes() {
         [AbiParam::HandleBorrowed { .. }]
     ));
 
-    let close = set.resolve("filesystem", "stark_file_close").unwrap();
+    let close = set.resolve("filesystem-read", "stark_file_close").unwrap();
     assert_eq!(
         close.function.is_close_for.as_deref(),
         Some("file"),
@@ -238,7 +250,9 @@ fn exactly_one_close_is_declared_for_file() {
 /// from exhaustion without a sentinel count.
 #[test]
 fn read_reports_count_and_eof_separately() {
-    let call = selected().resolve("filesystem", "stark_file_read").unwrap();
+    let call = selected()
+        .resolve("filesystem-read", "stark_file_read")
+        .unwrap();
     assert!(
         matches!(
             call.function.params.as_slice(),
@@ -260,7 +274,7 @@ fn read_reports_count_and_eof_separately() {
 #[test]
 fn write_reports_bytes_accepted() {
     let call = selected()
-        .resolve("filesystem", "stark_file_write")
+        .resolve("filesystem-write", "stark_file_write")
         .unwrap();
     assert!(
         matches!(
@@ -305,7 +319,9 @@ fn the_declared_file_vocabulary_is_channel_one() {
 /// resource type named. C7.8.4 admitted `file` and nothing more.
 #[test]
 fn an_unbound_resource_type_is_still_refused() {
-    let mut call = selected().resolve("filesystem", "stark_file_open").unwrap();
+    let mut call = selected()
+        .resolve("filesystem-read", "stark_file_open")
+        .unwrap();
     call.function.params = vec![AbiParam::HandleOut {
         resource_type: "directory".to_string(),
     }];

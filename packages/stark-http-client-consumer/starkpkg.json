@@ -2,6 +2,8 @@
   "name": "stark-http-client-consumer",
   "version": "0.1.0",
   "entry": "src/main.stark",
+  "capability_vocabulary": 1,
+  "capabilities": ["clock", "network-client"],
   "dependencies": {
     "stark_http_core": {
       "package": "stark-http-core",

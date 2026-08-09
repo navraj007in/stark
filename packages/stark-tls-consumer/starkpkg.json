@@ -2,6 +2,8 @@
   "name": "stark-tls-consumer",
   "version": "0.1.0",
   "entry": "src/main.stark",
+  "capability_vocabulary": 1,
+  "capabilities": ["clock", "network-client"],
   "dependencies": {
     "stark_tls": { "package": "stark-tls", "path": "../stark-tls", "version": "0.1.0" },
     "stark_net": { "package": "stark-net", "path": "../stark-net", "version": "0.1.0" },

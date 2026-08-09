@@ -16,7 +16,10 @@ const USAGE: &str = "\
 stark — package manager and builder for the STARK Core v1 language
 
 Usage:
-  stark check                   Check the current package and dependencies.
+  stark check [--target-native]
+                                 Check the current package and dependencies.
+                                 Native-surface gaps warn by default; --target-native
+                                 makes them errors.
   stark build [--release] [--target <triple>] [--no-build-cache] [--no-mir-opt]
               [--locked] [--offline] [--keep-generated] [--emit-rust] [--verbose]
                                  Compile a native executable. Debug by default;
@@ -102,10 +105,12 @@ fn main() -> ExitCode {
 
     let mut locked = false;
     let mut offline = false;
+    let mut target_native = false;
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "--locked" => locked = true,
             "--offline" => offline = true,
+            "--target-native" if cmd == "check" => target_native = true,
             _ => {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
@@ -164,7 +169,27 @@ fn main() -> ExitCode {
         }
     };
 
+    for diagnostic in program.diagnostics() {
+        eprint!("{}", diagnostic.render(program.sources()));
+    }
+
     if cmd == "check" {
+        if let Ok(mir) = program.lower_mir() {
+            let exclusions =
+                starkc::backend::generated_rust::emit_runtime::exclusions_in_program(&mir);
+            for (_, span, message) in &exclusions {
+                let diagnostic = if target_native {
+                    starkc::diag::Diagnostic::error(message.clone(), *span).with_code("E0106")
+                } else {
+                    starkc::diag::Diagnostic::warning(message.clone(), *span).with_code("W0106")
+                };
+                eprint!("{}", diagnostic.render(program.sources()));
+            }
+            if target_native && !exclusions.is_empty() {
+                eprintln!("{package_name}: native-target check failed");
+                return ExitCode::FAILURE;
+            }
+        }
         println!("{package_name}: OK");
         return ExitCode::SUCCESS;
     }
