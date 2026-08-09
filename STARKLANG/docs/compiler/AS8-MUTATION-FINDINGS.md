@@ -421,9 +421,12 @@ AS8-R14 `mir::verify::may_need_drop`'s HostResource arm is unguarded (MUT-037), 
         corresponding `mir_ty_is_copy` arm IS guarded (MUT-017, 3 kills including
         `a_host_resource_is_never_copy`). Both encode A11 §5. This is AS8-DA-006's verifier half.
 
-AS8-R15 The full-corpus coverage baseline was attempted and stopped on a disk floor by a
-        deliberate watchdog. The published baseline is `--lib` ONLY and says so in its own title
-        and body. A partial measurement stopped on purpose is a usable result; a full disk is not.
+AS8-R15 DISCHARGED. The full-corpus coverage run COMPLETED (83.05% regions, 84.92% functions,
+        83.64% lines); the watchdog never fired. Both runs are published. It also RETIRED a claim
+        this packet made from the `--lib` run — that the two files holding the most INVISIBLE
+        authorities were the least covered. They are not; that was a `--lib` artefact. The
+        replacement is stronger: traits.rs is 82.77% covered and ESF-TRAIT-001 still has no
+        control. Branch coverage remains unavailable from this toolchain and is not claimed.
 ```
 
 ## Method note — the harness had to be repaired mid-packet, twice

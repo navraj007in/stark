@@ -85,6 +85,16 @@ modules   one analysis   x8 open URIs   diagnostics
 implementation and takes ordinary checkpoints. The test is written so the repair flips its polarity
 rather than deleting it — its own message says so.
 
+**OWNER RULING 2026-08-09 — DEV-213 DOES NOT BLOCK SPRINT 4.** It is a real HEAD defect and
+correctly carries a DEV, but it is an LSP/editor correctness defect found by assurance — not a
+reason to mutate the frozen compiler architecture again before closeout. It is fixed in the next
+bounded LSP correctness packet.
+
+> **Standing qualification until this closes:** any claim that `workspace/symbol` is correct under
+> multi-file editing must be stated as qualified. The LSP answers correctly for a single open file
+> and for a freshly opened one; it is the combination of several open URIs of one package and an
+> edit to any of them that is wrong.
+
 ## DEV-004 — `resolve.rs` tensor-builtin gating bug (bare `min`/`max`) (RESOLVED in WP-C1.2)
 
 - **Normative expectation:** Core-only compilation (no `--extension tensor`) must never resolve

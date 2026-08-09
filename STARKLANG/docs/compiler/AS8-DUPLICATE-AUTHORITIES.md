@@ -43,12 +43,12 @@ BOTH KILLED   ->  the strongest outcome. Two independently implemented tables th
 
 | ID | Semantic rule | Implementation A | Implementation B | Intended relationship | One-sided mutation A | One-sided mutation B | External / control evidence | Disposition |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AS8-DA-001` | Which primitives are integers (`ESF-TYPE-001` family; 03 numeric semantics) | `typecheck::types::is_integer` — 14 call sites | `typecheck::types::is_integer_primitive` — 1 call site | **None intended.** Both `pub(super)`, same module, byte-identical, same bottom layer of the AS7 DAG. No independence value is available at one layer of one module | `AS8-MUT-018` **KILLED** (9) | `AS8-MUT-024` **KILLED** (4) | `entire_frozen_corpus_agrees`, both sides | **Consolidate AFTER AS8**, per owner ruling, unless a trial exposes a live defect. Not a DEV: identical copies cannot disagree |
-| `AS8-DA-002` | Which `RuntimeFn`s are Vec operations | `mir::interp::is_vec_runtime` | `mir::verify::is_vec_runtime_fn` | **Plausibly deliberate.** `verify.rs` exists to CHECK the lowering `interp.rs` executes; an independent table is what lets it disagree | `AS8-MUT-026` **KILLED** (1) | `AS8-MUT-027` **KILLED** (1) | `mir_differential` (copy A); an `unreachable!()` in `vec_runtime_sig` (copy B) | **BOTH COVERED, NEITHER CROSS-CHECKS — see the finding below** |
-| `AS8-DA-003` | Which `RuntimeFn`s are Box operations | `mir::interp::is_box_runtime` | `mir::verify::is_box_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-028` **KILLED** (4) | `AS8-MUT-029` **KILLED** (4) | as above | **BOTH COVERED, NEITHER CROSS-CHECKS** |
-| `AS8-DA-004` | Which `RuntimeFn`s are Slice operations | `mir::interp::is_slice_runtime` | `mir::verify::is_slice_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-030` **KILLED** (1) | `AS8-MUT-031` **KILLED** (1) | as above | **BOTH COVERED, NEITHER CROSS-CHECKS** |
+| `AS8-DA-001` | Which primitives are integers (`ESF-TYPE-001` family; 03 numeric semantics) | `typecheck::types::is_integer` — 14 call sites | `typecheck::types::is_integer_primitive` — 1 call site | **None intended.** Both `pub(super)`, same module, byte-identical, same bottom layer of the AS7 DAG. No independence value is available at one layer of one module | `AS8-MUT-018` **KILLED** (9) | `AS8-MUT-024` **KILLED** (4) | `entire_frozen_corpus_agrees`, both sides | **CONSOLIDATE to one authority** — owner ruling 2026-08-09. Both copies are guarded (MUT-018/024) and neither has drifted, so there is no defect and no DEV; there is also no useful independence at one layer of one module. **After Sprint 4, not before Tier-3.** |
+| `AS8-DA-002` | Which `RuntimeFn`s are Vec operations | `mir::interp::is_vec_runtime` | `mir::verify::is_vec_runtime_fn` | **Plausibly deliberate.** `verify.rs` exists to CHECK the lowering `interp.rs` executes; an independent table is what lets it disagree | `AS8-MUT-026` **KILLED** (1) | `AS8-MUT-027` **KILLED** (1) | `mir_differential` (copy A); an `unreachable!()` in `vec_runtime_sig` (copy B) | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
+| `AS8-DA-003` | Which `RuntimeFn`s are Box operations | `mir::interp::is_box_runtime` | `mir::verify::is_box_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-028` **KILLED** (4) | `AS8-MUT-029` **KILLED** (4) | as above | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
+| `AS8-DA-004` | Which `RuntimeFn`s are Slice operations | `mir::interp::is_slice_runtime` | `mir::verify::is_slice_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-030` **KILLED** (1) | `AS8-MUT-031` **KILLED** (1) | as above | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
 | `AS8-DA-006` | Does this type need drop glue (`ESF-DROP-002`; A11 §5, 05) | `mir::drop_rule::requires_drop_glue_with`, reached from `lower::ty_requires_drop_glue` — **precise** | `mir::verify::may_need_drop` — **deliberately conservative** | **Deliberate, asymmetric, and documented.** The verifier over-approximates on purpose so it can reject a missing drop without reimplementing the precise rule. AS4 added `may_need_drop_for_inventory`, a test-only window, expressly to measure the conservative rule against the precise one | — | `AS8-MUT-037` | AS4 drop-rule matrix; `a11_host_resource`, `c788_resource_lifecycle` | **KEEP. The positive exemplar.** Two implementations, an explicit intended relationship, and a measurement harness for the gap between them |
-| `AS8-DA-005` | `ScalarTy` → STARK primitive spelling | `provider_synth::scalar_src` | `provider_derive::scalar_name` | **Unclear.** Two stages of provider generation naming the same mapping; neither is a check on the other | `AS8-MUT-032` **KILLED** (2) | `AS8-MUT-033` **SURVIVED** (0) | `c788_io_*` package build (copy A only) | **ASYMMETRIC: copy B can drift silently. Architectural residual — AS8-R12** |
+| `AS8-DA-005` | `ScalarTy` → STARK primitive spelling | `provider_synth::scalar_src` | `provider_derive::scalar_name` | **Unclear.** Two stages of provider generation naming the same mapping; neither is a check on the other | `AS8-MUT-032` **KILLED** (2) | `AS8-MUT-033` **SURVIVED** (0) | `c788_io_*` package build (copy A only) | **CONSOLIDATE to one authority** — owner ruling 2026-08-09. Neither copy provides useful independence, and `scalar_name` is exercised by nothing (AS8-R12). **After Sprint 4.** |
 
 ## `AS8-DA-006` is the proof that this is a lower bound
 
@@ -95,9 +95,24 @@ against the instinct to consolidate:
 > It would also gain little beyond removing drift risk, and it would create genuine shared fate
 > where there is presently none.
 
-**Left as an owner call rather than resolved here**, because the ruling was explicitly about this
-dimension and the evidence refines the question rather than answering it: *is the redundancy worth
-keeping for a control that could be built, or consolidated because that control was never built?*
+**OWNER RULING, 2026-08-09 — the redundancy is kept, and the missing control is built.**
+
+```text
+DA-001, DA-005      CONSOLIDATE. Neither provides useful independence.
+DA-002/003/004      REMAIN SEPARATE. Interpreter and verifier keep independently implemented
+                    classifications rather than acquire shared fate. After Sprint 4, add an
+                    EXHAUSTIVE PARITY/DRIFT TEST over the closed `RuntimeFn` set, so one copy
+                    cannot silently diverge from the other.
+DA-006              UNCHANGED, exactly as designed: precise lowering rule vs conservative
+                    verifier rule.
+NONE of these belong before Tier-3.
+```
+
+The ruling answers the question the measurement posed. The trials showed the cross-check does not
+exist today; the disposition is to **build it** rather than to delete the redundancy that would make
+it possible. A parity test over a closed enum is a cheap, total control — it does not merge the two
+tables, so neither engine inherits the other's answer, and it cannot go quietly stale the way a
+shared helper would make impossible to notice at all.
 
 `AS8-DA-005` is the unambiguous one. `scalar_src` is exercised by the `stark-io` package build;
 `scalar_name` is exercised by nothing — mutating `ScalarTy::U8` to spell `UInt16` survived every
