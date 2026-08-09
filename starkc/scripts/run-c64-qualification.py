@@ -312,8 +312,9 @@ IGNORED_RE = re.compile(r"^test (\S+) \.\.\. ignored", re.MULTILINE)
 # ignore that is not on this list fails the run, and putting one on the list is a decision with a
 # reason attached.
 #
-# Both current entries are opt-in tensor-track tests that need an external artifact this matrix
-# does not supply. Neither observes Core runtime semantics, which is what C6.4 qualifies.
+# The first two entries are opt-in tensor-track tests that need an external artifact this matrix
+# does not supply. The third is a measurement harness. None observes Core runtime semantics, which
+# is what C6.4 qualifies.
 CLASSIFIED_IGNORES = {
     "imports_and_verifies_checksum_pinned_reference_model": (
         "gate-4 tensor track; needs a checksum-verified ResNet50 named by "
@@ -322,6 +323,13 @@ CLASSIFIED_IGNORES = {
     "real_inference_agrees_with_reference": (
         "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "
         "Outside the C6.4 Core-runtime matrix."
+    ),
+    "c10e_lsp_latency": (
+        "C10-E measurement harness, not an assertion: it prints LSP cold-open, "
+        "edit-to-diagnostic and workspace-symbol latencies and has no pass/fail condition "
+        "beyond completing. Run deliberately with `--ignored --nocapture`. A timing test in "
+        "the ordinary suite fails on a loaded machine and teaches nothing. Observes no Core "
+        "runtime semantics, so it is outside the C6.4 matrix."
     ),
 }
 
