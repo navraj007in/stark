@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C9  Next: Sprint 4 Tier-3 closeout, then Campaign B exit  Blocked: none
+Gate: C9  Next: C10 release qualification  Blocked: Gate C9 Part B (second-artifact evidence)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
@@ -14,12 +14,12 @@ Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unch
 
 | | |
 | --- | --- |
-| **Active packet** | **none** — AS8 CLOSED 2026-08-09 (CD-394). Next is the **Sprint 4 Tier-3 closeout**, then the Campaign B exit report |
-| **Active branch** | `wp-arch-stability/as7-modularization` |
+| **Active packet** | **none.** Campaign B EXITED 2026-08-09 — AS5–AS8 all closed, Sprint 4 Tier-3 PASS. Next is **C10 release qualification** |
+| **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | OPEN — Part A closed for C9.0/C9.1/C9.2; **Part B blocked pending second-artifact evidence.** No provider generalisation is authorised from ONNX alone |
-| **Sprint 4** | AS6 CLOSED (CD-390), AS7 CLOSED (CD-391) with criterion 2 **re-qualified** (CD-393), **AS8 CLOSED (CD-394)**. Only the Tier-3 closeout remains |
-| **Campaign B** | Exits only when AS5–AS8 are complete or owner-deferred. Its report gates C10; it makes no stability or conformance claim itself |
+| **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
+| **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
 | **Tensor track** | Deferred research on Gate 7's own terms. Platform progress is **not** permission to reopen it |
 
@@ -44,7 +44,7 @@ AS8-DA-001..6  duplicated authorities — see AS8-DUPLICATE-AUTHORITIES.md; DA-0
                consolidate-or-keep is an OWNER CALL, measurement recorded
 DEV-213        LSP caches one whole-package analysis per open URI, invalidates only the edited
                one; workspace/symbol returns stale names. Demonstrated at HEAD, not fixed
-PR #10 / #11   merge topology for sprint-3 and sprint-4 undecided; Sprint 4 cannot close on it
+(PR #10 / #11  RESOLVED — both merged as merge commits; every cited packet SHA still resolves)
 ```
 
 **This block is a summary and is not authoritative over the records below it.** Where they
