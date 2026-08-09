@@ -1,9 +1,9 @@
-# AS8 — compiler-source mutation trials, batches 0/1/1b/1c/6
+# AS8 — compiler-source mutation trials
 
 **Packet:** AS8, consuming `WP-ENGINE-INDEPENDENCE` EI1–EI5 (CD-392). Harness:
 `starkc/scripts/as8-mutate.py`. **Date:** 2026-08-09.
 
-**Status: five batches run. THREE EI DOCUMENTS ARE WRONG AND ARE CORRECTED HERE.** These are the
+**Status: all EI5 batches run, plus three the packet added (1b/1c isolation, 4b re-selection, 9 resolver/verifier) and the AS8-DA pairs. THREE EI DOCUMENTS WERE WRONG AND ARE CORRECTED HERE.** These are the
 first mutations in this repository to touch compiler source; EI2's §14.1 residual said so in
 advance and it was accurate.
 
@@ -31,6 +31,18 @@ than reinterpreted afterwards.
 | `AS8-MUT-008` | `ESF-TRAP-001a` | vocabulary no-op | SURVIVED | SURVIVED | **CONFIRMED** | 0 | — |
 | `AS8-MUT-012` | `ESF-COPY-002` | `&mut T` reports `Copy` **over `MirTy`** | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
 | `AS8-MUT-013` | `ESF-TYPE-001` | `()` stops canonicalising to `Unit` (reverts TYPE-PRIM-001) | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-014` | `ESF-TRAIT-001` | `Eq::eq` declared by-value | SURVIVED | SURVIVED | **CONFIRMED** | 0 | — |
+| `AS8-MUT-015` | `ESF-TRAIT-001` | `Ord::cmp` returns `Bool` | SURVIVED | SURVIVED | **CONFIRMED** | 0 | — |
+| `AS8-MUT-016` | `ESF-PROV-001` | provider params reversed | KILLED | SURVIVED | **VOID — see Finding 6** | 0 | — |
+| `AS8-MUT-025` | `ESF-PROV-001` | = MUT-016, re-selected | KILLED | KILLED | **CONFIRMED** | 4 | `MIR-0005` via `mir/verify.rs` |
+| `AS8-MUT-017` | `ESF-RES-001` | host resource is `Copy`-eligible | KILLED | KILLED | **CONFIRMED** | 3 | `a_host_resource_is_never_copy` |
+| `AS8-MUT-018` | `ESF-TYPE-001` | `is_integer` drops `UInt64` | KILLED | KILLED | **CONFIRMED** | 9 | `entire_frozen_corpus_agrees` |
+| `AS8-MUT-024` | `ESF-TYPE-001` | `is_integer_primitive` drops `UInt64` | KILLED | KILLED | **CONFIRMED** | 4 | `entire_frozen_corpus_agrees` |
+| `AS8-MUT-019` | `ESF-TYPE-001` | `strip_ref` stops at one level | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-020` | `RA-OVERFLOW` | drop the destination-width range check | KILLED | KILLED | **CONFIRMED** | 3 | `c5_snapshot_overflow_replays_…` |
+| `AS8-MUT-021` | `RA-SHIFT` | remove STARK's shift-count check | KILLED | KILLED | **CONFIRMED** | 1 | `invalid_shift_trap_agrees` |
+| `AS8-MUT-022` | `RA-DROP` | array destruction order reversed | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-023` | `EV-CORPUS-C6` | trap assignment, vs the corpus alone | KILLED | KILLED | **CONFIRMED** | 1 | `the_corpus_replays_through_every_required_engine` |
 
 Per EI5, kill rates are **not pooled**. Every trial above is `SHARED_AUTHORITY`, so the meaningful
 split is by killer independence, not by tag:
@@ -185,6 +197,84 @@ observes the consequence. It pairs instructively with MUT-006 — the same rule 
 front-end side, also a survivor, but killed instantly by `c61f_structural_copy`. The front-end form
 has a control; the MIR form has none, and neither engine notices.
 
+---
+
+## Finding 6 — `MUT-016` was VOID, and the reason is a third selection failure
+
+`AS8-MUT-016` reversed provider parameter order and was recorded SURVIVED. **That result is void,
+not negative.** EI5 named `EV-PROVIDER-LOOP` as its control and the harness cannot run it: the
+loopback suites live in `packages/*/native/Cargo.toml`, separate crates, while every trial runs
+`cargo test -p starkc`. The trial measured the harness's reach.
+
+`AS8-MUT-025` re-ran the identical mutation against the suites that drive a provider program through
+`mir/verify.rs`, its one in-tree consumer. **Killed by 4 tests**, the verifier reporting
+`MIR-0005 call argument: expected Ref { mutable: true, inner: UInt64 }, found Ref { mutable: false,
+inner: Slice(UInt8) }`.
+
+**`ESF-PROV-001` therefore HAS an in-tree independent control, and it is the MIR verifier.** EI2
+recorded only the external loopback, and EI2-R2 framed the gap as "two engines, not three". Both
+were counting ENGINES — and `mir/verify.rs` is not an engine. It is a check that derives its answer
+separately, which is what a control is.
+
+> **Three selection failures in one packet.** MUT-005/006 (the control existed and was not
+> selected), MUT-016 (the control was in another crate), MUT-013 (the control was selected and was
+> structurally incapable). The rule EI5 gained after the first was necessary and twice
+> insufficient. The general statement it should have carried from the start: **a mutation trial
+> measures THE SELECTED SUITES. A survivor is a statement about them until the selection is
+> independently justified.**
+
+## Finding 7 — a Core trait contract can be arbitrarily wrong and nothing notices
+
+`Eq::eq` declared to take `self` by value, and `Ord::cmp` declared to return `Bool` rather than
+`Ordering`, both **survived** `copy_canon_matrix`, `conformance`, `gate4a_prelude_traits` and
+`three_engine_differential`. EI5 predicted survivors; the prediction holds.
+
+`copy_canon_matrix` cannot help, for the reason MUT-003 already demonstrated — it enumerates *from*
+`core_method_signature`. `ESF-TRAIT-001` is `high` risk with no control, and the corpus census found
+no test citing TRAIT-DEF-001 / TRAIT-LAW-001 / TRAIT-ASSOC-001 outside corpus cases. **AS8-R10.**
+
+## Finding 8 — the rustc conversions are real; one of them is unguarded
+
+EI3's central claim was that overflow, shift and drop order were **converted** from rustc
+assumptions into STARK decisions. Two of three are now enforced rather than documented:
+
+```text
+RA-OVERFLOW  drop the destination-width range check  KILLED, 3 tests
+             "MIR/NATIVE DISAGREEMENT on completion versus trap"
+RA-SHIFT     remove STARK's own shift-count check    KILLED, 1 test
+             "MIR/NATIVE DISAGREEMENT on trap category"
+```
+
+Both kills are `CROSS_ENGINE_DERIVED`: MIR traps independently of the generated Rust, which is
+exactly the structure that makes the conversion meaningful rather than cosmetic.
+
+**`RA-DROP` survived.** Reversing `drop_plan::array_order` was observed by nothing. EI5 stated the
+consequence in advance — *"a survivor means mir↔native inheritance (`ESF-DROP-002`) is unguarded by
+the one control that exists"*. The HIR engine walks a different structure and would disagree; no
+case exercises it. **AS8-R8.**
+
+## Finding 9 — both `is_integer` copies are live and guarded; `strip_ref` is not
+
+`AS8-DA-001` resolved by measurement rather than argument:
+
+```text
+MUT-018  is_integer            drops UInt64   KILLED, 9 tests
+MUT-024  is_integer_primitive  drops UInt64   KILLED, 4 tests
+```
+
+Both copies are reached and both are guarded, so neither is dormant and neither has drifted. That
+settles the disposition the owner ruling left conditional: consolidation is safe **after AS8**,
+because neither copy checks the other — there is no independence to lose.
+
+`strip_ref` is the opposite. Making it stop after ONE level **survived** `conformance`, both
+differentials and `c61f_nested_refs`. TYPE-METHOD-002 makes nested-reference receivers normative —
+auto-deref removes one leading `&` at a time — and nothing distinguishes one level of stripping from
+many. **AS8-R9.**
+
+---
+
+---
+
 ## The corpus census (AS8-R3)
 
 `starkc/scripts/as8-control-census.py`, keyed on **normative rule IDs rather than function names**,
@@ -221,6 +311,10 @@ ENGINE-RISK-PROFILES.md          the EI5 handover ranking is rebuilt on measurem
 ENGINE-MUTATION-TARGETS.md       predictions revised; Selected-tests columns must name the
                                  HAND_AUTHORED controls, which is how MUT-005/006 were missed
 ```
+
+---
+
+---
 
 ## Disposition — what a survivor is, and what it is not (owner ruling, 2026-08-09)
 
@@ -282,9 +376,25 @@ AS8-R6  ESF-COPY-002 is unexercised: no differential case duplicates a `&mut` an
         consequence (MUT-012 survived every selected suite). A COVERAGE residual against
         EV-DIFF-*, not an authority residual — EI5 predicted this reading and it stands.
 
-AS8-R7  Five of thirteen EI5 predictions were falsified, in BOTH directions. Every error traces
+AS8-R7  EIGHT of twenty-five predictions were falsified, in BOTH directions. Every error traces
         to reasoning about the evidence base by reading it rather than by mutating it. No
         register entry should be cited as controlled or uncontrolled until it has been mutated.
+
+AS8-R8  ESF-DROP-002 array destruction order is unguarded. MUT-022 reversed
+        `drop_plan::array_order` and nothing observed it. The HIR engine walks a different
+        structure and WOULD disagree; no case exercises it. Coverage gap, not authority gap.
+
+AS8-R9  `types::strip_ref` recursion is unguarded. MUT-019 made it stop after one level and
+        survived both differentials and `c61f_nested_refs`. TYPE-METHOD-002 makes nested-reference
+        receivers normative, so this is a normative rule with no executable control.
+
+AS8-R10 ESF-TRAIT-001 has no control of any kind. MUT-014 and MUT-015 made Core trait contracts
+        arbitrarily wrong — `Eq::eq` by value, `Ord::cmp` returning Bool — and all four selected
+        suites passed. `copy_canon_matrix` enumerates FROM the table it would have to check.
+
+AS8-R11 EI2-R2 is corrected, in the compiler's favour: ESF-PROV-001 DOES have an in-tree
+        independent control, `mir/verify.rs` (MUT-025, 4 kills). EI2 counted engines, and the
+        verifier is not an engine. "Two engines, not three" understated the evidence.
 ```
 
 ## Method note — the harness had to be repaired mid-packet, twice
@@ -299,5 +409,7 @@ Recorded because both defects had the shape this packet exists to find.
    in flight committed AS8-MUT-002 to a pushed branch, and every C6.5 job failed on it. The
    harness now refuses a target that differs from HEAD before the trial and after the restore.
    **A mutation harness is a parallel writer inside your own session.**
+
+---
 
 ---
