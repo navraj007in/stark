@@ -5,19 +5,21 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C9  Next: C10 release qualification  Blocked: Gate C9 Part B (second-artifact evidence)
+Gate: C10  Next: C10-D (challenge), C10-E (perf), C10-F (policy)  Blocked: none
 Mandatory compiler path: Core=done   MIR=done   Native=done
-Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
+Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
+                 TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
 
 ## What is true right now
 
 | | |
 | --- | --- |
-| **Active packet** | **none.** Campaign B EXITED 2026-08-09 — AS5–AS8 all closed, Sprint 4 Tier-3 PASS. Next is **C10 release qualification** |
+| **Active packet** | C10-0, C10-P, C10-A1, C10-B, C10-C, **C10-A2 COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-D, C10-E, C10-F |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
-| **Gate C9** | OPEN — Part A closed for C9.0/C9.1/C9.2; **Part B blocked pending second-artifact evidence.** No provider generalisation is authorised from ONNX alone |
+| **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
+| **Gate C10** | **OPEN.** Plan: `plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md`, approved with amendments. Evaluating Core v1 Compiler Stable + Native Systems Preview only |
 | **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
 | **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
@@ -36,21 +38,403 @@ ROADMAP.md (repo root)     the one live forward plan
 
 ## Known open, at a glance
 
+**CORRECTED 2026-08-09 (CD-395, finding F2). This block listed TWO deviations; there are
+THIRTY-TWO.** It was not wrong about the two, and it says of itself that it is a summary — but a
+qualification session that trusted it would have carried 2 instead of 32. The three populations are
+frozen separately by OD-3; regenerate A with
+`python3 starkc/scripts/c10-deviation-populations.py`.
+
 ```text
-DEV-012        interactive editor validation, seven features unvalidated  (C8, CD-385)
-Gate C9 Part B blocked: needs a second artifact; ONNX alone authorises nothing
-AS8-R1..R15    mutation/evidence residuals — see AS8-MUTATION-FINDINGS.md
-AS8-DA-001..6  duplicated authorities — see AS8-DUPLICATE-AUTHORITIES.md; DA-002/003/004
-               consolidate-or-keep is an OWNER CALL, measurement recorded
-DEV-213        LSP caches one whole-package analysis per open URI, invalidates only the edited
-               one; workspace/symbol returns stale names. Demonstrated at HEAD, not fixed
-(PR #10 / #11  RESOLVED — both merged as merge commits; every cited packet SHA still resolves)
+POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 accepted + 1 dormant
+
+  live OPEN by the last ledger heading                                               26
+                            OD-7 adjudicated all 8 unsettled entries and BACKFILLED the 6 that
+                            lived only here. `c10-deviation-populations.py` now reports
+                            ADJUDICATE = 0 — population A is fully resolved
+    DEV-012 interactive editor validation, 7 of 10 features    -> C10-P, needs a human
+                                                                  in an editor (MANUAL evidence)
+    DEV-140/141/142/143/144/145   the six CD-342 "layer defect" registrations —
+                                  these BOUND THE SUPPORTED SUBSET and are load-bearing
+                                  for any native-conformance claim
+    DEV-120 native call-depth exhaustion      DEV-122 span source-identity gap
+    DEV-167 Display::fmt has no to_string()   DEV-168 qualified core-trait call, no MIR lowering
+    DEV-172 no signed type expresses its min  DEV-177 generic-parameter shadowing accepted
+    DEV-178 generic context not retained      DEV-180 HIR flattens &mut self receivers
+    DEV-181 assignment-RHS borrow blocks it   DEV-186 LSP unbounded Content-Length
+    DEV-214 a left-associative operator chain ABORTS the compiler with a stack overflow
+            (65 terms on a 2 MiB thread stack). Found by C10-B. OWNER CALL: every fix
+            changes the accepted set, the architecture, or only moves the cliff
+
+  OPEN HERE, owning NO heading in KNOWN-DEVIATIONS.md                                 6
+    DEV-156 stark fmt evicts member doc comments   DEV-157 no MirTy::Never in the backend
+    DEV-159 native build races its dependency      DEV-160 whole-value projection borrows
+    DEV-161 ambient CARGO_TARGET_DIR breaks builds  DEV-162 read through a whole-value accessor
+    ^^ a C10.7 check reading only the ledger would not see these. CD-395 finding F3
+
+  ADJUDICATED by OD-7 (owner, 2026-08-09) — none remain unsettled
+    CLOSED / retired    DEV-010 (superseded by C8)   DEV-020 (confirmed design)
+                        DEV-021 (verified correct)   DEV-196 (Core(File) not lowerable at all;
+                                                     the reachability test is KEPT as a premise
+                                                     guard)
+    OPEN, accepted      DEV-005 (CLI warning-policy drift; needs ONE current-head reproduction
+                                 before C10-Q, because the entry is old enough that a later
+                                 change may already have removed it)
+                        DEV-083 (impl-head concrete position vs unresolved receiver argument;
+                                 constrains the Core Stable claim, does not block C10)
+    ACCEPTED-INDEF.     DEV-011 (doc comments as trivia — no normative requirement demands
+                                 otherwise; a representation preference is NOT a conformance
+                                 defect, and it was NOT "fixed")
+    DORMANT             DEV-179 (unreachable while iterator map/filter is refused by E0105;
+                                 not closed, because the hazardous code remains; not counted
+                                 live, because nothing can reach it)
+
+POPULATION B — release/distribution (constrains WORDING, not conformance)
+    DEV-165 connect_timeout accepted and ignored; standalone toolchain PARTIAL;
+    offline package build NOT PROVEN; signed distribution NOT PROVEN (integrity, not
+    authenticity); x86_64-apple-darwin tier-3 PACKAGED AND NEVER EXECUTED (F1)
+
+POPULATION C — assurance residuals (constrain CLAIM STRENGTH; assert NO defect)
+    AS8-R1/R2/R4/R5/R6/R8/R9/R10/R12/R13/R14 live; R3, R15 DISCHARGED; R7 is a method finding
+    AS8-DA-001..006  DA-001/005 CONSOLIDATE (outside C10); DA-002/003/004 REMAIN SEPARATE and
+                     owe a RuntimeFn parity/drift test (test-only, permitted in C10-D);
+                     DA-006 KEEP
+    RA-LAYOUT unmeasured; RA-LINTS suppresses two deny-by-default lints in generated code
+    DEV-017   the coverage DB cannot express per-rule +/- evidence. C10-A1 measured the
+              consequence against the CORRECTED denominator: 85 of 168 granular rules are
+              cited only through an aggregate runner
+    branch coverage unavailable from this toolchain — not claimed, not fabricated
+
+Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
+(PR #10 / #11   RESOLVED — both merged as merge commits; every cited packet SHA still resolves)
 ```
 
 **This block is a summary and is not authoritative over the records below it.** Where they
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-395 — Gate C10 OPENED; six opening decisions ruled; the "at a glance" block was short by thirty (2026-08-09)
+
+**`STARKLANG/docs/compiler/plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md` is the execution plan,
+APPROVED WITH AMENDMENTS. `work-packages/C10-0-OPENING-INVENTORY.md` is the freeze.** Campaign B
+exited; C10 is the release-qualification campaign, and it is a QUALIFICATION campaign — its purpose
+is to determine what the existing compiler can legitimately claim, not to improve it.
+
+### The sequencing question, answered from the documents rather than by preference
+
+The position line read as *"C9 Part B blocks C10"*. **The roadmap does not say that anywhere.**
+§4.5 admits "blocked on second-artifact evidence" as one of three PERMITTED explicit statuses;
+WP-C10.7 requires C0–C8 plus the mandatory native path; the Core v1 Compiler Stable class requires
+"C7, C8, and C10". C9 is excluded in three independent places, and Charter §2.4 scopes the
+`Blocked:` field to the CURRENT gate. C9 Part A already supplies the extension-isolation and
+tensor-stage inputs C10.1 consumes.
+
+```text
+OD-1  APPROVED               C9 Part B does not block C10. Part A CLOSED, Part B DEFERRED
+                             pending second-artifact evidence; ONNX alone authorises nothing (CE7)
+OD-2  APPROVED               evaluate Core v1 Compiler Stable + Native Systems Preview ONLY.
+                             STARK v1 General-Purpose Stable is a wider claim on much the same
+                             evidence and remains a separate owner act (CD-022)
+OD-3  APPROVED W/REFINEMENT  THREE separately countable populations, not one denominator:
+                             A compiler deviations (the CD-021 denominator)
+                             B release/distribution (constrains WORDING)
+                             C assurance residuals (constrains CLAIM STRENGTH, asserts no defect)
+OD-4  MODIFIED               DEV-012 and DEV-213 are CLOSED during C10, not carried. Neither
+                             blocks opening; both gate the claim. New packet C10-P, new gate
+                             C10-G before C10-Q. Neither reopens C8
+OD-5  APPROVED               see the superseding note below
+OD-6  APPROVED               ROADMAP.md §0.1 corrected; §6.0's gate text preserved and marked
+                             satisfied
+```
+
+### Three amendments the owner made to the plan's METHOD
+
+1. **The plan's five inputs are not the whole authority.** The normative Core and extension
+   specifications retain theirs under Charter §1.6/§1.9. A work-package plan sits at level 5 of the
+   source-of-truth hierarchy and cannot demote the specification beneath itself.
+2. **No expected finding count, and no expected falsification rate.** The plan had said A1 "should
+   expect to correct some non-zero number" and that C10 "should expect a comparable rate" to AS8's
+   13/39. Both create investigator bias. **0 corrections and 20 are equally legitimate**; what must
+   be demonstrated is that the census enumerated the intended population — so the forcing mechanism
+   is an injected mis-citation the census must report, not a yield. **AS8's lesson was not "a third
+   of audits are wrong"; it was "do not infer evidence strength from reading the machinery."**
+3. **Inherited mutation evidence gets a freshness rule** (plan §8.2a). A prior trial may be cited
+   only while the targeted authority AND the claimed killing evidence are unchanged; otherwise the
+   result is HISTORICAL and the trial re-runs. Without it, C10 could cite `AS8-MUT-025` as evidence
+   that `mir/verify.rs` controls provider signatures long after that verifier was rewritten.
+
+### OD-5 — the superseding note. CD-394 IS NOT REWRITTEN.
+
+**CD-394's evidence line ("coverage baseline published as `--lib` only and labelled as such") and
+`AS8-EXIT-QUALIFICATION.md` §5's `AS8-R15` row were correct when written and were overtaken by
+`0bc9aee`.** Both are preserved exactly as written. The live figures:
+
+```text
+full corpus      regions 83.05%   functions 84.92%   lines 83.64%
+AS8-R15          DISCHARGED
+branch coverage  unavailable from this toolchain — NOT CLAIMED, NOT FABRICATED
+live document    STARKLANG/docs/compiler/AS8-COVERAGE-BASELINE.md
+```
+
+### What C10-0 measured, and the three things nobody had checked
+
+**F3, the most consequential.** Six open deviations exist **only** in this file, owning no heading
+in `KNOWN-DEVIATIONS.md` at all:
+
+```text
+DEV-156  `stark fmt` evicts member doc comments
+DEV-157  the native backend has no representation for `MirTy::Never`
+DEV-159  a native build can race its own dependency build
+DEV-160  place-granular borrows, whole-value projections
+DEV-161  an ambient `CARGO_TARGET_DIR` breaks every native build
+DEV-162  READ through a whole-value accessor
+```
+
+A C10.7 check reading only the ledger would not have seen them. OD-3's second clause — "plus any
+`DEV-NNN` present in `COMPILER-STATE.md` but absent there" — was written for exactly this and
+caught six.
+
+**F2.** The `Known open, at a glance` block listed **two** deviations. Population A has **thirty-two**
+(18 live-OPEN in the ledger + 6 state-only + 8 needing adjudication). The block was not lying — it
+says of itself that it is a summary — but a qualification session that trusted it would have carried
+2 instead of 32. **Corrected below, forward-only.**
+
+**F1.** `target-matrix.json` names **four** targets, not three. `x86_64-apple-darwin` is **tier-3,
+packaged with an archive and both installers, and exercised by no CI job whatsoever.** The C10 plan
+listed three and missed it. **C10-Q may not include tier-3 in any conformance claim.**
+
+**F6, the positive one, and it is measured rather than assumed.** Every inherited AS8 mutation
+result is FRESH: all 12 mutated authority files and all 13 control suites hash identically at
+`e7bb95d` and at `f12ecec`. All 39 trials are citable without re-running. Re-checked at C10-Q.
+
+Also found: four individually-correct and non-interchangeable counts of "how many deviations"
+(186 headings / 170 ids owning one / 178 ids mentioned / 190 reconciler entries), and
+`tests/c6-corpus/README.md` citing `c6_corpus_cases.rs` twice — including a runnable
+`cargo test --test c6_corpus_cases` — **for a target that does not exist** (the enforcer is
+`c6_generated_corpus.rs`).
+
+### Baseline
+
+```text
+qualification baseline   f12ececca6d4bdabf828d657c4a4f719a7f9c39a
+CI                       run 31292404920 (CI) + 31292404936 (C7.8), both conclusion success,
+                         zero non-succeeding jobs — queried per job, not read off a badge
+execution branch         wp-c10/execution-plan
+```
+
+**Next:** C10-P (DEV-213 repair, DEV-012 interactive validation) alongside C10-A1 (the 161-rule
+evidence census). **C10-Q remains an owner decision under CE8** — Charter §2.2 forbids a session
+claiming Core v1 conformance on its own authority. C10 proposes; the owner authorises.
+
+### C10-P, same day — DEV-213 CLOSED; DEV-012 cannot be closed by a session
+
+`audits/C10-P-LANGUAGE-SERVICES.md`. The LSP now invalidates per **package**, not per URI:
+`CompilationResult` records the `package_root` its whole-package analysis was built against, and
+`invalidate_package_of` sweeps every sibling sharing it — from `open`, `update` **and** `close`,
+because all three change the overlay set the analysis is computed from.
+
+**The pass is believed because the failure was demonstrated first.** With the sibling sweep
+disabled the flipped test fails with the defect's exact signature — `["alpha_symbol",
+"renamed_symbol"]`, both names present — and the control was then removed and the restore verified
+byte-identical. AS8's test is renamed and polarity-flipped rather than deleted, exactly as its own
+assertion message instructed. `c10-deviation-populations.py`, which knows nothing about the repair,
+independently reports population A's live-OPEN set dropping 18 → 17.
+
+Evidence: 48 LSP tests, 569 unit tests, clippy `--workspace --all-features --all-targets -D warnings`
+exit 0, `fmt --check` clean.
+
+**C10-0's freshness prediction held.** It stated in advance that an LSP-confined repair would
+disturb none of the 12 mutation-authority files or 13 control suites; the files changed are
+`src/lsp/state.rs` and `src/lsp/server.rs`. Every AS8 trial remains citable. Re-verified at C10-Q
+regardless.
+
+**The residual this packet creates, stated rather than left to be found:** invalidation is now more
+eager, so a package with many open URIs recompiles more often. AS8 measured the old duplication's
+cost as immaterial and the defect was never about cost — but **no before/after was taken here and
+none is claimed.** If an LSP workload enters C10-E's frozen set, this is the change to measure.
+
+### C10-A1, same day — the denominator itself was wrong, and the seven missing rules are the numeric ones
+
+`audits/C10-A1-EVIDENCE-CENSUS.md`. Tool: `scripts/c10-evidence-census.py`.
+
+```text
+DENOMINATOR   168 granular rules      (every prior document, this one included, said 161)
+
+PRECISE      36    21.4%    positive AND negative evidence at test-FUNCTION precision
+AGGREGATE    85    50.6%    cited only via a file or the aggregate runner  (DEV-017)
+ABSENT       42    25.0%    the INVENTORY cites nothing — see below
+N/A           5     3.0%
+```
+
+**A1-F1.** Rule IDs were matched as two dash-separated segments plus a number, and **seven have
+three** — `NUM-INT-ARITH-001`, `NUM-INT-DIV-001`, `NUM-FLOAT-OP/FORMAT/TRAIT/REPRO-001`,
+`NUM-INT-TYPE-001`. **All seven are the numeric-semantics rules**: integer overflow, division by
+zero, float behaviour. For a language whose headline guarantee is that overflow and division by
+zero always trap, the counting method used to plan this campaign could not see the rules that say
+so. Caught by cross-checking c2.11's ids against the inventory, not by reading the regex; confirmed
+by a second independently written enumerator (168 distinct, 0 duplicates, exactly 7 three-segment).
+**The population is unchanged; the enumeration was faulty** — recorded as a dated correction line
+per plan §7.2, not as an edit.
+
+**A1-F3, and it is binding on C10-A2.** `ABSENT` means *the inventory cites nothing*, **not** *nothing
+tests it*. `EXT-ISOLATION-001` records `none; none` while `starkc/tests/c91_extension_isolation.rs`
+runs nine tests in CI on every push; `OWN-PARTIAL-001` records `none` while the `as4_*` and `c61f_*`
+suites exercise it. **This is EI2's error in mirror image** — EI2 read the machinery and missed a
+control sitting in the tree; the inventory froze the same mistake into a data file in 2026-07-18 and
+never revisited it. A2 may not transcribe these buckets; every ABSENT and AGGREGATE row is resolved
+against the TREE or the dashboard says UNRESOLVED.
+
+**A1-F5.** 41 of the 42 ABSENT rules have no legacy predecessor either. The gap is exactly the
+granular rules C2.6 created when it split 59 broad IDs into 168, and which C2.11 — by its own header,
+covering "the high-cost frozen semantic surface" — never reached. **Coherent and bounded, not decay**,
+and it names the precise 41 rows A2 starts from.
+
+**A1-F2.** Citation integrity PASSES: all 36 PRECISE citations resolve to a real `fn`, checked the
+way `check-conformance.py` checks them so a renamed TEST is caught, not merely a renamed file. The
+clean result is believed because `--self-test` injects a citation to a function that does not exist
+and the census reports it. Per the owner's amendment, no finding count was expected or targeted.
+
+### C10-B, same day — the robustness gate FAILS on one target, and the guard that should have caught it works
+
+`audits/C10-B-ROBUSTNESS.md`. Suite: `tests/c10b_robustness.rs`, 12 tests.
+
+**DEV-214 — a left-associative operator chain aborts the compiler with a stack overflow.** The
+parser HAS the right guard (`MAX_DEPTH = 200`, *"this code is nested too deeply to parse"*) and it
+bounds SYNTACTIC nesting, because that is what recurses in recursive descent. A chain does not
+recurse there — `parser.rs` implements the 16-level precedence table as one `loop` per level — so
+the counter never moves. **The AST is still n deep**, and the walks after the parser descend it.
+
+```text
+(((((...1...)))))  300 deep   ->  REJECTED cleanly     <- the bounded failure the gate asks for
+1 + 1 + ... + 1     65 terms  ->  SIGABRT              <- DEV-214
+```
+
+**The severity is in the stack size.** 8 MiB (a main thread): 240 OK, 250 aborts. **2 MiB (Rust's
+default for a SPAWNED thread, and what `cargo test` gives each test): 60 OK, 65 aborts.** ~30 KB of
+stack per AST level. The LSP analyses on a server thread, so an embedding sits on the low number.
+Found because `cargo test` overflowed where `cargo run` had not — the difference between them IS the
+finding, and a suite run only on a main thread would have reported a threshold four times too
+generous.
+
+**Not repaired, by rule rather than reluctance.** Counting chain depth would start rejecting
+200–245-term expressions that compile today — a change to the accepted/rejected program set, CE1/CE2
+and plan stop condition 5. Converting the walks to a worklist is the broad refactoring §3.2 forbids.
+Raising the stack moves the cliff without removing it. **Owner call.**
+
+Targets T1, T2, T4, T5, T6, T8 and both determinism checks PASS over ~2,000 cases. **T3 (package
+graphs) and T7 (malformed artifacts) were NOT RUN** and are named as such rather than dropped from
+the population — C10-Q may not claim robustness over them. DEV-186 is confirmed and characterised.
+
+The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
+proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
+
+### C10-A2, same day — the dashboard, and a tool that needed three corrections
+
+`C10-CONFORMANCE-DASHBOARD.md` + `conformance/c10-dashboard.json` (168 rows, generated).
+Resolver: `scripts/c10-a2-resolve.py`; generator: `scripts/c10-dashboard.py`.
+
+**A1's buckets were NOT transcribed** — that was the packet's binding rule, and A1-F3 is why. Every
+row is resolved against the TREE, keyed on the normative rule id rather than the symbol
+(`as8-control-census.py`'s method, generalised from 11 authorities to 168 rules).
+
+```text
+PRECISE-C211           36     RESOLVED-BY-TREE       20     CORPUS-OR-FILE-LEVEL   27
+IMPLEMENTATION-ONLY     1     UNRESOLVED             84
+```
+
+**Function-precision evidence rose 36 -> 56 of 168 with no test written.** The twenty were already
+in the tree and the inventory never recorded them.
+
+**The resolver needed three corrections, and every one was found by reading NAMES rather than
+counts** — the counts were plausible at every stage:
+
+```text
+1  implementation citations counted as evidence   `interp.rs::eval_expr` offered as evidence for
+                                                  TYPE-PRIM-001. An implementation cannot be its
+                                                  own control — AS8-R4 exactly
+2  `///` citations attributed BACKWARDS           a doc comment above a `#[test]` named the
+                                                  PRECEDING function; five attributions came back
+                                                  shifted by one, every name a real function in
+                                                  the right file
+3  corpus cases counted at function precision     a `.stark` case has `fn main`, and attributing a
+                                                  rule to "main" is precision theatre
+```
+
+Each correction LOWERED the numbers. **A dashboard citing the wrong test is worse than one citing
+none, because it looks checked.** Four rows still attribute to `main` because the rule id sits
+inside an embedded STARK string in a Rust test — the file is right, the function name is not, and
+that is documented rather than engineered away.
+
+**`EXT-ISOLATION-001` is the exemplar and is now fixed.** The inventory recorded `none; none`; C10-A1
+found nine tests running in CI; and the resolver could not find them either, because nothing in
+`c91_extension_isolation.rs` named the rule it pinned. One module-header note plus five per-test
+attributions moved it to RESOLVED-BY-TREE with its five real test functions named — no test
+written, no behaviour changed. That is the shape of the remaining work.
+
+**A finding beyond attribution.** The spec-fixture corpus is a POSITIVE-evidence corpus: 64
+`parse-pass`, 27 `notation`, 17 `semantic-error`, 7 `lex-pass`, and **exactly one `parse-fail`**.
+Charter §1.6 rule 15 requires positive and negative evidence to travel together. Measuring the two
+families separately: lexical negative evidence is dense (`lexer.rs`, 26 test fns / 32 error
+assertions), syntactic is thin (`parser.rs`, 47 test fns / 5 asserting a rejection). **No C10-Q
+claim of syntactic conformance may rest on the fixture corpus alone.**
+
+### C10-C, same day — no class-B finding, and the probe that was nearly vacuous
+
+`audits/C10-C-SECURITY-REVIEW.md`, model `C10-THREAT-MODEL.md` (16 surfaces, FROZEN in C10-0 §9
+before any finding was reviewed), probes `tests/c10c_security.rs`.
+
+**No security vulnerability found, and no `SEC-C10-*` allocated.** The reason is structural rather
+than lucky: the compiler has no shell (all four `Command::new` sites build argument vectors), one
+dependency (`sha2`, default-features off), generated Rust escaped by Rust's own escaper and then
+compiled by rustc — so a literal breaking out is a build failure, not a silent injection — and
+interpreters with no host access at all, which is what keeps "no LSP workspace trust" in class D
+rather than class B.
+
+**The finding worth recording is about my own test.** S01's first probe asserted only that a hostile
+`mod` name produced *some* diagnostic. It passed, and it was nearly vacuous — `mod ordinary_name;`
+also produces one, because the file is missing. Reading the actual messages exposed it:
+
+```text
+mod ordinary_name;         ->  "file not found for module 'ordinary_name'"   <- reached the FS
+mod ../../../etc/passwd;   ->  "expected a module name, found `..`"          <- rejected by GRAMMAR
+```
+
+The defence is that hostile forms never reach the filesystem layer, so the assertion is now that
+they never produce the file-not-found diagnostic — a claim about WHICH path ran. **A passing test is
+not evidence until you know what it would have to see to fail.** That cost one `println!`.
+
+Classified: **S16 integrity-not-authenticity** (class C — governs the release wording; `stark doctor`
+detects corruption, not provenance). **S12 PATH-resolved cargo/rustc**, **S11 no LSP workspace
+trust**, **S02 build reads its package** — class D, accepted, and S12 must be STATED in the release
+notes rather than left implicit. **Seven surfaces carry a defence with NO falsifier** and are
+recorded UNVERIFIED, not claimed; R-S03 is the one worth closing first, because there the defence
+itself is unknown rather than merely untested.
+
+**No CE9 decision is requested:** the packet reviewed those surfaces and changed none of them.
+
+### OD-7 and OD-8 — owner rulings, 2026-08-09
+
+**OD-7.** All eight unsettled deviations adjudicated (above), and the six that lived only in this
+file are **backfilled into `KNOWN-DEVIATIONS.md` as forward-only headings** with status carried
+across unchanged. Nothing historical was rewritten. `c10-deviation-populations.py` was taught OD-7's
+status vocabulary — `ACCEPTED-INDEFINITELY` and `DORMANT` are neither open nor closed, and
+collapsing either into `open` would inflate the count CD-021's release rule ranges over. It now
+reports **ADJUDICATE = 0**.
+
+**OD-8 — ONNX timings: INCLUDE, QUARANTINED.** C10-0 recommended exclusion; the owner declined,
+because WP-C10.6 explicitly lists ONNX import/verify/deploy and excluding it would need an override
+of C10's own contract. It enters C10-E as a **separately scoped optional-extension appendix**, never
+aggregated into a compiler-performance number, with a verbatim sentence stating that it qualifies the
+frozen maintenance surface only and supports no tensor-capability claim. **C10-E's LSP latency
+baseline also absorbs DEV-213's residual** — post-fix numbers, and AS8's pre-fix figures are
+historical context that may NOT be called a before/after unless harness and workload are
+demonstrably identical.
+
+**DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
+features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3
+specifies the session so it can be done in one sitting, and records the rule that matters: check
+**values, not verdicts**, because DEV-182 passed protocol validation while silently decoding every
+escaped non-BMP character to the empty string.
 
 ## CD-394 — AS8 CLOSED, qualification PASS; the evidence base was overstated in three documents (2026-08-09)
 

@@ -325,20 +325,33 @@ impl Server {
                 version: doc.version,
                 analysis,
                 last_compiled_at: std::time::SystemTime::now(),
+                // DEV-213: recorded so `invalidate_package_of` can find this analysis's siblings
+                // without touching the filesystem on an edit.
+                package_root: self.package_root_for_document(&doc),
             };
 
             self.state.cache_compilation_result(result);
         }
     }
 
-    fn package_input_for_document(&self, doc: &OpenDocument) -> Option<ProjectInput> {
+    /// The package root a document belongs to, or `None` for a loose single file.
+    ///
+    /// DEV-213 needs this in two places -- to build the project input, and to stamp the cache
+    /// entry so invalidation can find siblings. It is one function rather than two so the two
+    /// callers cannot answer the question differently; a second copy of "which package is this
+    /// URI in" is exactly the duplicated-authority shape `AS8-DA-*` catalogues.
+    fn package_root_for_document(&self, doc: &OpenDocument) -> Option<PathBuf> {
         let path = file_uri_to_path(&doc.uri)?;
         let dir = if path.is_dir() {
             path.as_path()
         } else {
             path.parent()?
         };
-        let manifest = find_package_root(dir).ok()?;
+        find_package_root(dir).ok()
+    }
+
+    fn package_input_for_document(&self, doc: &OpenDocument) -> Option<ProjectInput> {
+        let manifest = self.package_root_for_document(doc)?;
         let graph = PackageGraph::load_from_root_with_modes(&manifest, false, true).ok()?;
         let overlays = self.open_document_overlays();
         Some(ProjectInput::package_with_overlays(graph, overlays))
@@ -1508,7 +1521,7 @@ mod tests {
     /// This is why the AS8 profile measured the duplication: the cost is the visible half, and
     /// this is the half that changes an answer.
     #[test]
-    fn as8_editing_one_file_leaves_other_uris_cached_analyses_stale() {
+    fn dev213_editing_one_file_invalidates_every_analysis_of_its_package() {
         let package_dir = std::env::temp_dir().join(format!(
             "as8_lsp_stale_{}_{}",
             std::process::id(),
@@ -1552,7 +1565,8 @@ mod tests {
         );
 
         // Rename the symbol, and recompile ONLY the edited URI — which is exactly what
-        // `didChange` does.
+        // `didChange` does. Before DEV-213's repair this left `main.stark`'s whole-package
+        // analysis untouched and still carrying the OLD name.
         server.state.update_document(
             child_uri.clone(),
             2,
@@ -1573,14 +1587,39 @@ mod tests {
             merged.iter().any(|name| name == "renamed_symbol"),
             "the edited URI's analysis must see the new name; got {merged:?}"
         );
-        // THE FINDING. `main.stark`'s cached analysis was never invalidated, so it still carries
-        // the pre-edit symbol, and the merged workspace answer contains a name that no longer
-        // exists in the package.
+        // DEV-213, REPAIRED. This assertion is AS8's, with its polarity flipped exactly as AS8's
+        // own message instructed -- the test is not deleted, because what it pins is the same
+        // fact either way: what `workspace/symbol` can see after a single-file edit.
+        //
+        // `alpha_symbol` no longer exists anywhere in the package. Before the repair,
+        // `main.stark`'s never-invalidated whole-package analysis still carried it and the merged
+        // response contained BOTH names. Now the edit sweeps every analysis of the package, so the
+        // only surviving answer is the one that is true.
         assert!(
-            merged.iter().any(|name| name == "alpha_symbol"),
-            "AS8 expects the STALE name to still be present via main.stark's un-invalidated \
-             analysis. If this assertion fails the defect is fixed and this test should become \
-             its regression test with the polarity flipped; got {merged:?}"
+            !merged.iter().any(|name| name == "alpha_symbol"),
+            "DEV-213: `alpha_symbol` was renamed and must not survive in ANY cached analysis of \
+             this package. Its presence means a sibling URI's whole-package analysis outlived the \
+             edit -- the exact defect AS8 demonstrated; got {merged:?}"
+        );
+        // The sweep must be an invalidation, not a purge of the whole cache: unrelated packages
+        // and loose files keep their analyses. `main.stark` is recompiled on demand, so a
+        // subsequent request answers correctly rather than answering nothing.
+        server.compile_document(&main_uri);
+        let after: Vec<String> = server
+            .state
+            .compilation_cache
+            .values()
+            .flat_map(|cached| cached.analysis.workspace_symbols("symbol"))
+            .map(|symbol| symbol.name.clone())
+            .collect();
+        assert!(
+            after.iter().any(|name| name == "renamed_symbol"),
+            "after recompiling the sibling, the package's only symbol must be the new one; \
+             got {after:?}"
+        );
+        assert!(
+            !after.iter().any(|name| name == "alpha_symbol"),
+            "the stale name must not reappear once the sibling is recompiled; got {after:?}"
         );
 
         let _ = std::fs::remove_dir_all(&package_dir);

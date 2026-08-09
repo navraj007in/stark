@@ -500,6 +500,43 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         }
     };
 
+    // DEV-214 (OD-9): reject an over-deep expression tree BEFORE any recursive pass consumes it.
+    //
+    // The parser's `MAX_DEPTH` bounds the nesting it recursed through, which leaves a
+    // left-associative chain -- parsed by an iterative precedence loop -- free to build a tree of
+    // any depth. Everything below this point walks that tree recursively, so the guard belongs
+    // here: after parsing, before resolution, and before the source map, symbol index and query
+    // index are built.
+    //
+    // Reported as an ERROR so `has_errors` short-circuits the rest of the function. That is the
+    // "no partial semantic analysis" half of the ruling: a program rejected for depth must not
+    // then be half-resolved by the very walks the rejection exists to protect.
+    let mut over_depth_limit = false;
+    if !has_errors(&diagnostics) {
+        let (depth, deepest) = ast.max_expr_depth_of_program();
+        // `deepest` is `Some` whenever the depth is non-zero, so the `if let` cannot skip a real
+        // violation -- and it means no span is ever fabricated for a diagnostic.
+        if let (true, Some(id)) = (depth > crate::parser::MAX_DEPTH, deepest) {
+            over_depth_limit = true;
+            let span = ast.exprs[id.0 as usize].span;
+            diagnostics.push(
+                Diagnostic::error(
+                    format!(
+                        "this expression is nested too deeply to analyse ({depth} levels; the \
+                         limit is {})",
+                        crate::parser::MAX_DEPTH
+                    ),
+                    span,
+                )
+                .with_code("E0209")
+                .with_help(
+                    "split the expression into smaller parts bound with `let`, or reduce the \
+                     nesting",
+                ),
+            );
+        }
+    }
+
     let mut hir = None;
     let mut type_tables = None;
     if !has_errors(&diagnostics) {
@@ -527,7 +564,20 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         .as_ref()
         .map(|hir| build_symbols(id, hir, &source_map))
         .unwrap_or_default();
-    let queries = query::QueryIndex::build(id, &ast, hir.as_ref(), &source_map, &symbols);
+    // DEV-214 (OD-9). `QueryIndex::build` walks the expression arena RECURSIVELY, and it runs
+    // unconditionally -- errors do not stop it, because a stale-but-present index is what lets the
+    // editor answer at all while a file is broken. That makes it the last recursive consumer of a
+    // rejected AST, and the first version of this repair overflowed here: the depth diagnostic was
+    // emitted, resolution and type checking were skipped, and then the index walked the same deep
+    // tree anyway.
+    //
+    // `build_source_map` above is safe by inspection -- it never touches `exprs` -- so only this
+    // one is skipped, and only for the input that would kill it.
+    let queries = if over_depth_limit {
+        query::QueryIndex::default()
+    } else {
+        query::QueryIndex::build(id, &ast, hir.as_ref(), &source_map, &symbols)
+    };
 
     ProjectAnalysis {
         id,
