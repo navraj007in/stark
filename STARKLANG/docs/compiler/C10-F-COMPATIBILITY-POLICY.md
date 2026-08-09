@@ -208,12 +208,37 @@ C10-C class C. **A public distribution needs a signed manifest, a trusted releas
 before installation, and platform notarisation. None exists.** C10-Q may not describe the
 distribution as verified or trusted.
 
-## 1.14 Capability vocabulary — **NOT APPLICABLE at this candidate**
+## 1.14 Capability vocabulary — **UNCOMMITTED, and EVIDENCED AS BREAKING** (updated 2026-08-09)
 
-A parallel branch adds `capability_vocabulary: u64` to `stark.lock` with manifest validation.
-**Absent from `develop` `1d20123` and from this candidate.** It becomes an axis only if that work
-lands before the consolidated candidate is frozen — at which point §1.3 and §1.8 both need
-re-deriving against it.
+This axis was recorded as NOT APPLICABLE while the work sat on an unmerged branch. **It is now
+evidenced, and the evidence is a demonstrated break.**
+
+Vocabulary v1 renames the pre-v1 capability names. The external sample suite — the register's only
+`EXTERNALLY_DERIVED` control — failed on the integrated tree:
+
+```text
+error: no provider supplies capability `process.args` for target `aarch64-apple-darwin`
+  STARK knows these capabilities: clock, environment-read, filesystem-read, filesystem-write,
+  network-client, network-listen, randomness
+```
+
+**The rename is intentional and documented** (`spec/packages/capabilities.md` §Migration), and the
+spec is explicit that a capability is never silently renamed *within* a vocabulary version — so
+renaming *across* versions is legitimate, and the absence of an alias shim is deliberate rather than
+an oversight.
+
+```text
+COMMITTED     `stark.lock` records `capability_vocabulary`, so the vocabulary a build resolved
+              under is durable and a later mismatch is detectable rather than silent
+UNCOMMITTED   what a compiler does with a lockfile written under an EARLIER vocabulary. No
+              behaviour is defined, and the break above shows the question is not academic
+to commit     decide the cross-vocabulary contract: reject, migrate, or interpret an older
+              capability as the union of its successors — which §Migration already contemplates
+```
+
+**This is the first demonstrated compatibility break against an external consumer**, and C10-Q must
+state it. It was invisible to every in-repo test, because the compiler's own 28 first-party packages
+were migrated in the same branch that made the change.
 
 ---
 
@@ -238,12 +263,29 @@ UNCOMMITTED      STARK language version          — no identifier exists
                  release AUTHENTICITY            — integrity only
                  tier-3 x86_64-apple-darwin      — packaged, never executed
 
+                 capability vocabulary           — cross-vocabulary behaviour undefined, and
+                                                   EVIDENCED AS BREAKING by the external sample
+                                                   suite. §1.14. (Its lockfile stamp is committed,
+                                                   listed above)
+
+SPLIT            capability vocabulary           — the one axis that is BOTH: `stark.lock` records
+                                                   the vocabulary a build resolved under
+                                                   (COMMITTED), while what a compiler does with a
+                                                   lockfile from an EARLIER vocabulary is
+                                                   undefined (UNCOMMITTED)
+
 NOT APPLICABLE   tensor extension compatibility  — deferred track, not productised
-                 capability vocabulary           — not in this candidate
 ```
 
-**Eight commitments, eight non-commitments, two not-applicable.** That ratio is the honest state of
-a 0.1.0 compiler, and every non-commitment names what would be needed rather than deferring vaguely.
+**Nine commitments, nine non-commitments, one not-applicable — across fourteen axes**, with
+capability vocabulary counted on both sides because it genuinely is both.
+
+*(Recount 2026-08-09: this read "eight, eight, two" until the capability-vocabulary axis moved from
+NOT APPLICABLE to evidenced. A summary sentence that outlives its list is the single most common
+review finding, and it survived here for exactly one packet.)*
+
+That ratio is the honest state of a 0.1.0 compiler, and every non-commitment names what would be
+needed rather than deferring vaguely.
 
 ---
 

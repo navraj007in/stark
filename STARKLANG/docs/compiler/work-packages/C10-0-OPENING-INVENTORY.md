@@ -502,7 +502,9 @@ optimisation follows automatically.**
 # 11. External pinned evidence
 
 ```text
-external sample suite   navraj007in/stark-samples @ b3b28e757f38d691e7309f168d1209e28ac459af
+external sample suite   navraj007in/stark-samples
+                        FROZEN AT   b3b28e757f38d691e7309f168d1209e28ac459af
+                        MOVED TO    5cac025f131f5b8d8de4ceb3112ca11c913c53fc  (2026-08-09)
                         CI verifies the pin RESOLVED to that SHA — `ref:` accepts a branch, so an
                         accidental branch name would float silently
 C6.5 corpus             manifest.toml + corpus.lock + generator-version.txt; generator_sha256 and
@@ -513,6 +515,45 @@ FROZEN.json             per-file SHA-256 of every performance workload
 ```
 
 **Moving the sample-suite pin during C10 is forbidden** (plan §14.4).
+
+### THE PIN MOVED ONCE, by explicit owner decision — 2026-08-09
+
+```text
+from   b3b28e757f38d691e7309f168d1209e28ac459af   the C10-0 freeze
+to     5cac025f131f5b8d8de4ceb3112ca11c913c53fc   15-capabilities migrated to vocabulary v1
+```
+
+**Why this is not the failure §14.4 exists to prevent.** That rule forbids advancing the pin to
+quiet a red external control. This is the opposite: the control went red because it **correctly
+detected a real breaking change**, and the pin moved only after the break was diagnosed, reproduced
+and recorded.
+
+```text
+what broke   pkg/15-capabilities/native, expected `run_ok`, failed to build:
+               "no provider supplies capability `process.args`"
+why          capability vocabulary v1 renames the pre-v1 names. INTENTIONAL, and documented in
+             spec/packages/capabilities.md "Migration from the pre-v1 implementation names" —
+             which also states a capability is never silently renamed WITHIN a vocabulary version,
+             so renaming ACROSS versions is legitimate and the absent alias shim is deliberate
+scope        1 of 18 samples. `15-capabilities` is the only one declaring any capability at all
+repair       the spec's own mapping, applied to `capabilities` AND to `provider_api`'s `errors`
+             map and per-function `capability` field — the second half is easy to miss and fails
+             the build for a separate reason if skipped
+result       39/39, up from 38/39
+```
+
+**The disclosure C10-Q owes.** `EV-SAMPLES` is the register's only `EXTERNALLY_DERIVED` control, and
+C10's external evidence now **spans two pins** — taken at `b3b28e7` before the vocabulary change and
+at `5cac025` after. Any claim resting on the external suite must say which side of that boundary it
+was measured on.
+
+**What this episode demonstrates is worth more than the repair.** The break was invisible to every
+in-repo test, because the compiler's own 28 first-party packages were migrated in the same branch
+that made the change. **The external control caught a compatibility break no internal evidence
+could have** — precisely the value EI2 assigned it, realised rather than argued for the first time.
+
+**Consequence for C10-F:** the capability-vocabulary axis stops being PENDING and becomes
+evidenced-as-breaking.
 
 ---
 
