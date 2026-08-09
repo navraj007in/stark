@@ -7155,3 +7155,202 @@ consequence  C10-Q must NOT name DEV-005 as a release deviation. Naming a deviat
 ```
 
 **Population A drops from 24 live-OPEN to 23.**
+
+## DEV-177 — CLOSED (2026-08-09). Already enforced; the ledger was never updated
+
+**Verified at `076b4dc`.** The reproducer from this entry is rejected:
+
+```text
+$ starkc check repro.stark
+Error: [E0204] generic parameter 'T' duplicates another generic parameter in scope
+  --> repro.stark:4:15
+ 4 |     fn choose<T>(self, value: T) -> T {
+   |               ^ 'T' is already declared by the enclosing impl
+   = related: repro.stark:3:6: 'T' first declared here
+check EXIT=1
+```
+
+**Negative control:** the same program with distinct names (`fn choose<U>`) still compiles — `OK`,
+exit 0. So the rule is enforced, not the construct broken. The other arm of NAME-SHADOW-001,
+`fn f<T, T>`, is rejected identically.
+
+**Fixed by `78bd84c` — "DEV-177: enforce NAME-SHADOW-001, which was never enforced at all".** The
+repair landed and this entry was never moved to CLOSED.
+
+**Consequence for C10-Q, and it is the largest single change to the claim.** DEV-177 was the *only*
+population-A deviation that **accepted a program the specification forbids**. With it closed, **no
+open deviation makes a conformance claim false** — every remaining one either refuses what the spec
+allows or executes an accepted program wrongly. The C10-Q derivation moves from *"PASS is not
+supported because a claim would be FALSE"* to *"PASS is not supported because 84 rules are
+unattributed"*, which is a different and weaker objection.
+
+## DEV-181 — CLOSED (2026-08-09). Already fixed; the ledger was never updated
+
+**Verified at `076b4dc`.** The reproducer compiles and runs:
+
+```text
+$ starkc check dev181.stark     OK, exit 0
+$ starkc run   dev181.stark     prints 1, exit 0
+```
+
+`x = x.method()` — the everyday idiom this entry called its own worst consequence — works.
+
+**Fixed by `57ff6b9` — "DEV-181: `x = x.method()` was refused by the borrow checker".**
+
+**Consequence:** the row C10's disposition register flagged as *"the highest user-friction item"*
+does not exist.
+
+---
+
+# Ledger hygiene finding (C10-Q preparation, 2026-08-09)
+
+**SUPERSEDED 2026-08-09 by the C10-Q reproduction pass: the figure is SEVEN of twenty-three, and
+`DEV-005` does not belong in the twenty-three at all — it owns no live heading here. See
+`STARKLANG/docs/compiler/audits/C10-Q-REPRODUCTION-PASS.md`.**
+
+**Three of twenty-three population-A deviations do not reproduce**: `DEV-005` (removed by AS2's
+one-pipeline consolidation), `DEV-177` (`78bd84c`), `DEV-181` (`57ff6b9`).
+
+**13% of the "open" list was fiction**, and all three were named in a drafted release claim.
+
+The cause is structural, not careless: this ledger is **append-only**, so closing a deviation
+requires a deliberate new entry, and a repair landed under a different work packet has no mechanism
+forcing that entry to be written. Each of these three was fixed by a commit whose message names the
+DEV number — the information existed; nothing connected it to the ledger.
+
+**The rule this produces, and C10-Q depends on it:** a deviation may not be named in a release
+claim on the strength of its ledger entry. It must be **reproduced at the candidate head**, or
+closed. OD-7 imposed exactly this on `DEV-005` and it found one; applying it to only one entry was
+the mistake.
+
+## DEV-083 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+The entry's verbatim reproducer — `impl<T> Pair<Option<T>, Int32>` with
+`let p = Pair { x: Some(5), y: 42 }; p.tag();` — compiles and runs, printing 42. It predicted
+`E0302 method 'tag' not found for type 'Pair<Option<_infer_4>, _infer_5>'`.
+
+Checked against three receiver shapes, including `Vec::new()` and a bare `None`, which are the most
+unresolved a receiver argument can be. All resolve.
+
+**Incidentally repaired.** No commit names DEV-083. `5b5edd3` — "AS3 Boundary 4 EXIT: `find_method`
+and `find_impl_fn` no longer exist" — rewrote exactly the one-way matching the entry describes.
+This is the class of closure a git-log audit cannot find, because fixing it was not the point of the
+work that fixed it.
+
+Note this entry was adjudicated OPEN under OD-7 earlier the same day, on the strength of its
+description rather than a re-run.
+
+## DEV-122 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+The symptom was a fault in one file reported against another. A division-by-zero inside a module is
+now reported at `src/helper.stark:3:5`, with the right line rendered, under **both** the HIR oracle
+and the native binary.
+
+`Span` now carries `pub source: SourceId` (`src/source.rs:19`), and `Span::in_source` is the
+constructor. That is precisely the "platform correction (mandatory `SourceId` on every span,
+resolution total by construction)" the entry filed as a separate future WP; it landed under AS1b.
+Incidental, as with DEV-083 — no commit names DEV-122.
+
+**A residual survives this closure and is not tracked by it.** `SourceFile::line_col` still clamps
+(`offset.min(self.src.len() as u32)`), and compile-time and runtime rendering remain separate paths.
+The clamp was dangerous because a span could be resolved against the wrong file; that is now
+prevented structurally, which is why this closes. The further hardening the entry asked for —
+`start <= end`, a column inside its line, one shared `resolve_span` — has not been done, and
+`debug_assert!(lo <= hi)` is not a release check. Whether that deserves its own number is an owner
+call.
+
+## DEV-161 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+`stark build` with `CARGO_TARGET_DIR` set builds and runs, and the hijack directory is never
+created. The builder passes `--target-dir` explicitly rather than clearing the variable, so the path
+the build writes and the path the builder reads derive from one value — documented at
+`src/backend/generated_rust/build.rs:104-119`.
+
+## DEV-162 — CLOSED, and already recorded as closed elsewhere (C10-Q reproduction pass, 2026-08-09)
+
+A partial move followed by a read of a live sibling runs correctly. More to the point,
+`COMPILER-STATE.md:2176` has recorded `DEV-162   read through a whole-value accessor   CLOSED
+(CD-372)` since CD-372. This entry was backfilled as OPEN under OD-7 on 2026-08-09, contradicting
+the state file on the same day. **Two sources of record disagreed and the ledger was the wrong
+one.**
+
+## DEV-178 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+`b39c49d` — "DEV-178: a function value carries the instantiation it was created with" — is the
+repair the entry's own Resolution section prescribed.
+
+Verified behaviourally rather than by commit title, because a title is not evidence. `size_of::<T>()`
+read from inside an associated function of a generic impl returns **4** for `Holder::tsize(1)` and
+**1** for `Holder::tsize(true)`. A result that discriminates `Int32` from `Bool` cannot be produced
+without the generic environment. The function-value path returns 4 for
+`let f: fn() -> UInt64 = type_size::<Int32>;`. Both causes named in the entry are covered.
+
+## DEV-157 — reproduces, but not in the shape this entry named (OPEN, C10-Q reproduction pass, 2026-08-09)
+
+Kept OPEN, with its reproducer corrected.
+
+The shape the entry names — `Err(_) => panic(..)` in match-arm value position — now builds and runs
+natively, including when the panicking arm is taken. **The defect is nonetheless alive**:
+
+```stark
+fn main() { let x: Int32 = panic("p"); println(x); }
+```
+
+fails with `native build does not yet support this program: MirTy Never has no C5.3a generated-Rust
+representation yet`, and so does `panic` in argument position.
+
+This was one probe away from being filed as a false closure in a release claim. It is the reason
+every non-reproducing verdict in this pass was re-tested across shape variants.
+
+## DEV-159 — not settled by the reproduction pass (OPEN, C10-Q reproduction pass, 2026-08-09)
+
+Remains OPEN, and this is not a confirmation. A native build racing its own dependency build is
+non-deterministic; a single successful build does not falsify it, and no fix commit exists. Counted
+as open conservatively. Settling it requires repeated cold builds of an HTTPS program.
+
+## DEV-180 — scheduled: its own packet, immediately after C10-Q closes (OPEN, owner ruling 2026-08-09)
+
+Still OPEN and still reproducing. This records **when** it is repaired and what the packet already
+knows, so the packet does not restart the investigation.
+
+**Owner ruling (2026-08-09): DEV-180 is taken as its own packet once C10-Q closes, and not before.**
+
+The reason is not difficulty. Binding a genuine reference for `&mut self` changes what the HIR
+oracle MEANS by a mutable receiver, and the oracle is the reference every engine-agreement claim in
+C10 is measured against. Landing it before C10-Q invalidates the evidence package; landing it after
+costs a re-run of the comparison, which is the cheaper and more honest order. This supersedes the
+entry's earlier "sequenced before A4 resumes" only as to ordering against C10-Q — A4 still follows
+this repair, not the other way round.
+
+### The three questions the entry required answered first — answered
+
+1. **Why DEV-070 excluded `&mut self` when `&self` moved to genuine references.** Because
+   take/write-back needs the caller's slot emptied to bind the value as `self`, and the `&self` arm
+   never does: it binds `Value::Ref(receiver_place.clone())`, since a shared borrow need not own.
+   The asymmetry was left deliberately and commented — "(`&mut self` keeps its take/write-back
+   model.)" **It was a deferral, not a design.**
+2. **Whether that limitation still holds. It does not.** `Place` and `place_slot_mut` already write
+   through a projection; that is exactly what the `&self` path uses today. The machinery the
+   deferral was waiting for exists.
+3. **Whether the returned-reference test depends on rebasing out of the method frame.** This is the
+   real risk and the reason the entry's third forbidden repair exists. A returned `&mut` currently
+   points into method-frame temporary storage; binding a real reference makes it point into caller
+   storage, which is correct but is not what
+   `mut_reference_returned_from_mut_self_method_writes_through` was written against. That test must
+   be re-derived from the specification, **not adjusted until it passes.**
+
+### The shape, and the tell that it is the right one
+
+Bind `Value::Ref(receiver_place.clone())` for `hir::Receiver::RefMut`, let mutability come from the
+static `Ty` and the borrow checker, and **delete the write-back and its error-path restoration
+entirely** — including the "the `Drop` receiver disappeared" internal error. That code exists only
+to service the flattening. A repair that leaves it in place has not made the receiver a reference.
+
+The entry's three forbidden repairs stand unchanged: no `&mut T → bare T` in `value_matches_ty`, no
+receiver-specific validator exception, and no synthetic reference to method-local storage.
+
+### Expected cost, recorded before the work so it can be checked against
+
+The five named receiver tests move, plus whatever the three-engine suite finds — and it will find
+something, because this changes the oracle. A packet that reports *no* engine movement has probably
+not changed the semantics it set out to change.
