@@ -6,7 +6,7 @@
     "identity": "stark-std-tls",
     "crate": "stark-tls-native",
     "crate_path": "stark-tls/native",
-    "capabilities": ["tls"],
+    "capabilities": ["network-client"],
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
@@ -39,7 +39,7 @@
     "functions": [
       {
         "symbol": "stark_tls_stream_connect",
-        "capability": "tls",
+        "capability": "network-client",
         "may_block": true,
         "params": [
           { "form": "handle_consumed", "resource": "tcp_stream" },
@@ -54,7 +54,7 @@
       },
       {
         "symbol": "stark_tls_stream_read",
-        "capability": "tls",
+        "capability": "network-client",
         "may_block": true,
         "params": [
           { "form": "handle_borrowed", "resource": "tls_stream" },
@@ -64,7 +64,7 @@
       },
       {
         "symbol": "stark_tls_stream_write",
-        "capability": "tls",
+        "capability": "network-client",
         "may_block": true,
         "params": [
           { "form": "handle_borrowed", "resource": "tls_stream" },
@@ -74,7 +74,7 @@
       },
       {
         "symbol": "stark_tls_stream_set_read_timeout",
-        "capability": "tls",
+        "capability": "network-client",
         "params": [
           { "form": "handle_borrowed", "resource": "tls_stream" },
           { "form": "scalar_in", "type": "u64" }
@@ -82,7 +82,7 @@
       },
       {
         "symbol": "stark_tls_stream_set_write_timeout",
-        "capability": "tls",
+        "capability": "network-client",
         "params": [
           { "form": "handle_borrowed", "resource": "tls_stream" },
           { "form": "scalar_in", "type": "u64" }
@@ -90,7 +90,7 @@
       },
       {
         "symbol": "stark_tls_stream_peer_version",
-        "capability": "tls",
+        "capability": "network-client",
         "params": [
           { "form": "handle_borrowed", "resource": "tls_stream" },
           { "form": "scalar_out", "type": "u32" }
@@ -98,7 +98,7 @@
       },
       {
         "symbol": "stark_tls_stream_close",
-        "capability": "tls",
+        "capability": "network-client",
         "close_for": "tls_stream",
         "params": [{ "form": "handle_consumed", "resource": "tls_stream" }]
       }

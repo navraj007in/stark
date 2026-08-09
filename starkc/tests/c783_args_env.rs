@@ -18,7 +18,7 @@ use starkc::provider_resolve::ProviderSet;
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
 fn args_env() -> Vec<String> {
-    vec!["process.args".to_string(), "process.env".to_string()]
+    vec!["environment-read".to_string()]
 }
 
 fn selected() -> ProviderSet {
@@ -37,10 +37,10 @@ fn both_capabilities_resolve_to_one_provider() {
     assert_eq!(set.providers()[0].crate_name, "stark-env-native");
 
     for (capability, function) in [
-        ("process.args", "stark_env_args_len"),
-        ("process.args", "stark_env_args_fill"),
-        ("process.env", "stark_env_var_len"),
-        ("process.env", "stark_env_var_fill"),
+        ("environment-read", "stark_env_args_len"),
+        ("environment-read", "stark_env_args_fill"),
+        ("environment-read", "stark_env_var_len"),
+        ("environment-read", "stark_env_var_fill"),
     ] {
         set.resolve(capability, function)
             .unwrap_or_else(|e| panic!("{capability}/{function} must resolve: {e:#?}"));
@@ -54,7 +54,7 @@ fn one_capability_is_enough_to_select() {
     let set = ProviderSet::select(
         provider_registry::first_party(),
         LINUX,
-        &["process.env".to_string()],
+        &["environment-read".to_string()],
     )
     .expect("selects");
     assert_eq!(set.providers().len(), 1);
@@ -73,7 +73,8 @@ fn an_undeclared_capability_does_not_select_its_provider() {
     assert_eq!(set.providers().len(), 1);
     assert_eq!(set.providers()[0].crate_name, "stark-time-native");
     assert!(
-        set.resolve("process.env", "stark_env_var_len").is_err(),
+        set.resolve("environment-read", "stark_env_var_len")
+            .is_err(),
         "an unrequested capability must not be resolvable"
     );
 }
@@ -88,7 +89,7 @@ fn an_undeclared_capability_does_not_select_its_provider() {
 #[test]
 fn the_fill_call_treats_its_buffer_as_caller_owned() {
     let call = selected()
-        .resolve("process.args", "stark_env_args_fill")
+        .resolve("environment-read", "stark_env_args_fill")
         .expect("resolves");
     let p = plan(
         ProviderCallId(0),
@@ -119,7 +120,7 @@ fn the_fill_call_treats_its_buffer_as_caller_owned() {
 #[test]
 fn presence_is_reported_separately_from_length() {
     let call = selected()
-        .resolve("process.env", "stark_env_var_len")
+        .resolve("environment-read", "stark_env_var_len")
         .expect("resolves");
     assert!(
         matches!(
@@ -145,7 +146,7 @@ fn presence_is_reported_separately_from_length() {
 #[test]
 fn declared_codes_are_recoverable_and_the_rest_are_violations() {
     let call = selected()
-        .resolve("process.env", "stark_env_var_len")
+        .resolve("environment-read", "stark_env_var_len")
         .expect("resolves");
     let p = plan(
         ProviderCallId(0),
@@ -208,7 +209,7 @@ fn the_status_vocabulary_is_per_provider() {
     .resolve("clock", "stark_time_monotonic_now_ns")
     .expect("resolves");
     let env = selected()
-        .resolve("process.env", "stark_env_var_fill")
+        .resolve("environment-read", "stark_env_var_fill")
         .expect("resolves");
 
     let clock_one = clock

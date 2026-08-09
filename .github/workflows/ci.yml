@@ -412,8 +412,32 @@ jobs:
           # `packages/`. This assertion has to move whenever the packager's layout moves -- it did
           # not last time, which is what the comment above is about, so it is written once here and
           # reused by both negative controls below.
+          #
+          # MERGE RESOLUTION (integration, 2026-08-09): this branch asserted the FLAT path
+          # `lib/stark/current/lib/stark/stark-runtime/...`. On the merged tree that assertion is
+          # WRONG and the job would fail: `scripts/build-release.py` writes the runtime to
+          # `starkc_root / "stark-runtime"`, and its own summary line says
+          # "Installed runtime: lib/stark/starkc/stark-runtime". The mirror path is kept, and it is
+          # a variable because the negative control below moves the same directory.
           installed_runtime="$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/starkc/stark-runtime"
           test -f "$installed_runtime/src/lib.rs"
+          # Kept from this branch: an EXTERNAL package, built against the installed toolchain with
+          # a declared capability set. The c5-native-workspace fixture below declares no
+          # capabilities, so it links no provider and cannot notice a missing provider payload.
+          mkdir -p "$RUNNER_TEMP/external-toolchain-package/src"
+          cat > "$RUNNER_TEMP/external-toolchain-package/starkpkg.json" <<'JSON'
+          {"name":"external-app","version":"0.1.0","entry":"src/main.stark","capabilities":["filesystem-read","filesystem-write"],"dependencies":{"stark_io":{"package":"stark-io","version":"0.1.0"}}}
+          JSON
+          cat > "$RUNNER_TEMP/external-toolchain-package/src/main.stark" <<'STARK'
+          fn main() { println("toolchain-package-ok"); }
+          STARK
+          (
+            cd "$RUNNER_TEMP/external-toolchain-package"
+            "$RUNNER_TEMP/stark-install/bin/stark" check --offline
+            "$RUNNER_TEMP/stark-install/bin/stark" build --offline
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+            ./target/stark/debug/external-app
+          )
           (
             cd tests/fixtures/c5-native-workspace/app
             "$RUNNER_TEMP/stark-install/bin/stark" run
@@ -532,6 +556,23 @@ jobs:
             throw "installed native runtime is missing"
           }
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
+          $external = Join-Path $env:RUNNER_TEMP "external-toolchain-package"
+          New-Item -ItemType Directory -Force (Join-Path $external "src") | Out-Null
+          '{"name":"external-app","version":"0.1.0","entry":"src/main.stark","capabilities":["filesystem-read","filesystem-write"],"dependencies":{"stark_io":{"package":"stark-io","version":"0.1.0"}}}' | Set-Content -Encoding utf8 (Join-Path $external "starkpkg.json")
+          'fn main() { println("toolchain-package-ok"); }' | Set-Content -Encoding utf8 (Join-Path $external "src/main.stark")
+          Push-Location $external
+          try {
+            & (Join-Path $prefix "bin/stark.exe") check --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package check failed" }
+            & (Join-Path $prefix "bin/stark.exe") build --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package build failed" }
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed locked toolchain package build failed" }
+            & (Join-Path $external "target/stark/debug/external-app.exe")
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package artifact failed" }
+          } finally {
+            Pop-Location
+          }
           Push-Location tests/fixtures/c5-native-workspace/app
           try {
             & (Join-Path $prefix "bin/stark.exe") run
@@ -814,7 +855,7 @@ jobs:
     env:
       # Moving this pin is a deliberate act. See §10.3 above.
       SAMPLES_REPO: navraj007in/stark-samples
-      SAMPLES_SHA: b3b28e757f38d691e7309f168d1209e28ac459af
+      SAMPLES_SHA: 5cac025f131f5b8d8de4ceb3112ca11c913c53fc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -64,7 +64,7 @@ fn a_foreign_resource_resolves_to_its_owner_and_everything_else_to_the_caller() 
 fn only_the_exact_declared_resource_is_treated_as_foreign() {
     let foreign = transfer();
     assert_eq!(owner_of("tcp_stream2", TLS, &foreign), TLS);
-    assert_eq!(owner_of("tcp", TLS, &foreign), TLS);
+    assert_eq!(owner_of("network-client", TLS, &foreign), TLS);
     assert_eq!(owner_of("", TLS, &foreign), TLS);
 }
 
@@ -138,7 +138,7 @@ fn the_planner_and_the_verifier_agree_on_a_transferred_handles_type() {
 
     let function = FunctionDecl {
         name: "stark_tls_stream_connect".to_string(),
-        capability: "tls".to_string(),
+        capability: "network-client".to_string(),
         params: vec![
             AbiParam::HandleConsumed {
                 resource_type: "tcp_stream".to_string(),
@@ -156,7 +156,7 @@ fn the_planner_and_the_verifier_agree_on_a_transferred_handles_type() {
             semver: (0, 1, 0),
             abi_version: "0.1".to_string(),
         },
-        capability: "tls".to_string(),
+        capability: "network-client".to_string(),
         function: function.clone(),
         target_triple: "aarch64-apple-darwin".to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),

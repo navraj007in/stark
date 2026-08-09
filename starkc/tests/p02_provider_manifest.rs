@@ -179,14 +179,14 @@ fn a_consuming_transfer_is_declarable_in_a_manifest() {
           "version": "0.1.0",
           "provider": {
             "abi": "0.1",
-            "capabilities": ["tls"],
+            "capabilities": ["network-client"],
             "targets": ["x86_64-unknown-linux-gnu"],
             "resources": [{ "name": "tls_stream" }],
             "consumes": [{ "provider": "stark-std-net", "resource": "tcp_stream" }],
             "functions": [
               {
                 "symbol": "stark_tls_client_connect",
-                "capability": "tls",
+                "capability": "network-client",
                 "may_block": true,
                 "params": [
                   { "form": "handle_consumed", "resource": "tcp_stream" },
@@ -196,7 +196,7 @@ fn a_consuming_transfer_is_declarable_in_a_manifest() {
               },
               {
                 "symbol": "stark_tls_stream_close",
-                "capability": "tls",
+                "capability": "network-client",
                 "close_for": "tls_stream",
                 "params": [{ "form": "handle_consumed", "resource": "tls_stream" }]
               }
@@ -384,15 +384,16 @@ fn the_built_in_set_supplies_the_expected_capabilities() {
         capabilities,
         vec![
             "clock".to_string(),
-            "dns".to_string(),
-            "filesystem".to_string(),
-            "process.args".to_string(),
-            "process.env".to_string(),
-            "random".to_string(),
-            "tcp".to_string(),
-            // HC9 (CD-365). `tls` is supplied by `stark-tls-native`, the first built-in provider
-            // that CONSUMES another provider's resource.
-            "tls".to_string(),
+            "environment-read".to_string(),
+            "filesystem-read".to_string(),
+            "filesystem-write".to_string(),
+            "network-client".to_string(),
+            // HC9 (CD-365). The second `network-client` role is supplied by
+            // `stark-tls-native`, the first built-in provider that consumes another provider's
+            // resource.
+            "network-client".to_string(),
+            "network-listen".to_string(),
+            "randomness".to_string(),
         ]
     );
 }

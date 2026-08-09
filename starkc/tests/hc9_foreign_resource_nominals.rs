@@ -82,14 +82,14 @@ fn manifest_with(foreign: &str) -> String {
   "name": "stark-tls",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": ["tls"],
+  "capabilities": ["network-client"],
   "dependencies": {{ {DEPS} }},
   "provider_api": {{
-    "errors": {{ "tls": "RawTlsError" }},
-    "resources": {{ "TlsStream": {{ "capability": "tls", "resource": "tls_stream" }} }},
+    "errors": {{ "network-client": "RawTlsError" }},
+    "resources": {{ "TlsStream": {{ "capability": "network-client", "resource": "tls_stream" }} }},
     {foreign}
     "functions": {{
-      "tls_stream_connect_raw": {{ "capability": "tls", "symbol": "stark_tls_stream_connect" }}
+      "tls_stream_connect_raw": {{ "capability": "network-client", "symbol": "stark_tls_stream_connect" }}
     }}
   }}
 }}"#
@@ -139,17 +139,17 @@ fn a_resource_declared_both_owned_and_foreign_is_refused() {
   "name": "stark-tls",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": ["tls"],
+  "capabilities": ["network-client"],
   "dependencies": {{ {DEPS} }},
   "provider_api": {{
-    "errors": {{ "tls": "RawTlsError" }},
+    "errors": {{ "network-client": "RawTlsError" }},
     "resources": {{
-      "TlsStream": {{ "capability": "tls", "resource": "tls_stream" }},
-      "MyTcpStream": {{ "capability": "tls", "resource": "tcp_stream" }}
+      "TlsStream": {{ "capability": "network-client", "resource": "tls_stream" }},
+      "MyTcpStream": {{ "capability": "network-client", "resource": "tcp_stream" }}
     }},
     {VALID_FOREIGN}
     "functions": {{
-      "tls_stream_connect_raw": {{ "capability": "tls", "symbol": "stark_tls_stream_connect" }}
+      "tls_stream_connect_raw": {{ "capability": "network-client", "symbol": "stark_tls_stream_connect" }}
     }}
   }}
 }}"#
@@ -197,7 +197,7 @@ fn connect_decl() -> starkc::provider_abi::FunctionDecl {
     use starkc::provider_abi::{AbiParam, FunctionDecl};
     FunctionDecl {
         name: "stark_tls_stream_connect".to_string(),
-        capability: "tls".to_string(),
+        capability: "network-client".to_string(),
         params: vec![
             AbiParam::HandleConsumed {
                 resource_type: "tcp_stream".to_string(),
@@ -214,7 +214,7 @@ fn connect_decl() -> starkc::provider_abi::FunctionDecl {
 }
 
 fn errors() -> BTreeMap<String, String> {
-    BTreeMap::from([("tls".to_string(), "RawTlsError".to_string())])
+    BTreeMap::from([("network-client".to_string(), "RawTlsError".to_string())])
 }
 
 fn owned() -> BTreeMap<String, String> {
@@ -233,7 +233,7 @@ fn a_transfer_derives_with_the_owners_nominal_for_the_consumed_handle() {
     both.extend(foreign());
     let sig = derive(
         "tls_stream_connect_raw",
-        "tls",
+        "network-client",
         &connect_decl(),
         &both,
         &errors(),
@@ -266,7 +266,7 @@ fn a_transfer_derives_with_the_owners_nominal_for_the_consumed_handle() {
 fn a_transfer_without_the_declaration_is_still_refused() {
     let error = derive(
         "tls_stream_connect_raw",
-        "tls",
+        "network-client",
         &connect_decl(),
         &owned(),
         &errors(),
@@ -288,7 +288,7 @@ fn synthesis_generates_the_owned_nominal_and_never_the_foreign_one() {
     both.extend(foreign());
     let sig = derive(
         "tls_stream_connect_raw",
-        "tls",
+        "network-client",
         &connect_decl(),
         &both,
         &errors(),
@@ -296,7 +296,7 @@ fn synthesis_generates_the_owned_nominal_and_never_the_foreign_one() {
     .unwrap();
 
     let vocabularies = BTreeMap::from([(
-        "tls".to_string(),
+        "network-client".to_string(),
         starkc::provider_bind::StatusBinding::new(),
     )]);
     let layer = synthesize_with_resources(&[sig], &vocabularies, &owned(), &foreign())
@@ -333,7 +333,7 @@ fn synthesis_refuses_a_nominal_that_is_neither_owned_nor_foreign() {
     both.extend(foreign());
     let sig = derive(
         "tls_stream_connect_raw",
-        "tls",
+        "network-client",
         &connect_decl(),
         &both,
         &errors(),
@@ -341,7 +341,7 @@ fn synthesis_refuses_a_nominal_that_is_neither_owned_nor_foreign() {
     .unwrap();
 
     let vocabularies = BTreeMap::from([(
-        "tls".to_string(),
+        "network-client".to_string(),
         starkc::provider_bind::StatusBinding::new(),
     )]);
     let error = synthesize_with_resources(&[sig], &vocabularies, &owned(), &BTreeMap::new())
@@ -364,7 +364,7 @@ fn the_tls_provider_ships_and_declares_its_consumption() {
         .expect("stark-tls-native must be in the built-in provider set");
 
     assert_eq!(provider.metadata.identity.name, "stark-std-tls");
-    assert_eq!(provider.metadata.capabilities, vec!["tls"]);
+    assert_eq!(provider.metadata.capabilities, vec!["network-client"]);
     assert_eq!(provider.metadata.resource_types, vec!["tls_stream"]);
     assert_eq!(provider.crate_path, "stark-tls/native");
 
@@ -391,5 +391,5 @@ fn the_tls_provider_crate_is_located_from_its_manifest() {
     );
     assert!(starkc::provider_registry::known_capabilities()
         .iter()
-        .any(|c| c == "tls"));
+        .any(|c| c == "network-client"));
 }

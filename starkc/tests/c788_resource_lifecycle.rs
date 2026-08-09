@@ -99,10 +99,10 @@ fn tcp_call(name: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
             semver: (0, 1, 0),
             abi_version: "0.1".to_string(),
         },
-        capability: "tcp".to_string(),
+        capability: "network-client".to_string(),
         function: FunctionDecl {
             name: name.to_string(),
-            capability: "tcp".to_string(),
+            capability: "network-client".to_string(),
             params,
             is_close_for: (name == "stark_tcp_stream_close").then(|| "tcp_stream".to_string()),
             may_block: false,
@@ -125,15 +125,15 @@ fn the_build_driver_no_longer_refuses_a_resource_bearing_provider_api() {
   "name": "c788_lifecycle_refusal",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["tcp"],
+  "capabilities": ["network-client"],
   "provider_api": {
-    "errors": { "tcp": "RawNetError" },
+    "errors": { "network-client": "RawNetError" },
     "resources": {
-      "TcpStream": { "capability": "tcp", "resource": "tcp_stream" }
+      "TcpStream": { "capability": "network-client", "resource": "tcp_stream" }
     },
     "functions": {
       "connect_raw": {
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_connect"
       }
     }
@@ -183,11 +183,11 @@ fn build_driver_selects_closes_for_bound_resource_nominals() {
   "name": "c788_lifecycle_close_wiring",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["tcp"],
+  "capabilities": ["network-client"],
   "provider_api": {
-    "errors": { "tcp": "RawNetError" },
+    "errors": { "network-client": "RawNetError" },
     "resources": {
-      "TcpStream": { "capability": "tcp", "resource": "tcp_stream" }
+      "TcpStream": { "capability": "network-client", "resource": "tcp_stream" }
     },
     "functions": {}
   }
@@ -230,23 +230,23 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
     let set = ProviderSet::select(
         provider_registry::first_party(),
         &host_triple(),
-        &["tcp".into()],
+        &["network-client".into()],
     )
     .expect("tcp provider selects for host");
     let connect = set
-        .resolve("tcp", "stark_tcp_stream_connect")
+        .resolve("network-client", "stark_tcp_stream_connect")
         .expect("connect resolves");
     let connect_sig = derive(
         "connect_raw",
-        "tcp",
+        "network-client",
         &connect.function,
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
-        &BTreeMap::from([("tcp".to_string(), "RawNetError".to_string())]),
+        &BTreeMap::from([("network-client".to_string(), "RawNetError".to_string())]),
     )
     .expect("connect signature derives");
     let layer = synthesize_with_resources(
         &[connect_sig],
-        &BTreeMap::from([("tcp".to_string(), connect.status_binding.clone())]),
+        &BTreeMap::from([("network-client".to_string(), connect.status_binding.clone())]),
         &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
         &BTreeMap::new(),
     )

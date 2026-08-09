@@ -42,32 +42,32 @@ fn tcp_manifest(name: &str) -> String {
   "name": "{name}",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["tcp"],
+  "capabilities": ["network-client", "network-listen"],
   "provider_api": {{
-    "errors": {{ "tcp": "RawNetworkError" }},
+    "errors": {{ "network-client": "RawNetworkError", "network-listen": "RawNetworkError" }},
     "resources": {{
-      "TcpListener": {{ "capability": "tcp", "resource": "tcp_listener" }},
-      "TcpStream": {{ "capability": "tcp", "resource": "tcp_stream" }}
+      "TcpListener": {{ "capability": "network-listen", "resource": "tcp_listener" }},
+      "TcpStream": {{ "capability": "network-client", "resource": "tcp_stream" }}
     }},
     "functions": {{
       "tcp_listener_bind": {{
-        "capability": "tcp",
+        "capability": "network-listen",
         "symbol": "stark_tcp_listener_bind"
       }},
       "tcp_listener_accept": {{
-        "capability": "tcp",
+        "capability": "network-listen",
         "symbol": "stark_tcp_listener_accept"
       }},
       "tcp_stream_connect": {{
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_connect"
       }},
       "tcp_stream_read": {{
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_read"
       }},
       "tcp_stream_write": {{
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_write"
       }}
     }}
@@ -86,12 +86,12 @@ fn args_len_executes_from_source_through_build_command() {
   "name": "c788_args",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["process.args"],
+  "capabilities": ["environment-read"],
   "provider_api": {
-    "errors": { "process.args": "RawArgsError" },
+    "errors": { "environment-read": "RawArgsError" },
     "functions": {
       "args_len": {
-        "capability": "process.args",
+        "capability": "environment-read",
         "symbol": "stark_env_args_len"
       }
     }
@@ -149,16 +149,16 @@ fn env_var_success_and_recoverable_invalid_name_execute_through_build_command() 
   "name": "c788_env",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["process.env"],
+  "capabilities": ["environment-read"],
   "provider_api": {
-    "errors": { "process.env": "RawEnvError" },
+    "errors": { "environment-read": "RawEnvError" },
     "functions": {
       "var_len": {
-        "capability": "process.env",
+        "capability": "environment-read",
         "symbol": "stark_env_var_len"
       },
       "var_fill": {
-        "capability": "process.env",
+        "capability": "environment-read",
         "symbol": "stark_env_var_fill"
       }
     }
@@ -401,12 +401,12 @@ fn a_resource_bearing_provider_api_is_no_longer_refused_categorically() {
   "name": "c788_resource",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["filesystem"],
+  "capabilities": ["filesystem-read"],
   "provider_api": {
-    "errors": { "filesystem": "RawIoError" },
+    "errors": { "filesystem-read": "RawIoError" },
     "functions": {
       "open_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_file_open"
       }
     }
@@ -500,7 +500,7 @@ fn io_minimal_executes_from_source_through_stark_io_package() {
   "name": "c788_io_minimal",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["filesystem"],
+  "capabilities": ["filesystem-read", "filesystem-write"],
   "dependencies": {
     "stark_io": {
       "package": "stark-io",
@@ -647,7 +647,7 @@ fn io_expanded_surface_executes_from_source_through_stark_io_package() {
   "name": "c788_io_expanded",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["filesystem"],
+  "capabilities": ["filesystem-read", "filesystem-write"],
   "dependencies": {
     "stark_io": {
       "package": "stark-io",

@@ -167,13 +167,13 @@ fn a_package_binding_nothing_synthesizes_nothing() {
 fn buffer_and_slot_forms_reach_the_generated_source() {
     let sig = derive(
         "env::var_fill",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_fill"),
         &map(&[]),
-        &map(&[("process.env", "RawEnvError")]),
+        &map(&[("environment-read", "RawEnvError")]),
     )
     .expect("derives");
-    let layer = synthesize(&[sig], &vocab(&[("process.env", &[])])).expect("synthesizes");
+    let layer = synthesize(&[sig], &vocab(&[("environment-read", &[])])).expect("synthesizes");
 
     assert!(
         layer
@@ -210,15 +210,15 @@ fn buffer_and_slot_forms_reach_the_generated_source() {
 fn a_signature_touching_an_unbound_resource_is_refused() {
     let file_open = derive(
         "file::open_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_open"),
         &map(&[("file", "File")]),
-        &map(&[("filesystem", "RawIoError")]),
+        &map(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
     // No resource nominals bound, so `File` names nothing.
-    let e = synthesize(&[file_open], &vocab(&[("filesystem", &[])]))
+    let e = synthesize(&[file_open], &vocab(&[("filesystem-read", &[])]))
         .expect_err("a resource the package does not bind must be refused");
     assert!(e.contains("File"), "{e}");
     // HC9 widened the rule: a nominal is admissible if the package BINDS it or declares it FOREIGN.
@@ -236,14 +236,14 @@ fn a_signature_touching_an_unbound_resource_is_refused() {
 fn a_signature_with_a_receiver_is_refused() {
     let read = derive(
         "File::read_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_read"),
         &map(&[("file", "File")]),
-        &map(&[("filesystem", "RawIoError")]),
+        &map(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
-    let e = synthesize(&[read], &vocab(&[("filesystem", &[])]))
+    let e = synthesize(&[read], &vocab(&[("filesystem-read", &[])]))
         .expect_err("a receiver must be refused");
     assert!(e.contains("associated placement"), "{e}");
     assert!(e.contains("File::read_raw"), "{e}");
@@ -314,10 +314,10 @@ fn an_empty_vocabulary_generates_an_uninhabited_error_type() {
 fn a_declared_vocabulary_becomes_one_variant_per_code() {
     let sig = derive(
         "env::var_fill",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_fill"),
         &map(&[]),
-        &map(&[("process.env", "RawEnvError")]),
+        &map(&[("environment-read", "RawEnvError")]),
     )
     .expect("derives");
 
@@ -325,7 +325,7 @@ fn a_declared_vocabulary_becomes_one_variant_per_code() {
     // the order they were declared in.
     let layer = synthesize(
         &[sig],
-        &vocab(&[("process.env", &[(7, "TooLong"), (3, "NotFound")])]),
+        &vocab(&[("environment-read", &[(7, "TooLong"), (3, "NotFound")])]),
     )
     .expect("synthesizes");
 
@@ -350,10 +350,10 @@ fn a_declared_vocabulary_becomes_one_variant_per_code() {
 fn conflicting_names_for_one_status_code_are_refused() {
     let a = derive(
         "env::var_fill",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_fill"),
         &map(&[]),
-        &map(&[("process.env", "Shared")]),
+        &map(&[("environment-read", "Shared")]),
     )
     .expect("derives");
     let b = derive(
@@ -368,7 +368,7 @@ fn conflicting_names_for_one_status_code_are_refused() {
     let e = synthesize(
         &[a, b],
         &vocab(&[
-            ("process.env", &[(3, "NotFound")]),
+            ("environment-read", &[(3, "NotFound")]),
             ("clock", &[(3, "Skewed")]),
         ]),
     )
@@ -422,15 +422,17 @@ fn the_real_env_vocabulary_generates_a_compilable_error_type() {
 
     let sig = derive(
         "env::var_fill",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_fill"),
         &map(&[]),
-        &map(&[("process.env", "RawEnvError")]),
+        &map(&[("environment-read", "RawEnvError")]),
     )
     .expect("derives");
 
-    let vocabularies =
-        BTreeMap::from([("process.env".to_string(), provider.status_binding.clone())]);
+    let vocabularies = BTreeMap::from([(
+        "environment-read".to_string(),
+        provider.status_binding.clone(),
+    )]);
     let layer = synthesize(&[sig], &vocabularies).expect("the env layer must synthesize");
 
     // Final segments only, code-ordered.
@@ -536,16 +538,16 @@ fn the_nominal_cannot_be_constructed_or_matched_into_existence() {
 fn a_signature_naming_an_unbound_nominal_is_refused() {
     let sig = derive(
         "file::open_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_open"),
         &map(&[("file", "File")]),
-        &map(&[("filesystem", "RawIoError")]),
+        &map(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
     let e = starkc::provider_synth::synthesize_with_resources(
         &[sig],
-        &vocab(&[("filesystem", &[])]),
+        &vocab(&[("filesystem-read", &[])]),
         &BTreeMap::new(),
         &BTreeMap::new(),
     )
@@ -564,16 +566,16 @@ fn a_signature_naming_an_unbound_nominal_is_refused() {
 fn a_bound_nominal_lets_a_resource_signature_synthesize() {
     let sig = derive(
         "file::open_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_open"),
         &map(&[("file", "File")]),
-        &map(&[("filesystem", "RawIoError")]),
+        &map(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
     let layer = starkc::provider_synth::synthesize_with_resources(
         &[sig],
-        &vocab(&[("filesystem", &[])]),
+        &vocab(&[("filesystem-read", &[])]),
         &BTreeMap::from([("file".to_string(), "File".to_string())]),
         &BTreeMap::new(),
     )

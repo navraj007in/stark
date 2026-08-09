@@ -160,45 +160,31 @@ fn capability_unavailable_for_an_undeclared_target() {
     }
 }
 
-/// Packet 1 §1.4: two providers applicable to one capability and target is a **hard error**.
-/// Silent first-match would make the binary depend on declaration order, so the test asserts the
-/// failure in **both** declaration orders — the exact property a first-match implementation would
-/// pass one of and fail the other.
+/// Vocabulary v1 capabilities are authority roles, not provider identities. Two providers may
+/// supply one role when their interface symbols are disjoint; the requested symbol selects the
+/// provider deterministically in either declaration order.
 #[test]
-fn two_providers_for_one_capability_is_a_hard_error_in_either_order() {
+fn two_disjoint_providers_for_one_capability_resolve_by_interface() {
     for declared in [
         vec![stark_time(), rival_clock()],
         vec![rival_clock(), stark_time()],
     ] {
-        let errors =
-            ProviderSet::select(declared, LINUX, &clock()).expect_err("ambiguity must not resolve");
-
-        match errors.as_slice() {
-            [ResolveError::CapabilityAmbiguous {
-                capability,
-                target,
-                providers,
-            }] => {
-                assert_eq!(capability, "clock");
-                assert_eq!(target, LINUX);
-                // Both conflicting providers AND their metadata locations are named, so the
-                // remediation ("remove one, or narrow its target declarations") is actionable.
-                assert_eq!(
-                    providers,
-                    &[
-                        (
-                            "rival-clock".to_string(),
-                            "vendor/rival-clock/manifest.json".to_string()
-                        ),
-                        (
-                            "stark-std-time".to_string(),
-                            "stark-time/native/Cargo.toml".to_string()
-                        ),
-                    ]
-                );
-            }
-            other => panic!("expected a single CapabilityAmbiguous, got {other:#?}"),
-        }
+        let set = ProviderSet::select(declared, LINUX, &clock())
+            .expect("roles may have disjoint suppliers");
+        assert_eq!(
+            set.resolve("clock", "stark_time_unix_now")
+                .unwrap()
+                .provider
+                .name,
+            "stark-std-time"
+        );
+        assert_eq!(
+            set.resolve("clock", "rival_clock_now")
+                .unwrap()
+                .provider
+                .name,
+            "rival-clock"
+        );
     }
 }
 
@@ -218,7 +204,7 @@ fn ambiguity_on_one_target_does_not_block_another() {
 fn resolving_an_unselected_capability_does_not_search() {
     let set = ProviderSet::select(vec![stark_time()], LINUX, &clock()).expect("selects");
     assert!(matches!(
-        set.resolve("filesystem", "anything"),
+        set.resolve("filesystem-read", "anything"),
         Err(ResolveError::CapabilityUnavailable { .. })
     ));
 }
@@ -393,8 +379,7 @@ fn function_belonging_to_another_capability_is_rejected() {
     }
 }
 
-/// Selection reports **every** failure, not the first — three misconfigured providers should
-/// produce three findings, not three rebuilds.
+/// Selection reports malformed-provider failures before interface resolution.
 #[test]
 fn selection_reports_every_failure() {
     let mut bad_symbol = stark_time();
@@ -408,12 +393,6 @@ fn selection_reports_every_failure() {
             .iter()
             .any(|e| matches!(e, ResolveError::InvalidSymbol { .. })),
         "expected the symbol failure: {errors:#?}"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| matches!(e, ResolveError::CapabilityAmbiguous { .. })),
-        "expected the ambiguity failure too: {errors:#?}"
     );
 }
 

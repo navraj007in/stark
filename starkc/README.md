@@ -119,15 +119,17 @@ The installer writes a **versioned** tree: the payload lands in
 `lib/stark/versions/<version>`, `lib/stark/current` points at it, and
 `bin/stark` is a symlink to `current/bin/stark` on Unix or a copy of it on
 Windows. Inside the payload the layout is `bin/{stark,starkc,starkide}` plus
-`lib/stark/starkc/stark-runtime` and `lib/stark/starkc/stark-provider-abi`. The
+`lib/stark/starkc/stark-runtime`, `lib/stark/starkc/stark-provider-abi`, and the 27 manifests
+marked for toolchain distribution under `lib/stark/packages/<name>`. The
 runtime is required because native debug builds invoke the selected Cargo/rustc
 toolchain offline against it. Flat installations made before the versioned tree
 are still found.
 
-This payload carries the compiler, its runtime, the provider ABI **and** the
-first-party native provider crates, under `lib/stark/packages/<name>/native` —
+This payload carries the compiler, its runtime, the provider ABI, first-party STARK libraries,
+**and** the native provider crates under `lib/stark/packages/<name>/native` —
 mirroring the repository's `packages/` directory — so a program declaring a
-host capability (clock, filesystem, environment, random, TCP/DNS or TLS) builds
+host capability (capability vocabulary v1: filesystem read/write, environment read, network
+client/listen, clock, randomness, process execution or native code) builds
 from a stock installation with nothing installed separately.
 
 Both depths are required, not cosmetic. A provider crate reaches the ABI

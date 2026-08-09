@@ -244,7 +244,12 @@ fn transfer_program() -> MirProgram {
         ],
         provider_calls: vec![
             transfer_call(),
-            close_call("stark-std-net", "stark-net-native", "tcp", "tcp_stream"),
+            close_call(
+                "stark-std-net",
+                "stark-net-native",
+                "network-client",
+                "tcp_stream",
+            ),
             close_call(
                 "stark-wrap-native",
                 "stark-wrap-native",

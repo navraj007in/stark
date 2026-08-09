@@ -112,16 +112,16 @@ fn bindings_are_sorted_so_key_order_cannot_escape() {
 #[test]
 fn the_tcp_declaration_binds_nominals_to_provider_resources() {
     let p = ok(&format!(
-        r#"{{{HEAD},"capabilities":["tcp"],
+        r#"{{{HEAD},"capabilities":["network-client","network-listen"],
             "provider_api":{{
-              "errors":{{"tcp":"RawNetError"}},
+              "errors":{{"network-client":"RawNetError","network-listen":"RawNetError"}},
               "resources":{{
-                "TcpListener":{{"capability":"tcp","resource":"tcp_listener"}},
-                "TcpStream":{{"capability":"tcp","resource":"tcp_stream"}}
+                "TcpListener":{{"capability":"network-listen","resource":"tcp_listener"}},
+                "TcpStream":{{"capability":"network-client","resource":"tcp_stream"}}
               }},
               "functions":{{
-                "TcpListener::bind_raw":{{"capability":"tcp","symbol":"stark_tcp_listener_bind"}},
-                "TcpStream::connect_raw":{{"capability":"tcp","symbol":"stark_tcp_stream_connect"}}
+                "TcpListener::bind_raw":{{"capability":"network-listen","symbol":"stark_tcp_listener_bind"}},
+                "TcpStream::connect_raw":{{"capability":"network-client","symbol":"stark_tcp_stream_connect"}}
               }}}}}}"#
     ));
 
@@ -140,10 +140,10 @@ fn a_binding_for_an_undeclared_capability_is_rejected() {
     let message = err(&format!(
         r#"{{{HEAD},"capabilities":["clock"],
             "provider_api":{{"errors":{{"clock":"E"}},"functions":{{
-              "T::c":{{"capability":"tcp","symbol":"stark_tcp_stream_connect"}}
+              "T::c":{{"capability":"network-client","symbol":"stark_tcp_stream_connect"}}
             }}}}}}"#
     ));
-    assert!(message.contains("tcp"), "{message}");
+    assert!(message.contains("network-client"), "{message}");
     assert!(message.contains("capabilities"), "{message}");
 }
 
@@ -163,9 +163,9 @@ fn a_binding_for_an_undeclared_capability_is_rejected() {
 #[test]
 fn a_package_may_not_declare_a_core_resource() {
     let message = err(&format!(
-        r#"{{{HEAD},"capabilities":["filesystem"],
+        r#"{{{HEAD},"capabilities":["filesystem-read"],
             "provider_api":{{"resources":{{
-              "MyFile":{{"capability":"filesystem","resource":"file"}}
+              "MyFile":{{"capability":"filesystem-read","resource":"file"}}
             }}}}}}"#
     ));
     assert!(message.contains("file"), "{message}");
@@ -178,10 +178,10 @@ fn a_package_may_not_declare_a_core_resource() {
 #[test]
 fn two_nominals_on_one_resource_are_rejected() {
     let message = err(&format!(
-        r#"{{{HEAD},"capabilities":["tcp"],
+        r#"{{{HEAD},"capabilities":["network-client"],
             "provider_api":{{"resources":{{
-              "TcpStream":{{"capability":"tcp","resource":"tcp_stream"}},
-              "Socket":{{"capability":"tcp","resource":"tcp_stream"}}
+              "TcpStream":{{"capability":"network-client","resource":"tcp_stream"}},
+              "Socket":{{"capability":"network-client","resource":"tcp_stream"}}
             }}}}}}"#
     ));
     assert!(message.contains("tcp_stream"), "{message}");

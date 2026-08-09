@@ -2659,11 +2659,17 @@ impl<'a> Interpreter<'a> {
             },
             hir::StmtKind::Let { local, init, .. } => {
                 let value = if let Some(init) = init {
-                    let value = self.expect_value(*init)?;
-                    if let Some(propagated) = self.pending_propagation.take() {
-                        return Ok(Flow::Propagate(propagated));
+                    match self.eval_expr(*init)? {
+                        Flow::Value(value) => {
+                            self.check_expr_value(*init, &value)?;
+                            Some(value)
+                        }
+                        // A diverging initializer never binds the local. Preserve the control flow
+                        // exactly as a statement-position expression would; converting it to a
+                        // placeholder Unit is what made a return-ending match arm trap in the HIR
+                        // interpreter after the type checker correctly accepted it as `!`.
+                        flow => return Ok(flow),
                     }
-                    Some(value)
                 } else {
                     None
                 };

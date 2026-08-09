@@ -25,6 +25,53 @@ fn analyze(name: &str, source: String) -> Vec<Diagnostic> {
 }
 
 #[test]
+fn external_authoring_divergence_and_discard_forms_are_valid() {
+    let cases = [
+        (
+            "match_return_arm.stark",
+            r#"
+enum Parsed { Ok(Int32), Err }
+fn parse(ok: Bool) -> Parsed { if ok { Parsed::Ok(7) } else { Parsed::Err } }
+fn selected(ok: Bool) -> Int32 {
+    let result = match parse(ok) {
+        Parsed::Ok(found) => found,
+        Parsed::Err => { return 1; }
+    };
+    result
+}
+fn main() { assert_eq(selected(true), 7); assert_eq(selected(false), 1); }
+"#,
+        ),
+        (
+            "if_assignment_or_return.stark",
+            r#"
+fn attached(raw: Int32) -> Bool {
+    let value: Bool;
+    if raw == 1 { value = true; }
+    else if raw == 0 { value = false; }
+    else { return false; }
+    value
+}
+fn main() { assert(attached(1)); assert(!attached(0)); assert(!attached(2)); }
+"#,
+        ),
+        (
+            "repeated_discard.stark",
+            "fn main() { let _ = 1; let _ = 2; }",
+        ),
+    ];
+
+    for (name, source) in cases {
+        let diagnostics = analyze(name, source.to_string());
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{name} failed: {errors:#?}");
+    }
+}
+
+#[test]
 fn all_gate2_valid_programs_pass_semantic_analysis() {
     let mut paths: Vec<_> = std::fs::read_dir(fixture_dir())
         .expect("gate2 valid fixture directory exists")

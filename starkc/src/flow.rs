@@ -256,11 +256,19 @@ impl FlowChecker<'_> {
                 if let Some(else_expr) = else_ {
                     self.visit_expr(*else_expr, &mut else_state);
                 }
-                state.initialized = then_state
-                    .initialized
-                    .intersection(&else_state.initialized)
-                    .copied()
-                    .collect();
+                match (then_state.diverged, else_state.diverged) {
+                    // A branch that cannot reach the join contributes no uninitialised path.
+                    (true, false) => state.initialized = else_state.initialized,
+                    (false, true) => state.initialized = then_state.initialized,
+                    (false, false) => {
+                        state.initialized = then_state
+                            .initialized
+                            .intersection(&else_state.initialized)
+                            .copied()
+                            .collect();
+                    }
+                    (true, true) => state.diverged = true,
+                }
             }
             hir::ExprKind::Match { scrutinee, arms } => {
                 self.visit_expr(*scrutinee, state);

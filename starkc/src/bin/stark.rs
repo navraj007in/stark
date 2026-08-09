@@ -16,7 +16,10 @@ const USAGE: &str = "\
 stark — package manager and builder for the STARK Core v1 language
 
 Usage:
-  stark check                   Check the current package and dependencies.
+  stark check [--target-native]
+                                 Check the current package and dependencies.
+                                 Native-surface gaps warn by default; --target-native
+                                 makes them errors.
   stark build [--release] [--target <triple>] [--no-build-cache] [--no-mir-opt]
               [--locked] [--offline] [--keep-generated] [--emit-rust] [--verbose]
                                  Compile a native executable. Debug by default;
@@ -102,10 +105,12 @@ fn main() -> ExitCode {
 
     let mut locked = false;
     let mut offline = false;
+    let mut target_native = false;
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             "--locked" => locked = true,
             "--offline" => offline = true,
+            "--target-native" if cmd == "check" => target_native = true,
             _ => {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
@@ -164,7 +169,27 @@ fn main() -> ExitCode {
         }
     };
 
+    for diagnostic in program.diagnostics() {
+        eprint!("{}", diagnostic.render(program.sources()));
+    }
+
     if cmd == "check" {
+        if let Ok(mir) = program.lower_mir() {
+            let exclusions =
+                starkc::backend::generated_rust::emit_runtime::exclusions_in_program(&mir);
+            for (_, span, message) in &exclusions {
+                let diagnostic = if target_native {
+                    starkc::diag::Diagnostic::error(message.clone(), *span).with_code("E0106")
+                } else {
+                    starkc::diag::Diagnostic::warning(message.clone(), *span).with_code("W0106")
+                };
+                eprint!("{}", diagnostic.render(program.sources()));
+            }
+            if target_native && !exclusions.is_empty() {
+                eprintln!("{package_name}: native-target check failed");
+                return ExitCode::FAILURE;
+            }
+        }
         println!("{package_name}: OK");
         return ExitCode::SUCCESS;
     }
@@ -236,6 +261,8 @@ struct ManifestFile {
 struct InstallManifest {
     version: String,
     target: String,
+    packages: Vec<String>,
+    providers: Vec<String>,
     files: Vec<ManifestFile>,
 }
 
@@ -280,6 +307,108 @@ fn layout_check(name: &str, root: &Path, candidates: &[&str]) -> DoctorCheck {
             .unwrap_or_else(|| root.join(candidates[0]))
             .display()
             .to_string(),
+    }
+}
+
+/// Verify the provider crates the running compiler knows how to select, independently of the
+/// release manifest's file hashes. Manifest verification proves that every DECLARED file arrived;
+/// this check proves the packager declared and shipped every built-in provider in the first place.
+fn provider_crates_check(root: &Path, manifest: Option<&InstallManifest>) -> DoctorCheck {
+    let providers = starkc::provider_registry::first_party();
+    let mut missing = Vec::new();
+    let mut complete = 0usize;
+    for provider in &providers {
+        let crate_root = root.join("lib/stark/packages").join(&provider.crate_path);
+        let mut provider_complete = true;
+        for required in ["Cargo.toml", "src/lib.rs"] {
+            let path = crate_root.join(required);
+            if !path.is_file() {
+                provider_complete = false;
+                missing.push(format!("{} ({})", provider.crate_name, path.display()));
+            }
+        }
+        if provider_complete {
+            complete += 1;
+        }
+    }
+    let missing_declarations: Vec<_> = manifest
+        .map(|manifest| {
+            providers
+                .iter()
+                .filter_map(|provider| provider.crate_path.split('/').next())
+                .filter(|package| {
+                    !manifest
+                        .providers
+                        .iter()
+                        .any(|declared| declared == package)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !missing_declarations.is_empty() {
+        missing.push(format!(
+            "manifest provider declarations: {}",
+            missing_declarations.join(", ")
+        ));
+    }
+    DoctorCheck {
+        name: "provider_crates".to_string(),
+        ok: missing.is_empty(),
+        detail: if missing.is_empty() {
+            format!(
+                "{}/{} built-in provider crates present",
+                providers.len(),
+                providers.len()
+            )
+        } else {
+            format!(
+                "{}/{} built-in provider crates complete; missing {}",
+                complete,
+                providers.len(),
+                missing.join(", ")
+            )
+        },
+    }
+}
+
+fn packages_check(root: &Path, manifest: Option<&InstallManifest>) -> DoctorCheck {
+    let package_root = root.join("lib/stark/packages");
+    let Some(manifest) = manifest else {
+        return DoctorCheck {
+            name: "packages".to_string(),
+            ok: false,
+            detail: "install manifest unavailable".to_string(),
+        };
+    };
+    let missing: Vec<_> = manifest
+        .packages
+        .iter()
+        .filter_map(|name| {
+            let path = package_root.join(name).join("starkpkg.json");
+            (!path.is_file()).then(|| format!("{} ({})", name, path.display()))
+        })
+        .collect();
+    let ok = !manifest.packages.is_empty() && missing.is_empty();
+    DoctorCheck {
+        name: "packages".to_string(),
+        ok,
+        detail: if manifest.packages.is_empty() {
+            "manifest declares no toolchain packages".to_string()
+        } else if missing.is_empty() {
+            format!(
+                "{}/{} declared toolchain packages present at {}",
+                manifest.packages.len(),
+                manifest.packages.len(),
+                package_root.display()
+            )
+        } else {
+            format!(
+                "{}/{} declared toolchain packages present; missing {}",
+                manifest.packages.len() - missing.len(),
+                manifest.packages.len(),
+                missing.join(", ")
+            )
+        },
     }
 }
 
@@ -378,6 +507,8 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
     ] {
         checks.push(layout_check(name, &root, candidates));
     }
+    checks.push(provider_crates_check(&root, manifest.as_ref()));
+    checks.push(packages_check(&root, manifest.as_ref()));
 
     if let Some(manifest) = &manifest {
         let mut verified = 0usize;
@@ -722,6 +853,26 @@ fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
         .ok_or("manifest is missing host_target")?
         .to_string();
 
+    let string_array = |key: &str| -> Result<Vec<String>, String> {
+        let Some(value) = root.get(key) else {
+            return Ok(Vec::new());
+        };
+        let entries = value
+            .array()
+            .ok_or_else(|| format!("manifest field {key} is not an array"))?;
+        entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .string()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("manifest field {key} contains a non-string entry"))
+            })
+            .collect()
+    };
+    let packages = string_array("packages")?;
+    let providers = string_array("providers")?;
+
     let entries = root
         .get("files")
         .and_then(Json::array)
@@ -768,6 +919,8 @@ fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
     Ok(InstallManifest {
         version,
         target,
+        packages,
+        providers,
         files,
     })
 }
@@ -1825,6 +1978,45 @@ mod doctor_tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Manifest hashes only cover files the manifest lists. This independent inventory check must
+    /// therefore fail when a built-in provider crate disappears even if a future broken packager
+    /// also omits it from `manifest.json`.
+    #[test]
+    fn doctor_names_missing_built_in_provider_crates() {
+        let root =
+            std::env::temp_dir().join(format!("stark-doctor-providers-{}", std::process::id()));
+        let providers = starkc::provider_registry::first_party();
+        for provider in &providers {
+            let crate_root = root.join("lib/stark/packages").join(&provider.crate_path);
+            std::fs::create_dir_all(crate_root.join("src")).unwrap();
+            std::fs::write(crate_root.join("Cargo.toml"), "[package]\n").unwrap();
+            std::fs::write(crate_root.join("src/lib.rs"), "").unwrap();
+        }
+
+        let complete = provider_crates_check(&root, None);
+        assert!(
+            complete.ok,
+            "complete provider tree must pass: {complete:?}"
+        );
+        assert_eq!(complete.name, "provider_crates");
+
+        let omitted = &providers[0];
+        let omitted_source = root
+            .join("lib/stark/packages")
+            .join(&omitted.crate_path)
+            .join("src/lib.rs");
+        std::fs::remove_file(omitted_source).unwrap();
+        let missing = provider_crates_check(&root, None);
+        assert!(!missing.ok, "an omitted provider source must fail doctor");
+        assert!(
+            missing.detail.contains(&omitted.crate_name),
+            "must name the omitted provider: {}",
+            missing.detail
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A path containing an escaped quote truncated at the escape under the old reader.

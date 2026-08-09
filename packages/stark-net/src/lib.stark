@@ -313,26 +313,26 @@ fn map_network_error(error: RawNetworkError) -> NetworkError {
     }
 }
 
-fn map_dns_error(error: RawDnsError) -> DnsError {
+fn map_dns_error(error: RawNetworkError) -> DnsError {
     match error {
-        RawDnsError::DnsInvalidHost => DnsError::InvalidHost,
-        RawDnsError::DnsNotFound => DnsError::NotFound,
-        RawDnsError::DnsTemporaryFailure => DnsError::TemporaryFailure,
-        RawDnsError::DnsTooManyResults => DnsError::TooManyResults,
-        RawDnsError::DnsUnsupportedAddressFamily => DnsError::UnsupportedAddressFamily,
-        RawDnsError::DnsUnsupported => DnsError::Unsupported,
-        RawDnsError::DnsOther => DnsError::Other(DNS_STATUS_OTHER),
-        RawDnsError::ConnectionRefused => DnsError::Other(1u32),
-        RawDnsError::TimedOut => DnsError::Other(2u32),
-        RawDnsError::NotFound => DnsError::Other(3u32),
-        RawDnsError::PermissionDenied => DnsError::Other(4u32),
-        RawDnsError::AddressInUse => DnsError::Other(5u32),
-        RawDnsError::InvalidInput => DnsError::Other(6u32),
-        RawDnsError::ConnectionReset => DnsError::Other(7u32),
-        RawDnsError::BrokenPipe => DnsError::Other(8u32),
-        RawDnsError::WouldBlock => DnsError::Other(9u32),
-        RawDnsError::Unsupported => DnsError::Other(10u32),
-        RawDnsError::Other => DnsError::Other(11u32),
+        RawNetworkError::DnsInvalidHost => DnsError::InvalidHost,
+        RawNetworkError::DnsNotFound => DnsError::NotFound,
+        RawNetworkError::DnsTemporaryFailure => DnsError::TemporaryFailure,
+        RawNetworkError::DnsTooManyResults => DnsError::TooManyResults,
+        RawNetworkError::DnsUnsupportedAddressFamily => DnsError::UnsupportedAddressFamily,
+        RawNetworkError::DnsUnsupported => DnsError::Unsupported,
+        RawNetworkError::DnsOther => DnsError::Other(DNS_STATUS_OTHER),
+        RawNetworkError::ConnectionRefused => DnsError::Other(1u32),
+        RawNetworkError::TimedOut => DnsError::Other(2u32),
+        RawNetworkError::NotFound => DnsError::Other(3u32),
+        RawNetworkError::PermissionDenied => DnsError::Other(4u32),
+        RawNetworkError::AddressInUse => DnsError::Other(5u32),
+        RawNetworkError::InvalidInput => DnsError::Other(6u32),
+        RawNetworkError::ConnectionReset => DnsError::Other(7u32),
+        RawNetworkError::BrokenPipe => DnsError::Other(8u32),
+        RawNetworkError::WouldBlock => DnsError::Other(9u32),
+        RawNetworkError::Unsupported => DnsError::Other(10u32),
+        RawNetworkError::Other => DnsError::Other(11u32),
     }
 }
 

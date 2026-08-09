@@ -60,6 +60,47 @@ const C5_SNAPSHOT_COMPLETION: &str =
 const C5_SNAPSHOT_OVERFLOW: &str =
     include_str!("exec_snapshots/c5_native__02_supported_overflow_trap.stark");
 
+three_engine_test!(
+    external_authoring_match_return_arm_agrees,
+    "external_match_return",
+    completes,
+    r#"
+enum Parsed { Ok(Int32), Err }
+fn parse(ok: Bool) -> Parsed { if ok { Parsed::Ok(7) } else { Parsed::Err } }
+fn selected(ok: Bool) -> Int32 {
+    let result = match parse(ok) {
+        Parsed::Ok(found) => found,
+        Parsed::Err => { return 1; }
+    };
+    result
+}
+fn main() { assert_eq(selected(true), 7); assert_eq(selected(false), 1); }
+"#
+);
+
+three_engine_test!(
+    external_authoring_assignment_or_return_agrees,
+    "external_assignment_or_return",
+    completes,
+    r#"
+fn attached(raw: Int32) -> Bool {
+    let value: Bool;
+    if raw == 1 { value = true; }
+    else if raw == 0 { value = false; }
+    else { return false; }
+    value
+}
+fn main() { assert(attached(1)); assert(!attached(0)); assert(!attached(2)); }
+"#
+);
+
+three_engine_test!(
+    external_authoring_repeated_discard_agrees,
+    "external_repeated_discard",
+    completes,
+    "fn main() { let _ = 1; let _ = 2; }"
+);
+
 #[test]
 fn c5_snapshot_completion_replays_through_all_three_engines() {
     if !support::differential::rustc_available() {

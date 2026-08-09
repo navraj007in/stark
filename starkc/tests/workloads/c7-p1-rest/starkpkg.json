@@ -2,39 +2,41 @@
   "name": "c7-p1-rest",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["tcp", "process.env"],
+  "capability_vocabulary": 1,
+  "capabilities": ["environment-read", "network-client", "network-listen"],
   "provider_api": {
     "errors": {
-      "tcp": "RawNetworkError",
-      "process.env": "RawEnvError"
+      "network-client": "RawNetworkError",
+      "network-listen": "RawNetworkError",
+      "environment-read": "RawEnvError"
     },
     "resources": {
-      "TcpListener": { "capability": "tcp", "resource": "tcp_listener" },
-      "TcpStream": { "capability": "tcp", "resource": "tcp_stream" }
+      "TcpListener": { "capability": "network-listen", "resource": "tcp_listener" },
+      "TcpStream": { "capability": "network-client", "resource": "tcp_stream" }
     },
     "functions": {
       "tcp_listener_bind": {
-        "capability": "tcp",
+        "capability": "network-listen",
         "symbol": "stark_tcp_listener_bind"
       },
       "tcp_listener_accept": {
-        "capability": "tcp",
+        "capability": "network-listen",
         "symbol": "stark_tcp_listener_accept"
       },
       "tcp_stream_read": {
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_read"
       },
       "tcp_stream_write": {
-        "capability": "tcp",
+        "capability": "network-client",
         "symbol": "stark_tcp_stream_write"
       },
       "var_len": {
-        "capability": "process.env",
+        "capability": "environment-read",
         "symbol": "stark_env_var_len"
       },
       "var_fill": {
-        "capability": "process.env",
+        "capability": "environment-read",
         "symbol": "stark_env_var_fill"
       }
     }

@@ -6564,6 +6564,52 @@ instead of asserting that a table is populated.
   agree on `7\ndtor\n`, alongside the DEV-211 case asserting the move is refused — so the pair
   distinguishes "destructor runs" from "cannot match a `Drop` enum at all".
 
+## DEV-219 — the root application capability envelope was informational [CLOSED, 2026-08-09]
+
+> **RENUMBERED from DEV-214 at integration, 2026-08-09.** This branch and Gate C10 both allocated
+> `DEV-214` on the same day: here for the capability envelope, on `develop` for a
+> left-associative operator chain that aborts the compiler (found by C10-B, repaired under OD-9).
+> C10's landed on the trunk first, so **C10 keeps 214 and this record becomes 219** — the next free
+> number after this branch's own `DEV-215..218`, which do not collide and are unchanged.
+>
+> The deviation itself is untouched: same finding, same closure, same evidence.
+
+Provider manifests already rejected a binding outside their own declaration, but the root package
+did not approve the transitive graph: deleting every root capability still built and performed host
+I/O. WP-P1.6 now derives every provider function/resource reference conservatively across the graph
+and enforces `derived ⊆ root envelope`. The diagnostic names capability, contributing package, and
+interface. `gate2_package::root_capability_envelope_is_transitive_actionable_and_allows_spare_authority`
+pins the empty-envelope failure, two-hop derivation, success case, and legal spare declaration.
+
+## DEV-215 — shipped capability names diverged from the ratified durable vocabulary [CLOSED, 2026-08-09]
+
+The implementation serialized transport/provider names (`filesystem`, `process.env`, `tcp`, `tls`,
+`random`) while the ratified v1 format specifies authority roles. First-party manifests, provider
+metadata and tests now use vocabulary v1; filesystem read/write and network client/listen are split,
+and `capability_vocabulary: 1` is recorded in authority-bearing manifests and lockfiles. The
+normative mapping is `STARKLANG/docs/spec/packages/capabilities.md`.
+
+## DEV-216 — `stark check` did not report generated-Rust surface gaps [CLOSED, 2026-08-09]
+
+`v[i] = value` typechecked and ran in the interpreters but failed only at `stark build` because
+`RuntimeFn::VecReplace` is not emitted. The backend now owns an exhaustive `native_support` table;
+adding a runtime function cannot compile without classifying it. `stark check` reports known
+exclusions as W0106, and `stark check --target-native` rejects them as E0106 with the construct and
+work package. VecReplace itself remains scheduled under WP-C6.3b.
+
+## DEV-217 — external path dependencies were refused without a supported acquisition route [CLOSED, 2026-08-09]
+
+The resolver confined paths to the root package's parent, forcing external authors to copy
+first-party packages. Canonical external relative/absolute paths are now accepted. `stark.lock`
+records `path:<canonical directory>` and a deterministic content hash; the package test proves both.
+
+## DEV-218 — divergence was lost in value typing, definite assignment, and execution [CLOSED, 2026-08-09]
+
+A block ending in `return` was typed as Unit in a value arm; an `if` branch that returned still
+contributed an uninitialized path; repeated `let _` declarations collided. Blocks now produce `!`
+when their reachable path diverges, flow joins ignore diverging branches, `_` is not published as a
+binding, and both HIR/MIR propagation preserve a return from a value-position arm. Three exact
+programs agree across HIR, MIR and native in `three_engine_differential`.
 ## DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI
 
 **Repaired under Gate C10's C10-P packet (OD-4, CD-395).** The deviation's first heading, above,

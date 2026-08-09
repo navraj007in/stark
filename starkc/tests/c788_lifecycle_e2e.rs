@@ -47,17 +47,17 @@ fn manifest(name: &str) -> String {
   "name": "{name}",
   "version": "0.1.0",
   "entry": "src/main.stark",
-  "capabilities": ["tcp"],
+  "capabilities": ["network-client", "network-listen"],
   "provider_api": {{
-    "errors": {{ "tcp": "RawNetworkError" }},
+    "errors": {{ "network-client": "RawNetworkError", "network-listen": "RawNetworkError" }},
     "resources": {{
-      "TcpListener": {{ "capability": "tcp", "resource": "tcp_listener" }},
-      "TcpStream": {{ "capability": "tcp", "resource": "tcp_stream" }}
+      "TcpListener": {{ "capability": "network-listen", "resource": "tcp_listener" }},
+      "TcpStream": {{ "capability": "network-client", "resource": "tcp_stream" }}
     }},
     "functions": {{
-      "tcp_listener_bind": {{ "capability": "tcp", "symbol": "stark_tcp_listener_bind" }},
-      "tcp_listener_accept": {{ "capability": "tcp", "symbol": "stark_tcp_listener_accept" }},
-      "tcp_stream_connect": {{ "capability": "tcp", "symbol": "stark_tcp_stream_connect" }}
+      "tcp_listener_bind": {{ "capability": "network-listen", "symbol": "stark_tcp_listener_bind" }},
+      "tcp_listener_accept": {{ "capability": "network-listen", "symbol": "stark_tcp_listener_accept" }},
+      "tcp_stream_connect": {{ "capability": "network-client", "symbol": "stark_tcp_stream_connect" }}
     }}
   }}
 }}"#

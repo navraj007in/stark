@@ -28,10 +28,14 @@ use starkc::provider_resolve::ProviderSet;
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 
 fn tcp() -> ProviderSet {
+    let providers = provider_registry::first_party()
+        .into_iter()
+        .filter(|provider| provider.crate_name == "stark-net-native")
+        .collect();
     ProviderSet::select(
-        provider_registry::first_party(),
+        providers,
         LINUX,
-        &["tcp".to_string()],
+        &["network-client".to_string(), "network-listen".to_string()],
     )
     .expect("tcp must be available on a Tier-1 target")
 }
@@ -53,7 +57,10 @@ fn registry_with_tcp_types() -> ResourceRegistry {
 fn tcp_selects_stark_net_and_only_on_request() {
     let set = tcp();
     assert_eq!(set.providers().len(), 1);
-    assert_eq!(set.providers()[0].crate_name, "stark-net-native");
+    assert!(set
+        .providers()
+        .iter()
+        .any(|provider| provider.crate_name == "stark-net-native"));
 
     for function in [
         "stark_tcp_listener_bind",
@@ -64,7 +71,12 @@ fn tcp_selects_stark_net_and_only_on_request() {
         "stark_tcp_listener_close",
         "stark_tcp_stream_close",
     ] {
-        set.resolve("tcp", function)
+        let capability = if function.contains("listener") {
+            "network-listen"
+        } else {
+            "network-client"
+        };
+        set.resolve(capability, function)
             .unwrap_or_else(|e| panic!("{function} must resolve: {e:#?}"));
     }
 
@@ -75,14 +87,18 @@ fn tcp_selects_stark_net_and_only_on_request() {
         &["clock".to_string()],
     )
     .expect("selects");
-    assert!(others.resolve("tcp", "stark_tcp_stream_connect").is_err());
+    assert!(others
+        .resolve("network-client", "stark_tcp_stream_connect")
+        .is_err());
 }
 
 /// Eleven declared codes — the richest vocabulary of the four providers, including `AddressInUse`,
 /// which only `bind` can produce. Everything else is a contract violation.
 #[test]
 fn the_tcp_status_vocabulary_is_channel_one() {
-    let call = tcp().resolve("tcp", "stark_tcp_stream_connect").unwrap();
+    let call = tcp()
+        .resolve("network-client", "stark_tcp_stream_connect")
+        .unwrap();
     let p = plan(
         ProviderCallId(0),
         &call,
@@ -120,7 +136,12 @@ fn every_tcp_function_is_refused_naming_its_resource_type() {
         "stark_tcp_listener_close",
         "stark_tcp_stream_close",
     ] {
-        let call = set.resolve("tcp", function).unwrap();
+        let capability = if function.contains("listener") {
+            "network-listen"
+        } else {
+            "network-client"
+        };
+        let call = set.resolve(capability, function).unwrap();
         match plan(
             ProviderCallId(0),
             &call,
@@ -165,7 +186,12 @@ fn the_whole_tcp_surface_plans_once_its_types_are_bound() {
         "stark_tcp_listener_close",
         "stark_tcp_stream_close",
     ] {
-        let call = set.resolve("tcp", function).unwrap();
+        let capability = if function.contains("listener") {
+            "network-listen"
+        } else {
+            "network-client"
+        };
+        let call = set.resolve(capability, function).unwrap();
         let p = plan(
             ProviderCallId(0),
             &call,
@@ -183,7 +209,9 @@ fn the_whole_tcp_surface_plans_once_its_types_are_bound() {
 /// stream, so one call both keeps a resource and creates another.
 #[test]
 fn accept_borrows_a_listener_and_produces_a_stream() {
-    let call = tcp().resolve("tcp", "stark_tcp_listener_accept").unwrap();
+    let call = tcp()
+        .resolve("network-listen", "stark_tcp_listener_accept")
+        .unwrap();
     let p = plan(
         ProviderCallId(0),
         &call,
