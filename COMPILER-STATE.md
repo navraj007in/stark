@@ -15,11 +15,11 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **Next: C10-Q — owner decision under CE8.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. Recommendation **PASS-WITH-DEVIATIONS, unconditional** — the condition is discharged. **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
+| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
-| **Gate C10** | **OPEN.** Plan: `plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md`, approved with amendments. Evaluating Core v1 Compiler Stable + Native Systems Preview only |
+| **Gate C10** | **CLOSED 2026-08-09 — PASS-WITH-DEVIATIONS** (owner decision under CE8). Claim, residuals and derivation: `C10-Q-EVIDENCE-PACKAGE.md` §3.2/§3.2a. **16 deviations**, every one reproduced at the candidate rather than inherited — seven of the 23 at the anchor did not reproduce and were closed. Named residuals, accepted rather than required: robustness targets **T3 and T7 declared and NOT RUN** (no robustness claim over either), and **seven security surfaces with a defence and no falsifier** (R-S03/05/06/09/11/14/15) — named, not claimed. Conformance is per-rule for 56 of 168 granular rules. Distribution is integrity-verified, NOT authenticated. **This does not authorise `develop -> main`** |
 | **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
 | **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
@@ -112,6 +112,48 @@ Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-397 — GATE C10 CLOSED: PASS-WITH-DEVIATIONS, on a deviation list that was verified rather than inherited (2026-08-09)
+
+**Owner decision under CE8: PASS-WITH-DEVIATIONS**, on the claim wording in
+`C10-Q-EVIDENCE-PACKAGE.md` §3.2 as drafted. Recorded in §3.2a. Gate C10 is CLOSED.
+
+```text
+gate decision      PASS-WITH-DEVIATIONS
+release wording    §3.2 as drafted
+T3 / T7            accepted as NAMED RESIDUALS; no robustness claim over either
+7 surfaces         accepted as NAMED RESIDUALS; named, not claimed
+DEV-177 question   WITHDRAWN — the reproduction pass answered it
+promotion          NOT authorised. `develop -> main` follows the decision separately
+```
+
+**What the claim rests on that it did not at first draft.** Every one of the 16 deviations it names
+was observed failing at the candidate. Seven of the 23 present at the anchor did not reproduce and
+were closed — DEV-083, DEV-122, DEV-161, DEV-162, DEV-177, DEV-178, DEV-181 — and each would
+otherwise have been published as a known limitation of a compiler that does not have it. DEV-177 in
+particular was the only subtraction that made a conformance claim FALSE rather than narrow, so its
+closure moved the objection to PASS from "a claim would be false" to "84 of 168 rules are
+unattributed", which is weaker and more honest.
+
+**The residuals are inside the claim text, not beneath it.** Nine robustness targets were declared
+before measurement and two are reported unrun; the population was not trimmed to seven after the
+fact, which is the denominator manipulation the plan forbids. The seven security surfaces are named
+individually rather than counted, because a residual a reader must go looking for is not a
+disclosure.
+
+**Two findings recorded and deliberately not acted on.** DEV-160's named-refusal boundary does not
+cover the shape `stark-http-client` works around — it reaches rustc and surfaces `E0502` inside
+`mod stark_proj`, the outcome CD-374 says the named refusal prevents. And DEV-122 closes with a
+surviving clamp in `line_col`; what made that clamp dangerous is now prevented structurally by
+`SourceId` on every span, so the entry closes, but the hardening it also asked for was never done.
+
+**Method note, because it is the transferable part.** The ledger could not be trusted to a git-log
+audit: three of the seven non-reproducing entries were repaired *incidentally* by unrelated
+consolidations (AS3 method resolution, AS1b span identity), so no commit names them. Only re-running
+a reproducer finds those. DEV-157 was one probe from a false closure in the other direction — the
+shape its entry named now builds, while the defect is alive in other `Never` positions.
+
+**Next:** DEV-180 as its own packet, per the owner's ruling that it follows C10-Q and not precede it.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
 

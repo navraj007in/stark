@@ -183,8 +183,49 @@ owner in the recorded environment.
 
 Distribution: integrity-verified, NOT authenticated. Unsigned archives.
 
+Robustness: qualified over SEVEN of nine declared targets. T3 (resolver / package /
+module graphs) and T7 (malformed artifacts — ONNX, build.json, stark.lock,
+manifest.json, corpus.lock) were DECLARED AND NOT RUN. No robustness qualification
+is claimed over either.
+
+Security: reviewed, with SEVEN surfaces carrying a defence and no falsifier, named
+and not claimed — R-S03 (a traversing `entry` is bounded, but nothing proves it is
+refused), R-S05 (nothing asserts the compiler spawns only cargo and rustc), R-S06
+(nothing asserts the absence of STARK-supplied linker arguments), R-S09 (no hostile
+archive is extracted anywhere), R-S11 (no workspace-trust boundary exists, so none
+is tested), R-S14 (no advisory scan in CI), R-S15 (no licence audit in CI).
+
 Tensor extension v0.1: deferred research. No claim.
 ```
+
+**Both residual sets are named in the claim rather than footnoted beneath it.** A residual a reader
+must go looking for is not a disclosure. Nine robustness targets were declared before measurement
+and two are reported unrun, rather than the population being trimmed to nine-of-seven after the
+fact — which is the denominator manipulation C10-B §7 forbids and this package's own rule refuses.
+
+**R-S03 is the one to close first**, and it is the only one where the *defence itself* is what goes
+unverified rather than merely the absence of an attack. R-S05, R-S06 and R-S09 are roughly one test
+each.
+
+## 3.2a DECISION RECORDED — PASS-WITH-DEVIATIONS (owner, 2026-08-09)
+
+**The owner decided C10-Q under CE8: PASS-WITH-DEVIATIONS**, on the claim wording in §3.2 as
+drafted, with T3/T7 and the seven security surfaces **named as accepted residuals** rather than
+required before close.
+
+```text
+gate decision      PASS-WITH-DEVIATIONS
+release wording    §3.2 as drafted
+T3 / T7            accepted as named residuals; no robustness claim over either
+7 surfaces         accepted as named residuals; named, not claimed
+```
+
+Everything below this heading is the derivation that produced the recommendation. It is preserved
+as written, including the alternatives that were not chosen — a derivation edited after the fact to
+agree with its outcome is not evidence of anything.
+
+**This does not authorise a `develop -> main` promotion**, which follows the decision and does not
+accompany it.
 
 ## 3.3 The gate decision this implies
 
@@ -279,12 +320,11 @@ campaign's method over an audit.
 3  WITHDRAWN — answered      DEV-177 does not reproduce and is CLOSED. It was the only
    by the reproduction pass  subtraction that falsified rather than narrowed, and it is gone.
                              Nothing is now blocked on it
-4  whether T3/T7 robustness  both are declared-but-not-run; C10-Q can name them or require them
-   and the 7 unverified
-   security surfaces are
-   acceptable as named
-   residuals
+4  ANSWERED — named as     accepted as residuals, not required before close. Both are
+   residuals                carried in the §3.2 claim text itself
 ```
+
+**All four are now settled; the gate decision is recorded in §3.2a.**
 
 **1 and 2 are satisfied by approving this package as drafted; only 4 needs a separate answer.** Two
 further calls are optional and neither blocks the gate: whether DEV-122's surviving clamp gets its
