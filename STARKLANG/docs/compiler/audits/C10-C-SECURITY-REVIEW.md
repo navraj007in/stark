@@ -83,6 +83,7 @@ path ran, not merely that something failed.
 | S11 | No LSP workspace-trust boundary: opening a folder analyses it | **D** | — | ACCEPTED for a pre-alpha server. **Becomes class B the moment analysis can execute anything** — today it cannot |
 | S02 | `stark build` reads/writes inside the package and target dir, and reads sibling packages a manifest names | **D** | — | ACCEPTED: it is what a build is |
 | S01, S04, S08 | Defended, and now falsifiable | — | — | Newly VERIFIED by `c10c_security.rs` |
+| **S10** | **This review described a defence that does not exist.** It claimed a dependency outside the workspace is "refused by name". `is_within_workspace` is called at ONE site and checks the ROOT manifest only, so external path dependencies are accepted | **D** | — | **CORRECTED** — `C10-THREAT-MODEL.md` §2a. The real control is `stark.lock`'s per-dependency canonical `source` plus verified `sha256`, which is stronger than the containment I imagined |
 | R-S03/05/06/09/11/14/15 | Seven surfaces with a defence but **no falsifier** | — | C | **UNVERIFIED.** Named, not claimed |
 
 ---

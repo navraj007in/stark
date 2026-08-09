@@ -47,13 +47,53 @@ toolchain, or inject into generated code.
 | **S07** | environment propagation | Reads are enumerable: `STARK_CARGO`/`CARGO`, `STARK_RUSTC`/`RUSTC`, `STARK_RUNTIME_DIR`, `STARK_REQUIRE_INSTALLED_RUNTIME`, `STARK_DUMP_MIR_ON_VERIFY_FAIL` | `c163_*`/`dev161_ambient_cargo_target_dir` covers the `CARGO_TARGET_DIR` interaction (DEV-161) | **PARTIAL** |
 | **S08** | temporary files / directories | `env::temp_dir()` + PID + counter; **no shared root** (C6.4 row 17) | `c10c_security::s08_generated_temp_paths_do_not_collide_within_a_process`; C6.4 row 17's platform evidence | **VERIFIED**, with one known survivor outside the matrix using `/tmp` (a gate-7 fixture) |
 | **S09** | archive extraction | Installer-side. Release archives are produced by `build-release.py`; the compiler extracts nothing | `test_build_release.py`; `release package smoke` on three platforms | **VERIFIED for production**, not for extraction of a hostile archive — R-S09 |
-| **S10** | dependency / package provenance | First-party manifests use plain sibling `../stark-<name>` paths; `stark.lock` pins; the workspace root is the package's parent, so a dependency outside `packages/` is **refused by name** | `qualify-first-party-packages.py`; `package.rs::get_workspace_root` tests | **VERIFIED (inherited)** |
+| **S10** | dependency / package provenance | **CORRECTED 2026-08-09 — see §2a.** `stark.lock` records, per dependency, the **canonical absolute `source` directory** and a verified **`sha256` content hash**; a mismatch is a hard error. The lockfile also carries a `capability_vocabulary` version | the content-hash-mismatch path (`"content hash mismatch for cached package"`); `qualify-first-party-packages.py` | **VERIFIED — by a different mechanism than this row first claimed** |
 | **S11** | LSP workspace trust | The server reads files of the package containing an opened URI. **There is no trust prompt** — opening a folder analyses it | none | **UNVERIFIED, and see DEV-186** — R-S11 |
 | **S12** | executable / tool paths | `command_path` prefers `STARK_CARGO`/`CARGO`, else the **bare name** `cargo` — i.e. **PATH lookup** | source-verified; no falsifier test | **ACCEPTED LIMITATION (class D)** — §4 |
 | **S13** | denial-of-service inputs | The parser's `MAX_DEPTH = 200` bounds syntactic nesting; the LSP bounds nothing | `c10b_robustness` T1/T2/T9 — **and this surface is where C10-B's two findings live** | **FAILS** — DEV-214, DEV-186 |
 | **S14** | dependency vulnerabilities | The compiler's own dependency set is deliberately tiny: `sha2` only, `default-features = false`. Charter §1.10 requires a necessity/maintenance/licence/security note per new dependency | `Cargo.toml` inspection; **no automated advisory scan runs** | **PARTIAL** — R-S14 |
 | **S15** | licences | Project MIT. Dependency licences unaudited in CI | none | **UNVERIFIED** — R-S15 |
 | **S16** | installer / release authenticity | `stark doctor` re-hashes every payload file against `manifest.json` — **integrity** | `release package smoke`; `stark doctor` tests | **INTEGRITY VERIFIED. AUTHENTICITY ABSENT** — class C, §4 |
+
+---
+
+# 2a. S10 CORRECTION — I described a defence that does not exist, and missed the one that does
+
+**This row originally read:** *"the workspace root is the package's parent, so a dependency outside
+`packages/` is refused by name."* **That is false at HEAD.** It was written from a remembered
+constraint rather than from the code.
+
+Measured:
+
+```text
+is_within_workspace   called at exactly ONE site, and it checks the ROOT MANIFEST:
+                          "root package is outside the permitted workspace"
+dependency paths      parent_dir.join(dep_path) -> canonicalize() -> DependencySource::Path
+                      NO containment check. An external path dependency is ACCEPTED
+```
+
+**External path dependencies are permitted** — which is what Cargo does, and is a **class D accepted
+operational limitation** rather than a vulnerability. It must be stated, because a reader of the
+original row would have assumed a boundary that is not there.
+
+**The real defence is stronger and more specific than the one I invented.** `LockfilePackage`
+records, per dependency:
+
+```text
+source   Option<String>  "Auditable acquisition origin. Path dependencies use the canonical
+                          absolute directory; registry dependencies use `registry`"
+sha256   String          content hash, VERIFIED on use — a mismatch is an error, not a warning
+```
+
+plus a `capability_vocabulary` version on the lockfile itself. **Provenance is established by
+recording and hashing what was actually used, not by restricting where it may live.** That is a
+better design than containment, and one I would have missed entirely had I not checked.
+
+**How this was found, because the method is the transferable part.** `CLAUDE.md` changed
+mid-session and asserted that external path dependencies are supported — contradicting this row.
+The charter puts `CLAUDE.md` at level 6 of the source-of-truth hierarchy and the implementation at
+level 3, so **neither the old row nor the new summary was trusted; the code was read.** The summary
+was right and my security document was wrong.
 
 ---
 
