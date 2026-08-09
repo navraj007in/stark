@@ -1,8 +1,11 @@
 # WP-C10 — Compiler Release Qualification (execution plan)
 
-**Status:** DRAFT — awaiting owner approval. **No C10 work may begin until §2's owner decisions are
-recorded in `COMPILER-STATE.md`.**
+**Status:** **APPROVED WITH AMENDMENTS (owner, 2026-08-09).** All six opening decisions are RULED —
+see §2. C10-0 is authorised to begin **once a green exact-head CI baseline exists** (§1.2).
 **Authored:** 2026-08-09, against `develop` at `f12ececca6d4bdabf828d657c4a4f719a7f9c39a`.
+**Amended:** 2026-08-09 — owner rulings OD-1…OD-6 recorded; three methodological amendments
+applied (authority of the normative specifications, §"How to execute"; no expected finding rate,
+§6.4/§8.3; inherited-mutation freshness rule, §8.2a).
 **Gate:** C10 — Compiler Release Qualification (`COMPILER-ROADMAP.md` §GATE C10).
 **Owning track:** compiler, under `COMPILER-CHARTER.md`.
 
@@ -19,8 +22,30 @@ A session executing this plan needs exactly five inputs:
 5  the packet-specific documents named in §4      inherited evidence, by exact path
 ```
 
-Nothing else is required, and nothing else is authoritative. Where this plan and the roadmap
-disagree, the roadmap wins and this plan is defective — fix it in the same change.
+**These five are the required navigation and control inputs — they are not the whole authority.**
+
+> **The normative Core and extension specifications retain their authority under
+> `COMPILER-CHARTER.md` §1.6 rule 1 and §1.9.** This plan governs *how C10 is executed*; it does
+> not and cannot govern *what STARK means*. Packet-specific evidence documents and the normative
+> rules referenced by this plan must be read when the corresponding claim is qualified — C10-A1
+> and C10-A2 are built on granular normative rule IDs and their exact spec homes, so the rest of
+> this plan already behaves this way.
+
+Source-of-truth order is the charter's §1.9, unchanged:
+
+```text
+1 approved normative Core or extension specification
+2 approved decision record in COMPILER-STATE.md or a gate proposal
+3 gate exit evidence and executable tests
+4 the compiler roadmap
+5 engineering plan / work-package documentation   <- THIS FILE SITS HERE
+6 README, CLAUDE context, implementation notes, commit messages
+7 archived pre-pivot documents — never authoritative
+```
+
+Where this plan and the roadmap disagree, the roadmap wins and this plan is defective — fix it in
+the same change. Where this plan and a normative specification disagree, the specification wins and
+this plan is defective in the same way.
 
 ---
 
@@ -158,15 +183,31 @@ authorise; it does not by itself block a compiler-scoped release claim. **DEV-16
 
 ---
 
-# 2. OPENING OWNER DECISION REQUIRED
+# 2. OPENING OWNER DECISIONS — ALL SIX RULED (2026-08-09)
 
-**Nothing below this heading is a recommendation the executing session may adopt on its own.** Each
-decision is stated as: what the documents say, whether they conflict, what is technically possible,
-and the smallest ruling that reconciles them. Record the rulings as a `CD-NNN` entry in
-`COMPILER-STATE.md` before C10-0 completes.
+**Every decision below is CLOSED.** Each is preserved in its original form — what the documents
+say, whether they conflict, what is technically possible, the ruling requested — with the owner's
+ruling appended. The analysis is kept rather than replaced by the answer, because the analysis is
+what a later reader needs in order to know whether the ruling still holds.
 
-CD numbers run ahead of HEAD in this repository — read the maximum from `git log --all` before
-allocating, and never force-push to relabel.
+Summary:
+
+```text
+OD-1  APPROVED               C9 Part B does not block C10
+OD-2  APPROVED               evaluate Core v1 Compiler Stable + Native Systems Preview only
+OD-3  APPROVED W/ REFINEMENT three separately countable populations, not one denominator
+OD-4  MODIFIED               close both DEVs during C10 rather than carrying them; neither
+                             reopens C8; unresolved state NARROWS the language-services claim
+OD-5  APPROVED               dated superseding record; CD-394 and AS8's exit qualification
+                             preserved untouched
+OD-6  APPROVED               correct the live ROADMAP summary; §6.0's gate text preserved and
+                             marked satisfied
+```
+
+**C10-0's first act** is to transcribe these six rulings into `COMPILER-STATE.md` as one dated
+`CD-NNN` entry, and to make the two document corrections OD-5 and OD-6 authorise. CD numbers run
+ahead of HEAD in this repository — read the maximum from `git log --all` before allocating, and
+never force-push to relabel.
 
 ## OD-1 — Does C9 Part B block C10?
 
@@ -238,9 +279,30 @@ reading and an unrecorded interpretation is exactly the drift this repository ha
 >
 > **Nothing in C9's historical record is edited.** The amendment is a new dated entry.
 
-If the owner rules the other way — C9 Part B blocks C10 — then C10 does not open, and this plan is
-shelved until an ecosystem second-artifact gate report exists. That is a coherent outcome and the
-plan does not argue against it; it simply cannot be chosen silently.
+### OWNER RULING — APPROVED (2026-08-09)
+
+**C9 Part B does not block C10.** The owner records that this plan's reading supersedes the earlier
+reading of the position line: C10's entry contract explicitly permits C9 to be blocked on
+second-artifact evidence, and C9 Part A already supplies the extension-isolation and tensor-stage
+inputs C10 consumes.
+
+Record, as a **new dated decision** — C9's history is not rewritten:
+
+```text
+C9 Part A      CLOSED
+C9 Part B      DEFERRED — second-artifact evidence required
+               no generalisation from ONNX alone (CE7)
+
+C10            MAY OPEN
+
+COMPILER-STATE.md position line:
+Gate: C10
+Next: C10-0
+Blocked: none
+
+Optional tracks:
+ArtifactInfra = blocked/deferred at C9 Part B
+```
 
 ## OD-2 — Which release classes is C10 evaluating?
 
@@ -260,6 +322,21 @@ DO NOT     STARK v1 General-Purpose Stable  same evidence, wider claim (CD-022).
                                             C10 finding
 DO NOT     Native Developer Preview         subsumed
 ```
+
+### OWNER RULING — APPROVED exactly as proposed (2026-08-09)
+
+```text
+EVALUATE          Core v1 Compiler Stable
+                  Native Systems Preview
+
+DO NOT EVALUATE   STARK v1 General-Purpose Stable
+                  Native Developer Preview
+```
+
+The owner's reasons, recorded because they bind C10-Q's wording: the Systems Preview is a **useful
+fallback claim**, and the General-Purpose claim is **materially wider even though it rests on much
+of the same evidence** — it therefore requires a separate owner act and is not something a C10
+finding can reach.
 
 ## OD-3 — What is the denominator for "every open deviation carries an owner"?
 
@@ -292,6 +369,47 @@ are named by no test, and 44 are named in no decision record or archive at all.*
 Without this ruling C10-0 cannot produce a countable inherited-deviation inventory, and C10.7 cannot
 be executed at all.
 
+### OWNER RULING — APPROVED WITH ONE REFINEMENT (2026-08-09)
+
+**Do not force three conceptually different populations into one "deviation" denominator.** C10-0
+freezes **three separately countable inventories**:
+
+```text
+A. COMPILER DEVIATIONS
+     KNOWN-DEVIATIONS.md live-heading set
+   + DEV-* present in COMPILER-STATE.md but absent from that file
+
+B. RELEASE / DISTRIBUTION DEVIATIONS
+     DEV-165 and its kin
+   + installer / offline-build / authenticity / package-distribution limits (§1.6)
+
+C. ASSURANCE RESIDUALS
+     live AS8-R*
+   + pending AS8-DA*
+   + EI / RA residuals inherited into C10 (incl. RA-LAYOUT unmeasured, RA-LINTS)
+   + any C10-R* this campaign allocates
+```
+
+**All three populations require an owner and a disposition before C10-Q.** They differ in what they
+constrain:
+
+```text
+A   is the denominator for the compiler-conformance deviation rule (CD-021)
+B   constrains the RELEASE / DISTRIBUTION WORDING — it does not gate compiler conformance
+C   constrains the STRENGTH OF EVIDENCE CLAIMS — it does not assert a defect exists
+```
+
+> **This preserves the semantic distinction AS8 worked to establish: an evidence residual is not
+> automatically a compiler defect.** A mutation survivor means the evidence cannot detect a wrong
+> rule, not that the rule is wrong. Collapsing C into A would silently convert sixteen
+> "we cannot see this" findings into sixteen "we are broken here" findings, and would have
+> allocated DEV numbers the AS8 owner ruling explicitly refused.
+
+**Consequences propagated through this plan:** §11.2's finding classes are aligned to these three
+populations plus security (class B in that section is `SEC-C10-*`, which is a fourth register and
+is not a deviation at all); §17.1's exit criterion E9 is restated per population; §6.3's opening
+inventory freezes all three, not one.
+
 ## OD-4 — Are DEV-012 and DEV-213 repaired inside C10, before it, or carried?
 
 Analysis and a recommendation are in §5.3. The ruling itself is the owner's. State it as one of:
@@ -299,6 +417,53 @@ Analysis and a recommendation are in §5.3. The ruling itself is the owner's. St
 deviation`. **C8 is not reopened under any of the three** — a DEV-213 repair is a new bounded LSP
 correctness packet, which the AS8 record already anticipates ("fixed in the next bounded LSP
 correctness packet").
+
+### OWNER RULING — MODIFIED (2026-08-09). The plan's recommendation to carry both is REJECTED.
+
+The plan recommended carrying both as named release deviations. **The owner rules otherwise, and
+the reason is OD-2:** because C10 explicitly evaluates **Core v1 Compiler Stable**, both should be
+*closed* rather than deliberately carried through C10-Q. The plan's own analysis is what makes this
+cheap — DEV-012 is essentially one editor session, and DEV-213 is a **demonstrated HEAD correctness
+defect**, not merely missing evidence.
+
+```text
+DEV-012   does not block C10-0
+          execute interactive validation EARLY during C10
+          no reopening of C8
+          all seven features pass   -> CLOSE DEV-012
+          any feature fails         -> allocate/use a bounded DEV, decide from the evidence
+
+DEV-213   does not block C10-0
+          bounded LSP correctness repair EARLY during C10
+          no reopening of C8
+          MUST be closed before an UNQUALIFIED Core v1 Compiler Stable
+          language-services claim is authorised
+```
+
+**Neither blocks opening. Both gate the claim.** A new checkpoint is inserted before C10-Q:
+
+```text
+Core v1 Compiler Stable candidate
+        |
+        v
+DEV-012 CLOSED  OR  an explicit, narrower language-services claim
+DEV-213 CLOSED  OR  an explicit, narrower workspace-symbol claim
+        |
+        v
+C10-Q
+```
+
+**The preferred route is to close them, not to weaken the release statement.** The narrower claim
+is the fallback, not the plan.
+
+**Scope discipline this ruling does not relax.** The DEV-213 repair is a bounded LSP
+cache-ownership correction — the existing test
+`as8_editing_one_file_leaves_other_uris_cached_analyses_stale` is written so a repair **flips its
+polarity rather than deleting it**, and that is the repair's acceptance criterion. It is not
+licence to redesign the LSP, and it does not reopen C8. DEV-012's validation is **MANUAL evidence**
+under Charter §5.2 and must be disclosed as such; it must not be described as automated coverage.
+
+**Both are scheduled as C10-P (§6.2), a bounded prerequisite packet running alongside C10-A1.**
 
 ## OD-5 — Two documents at HEAD contradict a third about AS8's coverage baseline
 
@@ -328,6 +493,27 @@ applied; full-corpus coverage completed and RETIRED a claim this packet made").
 > exit qualification.** This is the documentation discipline C10 will be held to (§16); applying it
 > to C10's own opening finding is the cheapest possible demonstration that it works.
 
+### OWNER RULING — APPROVED (2026-08-09)
+
+Add a dated superseding record stating that the later full-corpus run **completed** and that
+`AS8-COVERAGE-BASELINE.md` carries the live figure. **Do not modify CD-394 or the historical AS8
+exit qualification — they were correct when written.**
+
+The corrected current state:
+
+```text
+full corpus      regions    83.05%
+                 functions  84.92%
+                 lines      83.64%
+
+AS8-R15          DISCHARGED
+
+branch coverage  unavailable from this toolchain / NOT CLAIMED
+```
+
+The owner records this as *"exactly the right prospective-correction discipline"*, and §16.1
+generalises it: C10 corrects forward, never backward.
+
 ## OD-6 — `ROADMAP.md` §0.1's compiler/stabilisation row is stale
 
 `ROADMAP.md` §0.1 states: *"Sprints 1 and 2 are complete; AS3 and AS4 remain"* and *"Campaign A is a
@@ -339,6 +525,21 @@ has EXITED. `ROADMAP.md` is the live platform roadmap and this row is now wrong.
 > entry gate is met) as part of C10-0. This is a summary line, not a historical decision — §16's
 > rule permits updating current-state summaries in place. `ROADMAP.md` §6.0's binding gate text
 > itself is a decision record and is **not** rewritten; it gains a dated "gate satisfied" note.
+
+### OWNER RULING — APPROVED (2026-08-09)
+
+`ROADMAP.md` is a **live current-state roadmap**, so its stale summary is corrected. The corrected
+state:
+
+```text
+architecture stabilisation    COMPLETE
+Campaign A                    PASS
+Campaign B                    PASS
+structured-concurrency gate   SATISFIED
+```
+
+**Do not remove the historical gate requirement from §6.0.** Add the fact that it has subsequently
+been satisfied. The requirement and its satisfaction are two records, not one edited record.
 
 ---
 
@@ -533,7 +734,13 @@ outside C10?                        yes (name the owning track) / no
 
 **Do not assume every carried item blocks C10.** Most do not.
 
-## 5.2 How the inherited-deviation inventory is produced (not by reading the file)
+## 5.2 How the inherited inventories are produced (not by reading the file)
+
+Per **OD-3**, C10-0 freezes **three separately countable populations** — compiler deviations (A),
+release/distribution deviations (B), assurance residuals (C). Only A is the denominator for CD-021's
+compiler-conformance rule. All three need an owner and a disposition before C10-Q.
+
+Population A is produced as follows.
 
 `KNOWN-DEVIATIONS.md` is **append-only**: a deviation gets a new heading each time it is touched, so
 **the first heading is not its status — the last one is.** DEV-121 opens "OPEN" and is CLOSED 3,558
@@ -571,21 +778,26 @@ values, and a value defect survived it** — DEV-182, where the LSP JSON parser 
 non-BMP character to the empty string, and both parse and response *succeeded*. So "protocol-tested"
 is weaker evidence than it sounds, and a release claim over the seven features rests on it.
 
-**Recommended classification** (owner ruling required, OD-4):
+**RULED classification (OD-4, owner, 2026-08-09).** The plan proposed carrying this; the owner
+ruled to close it.
 
 ```text
 blocks opening?                     NO
 blocks a release claim?             YES — any claim that language services are "validated"
                                     beyond the three navigation queries
-must repair during C10?             NO — but the claim must be narrowed if it is not repaired
-may remain as explicit deviation?   YES
-outside C10?                        NO — C10 states the claim; C8 is not reopened
+must repair during C10?             YES — interactive validation runs EARLY in C10, as C10-P
+may remain as explicit deviation?   ONLY as the fallback if validation is not obtained
+outside C10?                        NO — C8 is not reopened
 ```
 
-Cheapest path: schedule **one interactive validation session** as a C10-0-adjacent prerequisite
-(it is MANUAL evidence per Charter §5.2 and must be disclosed as such), and if it does not happen,
-C10.7 states the language-services claim as covering three interactively-confirmed navigation
-queries plus seven protocol-conformant features, with DEV-012 named.
+**Execution.** One interactive validation session over the seven protocol-only features, in the
+recorded VS Code environment. **All seven pass -> CLOSE DEV-012.** Any feature fails -> allocate or
+reuse a bounded DEV and decide from the evidence, not from the schedule.
+
+It is **MANUAL evidence** under Charter §5.2 and must be disclosed as such — never described as
+automated coverage. If the session cannot be obtained, the fallback stands: C10-Q states the
+language-services claim as three interactively-confirmed navigation queries plus seven
+protocol-conformant features, with DEV-012 named. **The fallback is not the plan.**
 
 ### DEV-213 — LSP multi-file workspace-symbol staleness
 
@@ -607,25 +819,39 @@ cache. Owner-ruled non-blocking for Sprint 4; standing qualification recorded: *
 blocks opening?                     NO
 blocks a release claim?             YES — precisely one: workspace/symbol correctness under
                                     multi-file editing
-must repair during C10?             NO
-may remain as explicit deviation?   YES — with the standing qualification carried verbatim
-outside C10?                        the REPAIR is (next bounded LSP correctness packet);
-                                    the CLAIM is not
+must repair during C10?             YES — bounded LSP correctness repair, EARLY in C10, as C10-P
+may remain as explicit deviation?   ONLY as the fallback if the repair is not obtained
+outside C10?                        NO — C8 is not reopened; this is a new bounded packet, which
+                                    the AS8 record already anticipated
 ```
 
-**Recommendation for OD-4:** carry both as named release deviations; schedule the DEV-213 repair as
-a bounded post-C10 LSP packet; take the DEV-012 interactive session opportunistically if an editor
-environment is available during C10, and record it as MANUAL evidence if it happens. This keeps C10
-a qualification campaign. **If the owner instead wants a "language services correct" claim, DEV-213
-must be repaired before C10-Q and DEV-012's seven features must be interactively validated** —
-that is a real cost and the reason the decision is the owner's.
+**RULED (OD-4, owner, 2026-08-09).** The plan proposed carrying this; the owner ruled to repair it,
+because OD-2 evaluates Core v1 Compiler Stable and DEV-213 is a **demonstrated HEAD correctness
+defect**, not merely missing evidence.
+
+**Acceptance criterion, and the boundary of the repair.** The existing test
+`as8_editing_one_file_leaves_other_uris_cached_analyses_stale` was deliberately written so that a
+correct repair **flips its polarity rather than deleting it** — its own message says so. That flip
+is the repair's acceptance criterion. The repair is a bounded cache-ownership correction: one
+analysis per *package*, or invalidation across every URI of the affected package. It is **not**
+licence to redesign the LSP, add incremental analysis, or revisit C8's scope.
+
+**MUST be closed before an unqualified Core v1 Compiler Stable language-services claim is
+authorised.** If it is not closed, C10-Q states the workspace-symbol claim narrowly, carrying the
+standing qualification verbatim: *the LSP answers correctly for a single open file and for a freshly
+opened one; the combination of several open URIs of one package and an edit to any of them is
+wrong.* **The narrow claim is the fallback, not the plan.**
 
 ## 5.4 The remaining carried items
 
-| Item | Recommended classification | Note |
+Classifications below are **recommendations** except where a row cites an owner ruling. Per OD-3
+every row also carries a population letter: **A** compiler deviation, **B** release/distribution
+deviation, **C** assurance residual.
+
+| Item | Classification | Note |
 | --- | --- | --- |
-| **C9 Part B** | blocks opening: NO (subject to OD-1). Blocks the *artifact-generality* claim only. Outside C10. | Roadmap §4.5 permits "blocked" as an explicit status |
-| **AS8-R1, R4, R6, R8, R9, R13, R14** | evidence gaps, not defects. Feed §8's mutation population as **candidate targets**; each may become a C10-D control-construction item **only if** the claim it undermines is one C10 intends to make | No DEVs, per the AS8 owner ruling |
+| **C9 Part B** | blocks opening: **NO — RULED, OD-1**. Blocks the *artifact-generality* claim only. Outside C10. | Roadmap §4.5 permits "blocked" as an explicit status |
+| **AS8-R1, R4, R6, R8, R9, R13, R14** | **population C.** Evidence gaps, not defects. Feed §8's mutation population as **candidate targets**; each may become a C10-D control-construction item **only if** the claim it undermines is one C10 intends to make | No DEVs, per the AS8 owner ruling |
 | **AS8-R2** (`ESF-TRAP-001a`, no control constructible) | **permanent residual.** Named in the release statement | MUT-008 is the honest no-op marking the boundary |
 | **AS8-R5, R10** (`EV-SPEC-FIXTURES` does not control TYPE-PRIM-001; `ESF-TRAIT-001` has no control of any kind) | **highest-value C10-D targets.** `traits.rs` is 82.77% covered and Core trait contracts can be declared arbitrarily wrong with every selected suite passing | The clearest coverage-is-not-conformance exhibit in the tree |
 | **AS8-R3, R15** | DISCHARGED | R15's discharge is contradicted by two stale records — OD-5 |
@@ -638,7 +864,7 @@ that is a real cost and the reason the decision is the owner's.
 | **Full-corpus coverage** | 83.05% regions / 84.92% functions / 83.64% lines, published with **no target**, per AS8's work item | C10 must not convert this into a threshold (§7.3) |
 | **`RA-LAYOUT` unmeasured** (EI3) | rustc-assumption residual. In scope for C10-D only if a release claim depends on generated-struct layout | |
 | **`RA-LINTS`** — two deny-by-default lints suppressed in generated code | narrows what rustc refuses, i.e. narrows the strength of "rustc is a genuine external control" | **Must be named in C10.1's shared-fate column** for every row whose independent control is rustc |
-| **DEV-165** and the four distribution weaknesses | class C (release/distribution), §11.2. Named as exclusions in the release statement | Subject to OD-3 |
+| **DEV-165** and the four distribution weaknesses | **population B.** Named as exclusions in the release statement; constrains release/distribution WORDING only | OD-3 RULED: B is counted separately and is not the CD-021 denominator |
 | **DEV-017** (coverage-db precision) | the reason 125 of 161 granular rules lack classified evidence. **This is C10.1's central problem, not a side item** | §6.2 |
 
 ---
@@ -671,6 +897,7 @@ Everything else follows the brief.
 | Packet | Roadmap WP | Purpose | Entry condition | Exit evidence |
 | --- | --- | --- | --- | --- |
 | **C10-0** | — | Opening inventory and qualification freeze | OD-1..OD-6 ruled; §1.2's CI run completed and read | `C10-0-OPENING-INVENTORY.md` (§6.3) |
+| **C10-P** | — (OD-4) | Bounded prerequisite repairs: DEV-213 LSP cache ownership; DEV-012 interactive validation | C10-0 frozen | flipped-polarity test at HEAD; `C10-P-LANGUAGE-SERVICES.md` recording the MANUAL session |
 | **C10-A1** | C10.1 | Conformance-evidence integrity census | C10-0 frozen | `C10-A1-EVIDENCE-CENSUS.md` |
 | **C10-A2** | C10.1 | The dashboard | A1 complete; denominators declared | `C10-CONFORMANCE-DASHBOARD.md` + generated JSON |
 | **C10-B** | C10.2 | Robustness and fuzzing | fuzz target population declared (§9.2) | `C10-B-ROBUSTNESS.md` + corpora + regression fixtures |
@@ -681,15 +908,34 @@ Everything else follows the brief.
 | **C10-Q** | C10.7 | Exact-head release qualification and decision | all of the above; sweep §16.2 clean | `GATE-C10-CLOSURE.md` + `C10-RELEASE-STATEMENT.md` |
 
 **Ordering is a partial order, not a chain.** B, C and E are independent of each other and of D;
-they may run in any order or concurrently, subject to the WIP limits in `ROADMAP.md` §2.2. The hard
-edges are:
+they may run in any order or concurrently, subject to the WIP limits in `ROADMAP.md` §2.2. C10-P
+runs alongside C10-A1 — it touches the LSP and the census touches neither. The hard edges are:
 
 ```text
 C10-0  ->  everything
 C10-A1 ->  C10-A2  ->  C10-D  ->  C10-F  ->  C10-Q
 C10-B, C10-C, C10-E  ->  C10-F  (each contributes bounded promises)
+C10-P                ->  C10-G  (the language-services gate)
 every packet         ->  C10-Q
 ```
+
+### C10-G — the language-services gate (OD-4), immediately before C10-Q
+
+Not a packet; a **gate C10-Q may not pass without evaluating**:
+
+```text
+Core v1 Compiler Stable candidate
+        |
+        v
+DEV-012 CLOSED  OR  an explicit, narrower language-services claim
+DEV-213 CLOSED  OR  an explicit, narrower workspace-symbol claim
+        |
+        v
+C10-Q
+```
+
+Either branch is a legitimate exit. What is **not** legitimate is reaching C10-Q with an unqualified
+language-services claim and neither DEV closed.
 
 C10-F is last-but-one deliberately: a compatibility promise made before the evidence exists is the
 "accidental permanent promise" the roadmap warns about.
@@ -707,8 +953,13 @@ C10-F is last-but-one deliberately: a compatibility promise made before the evid
 3   supported platform matrix, read from target-matrix.json (not from prose), with the Tier-1 /
     Tier-2 split and what Tier-2 does NOT claim
 4   release classes being evaluated (OD-2)
-5   inherited deviations: the reconciler output, hand-audited, each with §5.1's five answers
-6   inherited residuals: AS8-R1..R15, AS8-DA-001..006, EI3 RA-* residuals, DEV-017
+5   the THREE OD-3 populations, frozen and separately countable:
+      A  compiler deviations      the reconciler output, hand-audited, each with §5.1's five
+                                  answers. The CD-021 denominator
+      B  release/distribution     DEV-165 + the four §1.6 weaknesses
+      C  assurance residuals      live AS8-R*, pending AS8-DA*, EI/RA residuals, DEV-017
+6   inherited mutation freshness: per §8.2a, the blob SHAs of every AS8 trial's authority file
+    and killer files, at the trial commit and at the candidate head, with FRESH/STALE per trial
 7   test/evidence inventory: every suite C10 will cite, by target name, with its Charter §5.2
     evidence class
 8   mutation authority inventory inherited from AS8: the 11 ESF entries, the 6 DA entries, the
@@ -761,9 +1012,24 @@ Method — the one AS8 proved necessary, run in the order that makes selection a
    cross-referenced to the ESF register. Those rules cannot be claimed on differential agreement.
 
 **Forcing function.** A1's output must include the count in each bucket **and** the list of rules
-that moved bucket during A1 with the reason. A census that finds exactly what the prior documents
-said is either correct or was not a census — AS8 corrected four of eleven register entries, and A1
-should expect to correct some non-zero number of the coverage DB's 59.
+that moved bucket during A1 with the reason.
+
+> **No expected finding count.** A1 may legitimately conclude **`0 previous classifications
+> changed`**. Zero and twenty are equally valid results. What must be demonstrated is not that
+> corrections were found but that the census **actually enumerated the intended population** — so
+> the forcing mechanism is the enumeration, not the yield:
+>
+> ```text
+> every rule in the declared population appears in the output exactly once
+> every bucket assignment cites the file:function or the confirmed absence
+> the enumerator is run twice and produces identical output (Charter §2.1 step 7)
+> a deliberately mis-cited rule is injected and the census reports it as inconsistent
+> ```
+>
+> That last line is the negative control. **A census with no negative control is EI2's error in a
+> new costume** — and note precisely what AS8's lesson was and was not. It was **not** "one third of
+> audits are wrong". It was: **do not infer evidence strength from reading the machinery.** An audit
+> that enumerates correctly and finds nothing has done its job.
 
 **Stop condition.** If ABSENT + AGGREGATE together exceed the population C10 can honestly claim
 over, A1 stops and escalates the **claim scope** to the owner (CE8) rather than widening the
@@ -933,8 +1199,52 @@ type identity                    AS8-R5: EV-SPEC-FIXTURES does not control TYPE-
 ```
 
 **Explicitly out of the mutation population:** anything whose claim C10 does not intend to publish;
-anything already trialled in AS8 with a recorded verdict (cite the trial, do not re-run it);
+anything already trialled in AS8 with a recorded verdict **that is still fresh under §8.2a**;
 `ESF-TRAP-001a`.
+
+## 8.2a Freshness rule for inherited AS8 mutation evidence (owner amendment, 2026-08-09)
+
+Citing a prior trial instead of re-running it is only sound while the thing it measured has not
+moved. **A mutation result is evidence about a specific compiler and a specific test tree, not a
+permanent property of a rule.**
+
+> **An inherited mutation result may be reused only if BOTH hold:**
+>
+> ```text
+> 1  the SEMANTIC AUTHORITY targeted by the trial is unchanged since the recorded trial; and
+> 2  the claimed KILLING / CONTROL evidence is unchanged in a way material to the trial
+> ```
+>
+> **If either has changed:**
+>
+> ```text
+> the prior mutation evidence is HISTORICAL
+> rerun the trial against the C10 candidate head
+> ```
+
+**How it is enforced, cheaply.** For every inherited trial, C10-0 records the blob SHA of the
+mutated source file and of each killing test file as they stood at the AS8 trial commit, then
+compares against the C10 candidate head:
+
+```bash
+# per inherited trial: authority file + each killer file
+git rev-parse <as8-trial-commit>:<path>     # recorded in the ledger
+git rev-parse <c10-candidate-head>:<path>   # compared at C10-0 and again at C10-Q
+```
+
+Identical blobs -> **FRESH**, cite the trial. Differing blobs -> inspect the intervening commits; a
+change that cannot be shown immaterial to the trial makes it **STALE**, and the trial re-runs.
+`C10-MUTATION-LEDGER.md` carries a `freshness` column with `FRESH (blob match)` /
+`FRESH (change reviewed, immaterial — reason)` / `STALE — rerun as C10-MUT-NNN`.
+
+**Why this matters and is not bureaucracy.** Without it, C10 could cite `AS8-MUT-025` as evidence
+that `mir/verify.rs` controls provider signatures long after that verifier has been substantially
+rewritten — publishing a release claim backed by a measurement of a compiler that no longer exists.
+The check is two `git rev-parse` calls per trial.
+
+**Re-freshness is checked twice**: once at C10-0 when the inventory is frozen, and **again at C10-Q
+against the final head**, because C10-P's repairs and any §3.3 defect repairs move source between
+those two points.
 
 ## 8.3 Required record per trial
 
@@ -951,11 +1261,23 @@ killer(s), if any       test names and the kill message
 residual                if the prediction is falsified — a new AS8-style R-number in the C10-R
                         series, with what it means for the claim
 restore verification    the harness's restore confirmation + `git status` clean
+freshness               §8.2a — for an INHERITED AS8 trial: FRESH (blob match) /
+                        FRESH (change reviewed, immaterial — reason) / STALE — rerun as
+                        C10-MUT-NNN. For a trial run by C10 itself: `n/a — run at <head>`
 ```
 
+**Ten fields. A trial missing any one of them is not evidence** — most often the missing one is
+`selected control`, which is what made three of AS8's trials misleading until they were re-run.
+
 **A falsified prediction is a finding, not an error.** Thirteen of thirty-nine were falsified in
-AS8, in both directions, and that ratio is the strongest single argument the campaign produced.
-C10 should expect a comparable rate and must not tune predictions to look accurate.
+AS8, in both directions, and that ratio is the strongest single argument that campaign produced.
+
+> **No expected falsification rate.** C10 does not target, predict or benchmark against AS8's 13/39.
+> A campaign in which **every** prediction is confirmed is a legitimate result, and so is one in
+> which most are falsified. What must hold is the *mechanism*: predictions are declared before the
+> run, the selection is recorded, the harness self-test passes in both directions, and no prediction
+> is edited after the fact. **Do not tune predictions to look accurate, and do not tune them to look
+> productively wrong either** — an expected-yield number corrupts a prediction in both directions.
 
 ## 8.4 What a survivor means, and does not
 
@@ -1205,8 +1527,21 @@ D  ACCEPTED OPERATIONAL LIMITATION documented, owned, deliberately not fixed. ->
 ```
 
 The HTTP track already uses a `SEC-*` namespace (SEC-HTTP-001/002), so `SEC-C10-NNN` is consistent
-with existing practice and keeps class B out of the DEV ledger, which is exactly what OD-3's
-denominator problem calls for.
+with existing practice and keeps class B out of the DEV ledger.
+
+**Mapping onto OD-3's three frozen populations** — the two schemes are deliberately not merged,
+because a security finding is not a deviation and a residual is not a defect:
+
+```text
+security class A  -> OD-3 population A   compiler deviations       (CD-021 denominator)
+security class B  -> its OWN register    SEC-C10-*                 (not a deviation at all)
+security class C  -> OD-3 population B   release/distribution      (constrains WORDING)
+security class D  -> OD-3 population B or C, per the limitation's subject; if it is a limit on
+                     what the EVIDENCE can show rather than on what the product does, it is C
+```
+
+An **assurance residual** (OD-3 population C) is never produced by C10-C. It comes from C10-A1 and
+C10-D — from evidence that cannot disagree, not from an adversary who can gain something.
 
 ## 11.3 What C10-C does not do
 
@@ -1545,8 +1880,9 @@ E3   robustness qualification is complete over the DECLARED target population, t
      classes or §3.3's defect rule
 E4   the security surface was frozen before review; every defence names its falsifier; every
      finding carries a class (A/B/C/D), an owner and a disposition
-E5   the mutation ledger is complete over the DECLARED population, every trial has all nine
-     required fields (§8.3), and every survivor has either a weakened claim or a constructed
+E5   the mutation ledger is complete over the DECLARED population, every trial has all TEN
+     required fields (§8.3) including freshness (§8.2a) re-checked against the FINAL head, and
+     every survivor has either a weakened claim or a constructed
      control
 E6   metamorphic relations were declared before running, each cites a normative rule, and no
      relation is a fake pair
@@ -1554,14 +1890,25 @@ E7   performance baselines exist over the FROZEN workload set, with the platform
      honestly, and no optimisation was performed under C10 authority
 E8   the compatibility policy states COMMITTED / UNCOMMITTED / NOT APPLICABLE for every axis in
      §13.2, each COMMITTED one citing its evidence
-E9   every open deviation in the OD-3 population carries an owner and a disposition, or an
-     explicitly recorded accepted-indefinitely decision (CD-021)
+E9   ALL THREE OD-3 populations are dispositioned, each counted separately:
+       E9a  population A (compiler deviations) — every live-heading deviation carries an owner
+            and a disposition, or an explicitly recorded accepted-indefinitely decision. THIS is
+            the CD-021 denominator, and an unowned entry here blocks the release decision
+       E9b  population B (release/distribution) — every entry carries an owner and a disposition,
+            and is named in the release statement's exclusions
+       E9c  population C (assurance residuals) — every live AS8-R*, pending AS8-DA*, EI/RA and
+            C10-R* residual carries an owner and a disposition, and each is reflected in the
+            STRENGTH of the claim it constrains rather than as a defect
+E9d  C10-G is evaluated: DEV-012 and DEV-213 are each CLOSED, or the corresponding claim is
+     explicitly narrowed in the release statement (OD-4)
 E10  CI is green at the frozen head, and every claim maps to the job/platform that executes it
 E11  §16.2's sweep is clean
 ```
 
-**E9 is the one that can block on its own.** An unowned deviation blocks the final release decision
-by CD-021, carried into WP-C10.7.
+**E9a is the one that can block on its own.** An unowned **compiler** deviation blocks the final
+release decision by CD-021, carried into WP-C10.7. E9b and E9c must be dispositioned too, but they
+constrain *wording* and *claim strength* respectively rather than blocking — that separation is
+OD-3's ruling and must not be collapsed at exit under time pressure.
 
 ## 17.2 The release decision procedure
 
@@ -1648,6 +1995,7 @@ it does not make STARK v1 General-Purpose       that is a separate owner act on 
 
 ```text
 STARKLANG/docs/compiler/work-packages/C10-0-OPENING-INVENTORY.md
+STARKLANG/docs/compiler/audits/C10-P-LANGUAGE-SERVICES.md      (DEV-213 repair + DEV-012 MANUAL)
 STARKLANG/docs/compiler/audits/C10-A1-EVIDENCE-CENSUS.md
 STARKLANG/docs/compiler/C10-CONFORMANCE-DASHBOARD.md
 STARKLANG/conformance/c10-dashboard.json                     (generated; the dashboard's source)
@@ -1678,10 +2026,10 @@ Carried into C10-0 so none is lost. **None is repaired by this plan.**
 
 | # | Finding | Where | Disposition |
 | --- | --- | --- | --- |
-| 1 | Position line reads as "C9 Part B blocks C10"; roadmap §4.5 says otherwise | `COMPILER-STATE.md` vs `COMPILER-ROADMAP.md` §4.5 / WP-C10.7 | **OD-1** |
-| 2 | AS8-R15 discharged in two documents, still open in two others | `AS8-MUTATION-FINDINGS.md`:424 + Campaign B §5 **vs** `AS8-EXIT-QUALIFICATION.md` §5 + `COMPILER-STATE.md` CD-394 | **OD-5** — dated superseding note; do not edit either historical record |
-| 3 | `ROADMAP.md` §0.1 says "Sprints 1 and 2 are complete; AS3 and AS4 remain" | `ROADMAP.md` §0.1 | **OD-6** — current-state correction |
-| 4 | DEV-165 is called a release blocker in `ROADMAP.md` but is absent from `KNOWN-DEVIATIONS.md` | `ROADMAP.md` §1 vs the ledger | **OD-3** — define the C10.7 denominator |
+| 1 | Position line reads as "C9 Part B blocks C10"; roadmap §4.5 says otherwise | `COMPILER-STATE.md` vs `COMPILER-ROADMAP.md` §4.5 / WP-C10.7 | **OD-1 — RULED: does not block** |
+| 2 | AS8-R15 discharged in two documents, still open in two others | `AS8-MUTATION-FINDINGS.md`:424 + Campaign B §5 **vs** `AS8-EXIT-QUALIFICATION.md` §5 + `COMPILER-STATE.md` CD-394 | **OD-5 — RULED: APPROVED.** Dated superseding note; CD-394 and the AS8 exit qualification preserved untouched |
+| 3 | `ROADMAP.md` §0.1 says "Sprints 1 and 2 are complete; AS3 and AS4 remain" | `ROADMAP.md` §0.1 | **OD-6 — RULED: APPROVED.** Current-state correction; §6.0's gate text preserved and marked satisfied |
+| 4 | DEV-165 is called a release blocker in `ROADMAP.md` but is absent from `KNOWN-DEVIATIONS.md` | `ROADMAP.md` §1 vs the ledger | **OD-3 — RULED: three separately countable populations.** DEV-165 is population B |
 | 5 | `KNOWN-DEVIATIONS.md` has 186 headings / 178 ids and is append-only; 7 closed-in-record are named by no test, 44 appear in no decision record | the file + `as8-reconcile-deviations.py` | §5.2 — mechanical inventory, hand-audited |
 | 6 | Test-target count: 210 top-level integration targets at HEAD; AS8 recorded 209 | `starkc/tests/` | C10-0 reconciles and records the method |
 | 7 | "581 tests across 5 targets" (CD-394) is a **scoped** run, and reads like a tree total | `COMPILER-STATE.md` CD-394 | §7.3 — never cite it as the tree's count |
@@ -1736,5 +2084,33 @@ governing document.
 
 ---
 
-**End of plan.** Execution begins only after the owner rules on OD-1 through OD-6 and approves this
-document. The first executable act is C10-0.
+**End of plan.**
+
+**Approval state (owner, 2026-08-09):**
+
+```text
+WP-C10 EXECUTION PLAN — APPROVED WITH AMENDMENTS
+
+OD-1  APPROVED         C9 Part B does not block C10
+OD-2  APPROVED         evaluate Core v1 Compiler Stable + Native Systems Preview only
+OD-3  APPROVED W/REF   three separately countable populations; all dispositioned by C10-Q
+OD-4  MODIFIED         neither blocks opening; DEV-012 interactive validation and DEV-213
+                       bounded repair both run EARLY in C10 as C10-P; neither reopens C8;
+                       unresolved state NARROWS the final language-services claim
+OD-5  APPROVED         prospective superseding record; CD-394 and the AS8 exit qualification
+                       preserved
+OD-6  APPROVED         correct the live ROADMAP summary; §6.0's gate preserved, marked satisfied
+
+MANDATORY PLAN AMENDMENTS — ALL APPLIED
+1  normative specifications remain authoritative        -> §"How to execute C10"
+2  no expected audit or falsification finding rate      -> §6.4 forcing function, §8.3
+3  inherited mutation evidence receives a freshness rule -> §8.2a
+```
+
+**C10-0 is authorised to begin once a green exact-head CI baseline exists (§1.2).** Its first act
+is to transcribe the six rulings into `COMPILER-STATE.md` as one dated `CD-NNN` entry and to make
+the two document corrections OD-5 and OD-6 authorise.
+
+**C10-Q remains an owner decision under CE8** — "any Core conformance or release claim" is an
+escalation, and Charter §2.2 forbids a session claiming Core v1 conformance on its own authority.
+C10 proposes; the owner authorises.
