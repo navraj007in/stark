@@ -31,6 +31,32 @@ BINARIES = ("stark", "starkc", "starkide")
 RUNTIME_FILES = ("Cargo.toml",)
 RUNTIME_DIRS = ("src",)
 RUNTIME_PATH_DEPENDENCIES = ("stark-provider-abi",)
+# A provider crate needs its manifest, its pinned lockfile and its sources. `target/` is a build
+# artefact of the checkout, not payload: including it multiplied the package by two orders of
+# magnitude and shipped one host's object files to every other.
+PROVIDER_FILES = ("Cargo.toml", "Cargo.lock")
+PROVIDER_DIRS = ("src",)
+
+
+def provider_crate_paths() -> list[str]:
+    """The built-in providers' crate paths, read from the manifests the compiler embeds.
+
+    `provider_registry.rs` states the rule this follows: adding a provider is adding a manifest,
+    and nothing else changes. Reading `crate_path` here rather than repeating the six names keeps
+    the packager from being the one place that has to be edited in step — a list that drifts silent
+    would ship a package missing exactly the capability someone added.
+    """
+    manifest_dir = CRATE_DIR / "providers"
+    paths = []
+    for manifest in sorted(manifest_dir.glob("*.json")):
+        provider = json.loads(manifest.read_text(encoding="utf-8"))["provider"]
+        crate_path = provider.get("crate_path")
+        if not crate_path:
+            raise SystemExit(f"provider manifest declares no crate_path: {manifest}")
+        paths.append(crate_path)
+    if not paths:
+        raise SystemExit(f"no provider manifests found under {manifest_dir}")
+    return paths
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -296,7 +322,12 @@ def write_manifest(staging: Path, *, target: str, version: str) -> None:
         "runtime_version": version,
         "backend_version": version,
         "packages": [],
-        "providers": [],
+        # Declared, not inferred from the file list: a reader asking "which capabilities can this
+        # package build?" gets an answer that stays true even if the payload is later trimmed —
+        # and a mismatch between this and `files` is then a detectable defect rather than silence.
+        "providers": sorted(
+            {crate_path.split("/", 1)[0] for crate_path in provider_crate_paths()}
+        ),
         "files": files,
         "signing": {
             "scheme": "unsigned-development",
@@ -313,9 +344,13 @@ def write_manifest(staging: Path, *, target: str, version: str) -> None:
 def component_for_path(relative: str) -> str:
     if relative.startswith("bin/"):
         return "binary"
-    if relative.startswith("lib/stark/stark-runtime/"):
+    # The mirror layout first, then the flat one an older package used, so a manifest written for
+    # either classifies the same way.
+    if relative.startswith(("lib/stark/starkc/stark-runtime/", "lib/stark/stark-runtime/")):
         return "runtime"
-    if relative.startswith("lib/stark/stark-provider-abi/"):
+    if relative.startswith(
+        ("lib/stark/starkc/stark-provider-abi/", "lib/stark/stark-provider-abi/")
+    ):
         return "provider-abi"
     if relative.startswith("lib/stark/providers/"):
         return "provider"
@@ -387,8 +422,20 @@ def package_release(
             if not windows:
                 destination.chmod(0o755)
 
+        # **The installed tree mirrors the repository.** The runtime and the provider ABI go under
+        # `lib/stark/starkc/`, and the providers under `lib/stark/packages/` — the same two levels
+        # they occupy in the checkout. That correspondence is load-bearing, not cosmetic: the
+        # runtime's `../stark-provider-abi` and every provider's `../../../starkc/stark-provider-abi`
+        # then name the same directory, so Cargo sees one `stark-provider-abi` and not two.
+        #
+        # It is also what `native_build::provider_root_beside_runtime` reads: it derives the
+        # provider root from the runtime's own location, so a runtime installed flat at
+        # `lib/stark/stark-runtime` shifts every candidate up a level and finds no providers at
+        # all. The flat layout stays readable by `native_toolchain::discover_runtime`, which lists
+        # it as a fallback for installations made before this move — but it is no longer written.
+        starkc_root = staging / "lib" / "stark" / "starkc"
         runtime_source = CRATE_DIR / "stark-runtime"
-        runtime_destination = staging / "lib" / "stark" / "stark-runtime"
+        runtime_destination = starkc_root / "stark-runtime"
         runtime_destination.mkdir(parents=True)
         for filename in RUNTIME_FILES:
             shutil.copy2(runtime_source / filename, runtime_destination / filename)
@@ -396,11 +443,28 @@ def package_release(
             shutil.copytree(runtime_source / dirname, runtime_destination / dirname)
         for crate_name in RUNTIME_PATH_DEPENDENCIES:
             source = CRATE_DIR / crate_name
-            destination = staging / "lib" / "stark" / crate_name
+            destination = starkc_root / crate_name
             destination.mkdir(parents=True)
             for filename in RUNTIME_FILES:
                 shutil.copy2(source / filename, destination / filename)
             for dirname in RUNTIME_DIRS:
+                shutil.copytree(source / dirname, destination / dirname)
+
+        # The provider crates themselves. Without these the package can `check` and `test` but
+        # cannot `build` any program that declares a capability — the compiler selects a provider
+        # from its built-in registry and then finds no crate to compile.
+        packages_root = staging / "lib" / "stark" / "packages"
+        for crate_path in provider_crate_paths():
+            source = REPO_DIR / "packages" / crate_path
+            if not (source / "Cargo.toml").is_file():
+                raise SystemExit(f"provider crate is missing from the checkout: {source}")
+            destination = packages_root / crate_path
+            destination.mkdir(parents=True)
+            for filename in PROVIDER_FILES:
+                candidate = source / filename
+                if candidate.is_file():
+                    shutil.copy2(candidate, destination / filename)
+            for dirname in PROVIDER_DIRS:
                 shutil.copytree(source / dirname, destination / dirname)
 
         dist_dir = CRATE_DIR / "dist"
@@ -418,8 +482,14 @@ def package_release(
                     f"STARK {version}",
                     f"Rust target: {target}",
                     "Included binaries: stark, starkc, starkide",
-                    "Installed runtime: lib/stark/stark-runtime",
-                    "Installed provider ABI: lib/stark/stark-provider-abi",
+                    "Installed runtime: lib/stark/starkc/stark-runtime",
+                    "Installed provider ABI: lib/stark/starkc/stark-provider-abi",
+                    "Installed providers: lib/stark/packages/<name>/native — "
+                    + ", ".join(
+                        sorted(
+                            {path.split("/", 1)[0] for path in provider_crate_paths()}
+                        )
+                    ),
                     "These binaries are unsigned development releases.",
                     "",
                 ]
