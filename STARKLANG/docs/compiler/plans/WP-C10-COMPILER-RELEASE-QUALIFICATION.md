@@ -1833,6 +1833,33 @@ legitimate parallel PRs, and `cancel-in-progress: true` would discard results so
 on — both are owner decisions about CI policy, and neither is C10's to make (§3.2). C10 records the
 constraint and works within it.
 
+## 14.1b Source inspection needs the same identity discipline as CI — added 2026-08-09
+
+§14.2 requires a CI citation to name `commit + run id + job + platform`. **A claim derived from
+reading source needs the identical treatment, and the reason is a failure rather than symmetry.**
+
+A C10 security row was "corrected" to the opposite of the truth after `package.rs` was read from a
+shared checkout that a parallel session had switched to its own unmerged branch. Every conventional
+sign of diligence was present: the lower-authority summary was distrusted, implementation code was
+read, concrete call sites were found, and a conclusion was derived from them. **The conclusion was
+still false, because the object inspected was not the object claimed.**
+
+> **A source inspection without a commit identity is not reproducible evidence.**
+
+Every material code-derived claim in a C10 document records:
+
+```text
+repository        which one, when more than one is in play
+commit SHA        the exact object read — never "HEAD", never "the checkout"
+file / path
+symbol or lines   what was actually looked at
+relationship      how that SHA relates to the declared qualification baseline:
+                  IS the baseline / an ancestor / a descendant / an unmerged sibling
+```
+
+That last field is the one that would have caught this: the SHA read was an **unmerged sibling** of
+the baseline, and stating so is impossible to do accidentally.
+
 ## 14.2 Tying evidence to the exact commit
 
 ```text

@@ -102,6 +102,30 @@ This is the same class of error as citing a CI run without its run id (§14.2), 
 after writing that rule down. The claim was *verified against evidence*; the evidence was the wrong
 evidence, and nothing about the verification would have revealed that.
 
+### The fourth stage, recorded in advance
+
+The full sequence has four stages, and the last one has not happened yet:
+
+```text
+1  ORIGINAL S10          containment defence correctly described
+2  CORRECTION            WRONG — claimed external dependencies already accepted.
+                         Cause: code read from the wrong checked-out branch
+3  WITHDRAWAL            baseline truth restored; commit-anchoring rule added
+4  FUTURE INTEGRATION    external paths ACTUALLY become accepted — because the COMPILER
+                         CHANGED, not because the baseline was ever misread
+```
+
+**Stage 4 matters more than it looks.** When `fix/release-package-ships-providers` lands, the
+sentence I wrongly wrote in stage 2 becomes true. Without this note, a later reader would find a
+withdrawn "correction" that the code now vindicates, and reasonably conclude the withdrawal was the
+error.
+
+It was not. The parallel branch **changes the model** rather than revealing it: it keeps the root
+workspace check, and treats a path outside the workspace as an **external source** whose provenance
+and content hash are recorded, instead of refusing it. That is a different design, deliberately
+adopted — and when it lands, S10's defence, falsifier and class all have to be re-derived against
+it. **A row that becomes true for a new reason is a new row, not a restored one.**
+
 ---
 
 # 3. Residuals — surfaces with a defence but no falsifier

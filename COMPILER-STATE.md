@@ -328,6 +328,46 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
 
+### Integration hazard, recorded 2026-08-09 — CD/DEV namespace collision with unmerged work
+
+**Do not renumber anything yet. Owner ruling: IDs are assigned at consolidation time, against a
+frozen `develop`, and no reservation is made now.** C10-D/E/F may allocate more before the parallel
+branch integrates, so reserving today would be a guess that ages badly.
+
+Measured against `origin/develop` (`1d20123`) and `fix/release-package-ships-providers`:
+
+```text
+CD-395    develop 4 files  |  parallel 1 file   COLLISION — C10 owns it on develop
+DEV-214   develop 5 files  |  parallel 1 file   COLLISION — C10 owns it on develop
+DEV-215..218                  parallel only     no collision today; inside a range C10-D/E/F may want
+divergence                    16 behind, 2 ahead
+```
+
+**C10 authoritatively owns `CD-395` and `DEV-214` on `develop`.** The parallel branch's records
+carrying those numbers are the ones that get renumbered at integration — after freezing `develop`,
+enumerating every allocated CD and DEV, and assigning the next free ones.
+
+### C10-Q is NOT next, and the reason is this branch (owner ruling, 2026-08-09)
+
+`fix/release-package-ships-providers` is no longer a distribution patch. Against current `develop`
+it modifies package resolution, capability semantics, provider resolution, native support
+classification, flow/interpreter/MIR behaviour, manifests, lockfiles and distribution —
+`package.rs`, `flow.rs`, `interp.rs`, `mir/lower.rs`, `native_build.rs`, `provider_resolve.rs`,
+`typecheck/body.rs`, many tests, and nearly every first-party manifest.
+
+**A C10-Q decision followed by merging that branch would qualify a compiler that is not the
+compiler being promoted to `main`.** The order is therefore:
+
+```text
+C10-D -> C10-E -> C10-F -> DEV-012 editor evidence
+      -> integrate the parallel work
+      -> §8.2a freshness + requalify every AFFECTED C10 check
+      -> C10-Q against that ONE consolidated SHA
+      -> develop -> main
+```
+
+D/E/F evidence that stays fresh is retained; anything whose authority or falsifier moves is re-run.
+
 ### C10-A2, same day — the dashboard, and a tool that needed three corrections
 
 `C10-CONFORMANCE-DASHBOARD.md` + `conformance/c10-dashboard.json` (168 rows, generated).
