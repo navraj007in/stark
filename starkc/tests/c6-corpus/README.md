@@ -51,7 +51,8 @@ from both sorted and hash order, Drop identities that expose reversal, omission 
 a `Float32` whose rendering differs from the same value widened to `Float64`.
 
 Every sentinel **pins its observation in the manifest** (`expected_stdout` or `expected_drop_log`),
-and `c6_corpus_cases.rs` enforces that it does. That is deliberate: a wrong implementation is usually
+and `c6_generated_corpus.rs` enforces that it does (it replays each case and compares
+`expected_stdout` / `expected_drop_log`). That is deliberate: a wrong implementation is usually
 wrong in all three engines at once — a structural `Display` fallback, a sorted map iteration, a
 declaration-order Drop schedule — and those agree perfectly. Three-engine agreement alone would pass
 them.
@@ -114,7 +115,7 @@ python3 tests/c6-corpus/generate.py --check           # byte-compare against wha
 python3 tests/c6-corpus/generate.py --seed S --out D  # generate elsewhere, under another seed
 python3 tests/c6-corpus/generate.py --lock            # regenerate corpus.lock
 cargo test --test c6_corpus_manifest          # strict manifest + lock integrity
-cargo test --test c6_corpus_cases             # run every case on the engines it declares
+cargo test --test c6_generated_corpus         # run every case on the engines it declares
 cargo test --test c6_corpus_generator         # determinism, bounds and the acceptance floor
 ```
 

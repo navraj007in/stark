@@ -5,19 +5,21 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C9  Next: C10 release qualification  Blocked: Gate C9 Part B (second-artifact evidence)
+Gate: C10  Next: C10-0 -> C10-P + C10-A1  Blocked: none
 Mandatory compiler path: Core=done   MIR=done   Native=done
-Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
+Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
+                 TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
 
 ## What is true right now
 
 | | |
 | --- | --- |
-| **Active packet** | **none.** Campaign B EXITED 2026-08-09 — AS5–AS8 all closed, Sprint 4 Tier-3 PASS. Next is **C10 release qualification** |
+| **Active packet** | **C10-0 COMPLETE** (`work-packages/C10-0-OPENING-INVENTORY.md`). Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-P + C10-A1 |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
-| **Gate C9** | OPEN — Part A closed for C9.0/C9.1/C9.2; **Part B blocked pending second-artifact evidence.** No provider generalisation is authorised from ONNX alone |
+| **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
+| **Gate C10** | **OPEN.** Plan: `plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md`, approved with amendments. Evaluating Core v1 Compiler Stable + Native Systems Preview only |
 | **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
 | **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
@@ -36,21 +38,172 @@ ROADMAP.md (repo root)     the one live forward plan
 
 ## Known open, at a glance
 
+**CORRECTED 2026-08-09 (CD-395, finding F2). This block listed TWO deviations; there are
+THIRTY-TWO.** It was not wrong about the two, and it says of itself that it is a summary — but a
+qualification session that trusted it would have carried 2 instead of 32. The three populations are
+frozen separately by OD-3; regenerate A with
+`python3 starkc/scripts/c10-deviation-populations.py`.
+
 ```text
-DEV-012        interactive editor validation, seven features unvalidated  (C8, CD-385)
-Gate C9 Part B blocked: needs a second artifact; ONNX alone authorises nothing
-AS8-R1..R15    mutation/evidence residuals — see AS8-MUTATION-FINDINGS.md
-AS8-DA-001..6  duplicated authorities — see AS8-DUPLICATE-AUTHORITIES.md; DA-002/003/004
-               consolidate-or-keep is an OWNER CALL, measurement recorded
-DEV-213        LSP caches one whole-package analysis per open URI, invalidates only the edited
-               one; workspace/symbol returns stale names. Demonstrated at HEAD, not fixed
-(PR #10 / #11  RESOLVED — both merged as merge commits; every cited packet SHA still resolves)
+POPULATION A — compiler deviations (the CD-021 denominator)                          32
+
+  live OPEN by the last ledger heading                                               18
+    DEV-012 interactive editor validation, 7 of 10 features    -> C10-P
+    DEV-213 LSP per-URI analysis cache, stale workspace/symbol -> C10-P
+    DEV-140/141/142/143/144/145   the six CD-342 "layer defect" registrations —
+                                  these BOUND THE SUPPORTED SUBSET and are load-bearing
+                                  for any native-conformance claim
+    DEV-120 native call-depth exhaustion      DEV-122 span source-identity gap
+    DEV-167 Display::fmt has no to_string()   DEV-168 qualified core-trait call, no MIR lowering
+    DEV-172 no signed type expresses its min  DEV-177 generic-parameter shadowing accepted
+    DEV-178 generic context not retained      DEV-180 HIR flattens &mut self receivers
+    DEV-181 assignment-RHS borrow blocks it   DEV-186 LSP unbounded Content-Length
+
+  OPEN HERE, owning NO heading in KNOWN-DEVIATIONS.md                                 6
+    DEV-156 stark fmt evicts member doc comments   DEV-157 no MirTy::Never in the backend
+    DEV-159 native build races its dependency      DEV-160 whole-value projection borrows
+    DEV-161 ambient CARGO_TARGET_DIR breaks builds  DEV-162 read through a whole-value accessor
+    ^^ a C10.7 check reading only the ledger would not see these. CD-395 finding F3
+
+  last heading does not settle it — OWNER ADJUDICATION due                            8
+    DEV-005 DEV-010 DEV-011 DEV-020 DEV-021 DEV-083 DEV-179 DEV-196
+
+POPULATION B — release/distribution (constrains WORDING, not conformance)
+    DEV-165 connect_timeout accepted and ignored; standalone toolchain PARTIAL;
+    offline package build NOT PROVEN; signed distribution NOT PROVEN (integrity, not
+    authenticity); x86_64-apple-darwin tier-3 PACKAGED AND NEVER EXECUTED (F1)
+
+POPULATION C — assurance residuals (constrain CLAIM STRENGTH; assert NO defect)
+    AS8-R1/R2/R4/R5/R6/R8/R9/R10/R12/R13/R14 live; R3, R15 DISCHARGED; R7 is a method finding
+    AS8-DA-001..006  DA-001/005 CONSOLIDATE (outside C10); DA-002/003/004 REMAIN SEPARATE and
+                     owe a RuntimeFn parity/drift test (test-only, permitted in C10-D);
+                     DA-006 KEEP
+    RA-LAYOUT unmeasured; RA-LINTS suppresses two deny-by-default lints in generated code
+    DEV-017   the coverage DB cannot express per-rule +/- evidence — why 125 of 161 granular
+              rules are unclassified
+    branch coverage unavailable from this toolchain — not claimed, not fabricated
+
+Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
+(PR #10 / #11   RESOLVED — both merged as merge commits; every cited packet SHA still resolves)
 ```
 
 **This block is a summary and is not authoritative over the records below it.** Where they
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-395 — Gate C10 OPENED; six opening decisions ruled; the "at a glance" block was short by thirty (2026-08-09)
+
+**`STARKLANG/docs/compiler/plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md` is the execution plan,
+APPROVED WITH AMENDMENTS. `work-packages/C10-0-OPENING-INVENTORY.md` is the freeze.** Campaign B
+exited; C10 is the release-qualification campaign, and it is a QUALIFICATION campaign — its purpose
+is to determine what the existing compiler can legitimately claim, not to improve it.
+
+### The sequencing question, answered from the documents rather than by preference
+
+The position line read as *"C9 Part B blocks C10"*. **The roadmap does not say that anywhere.**
+§4.5 admits "blocked on second-artifact evidence" as one of three PERMITTED explicit statuses;
+WP-C10.7 requires C0–C8 plus the mandatory native path; the Core v1 Compiler Stable class requires
+"C7, C8, and C10". C9 is excluded in three independent places, and Charter §2.4 scopes the
+`Blocked:` field to the CURRENT gate. C9 Part A already supplies the extension-isolation and
+tensor-stage inputs C10.1 consumes.
+
+```text
+OD-1  APPROVED               C9 Part B does not block C10. Part A CLOSED, Part B DEFERRED
+                             pending second-artifact evidence; ONNX alone authorises nothing (CE7)
+OD-2  APPROVED               evaluate Core v1 Compiler Stable + Native Systems Preview ONLY.
+                             STARK v1 General-Purpose Stable is a wider claim on much the same
+                             evidence and remains a separate owner act (CD-022)
+OD-3  APPROVED W/REFINEMENT  THREE separately countable populations, not one denominator:
+                             A compiler deviations (the CD-021 denominator)
+                             B release/distribution (constrains WORDING)
+                             C assurance residuals (constrains CLAIM STRENGTH, asserts no defect)
+OD-4  MODIFIED               DEV-012 and DEV-213 are CLOSED during C10, not carried. Neither
+                             blocks opening; both gate the claim. New packet C10-P, new gate
+                             C10-G before C10-Q. Neither reopens C8
+OD-5  APPROVED               see the superseding note below
+OD-6  APPROVED               ROADMAP.md §0.1 corrected; §6.0's gate text preserved and marked
+                             satisfied
+```
+
+### Three amendments the owner made to the plan's METHOD
+
+1. **The plan's five inputs are not the whole authority.** The normative Core and extension
+   specifications retain theirs under Charter §1.6/§1.9. A work-package plan sits at level 5 of the
+   source-of-truth hierarchy and cannot demote the specification beneath itself.
+2. **No expected finding count, and no expected falsification rate.** The plan had said A1 "should
+   expect to correct some non-zero number" and that C10 "should expect a comparable rate" to AS8's
+   13/39. Both create investigator bias. **0 corrections and 20 are equally legitimate**; what must
+   be demonstrated is that the census enumerated the intended population — so the forcing mechanism
+   is an injected mis-citation the census must report, not a yield. **AS8's lesson was not "a third
+   of audits are wrong"; it was "do not infer evidence strength from reading the machinery."**
+3. **Inherited mutation evidence gets a freshness rule** (plan §8.2a). A prior trial may be cited
+   only while the targeted authority AND the claimed killing evidence are unchanged; otherwise the
+   result is HISTORICAL and the trial re-runs. Without it, C10 could cite `AS8-MUT-025` as evidence
+   that `mir/verify.rs` controls provider signatures long after that verifier was rewritten.
+
+### OD-5 — the superseding note. CD-394 IS NOT REWRITTEN.
+
+**CD-394's evidence line ("coverage baseline published as `--lib` only and labelled as such") and
+`AS8-EXIT-QUALIFICATION.md` §5's `AS8-R15` row were correct when written and were overtaken by
+`0bc9aee`.** Both are preserved exactly as written. The live figures:
+
+```text
+full corpus      regions 83.05%   functions 84.92%   lines 83.64%
+AS8-R15          DISCHARGED
+branch coverage  unavailable from this toolchain — NOT CLAIMED, NOT FABRICATED
+live document    STARKLANG/docs/compiler/AS8-COVERAGE-BASELINE.md
+```
+
+### What C10-0 measured, and the three things nobody had checked
+
+**F3, the most consequential.** Six open deviations exist **only** in this file, owning no heading
+in `KNOWN-DEVIATIONS.md` at all:
+
+```text
+DEV-156  `stark fmt` evicts member doc comments
+DEV-157  the native backend has no representation for `MirTy::Never`
+DEV-159  a native build can race its own dependency build
+DEV-160  place-granular borrows, whole-value projections
+DEV-161  an ambient `CARGO_TARGET_DIR` breaks every native build
+DEV-162  READ through a whole-value accessor
+```
+
+A C10.7 check reading only the ledger would not have seen them. OD-3's second clause — "plus any
+`DEV-NNN` present in `COMPILER-STATE.md` but absent there" — was written for exactly this and
+caught six.
+
+**F2.** The `Known open, at a glance` block listed **two** deviations. Population A has **thirty-two**
+(18 live-OPEN in the ledger + 6 state-only + 8 needing adjudication). The block was not lying — it
+says of itself that it is a summary — but a qualification session that trusted it would have carried
+2 instead of 32. **Corrected below, forward-only.**
+
+**F1.** `target-matrix.json` names **four** targets, not three. `x86_64-apple-darwin` is **tier-3,
+packaged with an archive and both installers, and exercised by no CI job whatsoever.** The C10 plan
+listed three and missed it. **C10-Q may not include tier-3 in any conformance claim.**
+
+**F6, the positive one, and it is measured rather than assumed.** Every inherited AS8 mutation
+result is FRESH: all 12 mutated authority files and all 13 control suites hash identically at
+`e7bb95d` and at `f12ecec`. All 39 trials are citable without re-running. Re-checked at C10-Q.
+
+Also found: four individually-correct and non-interchangeable counts of "how many deviations"
+(186 headings / 170 ids owning one / 178 ids mentioned / 190 reconciler entries), and
+`tests/c6-corpus/README.md` citing `c6_corpus_cases.rs` twice — including a runnable
+`cargo test --test c6_corpus_cases` — **for a target that does not exist** (the enforcer is
+`c6_generated_corpus.rs`).
+
+### Baseline
+
+```text
+qualification baseline   f12ececca6d4bdabf828d657c4a4f719a7f9c39a
+CI                       run 31292404920 (CI) + 31292404936 (C7.8), both conclusion success,
+                         zero non-succeeding jobs — queried per job, not read off a badge
+execution branch         wp-c10/execution-plan
+```
+
+**Next:** C10-P (DEV-213 repair, DEV-012 interactive validation) alongside C10-A1 (the 161-rule
+evidence census). **C10-Q remains an owner decision under CE8** — Charter §2.2 forbids a session
+claiming Core v1 conformance on its own authority. C10 proposes; the owner authorises.
 
 ## CD-394 — AS8 CLOSED, qualification PASS; the evidence base was overstated in three documents (2026-08-09)
 
