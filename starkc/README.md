@@ -119,20 +119,29 @@ The installer writes a **versioned** tree: the payload lands in
 `lib/stark/versions/<version>`, `lib/stark/current` points at it, and
 `bin/stark` is a symlink to `current/bin/stark` on Unix or a copy of it on
 Windows. Inside the payload the layout is `bin/{stark,starkc,starkide}` plus
-`lib/stark/stark-runtime` and `lib/stark/stark-provider-abi`. The runtime is
-required because native debug builds invoke the selected Cargo/rustc toolchain
-offline against it. Flat installations made before the versioned tree are still
-found.
+`lib/stark/starkc/stark-runtime` and `lib/stark/starkc/stark-provider-abi`. The
+runtime is required because native debug builds invoke the selected Cargo/rustc
+toolchain offline against it. Flat installations made before the versioned tree
+are still found.
 
-This payload carries the compiler, its runtime and the provider ABI. It does
-**not** carry the first-party STARK packages or their native provider crates,
-so a program declaring a host capability — clock, filesystem, environment,
-random, TCP/DNS or TLS — still needs those sources installed separately, under
-`lib/stark/packages/<name>/native`, mirroring the repository's `packages/`
-directory. That depth is required, not cosmetic: a provider crate reaches the
-ABI through `../../../starkc/stark-provider-abi` and resolves nowhere else. The
-compiler also still accepts the two older provider roots
-(`lib/stark/<name>/native` and `lib/stark/providers/<name>/native`), so an
+This payload carries the compiler, its runtime, the provider ABI **and** the
+first-party native provider crates, under `lib/stark/packages/<name>/native` —
+mirroring the repository's `packages/` directory — so a program declaring a
+host capability (clock, filesystem, environment, random, TCP/DNS or TLS) builds
+from a stock installation with nothing installed separately.
+
+Both depths are required, not cosmetic. A provider crate reaches the ABI
+through `../../../starkc/stark-provider-abi` and resolves nowhere else, which
+is why the runtime and the ABI sit under `starkc/` rather than directly in
+`lib/stark`: at the flat depth the runtime's `../stark-provider-abi` and the
+providers' `../../../starkc/stark-provider-abi` name two different directories,
+and Cargo refuses a lockfile holding one package at two paths. The same
+correspondence is what lets the compiler find the providers at all — it derives
+the provider root from wherever the runtime turned out to be
+(`native_build::provider_root_beside_runtime`).
+
+The compiler still accepts the flat runtime location and the two older provider
+roots (`lib/stark/<name>/native` and `lib/stark/providers/<name>/native`), so an
 installation made before the move keeps working. See the repository README.
 
 Rust 1.85 or newer must be available for `stark build`; `stark run` uses the

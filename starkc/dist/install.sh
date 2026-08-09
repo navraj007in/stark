@@ -16,10 +16,21 @@ fi
 
 package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+# The mirror layout writes the runtime under `starkc/`; packages built before that move wrote it
+# flat. Accept either, so this installer can still lay down an older package.
+if [ -f "$package_dir/lib/stark/starkc/stark-runtime/Cargo.toml" ] &&
+   [ -f "$package_dir/lib/stark/starkc/stark-provider-abi/Cargo.toml" ]; then
+    runtime_present=yes
+elif [ -f "$package_dir/lib/stark/stark-runtime/Cargo.toml" ] &&
+     [ -f "$package_dir/lib/stark/stark-provider-abi/Cargo.toml" ]; then
+    runtime_present=yes
+else
+    runtime_present=no
+fi
+
 if [ ! -x "$package_dir/bin/stark" ] ||
    [ ! -f "$package_dir/manifest.json" ] ||
-   [ ! -f "$package_dir/lib/stark/stark-runtime/Cargo.toml" ] ||
-   [ ! -f "$package_dir/lib/stark/stark-provider-abi/Cargo.toml" ]; then
+   [ "$runtime_present" != yes ]; then
     echo "error: install.sh must be run from an extracted STARK release package" >&2
     exit 1
 fi

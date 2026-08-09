@@ -246,6 +246,43 @@ struct DoctorCheck {
     detail: String,
 }
 
+/// Where the runtime crate sits in an installed tree, mirror layout first.
+///
+/// The mirror layout puts it under `starkc/`, matching the repository; a package built before that
+/// move puts it flat. Both are installable and both are found by
+/// `native_toolchain::discover_runtime`, so doctor accepts either — checking only the flat path
+/// reported `runtime: fail` against a mirror-layout installation that builds programs correctly.
+const RUNTIME_LAYOUTS: &[&str] = &[
+    "lib/stark/starkc/stark-runtime/Cargo.toml",
+    "lib/stark/stark-runtime/Cargo.toml",
+];
+
+/// Where the provider ABI crate sits, in the same two layouts and the same order.
+const PROVIDER_ABI_LAYOUTS: &[&str] = &[
+    "lib/stark/starkc/stark-provider-abi/Cargo.toml",
+    "lib/stark/stark-provider-abi/Cargo.toml",
+];
+
+/// The first candidate that exists under `root`, reported by name.
+///
+/// On failure the detail names the FIRST candidate rather than listing all of them: that is the
+/// layout a current package writes, so the message points at where the file should have been
+/// rather than at wherever the search happened to end.
+fn layout_check(name: &str, root: &Path, candidates: &[&str]) -> DoctorCheck {
+    let found = candidates
+        .iter()
+        .map(|relative| root.join(relative))
+        .find(|path| path.is_file());
+    DoctorCheck {
+        name: name.to_string(),
+        ok: found.is_some(),
+        detail: found
+            .unwrap_or_else(|| root.join(candidates[0]))
+            .display()
+            .to_string(),
+    }
+}
+
 fn cmd_doctor(args: &[String]) -> ExitCode {
     let mut explicit_root = None;
     let mut json = false;
@@ -326,17 +363,20 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
     } else {
         "bin/stark"
     };
-    for (name, relative) in [
-        ("bin", stark_binary),
-        ("runtime", "lib/stark/stark-runtime/Cargo.toml"),
-        ("provider_abi", "lib/stark/stark-provider-abi/Cargo.toml"),
-    ] {
-        let path = root.join(relative);
-        checks.push(DoctorCheck {
-            name: name.to_string(),
+    checks.push({
+        let path = root.join(stark_binary);
+        DoctorCheck {
+            name: "bin".to_string(),
             ok: path.is_file(),
             detail: path.display().to_string(),
-        });
+        }
+    });
+
+    for (name, candidates) in [
+        ("runtime", RUNTIME_LAYOUTS),
+        ("provider_abi", PROVIDER_ABI_LAYOUTS),
+    ] {
+        checks.push(layout_check(name, &root, candidates));
     }
 
     if let Some(manifest) = &manifest {
@@ -1741,6 +1781,50 @@ mod doctor_tests {
                 .len(),
             1
         );
+    }
+
+    /// Doctor must pass on BOTH installed layouts.
+    ///
+    /// The packager moved the runtime under `starkc/` so that
+    /// `native_build::provider_root_beside_runtime` can derive the provider root from it. Doctor
+    /// still probed only the flat path, so a correct mirror-layout installation — one that builds
+    /// capability-using programs successfully — reported `runtime: fail`. A tree is checked here
+    /// rather than the constant, because the defect was in what the probe LOOKED AT.
+    #[test]
+    fn doctor_accepts_both_installed_layouts() {
+        let base = std::env::temp_dir().join(format!("stark-doctor-layout-{}", std::process::id()));
+        for (label, relative) in [
+            ("mirror", "lib/stark/starkc/stark-runtime/Cargo.toml"),
+            ("flat", "lib/stark/stark-runtime/Cargo.toml"),
+        ] {
+            let root = base.join(label);
+            let file = root.join(relative);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "[package]\nname='stark-runtime'\n").unwrap();
+
+            let check = layout_check("runtime", &root, RUNTIME_LAYOUTS);
+            assert!(check.ok, "{label} layout must satisfy doctor");
+            assert_eq!(
+                check.detail,
+                file.display().to_string(),
+                "{label} layout must be reported at the path actually found"
+            );
+        }
+
+        // An empty root fails, and names the layout a current package writes.
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let missing = layout_check("runtime", &empty, RUNTIME_LAYOUTS);
+        assert!(!missing.ok, "an empty root must not satisfy doctor");
+        assert!(
+            missing
+                .detail
+                .ends_with("lib/stark/starkc/stark-runtime/Cargo.toml"),
+            "must point at the mirror layout, got {}",
+            missing.detail
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A path containing an escaped quote truncated at the escape under the old reader.
