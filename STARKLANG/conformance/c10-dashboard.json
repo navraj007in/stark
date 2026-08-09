@@ -1,5 +1,5 @@
 {
-  "head": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+  "head": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
   "population": 168,
   "rows": [
     {
@@ -19,7 +19,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -41,7 +41,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -63,7 +63,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -85,7 +85,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -107,7 +107,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -129,7 +129,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -151,7 +151,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -173,7 +173,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -195,7 +195,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -217,7 +217,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -239,7 +239,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -261,7 +261,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -283,7 +283,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -305,7 +305,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -327,7 +327,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -349,7 +349,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -371,7 +371,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -393,7 +393,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -415,7 +415,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -437,7 +437,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -459,7 +459,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -481,7 +481,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -503,7 +503,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -525,7 +525,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -547,7 +547,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -569,7 +569,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -591,7 +591,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -613,7 +613,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -635,7 +635,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -661,7 +661,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -683,7 +683,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -705,7 +705,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -727,7 +727,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -749,7 +749,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -771,7 +771,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -793,7 +793,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -815,7 +815,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -843,7 +843,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -865,7 +865,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -895,7 +895,7 @@
       "challenge": "AS8-MUT-013 SURVIVED with the spec fixtures selected (AS8-R5)",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -922,7 +922,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -944,7 +944,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -977,7 +977,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1006,7 +1006,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1028,7 +1028,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1054,7 +1054,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1076,7 +1076,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1107,7 +1107,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1129,7 +1129,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1151,7 +1151,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1173,7 +1173,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1195,7 +1195,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1217,7 +1217,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1239,7 +1239,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1261,7 +1261,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1287,7 +1287,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1316,7 +1316,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1338,7 +1338,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1360,7 +1360,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1382,7 +1382,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1404,7 +1404,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1426,7 +1426,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1448,7 +1448,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1470,7 +1470,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1492,7 +1492,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1514,7 +1514,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1536,7 +1536,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1558,7 +1558,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1580,7 +1580,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1602,7 +1602,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1636,7 +1636,7 @@
       "challenge": "AS8-MUT-003/005/006 SURVIVED the differential; 009/010/011 KILLED by c61f_structural_copy",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1662,7 +1662,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1684,7 +1684,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1710,7 +1710,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1739,7 +1739,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1763,7 +1763,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1787,7 +1787,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1809,7 +1809,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1831,7 +1831,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1853,7 +1853,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1875,7 +1875,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1897,7 +1897,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1921,7 +1921,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1948,7 +1948,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1970,7 +1970,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -1992,7 +1992,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2014,7 +2014,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2036,7 +2036,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2058,7 +2058,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2080,7 +2080,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2105,7 +2105,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2127,7 +2127,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2151,7 +2151,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2173,7 +2173,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2195,7 +2195,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2217,7 +2217,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2239,7 +2239,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2261,7 +2261,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2283,7 +2283,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2305,7 +2305,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2331,7 +2331,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2353,7 +2353,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2375,7 +2375,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2397,7 +2397,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2419,7 +2419,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2441,7 +2441,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2463,7 +2463,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2485,7 +2485,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2512,7 +2512,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2534,7 +2534,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2556,7 +2556,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2578,7 +2578,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2600,7 +2600,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2628,7 +2628,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2657,7 +2657,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2684,7 +2684,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2706,7 +2706,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2730,7 +2730,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2763,7 +2763,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2785,7 +2785,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2807,7 +2807,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2829,7 +2829,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2851,7 +2851,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2873,7 +2873,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2895,7 +2895,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2917,7 +2917,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2939,7 +2939,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2961,7 +2961,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -2983,7 +2983,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3005,7 +3005,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3027,7 +3027,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3049,7 +3049,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3071,7 +3071,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3093,7 +3093,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3115,7 +3115,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3137,7 +3137,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3159,7 +3159,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3181,7 +3181,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3212,7 +3212,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3234,7 +3234,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3256,7 +3256,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3284,7 +3284,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3318,7 +3318,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3345,7 +3345,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3367,7 +3367,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3391,7 +3391,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3413,7 +3413,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3435,7 +3435,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3457,7 +3457,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3479,7 +3479,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3501,7 +3501,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3523,7 +3523,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3545,7 +3545,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3575,7 +3575,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3599,7 +3599,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3621,7 +3621,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3643,7 +3643,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3665,7 +3665,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3692,7 +3692,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3720,7 +3720,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3742,7 +3742,7 @@
       "challenge": "AS8-MUT-007 KILLED (4) by the HIR oracle; MUT-008 the honest no-op (AS8-R2)",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3771,7 +3771,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3793,7 +3793,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3815,7 +3815,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3837,7 +3837,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3859,7 +3859,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3881,7 +3881,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
@@ -3909,7 +3909,7 @@
       "challenge": "NOT-CHALLENGED",
       "deviation": "",
       "last_verified": {
-        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "commit": "51ca1aff161fcfa096aef9f0105936851fd2dbda",
         "toolchain": "rustc stable (CI floats)",
         "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
       }
