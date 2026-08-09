@@ -6995,9 +6995,26 @@ limit is 200)`, which only the DEV-214 repair emits.
 
 **MANUAL** (Charter §5.2). Not automated coverage, and it must never be described as such.
 
-**What the record contains is an owner VERDICT across the seven features, not a per-feature
-transcript of observed values.** That distinction is recorded because `GATE-C8-CLOSURE.md` §4 is
-explicit about why it matters:
+**One feature has a value-level record; six have a verdict.** The distinction is kept per feature
+rather than averaged, because it is the difference the DEV-182 lesson turns on.
+
+```text
+COMPLETION   VALUE-LEVEL, owner-reported 2026-08-09:
+             "Completion offered parse_fleet, from fleet.stark, with detail
+              `fn(Int32) -> Int32`: PASS"
+
+             Three independent facts, and each is one the wrong answer would have failed:
+               the CANDIDATE      parse_fleet, not a keyword and not the decoy parse_fleet_name
+               the PROVENANCE     fleet.stark — a DIFFERENT module, so cross-module completion
+                                  resolved rather than same-file text matching
+               the DETAIL         `fn(Int32) -> Int32` — the real resolved signature, so the
+                                  detail came from compiler analysis and not from a label
+
+diagnostics, formatting, signature help, rename, document symbols, semantic tokens
+             VERDICT — reported verified by the owner, no transcript captured
+```
+
+**That distinction is recorded because `GATE-C8-CLOSURE.md` §4 is explicit about why it matters:**
 
 > DEV-182 — the LSP JSON parser silently decoded every escaped non-BMP character to the empty
 > string — **passed** protocol validation, because both the parse and the response succeeded and
@@ -7007,6 +7024,11 @@ A verdict-shaped record is exactly what that defect survived. **The owner is the
 produce this evidence and is the authority on their own session**, so DEV-012 closes; but the
 release claim should describe it as *interactively validated by the owner in the recorded
 environment*, which is what it is, rather than implying a captured per-feature value transcript.
+
+**The completion observation is what the other six would look like if captured**, and it is kept
+verbatim as the template — `"offered X, from Y, with detail Z"` names a candidate, a provenance and
+a resolved signature, any one of which a stub or a text-matcher would get wrong. A re-validation
+should produce six more of these.
 
 ### What this closure claims
 
