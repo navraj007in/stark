@@ -1,0 +1,171 @@
+use super::algorithm;
+use super::bytes_copy;
+use super::equals;
+use super::from_bytes;
+use super::parse_hex;
+use super::to_hex;
+use super::DigestAlgorithm;
+use super::DigestError;
+
+const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const MIXED_SHA256: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
+const LOWER_SHA256: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+fn sha256_bytes() -> Vec<UInt8> {
+    let mut out = Vec::new();
+    let mut i: UInt8 = 0u8;
+    while i < 32u8 {
+        out.push(i);
+        i = i + 1u8;
+    }
+    out
+}
+
+fn zero_bytes() -> Vec<UInt8> {
+    let mut out = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < 32u64 {
+        out.push(0u8);
+        i = i + 1u64;
+    }
+    out
+}
+
+fn assert_invalid_length(
+    result: Result<super::Digest, DigestError>,
+    expected: UInt64,
+    actual: UInt64,
+) {
+    match result {
+        Err(DigestError::InvalidLength(found_expected, found_actual)) => {
+            if found_expected != expected || found_actual != actual {
+                panic("invalid length payload mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected invalid length");
+        }
+        Ok(_) => {
+            panic("expected digest failure");
+        }
+    }
+}
+
+fn assert_invalid_hex(result: Result<super::Digest, DigestError>, index: UInt64, byte: UInt8) {
+    match result {
+        Err(DigestError::InvalidHex(found_index, found_byte)) => {
+            if found_index != index || found_byte != byte {
+                panic("invalid hex payload mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected invalid hex");
+        }
+        Ok(_) => {
+            panic("expected digest failure");
+        }
+    }
+}
+
+fn test_from_bytes_accepts_exact_sha256_length() {
+    match from_bytes(DigestAlgorithm::Sha256, sha256_bytes()) {
+        Ok(digest) => {
+            match algorithm(&digest) {
+                DigestAlgorithm::Sha256 => {}
+            }
+            if to_hex(&digest).as_str() != LOWER_SHA256 {
+                panic("canonical hex mismatch");
+            }
+            let copy = bytes_copy(&digest);
+            if copy.len() != 32u64 || copy[31u64] != 31u8 {
+                panic("bytes copy mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected digest success");
+        }
+    }
+}
+
+fn test_from_bytes_rejects_invalid_lengths() {
+    let empty = Vec::new();
+    assert_invalid_length(from_bytes(DigestAlgorithm::Sha256, empty), 32u64, 0u64);
+
+    let mut short = sha256_bytes();
+    short.pop();
+    assert_invalid_length(from_bytes(DigestAlgorithm::Sha256, short), 32u64, 31u64);
+
+    let mut long = sha256_bytes();
+    long.push(32u8);
+    assert_invalid_length(from_bytes(DigestAlgorithm::Sha256, long), 32u64, 33u64);
+}
+
+fn test_parse_hex_accepts_mixed_case_and_renders_lowercase() {
+    match parse_hex(DigestAlgorithm::Sha256, MIXED_SHA256) {
+        Ok(digest) => {
+            if to_hex(&digest).as_str() != LOWER_SHA256 {
+                panic("canonical parsed hex mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected parse success");
+        }
+    }
+}
+
+fn test_parse_hex_rejects_valid_hex_wrong_lengths() {
+    assert_invalid_length(parse_hex(DigestAlgorithm::Sha256, ""), 32u64, 0u64);
+    assert_invalid_length(parse_hex(DigestAlgorithm::Sha256, "00"), 32u64, 1u64);
+    assert_invalid_length(
+        parse_hex(
+            DigestAlgorithm::Sha256,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+        ),
+        32u64,
+        31u64,
+    );
+    assert_invalid_length(
+        parse_hex(
+            DigestAlgorithm::Sha256,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        ),
+        32u64,
+        33u64,
+    );
+}
+
+fn test_parse_hex_maps_invalid_character_payload() {
+    assert_invalid_hex(parse_hex(DigestAlgorithm::Sha256, "00xz"), 2u64, 120u8);
+}
+
+fn test_parse_hex_maps_odd_valid_hex_length() {
+    assert_invalid_length(
+        parse_hex(
+            DigestAlgorithm::Sha256,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1",
+        ),
+        32u64,
+        31u64,
+    );
+}
+
+fn test_equals_compares_digest_values() {
+    let left = match from_bytes(DigestAlgorithm::Sha256, zero_bytes()) {
+        Ok(digest) => digest,
+        Err(_) => panic("left digest failed"),
+    };
+    let same = match parse_hex(DigestAlgorithm::Sha256, ZERO_SHA256) {
+        Ok(digest) => digest,
+        Err(_) => panic("same digest failed"),
+    };
+    let different = match from_bytes(DigestAlgorithm::Sha256, sha256_bytes()) {
+        Ok(digest) => digest,
+        Err(_) => panic("different digest failed"),
+    };
+    if !equals(&left, &same) {
+        panic("expected equal digests");
+    }
+    if equals(&left, &different) {
+        panic("expected different digests");
+    }
+}

@@ -121,6 +121,11 @@ CASES = [
         expected_stdout="48656c6c6f\n",
     ),
     PackageCase(
+        package="stark-digest",
+        consumer="stark-digest-consumer",
+        expected_stdout="000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+    ),
+    PackageCase(
         package="stark-uuid",
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",

@@ -1,0 +1,86 @@
+use stark_hex::decode;
+use stark_hex::encode_lower;
+use stark_hex::HexError;
+
+pub enum DigestAlgorithm {
+    Sha256,
+}
+
+pub enum DigestError {
+    InvalidLength(UInt64, UInt64),
+    InvalidHex(UInt64, UInt8),
+}
+
+pub struct Digest { algorithm: DigestAlgorithm, bytes: Vec<UInt8> }
+
+pub fn from_bytes(algorithm: DigestAlgorithm, bytes: Vec<UInt8>) -> Result<Digest, DigestError> {
+    let expected = expected_length(algorithm);
+    let actual = bytes.len();
+    if actual == expected {
+        Ok(Digest { algorithm, bytes })
+    } else {
+        Err(DigestError::InvalidLength(expected, actual))
+    }
+}
+
+pub fn parse_hex(algorithm: DigestAlgorithm, text: &str) -> Result<Digest, DigestError> {
+    match decode(text) {
+        Ok(bytes) => from_bytes(algorithm, bytes),
+        Err(HexError::InvalidCharacter(index, byte)) => Err(DigestError::InvalidHex(index, byte)),
+        Err(HexError::InvalidLength) => {
+            let expected = expected_length(algorithm);
+            Err(DigestError::InvalidLength(expected, text.bytes().len() / 2u64))
+        }
+    }
+}
+
+pub fn algorithm(digest: &Digest) -> DigestAlgorithm {
+    digest.algorithm
+}
+
+pub fn bytes_copy(digest: &Digest) -> Vec<UInt8> {
+    let mut out = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < digest.bytes.len() {
+        out.push(digest.bytes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+pub fn to_hex(digest: &Digest) -> String {
+    encode_lower(digest.bytes.as_slice())
+}
+
+pub fn equals(left: &Digest, right: &Digest) -> Bool {
+    if !same_algorithm(algorithm(left), algorithm(right)) {
+        return false;
+    }
+    if left.bytes.len() != right.bytes.len() {
+        return false;
+    }
+    let mut i: UInt64 = 0u64;
+    while i < left.bytes.len() {
+        if left.bytes[i] != right.bytes[i] {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn expected_length(algorithm: DigestAlgorithm) -> UInt64 {
+    match algorithm {
+        DigestAlgorithm::Sha256 => 32u64,
+    }
+}
+
+fn same_algorithm(left: DigestAlgorithm, right: DigestAlgorithm) -> Bool {
+    match left {
+        DigestAlgorithm::Sha256 => match right {
+            DigestAlgorithm::Sha256 => true,
+        }
+    }
+}
+
+mod tests;
