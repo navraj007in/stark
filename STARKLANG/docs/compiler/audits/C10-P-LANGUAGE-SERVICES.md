@@ -68,6 +68,24 @@ cargo fmt --manifest-path starkc/Cargo.toml --check                clean
 Evidence class (Charter §5.2): **REG** (regression test for a discovered bug) plus **UNIT**. Not
 MANUAL, and not editor-validated — see §3.
 
+## 1.2a CI evidence, and the correction it required
+
+The repair's multi-platform evidence took two attempts to state correctly, which is recorded because
+the first statement was wrong:
+
+```text
+run 31294314143  7cfa59e (the repair commit)  FAILURE, first attempt
+                 first-party package qualification (windows-x64): the fixed-port HTTP peer timed
+                 out. Reported here initially as "CI largely green" from a PARTIAL job list —
+                 an error, and exactly the one §14.2 exists to prevent
+run 31294314143  7cfa59e, RE-RUN on a quiet branch          SUCCESS, zero non-success jobs
+run 31295224000  c4c8ed3 (descendant, carries the repair)   SUCCESS, all jobs
+```
+
+**The repair has green evidence on all three platforms, twice over.** The failure was environmental
+and is not reproducible; see plan §14.1a for what that does and does not settle about the
+mechanism.
+
 ## 1.3 Freshness consequence for C10-D (plan §8.2a)
 
 C10-0 predicted in advance that a DEV-213 repair confined to the LSP would disturb none of the 12

@@ -1749,14 +1749,63 @@ first-party package qualification (windows-x64)
 ```
 
 The same job has succeeded on **twelve consecutive `develop` runs**, where commits land one at a
-time with CI settling between. It is not a Windows flake; it is a same-branch race, and it was
-caused by pushing three times in twenty-five minutes.
+time with CI settling between.
+
+### CORRECTION, same day, once every run on the branch had finished
+
+**The first version of this section said flatly "it is a same-branch race". The evidence does not
+support that, and the correction matters more than the original claim.** When the branch went
+quiet, three of the four runs had **passed while overlapping each other**:
+
+```text
+7cfa59e  04:19 -------------------------------- 04:47   FAILURE
+99979df       04:25 ------------------------------- 04:53   success   (overlapping)
+388e581            04:37 ------------------------------ 05:04   success   (overlapping)
+c4c8ed3                 04:44 ----------------------------- 05:11   success   (overlapping)
+```
+
+**Overlap is therefore necessary-at-most, not sufficient.** Three overlapping runs were fine. The
+accurate statement is the weaker one:
+
+> The fixed peer ports make concurrent runs on a branch **capable** of colliding. One run did. Three
+> did not. Whether 7cfa59e's failure was that collision or an unrelated transient is not settled by
+> the overlap timeline alone.
+
+That is the same error this campaign keeps finding in other documents — a mechanism that explains
+the observation, asserted as the cause because it fits — and it was made here, in C10's own plan,
+within an hour of C10-C recording that a passing test is not evidence until you know what would
+make it fail.
+
+### The discriminating run, and the limit of what it settles
+
+`7cfa59e`'s failed job was re-run **with every other run on the branch finished**:
+
+```text
+run 31294314143, rerun --failed, branch quiet    conclusion = success, zero non-success jobs
+```
+
+**Established:** there is no reproducible defect at `7cfa59e`. The same commit, the same job, the
+same platform, passes. Whatever happened at 04:30 was environmental.
+
+**NOT established:** that the overlap caused it. One clean rerun does not separate *"the overlap did
+it"* from *"an unrelated transient, and the retry got lucky"* — both are environmental and both
+predict exactly this result. Separating them needs repeated trials, which is not a spend a
+qualification campaign should make on a mechanism question.
+
+**Final disposition:** a transient with a **plausible but unconfirmed** mechanism. The fixed peer
+ports make a collision possible; nothing here shows one happened. The E10 precaution stands on the
+attribution argument alone — an overlap-free run is unambiguous — and not on a causal claim.
 
 ### Why this matters to C10 rather than being an operational nuisance
 
-**A red result may belong to another commit's peer, and a green one is only meaningful if nothing
-overlapped it.** That makes CI a concurrency-dependent evidence channel, and §14.2's rule — cite
+**A red result may belong to another commit's peer.** That is enough to make CI a
+concurrency-dependent evidence channel for ATTRIBUTION purposes, and §14.2's rule — cite
 `commit + run id + job + platform` — is *not sufficient* on its own to make a citation sound.
+
+Note what this does and does not justify. It justifies **preferring an overlap-free run when citing
+one**, because an overlap-free run is unambiguous. It does **not** justify discarding a green
+overlapping run: three of them passed here, and c4c8ed3's — which carries the DEV-213 repair and all
+of C10-A1/B/C — is one of them.
 
 **Exit criterion E10 is amended accordingly** (§17.1): CI green at the frozen head, **on a run with
 no overlapping run on the same branch**, and the executing session must verify the absence of
@@ -1766,9 +1815,11 @@ overlap rather than assume it.
 
 ```text
 push once, then WAIT for CI to settle before pushing again
-before citing any run, list the branch's runs and confirm no overlap in its window
-a failure inside an overlap window is NOT evidence of a defect — re-run it clean first
-a PASS inside an overlap window is NOT evidence of correctness either
+before citing any run, list the branch's runs and record whether anything overlapped its window
+a FAILURE inside an overlap window is not yet evidence of a defect — re-run it on a quiet
+    branch before believing it
+a PASS is a pass. An overlapping green run is still a green run; prefer an overlap-free one
+    when citing, but do not discard one for overlap alone
 ```
 
 **Not proposed as a workflow change here.** Widening the group to the branch would serialise
@@ -1968,10 +2019,10 @@ E9   ALL THREE OD-3 populations are dispositioned, each counted separately:
             STRENGTH of the claim it constrains rather than as a defect
 E9d  C10-G is evaluated: DEV-012 and DEV-213 are each CLOSED, or the corresponding claim is
      explicitly narrowed in the release statement (OD-4)
-E10  CI is green at the frozen head **on a run with no overlapping run on the same branch**
-     (§14.1a — the concurrency group is keyed on the commit, so consecutive commits race for the
-     fixed peer ports and a result inside an overlap window is not evidence either way), and
-     every claim maps to the job/platform that executes it
+E10  CI is green at the frozen head, **on a run whose overlap status is RECORDED** — an
+     overlap-free run is preferred because it is unambiguous, but an overlapping green run is
+     still green (§14.1a). A FAILURE inside an overlap window must be re-run on a quiet branch
+     before it is believed. Every claim maps to the job/platform that executes it
 E11  §16.2's sweep is clean
 ```
 
