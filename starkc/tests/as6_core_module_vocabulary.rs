@@ -35,7 +35,7 @@ const CORE_FRONT_END: &[&str] = &[
     "src/lexer.rs",
     "src/parser.rs",
     "src/resolve.rs",
-    "src/typecheck.rs",
+    "src/typecheck/mod.rs",
     "src/hir.rs",
     "src/ast.rs",
     "src/diag.rs",

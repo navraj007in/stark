@@ -91,7 +91,7 @@ export default function App() {
             <h2 className="section__title">{conformance.title}</h2>
             <p className="section__lede">{conformance.body}</p>
 
-            <div className="engines" role="list" aria-label="Execution engines">
+            <div className="engines" role="list" aria-label="Execution configurations">
               {['Reference interpreter', 'MIR interpreter', 'Native · debug', 'Native · release'].map(
                 (engine) => (
                   <div className="engine" role="listitem" key={engine}>
@@ -104,6 +104,7 @@ export default function App() {
 
             <blockquote className="pull">{conformance.emphasis}</blockquote>
             <p className="section__after">{conformance.note}</p>
+            <p className="section__after">{conformance.toolchain}</p>
           </div>
         </section>
 

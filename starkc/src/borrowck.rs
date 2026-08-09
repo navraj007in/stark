@@ -1200,10 +1200,10 @@ impl<'a> BorrowChecker<'a> {
             return Some(receiver);
         }
 
-        // DEV-060: mirror typecheck.rs::resolve_method's `default_fallback` (WP-C1.3) -- a
+        // DEV-060: mirror typecheck/body.rs::resolve_method's `default_fallback` (WP-C1.3) -- a
         // trait method declared with a real body and never overridden by any impl is a legal
         // call, but the search above only ever looks at `ImplItem::Fn` overrides (exactly like
-        // typecheck.rs's own override-only `candidates` collection, considered alone). Without
+        // typecheck/body.rs's own override-only `candidates` collection, considered alone). Without
         // this fallback, an un-overridden trait default method returns `None` here, and the
         // `Call` handler's `None => self.check_expr(*base)` arm unconditionally moves the
         // receiver (`check_expr`'s `Path` arm consumes any `Local`/`SelfValue` place)

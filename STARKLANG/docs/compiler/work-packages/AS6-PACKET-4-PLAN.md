@@ -107,6 +107,11 @@ push toward exactly the generic extension framework the programme rejects.
     Only (4) must move; centralised syntax dispatch is acceptable — parsing IS
     dispatch, and AS6 does not require a parser plugin architecture. The test is
     whether a new tensor syntax form requires edits in many unrelated places.
+4D  exit-criterion cleanup. NOT in the original order — added by owner ruling on
+    2026-08-08, after a deliberate criterion-2 re-read found residual vocabulary
+    tables in resolve.rs and typecheck.rs that 4A-4C had each reported clean.
+    Split check_model_def, move the classification tables, re-run the census,
+    and build the forcing test the work package asked for and no packet made.
 ```
 
 4A is **not** a separate owner checkpoint: inventory, cut, test and continue.
@@ -228,7 +233,7 @@ requirement was "move it behind rather than respell it".
 
 ## Revised AS6 status
 
-*(Superseded by "Group 2C — Status" at the end of this document; kept as the position after 4A.)*
+*(Superseded by "Packet 4D — Status" at the end of this document; kept as the position after 4A.)*
 
 ```text
 architectural discovery        DONE   (46ae2ec)
@@ -409,7 +414,15 @@ should be decided on its own evidence rather than by grouping.
 Also moved, because they are tensor semantics that only the rule block calls: `broadcast_shapes`,
 `broadcast_to_check`, `can_broadcast_to`, `shape_volume`, `dtype_to_ty`, `get_fix_suggestion`.
 
-`check_model_def` was left in Core, per 2B's finding. Measured against the context 2C actually
+`check_model_def` was left in Core, per 2B's finding.
+
+> **SUPERSEDED 2026-08-08 by the owner ruling in packet 4D.** The recommendation below was
+> **rejected**: `check_model_def` is *split*, not left in Core. The reasoning below measures the
+> cost of moving the function **whole**, which was never the right cut — split by phase, the
+> interface widens by **zero**. Kept as written because the error it contains is the finding.
+> See "Packet 4D — Ruling 1".
+
+Measured against the context 2C actually
 built — rather than against 4A's guess — the case for leaving it is stronger than 2B thought:
 
 ```text
@@ -423,9 +436,9 @@ Six new services — 15 → 21, a 40% wider interface — for one 87-line functi
 five of the six exist to *convert written type syntax and manage the declaration scope*, which is
 Core machinery by the same rule that kept `build_shape` and friends in Core. Nothing in
 `check_model_def` decides a dtype, shape, device or broadcast; it validates that a written model
-declaration is well-formed. **Recommendation: leave it in Core and close AS6 without it**, recording
-that as a decision rather than an omission. Call this 2D if it is taken up; the evidence above is
-the whole of it.
+declaration is well-formed. ~~**Recommendation: leave it in Core and close AS6 without it**~~ —
+**overturned by the owner, 2026-08-08.** The six-service figure is the cost of moving the whole
+function; the rules alone need three services the context already had.
 
 ## The context is fifteen services, not seven — and 2B's seven was measured wrong twice
 
@@ -526,7 +539,7 @@ type cannot silently re-enter Core.
 
 ## Residual, and what 4C inherits
 
-Case-insensitive `tensor|dtype|device|model` occurrences in `typecheck.rs`: **1152 → 698**.
+Case-insensitive `tensor|dtype|device|model` occurrences in `typecheck.rs`: **1152 → 698** (as at 2C; 4D moved four more tables out and added the `tensor_syntax::` call sites that replace them).
 
 The 698 are one coherent slice, not scattered residue: **tensor type *construction* and model
 *declaration*** — `build_tensor_type`, `build_shape`, `build_device`, `build_cuda_device`,
@@ -542,12 +555,14 @@ the ruling said to optimise.
 
 ## Status
 
+*(Superseded by "Packet 4D — Status" at the end of this document; kept as the position after 2C.)*
+
 ```text
 architectural discovery        DONE   (46ae2ec)
 builtin/catalogue quarantine   DONE   (fe80129)
 runtime/lowering boundary      DONE   (33cb0a7)
 tensor type-system boundary    DONE   (62ef6b0 rules, 2C authority)
-  └─ model DECLARATION slice   RECOMMEND LEAVING IN CORE — evidence above; owner call
+  └─ model DECLARATION slice   recommendation later OVERTURNED — see packet 4D
 parser residual audit          OPEN   — 4C
 qualification                  OPEN
 ```
@@ -606,7 +621,7 @@ a `match` inside Core's `parse_type`.
 
 ## The cut
 
-`extensions/tensor/syntax.rs`, 95 lines, five items:
+`extensions/tensor/syntax.rs`, 95 lines at 4C (4D grew it to the extension's full vocabulary), five items:
 
 ```rust
 MODEL_KEYWORD                  the model item's contextual keyword
@@ -635,14 +650,16 @@ owned by Core* — it moves 21 spellings out and the reference count is not evid
 
 ## Status
 
+*(Superseded by "Packet 4D — Status" at the end of this document; kept as the position after 4C.)*
+
 ```text
 architectural discovery        DONE   (46ae2ec)
 builtin/catalogue quarantine   DONE   (fe80129)
 runtime/lowering boundary      DONE   (33cb0a7)
 tensor type-system boundary    DONE   (62ef6b0 rules, 9147073 authority)
-  └─ model DECLARATION slice   RECOMMEND LEAVING IN CORE — evidence in group 2C
+  └─ model DECLARATION slice   recommendation later OVERTURNED — see packet 4D
 parser residual audit          DONE   (4C)
-qualification                  OPEN   — the last AS6 packet
+qualification                  OPEN
 ```
 
 
@@ -773,3 +790,93 @@ clean result. The test found `ast.rs` immediately.
 That is the fourth time in this sprint a proxy that resembled the question has produced a
 confident wrong answer — after `self.method(`, `ends_with("Drop")` and `ty_has_user_drop`. The
 compensating discipline is the same each time: make the check executable and let it run.
+
+## Status
+
+**This is the authoritative status block. The three above it are dated positions, each bannered.**
+
+```text
+architectural discovery        DONE   46ae2ec
+builtin/catalogue quarantine   DONE   fe80129
+runtime/lowering boundary      DONE   33cb0a7
+tensor type-system boundary    DONE   62ef6b0 rules, 9147073 authority
+  └─ model DECLARATION slice   DONE   4D-A — split, per owner ruling; 2C's
+                                      leave-in-Core recommendation was rejected
+parser residual audit          DONE   5190d1b (CI green, 28/28 jobs)
+exit-criterion cleanup         DONE   6050efa
+  ├─ resolver vocabulary       4D-B
+  ├─ checker vocabularies      4D-C
+  ├─ criterion-2 census        4D-D — four authorities beyond the ruling's list
+  └─ forcing lint              4D-E — the work-package deliverable no packet had built
+qualification                  OPEN   — on the 4D head, per owner instruction
+```
+
+Measured at 4D:
+
+```text
+extensions/tensor/check.rs    1862 lines      the semantic authority
+extensions/tensor/syntax.rs    419 lines      the surface vocabulary
+typecheck.rs                 14432 lines      from 15,937 at the start of packet 4
+resolve.rs occurrences         101 -> 85
+```
+
+## The finding worth carrying into AS7
+
+**Criterion 2 was the only one of the five that decays silently, and it is why residue survived
+three packets after its surfaces were declared done.**
+
+Criteria 1 and 3 are behavioural: the two-directional suite catches a regression in either, in both
+directions, on every run. Criterion 2 has no behavioural signature at all. A spelling table does not
+come back in one commit — it comes back one arm at a time, because somebody adds `"Float8"` to a
+match in `parse_type` where the surrounding code already is, and every test still passes.
+
+That is exactly what had happened: `resolve.rs` kept a 15-name table through three packets that each
+reported their surface clean, and the census then found the type-constructor spellings in **three**
+places and the element-type spellings in **four**. No test could have told anyone.
+
+Two consequences for AS7, which will make many more ownership cuts than AS6 did:
+
+1. **A structural criterion needs a structural check, committed at the same time as the cut** —
+   not a procedure, and not a reviewer's grep. 4D-E is that check for AS6.
+2. **Prefer criteria with behavioural signatures where the choice exists.** AS7's exit criterion 1
+   ("no semantic behaviour or diagnostic structure changes") has one; its criterion 2 ("dependency
+   direction is documented and cycle-free") does not, and should get its executable check written
+   before the modularisation starts rather than after.
+
+## AS6 closeout checklist — propagation order
+
+Nothing below runs until **exact-head qualification PASSes**. No document may say `AS6 CLOSED`
+before the evidence demonstrates it.
+
+```text
+evidence  ->  canonical state  ->  derived contributor documentation
+```
+
+not the reverse.
+
+```text
+After exact-head AS6 qualification PASS:
+
+1. COMPILER-STATE.md                    canonical closure FIRST
+2. WP-ARCHITECTURE-STABILIZATION.md     packet status, Sprint 4 progress
+3. CLAUDE.md
+4. AGENTS.md
+5. compiler-map / architecture docs     if AS6 changed their claims
+6. tensor-extension position/status docs
+```
+
+Items 3–6 are downstream summaries. They may lag; they must never lead. The reason for the
+ordering is the failure this repo has already paid for: a downstream document describing behaviour
+the canonical source has not scoped leaves implementers to pick between two answers, and whoever
+ships first picks arbitrarily.
+
+**Governance preconditions — both resolved 2026-08-08, before qualification, deliberately.**
+
+```text
+Campaign B approval    RESERVED -> APPROVED    WP-ARCHITECTURE-STABILIZATION.md §1
+Branch identity        sprint-3 -> sprint-4    from 6050efa, history retained
+```
+
+They were resolved first so that qualification answers **one** question — does AS6 satisfy its
+technical exit contract? — rather than simultaneously repairing who authorised the work and which
+sprint is executing it.

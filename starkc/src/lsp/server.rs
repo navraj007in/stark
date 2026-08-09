@@ -1496,6 +1496,95 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **AS8 — one `ProjectAnalysis` per open URI, invalidated per URI, merged across URIs.**
+    ///
+    /// `ServerState::compilation_cache` is keyed by URI and each value owns a WHOLE-PACKAGE
+    /// analysis. `update_document` removes only the edited URI's entry, and
+    /// `handle_workspace_symbol` merges symbols from EVERY cached analysis. Those three facts
+    /// together mean an edit to one file leaves every other open file's cached analysis holding
+    /// the OLD symbols for it, and the workspace-symbol response is assembled from both.
+    ///
+    /// This is why the AS8 profile measured the duplication: the cost is the visible half, and
+    /// this is the half that changes an answer.
+    #[test]
+    fn as8_editing_one_file_leaves_other_uris_cached_analyses_stale() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "as8_lsp_stale_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = package_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            package_dir.join("starkpkg.json"),
+            r#"{"name":"app","version":"0.1.0","entry":"src/main.stark"}"#,
+        )
+        .unwrap();
+        std::fs::write(src_dir.join("main.stark"), "mod child;\nfn main() { }\n").unwrap();
+        let child_path = src_dir.join("child.stark");
+        std::fs::write(&child_path, "pub fn alpha_symbol() -> Int32 { 1 }\n").unwrap();
+
+        let main_uri = path_to_file_uri(&src_dir.join("main.stark"));
+        let child_uri = path_to_file_uri(&child_path);
+
+        let mut server = Server::new();
+        // Two files of ONE package open. Each gets its own whole-package analysis.
+        server.state.open_document(
+            main_uri.clone(),
+            1,
+            "mod child;\nfn main() { }\n".to_string(),
+        );
+        server.compile_document(&main_uri);
+        server.state.open_document(
+            child_uri.clone(),
+            1,
+            "pub fn alpha_symbol() -> Int32 { 1 }\n".to_string(),
+        );
+        server.compile_document(&child_uri);
+        assert_eq!(
+            server.state.compilation_cache.len(),
+            2,
+            "two open URIs of one package must produce two independent analyses for this to matter"
+        );
+
+        // Rename the symbol, and recompile ONLY the edited URI — which is exactly what
+        // `didChange` does.
+        server.state.update_document(
+            child_uri.clone(),
+            2,
+            "pub fn renamed_symbol() -> Int32 { 1 }\n".to_string(),
+        );
+        server.compile_document(&child_uri);
+
+        // What `handle_workspace_symbol` does: merge symbols across every cached analysis.
+        let merged: Vec<String> = server
+            .state
+            .compilation_cache
+            .values()
+            .flat_map(|cached| cached.analysis.workspace_symbols("symbol"))
+            .map(|symbol| symbol.name.clone())
+            .collect();
+
+        assert!(
+            merged.iter().any(|name| name == "renamed_symbol"),
+            "the edited URI's analysis must see the new name; got {merged:?}"
+        );
+        // THE FINDING. `main.stark`'s cached analysis was never invalidated, so it still carries
+        // the pre-edit symbol, and the merged workspace answer contains a name that no longer
+        // exists in the package.
+        assert!(
+            merged.iter().any(|name| name == "alpha_symbol"),
+            "AS8 expects the STALE name to still be present via main.stark's un-invalidated \
+             analysis. If this assertion fails the defect is fixed and this test should become \
+             its regression test with the polarity flipped; got {merged:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&package_dir);
+    }
     use super::*;
 
     #[test]

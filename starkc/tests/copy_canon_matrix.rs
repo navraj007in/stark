@@ -34,7 +34,7 @@
 //!
 //! # Producers
 //!
-//! Enumerated from `typecheck.rs`'s core-method signature arms rather than guessed — every method
+//! Enumerated from `typecheck/traits.rs`'s `core_method_signature` arms rather than guessed — every method
 //! whose DECLARED RETURN mentions `Ty::Ref`. `append` and `write` mention `Ty::Ref` only in their
 //! parameters and are excluded. Ordinary-language producers (slice expressions, aliases, function
 //! returns) are included as controls: the law covers all producers of a normalized reference type,

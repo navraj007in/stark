@@ -710,10 +710,10 @@ fn test_cross_package_diagnostic_reports_dependency_file_not_root_file() {
 }
 
 /// WP-C1.2 (checklist item 10): coherence checking (SEM-007, orphan rule / overlapping impls)
-/// is implemented in typecheck.rs via `find_package_root`, a pure filesystem walk-up from each
+/// is implemented in `typecheck/` via `find_package_root`, a pure filesystem walk-up from each
 /// item's own file path -- entirely independent of the `PackageGraph` object built here. No
 /// prior test exercised this with a REAL two-package workspace (both `resolve.rs`'s unit tests
-/// and typecheck.rs's own coherence tests use a bare in-memory "test.stark" with no
+/// and the checker's own coherence tests use a bare in-memory "test.stark" with no
 /// `starkpkg.json` on disk anywhere, which the WP-C1.2 research confirmed makes
 /// `find_package_root` return `None` for every existing test). This test builds a real
 /// workspace to observe actual behavior, whatever it is, rather than assume it.

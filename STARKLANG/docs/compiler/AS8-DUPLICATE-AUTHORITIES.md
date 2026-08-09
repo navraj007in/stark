@@ -1,0 +1,146 @@
+# AS8-DA — duplicated authorities
+
+**Owner ruling, 2026-08-09.** These findings are **orthogonal to the shared-fate register and do
+not enter EI0's category vocabulary, which stays frozen.**
+
+> EI0's categories answer **what kind of semantic authority** something is — predicate, type table,
+> normalisation, lowering, ABI mapping. Duplication answers a different question: **how many
+> implementations of that semantic fact exist, and what relationship do they have.** A
+> `DUPLICATED_AUTHORITY` category would mix two dimensions and break the taxonomy.
+
+Shared fate and uncontrolled duplication are **opposite failure modes**:
+
+```text
+SHARED FATE          one implementation, many consumers   agreement proves nothing
+DUPLICATION          many implementations, one rule       copies drift, and the second
+                                                          copy is nobody's control
+```
+
+## The correction that shapes this file
+
+The first instinct on finding the scanner's five duplicates was to consolidate them. **That is wrong by default,
+and the owner ruling says why: a verifier can derive its value precisely from implementing the same
+rule independently.** Replacing both copies with one shared helper removes drift and *creates
+shared fate* — the verifier would then be unable to detect a wrong shared predicate. It converts a
+detectable problem into an undetectable one, which is the exact trade CD-065 records for
+`mir_ty_is_copy` and the reason the register exists.
+
+So duplication is not a defect to be removed on sight. It is a **relationship to be classified**,
+and the classifier is paired one-sided mutation:
+
+```text
+mutate implementation A only  ->  killed?   YES   independent redundancy is doing real work: KEEP
+                                            NO    A is unguarded
+mutate implementation B only  ->  killed?   YES   useful cross-check
+                                            NO    B can drift silently
+
+BOTH SURVIVE  ->  architectural residual: one authority, or an explicit cross-check
+BOTH KILLED   ->  the strongest outcome. Two independently implemented tables that check
+                  each other are a BETTER design than one shared helper
+```
+
+## Register
+
+| ID | Semantic rule | Implementation A | Implementation B | Intended relationship | One-sided mutation A | One-sided mutation B | External / control evidence | Disposition |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `AS8-DA-001` | Which primitives are integers (`ESF-TYPE-001` family; 03 numeric semantics) | `typecheck::types::is_integer` — 14 call sites | `typecheck::types::is_integer_primitive` — 1 call site | **None intended.** Both `pub(super)`, same module, byte-identical, same bottom layer of the AS7 DAG. No independence value is available at one layer of one module | `AS8-MUT-018` **KILLED** (9) | `AS8-MUT-024` **KILLED** (4) | `entire_frozen_corpus_agrees`, both sides | **CONSOLIDATE to one authority** — owner ruling 2026-08-09. Both copies are guarded (MUT-018/024) and neither has drifted, so there is no defect and no DEV; there is also no useful independence at one layer of one module. **After Sprint 4, not before Tier-3.** |
+| `AS8-DA-002` | Which `RuntimeFn`s are Vec operations | `mir::interp::is_vec_runtime` | `mir::verify::is_vec_runtime_fn` | **Plausibly deliberate.** `verify.rs` exists to CHECK the lowering `interp.rs` executes; an independent table is what lets it disagree | `AS8-MUT-026` **KILLED** (1) | `AS8-MUT-027` **KILLED** (1) | `mir_differential` (copy A); an `unreachable!()` in `vec_runtime_sig` (copy B) | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
+| `AS8-DA-003` | Which `RuntimeFn`s are Box operations | `mir::interp::is_box_runtime` | `mir::verify::is_box_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-028` **KILLED** (4) | `AS8-MUT-029` **KILLED** (4) | as above | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
+| `AS8-DA-004` | Which `RuntimeFn`s are Slice operations | `mir::interp::is_slice_runtime` | `mir::verify::is_slice_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-030` **KILLED** (1) | `AS8-MUT-031` **KILLED** (1) | as above | **REMAIN SEPARATE** — owner ruling 2026-08-09. The interpreter and the verifier keep independently implemented classifications rather than acquire shared fate. **After Sprint 4, add an exhaustive parity/drift test over the closed `RuntimeFn` set** so one copy cannot silently diverge from the other. |
+| `AS8-DA-006` | Does this type need drop glue (`ESF-DROP-002`; A11 §5, 05) | `mir::drop_rule::requires_drop_glue_with`, reached from `lower::ty_requires_drop_glue` — **precise** | `mir::verify::may_need_drop` — **deliberately conservative** | **Deliberate, asymmetric, and documented.** The verifier over-approximates on purpose so it can reject a missing drop without reimplementing the precise rule. AS4 added `may_need_drop_for_inventory`, a test-only window, expressly to measure the conservative rule against the precise one | — | `AS8-MUT-037` | AS4 drop-rule matrix; `a11_host_resource`, `c788_resource_lifecycle` | **KEEP. The positive exemplar.** Two implementations, an explicit intended relationship, and a measurement harness for the gap between them |
+| `AS8-DA-005` | `ScalarTy` → STARK primitive spelling | `provider_synth::scalar_src` | `provider_derive::scalar_name` | **Unclear.** Two stages of provider generation naming the same mapping; neither is a check on the other | `AS8-MUT-032` **KILLED** (2) | `AS8-MUT-033` **SURVIVED** (0) | `c788_io_*` package build (copy A only) | **CONSOLIDATE to one authority** — owner ruling 2026-08-09. Neither copy provides useful independence, and `scalar_name` is exercised by nothing (AS8-R12). **After Sprint 4.** |
+
+## `AS8-DA-006` is the proof that this is a lower bound
+
+`AS8-DA-006` was **not found by the scanner.** The two implementations have different names and
+different bodies — one precise, one conservative — so a textual matcher cannot see them. It was
+found by reading `may_need_drop`, whose own source comment says so outright:
+
+> *"the SIXTH `MirTy` catch-all to swallow this variant — and the second copy of 'does this need
+> dropping', after `lower::ty_requires_drop_glue`. **Two implementations of one rule, each corrected
+> separately**: lowering stopped emitting the `Drop`, and when that was fixed the verifier rejected
+> the `Drop` it now emitted."*
+
+That is a recorded instance of the two copies **actually disagreeing**, in production, historically.
+It is also the case that most argues for the owner ruling against reflexive consolidation: the pair
+is deliberate, the asymmetry is the point, and AS4 built a measurement window for the gap. The right
+disposition is KEEP, and it would have been invisible to a policy of "consolidate what the scanner
+finds".
+
+## What the paired trials actually showed (2026-08-09)
+
+**All three interpreter/verifier pairs were killed on BOTH sides — and that does not mean what the
+decision tree's "both killed" branch assumes.** The kill *messages* say who did the killing, and it
+is neither copy:
+
+```text
+copy A, interpreter   mir_differential
+                      "oracle succeeded (stdout ...) but MIR failed:
+                       Internal(\"runtime VecClear (string group) unhandled\")"
+copy B, verifier      an unreachable!() on a DIFFERENT path
+                      "internal error: entered unreachable code:
+                       Vec ops resolve through vec_runtime_sig, not runtime_sig"
+```
+
+So copy A is guarded by the **three-engine differential**, and copy B by an **assertion elsewhere in
+the compiler**. **Neither copy is acting as a control on the other.** The verifier's table is not
+what catches a wrong interpreter table, and vice versa.
+
+That matters for the disposition, and it cuts against my own first reading of the results as much as
+against the instinct to consolidate:
+
+> The owner ruling's concern was that consolidating would **destroy** an independent check.
+> Measurement says that check **is not currently there** — both copies are covered, by third
+> parties. Consolidating `AS8-DA-002/003/004` would therefore lose no control that exists today.
+> It would also gain little beyond removing drift risk, and it would create genuine shared fate
+> where there is presently none.
+
+**OWNER RULING, 2026-08-09 — the redundancy is kept, and the missing control is built.**
+
+```text
+DA-001, DA-005      CONSOLIDATE. Neither provides useful independence.
+DA-002/003/004      REMAIN SEPARATE. Interpreter and verifier keep independently implemented
+                    classifications rather than acquire shared fate. After Sprint 4, add an
+                    EXHAUSTIVE PARITY/DRIFT TEST over the closed `RuntimeFn` set, so one copy
+                    cannot silently diverge from the other.
+DA-006              UNCHANGED, exactly as designed: precise lowering rule vs conservative
+                    verifier rule.
+NONE of these belong before Tier-3.
+```
+
+The ruling answers the question the measurement posed. The trials showed the cross-check does not
+exist today; the disposition is to **build it** rather than to delete the redundancy that would make
+it possible. A parity test over a closed enum is a cheap, total control — it does not merge the two
+tables, so neither engine inherits the other's answer, and it cannot go quietly stale the way a
+shared helper would make impossible to notice at all.
+
+`AS8-DA-005` is the unambiguous one. `scalar_src` is exercised by the `stark-io` package build;
+`scalar_name` is exercised by nothing — mutating `ScalarTy::U8` to spell `UInt16` survived every
+selected suite. **One copy of a two-copy rule can drift silently. AS8-R12.**
+
+## This is a lower bound, not an inventory
+
+`starkc/scripts/as8-duplicate-authorities.py` matches **byte-identical bodies after whitespace
+normalisation**, over 2,532 `fn` definitions. A rule reimplemented with different names, a
+different match order, or an equivalent-but-not-identical expression is **invisible to it**. A
+clean report is not evidence of no duplication, and this table is not an inventory of the
+compiler's duplicated rules — it is the subset a textual matcher can see.
+
+The scanner was also **wrong on its first run**, in a way worth recording because it is the same
+class of error the whole packet has been about: it reported sixteen "identical" bodies inside
+`extensions/tensor/check.rs` and four in `mir/drop_rule.rs`. Both were artefacts — a trait method
+DECLARATION has no body, so a naive brace matcher runs on to the next `{` in the file. Fixed by
+stopping signature scanning at a `;` at paren depth zero. **A measurement is not evidence until it
+has been checked against something it should not find.**
+
+## Disposition rules (owner ruling, 2026-08-09)
+
+Duplicated implementations **do not earn DEV numbers merely for existing.** They are
+architecture-assurance candidates.
+
+```text
+one-sided trial shows a copy has ALREADY DRIFTED   ->  DEV immediately
+copies identical and correct but unguarded         ->  architecture debt / follow-up
+copies identical, one-sided mutation reliably      ->  KEEP BOTH; record the redundancy as
+    killed                                             a control, not as debt
+```

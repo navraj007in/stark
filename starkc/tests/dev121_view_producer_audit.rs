@@ -247,9 +247,14 @@ fn a_slice_view_survives_repeated_use() {
 fn every_view_returning_intrinsic_is_classified() {
     // Source-scanning: normalise line endings at the read, or this passes on Unix and fails in the
     // Windows lane where the checkout has CRLF.
-    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/typecheck.rs"))
-        .expect("typecheck.rs must be readable")
-        .replace("\r\n", "\n");
+    // AS7: `core_method_signature` moved from `typecheck.rs` to `typecheck/traits.rs` when the
+    // pass was split by semantic ownership. This audit follows the FUNCTION, not the file.
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/typecheck/traits.rs"
+    ))
+    .expect("typecheck/traits.rs must be readable")
+    .replace("\r\n", "\n");
 
     let start = source
         .find("fn core_method_signature")

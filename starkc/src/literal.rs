@@ -1,9 +1,9 @@
 //! Shared literal-value parsing.
 //!
-//! `typecheck.rs` (pattern-literal comparison in `pat_subsumes`, and integer-literal magnitude
+//! `typecheck/patterns.rs` (pattern-literal comparison in `pat_subsumes`) and `typecheck/` (integer-literal magnitude
 //! checking) and `interp.rs` (`eval_lit`) both need to turn a `Lit` + its source text into an
 //! actual value. Before this module existed, `interp.rs` had its own private copy of this logic
-//! and `typecheck.rs` had none at all -- `pat_subsumes` compared `Lit` shape only (base/suffix
+//! and the checker had none at all -- `pat_subsumes` compared `Lit` shape only (base/suffix
 //! tags, no value), so `match x { 1 => .., 2 => .. }` treated any two same-kind integer literal
 //! patterns as equal regardless of value. One shared implementation avoids that kind of drift.
 

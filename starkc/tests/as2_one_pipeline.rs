@@ -26,7 +26,7 @@ const PHASE_CALLS: &[&str] = &[
 /// `resolve` convenience wrapper. `onnx/verifier.rs` is a deliberate PARTIAL assembly — it resolves
 /// a tensor declaration without typechecking it, so it is not a competing full pipeline (AS0 §3).
 ///
-/// `typecheck.rs` is deliberately absent: it *defines* the phase and never calls one outside its own
+/// `typecheck/` is deliberately absent: it *defines* the phase and never calls one outside its own
 /// tests.
 const ALLOWED: &[&str] = &["src/analysis.rs", "src/resolve.rs", "src/onnx/verifier.rs"];
 
@@ -39,7 +39,7 @@ const TEST_ONLY: &[&str] = &[
     "src/backend/generated_rust/build.rs",
     "src/interp.rs",
     "src/resolve.rs",
-    "src/typecheck.rs",
+    "src/typecheck/mod.rs",
 ];
 
 fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {

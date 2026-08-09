@@ -1,7 +1,16 @@
 # WP-ENGINE-INDEPENDENCE
 
 **Document type:** Bounded compiler assurance work package.
-**Status:** PROPOSED — AS0 subpacket; owner approval required before execution.
+**Status:** **EXECUTED — EI0-EI6 complete, 2026-08-09.** Approved by owner ruling CD-392. Specified as an AS0
+subpacket; **AS0 remains closed** and is not reopened. Execution is transferred administratively to
+the **AS8 assurance phase**, which is the packet's primary consumer. Approved **without redesign**:
+the EI0–EI6 taxonomy and the five output artefacts below remain canonical, and AS8 may not select
+source-mutation targets until EI5 publishes the ranked list.
+
+**Execution order is the packet's own and is not a minimal subset.** EI0 freezes the vocabulary
+before the register is built, and EI5's ranking includes `RUSTC_ASSUMPTION` and rustc-sensitive
+lowering, which EI3 supplies — so running only EI1/EI2/EI4/EI5 would leave EI3 dangling and
+reproduce the same dependency debt at C10. EI6 completes during AS8/C10 closure.
 **Filed:** 2026-08-02. **Reconciled:** 2026-08-06.
 **Parent programme:** `WP-ARCHITECTURE-STABILIZATION.md` AS0.
 **Primary consumers:** AS0's architecture report, AS5 protocol/version work, AS8 mutation and
@@ -182,12 +191,16 @@ The packet must identify semantic assumptions delegated to Rust/rustc and record
 Create:
 
 ```text
-STARKLANG/docs/compiler/work-packages/WP-ENGINE-INDEPENDENCE.md
-STARKLANG/docs/compiler/ENGINE-SHARED-FATE-REGISTER.md
-STARKLANG/docs/compiler/ENGINE-RISK-PROFILES.md
-STARKLANG/docs/compiler/RUSTC-ASSUMPTION-INVENTORY.md
-STARKLANG/docs/compiler/ENGINE-EVIDENCE-INDEPENDENCE.md
-STARKLANG/docs/compiler/engine-shared-fate.json
+STARKLANG/docs/compiler/work-packages/WP-ENGINE-INDEPENDENCE.md   this packet
+STARKLANG/docs/compiler/ENGINE-SHARED-FATE-REGISTER.md            EI0+EI1  DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-EVIDENCE-INDEPENDENCE.md           EI2      DONE 2026-08-09
+STARKLANG/docs/compiler/RUSTC-ASSUMPTION-INVENTORY.md             EI3      DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-RISK-PROFILES.md                   EI4      DONE 2026-08-09
+STARKLANG/docs/compiler/engine-shared-fate.json                   EI1      DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-MUTATION-TARGETS.md                EI5      DONE 2026-08-09
+STARKLANG/docs/compiler/ENGINE-PUBLIC-CLAIM-CALIBRATION.md        EI6      DONE 2026-08-09
+                                                                           (wording approved;
+                                                                           website/C10 consume it)
 ```
 
 This file is the work packet. The remaining files are execution outputs.
