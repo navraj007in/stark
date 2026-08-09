@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-F (policy)  Blocked: none  [C10-Q gated on toolchain-branch integration]
+Gate: C10  Next: DEV-012 editor session; then toolchain integration  Blocked: C10-Q (needs the consolidated candidate)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, P, A1, A2, B, C, D, **E COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-F, then integration before C10-Q |
+| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Remaining before C10-Q: DEV-012 editor session, toolchain-branch integration, §8.2a re-run |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -327,6 +327,38 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
+
+### C10-F, same day — eight commitments, eight non-commitments, and two MSRVs
+
+`C10-F-COMPATIBILITY-POLICY.md`. Candidate `33a8608`; every claim read from that commit per §14.1b.
+Each of the fourteen axes is COMMITTED with evidence, UNCOMMITTED with what would be needed, or
+NOT APPLICABLE with the reason — no fourth option, no partial credit, and a promise with no evidence
+citation is **deleted rather than softened**.
+
+**The three version axes are COMMITTED as REJECTION promises, not stability promises**, which is the
+useful shape for a 0.1.0 compiler: MIR runtime surface (`MIR-0017`, tested by
+`rejects_unsupported_runtime_surface` stamping `0.1-A999`), runtime ABI (generated prologue,
+`c63_closure_evidence`), and the Native Provider ABI — the strongest, requiring **exact version AND
+content hash**, whose own source says *"'close enough' is how a build stops being repeatable"*.
+
+**Core language compatibility is UNCOMMITTED, and that is C10-A2's number arriving where it
+matters:** 56 of 168 rules carry function-precision evidence. A Core compatibility promise would be
+a promise about all 168.
+
+**Two different MSRV claims, and only one is enforced.** `MINIMUM_RUSTC_VERSION = "1.85.0"` makes
+`stark build` refuse a *user's* older rustc — a real check with a diagnostic. `rust-version = "1.85"`
+in `Cargo.toml` claims **starkc itself** still builds on 1.85, and **nothing verifies it**: CI uses
+`dtolnay/rust-toolchain@stable`, which resolved to 1.93.0 today, so the compiler could have adopted
+a 1.90 feature unnoticed. The enforced check is committed; the Cargo field is UNCOMMITTED until one
+CI job builds on 1.85.
+
+**C10-0's F1 lands here as policy.** `x86_64-apple-darwin` is tier-3: packaged with an archive and
+both installers, exercised by **no CI job**. UNCOMMITTED, and the release notes must say what tier-3
+means rather than let a reader infer support from a packaged artifact.
+
+**Diagnostics: determinism is not stability.** C10-B verified byte-identical diagnostics for the same
+source; DEV-182 (a value silently wrong while both sides reported success) and C10-R1 (keyword
+identity unpinned) are why codes, spans and text must be promised separately or not at all.
 
 ### C10-E, same day — the phase split, and DEV-213's residual measured rather than argued
 
