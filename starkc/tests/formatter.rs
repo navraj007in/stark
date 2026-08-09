@@ -243,3 +243,97 @@ fn idempotent_across_full_corpus_pass_matches_single_file_checks() {
         assert_eq!(once, twice, "not idempotent for: {src}");
     }
 }
+
+/// DEV-156 — a doc comment on a struct FIELD stays on that field.
+///
+/// The formatter measured a flat rendering of the field list into a scratch buffer, so its item
+/// printer was forbidden from consuming comments; field docs therefore survived only as unconsumed
+/// trivia and were flushed AFTER the struct. A documented struct came back as a one-line struct
+/// followed by its own orphaned field docs — the formatter silently detaching documentation from
+/// what it documents.
+#[test]
+fn dev156_field_doc_comments_stay_on_their_fields() {
+    let src = "\
+/// A point.
+struct Point {
+    /// The x coordinate.
+    x: Int32,
+    /// The y coordinate.
+    y: Int32,
+}
+";
+    let formatted = fmt(src);
+    assert_eq!(
+        formatted, src,
+        "a struct whose fields are documented is already canonical"
+    );
+}
+
+/// DEV-156 — the ordering is the assertion, not merely the presence of the text.
+///
+/// The defect PRESERVED every comment; it moved them. A test that only checked the comments still
+/// existed somewhere in the output would have passed against the broken formatter, so this pins
+/// that each doc precedes its own field and both are inside the braces.
+#[test]
+fn dev156_field_docs_precede_their_own_field() {
+    let formatted =
+        fmt("struct S {\n    /// first\n    a: Int32,\n    /// second\n    b: Int32,\n}\n");
+    let first = formatted.find("/// first").expect("first doc survives");
+    let a = formatted.find("a: Int32").expect("field a survives");
+    let second = formatted.find("/// second").expect("second doc survives");
+    let b = formatted.find("b: Int32").expect("field b survives");
+    let close = formatted.rfind('}').expect("the struct closes");
+    assert!(
+        first < a && a < second && second < b,
+        "each doc must precede its own field, got:\n{formatted}"
+    );
+    assert!(
+        b < close,
+        "the fields and their docs must be INSIDE the braces, got:\n{formatted}"
+    );
+}
+
+/// DEV-156 — an undocumented struct keeps the flat form.
+///
+/// The repair skips flat measurement only when a comment is present. Without this case, forcing
+/// every struct broken would also satisfy the assertions above.
+#[test]
+fn dev156_an_undocumented_struct_is_still_flat() {
+    assert_eq!(
+        fmt("struct Small { x: Int32, y: Int32 }\n"),
+        "struct Small { x: Int32, y: Int32 }\n"
+    );
+    assert_eq!(fmt("struct Empty {}\n"), "struct Empty {}\n");
+}
+
+/// DEV-156 — a comment after the last field belongs inside the braces, and formatting is stable.
+#[test]
+fn dev156_trailing_interior_comment_and_idempotence() {
+    let src = "\
+struct S {
+    /// documented
+    pub id: Int64,
+
+    /// also documented
+    label: String,
+    // a note before the brace
+}
+";
+    let once = fmt(src);
+    assert!(
+        once.contains("// a note before the brace"),
+        "the trailing interior comment survives, got:\n{once}"
+    );
+    let note = once.find("// a note").expect("note survives");
+    let close = once.rfind('}').expect("the struct closes");
+    assert!(note < close, "it stays inside the braces, got:\n{once}");
+    // The blank line is preserved because the field that follows it is DOCUMENTED: the rule runs
+    // per emitted comment. A blank line before an UNDOCUMENTED field is still dropped, which is
+    // `delimited_list`'s long-standing behaviour and not something DEV-156 changed in either
+    // direction. Asserted as it actually is, rather than as it ideally would be.
+    assert!(
+        once.contains("\n\n    /// also documented"),
+        "the blank line before a documented field is preserved, got:\n{once}"
+    );
+    assert_eq!(fmt(&once), once, "formatting is idempotent");
+}

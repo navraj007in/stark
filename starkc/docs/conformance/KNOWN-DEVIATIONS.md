@@ -7354,3 +7354,83 @@ receiver-specific validator exception, and no synthetic reference to method-loca
 The five named receiver tests move, plus whatever the three-engine suite finds — and it will find
 something, because this changes the oracle. A packet that reports *no* engine movement has probably
 not changed the semantics it set out to change.
+
+## DEV-186 — the LSP transport now bounds its allocation (CLOSED, 2026-08-09)
+
+`Content-Length` is a claim made by the peer, and it was honoured by allocating that many bytes
+before reading any of them and before the JSON parser ran.
+
+Two changes, and both were needed. `MAX_CONTENT_LENGTH` (64 MiB) rejects an absurd claim outright.
+`take` + `read_to_end` then grows the buffer as bytes ACTUALLY ARRIVE, so a peer that advertises the
+maximum and sends ten bytes causes ten bytes of growth. **A cap alone would still allocate the cap**
+— that is the half a naive fix misses, and it has its own test.
+
+Evidence: `lsp::server::tests::dev186_*` — an absurd length, the boundary derived from the constant
+rather than hard-coded, an under-cap lie, and a control proving an ordinary `initialize` is still
+served. Without the control every other assertion is satisfiable by a server that refuses
+everything.
+
+Unchanged: this is the TRANSPORT's authority. `json::MAX_DEPTH` bounds recursion inside the parser
+and could not have helped, because the parser never runs.
+
+## DEV-156 — `stark fmt` keeps field doc comments on their fields (CLOSED, 2026-08-09)
+
+The formatter measured a flat rendering of the field list into a scratch buffer, so its item printer
+was forbidden from consuming comments — a consumed comment would be discarded with the measurement.
+`field_def` therefore never emitted them, and field docs survived only as unconsumed trivia, flushed
+AFTER the struct. A documented struct came back as a one-line struct followed by its own orphaned
+docs. Worse than the original one-line entry recorded: the reproduction pass found the comments
+detached from what they document, not merely relocated.
+
+`struct_field_list` skips the flat measurement when a comment lies inside the braces, which is both
+why the broken form is chosen and why consuming comments there is safe. With no interior comment it
+defers to `delimited_list` and the flat form is byte-identical.
+
+Evidence: `tests/formatter.rs::dev156_*` — four cases. The ordering one matters most: the defect
+PRESERVED every comment and merely moved it, so a test asserting the text still appears somewhere
+would have passed against the broken formatter. `dev156_an_undocumented_struct_is_still_flat` is the
+negative control; without it, forcing every struct broken would satisfy the rest. The full formatter
+corpus sweep is unchanged.
+
+**Recorded limitation, pre-existing and unchanged:** a blank line before an UNDOCUMENTED field is
+still dropped. `delimited_list` never preserved blank lines between fields; DEV-156 did not move
+that in either direction, and the test asserts the behaviour as it is rather than as it ideally
+would be.
+
+## DEV-172 — every signed minimum is now writable (CLOSED for the signed widths, 2026-08-09)
+
+`let a: Int8 = -128;` and the minimum of every other signed width compile, run and build natively.
+A negative literal is a unary minus applied to a POSITIVE literal, so the magnitude reaching the
+range check was `128`, out of range for `Int8` — and the identical argument refused the minimum of
+every signed width.
+
+`-<int literal>` is now folded into ONE literal in **three** places, because three phases each
+performed the two-step evaluation independently:
+
+```text
+typecheck   the literal arm range-checks the negated value
+HIR interp  eval_expr folds the pair; eval_lit_signed carries the sign into the suffix check
+MIR lower   emits a single negative constant
+```
+
+Evidence: `three_engine_differential::dev172_signed_minimums_agree` — all three engines, including
+the suffixed `-128i8` form.
+
+**The MIR half was found by that test and by nothing else.** A native build with optimisation ON
+succeeded, because the MIR optimiser happened to const-fold the shape; the same program with
+`--no-mir-opt` emitted `((128i8) as i128).checked_neg()` and rustc rejected the crate. The engines
+disagreed on whether a program was BUILDABLE, and a hand-run `stark build` reported success. Had the
+fix stopped at the interpreter, the deviation would have been recorded closed on a passing manual
+check.
+
+`dev172_negating_the_minimum_still_traps` pins that the fold is NARROW: only a literal directly
+under a unary minus folds, so `-a` where `a` is `Int8::MIN` still traps `IntegerOverflow` in all
+three engines. A fold that reached further, or that quietly widened the type, completes instead and
+fails that test.
+
+**Residual, deliberately not taken:** an UNSUFFIXED literal above `Int64`'s range is still typed
+against the signed default, so `let u: UInt64 = 18446744073709551615;` is refused. Unlike the signed
+minimums, this has a working form — `18446744073709551615u64` produces the correct value — so it is
+an ergonomic gap, not an unwritable value. Fixing it means changing which literals may enter an
+inference variable, which is DEV-015's area and affects defaulting for every unsuffixed literal.
+Recorded rather than bundled into an unrelated repair.
