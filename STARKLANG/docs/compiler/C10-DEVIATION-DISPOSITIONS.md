@@ -91,8 +91,8 @@ Exactly **one** deviation is in the first class.
 | **DEV-011** | **ACCEPTED-INDEFINITELY** — doc comments as trivia. No normative requirement demands otherwise |
 | **DEV-179** | **DORMANT** — unreachable while iterator `map`/`filter` is refused by `E0105`. Not counted live |
 
-**Population A: 24 live-OPEN, every one now carrying an owner and a disposition. CD-021 is
-satisfied for A.**
+**Population A: 23 live-OPEN, every one now carrying an owner and a disposition. CD-021 is
+satisfied for A.** (24 when this register was written; `DEV-005` closed on reproduction — §2.5.)
 
 ---
 
@@ -133,7 +133,7 @@ would convert "we cannot see this" into "we are broken here" — the distinction
 # 5. What E9 establishes
 
 ```text
-SATISFIED   CD-021 for population A — 24 live-OPEN deviations, each with an owner and a
+SATISFIED   CD-021 for population A — 23 live-OPEN deviations, each with an owner and a
             disposition. No unowned deviation remains, so none blocks the release decision
 SATISFIED   B and C dispositioned, counted separately, and mapped to what each constrains
 

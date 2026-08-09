@@ -911,7 +911,7 @@ Everything else follows the brief.
 | **C10-A2** | C10.1 | The dashboard | A1 complete; denominators declared | `C10-CONFORMANCE-DASHBOARD.md` + generated JSON |
 | **C10-B** | C10.2 | Robustness and fuzzing | fuzz target population declared (§9.2) | `C10-B-ROBUSTNESS.md` + corpora + regression fixtures |
 | **C10-C** | C10.4 | Security review | threat model / surface inventory FROZEN (§11.1) | `C10-C-SECURITY-REVIEW.md` + `C10-THREAT-MODEL.md` |
-| **C10-D** | C10.3 | Differential, metamorphic, and selected mutations | A2 draft claims exist; relations declared (§10.2) | `C10-D-DIFFERENTIAL.md` + `C10-MUTATION-LEDGER.md` |
+| **C10-D** | C10.3 | Differential, metamorphic, and selected mutations | A2 draft claims exist; relations declared (§10.2) | `C10-MUTATION-LEDGER.md` — **one document, not two** (see §18) |
 | **C10-E** | C10.6 | Performance baselines | workload set frozen (§12.1) | `C10-E-PERFORMANCE-BASELINE.md` + per-platform JSON |
 | **C10-F** | C10.5 | Compatibility and version policy | A2, B, C, D, E complete enough to bound the promises | `C10-F-COMPATIBILITY-POLICY.md` |
 | **C10-Q** | C10.7 | Exact-head release qualification and decision | all of the above; sweep §16.2 clean | `GATE-C10-CLOSURE.md` + `C10-RELEASE-STATEMENT.md` |
@@ -2156,8 +2156,12 @@ STARKLANG/conformance/c10-dashboard.json                     (generated; the das
 STARKLANG/docs/compiler/audits/C10-B-ROBUSTNESS.md
 STARKLANG/docs/compiler/C10-THREAT-MODEL.md                  (frozen before C10-C reviews anything)
 STARKLANG/docs/compiler/audits/C10-C-SECURITY-REVIEW.md
-STARKLANG/docs/compiler/audits/C10-D-DIFFERENTIAL.md
-STARKLANG/docs/compiler/C10-MUTATION-LEDGER.md
+STARKLANG/docs/compiler/C10-MUTATION-LEDGER.md               C10-D, in ONE document
+    (this list originally also promised `audits/C10-D-DIFFERENTIAL.md`. C10-D produced a single
+     document because its differential and metamorphic findings are three paragraphs — the engine
+     vocabulary, and the fact that NO metamorphic relation could be added without normative
+     backing. Splitting three paragraphs into a second file to satisfy a list would be filing,
+     not evidence. Corrected here rather than by writing a stub to make the pointer resolve.)
 STARKLANG/docs/compiler/audits/C10-E-PERFORMANCE-BASELINE.md
 starkc/benchmarks/c10/<platform>.json                        (per-platform, from CI artifacts)
 STARKLANG/docs/compiler/C10-F-COMPATIBILITY-POLICY.md

@@ -338,7 +338,10 @@ Reproduce with `git rev-parse e7bb95d:<path>` versus `git rev-parse HEAD:<path>`
 ```text
 210   integration test targets      top-level `.rs` under starkc/tests/ (each is a binary)
   3   test module directories       tests/common, tests/fixtures (21 files), tests/support (4)
-117   spec fixture files            STARKLANG/tests/spec-fixtures/
+116   spec fixtures                 STARKLANG/tests/spec-fixtures/manifest.toml entries.
+                                    (The DIRECTORY holds 117 files — the 116 fixtures plus the
+                                    manifest itself. README.md states 116; this line said 117 and
+                                    was counting files, not fixtures.)
  89   C6.5 differential corpus      70 generated / 13 handwritten sentinels / 6 retained
  12   metamorphic families          M01-M12
   7   frozen performance workloads  w01-w07

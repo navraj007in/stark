@@ -277,12 +277,19 @@ SPLIT            capability vocabulary           — the one axis that is BOTH: 
 NOT APPLICABLE   tensor extension compatibility  — deferred track, not productised
 ```
 
-**Nine commitments, nine non-commitments, one not-applicable — across fourteen axes**, with
-capability vocabulary counted on both sides because it genuinely is both.
+**Fourteen axes — six COMMITTED, seven UNCOMMITTED, one NOT APPLICABLE**, with capability
+vocabulary split across both committed and uncommitted because it genuinely is both. The count is
+per **§1.x section heading**, which is mechanically checkable:
 
-*(Recount 2026-08-09: this read "eight, eight, two" until the capability-vocabulary axis moved from
-NOT APPLICABLE to evidenced. A summary sentence that outlives its list is the single most common
-review finding, and it survived here for exactly one packet.)*
+```bash
+grep -oE "^## 1\.[0-9]+[a-z]? [^—]*— \*\*[A-Z ]+" C10-F-COMPATIBILITY-POLICY.md | sed 's/.*\*\*//' | sort | uniq -c
+```
+
+*(Corrected twice on 2026-08-09. It first read "eight, eight, two", which went stale the moment the
+capability-vocabulary axis moved. The replacement — "nine, nine, one" — counted ITEMS in the summary
+block while claiming "across fourteen axes", two different granularities that do not reconcile. It
+now counts sections, and names the command that checks it. **A summary sentence outliving its list
+is the most common review finding there is, and this one produced two findings in one day.**)*
 
 That ratio is the honest state of a 0.1.0 compiler, and every non-commitment names what would be
 needed rather than deferring vaguely.
