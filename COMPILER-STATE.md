@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-A2 dashboard; then C10-D/E/F  Blocked: none (DEV-214 needs an owner call)
+Gate: C10  Next: C10-D (challenge), C10-E (perf), C10-F (policy)  Blocked: none
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, C10-P, C10-A1, C10-B, **C10-C COMPLETE**. Gate C10 OPENED 2026-08-09 (CD-395). Next: **C10-A2**, then D/E/F |
+| **Active packet** | C10-0, C10-P, C10-A1, C10-B, C10-C, **C10-A2 COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-D, C10-E, C10-F |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -327,6 +327,56 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
+
+### C10-A2, same day — the dashboard, and a tool that needed three corrections
+
+`C10-CONFORMANCE-DASHBOARD.md` + `conformance/c10-dashboard.json` (168 rows, generated).
+Resolver: `scripts/c10-a2-resolve.py`; generator: `scripts/c10-dashboard.py`.
+
+**A1's buckets were NOT transcribed** — that was the packet's binding rule, and A1-F3 is why. Every
+row is resolved against the TREE, keyed on the normative rule id rather than the symbol
+(`as8-control-census.py`'s method, generalised from 11 authorities to 168 rules).
+
+```text
+PRECISE-C211           36     RESOLVED-BY-TREE       20     CORPUS-OR-FILE-LEVEL   27
+IMPLEMENTATION-ONLY     1     UNRESOLVED             84
+```
+
+**Function-precision evidence rose 36 -> 56 of 168 with no test written.** The twenty were already
+in the tree and the inventory never recorded them.
+
+**The resolver needed three corrections, and every one was found by reading NAMES rather than
+counts** — the counts were plausible at every stage:
+
+```text
+1  implementation citations counted as evidence   `interp.rs::eval_expr` offered as evidence for
+                                                  TYPE-PRIM-001. An implementation cannot be its
+                                                  own control — AS8-R4 exactly
+2  `///` citations attributed BACKWARDS           a doc comment above a `#[test]` named the
+                                                  PRECEDING function; five attributions came back
+                                                  shifted by one, every name a real function in
+                                                  the right file
+3  corpus cases counted at function precision     a `.stark` case has `fn main`, and attributing a
+                                                  rule to "main" is precision theatre
+```
+
+Each correction LOWERED the numbers. **A dashboard citing the wrong test is worse than one citing
+none, because it looks checked.** Four rows still attribute to `main` because the rule id sits
+inside an embedded STARK string in a Rust test — the file is right, the function name is not, and
+that is documented rather than engineered away.
+
+**`EXT-ISOLATION-001` is the exemplar and is now fixed.** The inventory recorded `none; none`; C10-A1
+found nine tests running in CI; and the resolver could not find them either, because nothing in
+`c91_extension_isolation.rs` named the rule it pinned. One module-header note plus five per-test
+attributions moved it to RESOLVED-BY-TREE with its five real test functions named — no test
+written, no behaviour changed. That is the shape of the remaining work.
+
+**A finding beyond attribution.** The spec-fixture corpus is a POSITIVE-evidence corpus: 64
+`parse-pass`, 27 `notation`, 17 `semantic-error`, 7 `lex-pass`, and **exactly one `parse-fail`**.
+Charter §1.6 rule 15 requires positive and negative evidence to travel together. Measuring the two
+families separately: lexical negative evidence is dense (`lexer.rs`, 26 test fns / 32 error
+assertions), syntactic is thin (`parser.rs`, 47 test fns / 5 asserting a rejection). **No C10-Q
+claim of syntactic conformance may rest on the fixture corpus alone.**
 
 ### C10-C, same day — no class-B finding, and the probe that was nearly vacuous
 

@@ -1,0 +1,3918 @@
+{
+  "head": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+  "population": 168,
+  "rows": [
+    {
+      "rule": "LEX-SOURCE-001",
+      "home": "01 \u00a7Source Encoding",
+      "question": "Must source be valid UTF-8, and how is invalid input rejected?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-IDENT-001",
+      "home": "01 \u00a7Identifiers",
+      "question": "Which characters and case rules form identifiers?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-IDENT-002",
+      "home": "01 \u00a7Identifiers",
+      "question": "What identifier-length limit applies, and how is excess length rejected?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-KEYWORD-001",
+      "home": "01 \u00a7Keywords",
+      "question": "Which Core words always tokenize as keywords?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-INT-001",
+      "home": "01 \u00a7Integer Literals",
+      "question": "Which integer bases, digit forms, and maximal-munch boundaries tokenize?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-INT-002",
+      "home": "01 \u00a7Integer Literals",
+      "question": "Where may separators and integer suffixes occur?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-FLOAT-001",
+      "home": "01 \u00a7Floating-Point Literals",
+      "question": "Which decimal/exponent/suffix forms are floating literals?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-STRING-001",
+      "home": "01 \u00a7String Literals",
+      "question": "Which cooked and raw string forms terminate and what content is retained?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-ESCAPE-001",
+      "home": "01 \u00a7Escape Sequences",
+      "question": "Which escapes are legal and which Unicode scalar values may they produce?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-CHAR-001",
+      "home": "01 \u00a7Character Literals",
+      "question": "Must a character literal contain exactly one scalar value?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-BOOL-001",
+      "home": "01 \u00a7Boolean Literals",
+      "question": "Do `true` and `false` tokenize as Boolean literals?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-OP-001",
+      "home": "01 \u00a7Operators",
+      "question": "Which operator spellings form tokens?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-DELIM-001",
+      "home": "01 \u00a7Delimiters",
+      "question": "Which delimiters and punctuation form tokens?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-COMMENT-001",
+      "home": "01 \u00a7Comments",
+      "question": "How do line, nested block, and documentation comments tokenize and attach?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-SPACE-001",
+      "home": "01 \u00a7Whitespace",
+      "question": "Which code points are whitespace?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-TOKEN-001",
+      "home": "01 \u00a7Token Precedence",
+      "question": "What precedence resolves overlapping lexical tokens?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-RESERVED-001",
+      "home": "01 \u00a7Reserved Tokens",
+      "question": "Which future words are reserved and rejected as identifiers?",
+      "status_class": "complete/prohibited",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LEX-ERROR-001",
+      "home": "01 \u00a7Lexical Errors",
+      "question": "Which lexical failures are mandatory rejection conditions?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-PROGRAM-001",
+      "home": "02 \u00a7Program Structure",
+      "question": "Which item forms constitute a compilation unit?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-VIS-001",
+      "home": "02 \u00a7Visibility Modifiers",
+      "question": "Where may visibility modifiers appear syntactically?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-FN-001",
+      "home": "02 \u00a7Functions",
+      "question": "Which function signatures, receivers, generics, and return forms parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-DATA-001",
+      "home": "02 \u00a7Type and Trait Declarations",
+      "question": "Which struct, enum, trait, impl, and associated-item forms parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-ALIAS-001",
+      "home": "02 \u00a7Type Alias",
+      "question": "Which type-alias declarations parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-CONST-001",
+      "home": "02 \u00a7Constant Declarations",
+      "question": "Which constant declarations parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-BLOCK-001",
+      "home": "02 \u00a7Blocks and Statements",
+      "question": "How do statements and a trailing expression determine block syntax?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-LET-001",
+      "home": "02 \u00a7Let Statements",
+      "question": "Which initialized and deferred `let` forms parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-EXPR-001",
+      "home": "02 \u00a7Expressions",
+      "question": "What are expression precedence and associativity?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-PLACE-001",
+      "home": "02 \u00a7Place Expressions",
+      "question": "Which syntactic forms may appear as assignment targets?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-CONTROL-001",
+      "home": "02 \u00a7Control Flow",
+      "question": "Which `if`, `match`, loop, `break`, `continue`, and `return` forms parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-PATTERN-001",
+      "home": "02 \u00a7Patterns",
+      "question": "Which wildcard, binding, literal, tuple, struct, enum, range, and alternative patterns parse?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/resolve.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/src/resolve.rs::repeated_none_in_one_tuple_pattern_does_not_collide_as_duplicate_bindings"
+      ],
+      "engines": [
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "UNIT",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-PATH-001",
+      "home": "02 \u00a7Paths and Imports",
+      "question": "Which paths, use trees, and explicit generic arguments parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-LITERAL-001",
+      "home": "02 \u00a7Literal Expressions",
+      "question": "Which tuple, array, repeat-array, and struct literal forms parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-GUARD-001",
+      "home": "02 \u00a7Struct Literal Restrictions",
+      "question": "Where must struct literals be parenthesized to avoid control-flow ambiguity?",
+      "status_class": "complete/prohibited",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-TYPE-001",
+      "home": "02 \u00a7Types",
+      "question": "Which primitive, path, tuple, array, reference, function, and never types parse?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-SPLIT-001",
+      "home": "02 \u00a7Parsing Notes",
+      "question": "How are generic-closing and tuple-field tokens reclassified after lexing?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "SYN-RECOVERY-001",
+      "home": "02 \u00a7Syntax Errors",
+      "question": "Is parser recovery observable beyond required acceptance/rejection and diagnostics?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NAME-SCOPE-001",
+      "home": "04 \u00a7Scopes and Symbol Tables",
+      "question": "Which declarations introduce scopes and when do bindings become visible?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NAME-SHADOW-001",
+      "home": "04 \u00a7Name Resolution",
+      "question": "Which declarations may shadow which earlier bindings?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/typecheck/items.rs",
+        "starkc/src/typecheck/types.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/dev177_generic_shadowing.rs::choose",
+        "starkc/tests/dev177_generic_shadowing.rs::assert_rejected"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NAME-RESOLVE-001",
+      "home": "04 \u00a7Name Resolution",
+      "question": "How are local, item, module, type, value, trait, and associated names resolved?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-PRIM-001",
+      "home": "03 \u00a7Core Type Identity",
+      "question": "What are the identities of primitive, tuple, array, reference, function, and never types?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/interp.rs",
+        "starkc/src/mir/lower.rs",
+        "starkc/src/typecheck/types.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c65_entry_exit_contract.rs::the_unit_value_literal_typechecks_as_unit"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [
+        "see engine-shared-fate.json"
+      ],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "AS8-MUT-013 SURVIVED with the spec fixtures selected (AS8-R5)",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-NOMINAL-001",
+      "home": "03 \u00a7Struct Types",
+      "question": "What facts determine struct and enum type identity?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/lower.rs",
+        "starkc/src/parser.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c6_metamorphic.rs::every_metamorphic_pair_is_preserved_by_every_engine"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-ALIAS-001",
+      "home": "03 \u00a7Type Aliases",
+      "question": "Does a type alias transparently denote its target or introduce identity?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-FN-001",
+      "home": "03 \u00a7Function Types",
+      "question": "Do function values participate in Eq/Ord/Hash, and is function identity observable?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/lower.rs",
+        "starkc/src/mir/mod.rs",
+        "starkc/src/mir/verify.rs",
+        "starkc/src/typecheck/traits.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/three_engine_differential.rs::inc",
+        "starkc/src/typecheck/mod.rs::fn_values_do_not_satisfy_eq_or_ord",
+        "starkc/src/typecheck/mod.rs::main",
+        "starkc/src/typecheck/mod.rs::fn_typed_local_is_copy_and_reusable"
+      ],
+      "engines": [
+        "ENGINE(correlated)",
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "DIFF",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-FN-002",
+      "home": "03 \u00a7Function Types",
+      "question": "May a generic function coerce to a concrete fn type, and with what semantics?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/typecheck/body.rs",
+        "starkc/src/typecheck/mod.rs",
+        "starkc/src/typecheck/state.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/src/interp.rs::generic_fn_coerced_to_fn_value_executes",
+        "starkc/src/typecheck/mod.rs::undetermined_generic_fn_coercion_is_rejected"
+      ],
+      "engines": [
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "UNIT",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-WF-001",
+      "home": "03 \u00a7Type Well-Formedness and Sizedness",
+      "question": "Which recursive, unsized, zero-length, and edge-size types are well formed?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-INFER-001",
+      "home": "03 \u00a7Deterministic Local Inference",
+      "question": "How do local constraints, expected types, later uses, and ambiguity determine inferred types?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/typecheck/infer.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/gate2_valid.rs::main"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-INFER-002",
+      "home": "03 \u00a7Literal Type Inference",
+      "question": "When and to what types do unsuffixed numeric literals default?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-GENERIC-001",
+      "home": "03 \u00a7Generic Type Inference",
+      "question": "How are generic parameters, substitutions, bounds, and explicit arguments normalized?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/typecheck/body.rs",
+        "starkc/src/typecheck/items.rs",
+        "starkc/src/typecheck/mod.rs",
+        "starkc/src/typecheck/state.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/mir_differential.rs::bounded_generic_call_chain_agrees",
+        "starkc/src/typecheck/mod.rs::undetermined_generic_call_requires_turbofish"
+      ],
+      "engines": [
+        "ENGINE(correlated)",
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "DIFF",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-COERCE-001",
+      "home": "03 \u00a7Type Coercion",
+      "question": "Which numeric conversions are implicit?",
+      "status_class": "complete/prohibited",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-COERCE-002",
+      "home": "03 \u00a7Reference Coercions",
+      "question": "When may mutable references coerce to shared references?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-COERCE-003",
+      "home": "03 \u00a7Array to Slice Coercion",
+      "question": "When may an array reference coerce to a slice/view?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-COERCE-004",
+      "home": "03 \u00a7Never Type Coercion",
+      "question": "How does the never type coerce at control-flow joins?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-CAST-001",
+      "home": "03 \u00a7Explicit Casts",
+      "question": "Which explicit numeric casts are legal and what values do they produce?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-CFLOW-001",
+      "home": "03 \u00a7Control-Flow Typing",
+      "question": "How do branches and `match` arms choose a common type?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-LOOP-001",
+      "home": "03 \u00a7Control Flow Typing",
+      "question": "How do loop kind and reachable `break` values determine expression type?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-METHOD-001",
+      "home": "03 \u00a7Method Calls and Auto-Borrowing",
+      "question": "How are inherent and trait method candidates collected and prioritized?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/native_c6_2_generics_traits.rs::go"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TYPE-METHOD-002",
+      "home": "03 \u00a7Method Calls and Auto-Borrowing",
+      "question": "Which automatic borrow/dereference adjustments are allowed?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/lower.rs",
+        "starkc/src/parser.rs",
+        "starkc/src/typecheck/body.rs",
+        "starkc/src/typecheck/types.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/mir_differential.rs::bounded_generic_method_through_reference_agrees"
+      ],
+      "engines": [
+        "ENGINE(correlated)"
+      ],
+      "evidence_class": "DIFF",
+      "shared_fate": [],
+      "independent_control": "none \u2014 differential only (CROSS_ENGINE_DERIVED)",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAIT-DEF-001",
+      "home": "03 \u00a7Trait Definition",
+      "question": "What declarations, default bodies, and impl obligations are legal?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAIT-ASSOC-001",
+      "home": "03 \u00a7Associated Types",
+      "question": "How are associated functions/types resolved and qualified?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAIT-COHERENCE-001",
+      "home": "03 \u00a7Trait Coherence",
+      "question": "What orphan rule applies across package identities?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAIT-COHERENCE-002",
+      "home": "03 \u00a7Trait Coherence",
+      "question": "How are blanket impl overlap and candidate ambiguity decided?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAIT-LAW-001",
+      "home": "03 \u00a7Standard Trait Laws",
+      "question": "What semantic laws bind `Eq`, `Ord`, and `Hash`, and what follows from violations?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-RETURN-001",
+      "home": "04 \u00a7Return Analysis",
+      "question": "Must every reachable non-unit path return a compatible value?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-LOOP-001",
+      "home": "04 \u00a7Control Flow Analysis",
+      "question": "Which statements are unreachable and which loops are known not to fall through?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-INIT-001",
+      "home": "04 \u00a7Definite Assignment",
+      "question": "When is a local definitely initialized on all paths?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-MUT-001",
+      "home": "04 \u00a7Mutability Checking",
+      "question": "Which assignments require a mutable binding or mutable place?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-BOUNDS-001",
+      "home": "04 \u00a7Static Bounds Analysis",
+      "question": "Which statically provable indexing errors must be rejected?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FLOW-TRY-001",
+      "home": "04 \u00a7Error Propagation Analysis",
+      "question": "Where is `?` legal and what enclosing result type is required?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DIAG-CATALOG-001",
+      "home": "04 \u00a7Diagnostics",
+      "question": "Which rejection categories and diagnostic codes are stable and collision-free?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-MOVE-001",
+      "home": "Abstract Machine \u00a7Moves, Partial Moves, and Reinitialization",
+      "question": "Which value uses move, copy, or borrow an operand?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-COPY-001",
+      "home": "03 \u00a7Copy and Drop",
+      "question": "Which types are implicitly copyable?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/interp.rs",
+        "starkc/src/mir/lower.rs",
+        "starkc/src/mir/mod.rs",
+        "starkc/src/typecheck/traits.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c788_lifecycle_e2e.rs::move_then_drop_closes_only_the_destination",
+        "starkc/tests/native_c5_3_aggregates_enums.rs::a_stark_impl_copy_is_what_makes_a_generated_type_copy",
+        "starkc/src/typecheck/mod.rs::ownership_checker_visits_loop_bodies"
+      ],
+      "engines": [
+        "INTEGRATION",
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "UNIT",
+      "shared_fate": [
+        "see engine-shared-fate.json"
+      ],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "AS8-MUT-003/005/006 SURVIVED the differential; 009/010/011 KILLED by c61f_structural_copy",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-BORROW-001",
+      "home": "03 \u00a7Borrowing Rules",
+      "question": "When may shared and exclusive borrows coexist?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/borrowck.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/dev154_place_granular_borrow_conflicts.rs::expect_accepted"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-REGION-001",
+      "home": "03 \u00a7References and Lifetimes",
+      "question": "When do local, argument-derived, and temporary borrows end?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-RETURN-001",
+      "home": "03 \u00a7References and Lifetimes",
+      "question": "Which references may escape through return values?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_bodies.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/native_c61f_ret_refs.rs::rejected_e0103"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-CARRY-001",
+      "home": "03 \u00a7Borrow-Carrying Types",
+      "question": "How does reference provenance propagate through aggregates and calls?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_bodies.rs",
+        "starkc/src/backend/generated_rust/emit_call_thunk.rs",
+        "starkc/src/backend/generated_rust/emit_places.rs",
+        "starkc/src/backend/generated_rust/emit_types.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/c61f_nested_refs.rs::f"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-PARTIAL-001",
+      "home": "Abstract Machine \u00a7Moves, Partial Moves, and Reinitialization",
+      "question": "Which field moves are permitted before later aggregate use or destruction?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/borrowck.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OWN-REINIT-001",
+      "home": "Abstract Machine \u00a7Moves, Partial Moves, and Reinitialization",
+      "question": "When does assignment reinitialize a moved place?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/verify.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-EVAL-001",
+      "home": "Abstract Machine \u00a7Evaluation Order",
+      "question": "What is the evaluation order of operands, calls, indexing, and aggregates?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-PLACE-001",
+      "home": "Abstract Machine \u00a7Places and Projections",
+      "question": "Which expressions denote values versus places, and when are places read?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-TEMP-001",
+      "home": "Abstract Machine \u00a7Temporaries",
+      "question": "When are temporaries created and destroyed on success and early exit?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-ASSIGN-001",
+      "home": "Abstract Machine \u00a7Assignment and Replacement",
+      "question": "In what order are assignment target, right-hand side, old value, and write processed?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DROP-EXACT-001",
+      "home": "Abstract Machine \u00a7Exactly-Once Rule",
+      "question": "Which initialized values are destroyed exactly once?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DROP-ORDER-001",
+      "home": "Abstract Machine \u00a7Deterministic Order",
+      "question": "What is destruction order for locals, fields, elements, parameters, and partial aggregates?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/opt.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DROP-ABORT-001",
+      "home": "Abstract Machine \u00a7Trap Termination",
+      "question": "Does a language trap perform destruction before termination?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/build.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c71_profile_agreement.rs::no_destructor_runs_after_a_trap_in_release",
+        "starkc/tests/c71_build_cli.rs::the_generated_release_profile_overrides_cargo_defaults"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-VALUE-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "What is a language value independently of runtime representation?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-OBJECT-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "What gives a live object identity across ownership transfer?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-STORAGE-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "What is an abstract storage location/allocation without layout promises?",
+      "status_class": "complete/deliberately-unspecified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-OWNER-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "Which entities may own an object and its destruction obligation?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-LOCAL-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "When is a local initialized or moved-from?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "AM-TEMP-001",
+      "home": "Abstract Machine \u00a7Values, Objects, Storage, and Ownership",
+      "question": "What is a temporary owner?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-ONCE-001",
+      "home": "Abstract Machine \u00a7Results and Full Expressions",
+      "question": "Must every evaluated source expression run exactly once?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/interp.rs",
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-DISPATCH-001",
+      "home": "Abstract Machine \u00a7Results and Full Expressions",
+      "question": "Must runtime execution invoke exactly the statically selected callable/protocol?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-FOR-001",
+      "home": "Abstract Machine \u00a7Evaluation Order",
+      "question": "Must every statically accepted iterator execute through the selected iterator protocol?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOVE-READ-001",
+      "home": "Abstract Machine \u00a7Value and Place Contexts",
+      "question": "When does a place read copy, move, or borrow?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-AGG-001",
+      "home": "Abstract Machine \u00a7Aggregate Construction",
+      "question": "When do completed aggregate fields acquire ownership and in what order?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-AGG-002",
+      "home": "Abstract Machine \u00a7Aggregate Construction",
+      "question": "What happens to a partial aggregate on normal transfer versus trap?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXEC-CFLOW-001",
+      "home": "Abstract Machine \u00a7Normal Control Transfer and Partial Evaluation",
+      "question": "Which early exits are normal transfers and how do they clean scopes?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "REF-IDENTITY-001",
+      "home": "Abstract Machine \u00a7Identity and Derivation",
+      "question": "What facts constitute reference identity and aliasing?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "REF-PROJECT-001",
+      "home": "Abstract Machine \u00a7Projection, Auto-Borrow, and Auto-Dereference",
+      "question": "Do reference projections and auto-dereference remain live views?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "REF-RETURN-001",
+      "home": "Abstract Machine \u00a7Returned and Receiver-Derived References",
+      "question": "How does a returned receiver/parameter-derived reference survive callee exit?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "REF-SLICE-001",
+      "home": "Abstract Machine \u00a7Slice References",
+      "question": "Is a range slice a live view or an element copy?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_runtime.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/mod.rs"
+      ],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "REF-CARRY-001",
+      "home": "Abstract Machine \u00a7Borrow-Carrying Values",
+      "question": "How do borrow-carrying values preserve contained reference identity?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DROP-LOOP-001",
+      "home": "Abstract Machine \u00a7Loops and Iterators",
+      "question": "When are loop bindings, iterators, and unconsumed elements destroyed?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "DROP-COLLECTION-001",
+      "home": "Abstract Machine \u00a7Collections and Ownership-Discarding Operations",
+      "question": "How do collection destruction, clear, remove, replace, and duplicate discard destroy ownership?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "OBS-COMPARE-001",
+      "home": "Abstract Machine \u00a7Observable Execution and Differential Comparison",
+      "question": "Which observations must interpreter, MIR, and native execution compare?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PAT-EXHAUST-001",
+      "home": "04 \u00a7Exhaustiveness Checking",
+      "question": "Which finite domains require exhaustive patterns?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PAT-USEFUL-001",
+      "home": "04 \u00a7Pattern Type Checking",
+      "question": "Which unreachable patterns require rejection or warning?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PAT-OWN-001",
+      "home": "Abstract Machine \u00a7Pattern Execution",
+      "question": "Do Core v1 pattern bindings move, copy, or preserve references for each matched component?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PAT-DROP-001",
+      "home": "Abstract Machine \u00a7Pattern Execution",
+      "question": "What is destroyed for failed arm tests, wildcards, and selected-arm exit?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/borrowck.rs",
+        "starkc/src/interp.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/as4_hostile_combinations.rs::a_drop_enum_payload_cannot_move_out_of_a_match"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "CONST-DECL-001",
+      "home": "03 \u00a7Constant Evaluation",
+      "question": "Which declarations require compile-time evaluation?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "CONST-SUBSET-001",
+      "home": "03 \u00a7Constant Evaluation",
+      "question": "Which deterministic expressions, calls, and operations are valid in constants?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "CONST-FAIL-001",
+      "home": "03 \u00a7Constant Evaluation",
+      "question": "How do cycles, overflow, traps, and resource limits fail constant evaluation?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-INT-TYPE-001",
+      "home": "03 \u00a7Integer Types",
+      "question": "What widths and value ranges do integer types have?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-INT-ARITH-001",
+      "home": "Abstract Machine \u00a7Integer Operations",
+      "question": "What happens on integer add/subtract/multiply/negate overflow?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_bodies.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/mod.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/adversarial_boundaries.rs::exponentiation_checks_each_intermediate_multiply"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-INT-DIV-001",
+      "home": "Abstract Machine \u00a7Integer Operations",
+      "question": "What are signed division/remainder rounding, zero, and minimum/-1 results?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_bodies.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/cd139_float_division.rs::traps",
+        "starkc/tests/cd139_float_division.rs::integer_division_by_zero_still_traps"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-SHIFT-001",
+      "home": "Abstract Machine \u00a7Integer Operations",
+      "question": "How are negative or out-of-width shift counts handled?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/mod.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/adversarial_boundaries.rs::shift_counts_at_the_exact_width_boundary"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-CAST-001",
+      "home": "Abstract Machine \u00a7Numeric Conversion",
+      "question": "How do narrowing, sign-changing, and integer/float casts behave?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-FLOAT-FORMAT-001",
+      "home": "03 \u00a7Floating-Point Types",
+      "question": "Which IEEE formats correspond to `f32` and `f64`?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/mir/interp.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-FLOAT-OP-001",
+      "home": "Abstract Machine \u00a7Floating-Point Operations",
+      "question": "What rounding, NaN, infinity, signed-zero, and contraction rules apply?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_bodies.rs",
+        "starkc/src/interp.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/cd139_float_division.rs::float64_division_by_zero_yields_signed_infinity",
+        "starkc/tests/cd139_float_division.rs::float64_remainder_produces_nan",
+        "starkc/src/interp.rs::division_by_zero_produces_the_canonical_quiet_nan_bit_pattern_for_float64",
+        "starkc/src/interp.rs::negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero"
+      ],
+      "engines": [
+        "INTEGRATION",
+        "UNIT(cfg-test)"
+      ],
+      "evidence_class": "UNIT",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-FLOAT-TRAIT-001",
+      "home": "03 \u00a7Floating-Point Traits",
+      "question": "Which equality, ordering, and hashing contracts apply to floats?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "NUM-FLOAT-REPRO-001",
+      "home": "07 \u00a7Target-Defined Numeric Behavior",
+      "question": "Which floating results must be reproducible across targets/backends?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-UTF8-001",
+      "home": "06 \u00a7String",
+      "question": "Are strings valid UTF-8 at every observable boundary?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-CHAR-001",
+      "home": "03 \u00a7Character Type",
+      "question": "Is `char` a Unicode scalar value?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-INDEX-001",
+      "home": "06 \u00a7String Index Units",
+      "question": "Are string offsets bytes, scalars, or another unit?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-BOUNDARY-001",
+      "home": "06 \u00a7String Boundaries",
+      "question": "What occurs at a non-scalar UTF-8 boundary?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-ITER-001",
+      "home": "06 \u00a7String Iteration",
+      "question": "What units and order do string iteration APIs expose?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TEXT-CASE-001",
+      "home": "06 \u00a7Unicode Policy",
+      "question": "Which Unicode data/version governs classification and case operations?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-DECL-001",
+      "home": "07 \u00a7Module Declarations",
+      "question": "How do inline and file-backed modules form the module tree?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-FILE-001",
+      "home": "07 \u00a7Module Files",
+      "question": "How is a file-backed module located and bounded by its package/workspace?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-PATH-001",
+      "home": "07 \u00a7Path Resolution",
+      "question": "How do absolute, relative, `self`, `super`, and package paths resolve?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-USE-001",
+      "home": "07 \u00a7Imports",
+      "question": "How do aliases, nested imports, glob imports, and conflicts resolve?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-VIS-001",
+      "home": "07 \u00a7Visibility",
+      "question": "Which items are visible across module and package boundaries?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-REEXPORT-001",
+      "home": "07 \u00a7Public API Reachability",
+      "question": "May public APIs expose private or dependency-private types?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "MOD-CYCLE-001",
+      "home": "07 \u00a7Module Cycles",
+      "question": "Which module/import cycles are permitted or rejected?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-MANIFEST-001",
+      "home": "07 \u00a7Package Manifest",
+      "question": "Which manifest fields are required and how are they validated?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-RESOLVE-001",
+      "home": "07 \u00a7Dependency Resolution",
+      "question": "How are dependency constraints, sources, aliases, and features resolved?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-VERSION-001",
+      "home": "07 \u00a7Version Selection",
+      "question": "Which compatible version is selected and how are ties handled?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-CYCLE-001",
+      "home": "07 \u00a7Dependency Cycles",
+      "question": "Which dependency cycles are rejected?",
+      "status_class": "complete/prohibited",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-IDENTITY-001",
+      "home": "07 \u00a7Package Identity",
+      "question": "What relocation-stable facts identify a package instance and public item?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/package.rs",
+        "starkc/src/parser.rs",
+        "starkc/src/source.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c6_package.rs::diamond_package_symbols_are_canonical_and_deterministic_dev_114",
+        "starkc/tests/c6_package.rs::package_trap_provenance_is_logical_and_relocation_stable_dev_113",
+        "starkc/tests/c6_metamorphic.rs::every_metamorphic_pair_is_preserved_by_every_engine",
+        "starkc/tests/native_c5_4_workspace.rs::the_workspace_completes_identically_in_every_available_engine"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-MULTIVER-001",
+      "home": "07 \u00a7Version Coexistence",
+      "question": "Which resolved versions may coexist in one dependency graph?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PKG-LOCK-001",
+      "home": "07 \u00a7Lockfiles",
+      "question": "What lockfile facts are reproducible and authoritative?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PROC-MAIN-001",
+      "home": "07 \u00a7Executable Entry",
+      "question": "Which `main` signatures are executable?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_program.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/typecheck/types.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/c65_entry_exit_contract.rs::main"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PROC-EXIT-001",
+      "home": "07 \u00a7Process Termination",
+      "question": "How do return values, `Result`, and traps map to exit status?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_program.rs",
+        "starkc/src/interp.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/mod.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/c71_profile_agreement.rs::entry_exit_status_agrees",
+        "starkc/tests/c6_corpus_manifest.rs::a_manifest_citing_an_invented_rule_is_rejected",
+        "starkc/tests/c6_corpus_manifest.rs::valid_case",
+        "starkc/tests/c6_corpus_manifest.rs::empty_normative_rules_rejected",
+        "starkc/tests/c65_entry_exit_contract.rs::entry_observation",
+        "starkc/tests/c65_entry_exit_contract.rs::unit_entry_completes_with_status_zero"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "PROC-STREAM-001",
+      "home": "07 \u00a7Process Streams",
+      "question": "What are the observable stdin/stdout/stderr and flush contracts?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/interp.rs",
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/adversarial_stderr.rs::stdout_and_stderr_are_separate_ordered_streams"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-PRELUDE-001",
+      "home": "06 \u00a7Prelude",
+      "question": "Which names are implicitly available?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-FORMAT-001",
+      "home": "06 \u00a7Formatting",
+      "question": "What output and argument behavior do the Core formatting/printing facilities expose?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/typecheck/body.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-PROFILE-001",
+      "home": "06 \u00a7Conformance Profiles",
+      "question": "Which APIs are required in each Core profile?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-HOOK-001",
+      "home": "06 \u00a7Canonical Language Hooks",
+      "question": "Which library items are compiler-recognized hooks rather than ordinary APIs?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "CORPUS-OR-FILE-LEVEL",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-TRAIT-001",
+      "home": "06 \u00a7Core Trait Profile",
+      "question": "Which standard traits and required items belong to the Core profile?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-OPTION-001",
+      "home": "06 \u00a7Option",
+      "question": "What are `Option` representation-independent behavior and APIs?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-RESULT-001",
+      "home": "06 \u00a7Result",
+      "question": "What are `Result`, propagation, and combinator behavior?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-ITER-001",
+      "home": "06 \u00a7Iterator",
+      "question": "What is the iterator protocol and termination behavior?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-VEC-001",
+      "home": "06 \u00a7Vec",
+      "question": "What are vector growth, indexing, bounds, and ownership contracts?",
+      "status_class": "partial/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-HASH-001",
+      "home": "06 \u00a7HashMap and HashSet",
+      "question": "What equality, hashing, collision, and iteration-order contracts govern maps/sets?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/emit_types.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/lower.rs",
+        "starkc/src/mir/mod.rs"
+      ],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/dev116_hashset.rs::total_hash_collision_keeps_unequal_elements_distinct",
+        "starkc/tests/c63d_map_key_identity.rs::replacement_retains_the_first_stored_key"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-IO-001",
+      "home": "06 \u00a7I/O",
+      "question": "Which I/O APIs and error mappings are required?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [
+        "starkc/tests/c784_file.rs::write_reports_bytes_accepted"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-CONVERT-001",
+      "home": "06 \u00a7Conversion",
+      "question": "Which parsing/conversion APIs share language numeric semantics?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-MATH-001",
+      "home": "06 \u00a7Math",
+      "question": "Which mathematical operations, edge cases, and errors are required?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "STD-RANDOM-001",
+      "home": "06 \u00a7Random",
+      "question": "Which random APIs, seed determinism, and range contracts are required?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LAYOUT-QUERY-001",
+      "home": "07 \u00a7Target-Defined Layout",
+      "question": "Which size, alignment, discriminant, and address facts are observable?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/layout.rs",
+        "starkc/src/mir/drop_plan.rs",
+        "starkc/src/mir/interp.rs",
+        "starkc/src/mir/lower.rs"
+      ],
+      "evidence_state": "IMPLEMENTATION-ONLY",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LAYOUT-ABI-001",
+      "home": "07 \u00a7ABI Boundary",
+      "question": "Does Core v1 promise any stable data or calling ABI?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/backend/generated_rust/mod.rs",
+        "starkc/src/layout.rs",
+        "starkc/src/target.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/native_c5_3_aggregates_enums.rs::an_unknown_target_contract_is_rejected_before_emission"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "TRAP-CATEGORY-001",
+      "home": "Abstract Machine \u00a7Trap Categories",
+      "question": "Which failures are language traps, and how are host/process/resource failures excluded?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "PRECISE-C211",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "CONF",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "AS8-MUT-007 KILLED (4) by the HIR oracle; MUT-008 the honest no-op (AS8-R2)",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LIMIT-RESOURCE-001",
+      "home": "07 \u00a7Implementation and Target Limits",
+      "question": "How are allocation, stack, recursion, and host-resource exhaustion classified?",
+      "status_class": "complete/specified",
+      "implementation": [
+        "starkc/src/bin/stark.rs",
+        "starkc/src/interp.rs",
+        "starkc/src/mir/interp.rs"
+      ],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/mir_differential.rs::differential",
+        "starkc/tests/support/differential.rs::run_mir"
+      ],
+      "engines": [
+        "ENGINE(correlated)"
+      ],
+      "evidence_class": "DIFF",
+      "shared_fate": [],
+      "independent_control": "none \u2014 differential only (CROSS_ENGINE_DERIVED)",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "LIMIT-COMPILER-001",
+      "home": "07 \u00a7Implementation and Target Limits",
+      "question": "Which source, nesting, object, array, and package limits may implementations impose?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FUTURE-SYNTAX-001",
+      "home": "Future Boundaries \u00a7Reserved Syntax",
+      "question": "Which tokens and grammar space are reserved for future Core editions?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FUTURE-CLOSURE-001",
+      "home": "Future Boundaries \u00a7Closures and Lifetimes",
+      "question": "What ownership boundary must future capturing closures preserve?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FUTURE-THREAD-001",
+      "home": "Future Boundaries \u00a7Concurrency",
+      "question": "What single-threaded guarantees must remain valid if concurrency is added later?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "FUTURE-FFI-001",
+      "home": "Future Boundaries \u00a7Native Extensions",
+      "question": "What provenance, capability, ABI, and safety boundary applies to native providers/FFI?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "UNRESOLVED",
+      "positive_negative_sites": [],
+      "engines": [
+        "-"
+      ],
+      "evidence_class": "UNCLASSIFIED",
+      "shared_fate": [],
+      "independent_control": "none",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    },
+    {
+      "rule": "EXT-ISOLATION-001",
+      "home": "Future Boundaries \u00a7Extension Isolation",
+      "question": "How are post-v1 extensions prevented from silently changing Core v1 behavior?",
+      "status_class": "complete/specified",
+      "implementation": [],
+      "evidence_state": "RESOLVED-BY-TREE",
+      "positive_negative_sites": [
+        "starkc/tests/c91_extension_isolation.rs::c91_core_default_rejects_tensor_constructs_and_tensor_accepts_them",
+        "starkc/tests/c91_extension_isolation.rs::c91_sequential_and_parallel_analyses_do_not_share_extension_state",
+        "starkc/tests/c91_extension_isolation.rs::c91_cli_extension_config_rejects_unknown_and_duplicates",
+        "starkc/tests/c91_extension_isolation.rs::c91_package_and_tool_entry_points_are_core_only_without_extension_surface",
+        "starkc/tests/c91_extension_isolation.rs::c91_package_modules_do_not_leak_tensor_enablement_from_other_sessions"
+      ],
+      "engines": [
+        "INTEGRATION"
+      ],
+      "evidence_class": "REG",
+      "shared_fate": [],
+      "independent_control": "yes \u2014 front-end/hand-authored site",
+      "challenge": "NOT-CHALLENGED",
+      "deviation": "",
+      "last_verified": {
+        "commit": "fe4c902ff44b52da46feb7c2bf863b4cfe503a43",
+        "toolchain": "rustc stable (CI floats)",
+        "platforms": "see C10-0 \u00a73 and plan \u00a714.1"
+      }
+    }
+  ]
+}
