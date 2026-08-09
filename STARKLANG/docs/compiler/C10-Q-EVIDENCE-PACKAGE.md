@@ -72,13 +72,13 @@ performance         one platform (Darwin-arm64); ONNX appendix EMPTY (inputs una
 ## 2.4 Deviations
 
 ```text
-A  21 live-OPEN compiler deviations, every one owned and dispositioned
+A  16 live-OPEN compiler deviations, every one owned, dispositioned AND REPRODUCED
    NONE of them accepts what the specification forbids — see the correction below
 B   5 release/distribution — DEV-165, standalone toolchain, offline build, signing, tier-3
 C  20 assurance residuals — including AS8-R2/R10/R13/R14, all still true at the candidate
 ```
 
-> ### CORRECTED 2026-08-09 — THREE of twenty-three deviations do not reproduce
+> ### CORRECTED 2026-08-09 — SEVEN of twenty-three deviations do not reproduce
 >
 > This package's first draft named 23 deviations, and stated that **DEV-177 accepts a program the
 > specification forbids** — the one subtraction that made a conformance claim FALSE rather than
@@ -91,7 +91,8 @@ C  20 assurance residuals — including AS8-R2/R10/R13/R14, all still true at th
 > DEV-181   does not reproduce — 57ff6b9. `x = x.method()` compiles and runs
 > ```
 >
-> **13% of the "open" list was fiction, and all three were named in a drafted release claim.**
+> Both were named in a drafted release claim. (The count and percentage first published in this
+> paragraph were themselves wrong — corrected below.)
 >
 > The cause is structural: the ledger is append-only, so closing an entry needs a deliberate new
 > heading, and a repair landing under a different work packet has nothing forcing that heading to
@@ -102,13 +103,29 @@ C  20 assurance residuals — including AS8-R2/R10/R13/R14, all still true at th
 > ledger entry. It must be REPRODUCED at the candidate head, or closed.** OD-7 imposed exactly
 > that on `DEV-005` and it found one; applying it to a single entry was the mistake.
 >
-> **Reproduction status of the remaining 21 — stated honestly, because it bounds this package:**
+> **The reproduction pass has since been RUN over all 21.** Full record:
+> `audits/C10-Q-REPRODUCTION-PASS.md`. Five more entries do not reproduce.
 >
 > ```text
-> REPRODUCED at 076b4dc   DEV-172   Int8::MIN and Int64::MIN rejected, E0008 — still real
-> NOT YET REPRODUCED      the other 20. Their entries are inherited, and three of the last
->                         twenty-three inherited entries were wrong
+> DEV-083   does not reproduce — method resolution rewritten by AS3 (5b5edd3)
+> DEV-122   does not reproduce — Span now carries SourceId; landed under AS1b
+> DEV-161   does not reproduce — the builder passes --target-dir explicitly
+> DEV-162   does not reproduce — COMPILER-STATE.md already recorded it CLOSED (CD-372)
+> DEV-178   does not reproduce — b39c49d; verified by a size_of that discriminates Int32 from Bool
 > ```
+>
+> **TWO ARITHMETIC CORRECTIONS to the paragraph above, both against my own numbers.** DEV-005 was
+> not among the 23 — it owns no live heading in this file — so the first correction was **two** of
+> twenty-three, not three, and the "13%" was overstated. Counted properly against the anchor:
+>
+> ```text
+> at 076b4dc          23 live-OPEN
+> DEV-177, DEV-181    do not reproduce            -> 21
+> this pass           5 more do not reproduce     -> 16
+> ```
+>
+> **Seven of the twenty-three entries at the anchor — 30% — did not reproduce.** Every count here
+> is from `c10-deviation-populations.py` run against the file at each commit, not from prose.
 
 ---
 
@@ -144,9 +161,12 @@ performance        one platform. No cross-platform performance claim
 
 ```text
 STARK Core v1 front end, interpreter, MIR, and native backend: conforming for the listed
-platform matrix, with deviations DEV-083, DEV-120, DEV-122, DEV-140..145, DEV-156, DEV-157,
-DEV-159..162, DEV-167, DEV-168, DEV-172, DEV-178, DEV-180, DEV-186.
-(DEV-177 and DEV-181 REMOVED — they do not reproduce. 21 deviations, not 23.)
+platform matrix, with deviations DEV-120, DEV-140..145, DEV-156, DEV-157, DEV-159,
+DEV-160, DEV-167, DEV-168, DEV-172, DEV-180, DEV-186.
+(16 deviations. Seven of the 23 at the anchor were REMOVED because they do not
+reproduce: DEV-083, DEV-122, DEV-161, DEV-162, DEV-177, DEV-178, DEV-181. Every
+entry named above was observed failing at the candidate, not inherited from its
+ledger entry — except DEV-159, a build race, carried conservatively.)
 
 Platform matrix: aarch64-apple-darwin and x86_64-unknown-linux-gnu (Tier-1);
 x86_64-pc-windows-msvc (Tier-2, no tier-1 qualification record).
@@ -173,28 +193,41 @@ Charter §5.3's vocabulary. **The owner chooses; this is the derivation, not the
 ```text
 PASS                    NOT SUPPORTED — but the REASON changed. It is no longer "a claim would be
                         FALSE" (DEV-177 is closed); it is that 84 of 168 rules are unattributed
-                        and 21 deviations remain. A bare "conforming" claim would OVERSTATE, not
+                        and 16 deviations remain. A bare "conforming" claim would OVERSTATE, not
                         lie
-PASS-WITH-DEVIATIONS    SUPPORTED, on §3.2's wording, IF the 20 unreproduced deviations are
-                        verified first — see the condition below
-REVISE                  SUPPORTABLE, and now more defensible than when this package was drafted:
-                        three of twenty-three named deviations did not exist, so the claim's own
-                        deviation list is not yet trustworthy
+PASS-WITH-DEVIATIONS    SUPPORTED on §3.2's wording. The condition attached to this in the first
+                        draft — reproduce the deviations before naming them — is DISCHARGED
+REVISE                  STILL AVAILABLE, but the argument for it is now weaker, not stronger: the
+                        deviation list has been verified entry by entry, which is the specific
+                        distrust that motivated it
 BLOCKED                 not indicated
 ```
 
-## 3.4 The condition this package now carries
+## 3.4 The condition this package carried, and its discharge
 
-**Recommendation: PASS-WITH-DEVIATIONS, conditional on reproducing the remaining 20 deviations at
-`076b4dc` first.**
+**The condition is DISCHARGED.** Every population-A deviation has now been reproduced or closed at
+the candidate. Record: `audits/C10-Q-REPRODUCTION-PASS.md`.
 
-A release claim naming 21 deviations is only as good as the list. **Three of the last
-twenty-three were fiction**, and each would have been published as a known limitation of a
-compiler that does not have it. Naming a deviation that no longer exists is its own false claim —
-the same argument OD-7 used for DEV-005, now with a 3-in-23 base rate behind it.
+**Recommendation: PASS-WITH-DEVIATIONS, unconditional.**
 
-**REVISE is the honest alternative** if the owner would rather not spend that pass: it says the
-evidence is sound and one bounded verification remains, which is exactly the situation.
+The list this claim publishes is 16 entries, and each one was observed failing at the candidate
+head rather than inherited from its ledger entry. Seven entries that would have been published as
+known limitations of a compiler that does not have them were removed.
+
+**One entry is carried on weaker evidence and is marked as such.** DEV-159 is a build race. A single
+successful build does not falsify it and no fix commit exists, so it is counted OPEN conservatively
+— that is the safe direction for a release claim, but it is not a reproduction and the claim should
+not imply it is.
+
+**Two findings from the pass belong in front of the owner, neither of them blocking:**
+
+- **DEV-157 was one probe away from a false closure.** The shape its entry names now builds
+  correctly; the defect is alive in other `Never` positions. Every non-reproducing verdict was
+  therefore re-tested across shape variants — but the near miss is the strongest argument for
+  making reproduction periodic rather than one-off.
+- **DEV-160's named-refusal boundary does not cover the shape `stark-http-client` works around.**
+  CD-374 states b/c/d are "refused by name before rustc"; this one reaches rustc and surfaces
+  `E0502` inside `mod stark_proj` — the outcome CD-374 says the named refusal prevents.
 
 ---
 

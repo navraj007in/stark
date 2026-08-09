@@ -7204,6 +7204,10 @@ does not exist.
 
 # Ledger hygiene finding (C10-Q preparation, 2026-08-09)
 
+**SUPERSEDED 2026-08-09 by the C10-Q reproduction pass: the figure is SEVEN of twenty-three, and
+`DEV-005` does not belong in the twenty-three at all — it owns no live heading here. See
+`STARKLANG/docs/compiler/audits/C10-Q-REPRODUCTION-PASS.md`.**
+
 **Three of twenty-three population-A deviations do not reproduce**: `DEV-005` (removed by AS2's
 one-pipeline consolidation), `DEV-177` (`78bd84c`), `DEV-181` (`57ff6b9`).
 
@@ -7218,3 +7222,88 @@ DEV number — the information existed; nothing connected it to the ledger.
 claim on the strength of its ledger entry. It must be **reproduced at the candidate head**, or
 closed. OD-7 imposed exactly this on `DEV-005` and it found one; applying it to only one entry was
 the mistake.
+
+## DEV-083 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+The entry's verbatim reproducer — `impl<T> Pair<Option<T>, Int32>` with
+`let p = Pair { x: Some(5), y: 42 }; p.tag();` — compiles and runs, printing 42. It predicted
+`E0302 method 'tag' not found for type 'Pair<Option<_infer_4>, _infer_5>'`.
+
+Checked against three receiver shapes, including `Vec::new()` and a bare `None`, which are the most
+unresolved a receiver argument can be. All resolve.
+
+**Incidentally repaired.** No commit names DEV-083. `5b5edd3` — "AS3 Boundary 4 EXIT: `find_method`
+and `find_impl_fn` no longer exist" — rewrote exactly the one-way matching the entry describes.
+This is the class of closure a git-log audit cannot find, because fixing it was not the point of the
+work that fixed it.
+
+Note this entry was adjudicated OPEN under OD-7 earlier the same day, on the strength of its
+description rather than a re-run.
+
+## DEV-122 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+The symptom was a fault in one file reported against another. A division-by-zero inside a module is
+now reported at `src/helper.stark:3:5`, with the right line rendered, under **both** the HIR oracle
+and the native binary.
+
+`Span` now carries `pub source: SourceId` (`src/source.rs:19`), and `Span::in_source` is the
+constructor. That is precisely the "platform correction (mandatory `SourceId` on every span,
+resolution total by construction)" the entry filed as a separate future WP; it landed under AS1b.
+Incidental, as with DEV-083 — no commit names DEV-122.
+
+**A residual survives this closure and is not tracked by it.** `SourceFile::line_col` still clamps
+(`offset.min(self.src.len() as u32)`), and compile-time and runtime rendering remain separate paths.
+The clamp was dangerous because a span could be resolved against the wrong file; that is now
+prevented structurally, which is why this closes. The further hardening the entry asked for —
+`start <= end`, a column inside its line, one shared `resolve_span` — has not been done, and
+`debug_assert!(lo <= hi)` is not a release check. Whether that deserves its own number is an owner
+call.
+
+## DEV-161 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+`stark build` with `CARGO_TARGET_DIR` set builds and runs, and the hijack directory is never
+created. The builder passes `--target-dir` explicitly rather than clearing the variable, so the path
+the build writes and the path the builder reads derive from one value — documented at
+`src/backend/generated_rust/build.rs:104-119`.
+
+## DEV-162 — CLOSED, and already recorded as closed elsewhere (C10-Q reproduction pass, 2026-08-09)
+
+A partial move followed by a read of a live sibling runs correctly. More to the point,
+`COMPILER-STATE.md:2176` has recorded `DEV-162   read through a whole-value accessor   CLOSED
+(CD-372)` since CD-372. This entry was backfilled as OPEN under OD-7 on 2026-08-09, contradicting
+the state file on the same day. **Two sources of record disagreed and the ledger was the wrong
+one.**
+
+## DEV-178 — CLOSED, does not reproduce (C10-Q reproduction pass, 2026-08-09)
+
+`b39c49d` — "DEV-178: a function value carries the instantiation it was created with" — is the
+repair the entry's own Resolution section prescribed.
+
+Verified behaviourally rather than by commit title, because a title is not evidence. `size_of::<T>()`
+read from inside an associated function of a generic impl returns **4** for `Holder::tsize(1)` and
+**1** for `Holder::tsize(true)`. A result that discriminates `Int32` from `Bool` cannot be produced
+without the generic environment. The function-value path returns 4 for
+`let f: fn() -> UInt64 = type_size::<Int32>;`. Both causes named in the entry are covered.
+
+## DEV-157 — reproduces, but not in the shape this entry named (OPEN, C10-Q reproduction pass, 2026-08-09)
+
+Kept OPEN, with its reproducer corrected.
+
+The shape the entry names — `Err(_) => panic(..)` in match-arm value position — now builds and runs
+natively, including when the panicking arm is taken. **The defect is nonetheless alive**:
+
+```stark
+fn main() { let x: Int32 = panic("p"); println(x); }
+```
+
+fails with `native build does not yet support this program: MirTy Never has no C5.3a generated-Rust
+representation yet`, and so does `panic` in argument position.
+
+This was one probe away from being filed as a false closure in a release claim. It is the reason
+every non-reproducing verdict in this pass was re-tested across shape variants.
+
+## DEV-159 — not settled by the reproduction pass (OPEN, C10-Q reproduction pass, 2026-08-09)
+
+Remains OPEN, and this is not a confirmation. A native build racing its own dependency build is
+non-deterministic; a single successful build does not falsify it, and no fix commit exists. Counted
+as open conservatively. Settling it requires repeated cold builds of an HTTPS program.
