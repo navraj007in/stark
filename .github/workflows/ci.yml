@@ -855,7 +855,7 @@ jobs:
     env:
       # Moving this pin is a deliberate act. See §10.3 above.
       SAMPLES_REPO: navraj007in/stark-samples
-      SAMPLES_SHA: b3b28e757f38d691e7309f168d1209e28ac459af
+      SAMPLES_SHA: 5cac025f131f5b8d8de4ceb3112ca11c913c53fc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
