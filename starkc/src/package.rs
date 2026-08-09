@@ -687,6 +687,29 @@ pub fn find_package_root(start_dir: &Path) -> Result<PathBuf, String> {
     Err("missing manifest: starkpkg.json not found in current directory or any parent".to_string())
 }
 
+/// Find the local package set belonging to the running installed compiler.
+///
+/// Both an archive executed in place and a versioned prefix are supported. There is deliberately
+/// no environment override or source-checkout fallback: a release qualification must not pass by
+/// borrowing packages from the checkout that built it.
+pub fn discover_toolchain_package_root(current_exe: Option<&Path>) -> Option<PathBuf> {
+    let bin_dir = current_exe?.parent()?;
+    for relative in [
+        "../lib/stark/current/lib/stark/packages",
+        "../lib/stark/packages",
+    ] {
+        let candidate = bin_dir.join(relative);
+        if candidate.is_dir() {
+            return Some(
+                candidate
+                    .canonicalize()
+                    .unwrap_or_else(|_| candidate.to_path_buf()),
+            );
+        }
+    }
+    None
+}
+
 #[derive(Clone, Debug)]
 pub struct LockfilePackage {
     pub name: String,
@@ -953,7 +976,20 @@ pub fn find_highest_compatible_version(
 ) -> Result<(Version, PathBuf), String> {
     let pkg_dir = registry_root.join(pkg_name);
     if !pkg_dir.exists() {
-        return Err(format!("package '{}' not found in registry", pkg_name));
+        return Err(format!(
+            "package '{}' matching version requirement '{}' was not found in the workspace \
+             registry '{}'. Dependencies in this build resolve from an explicit `path` or that \
+             workspace registry; toolchain-supplied packages are not available. Use a path \
+             dependency such as \"{}\": {{ \"package\": \"{}\", \"version\": \"{}\", \
+             \"path\": \"../{}\" }}",
+            pkg_name,
+            req_to_string(req),
+            registry_root.display(),
+            pkg_name,
+            pkg_name,
+            req_to_string(req),
+            pkg_name,
+        ));
     }
 
     let mut highest: Option<(Version, PathBuf)> = None;
@@ -1006,6 +1042,24 @@ impl PackageGraph {
         locked: bool,
         offline: bool,
     ) -> Result<Self, String> {
+        let current_exe = std::env::current_exe().ok();
+        let toolchain_root = discover_toolchain_package_root(current_exe.as_deref());
+        Self::load_from_root_with_modes_and_toolchain(
+            root_manifest_path,
+            locked,
+            offline,
+            toolchain_root.as_deref(),
+        )
+    }
+
+    /// Explicit-root entry point for hermetic resolver and installed-layout qualification.
+    #[doc(hidden)]
+    pub fn load_from_root_with_modes_and_toolchain(
+        root_manifest_path: &Path,
+        locked: bool,
+        offline: bool,
+        toolchain_root: Option<&Path>,
+    ) -> Result<Self, String> {
         // Dependency paths are canonicalized while parsing their manifests. Canonicalize the
         // graph root as well so workspace containment compares paths in the same representation.
         // This is required on Windows, where canonicalization adds the `\\?\` prefix.
@@ -1054,6 +1108,7 @@ impl PackageGraph {
         let cache_dir = graph.workspace_root.join("tmp/stark_cache");
 
         let mut resolved_packages = HashMap::new();
+        let mut shadowed_toolchain_packages = std::collections::HashSet::new();
         graph.resolve_dependencies_for(
             &root_name,
             &mut Vec::new(),
@@ -1061,8 +1116,10 @@ impl PackageGraph {
             offline,
             &registry_dir,
             &cache_dir,
+            toolchain_root,
             existing_lock.as_ref(),
             &mut resolved_packages,
+            &mut shadowed_toolchain_packages,
         )?;
 
         graph.enforce_root_capability_envelope()?;
@@ -1077,7 +1134,10 @@ impl PackageGraph {
 
                 let (source, sha256) = if let Some(resolved_meta) = resolved_packages.get(pkg_name)
                 {
-                    (Some("registry".to_string()), resolved_meta.sha256.clone())
+                    (
+                        Some(resolved_meta.source.clone()),
+                        resolved_meta.sha256.clone(),
+                    )
                 } else {
                     let directory = pkg.manifest_path.parent().ok_or_else(|| {
                         format!(
@@ -1161,8 +1221,10 @@ impl PackageGraph {
         offline: bool,
         registry_dir: &Path,
         cache_dir: &Path,
+        toolchain_root: Option<&Path>,
         existing_lock: Option<&Lockfile>,
         resolved_packages: &mut HashMap<String, ResolvedMeta>,
+        shadowed_toolchain_packages: &mut std::collections::HashSet<String>,
     ) -> Result<(), String> {
         visit_stack.push(package_name.to_string());
 
@@ -1207,6 +1269,34 @@ impl PackageGraph {
                         ));
                     }
 
+                    if resolved_packages
+                        .get(package_name)
+                        .is_some_and(|meta| meta.source == "toolchain")
+                    {
+                        let directory = dep_manifest.parent().unwrap();
+                        let sha256 = calculate_dir_sha256(directory)?;
+                        if let Some(lock_pkg) =
+                            existing_lock.and_then(|lock| lock.packages.get(dep_alias))
+                        {
+                            if locked
+                                && (lock_pkg.source.as_deref() != Some("toolchain")
+                                    || lock_pkg.sha256 != sha256)
+                            {
+                                return Err(format!(
+                                    "lockfile out of sync for toolchain package '{}': source or content hash changed",
+                                    dependency.package
+                                ));
+                            }
+                        }
+                        resolved_packages.insert(
+                            dep_alias.clone(),
+                            ResolvedMeta {
+                                source: "toolchain".to_string(),
+                                sha256,
+                            },
+                        );
+                    }
+
                     self.packages.insert(dep_alias.clone(), dep_pkg);
                     self.resolve_dependencies_for(
                         dep_alias,
@@ -1215,83 +1305,182 @@ impl PackageGraph {
                         offline,
                         registry_dir,
                         cache_dir,
+                        toolchain_root,
                         existing_lock,
                         resolved_packages,
+                        shadowed_toolchain_packages,
                     )?;
                 }
                 DependencySource::Registry(req) => {
-                    // Try to resolve version using existing lock file first
-                    let resolved_version = if let Some(lock) = existing_lock {
-                        if let Some(lock_pkg) = lock.packages.get(dep_alias) {
-                            if req.matches(&lock_pkg.version) {
-                                Some((lock_pkg.version.clone(), lock_pkg.sha256.clone()))
-                            } else {
-                                if locked {
-                                    return Err("lockfile out of sync: stark.lock must be updated but --locked was passed".to_string());
-                                }
-                                None
-                            }
-                        } else {
-                            if locked {
-                                return Err("lockfile out of sync: stark.lock must be updated but --locked was passed".to_string());
-                            }
-                            None
-                        }
+                    let locked_package = existing_lock
+                        .and_then(|lock| lock.packages.get(dep_alias))
+                        .filter(|package| req.matches(&package.version));
+                    if locked && locked_package.is_none() {
+                        return Err("lockfile out of sync: stark.lock must be updated but --locked was passed".to_string());
+                    }
+                    if locked
+                        && locked_package.is_some_and(|package| {
+                            !matches!(
+                                package.source.as_deref(),
+                                None | Some("registry") | Some("toolchain")
+                            )
+                        })
+                    {
+                        return Err(format!(
+                            "lockfile out of sync: version dependency '{}' has incompatible source",
+                            dependency.package
+                        ));
+                    }
+
+                    let toolchain_manifest = toolchain_root
+                        .map(|root| root.join(&dependency.package).join("starkpkg.json"))
+                        .filter(|path| path.is_file());
+                    let toolchain_package = toolchain_manifest
+                        .as_ref()
+                        .map(|path| Package::from_manifest(path))
+                        .transpose()?;
+
+                    let locked_to_toolchain = locked_package
+                        .is_some_and(|package| package.source.as_deref() == Some("toolchain"));
+                    let registry_version = if locked_package.is_some() && !locked_to_toolchain {
+                        locked_package.map(|package| package.version.clone())
+                    } else if locked_package.is_none() {
+                        find_highest_compatible_version(registry_dir, &dependency.package, req)
+                            .ok()
+                            .map(|(version, _)| version)
                     } else {
                         None
                     };
 
-                    let (version, expected_sha) = if let Some((ver, sha)) = resolved_version {
-                        (ver, Some(sha))
+                    let (version, expected_sha, source, package_dir) = if locked_to_toolchain {
+                        let lock_package = locked_package.unwrap();
+                        let package = toolchain_package.as_ref().ok_or_else(|| {
+                            let version = format!(
+                                "{}.{}.{}",
+                                lock_package.version.major,
+                                lock_package.version.minor,
+                                lock_package.version.patch
+                            );
+                            let root = toolchain_root
+                                .map(|root| root.display().to_string())
+                                .unwrap_or_else(|| "<undiscovered>".to_string());
+                            format!(
+                                "locked toolchain package '{} {}' is missing from '{}'",
+                                dependency.package, version, root
+                            )
+                        })?;
+                        if package.version != lock_package.version {
+                            let version = format!(
+                                "{}.{}.{}",
+                                lock_package.version.major,
+                                lock_package.version.minor,
+                                lock_package.version.patch
+                            );
+                            return Err(format!(
+                                "locked toolchain package '{}' requires version '{}', but this toolchain carries '{}'",
+                                dependency.package,
+                                version,
+                                package.version_str()
+                            ));
+                        }
+                        (
+                            package.version.clone(),
+                            Some(lock_package.sha256.clone()),
+                            "toolchain",
+                            package.manifest_path.parent().unwrap().to_path_buf(),
+                        )
+                    } else if let Some(version) = registry_version {
+                        if toolchain_package.is_some()
+                            && locked_package.is_none()
+                            && shadowed_toolchain_packages.insert(dependency.package.clone())
+                        {
+                            eprintln!(
+                                "warning: workspace registry package '{}' shadows the toolchain package",
+                                dependency.package
+                            );
+                        }
+                        let ver_str =
+                            format!("{}.{}.{}", version.major, version.minor, version.patch);
+                        let cached = cache_dir.join(&dependency.package).join(&ver_str);
+                        if !cached.exists() {
+                            if offline {
+                                return Err(format!(
+                                    "offline mode: cached package '{} {}' is not available in '{}'",
+                                    dependency.package,
+                                    ver_str,
+                                    cached.display()
+                                ));
+                            }
+                            let registry = registry_dir.join(&dependency.package).join(&ver_str);
+                            if !registry.is_dir() {
+                                return Err(format!(
+                                    "package '{} {}' not found in registry '{}'",
+                                    dependency.package,
+                                    ver_str,
+                                    registry.display()
+                                ));
+                            }
+                            copy_dir_all(&registry, &cached)?;
+                        }
+                        (
+                            version,
+                            locked_package.map(|package| package.sha256.clone()),
+                            "registry",
+                            cached,
+                        )
+                    } else if let Some(package) = toolchain_package.as_ref() {
+                        if !req.matches(&package.version) {
+                            return Err(format!(
+                                "package '{}' requests version '{}', but toolchain root '{}' carries incompatible version '{}'",
+                                dependency.package,
+                                req_to_string(req),
+                                toolchain_root.unwrap().display(),
+                                package.version_str()
+                            ));
+                        }
+                        (
+                            package.version.clone(),
+                            None,
+                            "toolchain",
+                            package.manifest_path.parent().unwrap().to_path_buf(),
+                        )
                     } else {
-                        // Resolve from registry
-                        let (ver, _) = find_highest_compatible_version(
-                            registry_dir,
-                            &dependency.package,
-                            req,
-                        )?;
-                        (ver, None)
+                        let outcome = if registry_dir.join(&dependency.package).is_dir() {
+                            format!(
+                                "no compatible version of '{}' found matching '{}'",
+                                dependency.package,
+                                req_to_string(req)
+                            )
+                        } else {
+                            format!(
+                                "package '{}' matching version requirement '{}' was not found",
+                                dependency.package,
+                                req_to_string(req)
+                            )
+                        };
+                        return Err(format!(
+                            "{} in workspace registry '{}'{}; use an explicit `path` dependency such as \"{}\": {{ \"package\": \"{}\", \"version\": \"{}\", \"path\": \"../{}\" }}",
+                            outcome,
+                            registry_dir.display(),
+                            toolchain_root.map(|root| format!(" or toolchain root '{}'", root.display())).unwrap_or_else(|| "; this build has no discovered toolchain package root".to_string()),
+                            dep_alias,
+                            dependency.package,
+                            req_to_string(req),
+                            dependency.package,
+                        ));
                     };
-
                     let ver_str = format!("{}.{}.{}", version.major, version.minor, version.patch);
-                    let cached_pkg_dir = cache_dir.join(&dependency.package).join(&ver_str);
-
-                    // If not in cache, copy from registry (or fail if offline)
-                    if !cached_pkg_dir.exists() {
-                        if offline {
-                            return Err(format!(
-                                "offline mode: cached package '{} {}' is not available in '{}'",
-                                dependency.package,
-                                ver_str,
-                                cached_pkg_dir.display()
-                            ));
-                        }
-
-                        let reg_pkg_dir = registry_dir.join(&dependency.package).join(&ver_str);
-                        if !reg_pkg_dir.exists() {
-                            return Err(format!(
-                                "package '{} {}' not found in registry '{}'",
-                                dependency.package,
-                                ver_str,
-                                reg_pkg_dir.display()
-                            ));
-                        }
-
-                        copy_dir_all(&reg_pkg_dir, &cached_pkg_dir)?;
-                    }
-
-                    // Calculate and verify content hash
-                    let sha256 = calculate_dir_sha256(&cached_pkg_dir)?;
+                    let sha256 = calculate_dir_sha256(&package_dir)?;
                     if let Some(ref exp_sha) = expected_sha {
                         if sha256 != *exp_sha {
                             return Err(format!(
-                                "content hash mismatch for cached package '{} {}': expected '{}', found '{}'",
-                                dependency.package, ver_str, exp_sha, sha256
+                                "content hash mismatch for {} package '{} {}': expected '{}', found '{}'",
+                                source, dependency.package, ver_str, exp_sha, sha256
                             ));
                         }
                     }
 
-                    let dep_manifest = cached_pkg_dir.join("starkpkg.json");
+                    let dep_manifest = package_dir.join("starkpkg.json");
                     if let Some(existing) = self.packages.get(dep_alias) {
                         if existing.version != version {
                             return Err(format!(
@@ -1316,7 +1505,13 @@ impl PackageGraph {
                         ));
                     }
                     self.packages.insert(dep_alias.clone(), dep_pkg);
-                    resolved_packages.insert(dep_alias.clone(), ResolvedMeta { sha256 });
+                    resolved_packages.insert(
+                        dep_alias.clone(),
+                        ResolvedMeta {
+                            source: source.to_string(),
+                            sha256,
+                        },
+                    );
 
                     self.resolve_dependencies_for(
                         dep_alias,
@@ -1325,8 +1520,10 @@ impl PackageGraph {
                         offline,
                         registry_dir,
                         cache_dir,
+                        toolchain_root,
                         existing_lock,
                         resolved_packages,
+                        shadowed_toolchain_packages,
                     )?;
                 }
             }
@@ -1407,6 +1604,7 @@ impl Package {
 }
 
 struct ResolvedMeta {
+    source: String,
     sha256: String,
 }
 

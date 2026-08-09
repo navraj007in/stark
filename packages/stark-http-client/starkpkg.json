@@ -2,6 +2,7 @@
   "name": "stark-http-client",
   "version": "0.1.0",
   "entry": "src/lib.stark",
+  "distribution": { "toolchain": true },
   "capability_vocabulary": 1,
   "capabilities": ["clock", "network-client"],
   "dependencies": {

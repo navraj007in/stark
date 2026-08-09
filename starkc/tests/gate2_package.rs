@@ -18,6 +18,41 @@ fn setup_temp_workspace(name: &str) -> PathBuf {
     base
 }
 
+/// A version-only dependency cannot currently use a package bundled with the toolchain. Until the
+/// toolchain package root lands, the failure must tell an external author both what was requested
+/// and the supported `path` form instead of presenting the workspace registry as the only model.
+#[test]
+fn missing_registry_package_explains_the_supported_path_dependency_form() {
+    let workspace = setup_temp_workspace("missing_registry_guidance");
+    let app_dir = workspace.join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+            "name": "app",
+            "version": "0.1.0",
+            "entry": "src/main.stark",
+            "dependencies": {
+                "stark_io": { "package": "stark-io", "version": "^0.1.0" }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(app_dir.join("src/main.stark"), "fn main() {}\n").unwrap();
+
+    let manifest_path = find_package_root(&app_dir).unwrap();
+    let error = PackageGraph::load_from_root(&manifest_path).unwrap_err();
+    assert!(error.contains("stark-io"), "must name the package: {error}");
+    assert!(error.contains("^0.1.0"), "must name the version: {error}");
+    assert!(error.contains("`path`"), "must name the path form: {error}");
+    assert!(
+        error.contains(r#""package": "stark-io""#),
+        "must show a usable manifest fragment: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
 #[test]
 fn test_three_package_workspace_compiles() {
     let workspace = setup_temp_workspace("three_pkg");

@@ -409,6 +409,20 @@ jobs:
           # step by hand -- it reads the manifest and re-hashes every file the package shipped.
           "$RUNNER_TEMP/stark-install/bin/stark" doctor
           test -f "$RUNNER_TEMP/stark-install/lib/stark/current/lib/stark/stark-runtime/src/lib.rs"
+          mkdir -p "$RUNNER_TEMP/external-toolchain-package/src"
+          cat > "$RUNNER_TEMP/external-toolchain-package/starkpkg.json" <<'JSON'
+          {"name":"external-app","version":"0.1.0","entry":"src/main.stark","capabilities":["filesystem-read","filesystem-write"],"dependencies":{"stark_io":{"package":"stark-io","version":"0.1.0"}}}
+          JSON
+          cat > "$RUNNER_TEMP/external-toolchain-package/src/main.stark" <<'STARK'
+          fn main() { println("toolchain-package-ok"); }
+          STARK
+          (
+            cd "$RUNNER_TEMP/external-toolchain-package"
+            "$RUNNER_TEMP/stark-install/bin/stark" check --offline
+            "$RUNNER_TEMP/stark-install/bin/stark" build --offline
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+            ./target/stark/debug/external-app
+          )
           (
             cd tests/fixtures/c5-native-workspace/app
             "$RUNNER_TEMP/stark-install/bin/stark" run
@@ -471,6 +485,23 @@ jobs:
             throw "installed native runtime is missing"
           }
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
+          $external = Join-Path $env:RUNNER_TEMP "external-toolchain-package"
+          New-Item -ItemType Directory -Force (Join-Path $external "src") | Out-Null
+          '{"name":"external-app","version":"0.1.0","entry":"src/main.stark","capabilities":["filesystem-read","filesystem-write"],"dependencies":{"stark_io":{"package":"stark-io","version":"0.1.0"}}}' | Set-Content -Encoding utf8 (Join-Path $external "starkpkg.json")
+          'fn main() { println("toolchain-package-ok"); }' | Set-Content -Encoding utf8 (Join-Path $external "src/main.stark")
+          Push-Location $external
+          try {
+            & (Join-Path $prefix "bin/stark.exe") check --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package check failed" }
+            & (Join-Path $prefix "bin/stark.exe") build --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package build failed" }
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed locked toolchain package build failed" }
+            & (Join-Path $external "target/stark/debug/external-app.exe")
+            if ($LASTEXITCODE -ne 0) { throw "installed toolchain package artifact failed" }
+          } finally {
+            Pop-Location
+          }
           Push-Location tests/fixtures/c5-native-workspace/app
           try {
             & (Join-Path $prefix "bin/stark.exe") run

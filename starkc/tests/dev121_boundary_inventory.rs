@@ -231,14 +231,13 @@ fn the_inventory_list_and_the_classifier_agree() {
 /// ```text
 /// expect_value               28 callers   ← the funnel; has ExprId
 /// expect_bool / expect_int     8 callers   ← delegate to expect_value
-/// direct eval_expr             6 sites     ← 1 is expect_value itself; 5 are NOT boundaries
+/// direct eval_expr             7 sites     ← 1 is expect_value itself; 2 checked, 4 flow/drop
 /// ```
 ///
-/// The five direct sites are `eval_block`'s tail, `eval_stmt`'s expression statement, the `else`
-/// branch, a match arm's body, and one nested expression case. **None is a boundary**: the value
-/// flows to the *enclosing* expression rather than coming to rest, and lands at one of the eleven
-/// boundaries when it finally does. Classified `NotABoundary`, with that reason, rather than left
-/// as an unexplained gap.
+/// The direct sites are `expect_value`, `eval_block`'s tail, `eval_stmt`'s expression statement, a
+/// checked let initializer, a checked interpolation field, the `else` branch, and a match arm's
+/// body. The flow-through/drop sites are not boundaries; the two typed consumers call
+/// `check_expr_value` before their value comes to rest.
 ///
 /// The producer-side assertion at `expect_value` (Packet 6) does not REPLACE the destination
 /// checks — both consume the same `check_value_for_ty`, so it adds defence, not a second
@@ -257,14 +256,15 @@ fn the_producer_side_funnel_is_expect_value() {
     // interpolation field's non-place branch consumed an expression result with no producer check
     // at all (DEV-203), and a bound of eight had room for it.
     assert_eq!(
-        direct, 6,
-        "every direct `eval_expr` consumer must be classified. Found {direct}, expected 6:\n\
+        direct, 7,
+        "every direct `eval_expr` consumer must be classified. Found {direct}, expected 7:\n\
          \x20 1. `expect_value` itself — the funnel\n\
          \x20 2. `eval_block`'s tail — flows to the block's value, NotABoundary\n\
          \x20 3. `StmtKind::Expr` — the value is dropped, not stored\n\
-         \x20 4. an interpolation field — a CHECKED consumer, `check_expr_value` (DEV-203)\n\
-         \x20 5. an `else` branch — flows to the enclosing `if`\n\
-         \x20 6. a match arm body — flows to the enclosing `match`\n\
+         \x20 4. a let initializer — a CHECKED consumer, `check_expr_value`\n\
+         \x20 5. an interpolation field — a CHECKED consumer, `check_expr_value` (DEV-203)\n\
+         \x20 6. an `else` branch — flows to the enclosing `if`\n\
+         \x20 7. a match arm body — flows to the enclosing `match`\n\
          A new one is either a typed consumer that must call `check_expr_value`, or a \
          flow-through that must be classified here before it is added."
     );

@@ -52,6 +52,31 @@ disagree, the dated record wins and this block is stale — fix it in the same c
 
 ---
 
+## CD-395 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
+
+**Owner-approved implementation of WP-PKG-TOOLCHAIN-ROOT.** Three distribution choices are now
+load-bearing rather than inferred from directory names:
+
+1. A package ships only when its manifest says `"distribution": { "toolchain": true }`. The
+   marker names toolchain bundling rather than registry publication. The current marked set is the
+   27 packages whose entry is `src/lib.stark`; the `stark-get` application and all 25 consumer
+   fixtures do not ship.
+2. The bundled version must satisfy the requested constraint. An incompatible request is refused
+   with both requested and carried versions.
+3. Fresh resolution precedence is explicit `path`, then the workspace registry, then the
+   executable-relative toolchain root. A compatible workspace-registry package shadows a bundled
+   package with one warning. A lockfile does not re-run precedence: its `registry` or `toolchain`
+   source remains authoritative.
+
+Toolchain lock entries record `source: "toolchain"`, version and content hash, never the absolute
+installation prefix. Toolchain packages remain local in `--offline` mode and contribute the same
+transitive capability envelope as path and registry packages. The installed tree mirrors
+`packages/<name>/`, preserving existing sibling path dependencies.
+
+`stark doctor` now has independent named `provider_crates` and `packages` checks. The provider
+check derives its required set from the compiler's built-in provider registry, so deleting a crate
+and also deleting its manifest hash cannot produce a false OK.
+
 ## CD-394 — AS8 CLOSED, qualification PASS; the evidence base was overstated in three documents (2026-08-09)
 
 **`STARKLANG/docs/compiler/audits/AS8-EXIT-QUALIFICATION.md` is the record.** All five exit criteria

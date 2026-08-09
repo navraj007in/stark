@@ -131,8 +131,9 @@ conflict table.
   source formatter, a naming-convention test runner, a documentation generator, and an LSP server
   with a VS Code extension. The Python code in `STARKLANG/compiler/` and `Practice/Interpreter/`
   are pre-pivot prototypes and must not be extended for Core v1 work.
-- Packages and host access: **28 first-party packages live under `packages/`** (moved there
-  2026-08-04), each with a `*-consumer` package that must actually *call* its declared surface.
+- Packages and host access: **27 libraries plus the `stark-get` application live under
+  `packages/`** (moved there 2026-08-04). Their qualification consumers must actually *call* the
+  declared surfaces they cover.
   Host authority uses capability vocabulary v1 — `filesystem-read`, `filesystem-write`,
   `environment-read`, `network-client`, `network-listen`, `clock`, `randomness`,
   `process-execution`, `native-code`. References derive a conservative transitive set, which the
@@ -142,9 +143,10 @@ conflict table.
   all. An HTTP/1.1 and HTTPS client written in STARK closed 2026-08-03 (HC0–HC13).
 - Distribution: Installer Phase I is implemented — release archives, platform installers, a
   versioned install tree (`lib/stark/versions/<v>` with `current`), uninstall, and `stark doctor`
-  manifest verification. It proves **integrity, not authenticity**: archives are unsigned, the
-  payload does not carry the first-party packages or providers, and an offline build of an
-  HTTP/TLS program on a clean machine is not yet possible.
+  manifest verification. The payload carries 27 explicitly marked first-party libraries and all
+  six native provider crates; version-only dependencies resolve from the executable-relative
+  toolchain root offline. `stark doctor` names package and provider-crate inventory checks. It
+  proves **integrity, not authenticity**: archives remain unsigned.
 - Delivery has been governed by **two, non-overlapping gate sequences** — do not conflate them:
   - **Old sequence (`starkc/docs/gate1-exit.md` … `gate7-decision.md`)**, cited by
     `STARKLANG/docs/ROADMAP.md`: all seven gates are closed. Gates 1–5 built the front end,
