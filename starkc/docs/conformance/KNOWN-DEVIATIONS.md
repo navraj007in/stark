@@ -7307,3 +7307,50 @@ every non-reproducing verdict in this pass was re-tested across shape variants.
 Remains OPEN, and this is not a confirmation. A native build racing its own dependency build is
 non-deterministic; a single successful build does not falsify it, and no fix commit exists. Counted
 as open conservatively. Settling it requires repeated cold builds of an HTTPS program.
+
+## DEV-180 — scheduled: its own packet, immediately after C10-Q closes (OPEN, owner ruling 2026-08-09)
+
+Still OPEN and still reproducing. This records **when** it is repaired and what the packet already
+knows, so the packet does not restart the investigation.
+
+**Owner ruling (2026-08-09): DEV-180 is taken as its own packet once C10-Q closes, and not before.**
+
+The reason is not difficulty. Binding a genuine reference for `&mut self` changes what the HIR
+oracle MEANS by a mutable receiver, and the oracle is the reference every engine-agreement claim in
+C10 is measured against. Landing it before C10-Q invalidates the evidence package; landing it after
+costs a re-run of the comparison, which is the cheaper and more honest order. This supersedes the
+entry's earlier "sequenced before A4 resumes" only as to ordering against C10-Q — A4 still follows
+this repair, not the other way round.
+
+### The three questions the entry required answered first — answered
+
+1. **Why DEV-070 excluded `&mut self` when `&self` moved to genuine references.** Because
+   take/write-back needs the caller's slot emptied to bind the value as `self`, and the `&self` arm
+   never does: it binds `Value::Ref(receiver_place.clone())`, since a shared borrow need not own.
+   The asymmetry was left deliberately and commented — "(`&mut self` keeps its take/write-back
+   model.)" **It was a deferral, not a design.**
+2. **Whether that limitation still holds. It does not.** `Place` and `place_slot_mut` already write
+   through a projection; that is exactly what the `&self` path uses today. The machinery the
+   deferral was waiting for exists.
+3. **Whether the returned-reference test depends on rebasing out of the method frame.** This is the
+   real risk and the reason the entry's third forbidden repair exists. A returned `&mut` currently
+   points into method-frame temporary storage; binding a real reference makes it point into caller
+   storage, which is correct but is not what
+   `mut_reference_returned_from_mut_self_method_writes_through` was written against. That test must
+   be re-derived from the specification, **not adjusted until it passes.**
+
+### The shape, and the tell that it is the right one
+
+Bind `Value::Ref(receiver_place.clone())` for `hir::Receiver::RefMut`, let mutability come from the
+static `Ty` and the borrow checker, and **delete the write-back and its error-path restoration
+entirely** — including the "the `Drop` receiver disappeared" internal error. That code exists only
+to service the flattening. A repair that leaves it in place has not made the receiver a reference.
+
+The entry's three forbidden repairs stand unchanged: no `&mut T → bare T` in `value_matches_ty`, no
+receiver-specific validator exception, and no synthetic reference to method-local storage.
+
+### Expected cost, recorded before the work so it can be checked against
+
+The five named receiver tests move, plus whatever the three-engine suite finds — and it will find
+something, because this changes the oracle. A packet that reports *no* engine movement has probably
+not changed the semantics it set out to change.
