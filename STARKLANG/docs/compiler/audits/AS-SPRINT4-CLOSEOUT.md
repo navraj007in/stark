@@ -4,7 +4,8 @@
 **Packets:** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394).
 **Range:** `b33b3e7..e7bb95d` — 45 commits after `6050efa`, which itself carries Sprint 3.
 
-**Verdict: PENDING exact-head CI. Every other Tier-3 row is discharged below.**
+**Verdict: PASS.** Every Tier-3 row is discharged. AS8's exact-head CI was green on `e7bb95d`
+(**24 jobs, 0 failures**), and the only commits after it are documentation.
 
 ---
 
@@ -26,7 +27,7 @@ rows are **not** optional here, because extension code and `package.rs` both cha
 | --- | --- |
 | `cargo fmt --check` | **CLEAN.** Two of my own files needed formatting and were fixed with `rustfmt <paths>`, never a whole-tree `cargo fmt` — this checkout is shared |
 | `cargo clippy --workspace --all-features --all-targets -- -D warnings` | **CLEAN.** Run in its own command and its exit read. An earlier piped run reported exit 0 while the build was failing; the pipe masks it |
-| Full Rust suite through CI | **PENDING** — exact-head CI on `e7bb95d` |
+| Full Rust suite through CI | **GREEN** — run 31289411236 on `e7bb95d`, **24 jobs, 0 failures**, three Tier-1 platforms. Commits after that head are documentation only, verified by `git diff --name-only` |
 | Core positive and negative fixture conformance | **CLEAN** — `conformance`, which drives `STARKLANG/tests/spec-fixtures` |
 | HIR / MIR / native-debug / native-release differential rows | **CLEAN** via CI's `three_engine_differential`, `mir_differential`, C6.4/C6.5 |
 | Tensor / extension tests | **REQUIRED and clean** — `extensions/tensor` changed under AS6; the AS6 boundary lint (`as7_module_dependencies::as7_does_not_reopen_the_as6_extension_boundary`) is green |
@@ -116,6 +117,10 @@ merge-tree        CLEAN for develop + PR #10; neither branch touches ROADMAP.md
 ```
 
 ```text
+[DONE] CD-394 exact-head CI GREEN  e7bb95d, 24 jobs, 0 failures
+[DONE] PR #10 merged to develop as 645997d — a MERGE COMMIT, 2 parents, no history rewritten
+[NOW ] PR #11 (Sprint 4 integration) -> exact-head Tier-3 CI -> merge commit -> Campaign B exit
+
 CD-394 exact-head CI GREEN -> PR #10 (integration stage 1, merge commit)
                            -> PR #11 (Sprint 4 integration) -> this closeout -> Tier-3 CI GREEN
                            -> merge PR #11 (merge commit) -> Campaign B exit report
