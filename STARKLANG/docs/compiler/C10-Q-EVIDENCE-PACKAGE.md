@@ -276,15 +276,20 @@ campaign's method over an audit.
 ```text
 1  the gate decision            PASS-WITH-DEVIATIONS, or otherwise
 2  the exact release wording    §3.2 as drafted, or amended
-3  whether DEV-177 must close   it is the only subtraction that falsifies rather than narrows
-   before any conformance
-   claim is published
-4  whether T3/T7 robustness     both are declared-but-not-run; C10-Q can name them or require them
+3  WITHDRAWN — answered      DEV-177 does not reproduce and is CLOSED. It was the only
+   by the reproduction pass  subtraction that falsified rather than narrowed, and it is gone.
+                             Nothing is now blocked on it
+4  whether T3/T7 robustness  both are declared-but-not-run; C10-Q can name them or require them
    and the 7 unverified
    security surfaces are
    acceptable as named
    residuals
 ```
+
+**1 and 2 are satisfied by approving this package as drafted; only 4 needs a separate answer.** Two
+further calls are optional and neither blocks the gate: whether DEV-122's surviving clamp gets its
+own number, and whether DEV-160's named-refusal gap (it does not cover the shape
+`stark-http-client` works around) is recorded only or scheduled.
 
 **Nothing in this package should be read as authorising a `develop -> main` promotion.** That
 follows the decision; it does not accompany it.
