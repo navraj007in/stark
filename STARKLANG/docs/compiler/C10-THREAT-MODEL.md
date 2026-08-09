@@ -47,7 +47,7 @@ toolchain, or inject into generated code.
 | **S07** | environment propagation | Reads are enumerable: `STARK_CARGO`/`CARGO`, `STARK_RUSTC`/`RUSTC`, `STARK_RUNTIME_DIR`, `STARK_REQUIRE_INSTALLED_RUNTIME`, `STARK_DUMP_MIR_ON_VERIFY_FAIL` | `c163_*`/`dev161_ambient_cargo_target_dir` covers the `CARGO_TARGET_DIR` interaction (DEV-161) | **PARTIAL** |
 | **S08** | temporary files / directories | `env::temp_dir()` + PID + counter; **no shared root** (C6.4 row 17) | `c10c_security::s08_generated_temp_paths_do_not_collide_within_a_process`; C6.4 row 17's platform evidence | **VERIFIED**, with one known survivor outside the matrix using `/tmp` (a gate-7 fixture) |
 | **S09** | archive extraction | Installer-side. Release archives are produced by `build-release.py`; the compiler extracts nothing | `test_build_release.py`; `release package smoke` on three platforms | **VERIFIED for production**, not for extraction of a hostile archive — R-S09 |
-| **S10** | dependency / package provenance | **CORRECTED 2026-08-09 — see §2a.** `stark.lock` records, per dependency, the **canonical absolute `source` directory** and a verified **`sha256` content hash**; a mismatch is a hard error. The lockfile also carries a `capability_vocabulary` version | the content-hash-mismatch path (`"content hash mismatch for cached package"`); `qualify-first-party-packages.py` | **VERIFIED — by a different mechanism than this row first claimed** |
+| **S10** | dependency / package provenance | First-party manifests use plain sibling `../stark-<name>` paths; `stark.lock` pins with a verified `sha256`; **and dependency resolution refuses a path outside the workspace** — `package.rs:1087` errors with *"dependency '…' resolves to '…' which is outside the permitted workspace"* | `qualify-first-party-packages.py`; the containment error path at `package.rs:1087`; `package.rs::get_workspace_root` tests | **VERIFIED.** See §2a — this row was briefly "corrected" to say the opposite, in error |
 | **S11** | LSP workspace trust | The server reads files of the package containing an opened URI. **There is no trust prompt** — opening a folder analyses it | none | **UNVERIFIED, and see DEV-186** — R-S11 |
 | **S12** | executable / tool paths | `command_path` prefers `STARK_CARGO`/`CARGO`, else the **bare name** `cargo` — i.e. **PATH lookup** | source-verified; no falsifier test | **ACCEPTED LIMITATION (class D)** — §4 |
 | **S13** | denial-of-service inputs | The parser's `MAX_DEPTH = 200` bounds syntactic nesting; the LSP bounds nothing | `c10b_robustness` T1/T2/T9 — **and this surface is where C10-B's two findings live** | **FAILS** — DEV-214, DEV-186 |
@@ -57,43 +57,74 @@ toolchain, or inject into generated code.
 
 ---
 
-# 2a. S10 CORRECTION — I described a defence that does not exist, and missed the one that does
+# 2a. S10 — a correction, and then the correction WITHDRAWN. The original row was right.
 
-**This row originally read:** *"the workspace root is the package's parent, so a dependency outside
-`packages/` is refused by name."* **That is false at HEAD.** It was written from a remembered
-constraint rather than from the code.
+**Both records are kept, because the sequence is the lesson.**
 
-Measured:
+### What I claimed on 2026-08-09, and withdrew the same day
 
-```text
-is_within_workspace   called at exactly ONE site, and it checks the ROOT MANIFEST:
-                          "root package is outside the permitted workspace"
-dependency paths      parent_dir.join(dep_path) -> canonicalize() -> DependencySource::Path
-                      NO containment check. An external path dependency is ACCEPTED
-```
-
-**External path dependencies are permitted** — which is what Cargo does, and is a **class D accepted
-operational limitation** rather than a vulnerability. It must be stated, because a reader of the
-original row would have assumed a boundary that is not there.
-
-**The real defence is stronger and more specific than the one I invented.** `LockfilePackage`
-records, per dependency:
+`CLAUDE.md` changed mid-session and asserted that external path dependencies are supported, which
+contradicted this row. I said the right thing — *the charter puts `CLAUDE.md` at level 6 and the
+implementation at level 3, so read the code* — and then **read the wrong code**.
 
 ```text
-source   Option<String>  "Auditable acquisition origin. Path dependencies use the canonical
-                          absolute directory; registry dependencies use `registry`"
-sha256   String          content hash, VERIFIED on use — a mismatch is an error, not a warning
+what I reported      is_within_workspace is called at ONE site, checking only the ROOT manifest,
+                     so external path dependencies are ACCEPTED
+what is actually     THREE sites. package.rs:1087 checks the DEPENDENCY manifest and errors:
+true                   "dependency '...' resolves to '...' which is outside the permitted
+                        workspace '...'"
 ```
 
-plus a `capability_vocabulary` version on the lockfile itself. **Provenance is established by
-recording and hashing what was actually used, not by restricting where it may live.** That is a
-better design than containment, and one I would have missed entirely had I not checked.
+### Why I read the wrong code
 
-**How this was found, because the method is the transferable part.** `CLAUDE.md` changed
-mid-session and asserted that external path dependencies are supported — contradicting this row.
-The charter puts `CLAUDE.md` at level 6 of the source-of-truth hierarchy and the implementation at
-level 3, so **neither the old row nor the new summary was trusted; the code was read.** The summary
-was right and my security document was wrong.
+**A parallel session had switched the primary checkout to its own unmerged branch, and I read
+`package.rs` from there without checking which branch I was on.** That branch removes the
+dependency containment check as part of supporting external path dependencies — real work, not yet
+merged. Verified afterwards against both anchors that matter:
+
+```text
+f12ecec         the C10 qualification baseline    3 sites, dep check present at :1087
+origin/develop  after the merge                   3 sites, dep check present at :1087
+their branch    unmerged                          the check removed; capability_vocabulary added
+```
+
+**So the original row was correct for the baseline and for develop, and my correction described a
+state that does not yet exist anywhere C10 qualifies against.**
+
+### The lesson, stated as a rule
+
+> **"Read the code" is not a method until you have established WHICH code.** A shared checkout can
+> be on any branch at any moment. Every code-derived claim in a C10 document must name the commit
+> it was read from, and that commit must be the qualification baseline or an explicit successor —
+> never "whatever was checked out".
+
+This is the same class of error as citing a CI run without its run id (§14.2), and I made it hours
+after writing that rule down. The claim was *verified against evidence*; the evidence was the wrong
+evidence, and nothing about the verification would have revealed that.
+
+### The fourth stage, recorded in advance
+
+The full sequence has four stages, and the last one has not happened yet:
+
+```text
+1  ORIGINAL S10          containment defence correctly described
+2  CORRECTION            WRONG — claimed external dependencies already accepted.
+                         Cause: code read from the wrong checked-out branch
+3  WITHDRAWAL            baseline truth restored; commit-anchoring rule added
+4  FUTURE INTEGRATION    external paths ACTUALLY become accepted — because the COMPILER
+                         CHANGED, not because the baseline was ever misread
+```
+
+**Stage 4 matters more than it looks.** When `fix/release-package-ships-providers` lands, the
+sentence I wrongly wrote in stage 2 becomes true. Without this note, a later reader would find a
+withdrawn "correction" that the code now vindicates, and reasonably conclude the withdrawal was the
+error.
+
+It was not. The parallel branch **changes the model** rather than revealing it: it keeps the root
+workspace check, and treats a path outside the workspace as an **external source** whose provenance
+and content hash are recorded, instead of refusing it. That is a different design, deliberately
+adopted — and when it lands, S10's defence, falsifier and class all have to be re-derived against
+it. **A row that becomes true for a new reason is a new row, not a restored one.**
 
 ---
 

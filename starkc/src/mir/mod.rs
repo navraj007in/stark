@@ -1474,3 +1474,343 @@ fn dump_operand(op: &Operand) -> String {
         },
     }
 }
+
+/// C10-D — `AS8-DA-002/003/004`'s missing cross-check, built as the owner ruled.
+///
+/// **The measurement that made this necessary.** AS8 mutated each interpreter/verifier pair
+/// one-sided and both sides died — but the KILL MESSAGES showed neither copy was killing the
+/// other: copy A died to `mir_differential`, copy B to an `unreachable!()` somewhere else
+/// entirely. So the redundancy was real and the CROSS-CHECK was imaginary. The ruling was to keep
+/// both implementations — a verifier derives its value from implementing the rule independently,
+/// and merging them would create shared fate where there is none — and to **build the control that
+/// was missing** rather than delete the redundancy that makes it possible.
+///
+/// **Exhaustive over the closed set, which is what makes it a total control.** `RuntimeFn` is a
+/// closed, versioned surface (contract §7). Iterating every variant means drift cannot hide in the
+/// one classification nobody wrote a case for.
+///
+/// **A fourth pair, which `AS8-DA` does not catalogue.** The register lists Vec (`DA-002`), Box
+/// (`DA-003`) and Slice (`DA-004`). `is_map_runtime` / `is_map_runtime_fn` is a fourth pair of the
+/// same shape, and it was found by enumerating the classifiers rather than by reading the
+/// register — which is precisely what `AS8-DUPLICATE-AUTHORITIES.md` warns about when it says
+/// "this is a lower bound, not an inventory".
+#[cfg(test)]
+mod c10d_runtime_fn_parity {
+    use super::RuntimeFn;
+
+    /// Every `RuntimeFn`. Kept in step with the enum by `_exhaustiveness_witness` below: adding a
+    /// variant without adding it here is a COMPILE ERROR, not a silently smaller test.
+    const ALL: &[RuntimeFn] = &[
+        RuntimeFn::PrintlnInt64,
+        RuntimeFn::PrintlnUInt64,
+        RuntimeFn::PrintlnBool,
+        RuntimeFn::PrintlnFloat64,
+        RuntimeFn::PrintFloat32,
+        RuntimeFn::PrintlnFloat32,
+        RuntimeFn::PrintInt64,
+        RuntimeFn::PrintUInt64,
+        RuntimeFn::PrintBool,
+        RuntimeFn::PrintFloat64,
+        RuntimeFn::PrintlnStr,
+        RuntimeFn::PrintStr,
+        RuntimeFn::StringNew,
+        RuntimeFn::StringFromStr,
+        RuntimeFn::StringLen,
+        RuntimeFn::StringIsEmpty,
+        RuntimeFn::StringPushStr,
+        RuntimeFn::StringClear,
+        RuntimeFn::StringAsStr,
+        RuntimeFn::StringClone,
+        RuntimeFn::StringContains,
+        RuntimeFn::StrLen,
+        RuntimeFn::StrIsEmpty,
+        RuntimeFn::StrToString,
+        RuntimeFn::StrBytes,
+        RuntimeFn::StrSubstring,
+        RuntimeFn::StrEq,
+        RuntimeFn::StrCmp,
+        RuntimeFn::FmtInt64,
+        RuntimeFn::FmtUInt64,
+        RuntimeFn::FmtBool,
+        RuntimeFn::FmtFloat64,
+        RuntimeFn::FmtFloat32,
+        RuntimeFn::FmtChar,
+        RuntimeFn::FmtUnit,
+        RuntimeFn::FmtPad,
+        RuntimeFn::FmtIntSpec,
+        RuntimeFn::FmtUIntSpec,
+        RuntimeFn::FmtFloat64Spec,
+        RuntimeFn::FmtFloat32Spec,
+        RuntimeFn::VecNew,
+        RuntimeFn::VecWithCapacity,
+        RuntimeFn::VecPush,
+        RuntimeFn::VecPop,
+        RuntimeFn::VecLen,
+        RuntimeFn::VecIsEmpty,
+        RuntimeFn::VecIndexGet,
+        RuntimeFn::VecReplace,
+        RuntimeFn::VecRemove,
+        RuntimeFn::VecClear,
+        RuntimeFn::BoxNew,
+        RuntimeFn::BoxIntoInner,
+        RuntimeFn::VecGetRef,
+        RuntimeFn::VecGetMutRef,
+        RuntimeFn::CharsIterNew,
+        RuntimeFn::CharsIterNext,
+        RuntimeFn::SliceNew,
+        RuntimeFn::SliceNewMut,
+        RuntimeFn::SliceLen,
+        RuntimeFn::SliceIsEmpty,
+        RuntimeFn::VecIterNew,
+        RuntimeFn::VecIterNext,
+        RuntimeFn::HashMapNew,
+        RuntimeFn::HashMapInsert,
+        RuntimeFn::HashMapGet,
+        RuntimeFn::HashMapLen,
+        RuntimeFn::HashMapIsEmpty,
+        RuntimeFn::HashMapContainsKey,
+        RuntimeFn::HashMapRemove,
+        RuntimeFn::HashMapClear,
+        RuntimeFn::HashMapKeysIterNew,
+        RuntimeFn::HashMapKeysIterNext,
+        RuntimeFn::HashSetNew,
+        RuntimeFn::HashSetInsert,
+        RuntimeFn::HashSetRemove,
+        RuntimeFn::HashSetContains,
+        RuntimeFn::HashSetLen,
+        RuntimeFn::HashSetIsEmpty,
+        RuntimeFn::HashSetClear,
+        RuntimeFn::HashSetIterNew,
+        RuntimeFn::HashSetIterNext,
+        RuntimeFn::PrintlnChar,
+        RuntimeFn::PrintChar,
+        RuntimeFn::CharFromU32,
+        RuntimeFn::StringPushChar,
+        RuntimeFn::StringPopChar,
+        RuntimeFn::EprintlnStr,
+        RuntimeFn::EprintStr,
+        RuntimeFn::EprintlnInt64,
+        RuntimeFn::EprintInt64,
+        RuntimeFn::EprintlnUInt64,
+        RuntimeFn::EprintUInt64,
+        RuntimeFn::EprintlnBool,
+        RuntimeFn::EprintBool,
+        RuntimeFn::EprintlnFloat64,
+        RuntimeFn::EprintFloat64,
+        RuntimeFn::EprintlnFloat32,
+        RuntimeFn::EprintFloat32,
+        RuntimeFn::EprintlnChar,
+        RuntimeFn::EprintChar,
+    ];
+
+    /// The compile-time half of the exhaustiveness guarantee.
+    ///
+    /// No catch-all arm, deliberately. A new `RuntimeFn` variant breaks this function, which is the
+    /// signal to add it to `ALL`. Without it, `ALL` could quietly fall behind the enum and every
+    /// assertion below would keep passing over a shrinking population — the failure mode
+    /// `AS8-DA-006` names as "the sixth `MirTy` catch-all to swallow this variant".
+    /// One classifier: `RuntimeFn -> bool`.
+    type Classify = fn(RuntimeFn) -> bool;
+    /// A family under test: its name, the interpreter's classifier, the verifier's.
+    type Family = (&'static str, Classify, Classify);
+
+    #[allow(dead_code)]
+    fn _exhaustiveness_witness(rt: RuntimeFn) {
+        match rt {
+            RuntimeFn::PrintlnInt64
+            | RuntimeFn::PrintlnUInt64
+            | RuntimeFn::PrintlnBool
+            | RuntimeFn::PrintlnFloat64
+            | RuntimeFn::PrintFloat32
+            | RuntimeFn::PrintlnFloat32
+            | RuntimeFn::PrintInt64
+            | RuntimeFn::PrintUInt64
+            | RuntimeFn::PrintBool
+            | RuntimeFn::PrintFloat64
+            | RuntimeFn::PrintlnStr
+            | RuntimeFn::PrintStr
+            | RuntimeFn::StringNew
+            | RuntimeFn::StringFromStr
+            | RuntimeFn::StringLen
+            | RuntimeFn::StringIsEmpty
+            | RuntimeFn::StringPushStr
+            | RuntimeFn::StringClear
+            | RuntimeFn::StringAsStr
+            | RuntimeFn::StringClone
+            | RuntimeFn::StringContains
+            | RuntimeFn::StrLen
+            | RuntimeFn::StrIsEmpty
+            | RuntimeFn::StrToString
+            | RuntimeFn::StrBytes
+            | RuntimeFn::StrSubstring
+            | RuntimeFn::StrEq
+            | RuntimeFn::StrCmp
+            | RuntimeFn::FmtInt64
+            | RuntimeFn::FmtUInt64
+            | RuntimeFn::FmtBool
+            | RuntimeFn::FmtFloat64
+            | RuntimeFn::FmtFloat32
+            | RuntimeFn::FmtChar
+            | RuntimeFn::FmtUnit
+            | RuntimeFn::FmtPad
+            | RuntimeFn::FmtIntSpec
+            | RuntimeFn::FmtUIntSpec
+            | RuntimeFn::FmtFloat64Spec
+            | RuntimeFn::FmtFloat32Spec
+            | RuntimeFn::VecNew
+            | RuntimeFn::VecWithCapacity
+            | RuntimeFn::VecPush
+            | RuntimeFn::VecPop
+            | RuntimeFn::VecLen
+            | RuntimeFn::VecIsEmpty
+            | RuntimeFn::VecIndexGet
+            | RuntimeFn::VecReplace
+            | RuntimeFn::VecRemove
+            | RuntimeFn::VecClear
+            | RuntimeFn::BoxNew
+            | RuntimeFn::BoxIntoInner
+            | RuntimeFn::VecGetRef
+            | RuntimeFn::VecGetMutRef
+            | RuntimeFn::CharsIterNew
+            | RuntimeFn::CharsIterNext
+            | RuntimeFn::SliceNew
+            | RuntimeFn::SliceNewMut
+            | RuntimeFn::SliceLen
+            | RuntimeFn::SliceIsEmpty
+            | RuntimeFn::VecIterNew
+            | RuntimeFn::VecIterNext
+            | RuntimeFn::HashMapNew
+            | RuntimeFn::HashMapInsert
+            | RuntimeFn::HashMapGet
+            | RuntimeFn::HashMapLen
+            | RuntimeFn::HashMapIsEmpty
+            | RuntimeFn::HashMapContainsKey
+            | RuntimeFn::HashMapRemove
+            | RuntimeFn::HashMapClear
+            | RuntimeFn::HashMapKeysIterNew
+            | RuntimeFn::HashMapKeysIterNext
+            | RuntimeFn::HashSetNew
+            | RuntimeFn::HashSetInsert
+            | RuntimeFn::HashSetRemove
+            | RuntimeFn::HashSetContains
+            | RuntimeFn::HashSetLen
+            | RuntimeFn::HashSetIsEmpty
+            | RuntimeFn::HashSetClear
+            | RuntimeFn::HashSetIterNew
+            | RuntimeFn::HashSetIterNext
+            | RuntimeFn::PrintlnChar
+            | RuntimeFn::PrintChar
+            | RuntimeFn::CharFromU32
+            | RuntimeFn::StringPushChar
+            | RuntimeFn::StringPopChar
+            | RuntimeFn::EprintlnStr
+            | RuntimeFn::EprintStr
+            | RuntimeFn::EprintlnInt64
+            | RuntimeFn::EprintInt64
+            | RuntimeFn::EprintlnUInt64
+            | RuntimeFn::EprintUInt64
+            | RuntimeFn::EprintlnBool
+            | RuntimeFn::EprintBool
+            | RuntimeFn::EprintlnFloat64
+            | RuntimeFn::EprintFloat64
+            | RuntimeFn::EprintlnFloat32
+            | RuntimeFn::EprintFloat32
+            | RuntimeFn::EprintlnChar
+            | RuntimeFn::EprintChar => {}
+        }
+    }
+
+    #[test]
+    fn all_lists_every_variant_exactly_once() {
+        let mut seen = std::collections::HashSet::new();
+        for rt in ALL {
+            assert!(
+                seen.insert(format!("{rt:?}")),
+                "duplicate entry in ALL: {rt:?}"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            100,
+            "ALL must list every RuntimeFn variant exactly once; the enum has 100"
+        );
+    }
+
+    /// The control itself: the interpreter's and the verifier's classifications must agree on
+    /// every variant, for every family.
+    ///
+    /// **This does not merge the tables, and that is the point.** Each engine keeps deciding
+    /// independently, so neither inherits the other's answer and the verifier can still disagree
+    /// with a wrong lowering. What the test removes is the ability of one copy to drift from the
+    /// other UNNOTICED — which `AS8-R12` demonstrated is not hypothetical: `scalar_name` drifted
+    /// silently because nothing exercised it.
+    #[test]
+    fn interpreter_and_verifier_classifications_agree_over_the_whole_closed_set() {
+        let families: [Family; 4] = [
+            (
+                "vec",
+                crate::mir::interp::is_vec_runtime,
+                crate::mir::verify::is_vec_runtime_fn,
+            ),
+            (
+                "box",
+                crate::mir::interp::is_box_runtime,
+                crate::mir::verify::is_box_runtime_fn,
+            ),
+            (
+                "slice",
+                crate::mir::interp::is_slice_runtime,
+                crate::mir::verify::is_slice_runtime_fn,
+            ),
+            (
+                "map",
+                crate::mir::interp::is_map_runtime,
+                crate::mir::verify::is_map_runtime_fn,
+            ),
+        ];
+        let mut divergences = Vec::new();
+        for (family, interp, verify) in families {
+            for rt in ALL {
+                let (a, b) = (interp(*rt), verify(*rt));
+                if a != b {
+                    divergences.push(format!(
+                        "{family}: {rt:?} — interp says {a}, verify says {b}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            divergences.is_empty(),
+            "the interpreter and verifier disagree about the runtime surface. Neither is \
+             authoritative over the other by design; a disagreement means one has drifted and the \
+             lowering it guards is now unguarded:\n  {}",
+            divergences.join("\n  ")
+        );
+    }
+
+    /// A family that classifies NOTHING is a table that has been emptied, not a table that agrees.
+    ///
+    /// Without this, deleting every arm from both copies would leave the parity test green: two
+    /// empty tables agree perfectly. `AS8-MUT-003` is the same shape — `copy_canon_matrix` covers
+    /// its target completely and controls nothing.
+    #[test]
+    fn each_family_classifies_a_non_empty_and_proper_subset() {
+        let families: [(&'static str, Classify); 4] = [
+            ("vec", crate::mir::interp::is_vec_runtime),
+            ("box", crate::mir::interp::is_box_runtime),
+            ("slice", crate::mir::interp::is_slice_runtime),
+            ("map", crate::mir::interp::is_map_runtime),
+        ];
+        for (family, f) in families {
+            let n = ALL.iter().filter(|rt| f(**rt)).count();
+            assert!(
+                n > 0,
+                "{family}: classifies nothing — the table is empty, not agreeing"
+            );
+            assert!(
+                n < ALL.len(),
+                "{family}: classifies EVERY variant — the predicate has stopped discriminating"
+            );
+        }
+    }
+}

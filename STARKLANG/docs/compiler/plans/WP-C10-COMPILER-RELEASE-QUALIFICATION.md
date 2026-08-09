@@ -911,7 +911,7 @@ Everything else follows the brief.
 | **C10-A2** | C10.1 | The dashboard | A1 complete; denominators declared | `C10-CONFORMANCE-DASHBOARD.md` + generated JSON |
 | **C10-B** | C10.2 | Robustness and fuzzing | fuzz target population declared (§9.2) | `C10-B-ROBUSTNESS.md` + corpora + regression fixtures |
 | **C10-C** | C10.4 | Security review | threat model / surface inventory FROZEN (§11.1) | `C10-C-SECURITY-REVIEW.md` + `C10-THREAT-MODEL.md` |
-| **C10-D** | C10.3 | Differential, metamorphic, and selected mutations | A2 draft claims exist; relations declared (§10.2) | `C10-D-DIFFERENTIAL.md` + `C10-MUTATION-LEDGER.md` |
+| **C10-D** | C10.3 | Differential, metamorphic, and selected mutations | A2 draft claims exist; relations declared (§10.2) | `C10-MUTATION-LEDGER.md` — **one document, not two** (see §18) |
 | **C10-E** | C10.6 | Performance baselines | workload set frozen (§12.1) | `C10-E-PERFORMANCE-BASELINE.md` + per-platform JSON |
 | **C10-F** | C10.5 | Compatibility and version policy | A2, B, C, D, E complete enough to bound the promises | `C10-F-COMPATIBILITY-POLICY.md` |
 | **C10-Q** | C10.7 | Exact-head release qualification and decision | all of the above; sweep §16.2 clean | `GATE-C10-CLOSURE.md` + `C10-RELEASE-STATEMENT.md` |
@@ -1654,11 +1654,12 @@ MIR version                      MIR_VERSION "0.4". Already enforced: a consumer
 runtime ABI version              MIR_RUNTIME_SURFACE, bumped INDEPENDENTLY of MIR_VERSION.
                                  Compiler/runtime mismatch is already rejected before user code
                                  runs (C6.4 row 9)
-capability vocabulary version    `stark.lock` carries `capability_vocabulary: u64`, and a
-                                 manifest's value is validated ("must be the integer 1"). ADDED
-                                 2026-08-09 — this axis was missing from the list, and it is a
-                                 real compatibility surface: a lockfile written under vocabulary 1
-                                 must have defined behaviour under vocabulary 2
+capability vocabulary version    NOT YET IN develop. A parallel branch adds
+                                 `capability_vocabulary: u64` to `stark.lock` with manifest
+                                 validation. Listed here so C10-F does not have to rediscover it,
+                                 and marked PENDING because it is absent from the C10 baseline
+                                 `f12ecec` and from `develop` as merged — the axis becomes real
+                                 for C10 only if that work lands before C10-F freezes
 Native Provider ABI version      native-provider-abi-v0.1 + CE4-amendment-1 + CD360-amendment-2.
                                  One stark-provider-abi must satisfy both the runtime's `../` and
                                  a provider's `../../../` — Cargo refuses a lockfile naming one
@@ -1831,6 +1832,33 @@ a PASS is a pass. An overlapping green run is still a green run; prefer an overl
 legitimate parallel PRs, and `cancel-in-progress: true` would discard results someone is waiting
 on — both are owner decisions about CI policy, and neither is C10's to make (§3.2). C10 records the
 constraint and works within it.
+
+## 14.1b Source inspection needs the same identity discipline as CI — added 2026-08-09
+
+§14.2 requires a CI citation to name `commit + run id + job + platform`. **A claim derived from
+reading source needs the identical treatment, and the reason is a failure rather than symmetry.**
+
+A C10 security row was "corrected" to the opposite of the truth after `package.rs` was read from a
+shared checkout that a parallel session had switched to its own unmerged branch. Every conventional
+sign of diligence was present: the lower-authority summary was distrusted, implementation code was
+read, concrete call sites were found, and a conclusion was derived from them. **The conclusion was
+still false, because the object inspected was not the object claimed.**
+
+> **A source inspection without a commit identity is not reproducible evidence.**
+
+Every material code-derived claim in a C10 document records:
+
+```text
+repository        which one, when more than one is in play
+commit SHA        the exact object read — never "HEAD", never "the checkout"
+file / path
+symbol or lines   what was actually looked at
+relationship      how that SHA relates to the declared qualification baseline:
+                  IS the baseline / an ancestor / a descendant / an unmerged sibling
+```
+
+That last field is the one that would have caught this: the SHA read was an **unmerged sibling** of
+the baseline, and stating so is impossible to do accidentally.
 
 ## 14.2 Tying evidence to the exact commit
 
@@ -2128,8 +2156,12 @@ STARKLANG/conformance/c10-dashboard.json                     (generated; the das
 STARKLANG/docs/compiler/audits/C10-B-ROBUSTNESS.md
 STARKLANG/docs/compiler/C10-THREAT-MODEL.md                  (frozen before C10-C reviews anything)
 STARKLANG/docs/compiler/audits/C10-C-SECURITY-REVIEW.md
-STARKLANG/docs/compiler/audits/C10-D-DIFFERENTIAL.md
-STARKLANG/docs/compiler/C10-MUTATION-LEDGER.md
+STARKLANG/docs/compiler/C10-MUTATION-LEDGER.md               C10-D, in ONE document
+    (this list originally also promised `audits/C10-D-DIFFERENTIAL.md`. C10-D produced a single
+     document because its differential and metamorphic findings are three paragraphs — the engine
+     vocabulary, and the fact that NO metamorphic relation could be added without normative
+     backing. Splitting three paragraphs into a second file to satisfy a list would be filing,
+     not evidence. Corrected here rather than by writing a stub to make the pointer resolve.)
 STARKLANG/docs/compiler/audits/C10-E-PERFORMANCE-BASELINE.md
 starkc/benchmarks/c10/<platform>.json                        (per-platform, from CI artifacts)
 STARKLANG/docs/compiler/C10-F-COMPATIBILITY-POLICY.md

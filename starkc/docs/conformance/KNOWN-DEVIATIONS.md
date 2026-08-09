@@ -7004,3 +7004,154 @@ wide-but-shallow shapes       2,000-element tuple, 2,000 locals, 1,500 fields �
 
 `cargo test --lib` 569 passed; `c10b_robustness` 12; `c10c_security` 5; `conformance` 3; clippy
 `--workspace --all-features --all-targets -D warnings` exit 0; `fmt --check` clean.
+
+## DEV-012 — CLOSED (C10-P, owner verification, 2026-08-09). Ten of ten features interactively validated
+
+**The deviation's earlier headings stand unedited.** This file is append-only and each was correct
+when written.
+
+### What C8 left open, and what closes it
+
+`GATE-C8-CLOSURE.md` closed Gate C8 with interactive VS Code validation recorded for **three of ten**
+advertised features — hover, go-to-definition, find-references — and narrowed DEV-012 to the
+remaining seven: diagnostics, formatting, completion, signature help, rename, document symbols,
+semantic tokens. Item 8 of §2a was an explicit owner override, labelled *"deliberately closed
+short"*.
+
+**Those seven were exercised by the owner in a real editor on 2026-08-09 and reported verified.**
+
+### Environment
+
+```text
+VS Code           1.132.0 (df53daabb18cd157bdb08c7f01c34df936cf12f4)
+extension         starklang.stark-language@0.2.0, built from the C10 candidate 37a0a03
+compiler          release `stark` / `starkc` from the same candidate, wired via
+                  .vscode/settings.json — NOT a PATH binary of unknown provenance
+host              macOS 26.5.2, arm64
+subject           a real multi-file package: two modules, a struct, an enum, a cross-file symbol
+                  (`parse_fleet`), a decoy sharing its prefix (`parse_fleet_name`), and a
+                  commented type error to introduce and withdraw
+```
+
+**The build was verified to carry the C10 work before the session**, rather than assumed: a
+250-term chain produced `[E0209] this expression is nested too deeply to analyse (250 levels; the
+limit is 200)`, which only the DEV-214 repair emits.
+
+### Evidence class, stated precisely
+
+**MANUAL** (Charter §5.2). Not automated coverage, and it must never be described as such.
+
+**One feature has a value-level record; six have a verdict.** The distinction is kept per feature
+rather than averaged, because it is the difference the DEV-182 lesson turns on.
+
+```text
+COMPLETION   VALUE-LEVEL, owner-reported 2026-08-09:
+             "Completion offered parse_fleet, from fleet.stark, with detail
+              `fn(Int32) -> Int32`: PASS"
+
+             Three independent facts, and each is one the wrong answer would have failed:
+               the CANDIDATE      parse_fleet, not a keyword and not the decoy parse_fleet_name
+               the PROVENANCE     fleet.stark — a DIFFERENT module, so cross-module completion
+                                  resolved rather than same-file text matching
+               the DETAIL         `fn(Int32) -> Int32` — the real resolved signature, so the
+                                  detail came from compiler analysis and not from a label
+
+diagnostics, formatting, signature help, rename, document symbols, semantic tokens
+             VERDICT — reported verified by the owner, no transcript captured
+```
+
+**That distinction is recorded because `GATE-C8-CLOSURE.md` §4 is explicit about why it matters:**
+
+> DEV-182 — the LSP JSON parser silently decoded every escaped non-BMP character to the empty
+> string — **passed** protocol validation, because both the parse and the response succeeded and
+> only the *value* was wrong.
+
+A verdict-shaped record is exactly what that defect survived. **The owner is the only party who can
+produce this evidence and is the authority on their own session**, so DEV-012 closes; but the
+release claim should describe it as *interactively validated by the owner in the recorded
+environment*, which is what it is, rather than implying a captured per-feature value transcript.
+
+**The completion observation is what the other six would look like if captured**, and it is kept
+verbatim as the template — `"offered X, from Y, with detail Z"` names a candidate, a provenance and
+a resolved signature, any one of which a stub or a text-matcher would get wrong. A re-validation
+should produce six more of these.
+
+### What this closure claims
+
+```text
+CLAIMS      all ten advertised language-service features have been exercised interactively in a
+            real editor against a compiler built from the C10 candidate
+CLAIMS      the C10-G gate's DEV-012 arm is satisfied: the language-services claim need not be
+            narrowed on account of missing interactive validation
+NOT CLAIMS  that the extension's full UI surface is exercised — ten features, not everything
+NOT CLAIMS  automated protection. Nothing here runs in CI; a regression in any of the seven would
+            be caught only by another manual session
+NOT CLAIMS  a value-level transcript. See above
+```
+
+**C10-G status after this and C10-P's DEV-213 closure: both arms satisfied.** The Core v1 Compiler
+Stable language-services claim may be stated without the DEV-012 or DEV-213 qualifications.
+
+## DEV-005 — CLOSED (2026-08-09). It does not reproduce; AS2 removed it
+
+**OD-7 attached a condition to this entry: one current-head reproduction before C10-Q, "because the
+entry is old enough that a later change may already have removed it, and a release must not name a
+deviation that no longer exists."** The condition was right, and this is the result.
+
+### What it claimed
+
+`starkc check` gated on `severity != Error` while `starkc run` gated on `diagnostics.is_empty()`, so
+a program with one warning and zero errors was `OK` under `check` and refused outright by `run`.
+
+### Measured at `29ce610` — it does not reproduce
+
+Warning case, `unreachable code` after a `return`:
+
+```text
+$ starkc check warn.stark
+Warning: [W0005] unreachable code  --> warn.stark:4:5
+warn.stark: OK
+check EXIT=0
+
+$ starkc run warn.stark
+Warning: [W0005] unreachable code  --> warn.stark:4:5
+1
+run EXIT=0          <- the program RAN, and printed
+```
+
+**Both gate on errors. Both report the warning. `run` executes.** The divergence is gone.
+
+### The negative control, because "both exit 0" could equally mean `run` stopped gating at all
+
+```text
+$ starkc check err.stark    (let x: Int32 = "not an int")   EXIT=1
+$ starkc run   err.stark                                    EXIT=1
+```
+
+An error still refuses both. So `run`'s gate is intact and merely no longer fires on warnings —
+which is the fix, not a regression. Output is byte-identical across repeated runs.
+
+### Why it went away
+
+Not a targeted repair. **`AS2` — "the ONE pipeline" — removed the hand-assembled pipeline that
+`cmd_run` used to carry**, and `main.rs`'s own comment records both the change and the reasoning:
+
+> *"This command used to assemble parse → resolve → typecheck itself and gate each phase on
+> `diagnostics.is_empty()` rather than on errors — equivalent today, because only typecheck emits
+> warnings … but a warning added to parse or resolve would silently have become fatal here. **The
+> session gates on errors.**"*
+
+So the deviation was fixed as a side effect of removing a duplicated pipeline — which is exactly the
+class of defect Charter §1.5 rule 18 predicts when tools diverge, and exactly what consolidating them
+was expected to cure.
+
+### Disposition
+
+```text
+status       CLOSED — does not reproduce at the candidate
+supersedes   OD-7's "OPEN, ACCEPTED RELEASE DEVIATION"
+consequence  C10-Q must NOT name DEV-005 as a release deviation. Naming a deviation that no longer
+             exists is its own kind of false claim
+```
+
+**Population A drops from 24 live-OPEN to 23.**

@@ -1,0 +1,155 @@
+[
+  {
+    "spec_id": "AS8-MUT-017",
+    "result": "KILLED",
+    "seconds": 4.8,
+    "killers": [
+      "a_host_resource_is_never_copy",
+      "a_host_resource_is_slot_backed",
+      "extracting_a_resource_from_a_result_moves_it"
+    ],
+    "killer_count": 3,
+    "divergence": "TypeContext::is_copy must say a host resource is not Copy\n\n---- a_host_resource_is_never_copy stdout ----\n\nthread 'a_host_resource_is_never_copy' (64202400) panicked at tests/a11_host_resource.rs:688:5:\na host resource must never be Copy",
+    "detail": "",
+    "target": "ESF-RES-001",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "mir::mir_ty_is_copy \u2014 HostResource arm",
+    "expected": "KILLED",
+    "note": "A host resource classified Copy-eligible \u2014 THE EXACT A11/CD-234 SHAPE THE CODE COMMENT WARNS ABOUT, which records that a wildcard here made a resource Copy with three silent consequences. A survivor would mean that warning is unenforced by anything.",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "spec_id": "AS8-MUT-023",
+    "result": "KILLED",
+    "seconds": 161.7,
+    "killers": [
+      "the_corpus_replays_through_every_required_engine"
+    ],
+    "killer_count": 1,
+    "divergence": "2 of 170 replayed cases failed:\n\n=== gen__t16__ca829fca ===\nclassification  OBSERVATION-DIVERGENCE\ncategory        traps\nkind            generated\ngenerator       template T16, seed c6.5-default, version 0.1.0\nsources         cases/generated/gen__t16__ca829fca.stark\npackage graph   single-file\nnormative rules TRAP-CATEGORY-001\nreproduce       C6_CASE=gen__t16__ca829fca cargo test --test c6_generated_corpus\nretention       cases/retained/<DEV-ID>/original/gen__t16__ca829fca.stark\ndetail\n  hir/mir disagree on trap category\n  --- hir ---\n  Trapped(\n      TrapObservation {\n          category: Divi",
+    "detail": "",
+    "target": "EV-CORPUS-C6",
+    "tag": "EVIDENCE_SHARED",
+    "authority": "the C6 corpus's expected_trap_category, vs a real semantic change",
+    "expected": "KILLED",
+    "note": "The MUT-007 mutation, run against THE CORPUS ALONE. EI5 asks whether the corpus 'detects semantic change' or merely 'detects corpus change'. Its cases carry expected_trap_category, so a kill here means the corpus pins semantics independently of the engines agreeing. EV-COPY-MATRIX, Batch 8's other row, is ALREADY ANSWERED by MUT-003 \u2014 it survived, so it is a transcription.",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "spec_id": "AS8-MUT-034",
+    "result": "SURVIVED",
+    "seconds": 76.2,
+    "killers": [],
+    "killer_count": 0,
+    "divergence": "",
+    "detail": "",
+    "target": "resolver visibility",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "resolve::item_is_visible_from",
+    "expected": "KILLED",
+    "note": "Every item becomes visible from every module \u2014 private items stop being private. 07 governs visibility and resolve.rs carries in-module tests for exactly this (`private_item_is_not_visible_from_a_descendant_module`), so `--lib` would also kill it; the selection asks whether the SPEC FIXTURES do.",
+    "verdict": "UNEXPECTED"
+  },
+  {
+    "spec_id": "AS8-MUT-035",
+    "result": "SURVIVED",
+    "seconds": 59.9,
+    "killers": [],
+    "killer_count": 0,
+    "divergence": "",
+    "detail": "",
+    "target": "resolver visibility",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "resolve::name_is_visible_from \u2014 re-export visibility",
+    "expected": "KILLED",
+    "note": "A NON-`pub` re-export becomes visible outside its module. `use` without `pub` must not re-export (07).",
+    "verdict": "UNEXPECTED"
+  },
+  {
+    "spec_id": "AS8-MUT-036",
+    "result": "KILLED",
+    "seconds": 3.9,
+    "killers": [
+      "dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not",
+      "rejects_read_of_moved_field_and_moved_container",
+      "rejects_use_after_move"
+    ],
+    "killer_count": 3,
+    "divergence": "expected verifier rejection with MIR-0007, got clean pass",
+    "detail": "",
+    "target": "MIR verifier",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "mir::verify::paths_prefix_related \u2014 move-path overlap",
+    "expected": "KILLED",
+    "note": "Two move paths are never considered prefix-related, so overlapping partial moves stop being detected. WEAKENS the verifier: it removes a rejection rather than adding one, so only a test that asserts the rejection can notice.",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "spec_id": "AS8-MUT-037",
+    "result": "SURVIVED",
+    "seconds": 5.2,
+    "killers": [],
+    "killer_count": 0,
+    "divergence": "",
+    "detail": "",
+    "target": "MIR verifier",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "mir::verify::may_need_drop \u2014 the HostResource arm",
+    "expected": "KILLED",
+    "note": "A11 \u00a75: a host resource's drop IS its provider close. The source comment records that lowering and the verifier were CORRECTED SEPARATELY here \u2014 lowering stopped emitting the Drop, and when that was fixed the verifier rejected the Drop it now emitted. AS8-DA-006 is that pair; this trial disturbs the verifier half.",
+    "verdict": "UNEXPECTED"
+  },
+  {
+    "spec_id": "AS8-MUT-038",
+    "result": "KILLED",
+    "seconds": 3.6,
+    "killers": [
+      "resolve::tests::module_paths_imports_and_visibility_are_enforced",
+      "resolve::tests::private_item_is_not_visible_from_a_descendant_module"
+    ],
+    "killer_count": 2,
+    "divergence": "assertion failed: private.iter().any(|diagnostic| diagnostic.code.as_deref() == Some(\"E0207\"))",
+    "detail": "",
+    "target": "resolver visibility",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "resolve::item_is_visible_from \u2014 vs the in-module unit tests",
+    "expected": "KILLED",
+    "note": "Every item visible from every module, checked against resolve.rs's own unit tests rather than against the fixture corpus.",
+    "verdict": "CONFIRMED"
+  },
+  {
+    "spec_id": "AS8-MUT-039",
+    "result": "SURVIVED",
+    "seconds": 4.1,
+    "killers": [],
+    "killer_count": 0,
+    "divergence": "",
+    "detail": "",
+    "target": "resolver visibility",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "resolve::name_is_visible_from \u2014 vs the in-module unit tests",
+    "expected": "KILLED",
+    "note": "A non-`pub` re-export becomes visible outside its module, same comparison.",
+    "verdict": "UNEXPECTED"
+  },
+  {
+    "spec_id": "AS8-MUT-007",
+    "result": "KILLED",
+    "seconds": 2.9,
+    "killers": [
+      "dev089_trap_inside_fmt_agrees",
+      "division_by_zero_trap_agrees",
+      "drop_output_before_a_trap_is_compared",
+      "trap_aborts_without_drops_agree"
+    ],
+    "killer_count": 4,
+    "divergence": "dev089_trap.stark: trap category mismatch \u2014 MIR IntegerOverflow vs oracle message \"division by zero\"",
+    "detail": "",
+    "target": "ESF-TRAP-001b",
+    "tag": "SHARED_AUTHORITY",
+    "authority": "trap category ASSIGNMENT \u2014 mir/lower.rs only (one-sided)",
+    "expected": "KILLED",
+    "note": "Division by zero reported as IntegerOverflow ON THE MIR PATH ONLY. interp.rs still assigns DivideByZero at its own site, so `oracle_category` should disagree. Predicted KILLED -- which, if it holds, means assignment is PARTIALLY_VISIBLE and the register's INVISIBLE is wrong.",
+    "verdict": "CONFIRMED"
+  }
+]

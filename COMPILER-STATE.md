@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-D (challenge), C10-E (perf), C10-F (policy)  Blocked: none
+Gate: C10  Next: toolchain integration  Blocked: C10-Q (needs the consolidated candidate)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, C10-P, C10-A1, C10-B, C10-C, **C10-A2 COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-D, C10-E, C10-F |
+| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **E9 DONE** (`C10-DEVIATION-DISPOSITIONS.md` — 23 A + 5 B + 20 C, all owned; **DEV-005 CLOSED on reproduction**). Remaining: **E10**, **E11**, PR #16 merge |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -358,6 +358,212 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
 
+### C10-F, same day — eight commitments, eight non-commitments, and two MSRVs
+
+`C10-F-COMPATIBILITY-POLICY.md`. Candidate `33a8608`; every claim read from that commit per §14.1b.
+Each of the fourteen axes is COMMITTED with evidence, UNCOMMITTED with what would be needed, or
+NOT APPLICABLE with the reason — no fourth option, no partial credit, and a promise with no evidence
+citation is **deleted rather than softened**.
+
+**The three version axes are COMMITTED as REJECTION promises, not stability promises**, which is the
+useful shape for a 0.1.0 compiler: MIR runtime surface (`MIR-0017`, tested by
+`rejects_unsupported_runtime_surface` stamping `0.1-A999`), runtime ABI (generated prologue,
+`c63_closure_evidence`), and the Native Provider ABI — the strongest, requiring **exact version AND
+content hash**, whose own source says *"'close enough' is how a build stops being repeatable"*.
+
+**Core language compatibility is UNCOMMITTED, and that is C10-A2's number arriving where it
+matters:** 56 of 168 rules carry function-precision evidence. A Core compatibility promise would be
+a promise about all 168.
+
+**Two different MSRV claims, and only one is enforced.** `MINIMUM_RUSTC_VERSION = "1.85.0"` makes
+`stark build` refuse a *user's* older rustc — a real check with a diagnostic. `rust-version = "1.85"`
+in `Cargo.toml` claims **starkc itself** still builds on 1.85, and **nothing verifies it**: CI uses
+`dtolnay/rust-toolchain@stable`, which resolved to 1.93.0 today, so the compiler could have adopted
+a 1.90 feature unnoticed. The enforced check is committed; the Cargo field is UNCOMMITTED until one
+CI job builds on 1.85.
+
+**C10-0's F1 lands here as policy.** `x86_64-apple-darwin` is tier-3: packaged with an archive and
+both installers, exercised by **no CI job**. UNCOMMITTED, and the release notes must say what tier-3
+means rather than let a reader infer support from a packaged artifact.
+
+**Diagnostics: determinism is not stability.** C10-B verified byte-identical diagnostics for the same
+source; DEV-182 (a value silently wrong while both sides reported success) and C10-R1 (keyword
+identity unpinned) are why codes, spans and text must be promised separately or not at all.
+
+### C10-E, same day — the phase split, and DEV-213's residual measured rather than argued
+
+`audits/C10-E-PERFORMANCE-BASELINE.md`; data `benchmarks/c10/darwin-arm64.json`. Candidate
+`01ba608`, Darwin-arm64, rustc 1.93.0. **Baselines only — no threshold proposed, nothing optimised.**
+
+**Workload integrity is verified before any timing is taken**: 7 workloads, 16 files, 0 drift
+against `FROZEN.json`. The harness exits rather than measure a drifted workload, because a baseline
+against a changed workload looks comparable and is not.
+
+**E2 — the phase split `c7-baseline.py` cannot produce.** Type checking dominates at **44–59%**;
+lexing is a flat ~6.5% everywhere. `w06_multi_package` is the only workload where resolution rises
+(26.8%) and checking falls — the one workload with a package graph.
+
+**E2.1 — scaling is mildly superlinear, and recorded rather than acted on.** 64x the input costs
+**117x** the time (~`O(n^1.17)`), with the growth concentrated in checking: its share climbs 52% ->
+75% from 100 to 6,400 functions. 234 ms for 6,400 functions blocks nothing; investigating it is a
+separate approved packet (§12.3).
+
+**E4 — the finding. An edit now costs about a cold open.**
+
+```text
+modules   cold open   edit -> diagnostic   workspace symbol
+      4      548 us              510 us               1 us
+      8      937 us            1,051 us               3 us
+     16    1,808 us            1,869 us               4 us
+     32    3,162 us            3,185 us               8 us
+```
+
+`edit -> diagnostic` tracks `cold open` at every size. **That is C10-P's residual, quantified**:
+package-scoped invalidation drops every cached analysis of the package, so the first query after an
+edit pays for a full re-analysis. C10-P declared this before measuring it — *"invalidation is now
+more eager… no before/after was taken here and none is claimed"* — and at 3.2 ms for 32 modules it
+is inside interactive latency, so **nothing here argues for reverting or optimising the repair.**
+
+**AS8's 22 ms / 181 ms are NOT used as a before/after.** They describe a different architecture (one
+analysis per URI, invalidated per URI) measured with a different harness on a differently-shaped
+package. The numbers here are smaller; that is not evidence of a speedup and is not claimed as one.
+
+**E6 — one platform.** Darwin-arm64 measured; Linux-x64 and Windows-x64 **NOT MEASURED**. The
+harnesses are portable (platform in the filename, RSS unit in the payload, because macOS reports
+bytes and Linux kilobytes) but no CI job runs them. **C10-Q may not generalise these to the platform
+matrix**; the concrete next step is a CI job uploading `benchmarks/c10/<platform>.json`.
+
+**OD-8 appendix — EMPTY, and the reason is availability rather than scope.** No `.onnx` file exists
+in the tree: `gate4/manifest.toml` records that ONNX fixtures "are generated deterministically by
+test code", and `gate5/fetch-input.sh` downloads its reference image from the network, with deploy
+additionally needing ONNX Runtime. Import/verify could be timed by driving the generator; **deploy
+cannot be timed offline at all.** Measuring a third of the appendix and labelling it
+"import/verify/deploy" would be worse than measuring none. **OWNER DECISION:** authorise driving the
+generator for import/verify and record deploy as unmeasurable offline, or accept the empty appendix
+with this explanation as the reason. Either satisfies OD-8; guessing does not.
+
+### C10-R, same day — the freshness rule fired, and the evidence survived the merge
+
+`C10-MUTATION-LEDGER.md` §6. Candidate `29ce610` (`develop` `eb60dec` merged in).
+
+**PR #15 moved five files on the mutation-evidence list**, and §8.2a marked **31 of 41 trials
+STALE** — 6 because the mutated code moved (`mir/lower.rs`, `resolve.rs`), 28 because the killing
+suite moved (`three_engine_differential`, `a11_host_resource`, `c788_resource_lifecycle`).
+
+**Yesterday the rule returned "all FRESH" twice and looked like ceremony. Today it stopped C10-Q
+citing 31 measurements of a compiler that no longer exists.**
+
+**Owner decision: re-run the subset backing published claims, not all 31.** Plan §8.2 scopes
+mutation to claims C10 intends to publish, and C10-F marks Core language compatibility UNCOMMITTED —
+so trials backing unpublished Core rules need not be refreshed. Nine re-run: all six clause-1
+trials, plus MUT-017/037 (host-resource typing, backing the COMMITTED provider claims) and MUT-036
+(MIR verifier, backing the COMMITTED rejection claim). **Twenty-two are recorded HISTORICAL**, and
+C10-Q owes the disclosure that its mutation evidence is 9 current + 22 historical + 10 fresh-by-hash.
+
+**Result: 9/9 reproduce AS8's recorded outcome, killer counts included.** The integration changed
+`resolve.rs` and `mir/lower.rs` without changing any measured control relationship — verified rather
+than assumed. `AS8-R13` and `AS8-R14` both still hold at the candidate.
+
+**One reading trap, recorded because it would be easy to misreport.** The harness prints UNEXPECTED
+against `expect`, which encodes **EI5's original prediction** — not against what AS8 measured. So
+`MUT-034/035/037/039` print UNEXPECTED while matching AS8 exactly. Calling those new surprises would
+be misreading the tool.
+
+`as8-mutate.py` gains `--only` (select trial ids ACROSS batches), because stale trials do not line
+up with AS8's batches and duplicating their definitions would create the second copy that drifts —
+the `AS8-DA-*` failure mode, inside the tool built to detect it.
+
+### C10-D, same day — a control built, and a C10-A2 claim refuted by measurement
+
+`C10-MUTATION-LEDGER.md`. Baseline `51ca1af`.
+
+**Population declared before running**, per plan §8.2: claims C10 intends to publish whose evidence
+is not already mutated and which A2 flagged as thin. **All 12 AS8 authority files and 13 control
+suites hash identically to `e7bb95d` at this baseline, so all 39 inherited trials are citable and
+none was re-run** — the freshness rule paying for itself rather than adding ceremony.
+
+**C10D-CTL-001 — the `RuntimeFn` parity control, built as the owner ruled.** AS8 found that killing
+both sides of the interpreter/verifier pairs proved nothing: the kill messages showed copy A dying
+to `mir_differential` and copy B to an `unreachable!()` elsewhere, so the redundancy was real and
+the cross-check imaginary. Now exhaustive over all 100 variants of the closed `RuntimeFn` surface,
+across **four** families. Exhaustiveness is a compile-time guarantee — a no-catch-all witness match,
+so a new variant breaks the build rather than shrinking the population. Proved able to fail:
+dropping `SliceIsEmpty` from the verifier's table alone yields *"slice: SliceIsEmpty — interp says
+true, verify says false"*; restore verified identical. Six classifiers went `fn` -> `pub(super) fn`
+— visibility only, no behaviour change, the two implementations stay independent by design.
+
+**A fourth pair the register does not list.** `AS8-DA` catalogues Vec/Box/Slice.
+`is_map_runtime` / `is_map_runtime_fn` is a fourth of identical shape, found by enumerating the
+classifiers rather than reading the register — exactly what `AS8-DUPLICATE-AUTHORITIES.md` predicts
+when it calls itself "a lower bound, not an inventory". Allocated as **`C10-DA-001`**, not
+`AS8-DA-007`: AS8 is closed and did not find this, and numbering it into AS8's sequence would
+rewrite who discovered what. **The known duplicated-authority population goes from six to seven
+without touching the closed AS8 result.** (The ID-deferral ruling below is about `CD-*`/`DEV-*`
+numbers that could collide with the parallel branch; this namespace is C10's own.)
+
+**C10D-MUT-001 refutes a C10-A2 claim.** A2 concluded from counting that lexical negative evidence
+is "DENSE … these rules are controlled". Deleting `"mut" => Mut` from the keyword table left **all
+26 `lexer.rs` tests passing — including `keywords_reserved_and_idents`, a test named for exactly
+that rule.** The kill came from `conformance` and `gate2_valid`, by programs ceasing to parse.
+
+```text
+C10-R1   keyword identity is controlled only COARSELY, by parse failure.
+         CATCHES  a keyword that stops being one — every program using it then fails
+         MISSES   a keyword mis-mapped to a DIFFERENT keyword, where the program still parses.
+                  Nothing pins the token a word maps TO
+```
+
+**The count was real; the inference was wrong.** Those 32 assertions cover literal forms, escapes
+and malformed input, not keyword identity — measuring the wrong property and reasoning from it, in
+the same session that recorded EI2 doing the same. A2's section is corrected in place. **No DEV
+allocated:** a kill by the wrong mechanism means the evidence cannot detect the defect, not that the
+defect is present.
+
+**C10-R2** — no metamorphic relation was added. The plan's candidates (formatter idempotence,
+harmless parenthesisation, equivalent import forms) each need a normative rule stating the
+equivalence before §10.2 permits them, and none has one written. The blocker is normative, not
+technical.
+
+### Integration hazard, recorded 2026-08-09 — CD/DEV namespace collision with unmerged work
+
+**Do not renumber anything yet. Owner ruling: IDs are assigned at consolidation time, against a
+frozen `develop`, and no reservation is made now.** C10-D/E/F may allocate more before the parallel
+branch integrates, so reserving today would be a guess that ages badly.
+
+Measured against `origin/develop` (`1d20123`) and `fix/release-package-ships-providers`:
+
+```text
+CD-395    develop 4 files  |  parallel 1 file   COLLISION — C10 owns it on develop
+DEV-214   develop 5 files  |  parallel 1 file   COLLISION — C10 owns it on develop
+DEV-215..218                  parallel only     no collision today; inside a range C10-D/E/F may want
+divergence                    16 behind, 2 ahead
+```
+
+**C10 authoritatively owns `CD-395` and `DEV-214` on `develop`.** The parallel branch's records
+carrying those numbers are the ones that get renumbered at integration — after freezing `develop`,
+enumerating every allocated CD and DEV, and assigning the next free ones.
+
+### C10-Q is NOT next, and the reason is this branch (owner ruling, 2026-08-09)
+
+`fix/release-package-ships-providers` is no longer a distribution patch. Against current `develop`
+it modifies package resolution, capability semantics, provider resolution, native support
+classification, flow/interpreter/MIR behaviour, manifests, lockfiles and distribution —
+`package.rs`, `flow.rs`, `interp.rs`, `mir/lower.rs`, `native_build.rs`, `provider_resolve.rs`,
+`typecheck/body.rs`, many tests, and nearly every first-party manifest.
+
+**A C10-Q decision followed by merging that branch would qualify a compiler that is not the
+compiler being promoted to `main`.** The order is therefore:
+
+```text
+C10-D -> C10-E -> C10-F -> DEV-012 editor evidence
+      -> integrate the parallel work
+      -> §8.2a freshness + requalify every AFFECTED C10 check
+      -> C10-Q against that ONE consolidated SHA
+      -> develop -> main
+```
+
+D/E/F evidence that stays fresh is retained; anything whose authority or falsifier moves is re-run.
+
 ### C10-A2, same day — the dashboard, and a tool that needed three corrections
 
 `C10-CONFORMANCE-DASHBOARD.md` + `conformance/c10-dashboard.json` (168 rows, generated).
@@ -460,7 +666,27 @@ baseline also absorbs DEV-213's residual** — post-fix numbers, and AS8's pre-f
 historical context that may NOT be called a before/after unless harness and workload are
 demonstrably identical.
 
-**DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
+### DEV-012 CLOSED — owner verification, 2026-08-09. C10-G passes on both arms.
+
+Seven protocol-only features exercised in a real editor: VS Code 1.132.0,
+`starklang.stark-language@0.2.0` **built from the C10 candidate `37a0a03`**, release binaries from
+the same candidate wired explicitly rather than resolved from `PATH`, macOS 26.5.2 arm64. The build
+was verified to carry the C10 work first — a 250-term chain produced `[E0209] … (250 levels; the
+limit is 200)`, which only the DEV-214 repair emits.
+
+**Evidence class MANUAL, and the record is a VERDICT rather than a per-feature value transcript.**
+Recorded that way deliberately: `GATE-C8-CLOSURE.md` §4 exists because DEV-182 — a parser silently
+decoding every escaped non-BMP character to the empty string — **passed** protocol validation, since
+both sides reported success and only the value was wrong. The owner is the only party who can
+produce this evidence and is the authority on their own session, so it closes; C10-Q should word it
+as *interactively validated by the owner in the recorded environment*.
+
+**C10-G: both arms satisfied.** DEV-213 closed by repair, DEV-012 by validation — OD-4's preferred
+route, not its fallback. The Core v1 Compiler Stable language-services claim need not be narrowed
+for either.
+
+**The DEV-012 session specification is retained** in `C10-P-LANGUAGE-SERVICES.md` §3.2 as the
+procedure a future re-validation should follow. It needs a person exercising seven
 features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3
 specifies the session so it can be done in one sitting, and records the rule that matters: check
 **values, not verdicts**, because DEV-182 passed protocol validation while silently decoding every
