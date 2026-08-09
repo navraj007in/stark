@@ -115,12 +115,23 @@ firing precisely where it predicted, not a discovery about the compiler.
 ```text
 LEXICAL      lexer.rs in-module tests    26 test fns, 32 error assertions
              spec fixtures                7 lex-pass
-             -> negative evidence is DENSE. These rules are controlled; the attribution is missing
 
 SYNTACTIC    parser.rs in-module tests   47 test fns, only 5 asserting a rejection
              spec fixtures               64 parse-pass ... and exactly ONE parse-fail
              -> negative evidence is THIN, and this is a real finding rather than a bookkeeping gap
 ```
+
+> **CORRECTED 2026-08-09 by C10-D (`C10D-MUT-001`).** This section originally concluded from the
+> lexical counts that *"negative evidence is DENSE. These rules are controlled; the attribution is
+> missing."* **Mutation refuted it.** Deleting `"mut" => Mut` from the lexer's keyword table left
+> **all 26 `lexer.rs` tests passing** — including `keywords_reserved_and_idents`, a test named for
+> exactly that rule. The kill came from `conformance` and `gate2_valid`, by programs ceasing to
+> parse.
+>
+> **The count was real; the inference was wrong.** Those 32 assertions cover literal forms, escapes
+> and malformed input — not keyword identity. Inferring control from a count of assertions is
+> measuring the wrong property, and I did it in the same session that recorded EI2 making precisely
+> that error. Keyword identity is controlled **coarsely, by parse failure** — see `C10-R1`.
 
 **One `parse-fail` fixture in the entire corpus.** Charter §1.6 rule 15 requires that "positive and
 negative evidence travel together — every semantic rule needs valid and invalid cases where

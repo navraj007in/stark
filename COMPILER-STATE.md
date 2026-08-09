@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-D (challenge), C10-E (perf), C10-F (policy)  Blocked: none
+Gate: C10  Next: C10-E (perf), C10-F (policy)  Blocked: none  [C10-Q gated on integration]
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, C10-P, C10-A1, C10-B, C10-C, **C10-A2 COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-D, C10-E, C10-F |
+| **Active packet** | C10-0, P, A1, A2, B, C, **D COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-E, C10-F, then integration before C10-Q |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -327,6 +327,54 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
+
+### C10-D, same day — a control built, and a C10-A2 claim refuted by measurement
+
+`C10-MUTATION-LEDGER.md`. Baseline `51ca1af`.
+
+**Population declared before running**, per plan §8.2: claims C10 intends to publish whose evidence
+is not already mutated and which A2 flagged as thin. **All 12 AS8 authority files and 13 control
+suites hash identically to `e7bb95d` at this baseline, so all 39 inherited trials are citable and
+none was re-run** — the freshness rule paying for itself rather than adding ceremony.
+
+**C10D-CTL-001 — the `RuntimeFn` parity control, built as the owner ruled.** AS8 found that killing
+both sides of the interpreter/verifier pairs proved nothing: the kill messages showed copy A dying
+to `mir_differential` and copy B to an `unreachable!()` elsewhere, so the redundancy was real and
+the cross-check imaginary. Now exhaustive over all 100 variants of the closed `RuntimeFn` surface,
+across **four** families. Exhaustiveness is a compile-time guarantee — a no-catch-all witness match,
+so a new variant breaks the build rather than shrinking the population. Proved able to fail:
+dropping `SliceIsEmpty` from the verifier's table alone yields *"slice: SliceIsEmpty — interp says
+true, verify says false"*; restore verified identical. Six classifiers went `fn` -> `pub(super) fn`
+— visibility only, no behaviour change, the two implementations stay independent by design.
+
+**A fourth pair the register does not list.** `AS8-DA` catalogues Vec/Box/Slice.
+`is_map_runtime` / `is_map_runtime_fn` is a fourth of identical shape, found by enumerating the
+classifiers rather than reading the register — exactly what `AS8-DUPLICATE-AUTHORITIES.md` predicts
+when it calls itself "a lower bound, not an inventory". Candidate `AS8-DA-007`; **allocation
+deferred to consolidation** per the ID ruling below.
+
+**C10D-MUT-001 refutes a C10-A2 claim.** A2 concluded from counting that lexical negative evidence
+is "DENSE … these rules are controlled". Deleting `"mut" => Mut` from the keyword table left **all
+26 `lexer.rs` tests passing — including `keywords_reserved_and_idents`, a test named for exactly
+that rule.** The kill came from `conformance` and `gate2_valid`, by programs ceasing to parse.
+
+```text
+C10-R1   keyword identity is controlled only COARSELY, by parse failure.
+         CATCHES  a keyword that stops being one — every program using it then fails
+         MISSES   a keyword mis-mapped to a DIFFERENT keyword, where the program still parses.
+                  Nothing pins the token a word maps TO
+```
+
+**The count was real; the inference was wrong.** Those 32 assertions cover literal forms, escapes
+and malformed input, not keyword identity — measuring the wrong property and reasoning from it, in
+the same session that recorded EI2 doing the same. A2's section is corrected in place. **No DEV
+allocated:** a kill by the wrong mechanism means the evidence cannot detect the defect, not that the
+defect is present.
+
+**C10-R2** — no metamorphic relation was added. The plan's candidates (formatter idempotence,
+harmless parenthesisation, equivalent import forms) each need a normative rule stating the
+equivalence before §10.2 permits them, and none has one written. The blocker is normative, not
+technical.
 
 ### Integration hazard, recorded 2026-08-09 — CD/DEV namespace collision with unmerged work
 

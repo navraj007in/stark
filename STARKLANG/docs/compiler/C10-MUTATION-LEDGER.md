@@ -1,0 +1,161 @@
+# C10-D — mutation ledger
+
+**Packet:** C10-D, WP-C10.3. **Date:** 2026-08-09.
+**Baseline:** `51ca1af` (merge of `origin/develop` `1d20123` into `wp-c10/execution-plan`).
+**Harness discipline:** plan §8. **Freshness:** §8.2a.
+
+---
+
+# 1. Population — declared BEFORE any trial ran (plan §8.2)
+
+```text
+IN SCOPE
+  claims C10 intends to publish (OD-2: Core v1 Compiler Stable, Native Systems Preview)
+  whose supporting evidence has NOT already been mutated in AS8's 39 trials
+  and whose evidence C10-A2 flagged as thin or unattributed
+
+OUT OF SCOPE
+  anything already trialled in AS8 with a recorded verdict that is still FRESH  (§8.2a)
+  ESF-TRAIT-001, ESF-TRAP-001a and the other AS8-R residuals — trialled, recorded, unchanged
+  anything whose claim C10 does not intend to publish
+```
+
+**Inherited evidence re-verified against this baseline, not assumed:** all 12 mutation-authority
+files and all 13 control suites hash identically to `e7bb95d`. **Every one of AS8's 39 trials
+remains citable and none is re-run.** That is the freshness rule paying for itself rather than
+adding ceremony.
+
+---
+
+# 2. C10D-CTL-001 — the `RuntimeFn` parity control (owner-ruled, built)
+
+**Not a mutation — a control that did not exist.** The AS8 owner ruling on `AS8-DA-002/003/004`
+was to keep both implementations and **build the missing cross-check**.
+
+**Why it was missing.** AS8 mutated each interpreter/verifier pair one-sided and both sides died —
+but the kill *messages* showed neither copy killed the other: copy A died to `mir_differential`,
+copy B to an `unreachable!()` elsewhere. The redundancy was real; the cross-check was imaginary.
+
+```text
+location   starkc/src/mir/mod.rs, mod c10d_runtime_fn_parity
+scope      all 100 RuntimeFn variants — the closed, versioned runtime surface (contract §7)
+families   vec, box, slice, AND map
+change     six classifiers `fn` -> `pub(super) fn`. Visibility only, no behaviour change;
+           the two implementations stay independent by design
+```
+
+Three tests: exhaustive parity, an `ALL`-completeness check, and a **non-empty proper-subset**
+check so that emptying both tables cannot pass as agreement (the `AS8-MUT-003` shape, where
+`copy_canon_matrix` covers its target completely and controls nothing).
+
+**Exhaustiveness is enforced at compile time.** `_exhaustiveness_witness` matches every variant with
+no catch-all, so adding a `RuntimeFn` breaks the build rather than silently shrinking the
+population — the failure `AS8-DA-006` names as "the sixth `MirTy` catch-all to swallow this
+variant".
+
+## 2.1 Negative control — the pass is believed because the failure was demonstrated
+
+```text
+injected   verify.rs's slice table loses `SliceIsEmpty` (one-sided drift)
+result     FAILED: "slice: SliceIsEmpty — interp says true, verify says false"
+restore    verified byte-identical; re-run green
+```
+
+## 2.2 A fourth pair the register does not catalogue
+
+`AS8-DA` lists Vec (`DA-002`), Box (`DA-003`) and Slice (`DA-004`).
+**`is_map_runtime` / `is_map_runtime_fn` is a fourth pair of identical shape**, found by
+enumerating the classifiers rather than by reading the register.
+
+`AS8-DUPLICATE-AUTHORITIES.md` says of itself: *"this is a lower bound, not an inventory… a rule
+reimplemented with different names, a different match order, or an equivalent-but-not-identical
+expression is invisible to it."* **This is that warning coming true.** The parity control covers all
+four, so the gap is closed as well as recorded.
+
+**Candidate `AS8-DA-007`** — allocation deferred to consolidation, per the owner ruling that IDs are
+assigned against a frozen `develop` (see `COMPILER-STATE.md`, integration hazard).
+
+---
+
+# 3. C10D-MUT-001 — and it refutes a claim C10-A2 made
+
+| field | value |
+| --- | --- |
+| **authority/rule ID** | `LEX-KEYWORD-001` — *"Which Core words always tokenize as keywords?"* |
+| **target** | `starkc/src/lexer.rs::keyword`, the arm `"mut" => Mut` |
+| **mutation** | delete the arm: `mut` lexes as an ordinary identifier |
+| **prediction** | **KILLED** by `lexer.rs`'s own unit tests — C10-A2 counted 26 test fns and 32 error assertions there and called lexical negative evidence "dense" |
+| **selected control** | `--lib lexer` (26 tests); `--test conformance`; `--test gate2_valid` |
+| **expected result** | a lexer-level assertion fails |
+| **actual result** | **UNEXPECTED.** `--lib lexer`: **26 passed, 0 failed.** `conformance`: FAILED. `gate2_valid`: 11 of 56 FAILED |
+| **killer(s)** | `conformance::spec_conformance`; 11 `gate2_valid` cases — **all by programs ceasing to parse**, none by a lexical assertion |
+| **residual** | **C10-R1** (below) |
+| **freshness** | `n/a — run at 51ca1af` |
+| **restore verification** | `diff` byte-identical; `--lib lexer` re-run green |
+
+## 3.1 The finding
+
+**`lexer::tests::keywords_reserved_and_idents` — a test named for exactly this rule — passed while
+`mut` was not a keyword.**
+
+That is the `copy_canon_matrix` shape in a new file: a test that *names* the rule and does not
+*control* it. It is also a direct refutation of C10-A2's reasoning, which inferred control from a
+**count of error assertions**:
+
+> *"lexical negative evidence is DENSE (`lexer.rs`, 26 test fns / 32 error assertions) … these rules
+> are controlled; the attribution is missing."*
+
+**The count was real and the inference was wrong.** Those 32 assertions cover literal forms, escapes
+and malformed input — not keyword identity. A2 measured the wrong property and reasoned from it, in
+the same session that recorded EI2 making precisely that error.
+
+## 3.2 C10-R1 — the residual
+
+```text
+C10-R1   Keyword identity is controlled only COARSELY, by programs failing to parse.
+
+         What that catches:   a keyword that stops being a keyword, because the grammar then
+                              rejects every program using it
+         What it would MISS:  a keyword mis-mapped to a DIFFERENT keyword, or a reserved word
+                              silently promoted to a keyword, where the program still parses.
+                              Nothing in the tree pins the token a word maps TO
+         Disposition:         population C (assurance residual). Owner: C10-Q states the lexical
+                              claim as controlled by acceptance/rejection, not by token identity
+```
+
+**No DEV is allocated.** A survivor — or here, a kill by the wrong mechanism — means the evidence
+cannot detect the defect, not that the defect is present. The AS8 owner ruling, inherited verbatim.
+
+---
+
+# 4. Metamorphic — the twelve families, and what C10-D did not add
+
+`starkc/tests/c6-corpus/metamorphic.py` carries **M01–M12**, each with a recorded precondition and
+a named normative rule, and each transform asserting that it actually rewrote the source (a
+transformation that changes nothing is a fake pair).
+
+**C10-D adds none, and that is a scope decision rather than an omission.** The plan's candidate list
+(formatter idempotence, harmless parenthesisation, equivalent import forms) each needs a normative
+rule stating the equivalence *before* the relation may be added — §10.2 — and none of the three has
+one written down today. **Adding a relation on intuition is exactly what §10.2 forbids**, and
+sourcing three new normative equivalences is spec work, not qualification.
+
+Recorded as **C10-R2**: the metamorphic surface is twelve families wide and could be wider; the
+blocker is normative, not technical.
+
+---
+
+# 5. What C10-D establishes, and what it does not
+
+```text
+ESTABLISHES   the interpreter/verifier runtime classifications now have a total cross-check,
+              proved able to fail, over the whole closed enum and all FOUR families
+ESTABLISHES   keyword identity is controlled coarsely, by parse failure — measured, not assumed
+ESTABLISHES   AS8's 39 trials are FRESH at this baseline and need no re-running
+
+DOES NOT      re-open any AS8 residual. R2, R5, R10, R13 and the rest stand as recorded
+DOES NOT      add metamorphic relations without normative backing
+DOES NOT      allocate DEVs for evidence gaps — a gap is not a defect
+DOES NOT      challenge the other 163 NOT-CHALLENGED rules. C10-D challenged the claims C10-A2
+              flagged as thin; the rest remain NOT-CHALLENGED in the dashboard, honestly labelled
+```

@@ -2706,7 +2706,9 @@ fn narrow_to_declared_width(value: MirValue, ty: &MirTy) -> MirValue {
     }
 }
 
-fn is_vec_runtime(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_vec_runtime(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(
         rt,
@@ -2727,17 +2729,23 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
     )
 }
 
-fn is_box_runtime(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_box_runtime(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(rt, BoxNew | BoxIntoInner)
 }
 
-fn is_slice_runtime(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_slice_runtime(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)
 }
 
-fn is_map_runtime(rt: RuntimeFn) -> bool {
+/// C10-D: `pub(super)` so `mir`'s parity test can compare the two copies. Visibility only —
+/// no behaviour change, and the two implementations stay independent by design.
+pub(super) fn is_map_runtime(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(
         rt,
