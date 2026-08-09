@@ -6958,3 +6958,68 @@ wide-but-shallow shapes       2,000-element tuple, 2,000 locals, 1,500 fields �
 
 `cargo test --lib` 569 passed; `c10b_robustness` 12; `c10c_security` 5; `conformance` 3; clippy
 `--workspace --all-features --all-targets -D warnings` exit 0; `fmt --check` clean.
+
+## DEV-012 — CLOSED (C10-P, owner verification, 2026-08-09). Ten of ten features interactively validated
+
+**The deviation's earlier headings stand unedited.** This file is append-only and each was correct
+when written.
+
+### What C8 left open, and what closes it
+
+`GATE-C8-CLOSURE.md` closed Gate C8 with interactive VS Code validation recorded for **three of ten**
+advertised features — hover, go-to-definition, find-references — and narrowed DEV-012 to the
+remaining seven: diagnostics, formatting, completion, signature help, rename, document symbols,
+semantic tokens. Item 8 of §2a was an explicit owner override, labelled *"deliberately closed
+short"*.
+
+**Those seven were exercised by the owner in a real editor on 2026-08-09 and reported verified.**
+
+### Environment
+
+```text
+VS Code           1.132.0 (df53daabb18cd157bdb08c7f01c34df936cf12f4)
+extension         starklang.stark-language@0.2.0, built from the C10 candidate 37a0a03
+compiler          release `stark` / `starkc` from the same candidate, wired via
+                  .vscode/settings.json — NOT a PATH binary of unknown provenance
+host              macOS 26.5.2, arm64
+subject           a real multi-file package: two modules, a struct, an enum, a cross-file symbol
+                  (`parse_fleet`), a decoy sharing its prefix (`parse_fleet_name`), and a
+                  commented type error to introduce and withdraw
+```
+
+**The build was verified to carry the C10 work before the session**, rather than assumed: a
+250-term chain produced `[E0209] this expression is nested too deeply to analyse (250 levels; the
+limit is 200)`, which only the DEV-214 repair emits.
+
+### Evidence class, stated precisely
+
+**MANUAL** (Charter §5.2). Not automated coverage, and it must never be described as such.
+
+**What the record contains is an owner VERDICT across the seven features, not a per-feature
+transcript of observed values.** That distinction is recorded because `GATE-C8-CLOSURE.md` §4 is
+explicit about why it matters:
+
+> DEV-182 — the LSP JSON parser silently decoded every escaped non-BMP character to the empty
+> string — **passed** protocol validation, because both the parse and the response succeeded and
+> only the *value* was wrong.
+
+A verdict-shaped record is exactly what that defect survived. **The owner is the only party who can
+produce this evidence and is the authority on their own session**, so DEV-012 closes; but the
+release claim should describe it as *interactively validated by the owner in the recorded
+environment*, which is what it is, rather than implying a captured per-feature value transcript.
+
+### What this closure claims
+
+```text
+CLAIMS      all ten advertised language-service features have been exercised interactively in a
+            real editor against a compiler built from the C10 candidate
+CLAIMS      the C10-G gate's DEV-012 arm is satisfied: the language-services claim need not be
+            narrowed on account of missing interactive validation
+NOT CLAIMS  that the extension's full UI surface is exercised — ten features, not everything
+NOT CLAIMS  automated protection. Nothing here runs in CI; a regression in any of the seven would
+            be caught only by another manual session
+NOT CLAIMS  a value-level transcript. See above
+```
+
+**C10-G status after this and C10-P's DEV-213 closure: both arms satisfied.** The Core v1 Compiler
+Stable language-services claim may be stated without the DEV-012 or DEV-213 qualifications.

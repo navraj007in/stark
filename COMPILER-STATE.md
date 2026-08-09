@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: DEV-012 editor session; then toolchain integration  Blocked: C10-Q (needs the consolidated candidate)
+Gate: C10  Next: toolchain integration  Blocked: C10-Q (needs the consolidated candidate)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -605,7 +605,27 @@ baseline also absorbs DEV-213's residual** — post-fix numbers, and AS8's pre-f
 historical context that may NOT be called a before/after unless harness and workload are
 demonstrably identical.
 
-**DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
+### DEV-012 CLOSED — owner verification, 2026-08-09. C10-G passes on both arms.
+
+Seven protocol-only features exercised in a real editor: VS Code 1.132.0,
+`starklang.stark-language@0.2.0` **built from the C10 candidate `37a0a03`**, release binaries from
+the same candidate wired explicitly rather than resolved from `PATH`, macOS 26.5.2 arm64. The build
+was verified to carry the C10 work first — a 250-term chain produced `[E0209] … (250 levels; the
+limit is 200)`, which only the DEV-214 repair emits.
+
+**Evidence class MANUAL, and the record is a VERDICT rather than a per-feature value transcript.**
+Recorded that way deliberately: `GATE-C8-CLOSURE.md` §4 exists because DEV-182 — a parser silently
+decoding every escaped non-BMP character to the empty string — **passed** protocol validation, since
+both sides reported success and only the value was wrong. The owner is the only party who can
+produce this evidence and is the authority on their own session, so it closes; C10-Q should word it
+as *interactively validated by the owner in the recorded environment*.
+
+**C10-G: both arms satisfied.** DEV-213 closed by repair, DEV-012 by validation — OD-4's preferred
+route, not its fallback. The Core v1 Compiler Stable language-services claim need not be narrowed
+for either.
+
+**The DEV-012 session specification is retained** in `C10-P-LANGUAGE-SERVICES.md` §3.2 as the
+procedure a future re-validation should follow. It needs a person exercising seven
 features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3
 specifies the session so it can be done in one sitting, and records the rule that matters: check
 **values, not verdicts**, because DEV-182 passed protocol validation while silently decoding every

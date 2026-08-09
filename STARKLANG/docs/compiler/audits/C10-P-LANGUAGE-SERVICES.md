@@ -10,7 +10,7 @@ through **C10-G**, the gate immediately before C10-Q.
 
 ```text
 DEV-213   CLOSED   this packet
-DEV-012   OPEN     blocked on a human in an editor — see §3
+DEV-012   CLOSED   owner verification, 2026-08-09 — see §3
 ```
 
 ---
@@ -96,20 +96,54 @@ regardless, per the rule.
 
 ---
 
-# 2. C10-G status after this packet
+# 2. C10-G status after this packet — BOTH ARMS SATISFIED
 
 ```text
 DEV-213   CLOSED     -> the workspace/symbol claim may be stated WITHOUT the AS8 qualification,
                         within the bound in §1
-DEV-012   OPEN       -> the language-services claim must still be NARROWED at C10-Q, unless the
-                        session in §3 happens first
+DEV-012   CLOSED     -> the language-services claim need NOT be narrowed for missing interactive
+                        validation
 ```
+
+**The C10-G gate passes on its intended branch, not its fallback.** OD-4's preferred route was to
+close both rather than weaken the release statement, and both closed.
 
 ---
 
-# 3. DEV-012 — NOT closed, and the reason is not effort
+# 3. DEV-012 — CLOSED by owner verification, 2026-08-09
 
-**This packet cannot close DEV-012.** Seven advertised features (diagnostics, formatting,
+**Full record:** `KNOWN-DEVIATIONS.md`, live heading *"DEV-012 — CLOSED (C10-P, owner verification,
+2026-08-09)"*. Summary here; that entry is authoritative.
+
+The seven protocol-only features were exercised in a real editor and reported verified by the
+owner. Environment: VS Code 1.132.0, `starklang.stark-language@0.2.0` **built from the C10 candidate
+`37a0a03`**, release `starkc`/`stark` from the same candidate wired explicitly rather than resolved
+from `PATH`, macOS 26.5.2 arm64, against a real multi-file package with a cross-file symbol and a
+same-prefix decoy.
+
+**The build was verified to carry the C10 work before the session rather than assumed:** a 250-term
+chain produced `[E0209] … (250 levels; the limit is 200)`, which only the DEV-214 repair emits.
+
+## 3.1 What the record is, stated precisely
+
+**MANUAL evidence** (Charter §5.2) — never to be described as automated coverage. **What it contains
+is an owner verdict across the seven features, not a per-feature transcript of observed values.**
+
+That distinction is recorded rather than smoothed over, because `GATE-C8-CLOSURE.md` §4 is explicit
+about the failure mode: **DEV-182 passed protocol validation** — parse and response both succeeded,
+and only the *value* was wrong. A verdict-shaped record is what that defect survived.
+
+**The owner is the only party who can produce this evidence and is the authority on their own
+session, so DEV-012 closes.** The consequence for wording is small and real: C10-Q should say
+*interactively validated by the owner in the recorded environment*, which is true, rather than
+implying a captured value-level transcript.
+
+## 3.2 The original specification for the session, retained
+
+Kept because it is what a future re-validation should follow, and because it records what was asked
+for.
+
+**This packet could not close DEV-012 on its own.** Seven advertised features (diagnostics, formatting,
 completion, signature help, rename, document symbols, semantic tokens) have protocol evidence only.
 Closing the deviation requires a person exercising them in a real editor — **MANUAL evidence** under
 Charter §5.2, which must be disclosed as manual and never described as automated coverage.
