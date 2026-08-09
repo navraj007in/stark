@@ -29,7 +29,7 @@
 
 use starkc::analysis::{analyze_project, ProjectInput};
 use starkc::diag::Severity;
-use starkc::lsp::Server;
+use starkc::lsp::{Server, MAX_CONTENT_LENGTH};
 use starkc::mir::{lower::lower_program, verify::verify_program};
 use starkc::options::LanguageOptions;
 use starkc::parser::{parse, ParseMode};
@@ -503,17 +503,21 @@ fn t8_malformed_protocol_input_fails_boundedly() {
 // CHARACTERISED here rather than repaired: C10 is a qualification campaign.
 // ---------------------------------------------------------------------------------------------
 
-/// DEV-186, characterised at HEAD.
+/// DEV-186, REPAIRED. This is now the regression test for the limit, which is what the
+/// characterisation version of it said it would become.
 ///
-/// `Server::run` does `vec![0u8; content_length]` BEFORE reading the body, so a header alone
-/// decides an allocation. This test pins the CURRENT behaviour at a size that is large but safe
-/// (64 MiB) and records that no bound exists -- it does not assert that the allocation is
-/// refused, because at HEAD it is not.
+/// It previously pinned the defect: `Server::run` did `vec![0u8; content_length]` BEFORE reading
+/// the body, so a header alone decided an allocation, and the test deliberately did NOT assert
+/// that the allocation was refused, because at that head it was not. The repair flipped it, as
+/// designed, and the assertions below now describe the bound rather than its absence.
 ///
-/// **It is written so that a repair flips it**, the same way AS8 wrote DEV-213's test: when a
-/// limit is introduced, this test starts failing and becomes the regression test for the limit.
+/// **Two properties, and the second is the one the repair nearly cost.** A frame over the cap is
+/// refused deterministically. A frame UNDER the cap whose body is short is still `UnexpectedEof` --
+/// bounded FAILURE, not silence. The first version of the repair returned `Ok(())` for a short
+/// body, which made a truncated frame indistinguishable from an orderly disconnect; this test
+/// caught it in CI on all three platforms.
 #[test]
-fn t9_dev186_content_length_allocates_before_reading_and_is_unbounded_at_head() {
+fn t9_dev186_content_length_is_bounded_before_allocating() {
     // 64 MiB: demonstrably far past any legitimate LSP message, and small enough that the test
     // cannot itself become the denial of service it is describing.
     let claim = 64 * 1024 * 1024usize;
@@ -533,9 +537,36 @@ fn t9_dev186_content_length_allocates_before_reading_and_is_unbounded_at_head() 
         elapsed < CASE_BUDGET,
         "DEV-186: a 64 MiB claim took {elapsed:?}; that is a hang, not merely an allocation"
     );
-    // No assertion that the allocation was refused: AT HEAD IT IS NOT. DEV-186 is OPEN, this is
-    // its characterisation, and a future limit will make the `is_err` above arrive for a
-    // different and better reason.
+    // The `is_err` above now arrives for the better reason the characterisation version
+    // predicted: the body is short, and a short body is `UnexpectedEof` rather than success.
+    assert_eq!(
+        result.expect_err("checked above").kind(),
+        std::io::ErrorKind::UnexpectedEof,
+        "DEV-186: a 64 MiB claim with no body is a truncated frame, not a clean shutdown"
+    );
+
+    // And the bound itself: one byte past the cap is refused DETERMINISTICALLY, before any
+    // allocation is sized from the peer's claim. Derived from the constant rather than hard-coded,
+    // so retuning the cap cannot silently invalidate this.
+    let over = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH + 1).into_bytes();
+    let start = Instant::now();
+    let mut server = Server::new();
+    let mut out: Vec<u8> = Vec::new();
+    let refused = server.run(Cursor::new(over), &mut out);
+    let elapsed = start.elapsed();
+    assert_eq!(
+        refused.expect_err("over the cap must be refused").kind(),
+        std::io::ErrorKind::InvalidData,
+        "DEV-186: an over-cap Content-Length must be a deterministic protocol error"
+    );
+    assert!(
+        elapsed < CASE_BUDGET,
+        "DEV-186: refusing an over-cap claim took {elapsed:?}; it must not allocate first"
+    );
+    assert!(
+        out.is_empty(),
+        "DEV-186: an over-cap frame is never answered"
+    );
 }
 
 /// DEV-214, characterised at HEAD -- and characterised BELOW the cliff, deliberately.

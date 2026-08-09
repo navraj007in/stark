@@ -20,7 +20,7 @@ use super::state::*;
 /// 64 MiB is chosen to sit far above any legitimate LSP payload — the largest real messages are
 /// whole-document syncs, and a 64 MiB source file is not a thing this compiler can usefully open —
 /// while being small enough that committing it is survivable.
-const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
+pub const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
 
 /// LSP server
 pub struct Server {
@@ -80,11 +80,16 @@ impl Server {
                     // peer that advertises the maximum and sends ten bytes allocates ten bytes'
                     // worth of growth, not the maximum. A cap alone would still allocate the cap.
                     if content_length > MAX_CONTENT_LENGTH {
-                        eprintln!(
-                            "protocol error: Content-Length {content_length} exceeds the maximum \
-                             of {MAX_CONTENT_LENGTH} bytes; closing the connection"
-                        );
-                        return Ok(());
+                        // A DETERMINISTIC PROTOCOL ERROR, not a quiet shutdown. An over-large
+                        // frame is the peer violating the contract, and the caller must be able to
+                        // tell that apart from an orderly disconnect.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Content-Length {content_length} exceeds the maximum of \
+                                 {MAX_CONTENT_LENGTH} bytes"
+                            ),
+                        ));
                     }
 
                     let mut content = Vec::new();
@@ -92,10 +97,15 @@ impl Server {
                         .take(content_length as u64)
                         .read_to_end(&mut content)?;
                     if read != content_length {
-                        // The stream ended mid-body. Nothing further can be framed from it, so
-                        // this is a clean shutdown rather than an error: the alternative is
-                        // resynchronising on a stream whose framing is already known to be wrong.
-                        return Ok(());
+                        // The stream ended mid-body. `read_exact` surfaced this as
+                        // `UnexpectedEof` before DEV-186, and it still must: C10-B's T9 pins
+                        // BOUNDED FAILURE as the property, and a short body reported as success
+                        // is indistinguishable from an orderly disconnect. Bounding the
+                        // allocation must not cost the signal.
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!("body ended after {read} of {content_length} bytes"),
+                        ));
                     }
 
                     if let Ok(message_text) = String::from_utf8(content) {
@@ -1561,9 +1571,9 @@ mod tests {
         let input = "Content-Length: 9999999999999\r\n\r\n";
         let mut server = Server::new();
         let mut output = Vec::new();
-        server
-            .run(Cursor::new(input.as_bytes().to_vec()), &mut output)
-            .expect("an over-large frame is a clean shutdown, not an io error");
+        let result = server.run(Cursor::new(input.as_bytes().to_vec()), &mut output);
+        let error = result.expect_err("an over-large frame is a protocol error");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(
             output.is_empty(),
             "nothing should be answered for a frame that was never read"
@@ -1580,9 +1590,10 @@ mod tests {
         let over = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH + 1);
         let mut server = Server::new();
         let mut output = Vec::new();
-        server
+        let error = server
             .run(Cursor::new(over.into_bytes()), &mut output)
-            .expect("over the cap is a clean shutdown");
+            .expect_err("one byte over the cap is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(output.is_empty(), "an over-cap frame is never answered");
     }
 
@@ -1597,9 +1608,13 @@ mod tests {
         input.extend_from_slice(b"0123456789");
         let mut server = Server::new();
         let mut output = Vec::new();
-        server
+        // BOUNDED FAILURE, not silence: a body shorter than advertised is `UnexpectedEof`, the
+        // same as before DEV-186. C10-B's T9 pins this, and bounding the allocation must not cost
+        // the signal that distinguishes a truncated frame from an orderly disconnect.
+        let error = server
             .run(Cursor::new(input), &mut output)
-            .expect("a truncated body is a clean shutdown");
+            .expect_err("a truncated body is an error, not success");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(output.is_empty(), "a truncated frame is never answered");
     }
 

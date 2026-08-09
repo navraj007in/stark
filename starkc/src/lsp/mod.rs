@@ -8,7 +8,7 @@ pub mod protocol;
 pub mod server;
 pub mod state;
 
-pub use server::Server;
+pub use server::{Server, MAX_CONTENT_LENGTH};
 pub use state::ServerState;
 
 use std::io::{self, BufReader};
