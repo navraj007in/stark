@@ -116,7 +116,8 @@ integration test targets     210   top-level `.rs` files under starkc/tests/
 test module dirs                   tests/common, tests/fixtures (21), tests/support (4)
 spec fixture files           117   STARKLANG/tests/spec-fixtures/
 legacy conformance rules      59   STARKLANG/conformance/core-v1-coverage.toml
-granular semantic-freeze IDs 161   semantic-freeze/CORE-V1-COMPLETENESS.md
+granular semantic-freeze IDs 168   semantic-freeze/CORE-V1-COMPLETENESS.md  (stated as 161
+                                   when this table was written; corrected by C10-A1 — see below)
 granular rules with precise
   positive/negative evidence   36   STARKLANG/conformance/core-v1-c2.11-evidence.toml
 C6.5 differential corpus      89   70 generated / 13 handwritten sentinels / 6 retained
@@ -132,6 +133,13 @@ CI workflows                   2   ci.yml            14 job definitions -> 24 ma
                                    c78-native-...     2 job definitions ->  4 matrix-expanded
                                                      28 checks total, matching CD-389's "28/28"
 ```
+
+> **CORRECTED 2026-08-09 by C10-A1 (A1-F1): the denominator is 168, not 161.** Seven
+> three-segment `NUM-*` IDs — all the numeric-semantics rules, including integer overflow and
+> division by zero — were invisible to the counting method used here. The population is unchanged;
+> the enumeration was faulty. Measured buckets: PRECISE 36, AGGREGATE 85, ABSENT 42, N/A 5.
+> `audits/C10-A1-EVIDENCE-CENSUS.md`. **The paragraph below is preserved as written** — its
+> argument is unaffected and its number is not.
 
 **The 161-vs-36 gap is the single most important number in this table.** 161 granular semantic
 rules exist; 36 carry positive/negative evidence at test-function precision. The remaining 125 are
@@ -664,7 +672,8 @@ starkc/scripts/as8-reconcile-deviations.py
 STARKLANG/conformance/core-v1-coverage.toml         legacy, 59 rules, DEV-017 precision limit
 STARKLANG/conformance/core-v1-rule-id-map.toml      59 legacy -> 161 granular
 STARKLANG/conformance/core-v1-c2.11-evidence.toml   36 granular rules at fn precision
-semantic-freeze/CORE-V1-COMPLETENESS.md             161 granular IDs, the inventory of record
+semantic-freeze/CORE-V1-COMPLETENESS.md             168 granular IDs (was cited as 161 until
+                                                    C10-A1 measured it), the inventory of record
 STARKLANG/tests/spec-fixtures/manifest.toml         117 fixtures, hand-triaged from the spec
 starkc/tests/c6-corpus/                             89 cases, manifest+lock+generator, 12
                                                     metamorphic families, mutation controls
@@ -865,7 +874,7 @@ deviation, **C** assurance residual.
 | **`RA-LAYOUT` unmeasured** (EI3) | rustc-assumption residual. In scope for C10-D only if a release claim depends on generated-struct layout | |
 | **`RA-LINTS`** — two deny-by-default lints suppressed in generated code | narrows what rustc refuses, i.e. narrows the strength of "rustc is a genuine external control" | **Must be named in C10.1's shared-fate column** for every row whose independent control is rustc |
 | **DEV-165** and the four distribution weaknesses | **population B.** Named as exclusions in the release statement; constrains release/distribution WORDING only | OD-3 RULED: B is counted separately and is not the CD-021 denominator |
-| **DEV-017** (coverage-db precision) | the reason 125 of 161 granular rules lack classified evidence. **This is C10.1's central problem, not a side item** | §6.2 |
+| **DEV-017** (coverage-db precision) | **population C.** The reason 85 of 168 granular rules are cited only through an aggregate runner (C10-A1). **C10.1's central problem, not a side item** | §6.2; `audits/C10-A1-EVIDENCE-CENSUS.md` |
 
 ---
 
@@ -990,7 +999,8 @@ implementation?
 
 Method — the one AS8 proved necessary, run in the order that makes selection auditable:
 
-1. **Declare the population** (§7.2). Recommended denominator: the **161 granular IDs** in
+1. **Declare the population** (§7.2). **DONE — C10-0 declared it and C10-A1 corrected the count
+   from 161 to 168 without changing the population.** The denominator is the **granular IDs** in
    `CORE-V1-COMPLETENESS.md`, because that is the inventory of record and the 59 legacy rules map
    onto it via `core-v1-rule-id-map.toml`. Declare it in C10-0, before measuring.
 2. **Enumerate the corpus**, do not read the machinery. Use
@@ -2033,7 +2043,7 @@ Carried into C10-0 so none is lost. **None is repaired by this plan.**
 | 5 | `KNOWN-DEVIATIONS.md` has 186 headings / 178 ids and is append-only; 7 closed-in-record are named by no test, 44 appear in no decision record | the file + `as8-reconcile-deviations.py` | §5.2 — mechanical inventory, hand-audited |
 | 6 | Test-target count: 210 top-level integration targets at HEAD; AS8 recorded 209 | `starkc/tests/` | C10-0 reconciles and records the method |
 | 7 | "581 tests across 5 targets" (CD-394) is a **scoped** run, and reads like a tree total | `COMPILER-STATE.md` CD-394 | §7.3 — never cite it as the tree's count |
-| 8 | 161 granular rules vs 36 with precise evidence; 125 cited only through the aggregate fixture runner | `CORE-V1-COMPLETENESS.md` vs `core-v1-c2.11-evidence.toml`; DEV-017 | §6.4/§6.5 — the dashboard's central constraint |
+| 8 | **168** granular rules (not 161 — A1-F1) vs 36 with precise evidence; **85 AGGREGATE, 42 ABSENT** | `CORE-V1-COMPLETENESS.md` vs `core-v1-c2.11-evidence.toml`; DEV-017 | MEASURED by C10-A1. And `ABSENT` means the INVENTORY cites nothing, not that nothing tests it (A1-F3) |
 | 9 | Conformance fixtures, C6.5 mutation controls and the external sample suite are **linux-x64 only** | `ci.yml` | §14.1 — surfaced per dashboard row; must not be generalised to "three platforms" |
 | 10 | The only performance report is macOS-arm64 | `c75-report-macos-arm64.json` | §12.4 |
 | 11 | `RA-LINTS` suppresses two deny-by-default lints in generated code, narrowing rustc-as-control | `RUSTC-ASSUMPTION-INVENTORY.md`, EI3 | §5.4 — named in every dashboard row whose control is rustc |

@@ -80,8 +80,9 @@ POPULATION C — assurance residuals (constrain CLAIM STRENGTH; assert NO defect
                      owe a RuntimeFn parity/drift test (test-only, permitted in C10-D);
                      DA-006 KEEP
     RA-LAYOUT unmeasured; RA-LINTS suppresses two deny-by-default lints in generated code
-    DEV-017   the coverage DB cannot express per-rule +/- evidence — why 125 of 161 granular
-              rules are unclassified
+    DEV-017   the coverage DB cannot express per-rule +/- evidence. C10-A1 measured the
+              consequence against the CORRECTED denominator: 85 of 168 granular rules are
+              cited only through an aggregate runner
     branch coverage unavailable from this toolchain — not claimed, not fabricated
 
 Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
@@ -232,6 +233,47 @@ regardless.
 eager, so a package with many open URIs recompiles more often. AS8 measured the old duplication's
 cost as immaterial and the defect was never about cost — but **no before/after was taken here and
 none is claimed.** If an LSP workload enters C10-E's frozen set, this is the change to measure.
+
+### C10-A1, same day — the denominator itself was wrong, and the seven missing rules are the numeric ones
+
+`audits/C10-A1-EVIDENCE-CENSUS.md`. Tool: `scripts/c10-evidence-census.py`.
+
+```text
+DENOMINATOR   168 granular rules      (every prior document, this one included, said 161)
+
+PRECISE      36    21.4%    positive AND negative evidence at test-FUNCTION precision
+AGGREGATE    85    50.6%    cited only via a file or the aggregate runner  (DEV-017)
+ABSENT       42    25.0%    the INVENTORY cites nothing — see below
+N/A           5     3.0%
+```
+
+**A1-F1.** Rule IDs were matched as two dash-separated segments plus a number, and **seven have
+three** — `NUM-INT-ARITH-001`, `NUM-INT-DIV-001`, `NUM-FLOAT-OP/FORMAT/TRAIT/REPRO-001`,
+`NUM-INT-TYPE-001`. **All seven are the numeric-semantics rules**: integer overflow, division by
+zero, float behaviour. For a language whose headline guarantee is that overflow and division by
+zero always trap, the counting method used to plan this campaign could not see the rules that say
+so. Caught by cross-checking c2.11's ids against the inventory, not by reading the regex; confirmed
+by a second independently written enumerator (168 distinct, 0 duplicates, exactly 7 three-segment).
+**The population is unchanged; the enumeration was faulty** — recorded as a dated correction line
+per plan §7.2, not as an edit.
+
+**A1-F3, and it is binding on C10-A2.** `ABSENT` means *the inventory cites nothing*, **not** *nothing
+tests it*. `EXT-ISOLATION-001` records `none; none` while `starkc/tests/c91_extension_isolation.rs`
+runs nine tests in CI on every push; `OWN-PARTIAL-001` records `none` while the `as4_*` and `c61f_*`
+suites exercise it. **This is EI2's error in mirror image** — EI2 read the machinery and missed a
+control sitting in the tree; the inventory froze the same mistake into a data file in 2026-07-18 and
+never revisited it. A2 may not transcribe these buckets; every ABSENT and AGGREGATE row is resolved
+against the TREE or the dashboard says UNRESOLVED.
+
+**A1-F5.** 41 of the 42 ABSENT rules have no legacy predecessor either. The gap is exactly the
+granular rules C2.6 created when it split 59 broad IDs into 168, and which C2.11 — by its own header,
+covering "the high-cost frozen semantic surface" — never reached. **Coherent and bounded, not decay**,
+and it names the precise 41 rows A2 starts from.
+
+**A1-F2.** Citation integrity PASSES: all 36 PRECISE citations resolve to a real `fn`, checked the
+way `check-conformance.py` checks them so a renamed TEST is caught, not merely a renamed file. The
+clean result is believed because `--self-test` injects a citation to a function that does not exist
+and the census reports it. Per the owner's amendment, no finding count was expected or targeted.
 
 **DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
 features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3

@@ -268,7 +268,8 @@ RA-LAYOUT            unmeasured (EI3 residual)
 RA-LINTS             two deny-by-default lints suppressed in generated code, narrowing what
                      rustc refuses — i.e. narrowing "rustc is a genuine external control"
 DEV-017              the coverage database cannot express per-rule positive/negative evidence.
-                     THE reason 125 of 161 granular rules are unclassified. Closed in the record
+                     THE reason most granular rules are unclassified — measured by C10-A1 as
+                     85 of 168 AGGREGATE. Closed in the record
                      and named by no test (reconciler)
 branch coverage      unavailable from this toolchain. Not fabricated, not claimed, never stated
 ```
@@ -353,7 +354,9 @@ across 5 targets"* was a **scoped** run and must never be cited as a tree total 
  59   legacy broad rules            core-v1-coverage.toml — `tests` field does NOT distinguish
                                     positive from negative and often cites only the aggregate
                                     conformance.rs runner (DEV-017)
-161   granular semantic-freeze IDs  CORE-V1-COMPLETENESS.md — THE INVENTORY OF RECORD
+168   granular semantic-freeze IDs  CORE-V1-COMPLETENESS.md — THE INVENTORY OF RECORD
+      *** was stated as 161 here on 2026-08-09; CORRECTED by C10-A1 the same day. Seven
+      three-segment `NUM-*` IDs were invisible to the counting method. See A1-F1 ***
  36   granular rules at test-fn     core-v1-c2.11-evidence.toml
       precision
 125   granular rules NOT at that precision
@@ -363,7 +366,10 @@ across 5 targets"* was a **scoped** run and must never be cited as a tree total 
 
 ```text
 metric        per-rule conformance evidence classification
-population    the 161 granular IDs in semantic-freeze/CORE-V1-COMPLETENESS.md
+population    the granular IDs in semantic-freeze/CORE-V1-COMPLETENESS.md
+              declared as 161 (C10-0); CORRECTED to 168 (C10-A1, same day) — the POPULATION
+              is unchanged, the ENUMERATOR was undercounting. Two independent enumerators
+              agree on 168. Recorded as a dated line per plan §7.2, not as an edit
 enumerated by the ID column of that file's matrix tables
 exclusions    NONE. Rules classed intentionally-deferred / prohibited / spec-defect are
               retained in the denominator and bucketed N/A with the reason, so the denominator
