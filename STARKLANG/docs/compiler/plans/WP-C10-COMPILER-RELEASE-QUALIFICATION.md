@@ -1654,11 +1654,12 @@ MIR version                      MIR_VERSION "0.4". Already enforced: a consumer
 runtime ABI version              MIR_RUNTIME_SURFACE, bumped INDEPENDENTLY of MIR_VERSION.
                                  Compiler/runtime mismatch is already rejected before user code
                                  runs (C6.4 row 9)
-capability vocabulary version    `stark.lock` carries `capability_vocabulary: u64`, and a
-                                 manifest's value is validated ("must be the integer 1"). ADDED
-                                 2026-08-09 — this axis was missing from the list, and it is a
-                                 real compatibility surface: a lockfile written under vocabulary 1
-                                 must have defined behaviour under vocabulary 2
+capability vocabulary version    NOT YET IN develop. A parallel branch adds
+                                 `capability_vocabulary: u64` to `stark.lock` with manifest
+                                 validation. Listed here so C10-F does not have to rediscover it,
+                                 and marked PENDING because it is absent from the C10 baseline
+                                 `f12ecec` and from `develop` as merged — the axis becomes real
+                                 for C10 only if that work lands before C10-F freezes
 Native Provider ABI version      native-provider-abi-v0.1 + CE4-amendment-1 + CD360-amendment-2.
                                  One stark-provider-abi must satisfy both the runtime's `../` and
                                  a provider's `../../../` — Cargo refuses a lockfile naming one
