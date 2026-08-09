@@ -459,11 +459,43 @@ have no performance record. C10-E either produces them through CI or states the 
 not generalise one platform's numbers to three or four.
 
 **Not covered by the frozen set** — extension is an owner decision *before* measurement, never
-after: large-module scaling, multi-package scaling beyond w06's app+lib, LSP change-to-diagnostic
-latency, and ONNX import/verify/deploy (whose inclusion is itself a C10-0 question, since the
-tensor track is deferred research — **recommendation: EXCLUDE**, and state the exclusion, because
-measuring it invites reading C10 as tensor-track progress, which Campaign B's exit report
-explicitly forbids).
+after: large-module scaling, multi-package scaling beyond w06's app+lib, and LSP
+change-to-diagnostic latency.
+
+### OD-8 — ONNX timings: RULED (owner, 2026-08-09). INCLUDE, QUARANTINED.
+
+C10-0 recommended excluding ONNX import/verify/deploy. **The owner declined outright exclusion**,
+and the reason is the contract: WP-C10.6 explicitly lists *"ONNX import/verify/deploy time"*, so
+excluding it would need an owner override of C10's own contract rather than a C10-0 recommendation.
+
+The ruling is **include it, quarantine it**:
+
+```text
+C10-E CORE PERFORMANCE SET
+    lex / parse / resolve / check      package scaling       compiler memory
+    LSP latency                        native build/runtime  binary size
+
+C10-E OPTIONAL-EXTENSION APPENDIX  (separately scoped, separately reported)
+    frozen ONNX import      frozen ONNX verify      frozen ONNX deploy
+
+DO NOT
+    aggregate ONNX into any "STARK compiler performance" number
+    optimise ONNX            add tensor capability
+    reopen Gate 7            treat the measurement as tensor-track progress
+```
+
+The appendix must carry this sentence verbatim:
+
+> *These measurements qualify the already-supported, frozen tensor/ONNX maintenance surface only.
+> They do not expand tensor capability, reopen the tensor productisation track, or support a claim
+> of general tensor execution maturity.*
+
+**LSP latency additionally absorbs DEV-213's residual** (owner ruling, same day). C10-P traded an
+unmeasured amount of recomputation for correctness; C10-E already owes an LSP baseline, so it
+measures the post-fix architecture — single open URI, multi-file package, several open URIs, edit
+one file, change-to-diagnostic latency. **AS8's pre-fix numbers are historical context and may not
+be called a before/after** unless the harness and workload are demonstrably identical. **No
+optimisation follows automatically.**
 
 ---
 

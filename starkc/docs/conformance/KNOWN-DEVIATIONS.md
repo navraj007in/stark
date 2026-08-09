@@ -6741,3 +6741,145 @@ starkc/examples/c10b_thread.rs     the stack-size dependence
 
 The failing side is deliberately **not** a test. It cannot be one: SIGABRT takes every other test in
 the binary with it.
+
+---
+
+# OD-7 adjudication (owner ruling, 2026-08-09) — the eight unsettled statuses, and six entries this ledger never had
+
+**Authority:** owner ruling OD-7, recorded during C10-A1/C10-B. C10-0 enumerated eight deviations
+whose last heading did not settle their status, and six that were OPEN in `COMPILER-STATE.md` and
+owned **no heading here at all**. Both are resolved below.
+
+**Nothing historical is rewritten.** Every entry below is a NEW, dated heading; the originals stand
+exactly as written, in this append-only file and in `COMPILER-STATE.md`.
+
+## DEV-005 — OPEN, ACCEPTED RELEASE DEVIATION (OD-7, 2026-08-09)
+
+`starkc check` permits warnings where `starkc run` refuses any diagnostic. A **usability/CLI-policy
+inconsistency with no safety impact**, and the specification does not mandate the policy.
+
+```text
+status       OPEN
+owner        a future bounded CLI-consistency packet
+C10 repair   NO
+C10-Q        PERMITTED as a named tooling deviation
+```
+
+**Condition attached by the owner:** *one current-head reproduction is required before C10-Q.* The
+entry is old enough that an incidental later change may already have removed it, and a release must
+not name a deviation that no longer exists.
+
+## DEV-010 — CLOSED (OD-7, 2026-08-09). Stale ledger status, not a release deviation
+
+The recorded defect was that hover, definition and references were **protocol stubs**. Gate C8
+established compiler-derived semantic services, and those three features are precisely the ones the
+owner interactively validated (`GATE-C8-CLOSURE.md` §2). The deviation describes a compiler that no
+longer exists.
+
+## DEV-011 — ACCEPTED-INDEFINITELY (OD-7, 2026-08-09). Not OPEN, and not "fixed"
+
+Doc comments are trivia rather than AST/HIR metadata. **The entry itself records that no explicit
+normative requirement demands otherwise.**
+
+```text
+status       ACCEPTED-INDEFINITELY
+reason       an implementation/tooling representation choice; no current normative violation
+reopen if    a future documented semantic or tooling requirement cannot be satisfied from
+             trivia and reassociation
+```
+
+Recorded this way deliberately: C10 must not classify a representation preference as a conformance
+defect, and must not claim it was fixed.
+
+## DEV-020 — CLOSED (OD-7, 2026-08-09). Confirmed design
+
+`pub use` of a private item exposes it: the visibility of a re-export is the visibility of the
+re-export. Already recorded in C1 as confirmed design rather than a defect.
+
+## DEV-021 — CLOSED (OD-7, 2026-08-09). Verified correct
+
+Cross-package coherence checking was **verified working**. The entry records a verification, not a
+continuing defect.
+
+## DEV-083 — OPEN, ACCEPTED-DEFERRED (OD-7, 2026-08-09). Real, and it constrains the claim
+
+A concrete position in an impl head cannot match a receiver type argument that is still unresolved.
+Native planning carried this forward as a known front-end limitation and required **deterministic
+rejection** rather than pretended support.
+
+```text
+status          OPEN
+classification  supported-surface limitation
+C10 repair      NO
+release         permitted ONLY if explicitly listed
+future owner    a bounded inference / method-resolution packet
+```
+
+**It constrains the Core v1 Compiler Stable claim; it does not block C10.**
+
+## DEV-179 — DORMANT (OD-7, 2026-08-09). Not closed, and not counted as live
+
+`MapIter`/`FilterIter` discard a generic callback's instantiation. **Unreachable while iterator
+`map`/`filter` remains refused by `E0105`** — a feature-activation prerequisite, not an active
+conformance failure.
+
+```text
+status       DORMANT
+release      does not block the current supported scope
+trigger      MUST be resolved before iterator map/filter becomes accepted
+```
+
+Not closed, because the hazardous implementation is still there. Removed from the live
+current-defect count, because nothing can reach it.
+
+## DEV-196 — CLOSED / RETIRED AS A LIVE DEFECT (OD-7, 2026-08-09)
+
+Measurement showed legacy `Core(File)` is not ordinarily lowerable from source at all — even
+binding the returned `File` is rejected before MIR lowering. The real provider path uses explicit
+resource-close semantics, not this legacy `Drop` path.
+
+**The reachability regression test is KEPT**, because it guards the premise:
+
+```text
+if Core(File) ever becomes ordinarily lowerable
+    -> DEV-196's dormant hazard becomes relevant again, and that test is what will say so
+```
+
+---
+
+# The six entries this ledger never had (OD-7 backfill, 2026-08-09)
+
+C10-0 finding **F3**: these six were OPEN in `COMPILER-STATE.md` and owned no heading here, so a
+mechanical C10-Q check reading this file alone would have missed six genuine deviations.
+
+**Status is carried across unchanged, and the `COMPILER-STATE.md` records remain authoritative for
+detail.** This backfill restores the structured ledger; it does not re-adjudicate anything.
+
+## DEV-156 — `stark fmt` evicts member doc comments (OPEN; backfilled OD-7, 2026-08-09)
+
+A doc comment on a struct **field** is relocated after the struct. Recorded in `COMPILER-STATE.md`.
+
+## DEV-157 — the native backend has no representation for `MirTy::Never` (OPEN; backfilled OD-7, 2026-08-09)
+
+`Err(_) => panic(..)` in match-arm **value** position has no native representation.
+
+## DEV-159 — a native build can race its own dependency build (OPEN; backfilled OD-7, 2026-08-09)
+
+Reported by an outside reviewer: a first native build of an HTTP program can race the build of its
+own dependencies.
+
+## DEV-160 — place-granular borrows, whole-value projections (OPEN; backfilled OD-7, 2026-08-09)
+
+The borrow checker is place-granular (DEV-154); whole-slot borrows for disjoint projections remain
+open. Guarded in CI by the `DEV-160 raw slot primitives under Miri` job.
+
+## DEV-161 — an ambient `CARGO_TARGET_DIR` breaks every native build (OPEN; backfilled OD-7, 2026-08-09)
+
+Cargo's default output is `<manifest dir>/target`, which is where the generated crate expects it. An
+exported `CARGO_TARGET_DIR` redirects it and the build fails. **An operational trap for any session
+that sets the variable globally** — including a mutation or coverage run.
+
+## DEV-162 — reading through a whole-value accessor (OPEN; backfilled OD-7, 2026-08-09)
+
+A read through a whole-value accessor on partially-moved storage. Sibling to DEV-158 (CLOSED) and
+DEV-160 (OPEN).

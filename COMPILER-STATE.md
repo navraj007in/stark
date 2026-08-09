@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-C (security); C10-A2 dashboard  Blocked: none (DEV-214 needs an owner call)
+Gate: C10  Next: C10-A2 dashboard; then C10-D/E/F  Blocked: none (DEV-214 needs an owner call)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | C10-0, C10-P, C10-A1, **C10-B COMPLETE**. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-C, then C10-A2 |
+| **Active packet** | C10-0, C10-P, C10-A1, C10-B, **C10-C COMPLETE**. Gate C10 OPENED 2026-08-09 (CD-395). Next: **C10-A2**, then D/E/F |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -45,10 +45,12 @@ frozen separately by OD-3; regenerate A with
 `python3 starkc/scripts/c10-deviation-populations.py`.
 
 ```text
-POPULATION A — compiler deviations (the CD-021 denominator)                          32
+POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 accepted + 1 dormant
 
-  live OPEN by the last ledger heading                                               18
-                                            (DEV-213 CLOSED by C10-P; DEV-214 opened by C10-B)
+  live OPEN by the last ledger heading                                               26
+                            OD-7 adjudicated all 8 unsettled entries and BACKFILLED the 6 that
+                            lived only here. `c10-deviation-populations.py` now reports
+                            ADJUDICATE = 0 — population A is fully resolved
     DEV-012 interactive editor validation, 7 of 10 features    -> C10-P, needs a human
                                                                   in an editor (MANUAL evidence)
     DEV-140/141/142/143/144/145   the six CD-342 "layer defect" registrations —
@@ -69,8 +71,22 @@ POPULATION A — compiler deviations (the CD-021 denominator)                   
     DEV-161 ambient CARGO_TARGET_DIR breaks builds  DEV-162 read through a whole-value accessor
     ^^ a C10.7 check reading only the ledger would not see these. CD-395 finding F3
 
-  last heading does not settle it — OWNER ADJUDICATION due                            8
-    DEV-005 DEV-010 DEV-011 DEV-020 DEV-021 DEV-083 DEV-179 DEV-196
+  ADJUDICATED by OD-7 (owner, 2026-08-09) — none remain unsettled
+    CLOSED / retired    DEV-010 (superseded by C8)   DEV-020 (confirmed design)
+                        DEV-021 (verified correct)   DEV-196 (Core(File) not lowerable at all;
+                                                     the reachability test is KEPT as a premise
+                                                     guard)
+    OPEN, accepted      DEV-005 (CLI warning-policy drift; needs ONE current-head reproduction
+                                 before C10-Q, because the entry is old enough that a later
+                                 change may already have removed it)
+                        DEV-083 (impl-head concrete position vs unresolved receiver argument;
+                                 constrains the Core Stable claim, does not block C10)
+    ACCEPTED-INDEF.     DEV-011 (doc comments as trivia — no normative requirement demands
+                                 otherwise; a representation preference is NOT a conformance
+                                 defect, and it was NOT "fixed")
+    DORMANT             DEV-179 (unreachable while iterator map/filter is refused by E0105;
+                                 not closed, because the hazardous code remains; not counted
+                                 live, because nothing can reach it)
 
 POPULATION B — release/distribution (constrains WORDING, not conformance)
     DEV-165 connect_timeout accepted and ignored; standalone toolchain PARTIAL;
@@ -311,6 +327,58 @@ the population — C10-Q may not claim robustness over them. DEV-186 is confirme
 
 The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
 proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
+
+### C10-C, same day — no class-B finding, and the probe that was nearly vacuous
+
+`audits/C10-C-SECURITY-REVIEW.md`, model `C10-THREAT-MODEL.md` (16 surfaces, FROZEN in C10-0 §9
+before any finding was reviewed), probes `tests/c10c_security.rs`.
+
+**No security vulnerability found, and no `SEC-C10-*` allocated.** The reason is structural rather
+than lucky: the compiler has no shell (all four `Command::new` sites build argument vectors), one
+dependency (`sha2`, default-features off), generated Rust escaped by Rust's own escaper and then
+compiled by rustc — so a literal breaking out is a build failure, not a silent injection — and
+interpreters with no host access at all, which is what keeps "no LSP workspace trust" in class D
+rather than class B.
+
+**The finding worth recording is about my own test.** S01's first probe asserted only that a hostile
+`mod` name produced *some* diagnostic. It passed, and it was nearly vacuous — `mod ordinary_name;`
+also produces one, because the file is missing. Reading the actual messages exposed it:
+
+```text
+mod ordinary_name;         ->  "file not found for module 'ordinary_name'"   <- reached the FS
+mod ../../../etc/passwd;   ->  "expected a module name, found `..`"          <- rejected by GRAMMAR
+```
+
+The defence is that hostile forms never reach the filesystem layer, so the assertion is now that
+they never produce the file-not-found diagnostic — a claim about WHICH path ran. **A passing test is
+not evidence until you know what it would have to see to fail.** That cost one `println!`.
+
+Classified: **S16 integrity-not-authenticity** (class C — governs the release wording; `stark doctor`
+detects corruption, not provenance). **S12 PATH-resolved cargo/rustc**, **S11 no LSP workspace
+trust**, **S02 build reads its package** — class D, accepted, and S12 must be STATED in the release
+notes rather than left implicit. **Seven surfaces carry a defence with NO falsifier** and are
+recorded UNVERIFIED, not claimed; R-S03 is the one worth closing first, because there the defence
+itself is unknown rather than merely untested.
+
+**No CE9 decision is requested:** the packet reviewed those surfaces and changed none of them.
+
+### OD-7 and OD-8 — owner rulings, 2026-08-09
+
+**OD-7.** All eight unsettled deviations adjudicated (above), and the six that lived only in this
+file are **backfilled into `KNOWN-DEVIATIONS.md` as forward-only headings** with status carried
+across unchanged. Nothing historical was rewritten. `c10-deviation-populations.py` was taught OD-7's
+status vocabulary — `ACCEPTED-INDEFINITELY` and `DORMANT` are neither open nor closed, and
+collapsing either into `open` would inflate the count CD-021's release rule ranges over. It now
+reports **ADJUDICATE = 0**.
+
+**OD-8 — ONNX timings: INCLUDE, QUARANTINED.** C10-0 recommended exclusion; the owner declined,
+because WP-C10.6 explicitly lists ONNX import/verify/deploy and excluding it would need an override
+of C10's own contract. It enters C10-E as a **separately scoped optional-extension appendix**, never
+aggregated into a compiler-performance number, with a verbatim sentence stating that it qualifies the
+frozen maintenance surface only and supports no tensor-capability claim. **C10-E's LSP latency
+baseline also absorbs DEV-213's residual** — post-fix numbers, and AS8's pre-fix figures are
+historical context that may NOT be called a before/after unless harness and workload are
+demonstrably identical.
 
 **DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
 features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3

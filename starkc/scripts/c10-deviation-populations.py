@@ -50,20 +50,43 @@ def live_headings(lines: list[str]) -> dict[str, tuple[int, str]]:
     return last
 
 
-def classify(heading: str) -> str:
-    """closed | open | adjudicate.
+#: The status vocabulary the OWNER established in ruling OD-7 (2026-08-09). Before it, this file
+#: had no vocabulary at all and every heading was free text -- which is why eight entries needed
+#: hand-adjudication on the first run. These are checked BEFORE the loose OPEN/CLOSED words,
+#: because "OPEN, ACCEPTED RELEASE DEVIATION" contains both a status and a disposition and only
+#: the pair is meaningful.
+OD7_VOCABULARY = (
+    ("ACCEPTED-INDEFINITELY", "accepted"),
+    ("DORMANT", "dormant"),
+    ("CLOSED / RETIRED", "closed"),
+    ("CLOSED/RETIRED", "closed"),
+    ("OPEN, ACCEPTED", "open"),
+    ("OPEN; BACKFILLED", "open"),
+)
 
-    `adjudicate` is not a failure mode, it is the honest answer for a heading whose status word is
-    absent or is qualified by the same sentence (e.g. "OPEN, deferred by decision", or a heading
-    that says both RESOLVED and OPEN). Those go to a human.
+
+def classify(heading: str) -> str:
+    """closed | open | accepted | dormant | adjudicate.
+
+    `adjudicate` is not a failure mode. It is the honest answer for a heading whose status word is
+    absent, or is qualified within the same sentence, or says both RESOLVED and OPEN. Those go to a
+    human -- a regex that guessed would be doing the reviewer's job badly.
+
+    `accepted` and `dormant` exist because OD-7 ruled that they are NOT open and NOT closed:
+    an accepted-indefinitely deviation needs an owner and a disposition but never a repair, and a
+    dormant one is unreachable until a named feature is activated. Collapsing either into `open`
+    would inflate the live-defect count that CD-021's release rule ranges over.
     """
     upper = heading.upper()
+    for token, verdict in OD7_VOCABULARY:
+        if token in upper:
+            return verdict
     has_open = "OPEN" in upper
     has_closed = any(w in upper for w in CLOSED_WORDS)
     if has_open and has_closed:
         return "adjudicate"
     if has_open:
-        return "open" if re.search(r"\(OPEN\)|\[OPEN\b|\(OPEN,", heading, re.I) else "adjudicate"
+        return "open" if re.search(r"\(OPEN\)|\[OPEN\b|\(OPEN,|\(OPEN;", heading, re.I) else "adjudicate"
     if has_closed:
         return "closed"
     return "adjudicate"
@@ -77,7 +100,9 @@ def main() -> int:
     dev_lines = read(DEVIATIONS)
     last = live_headings(dev_lines)
 
-    buckets: dict[str, list[tuple[str, int, str]]] = {"open": [], "closed": [], "adjudicate": []}
+    buckets: dict[str, list[tuple[str, int, str]]] = {
+        "open": [], "closed": [], "accepted": [], "dormant": [], "adjudicate": []
+    }
     for did, (ln, head) in last.items():
         buckets[classify(head)].append((did, ln, head[3:]))
     for b in buckets.values():
@@ -114,6 +139,11 @@ def main() -> int:
     for did, ln, head in buckets["open"]:
         print(f"    {did}  L{ln:<6d} {head[:110]}")
     print()
+    for name, label in (("accepted", "ACCEPTED-INDEFINITELY"), ("dormant", "DORMANT")):
+        print(f"{label} -- owned and dispositioned, NOT counted as a live defect  ({len(buckets[name])})")
+        for did, ln, head in buckets[name]:
+            print(f"    {did}  L{ln:<6d} {head[:110]}")
+        print()
     print(f"ADJUDICATE -- the last heading does not settle it  ({len(buckets['adjudicate'])})")
     print("    Not an error. A human decides; a regex that guessed would be doing it badly.")
     for did, ln, head in buckets["adjudicate"]:
