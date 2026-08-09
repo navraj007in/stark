@@ -1,6 +1,6 @@
 ---
 name: stark-package-authoring
-description: Use when creating, extending or reviewing a first-party STARK package under packages/ — including any package that needs host access (clock, filesystem, environment, random, TCP/DNS, TLS) and therefore a native provider crate. Encodes the manifest and layout rules the compiler enforces, the qualification gate a package must pass, and the compiler defects a package author has to code around.
+description: Use when creating, extending or reviewing a first-party STARK package under packages/ — including any package that needs host access through capability vocabulary v1 and therefore a native provider crate. Encodes the manifest and layout rules the compiler enforces, the qualification gate a package must pass, and the compiler defects a package author has to code around.
 tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 
@@ -29,20 +29,21 @@ packages/stark-<name>-consumer/
   "name": "stark-example",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": ["tcp", "dns"],
+  "capability_vocabulary": 1,
+  "capabilities": ["network-client"],
   "dependencies": {
     "stark_other": { "package": "stark-other", "path": "../stark-other", "version": "0.1.0" }
   }
 }
 ```
 
-**Dependency paths must be siblings.** The workspace root is the *parent directory* of your package
-(`starkc/src/package.rs`, `get_workspace_root`), so anything outside `packages/` is refused by name
-with `resolves to '…' which is outside the permitted workspace`. Use `../stark-other`, never an
-absolute path out of the tree. Package names use hyphens; the dependency alias used in `use`
-statements uses underscores.
+First-party dependency paths should be siblings (`../stark-other`) for a relocatable repository.
+External absolute or relative path dependencies are supported: the resolver canonicalizes them and
+records the resolved directory plus content hash in `stark.lock`. Package names use hyphens; the
+dependency alias used in `use` statements uses underscores.
 
-`stark.lock` records names and versions, never paths.
+For external path dependencies, `stark.lock` also records the canonical source path and a
+deterministic content hash so dependencies outside the workspace remain auditable.
 
 ## 2. Host access is declared, never assumed
 
@@ -52,11 +53,11 @@ provider crate satisfies it at build time.
 | capability | provider crate |
 | --- | --- |
 | `clock` | `packages/stark-time/native` |
-| `filesystem` | `packages/stark-file/native` |
-| `process.env`, `process.args` | `packages/stark-env/native` |
-| `random` | `packages/stark-random/native` |
-| `tcp`, `dns` | `packages/stark-net/native` |
-| `tls` | `packages/stark-tls/native` |
+| `filesystem-read`, `filesystem-write` | `packages/stark-file/native` |
+| `environment-read` | `packages/stark-env/native` |
+| `randomness` | `packages/stark-random/native` |
+| `network-client`, `network-listen` | `packages/stark-net/native` |
+| `network-client` | `packages/stark-tls/native` |
 
 **Capability-backed packages cannot run under `stark run`.** The reference and MIR interpreters have
 no provider layer at all, so anything reaching the network or the filesystem builds with

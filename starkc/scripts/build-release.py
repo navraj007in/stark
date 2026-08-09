@@ -38,6 +38,27 @@ PROVIDER_FILES = ("Cargo.toml", "Cargo.lock")
 PROVIDER_DIRS = ("src",)
 
 
+def toolchain_package_paths() -> list[str]:
+    """Packages explicitly marked for installation with this compiler build."""
+    paths = []
+    for manifest in sorted((REPO_DIR / "packages").glob("*/starkpkg.json")):
+        package = json.loads(manifest.read_text(encoding="utf-8"))
+        if package.get("distribution", {}).get("toolchain") is not True:
+            continue
+        name = package.get("name")
+        if name != manifest.parent.name:
+            raise SystemExit(
+                f"toolchain package name '{name}' does not match directory: {manifest.parent}"
+            )
+        entry = package.get("entry", "src/main.stark")
+        if not (manifest.parent / entry).is_file():
+            raise SystemExit(f"toolchain package entry is missing: {manifest.parent / entry}")
+        paths.append(name)
+    if not paths:
+        raise SystemExit("no manifests declare distribution.toolchain=true")
+    return paths
+
+
 def provider_crate_paths() -> list[str]:
     """The built-in providers' crate paths, read from the manifests the compiler embeds.
 
@@ -321,7 +342,7 @@ def write_manifest(staging: Path, *, target: str, version: str) -> None:
         "mir_version": "unknown",
         "runtime_version": version,
         "backend_version": version,
-        "packages": [],
+        "packages": toolchain_package_paths(),
         # Declared, not inferred from the file list: a reader asking "which capabilities can this
         # package build?" gets an answer that stays true even if the payload is later trimmed —
         # and a mismatch between this and `files` is then a detectable defect rather than silence.
@@ -352,7 +373,9 @@ def component_for_path(relative: str) -> str:
         ("lib/stark/starkc/stark-provider-abi/", "lib/stark/stark-provider-abi/")
     ):
         return "provider-abi"
-    if relative.startswith("lib/stark/providers/"):
+    if relative.startswith("lib/stark/providers/") or (
+        relative.startswith("lib/stark/packages/") and "/native/" in relative
+    ):
         return "provider"
     if relative.startswith("lib/stark/packages/"):
         return "package"
@@ -454,6 +477,18 @@ def package_release(
         # cannot `build` any program that declares a capability — the compiler selects a provider
         # from its built-in registry and then finds no crate to compile.
         packages_root = staging / "lib" / "stark" / "packages"
+        # STARK packages retain the repository's sibling layout. In particular, a dependency such
+        # as `../stark-ascii` resolves identically from the installed tree. Native crates are
+        # copied separately below from the provider registry and checkout build artefacts never
+        # enter the payload.
+        for toolchain_package in toolchain_package_paths():
+            source = REPO_DIR / "packages" / toolchain_package
+            destination = packages_root / toolchain_package
+            shutil.copytree(
+                source,
+                destination,
+                ignore=shutil.ignore_patterns("native", "target", "__pycache__", "*.pyc"),
+            )
         for crate_path in provider_crate_paths():
             source = REPO_DIR / "packages" / crate_path
             if not (source / "Cargo.toml").is_file():
@@ -484,6 +519,8 @@ def package_release(
                     "Included binaries: stark, starkc, starkide",
                     "Installed runtime: lib/stark/starkc/stark-runtime",
                     "Installed provider ABI: lib/stark/starkc/stark-provider-abi",
+                    "Installed STARK packages: lib/stark/packages/<name> — "
+                    + ", ".join(toolchain_package_paths()),
                     "Installed providers: lib/stark/packages/<name>/native — "
                     + ", ".join(
                         sorted(

@@ -61,14 +61,17 @@ These are the ones most often got wrong:
   another engine.
 - **Tooling**: `stark fmt`, `stark test`, `stark doc`, `stark doctor`, `starkc lsp` with a VS Code
   extension, and `starkide`, a terminal IDE.
-- **Packages**: 28 first-party packages under `packages/`, each with a `*-consumer` that must
-  actually *call* its declared surface. Includes an HTTP/1.1 and HTTPS client written in STARK
+- **Packages**: 27 first-party libraries plus the `stark-get` application under `packages/`, with
+  qualification consumers that must actually *call* the declared surfaces they cover. Includes an
+  HTTP/1.1 and HTTPS client written in STARK
   (HC0–HC13, closed 2026-08-03), TLS, JSON, CSV, URL and the encoding family.
-- **Host access**: capability-declared and provider-backed. A package names `clock`, `filesystem`,
-  `process.env`/`process.args`, `random`, `tcp`/`dns` or `tls` in its manifest, and a native
-  provider crate at `packages/<name>/native` satisfies it at build time.
+- **Host access**: capability-derived, envelope-checked and provider-backed. Vocabulary v1 names
+  `filesystem-read`, `filesystem-write`, `environment-read`, `network-client`, `network-listen`,
+  `clock`, `randomness`, `process-execution`, and `native-code`. The root manifest approves the
+  transitive derived set; a native provider crate at `packages/<name>/native` satisfies it.
 - **Distribution**: release archives, platform installers, a versioned install tree, uninstall,
-  and `stark doctor` manifest verification.
+  27 explicitly marked toolchain libraries, six provider crates, executable-relative local package
+  resolution, and named package/provider checks in `stark doctor`.
 
 ## What does not exist
 
@@ -92,8 +95,9 @@ Read the relevant one before starting; they are written as checklists, not backg
 
 - **`stark run` cannot execute anything that touches the host.** The interpreters have no provider
   layer, so capability-backed packages build with `stark build` or not at all.
-- **Dependency paths must be siblings.** The workspace root is the *parent directory* of a package
-  (`package.rs` `get_workspace_root`), so a path outside `packages/` is refused by name.
+- **Path dependencies may leave the package's parent directory.** They are canonicalized, and the
+  lockfile records the resolved path plus content hash. First-party packages remain siblings for a
+  relocatable repository layout.
 - **Provider crates are depth-sensitive.** `packages/<name>/native/Cargo.toml` reaches the ABI
   through `../../../starkc/stark-provider-abi`; `include_str!` in provider *sources* needs one
   more level, because it resolves relative to the source file rather than the manifest. One

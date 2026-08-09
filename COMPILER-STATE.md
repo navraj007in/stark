@@ -113,6 +113,36 @@ disagree, the dated record wins and this block is stale — fix it in the same c
 
 ---
 
+## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
+
+> **RENUMBERED from CD-395 at integration, 2026-08-09.** Both this branch and Gate C10 allocated
+> `CD-395` on the same day, to different decisions, while working in parallel. C10's landed on
+> `develop` first (PR #13, merge `1d20123`), so **C10 keeps 395 and this record moves to 396** —
+> the rule is arrival order on the trunk, not authorship order. Nothing about the decision below
+> has changed; only its number.
+
+**Owner-approved implementation of WP-PKG-TOOLCHAIN-ROOT.** Three distribution choices are now
+load-bearing rather than inferred from directory names:
+
+1. A package ships only when its manifest says `"distribution": { "toolchain": true }`. The
+   marker names toolchain bundling rather than registry publication. The current marked set is the
+   27 packages whose entry is `src/lib.stark`; the `stark-get` application and all 25 consumer
+   fixtures do not ship.
+2. The bundled version must satisfy the requested constraint. An incompatible request is refused
+   with both requested and carried versions.
+3. Fresh resolution precedence is explicit `path`, then the workspace registry, then the
+   executable-relative toolchain root. A compatible workspace-registry package shadows a bundled
+   package with one warning. A lockfile does not re-run precedence: its `registry` or `toolchain`
+   source remains authoritative.
+
+Toolchain lock entries record `source: "toolchain"`, version and content hash, never the absolute
+installation prefix. Toolchain packages remain local in `--offline` mode and contribute the same
+transitive capability envelope as path and registry packages. The installed tree mirrors
+`packages/<name>/`, preserving existing sibling path dependencies.
+
+`stark doctor` now has independent named `provider_crates` and `packages` checks. The provider
+check derives its required set from the compiler's built-in provider registry, so deleting a crate
+and also deleting its manifest hash cannot produce a false OK.
 ## CD-395 — Gate C10 OPENED; six opening decisions ruled; the "at a glance" block was short by thirty (2026-08-09)
 
 **`STARKLANG/docs/compiler/plans/WP-C10-COMPILER-RELEASE-QUALIFICATION.md` is the execution plan,

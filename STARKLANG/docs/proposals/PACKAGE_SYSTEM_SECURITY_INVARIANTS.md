@@ -391,3 +391,10 @@ all new cross-references (rules 18–20, E7, WP-P1.6) resolve to real content. (
 outstanding by design: the ecosystem STATE.md does not exist yet — WP-E0.0's bootstrap must
 cite this file in its opening decision-log entries. (c) is a standing obligation on all
 future ecosystem WP files.
+
+**Implementation follow-through 2026-08-09:** WP-P1.6 is implemented. Vocabulary v1 was adopted
+as written and recorded in manifests/lockfiles as `capability_vocabulary: 1`; the pre-v1 mapping is
+normative in `../spec/packages/capabilities.md`. Conservative graph derivation and root-envelope
+enforcement are normative in `../spec/packages/capability-derivation.md`. Provider selection now
+distinguishes authority roles from interface identity, allowing disjoint TCP/TLS interfaces under
+`network-client` while retaining global symbol-collision rejection.

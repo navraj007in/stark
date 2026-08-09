@@ -201,26 +201,26 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["process.args".to_string(), "process.env".to_string()],
+            capabilities: vec!["environment-read".to_string()],
             resource_types: vec![],
             functions: vec![
                 FunctionDecl {
                     name: "stark_env_args_len".to_string(),
-                    capability: "process.args".to_string(),
+                    capability: "environment-read".to_string(),
                     params: vec![AbiParam::ScalarOut(ScalarTy::U64)],
                     is_close_for: None,
                     may_block: false,
                 },
                 FunctionDecl {
                     name: "stark_env_args_fill".to_string(),
-                    capability: "process.args".to_string(),
+                    capability: "environment-read".to_string(),
                     params: vec![AbiParam::BufferInOut, AbiParam::ScalarOut(ScalarTy::U64)],
                     is_close_for: None,
                     may_block: false,
                 },
                 FunctionDecl {
                     name: "stark_env_var_len".to_string(),
-                    capability: "process.env".to_string(),
+                    capability: "environment-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::ScalarOut(ScalarTy::Bool),
@@ -231,7 +231,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_env_var_fill".to_string(),
-                    capability: "process.env".to_string(),
+                    capability: "environment-read".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::BufferInOut,

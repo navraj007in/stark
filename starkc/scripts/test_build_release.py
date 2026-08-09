@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import stat
@@ -99,12 +100,34 @@ class ReleasePackageTests(unittest.TestCase):
                     (native / "../../../starkc/stark-provider-abi/Cargo.toml").resolve().is_file(),
                     f"provider ABI dependency does not resolve for {crate_path}",
                 )
+            for package_name in build_release.toolchain_package_paths():
+                package = package_root / "lib/stark/packages" / package_name
+                self.assertTrue((package / "starkpkg.json").is_file())
+                self.assertTrue(
+                    any((package / "src").rglob("*.stark")),
+                    f"missing STARK sources for {package_name}",
+                )
             # `target/` is a build artefact of the checkout, never payload.
             self.assertEqual(
                 [], list((package_root / "lib/stark/packages").rglob("target")),
                 "provider build artefacts must not be packaged",
             )
             self.assertTrue((package_root / "manifest.json").is_file())
+            install_manifest = json.loads(
+                (package_root / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                install_manifest["packages"], build_release.toolchain_package_paths()
+            )
+            self.assertEqual(
+                install_manifest["providers"],
+                sorted(
+                    {
+                        path.split("/", 1)[0]
+                        for path in build_release.provider_crate_paths()
+                    }
+                ),
+            )
             if os.name != "nt":
                 prefix = root / "prefix with spaces"
                 subprocess.run(
@@ -123,8 +146,12 @@ class ReleasePackageTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     (installed / "lib/stark/packages").is_dir(),
-                    "an installed tree must carry the provider crates",
+                    "an installed tree must carry packages and provider crates",
                 )
+                for package_name in build_release.toolchain_package_paths():
+                    self.assertTrue(
+                        (installed / "lib/stark/packages" / package_name / "starkpkg.json").is_file()
+                    )
                 subprocess.run(
                     [
                         str(prefix / "lib/stark/uninstall.sh"),
@@ -165,6 +192,21 @@ class ReleasePackageTests(unittest.TestCase):
                 for crate_path in build_release.provider_crate_paths():
                     self.assertIn(
                         f"{package_root}/lib/stark/packages/{crate_path}/Cargo.toml", names
+                    )
+                for package_name in build_release.toolchain_package_paths():
+                    self.assertIn(
+                        f"{package_root}/lib/stark/packages/{package_name}/starkpkg.json",
+                        names,
+                    )
+                    self.assertTrue(
+                        any(
+                            name.startswith(
+                                f"{package_root}/lib/stark/packages/{package_name}/src/"
+                            )
+                            and name.endswith(".stark")
+                            for name in names
+                        ),
+                        f"missing STARK sources for {package_name}",
                     )
                 self.assertIn(f"{package_root}/manifest.json", names)
                 self.assertIn(f"{package_root}/install.ps1", names)

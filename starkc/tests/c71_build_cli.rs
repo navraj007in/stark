@@ -241,6 +241,32 @@ fn target_without_a_value_is_a_usage_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn check_reports_native_surface_exclusions_and_can_make_them_fatal() {
+    if skip_without_binary() {
+        return;
+    }
+    let dir = scratch("native_surface");
+    std::fs::write(
+        dir.join("src/main.stark"),
+        "fn main() { let mut values: Vec<Int32> = Vec::new(); values.push(1); values[0u64] = 2; }\n",
+    )
+    .unwrap();
+
+    let (ok, stdout, stderr) = run(&dir, &["check"]);
+    assert!(ok, "default check must remain successful: {stderr}");
+    assert!(stdout.contains(": OK"), "{stdout}");
+    assert!(stderr.contains("W0106"), "{stderr}");
+    assert!(stderr.contains("VecReplace"), "{stderr}");
+    assert!(stderr.contains("WP-C6.3b"), "{stderr}");
+
+    let (ok, _, stderr) = run(&dir, &["check", "--target-native"]);
+    assert!(!ok, "strict native targeting must reject the exclusion");
+    assert!(stderr.contains("E0106"), "{stderr}");
+    assert!(stderr.contains("Vec index assignment"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--target=<triple>` is accepted as one argument, and refused for the same reason as the spaced
 /// form — so the two spellings cannot diverge.
 #[test]

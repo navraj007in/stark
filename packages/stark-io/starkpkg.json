@@ -2,95 +2,96 @@
   "name": "stark-io",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "capabilities": [
-    "filesystem"
-  ],
+  "distribution": { "toolchain": true },
+  "capability_vocabulary": 1,
+  "capabilities": ["filesystem-read", "filesystem-write"],
   "dependencies": {},
   "provider_api": {
     "errors": {
-      "filesystem": "RawFileError"
+      "filesystem-read": "RawFileError",
+      "filesystem-write": "RawFileError"
     },
     "resources": {
       "NativeFile": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "resource": "io_file"
       }
     },
     "functions": {
       "file_open_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iofile_open"
       },
       "file_create_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_create"
       },
       "file_read_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iofile_read"
       },
       "file_write_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_write"
       },
       "file_flush_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_complete"
       },
       "file_close_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iofile_close"
       },
       "file_open_options_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_open_options"
       },
       "file_seek_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iofile_seek"
       },
       "file_sync_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_sync"
       },
       "file_set_len_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_set_len"
       },
       "file_metadata_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iofile_metadata"
       },
       "path_metadata_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iopath_metadata"
       },
       "path_exists_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iopath_exists"
       },
       "file_remove_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_remove"
       },
       "file_rename_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_rename"
       },
       "file_copy_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iofile_copy"
       },
       "dir_create_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iodir_create"
       },
       "dir_remove_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-write",
         "symbol": "stark_iodir_remove"
       },
       "dir_list_raw": {
-        "capability": "filesystem",
+        "capability": "filesystem-read",
         "symbol": "stark_iodir_list"
       }
     }

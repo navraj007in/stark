@@ -724,12 +724,15 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec!["tcp".to_string(), "dns".to_string()],
+            capabilities: vec![
+                "network-client".to_string(),
+                "network-listen".to_string(),
+            ],
             resource_types: vec![listener.clone(), stream.clone()],
             functions: vec![
                 FunctionDecl {
                     name: "stark_tcp_listener_bind".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-listen".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -741,7 +744,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_listener_accept".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-listen".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: listener.clone(),
@@ -755,7 +758,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_stream_connect".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::HandleOut {
@@ -767,7 +770,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_stream_read".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: stream.clone(),
@@ -780,7 +783,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_stream_write".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::HandleBorrowed {
                             resource_type: stream.clone(),
@@ -793,7 +796,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_listener_close".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-listen".to_string(),
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: listener.clone(),
                     }],
@@ -802,7 +805,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_tcp_stream_close".to_string(),
-                    capability: "tcp".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![AbiParam::HandleConsumed {
                         resource_type: stream.clone(),
                     }],
@@ -811,7 +814,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_dns_resolve_len".to_string(),
-                    capability: "dns".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::ScalarOut(ScalarTy::U64),
@@ -822,7 +825,7 @@ mod tests {
                 },
                 FunctionDecl {
                     name: "stark_dns_resolve_fill".to_string(),
-                    capability: "dns".to_string(),
+                    capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
                         AbiParam::BufferInOut,

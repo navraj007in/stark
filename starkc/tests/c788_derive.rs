@@ -90,10 +90,10 @@ fn two_out_slots_derive_a_tuple_in_declared_order() {
 fn buffers_are_parameters_and_out_slots_are_results() {
     let sig = derive(
         "env::var_len",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_len"),
         &nominals(&[]),
-        &errors_for(&[("process.env", "RawEnvError")]),
+        &errors_for(&[("environment-read", "RawEnvError")]),
     )
     .expect("derives");
 
@@ -113,10 +113,10 @@ fn buffers_are_parameters_and_out_slots_are_results() {
 fn an_in_out_buffer_is_a_parameter_not_a_result() {
     let sig = derive(
         "env::var_fill",
-        "process.env",
+        "environment-read",
         &decl("stark-std-env", "stark_env_var_fill"),
         &nominals(&[]),
-        &errors_for(&[("process.env", "RawEnvError")]),
+        &errors_for(&[("environment-read", "RawEnvError")]),
     )
     .expect("derives");
 
@@ -133,10 +133,10 @@ fn an_in_out_buffer_is_a_parameter_not_a_result() {
 fn a_handle_out_derives_an_owned_resource_result() {
     let sig = derive(
         "File::open_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_open"),
         &nominals(&[("file", "File")]),
-        &errors_for(&[("filesystem", "RawIoError")]),
+        &errors_for(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
@@ -156,10 +156,10 @@ fn a_handle_out_derives_an_owned_resource_result() {
 fn a_borrowed_handle_becomes_the_receiver() {
     let sig = derive(
         "File::read_raw",
-        "filesystem",
+        "filesystem-read",
         &decl("stark-std-file", "stark_file_read"),
         &nominals(&[("file", "File")]),
-        &errors_for(&[("filesystem", "RawIoError")]),
+        &errors_for(&[("filesystem-read", "RawIoError")]),
     )
     .expect("derives");
 
@@ -185,10 +185,10 @@ fn a_borrowed_handle_becomes_the_receiver() {
 fn accept_derives_a_borrowed_receiver_and_an_owned_result() {
     let sig = derive(
         "TcpListener::accept_raw",
-        "tcp",
+        "network-client",
         &decl("stark-std-net", "stark_tcp_listener_accept"),
         &nominals(&[("tcp_listener", "TcpListener"), ("tcp_stream", "TcpStream")]),
-        &errors_for(&[("tcp", "RawNetError")]),
+        &errors_for(&[("network-client", "RawNetError")]),
     )
     .expect("derives");
 
@@ -209,10 +209,10 @@ fn accept_derives_a_borrowed_receiver_and_an_owned_result() {
 fn an_unbound_resource_in_a_signature_is_rejected() {
     let e = derive(
         "TcpStream::connect_raw",
-        "tcp",
+        "network-client",
         &decl("stark-std-net", "stark_tcp_stream_connect"),
         &nominals(&[]), // nothing bound
-        &errors_for(&[("tcp", "RawNetError")]),
+        &errors_for(&[("network-client", "RawNetError")]),
     )
     .expect_err("must fail");
 
@@ -229,10 +229,10 @@ fn an_unbound_resource_in_a_signature_is_rejected() {
 fn a_receiver_of_the_wrong_resource_is_rejected() {
     let e = derive(
         "TcpStream::accept_raw",
-        "tcp",
+        "network-client",
         &decl("stark-std-net", "stark_tcp_listener_accept"),
         &nominals(&[("tcp_listener", "TcpListener"), ("tcp_stream", "TcpStream")]),
-        &errors_for(&[("tcp", "RawNetError")]),
+        &errors_for(&[("network-client", "RawNetError")]),
     )
     .expect_err("must fail");
 

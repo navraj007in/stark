@@ -59,7 +59,7 @@ fn tls_provider(
             abi_version: ABI_VERSION.to_string(),
         },
         target_triples: vec!["aarch64-apple-darwin".to_string()],
-        capabilities: vec!["tls".to_string()],
+        capabilities: vec!["network-client".to_string()],
         resource_types: resource_types.into_iter().map(String::from).collect(),
         foreign_resources: foreign,
         functions,
@@ -94,7 +94,7 @@ fn borrowed(rt: &str) -> AbiParam {
 fn func(name: &str, params: Vec<AbiParam>, close_for: Option<&str>) -> FunctionDecl {
     FunctionDecl {
         name: name.to_string(),
-        capability: "tls".to_string(),
+        capability: "network-client".to_string(),
         params,
         is_close_for: close_for.map(String::from),
         may_block: true,
@@ -431,12 +431,12 @@ fn net_provider(name: &str) -> ProviderMetadata {
             abi_version: ABI_VERSION.to_string(),
         },
         target_triples: vec!["test-triple".to_string()],
-        capabilities: vec!["tcp".to_string()],
+        capabilities: vec!["network-client".to_string()],
         resource_types: vec!["tcp_stream".to_string()],
         foreign_resources: Vec::new(),
         functions: vec![FunctionDecl {
             name: "stark_tcp_stream_close".to_string(),
-            capability: "tcp".to_string(),
+            capability: "network-client".to_string(),
             params: vec![consumed("tcp_stream")],
             is_close_for: Some("tcp_stream".to_string()),
             may_block: false,
@@ -465,7 +465,7 @@ fn resolve_errors(providers: Vec<ProviderMetadata>) -> Vec<ResolveError> {
     ProviderSet::select(
         providers.into_iter().map(declared).collect(),
         "test-triple",
-        &["tls".to_string(), "tcp".to_string()],
+        &["network-client".to_string(), "network-client".to_string()],
     )
     .err()
     .unwrap_or_default()

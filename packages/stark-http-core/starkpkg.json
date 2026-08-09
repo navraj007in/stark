@@ -1,5 +1,6 @@
 {
   "name": "stark-http-core",
   "version": "0.1.0",
-  "entry": "src/lib.stark"
+  "entry": "src/lib.stark",
+  "distribution": { "toolchain": true }
 }

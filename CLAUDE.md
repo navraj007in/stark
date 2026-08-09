@@ -131,18 +131,22 @@ conflict table.
   source formatter, a naming-convention test runner, a documentation generator, and an LSP server
   with a VS Code extension. The Python code in `STARKLANG/compiler/` and `Practice/Interpreter/`
   are pre-pivot prototypes and must not be extended for Core v1 work.
-- Packages and host access: **28 first-party packages live under `packages/`** (moved there
-  2026-08-04), each with a `*-consumer` package that must actually *call* its declared surface.
-  A package reaching outside the process declares a capability in `starkpkg.json` — `clock`,
-  `filesystem`, `process.env`/`process.args`, `random`, `tcp`/`dns`, `tls` — satisfied at build
-  time by a native provider crate at `packages/<name>/native`. **Capability-backed packages build
+- Packages and host access: **27 libraries plus the `stark-get` application live under
+  `packages/`** (moved there 2026-08-04). Their qualification consumers must actually *call* the
+  declared surfaces they cover.
+  Host authority uses capability vocabulary v1 — `filesystem-read`, `filesystem-write`,
+  `environment-read`, `network-client`, `network-listen`, `clock`, `randomness`,
+  `process-execution`, `native-code`. References derive a conservative transitive set, which the
+  root `starkpkg.json` declaration must envelope; native providers satisfy it at build time.
+  **Capability-backed packages build
   with `stark build` and cannot run under `stark run`**: the interpreters have no host access at
   all. An HTTP/1.1 and HTTPS client written in STARK closed 2026-08-03 (HC0–HC13).
 - Distribution: Installer Phase I is implemented — release archives, platform installers, a
   versioned install tree (`lib/stark/versions/<v>` with `current`), uninstall, and `stark doctor`
-  manifest verification. It proves **integrity, not authenticity**: archives are unsigned, the
-  payload does not carry the first-party packages or providers, and an offline build of an
-  HTTP/TLS program on a clean machine is not yet possible.
+  manifest verification. The payload carries 27 explicitly marked first-party libraries and all
+  six native provider crates; version-only dependencies resolve from the executable-relative
+  toolchain root offline. `stark doctor` names package and provider-crate inventory checks. It
+  proves **integrity, not authenticity**: archives remain unsigned.
 - Delivery has been governed by **two, non-overlapping gate sequences** — do not conflate them:
   - **Old sequence (`starkc/docs/gate1-exit.md` … `gate7-decision.md`)**, cited by
     `STARKLANG/docs/ROADMAP.md`: all seven gates are closed. Gates 1–5 built the front end,
@@ -197,10 +201,9 @@ re-deriving the rules:
   added/renumbered block must be re-triaged in the same change.
 - New language features land in the spec first, extensions second, README
   last. The archive is never updated for new features.
-- **Packages live under `packages/`, and dependency paths must stay siblings.** The workspace root
-  is the *parent directory* of a package (`package.rs` `get_workspace_root`), so a dependency
-  outside `packages/` is refused by name. Every first-party manifest therefore uses plain
-  `../stark-<name>` paths.
+- **Packages live under `packages/`, but external path dependencies are supported.** Paths are
+  canonicalized and their resolved directory plus content hash is recorded in `stark.lock`.
+  First-party manifests still use plain `../stark-<name>` paths so the repository is relocatable.
 - **Provider crates are depth-sensitive.** `packages/<name>/native/Cargo.toml` reaches the ABI
   through `../../../starkc/stark-provider-abi`, and `include_str!` in provider sources needs a
   further level (`../../../../starkc/providers/*.json`) because it resolves relative to the source

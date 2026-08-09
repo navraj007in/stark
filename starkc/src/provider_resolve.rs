@@ -212,7 +212,9 @@ pub fn check_symbol(symbol: &str) -> Result<(), SymbolProblem> {
 ///
 /// Construction is the only way to get one, and construction is the point every ABI §16 check
 /// runs. A `ProviderSet` in hand therefore means: every member validated, every symbol is a legal
-/// C identifier, no two members collide, and every required capability has exactly one supplier.
+/// C identifier, no two members collide, and every required authority capability has at least one
+/// supplier. Role-level vocabulary deliberately permits several providers (for example TCP and
+/// TLS both supply `network-client`); the interface symbol selects uniquely within that role.
 #[derive(Debug, Clone)]
 pub struct ProviderSet {
     target: String,
@@ -323,41 +325,32 @@ impl ProviderSet {
             }
         }
 
-        // 5. Capability supply (§16 check 3 + Packet 1 §1.4). Exactly one supplier, always.
+        // 5. Capability supply (§16 check 3). At least one supplier, always. Capability names are
+        // authority roles, not provider identities: `network-client` legitimately admits both the
+        // net and TLS providers. Interface resolution below remains deterministic because step 4
+        // rejects duplicate symbols across the selected set.
         for capability in required_capabilities {
             let suppliers: Vec<(String, String)> = selected
                 .iter()
                 .filter(|p| p.metadata.capabilities.contains(capability))
                 .map(|p| (p.metadata.identity.name.clone(), p.origin.clone()))
                 .collect();
-            match suppliers.len() {
-                0 => {
-                    let declared_for_other_targets = declared
-                        .iter()
-                        .filter(|p| p.metadata.capabilities.contains(capability))
-                        .map(|p| {
-                            (
-                                p.metadata.identity.name.clone(),
-                                p.metadata.target_triples.clone(),
-                            )
-                        })
-                        .collect();
-                    errors.push(ResolveError::CapabilityUnavailable {
-                        capability: capability.clone(),
-                        target: target.to_string(),
-                        declared_for_other_targets,
-                    });
-                }
-                1 => {}
-                _ => {
-                    let mut providers = suppliers;
-                    providers.sort();
-                    errors.push(ResolveError::CapabilityAmbiguous {
-                        capability: capability.clone(),
-                        target: target.to_string(),
-                        providers,
-                    });
-                }
+            if suppliers.is_empty() {
+                let declared_for_other_targets = declared
+                    .iter()
+                    .filter(|p| p.metadata.capabilities.contains(capability))
+                    .map(|p| {
+                        (
+                            p.metadata.identity.name.clone(),
+                            p.metadata.target_triples.clone(),
+                        )
+                    })
+                    .collect();
+                errors.push(ResolveError::CapabilityUnavailable {
+                    capability: capability.clone(),
+                    target: target.to_string(),
+                    declared_for_other_targets,
+                });
             }
         }
 
@@ -480,41 +473,71 @@ impl ProviderSet {
             .filter(|p| p.metadata.capabilities.iter().any(|c| c == capability))
             .collect();
 
-        let provider = match suppliers.as_slice() {
-            [one] => *one,
-            [] => {
-                return Err(ResolveError::CapabilityUnavailable {
-                    capability: capability.to_string(),
-                    target: self.target.clone(),
-                    declared_for_other_targets: Vec::new(),
-                });
-            }
-            many => {
-                let mut providers: Vec<(String, String)> = many
-                    .iter()
-                    .map(|p| (p.metadata.identity.name.clone(), p.origin.clone()))
-                    .collect();
-                providers.sort();
-                return Err(ResolveError::CapabilityAmbiguous {
-                    capability: capability.to_string(),
-                    target: self.target.clone(),
-                    providers,
-                });
-            }
-        };
+        if suppliers.is_empty() {
+            return Err(ResolveError::CapabilityUnavailable {
+                capability: capability.to_string(),
+                target: self.target.clone(),
+                declared_for_other_targets: Vec::new(),
+            });
+        }
 
-        let Some(decl) = provider
-            .metadata
-            .functions
+        let mut matches: Vec<(&DeclaredProvider, &crate::provider_abi::FunctionDecl)> = suppliers
             .iter()
-            .find(|f| f.name == function)
-        else {
+            .filter_map(|provider| {
+                provider
+                    .metadata
+                    .functions
+                    .iter()
+                    .find(|decl| decl.name == function)
+                    .map(|decl| (*provider, decl))
+            })
+            .collect();
+        if matches.is_empty() {
+            // If the symbol exists under another role, name the real mismatch instead of claiming
+            // no provider has heard of it.
+            if let Some((provider, decl)) = self.selected.iter().find_map(|provider| {
+                provider
+                    .metadata
+                    .functions
+                    .iter()
+                    .find(|decl| decl.name == function)
+                    .map(|decl| (provider, decl))
+            }) {
+                return Err(ResolveError::FunctionCapabilityMismatch {
+                    function: function.to_string(),
+                    provider: provider.metadata.identity.name.clone(),
+                    declared: decl.capability.clone(),
+                    requested: capability.to_string(),
+                });
+            }
             return Err(ResolveError::UnknownFunction {
                 capability: capability.to_string(),
                 function: function.to_string(),
-                provider: provider.metadata.identity.name.clone(),
+                provider: suppliers
+                    .iter()
+                    .map(|provider| provider.metadata.identity.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             });
-        };
+        }
+        if matches.len() > 1 {
+            let mut providers = matches
+                .iter()
+                .map(|(provider, _)| {
+                    (
+                        provider.metadata.identity.name.clone(),
+                        provider.origin.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            providers.sort();
+            return Err(ResolveError::CapabilityAmbiguous {
+                capability: capability.to_string(),
+                target: self.target.clone(),
+                providers,
+            });
+        }
+        let (provider, decl) = matches.pop().expect("non-empty checked above");
 
         // A10 §4 invariant 3: membership is checked against the DECLARATION, not assumed from the
         // lookup succeeding. A function reachable by name from the right provider can still belong

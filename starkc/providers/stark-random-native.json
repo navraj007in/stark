@@ -6,7 +6,7 @@
     "identity": "stark-std-random",
     "crate": "stark-random-native",
     "crate_path": "stark-random/native",
-    "capabilities": ["random"],
+    "capabilities": ["randomness"],
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
@@ -17,7 +17,7 @@
     "functions": [
       {
         "symbol": "stark_random_secure_fill",
-        "capability": "random",
+        "capability": "randomness",
         "params": [{ "form": "buffer_in_out" }]
       }
     ]

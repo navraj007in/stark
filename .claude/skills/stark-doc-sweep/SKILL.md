@@ -35,7 +35,7 @@ grep -rnE '\b(two|three|four|five|six|seven|eight|nine|ten|[0-9]+) (gates?|comma
   README.md ROADMAP.md CLAUDE.md AGENTS.md starkc/README.md
 ```
 
-Known live counts to keep honest: 28 packages, 25 consumers, 6 provider crates, 8 capability names,
+Known live counts to keep honest: 28 packages, 25 consumers, 6 provider crates, 9 capability names,
 116 spec fixtures, 87 audited stdlib methods / 59 verified, four engine configurations.
 
 ## 2. Table vs. prose
