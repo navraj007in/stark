@@ -412,6 +412,32 @@ BATCHES = {
                   "emitting the Drop, and when that was fixed the verifier rejected the Drop it now "
                   "emitted. AS8-DA-006 is that pair; this trial disturbs the verifier half."),
     ],
+    # -------------------- Batch 9b: the claim Batch 9's notes made, tested instead of asserted --
+    # MUT-034/035 selected `conformance` and `three_engine_differential` and BOTH SURVIVED. The
+    # trial note asserted "resolve.rs carries in-module tests for exactly this, so --lib would also
+    # kill it; the selection asks whether the SPEC FIXTURES do."
+    #
+    # That second half is a MEASUREMENT and the first half is an ASSERTION, and this packet has now
+    # been wrong three times about which suites can kill what. So: same mutations, `--lib` selected.
+    # If these kill, the survivors above are a precise statement about spec-fixture coverage. If
+    # they DO NOT, the visibility rules have no control anywhere and the finding is far larger.
+    "9b": [
+        dict(id="AS8-MUT-038", target="resolver visibility", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="resolve::item_is_visible_from — vs the in-module unit tests",
+             file="src/resolve.rs",
+             find="        matches!(\n            self.ast.item(ast::ItemId(item_id.0)).vis,\n            Some(ast::Vis::Pub)\n        )",
+             repl="        true",
+             tests=["--lib"],
+             note="Every item visible from every module, checked against resolve.rs's own unit "
+                  "tests rather than against the fixture corpus."),
+        dict(id="AS8-MUT-039", target="resolver visibility", tag="SHARED_AUTHORITY", expect="KILLED",
+             authority="resolve::name_is_visible_from — vs the in-module unit tests",
+             file="src/resolve.rs",
+             find="        if let Some(vis) = self.reexport_vis.get(&(module_id, name.to_string())) {\n            return matches!(vis, Some(ast::Vis::Pub));\n        }",
+             repl="        if self.reexport_vis.contains_key(&(module_id, name.to_string())) {\n            return true;\n        }",
+             tests=["--lib"],
+             note="A non-`pub` re-export becomes visible outside its module, same comparison."),
+    ],
     # ----------------------------------- AS8-DA: paired one-sided trials on duplicate authorities --
     # NOT an EI5 batch and NOT an EI0 category. Owner ruling 2026-08-09: EI0's vocabulary answers
     # WHAT KIND of semantic authority something is; duplication answers HOW MANY implementations

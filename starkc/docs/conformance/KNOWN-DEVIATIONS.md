@@ -43,6 +43,48 @@ impact, workaround, proposed disposition, owning future gate.
 
 ---
 
+## DEV-213 — the LSP caches one whole-package analysis PER OPEN URI, and invalidates only the edited one (OPEN, found by AS8, 2026-08-09)
+
+**Demonstrated at HEAD, not hypothesised.** `starkc/src/lsp/server.rs`
+`as8_editing_one_file_leaves_other_uris_cached_analyses_stale` passes today, which is the defect.
+
+`ServerState::compilation_cache` is keyed by URI and each value owns a whole-package
+`ProjectAnalysis` — AST, HIR, resolution tables, type tables, symbol index. Three facts compose
+into a wrong answer:
+
+```text
+state.rs:90    one full ProjectAnalysis is cached PER OPEN URI
+state.rs:73    update_document removes ONLY the edited URI's entry
+server.rs:782  handle_workspace_symbol merges symbols from EVERY cached analysis
+```
+
+Open `main.stark` and `child.stark` of one package; rename a symbol in `child.stark`. `didChange`
+drops `child.stark`'s entry and recompiles it, and `main.stark`'s analysis — which also contains the
+whole package, including `child` — is never invalidated. `workspace/symbol` then answers from both,
+so the response contains **the new name AND the name that no longer exists**.
+
+**Severity.** Wrong answers to `workspace/symbol`, not a crash and not a compilation defect: `stark
+build` and every engine are unaffected because none of them uses this cache. It is an editor-surface
+correctness bug, which is the class C8 closed short on (DEV-012).
+
+**Found by AS8's LSP profiling**, which the packet's scope framed as a PERFORMANCE question —
+*"replace whole-package ProjectAnalysis duplication per open URI where measurement shows material
+cost"*. The measured cost is modest (32-module package: 22 ms for one analysis, 181 ms for eight
+open URIs). The duplication's real consequence is not cost, it is **N copies with independent
+invalidation**.
+
+```text
+modules   one analysis   x8 open URIs   diagnostics
+      4          1.4ms         12.2ms             7
+      8          1.8ms         15.2ms            15
+     16          7.7ms         51.0ms            31
+     32         22.0ms        181.3ms            63
+```
+
+**Not fixed here.** AS8 is an assurance packet; a cache-ownership change to the LSP is
+implementation and takes ordinary checkpoints. The test is written so the repair flips its polarity
+rather than deleting it — its own message says so.
+
 ## DEV-004 — `resolve.rs` tensor-builtin gating bug (bare `min`/`max`) (RESOLVED in WP-C1.2)
 
 - **Normative expectation:** Core-only compilation (no `--extension tensor`) must never resolve
