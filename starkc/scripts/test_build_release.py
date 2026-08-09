@@ -75,13 +75,34 @@ class ReleasePackageTests(unittest.TestCase):
                 if os.name != "nt":
                     self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
             self.assertTrue(
-                (package_root / "lib/stark/stark-runtime/Cargo.toml").is_file()
+                (package_root / "lib/stark/starkc/stark-runtime/Cargo.toml").is_file()
             )
             self.assertTrue(
-                (package_root / "lib/stark/stark-runtime/src/lib.rs").is_file()
+                (package_root / "lib/stark/starkc/stark-runtime/src/lib.rs").is_file()
             )
             self.assertTrue(
-                (package_root / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
+                (package_root / "lib/stark/starkc/stark-provider-abi/src/lib.rs").is_file()
+            )
+            # Without the provider crates the package can `check` and `test` but cannot `build`
+            # anything that declares a capability, so their presence is part of what "packaged"
+            # means. The ABI path is asserted from the provider's own perspective: its manifest
+            # says `../../../starkc/stark-provider-abi`, and that has to land on a real directory.
+            for crate_path in build_release.provider_crate_paths():
+                native = package_root / "lib/stark/packages" / crate_path
+                self.assertTrue(
+                    (native / "Cargo.toml").is_file(), f"missing provider crate: {crate_path}"
+                )
+                self.assertTrue(
+                    (native / "src/lib.rs").is_file(), f"missing provider sources: {crate_path}"
+                )
+                self.assertTrue(
+                    (native / "../../../starkc/stark-provider-abi/Cargo.toml").resolve().is_file(),
+                    f"provider ABI dependency does not resolve for {crate_path}",
+                )
+            # `target/` is a build artefact of the checkout, never payload.
+            self.assertEqual(
+                [], list((package_root / "lib/stark/packages").rglob("target")),
+                "provider build artefacts must not be packaged",
             )
             self.assertTrue((package_root / "manifest.json").is_file())
             if os.name != "nt":
@@ -95,10 +116,14 @@ class ReleasePackageTests(unittest.TestCase):
                 self.assertTrue((prefix / "lib/stark/current").exists())
                 self.assertTrue((installed / "manifest.json").is_file())
                 self.assertTrue(
-                    (installed / "lib/stark/stark-runtime/src/lib.rs").is_file()
+                    (installed / "lib/stark/starkc/stark-runtime/src/lib.rs").is_file()
                 )
                 self.assertTrue(
-                    (installed / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
+                    (installed / "lib/stark/starkc/stark-provider-abi/src/lib.rs").is_file()
+                )
+                self.assertTrue(
+                    (installed / "lib/stark/packages").is_dir(),
+                    "an installed tree must carry the provider crates",
                 )
                 subprocess.run(
                     [
@@ -129,14 +154,18 @@ class ReleasePackageTests(unittest.TestCase):
                 for binary in build_release.BINARIES:
                     self.assertIn(f"{package_root}/bin/{binary}.exe", names)
                 self.assertIn(
-                    f"{package_root}/lib/stark/stark-runtime/Cargo.toml", names
+                    f"{package_root}/lib/stark/starkc/stark-runtime/Cargo.toml", names
                 )
                 self.assertIn(
-                    f"{package_root}/lib/stark/stark-runtime/src/lib.rs", names
+                    f"{package_root}/lib/stark/starkc/stark-runtime/src/lib.rs", names
                 )
                 self.assertIn(
-                    f"{package_root}/lib/stark/stark-provider-abi/src/lib.rs", names
+                    f"{package_root}/lib/stark/starkc/stark-provider-abi/src/lib.rs", names
                 )
+                for crate_path in build_release.provider_crate_paths():
+                    self.assertIn(
+                        f"{package_root}/lib/stark/packages/{crate_path}/Cargo.toml", names
+                    )
                 self.assertIn(f"{package_root}/manifest.json", names)
                 self.assertIn(f"{package_root}/install.ps1", names)
                 self.assertIn(f"{package_root}/uninstall.ps1", names)
