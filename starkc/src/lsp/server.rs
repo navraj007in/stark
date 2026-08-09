@@ -5,12 +5,22 @@ use crate::diag::{DiagnosticBatch, StructuredDiagnostic};
 use crate::package::{find_package_root, PackageGraph};
 use crate::source::{SourceFile, Span};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::protocol::*;
 use super::state::*;
+
+/// The largest `Content-Length` the framing layer will accept, in bytes.
+///
+/// DEV-186. This bounds the TRANSPORT, and is a different authority from `json::MAX_DEPTH`, which
+/// bounds recursion inside the parser. A depth limit cannot help here: the parser never runs.
+///
+/// 64 MiB is chosen to sit far above any legitimate LSP payload — the largest real messages are
+/// whole-document syncs, and a 64 MiB source file is not a thing this compiler can usefully open —
+/// while being small enough that committing it is survivable.
+const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
 
 /// LSP server
 pub struct Server {
@@ -59,8 +69,34 @@ impl Server {
             // Read content
             if let Some(content_length_str) = headers.get("Content-Length") {
                 if let Ok(content_length) = content_length_str.parse::<usize>() {
-                    let mut content = vec![0u8; content_length];
-                    reader.read_exact(&mut content)?;
+                    // DEV-186. `Content-Length` is a claim made by the peer, and it used to be
+                    // honoured by allocating that many bytes BEFORE reading any of them and before
+                    // the JSON parser ran. `Content-Length: 9999999999999` therefore committed the
+                    // memory on the strength of a header field. `usize` parsing bounds the NUMBER,
+                    // not the ALLOCATION.
+                    //
+                    // Two changes, and both are needed. The cap rejects an absurd claim outright.
+                    // `take` + `read_to_end` then grows the buffer as bytes ACTUALLY ARRIVE, so a
+                    // peer that advertises the maximum and sends ten bytes allocates ten bytes'
+                    // worth of growth, not the maximum. A cap alone would still allocate the cap.
+                    if content_length > MAX_CONTENT_LENGTH {
+                        eprintln!(
+                            "protocol error: Content-Length {content_length} exceeds the maximum \
+                             of {MAX_CONTENT_LENGTH} bytes; closing the connection"
+                        );
+                        return Ok(());
+                    }
+
+                    let mut content = Vec::new();
+                    let read = (&mut reader)
+                        .take(content_length as u64)
+                        .read_to_end(&mut content)?;
+                    if read != content_length {
+                        // The stream ended mid-body. Nothing further can be framed from it, so
+                        // this is a clean shutdown rather than an error: the alternative is
+                        // resynchronising on a stream whose framing is already known to be wrong.
+                        return Ok(());
+                    }
 
                     if let Ok(message_text) = String::from_utf8(content) {
                         match parse_message(&message_text) {
@@ -1509,6 +1545,82 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    use super::{Server, MAX_CONTENT_LENGTH};
+    use std::io::Cursor;
+
+    /// DEV-186 — an absurd `Content-Length` is refused BEFORE the body is allocated.
+    ///
+    /// The header advertises ~10 TB and the body is empty. Pre-DEV-186 this reached
+    /// `vec![0u8; content_length]` and committed the allocation on the peer's word alone. The
+    /// test asserts the run RETURNS; if the cap is removed it either aborts the process on
+    /// allocation failure or drives the machine into swap, and there is no assertion that can
+    /// observe that politely — which is exactly why the bound belongs before the allocation.
+    #[test]
+    fn dev186_absurd_content_length_is_refused_before_allocating() {
+        let input = "Content-Length: 9999999999999\r\n\r\n";
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(Cursor::new(input.as_bytes().to_vec()), &mut output)
+            .expect("an over-large frame is a clean shutdown, not an io error");
+        assert!(
+            output.is_empty(),
+            "nothing should be answered for a frame that was never read"
+        );
+    }
+
+    /// DEV-186 — the boundary itself, from both sides.
+    ///
+    /// One byte over the cap is refused. The cap is not asserted to be any particular number:
+    /// the test derives both cases from `MAX_CONTENT_LENGTH`, so retuning the constant does not
+    /// silently invalidate it.
+    #[test]
+    fn dev186_the_cap_is_the_boundary() {
+        let over = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH + 1);
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(Cursor::new(over.into_bytes()), &mut output)
+            .expect("over the cap is a clean shutdown");
+        assert!(output.is_empty(), "an over-cap frame is never answered");
+    }
+
+    /// DEV-186 — a peer that advertises a large body and sends a short one is not trusted either.
+    ///
+    /// This is the half a cap alone does not fix. The advertised length is UNDER the cap and so
+    /// passes it, but the body is ten bytes. `take` + `read_to_end` grows with the bytes that
+    /// actually arrive, so the buffer follows the stream rather than the claim.
+    #[test]
+    fn dev186_an_under_cap_lie_allocates_only_what_arrives() {
+        let mut input = format!("Content-Length: {}\r\n\r\n", MAX_CONTENT_LENGTH - 1).into_bytes();
+        input.extend_from_slice(b"0123456789");
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(Cursor::new(input), &mut output)
+            .expect("a truncated body is a clean shutdown");
+        assert!(output.is_empty(), "a truncated frame is never answered");
+    }
+
+    /// DEV-186 control — an ordinary message still round-trips.
+    ///
+    /// Without this, every assertion above is satisfiable by a server that refuses everything.
+    #[test]
+    fn dev186_a_normal_message_is_still_served() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(Cursor::new(input.into_bytes()), &mut output)
+            .expect("a well-formed frame is served");
+        let text = String::from_utf8(output).expect("responses are utf-8");
+        assert!(
+            text.contains("Content-Length:") && text.contains("capabilities"),
+            "an initialize request should be answered with capabilities, got: {text}"
+        );
+    }
 
     /// **AS8 — one `ProjectAnalysis` per open URI, invalidated per URI, merged across URIs.**
     ///

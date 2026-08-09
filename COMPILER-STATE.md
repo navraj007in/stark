@@ -155,6 +155,8 @@ shape its entry named now builds, while the defect is alive in other `Never` pos
 
 **Next:** DEV-180 as its own packet, per the owner's ruling that it follows C10-Q and not precede it.
 
+**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
+
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
 
 > **RENUMBERED from CD-395 at integration, 2026-08-09.** Both this branch and Gate C10 allocated

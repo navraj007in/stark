@@ -2787,3 +2787,53 @@ fn main() {
         other => panic!("expected a trap, got {other:#?}"),
     }
 }
+
+// DEV-172 — the minimum of every signed width is writable, and means the same thing in every
+// engine.
+//
+// `03-Type-System.md` states `Int8`'s range as -128 to 127. A negative literal is a unary minus
+// applied to a POSITIVE literal, so the magnitude reaching the range check was `128`, which is out
+// of range for `Int8` — and the identical argument refused the minimum of every signed width. The
+// checker and both executing engines fold `-<literal>` into one literal; this pins that they agree,
+// rather than each being fixed separately and drifting.
+three_engine_test!(
+    dev172_signed_minimums_agree,
+    "dev172_signed_minimums",
+    completes,
+    r#"
+fn main() {
+    let a: Int8 = -128;
+    let b: Int16 = -32768;
+    let c: Int32 = -2147483648;
+    let d: Int64 = -9223372036854775808;
+    let suffixed: Int8 = -128i8;
+    assert_eq(a, -128);
+    assert_eq(b, -32768);
+    assert_eq(c, -2147483648);
+    assert_eq(d, -9223372036854775808);
+    assert_eq(suffixed, -128);
+    assert(a < 0);
+    assert_eq(a + 1, -127);
+}
+"#
+);
+
+// DEV-172 — the fold is NARROW, and this is the case that proves it.
+//
+// Only a literal DIRECTLY under a unary minus folds. Here the inner `-128` folds to `Int8`'s
+// minimum, and the outer negation then has to produce `128`, which `Int8` cannot hold. It must
+// trap exactly as any other overflowing negation does. A fold that reached through the second
+// minus — or one that quietly widened the type — would complete instead, so this case fails if
+// the repair is made too eager.
+three_engine_test!(
+    dev172_negating_the_minimum_still_traps,
+    "dev172_negate_minimum",
+    traps(TrapCategory::IntegerOverflow, 4),
+    r#"
+fn main() {
+    let a: Int8 = -128;
+    let b: Int8 = -a;
+    assert_eq(b, 0);
+}
+"#
+);

@@ -888,7 +888,7 @@ impl<'a> Printer<'a> {
                 self.write(t);
                 self.generics_decl(&generics);
                 self.write(" ");
-                self.delimited_list("{", "}", fields.len(), |p, i| p.field_def(&fields[i]));
+                self.struct_field_list(&fields, span.lo, span.hi);
             }
             ItemKind::Enum {
                 name,
@@ -1034,6 +1034,54 @@ impl<'a> Printer<'a> {
             }
         }
         self.last_pos = span.hi;
+    }
+
+    /// DEV-156 — a struct's field list, with any doc comments on its FIELDS kept on their fields.
+    ///
+    /// `delimited_list` measures a flat rendering into a scratch buffer first, so its item printer
+    /// must not consume comments — a consumed comment would be discarded with the measurement.
+    /// `field_def` therefore never emitted them, and the comments survived only as unconsumed
+    /// trivia, flushed after the struct had been printed. A struct whose fields were documented
+    /// came back as a one-line struct followed by its own field docs, orphaned:
+    ///
+    /// ```text
+    /// struct Point { x: Int32, y: Int32 }
+    /// /// The x coordinate.
+    ///
+    /// /// The y coordinate.
+    /// ```
+    ///
+    /// Documentation is not decoration, and a formatter that moves it has damaged the file.
+    ///
+    /// When there is a comment inside the braces the flat form cannot represent it, so the
+    /// measurement is skipped entirely and the broken form is printed directly — which is also
+    /// what makes it safe to consume comments here. With no interior comments this defers to
+    /// `delimited_list` and the flat form is unchanged.
+    fn struct_field_list(&mut self, fields: &[FieldDef], header_pos: u32, close_pos: u32) {
+        let has_interior_comment = self.comments.peek().is_some_and(|c| c.span.lo < close_pos);
+        if fields.is_empty() || !has_interior_comment {
+            self.delimited_list("{", "}", fields.len(), |p, i| p.field_def(&fields[i]));
+            return;
+        }
+        self.write("{");
+        // The blank-line rule compares against `last_pos`, which is still wherever the previous
+        // ITEM ended. Left stale, the first field's doc comment looks like it was separated from
+        // what precedes it by a blank line, and one gets invented. Seed it with the header, as the
+        // enum arm does.
+        self.last_pos = header_pos;
+        self.indent += 1;
+        for f in fields {
+            self.emit_leading_comments(f.name.lo);
+            self.newline();
+            self.field_def(f);
+            self.write(",");
+            self.last_pos = f.name.hi;
+        }
+        // A comment after the last field but before `}` belongs inside the braces too.
+        self.emit_leading_comments(close_pos);
+        self.indent -= 1;
+        self.newline();
+        self.write("}");
     }
 
     fn field_def(&mut self, f: &FieldDef) {
