@@ -1719,6 +1719,63 @@ listed platform matrix" that rests on those jobs is claiming more than the evide
 the claim is scoped to what the multi-platform jobs actually run. **C10-A2 must surface this per
 row, and C10-Q must not paper over it.**
 
+## 14.1a CI evidence is CONCURRENCY-DEPENDENT — found the hard way, 2026-08-09
+
+**The `concurrency:` group is keyed on the tested COMMIT**, not on the branch:
+
+```yaml
+group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+cancel-in-progress: false
+```
+
+That correctly serialises the push-event and pull_request-event runs of **one** commit, which is
+what its comment says it is for: both bind the fixed peer ports 39187–39191, because the STARK
+consumer packages hardcode those addresses in their source.
+
+**It does nothing about consecutive commits on the same branch.** Two commits are two groups, and
+they race.
+
+Demonstrated on this campaign's own branch:
+
+```text
+7cfa59e  CI  04:19:25 ------------------------------------- 04:47:43   FAILED at 04:30:08
+99979df  CI          04:25:47 ---------------------------------->      overlapping
+388e581  CI                          04:37:53 ------------------>      overlapping
+
+first-party package qualification (windows-x64)
+    FETCH FAILED for http://127.0.0.1:39188/fixed
+    timed out reading the response
+    no HTTP peer on 127.0.0.1:39188 — this consumer needs a live one (CD-348)
+```
+
+The same job has succeeded on **twelve consecutive `develop` runs**, where commits land one at a
+time with CI settling between. It is not a Windows flake; it is a same-branch race, and it was
+caused by pushing three times in twenty-five minutes.
+
+### Why this matters to C10 rather than being an operational nuisance
+
+**A red result may belong to another commit's peer, and a green one is only meaningful if nothing
+overlapped it.** That makes CI a concurrency-dependent evidence channel, and §14.2's rule — cite
+`commit + run id + job + platform` — is *not sufficient* on its own to make a citation sound.
+
+**Exit criterion E10 is amended accordingly** (§17.1): CI green at the frozen head, **on a run with
+no overlapping run on the same branch**, and the executing session must verify the absence of
+overlap rather than assume it.
+
+### The rule this imposes on C10 execution
+
+```text
+push once, then WAIT for CI to settle before pushing again
+before citing any run, list the branch's runs and confirm no overlap in its window
+a failure inside an overlap window is NOT evidence of a defect — re-run it clean first
+a PASS inside an overlap window is NOT evidence of correctness either
+```
+
+**Not proposed as a workflow change here.** Widening the group to the branch would serialise
+legitimate parallel PRs, and `cancel-in-progress: true` would discard results someone is waiting
+on — both are owner decisions about CI policy, and neither is C10's to make (§3.2). C10 records the
+constraint and works within it.
+
 ## 14.2 Tying evidence to the exact commit
 
 ```text
@@ -1911,7 +1968,10 @@ E9   ALL THREE OD-3 populations are dispositioned, each counted separately:
             STRENGTH of the claim it constrains rather than as a defect
 E9d  C10-G is evaluated: DEV-012 and DEV-213 are each CLOSED, or the corresponding claim is
      explicitly narrowed in the release statement (OD-4)
-E10  CI is green at the frozen head, and every claim maps to the job/platform that executes it
+E10  CI is green at the frozen head **on a run with no overlapping run on the same branch**
+     (§14.1a — the concurrency group is keyed on the commit, so consecutive commits race for the
+     fixed peer ports and a result inside an overlap window is not evidence either way), and
+     every claim maps to the job/platform that executes it
 E11  §16.2's sweep is clean
 ```
 
