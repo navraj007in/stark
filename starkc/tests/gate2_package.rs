@@ -21,6 +21,15 @@ fn setup_temp_workspace(name: &str) -> PathBuf {
 /// A version-only dependency cannot currently use a package bundled with the toolchain. Until the
 /// toolchain package root lands, the failure must tell an external author both what was requested
 /// and the supported `path` form instead of presenting the workspace registry as the only model.
+/// JSON-escape a path for embedding in a manifest or matching against a lockfile.
+///
+/// Only backslash and quote matter for a filesystem path, and backslash is the one that bites:
+/// a Windows path written raw into JSON turns `\t`, `\s`, `\a` into invalid escapes. POSIX
+/// paths need none of this, which is exactly why the omission survived until a Windows lane ran.
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[test]
 fn missing_registry_package_explains_the_supported_path_dependency_form() {
     let workspace = setup_temp_workspace("missing_registry_guidance");
@@ -545,15 +554,24 @@ fn test_external_path_dependency_is_allowed_and_audited_in_lockfile() {
             "outside": { "path": "__OUTSIDE__" }
         }
     }"#
-        .replace("__OUTSIDE__", &relative.to_string_lossy()),
+        // A manifest is JSON, so a path embedded in one must be JSON-ESCAPED. On Windows
+        // `to_string_lossy()` yields `..\..\temp_workspace_boundary_outside`, and `\t`/`\s`
+        // are not valid JSON escapes -- the manifest failed to parse before this, and only on
+        // Windows, because POSIX separators need no escaping.
+        .replace("__OUTSIDE__", &json_escape(&relative.to_string_lossy())),
     )
     .unwrap();
 
     PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap();
     let lock = std::fs::read_to_string(app_dir.join("stark.lock")).unwrap();
     let canonical = outside_dir.canonicalize().unwrap();
+    // The lockfile is JSON too, so the recorded path is escaped there as well. Comparing against
+    // the raw `display()` form passes on POSIX by coincidence and fails on Windows.
     assert!(
-        lock.contains(&format!("path:{}", canonical.display())),
+        lock.contains(&format!(
+            "path:{}",
+            json_escape(&canonical.to_string_lossy())
+        )),
         "lockfile must record the canonical external path: {lock}"
     );
     assert!(

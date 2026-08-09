@@ -190,7 +190,20 @@ fn toolchain_lock_entries_are_identical_across_install_prefixes_and_path_wins() 
         Some(&first.join("prefix/lib/stark/packages")),
     )
     .unwrap();
-    assert!(graph.packages["math"].manifest_path.starts_with(&path_math));
+    // `PackageGraph` canonicalizes every dependency path, and on Windows canonicalization adds
+    // the `\\?\` verbatim prefix -- so the stored manifest path and this locally-built one are the
+    // same directory in two different representations, and `starts_with` is false. Canonicalize
+    // both sides before comparing. `package.rs` already documents this for the graph root; the
+    // same rule applies to anything compared against it.
+    let path_math_canonical = path_math.canonicalize().unwrap();
+    assert!(
+        graph.packages["math"]
+            .manifest_path
+            .starts_with(&path_math_canonical),
+        "expected {} to be under {}",
+        graph.packages["math"].manifest_path.display(),
+        path_math_canonical.display()
+    );
 
     let _ = std::fs::remove_dir_all(&first);
     let _ = std::fs::remove_dir_all(&second);
