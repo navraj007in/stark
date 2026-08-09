@@ -3,7 +3,9 @@
 **Execution brief for Codex / Claude**  
 **Repository:** `navraj007in/stark`  
 **Prepared:** 2026-07-31  
-**Starting position:** Gate C8 is `C8-CANDIDATE-COMPLETE` at CD-281. Gate C9 may begin now.  
+**Starting position:** Gate C8 was `C8-CANDIDATE-COMPLETE` at CD-281, which is what permitted C9 to
+begin. C8 has since been **CLOSED** (CD-385, 2026-08-06); this line records the position at the time
+and is not the current status.  
 **Authority:** `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`, Gate C9.
 
 ---
@@ -72,7 +74,7 @@ The current compiler already has:
 - CLI and editor extension configuration paths;
 - ONNX artifact reading, signature extraction, identity/provenance recording, declaration generation, drift verification, deployment lowering, and diagnostics.
 
-Gate C8 is candidate-complete. C9 work must not reopen C8 scope except where C9.1 tests extension isolation through the LSP and exposes a real defect.
+Gate C8 is **closed** (CD-385, 2026-08-06; candidate-complete when this plan was written). C9 work must not reopen C8 scope except where C9.1 tests extension isolation through the LSP and exposes a real defect.
 
 The C8 validation gap, `DEV-012`, remains post-C8 interactive editor validation and is not owned by C9.
 

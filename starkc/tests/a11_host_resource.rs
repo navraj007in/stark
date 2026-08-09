@@ -23,7 +23,7 @@ use starkc::mir::{
     self, AggKind, BasicBlock, Callee, Constant, EnumRef, LocalDecl, LocalKind, MirBody,
     MirProgram, MirTy, Operand, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
 };
-use starkc::source::{SourceFile, Span};
+use starkc::source::SourceFile;
 use std::sync::Arc;
 
 fn resource_ty() -> MirTy {
@@ -36,8 +36,7 @@ fn resource_ty() -> MirTy {
 
 fn info() -> SourceInfo {
     SourceInfo {
-        file: mir::FileId(0),
-        span: Span { lo: 0, hi: 0 },
+        span: test_source().synthetic_span(),
         origin: mir::Origin::UserCode,
     }
 }
@@ -57,7 +56,8 @@ fn body_assigning(rvalue: Rvalue) -> MirProgram {
 /// `body_assigning`, with the local's type chosen — so the CD-235 Core-nominal case can be built.
 fn body_assigning_ty(rvalue: Rvalue, ty: MirTy) -> MirProgram {
     MirProgram {
-        files: vec![Arc::new(SourceFile::new("r.stark", ""))],
+        entry_source: test_source().id(),
+        sources: test_sources(),
         bodies: vec![MirBody {
             instance: mir::Instance {
                 item: ItemId(0),
@@ -111,12 +111,13 @@ fn verify_codes(program: &MirProgram) -> Vec<String> {
 /// The increment invalidates every build key, which is the intent: a key that ignored a
 /// representation change would serve a cached artifact built under different type rules.
 ///
-/// A12 (`DEFECT-C788-LOOP-TEMP`) has since taken it to `0.3` by widening the statement set. The pin
-/// moves with each amendment on purpose — that is what makes an unannounced shape change fail here
-/// rather than pass silently.
+/// A12 (`DEFECT-C788-LOOP-TEMP`) has since taken it to `0.3` by widening the statement set, and
+/// AS1b-iii to `0.4` by removing `SourceInfo::file` and `FileId` and replacing `MirProgram::files`
+/// with a source registry. The pin moves with each amendment on purpose — that is what makes an
+/// unannounced shape change fail here rather than pass silently.
 #[test]
 fn the_mir_version_records_every_shape_amendment() {
-    assert_eq!(mir::MIR_VERSION, "0.3");
+    assert_eq!(mir::MIR_VERSION, "0.4");
     // `MIR_RUNTIME_SURFACE` did NOT move for A11 or A12: neither adds a `RuntimeFn`. A11's close is
     // a provider call through MIR's `Drop` terminator; A12's storage end is a statement the backend
     // lowers itself, calling nothing.
@@ -126,8 +127,12 @@ fn the_mir_version_records_every_shape_amendment() {
     // no statement, terminator, or type — which is the distinction these two constants draw.
     //
     // **A14 (CD-381) moves it again**, to `0.1-A14`: twelve `RuntimeFn` members added across
-    // CD-378 (`Fmt*`) and CD-380 (`Fmt*Spec`). `MIR_VERSION` still stays at `0.3` for the same
-    // reason — formatting adds runtime operations, not a statement, terminator or type.
+    // CD-378 (`Fmt*`) and CD-380 (`Fmt*Spec`). `MIR_VERSION` stayed at `0.3` for the same reason —
+    // formatting adds runtime operations, not a statement, terminator or type.
+    //
+    // **AS1b-iii moves `MIR_VERSION` and NOT this**, which is the same distinction read in the
+    // other direction: removing `SourceInfo::file`, `FileId` and `MirProgram::files` changes the
+    // data model twice over and adds no runtime operation at all.
     assert_eq!(mir::MIR_RUNTIME_SURFACE, "0.1-A14");
 }
 
@@ -390,6 +395,29 @@ fn a_package_nominal_uses_host_resource_immediately() {
 use starkc::mir::{ValidatedProviderCall, ValidatedProviderClose};
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity};
 
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
+}
+
 fn close_decl(name: &str, is_close_for: Option<&str>, params: Vec<AbiParam>) -> FunctionDecl {
     FunctionDecl {
         name: name.to_string(),
@@ -425,7 +453,8 @@ fn program_with_closes(
     closes: Vec<ValidatedProviderClose>,
 ) -> MirProgram {
     MirProgram {
-        files: vec![Arc::new(SourceFile::new("c.stark", ""))],
+        entry_source: test_source().id(),
+        sources: test_sources(),
         bodies: Vec::new(),
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
@@ -974,7 +1003,7 @@ fn a_diverging_arm_does_not_leave_a_variable_unassigned() {
         assert!(pd.is_empty(), "{pd:?}");
         let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
         assert!(rd.is_empty(), "{rd:?}");
-        let checked = starkc::typecheck::analyze(&hir, file);
+        let checked = starkc::typecheck::analyze(&hir);
         let errors: Vec<_> = checked
             .diagnostics
             .iter()
@@ -1002,7 +1031,7 @@ fn a_non_diverging_arm_that_skips_the_assignment_still_reports_e0401() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = starkc::resolve::resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = starkc::typecheck::analyze(&hir, file);
+    let checked = starkc::typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

@@ -59,7 +59,7 @@ fn front(tag: &str, source: &str) -> Front {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors = checked
         .diagnostics
         .iter()

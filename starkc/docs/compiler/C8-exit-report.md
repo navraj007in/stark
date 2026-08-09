@@ -1,6 +1,7 @@
 # Gate C8 Exit Report — Semantic Language Services
 
-Status: `C8-CANDIDATE-COMPLETE`
+Status: `C8-CLOSED` (CD-385, 2026-08-06 — see `STARKLANG/docs/compiler/GATE-C8-CLOSURE.md`)
+Prior status: `C8-CANDIDATE-COMPLETE` (2026-07-31)
 Date: 2026-07-31
 Qualified commit: `6556a0d`
 
@@ -8,7 +9,7 @@ Qualified commit: `6556a0d`
 
 Gate C8 provides compiler-backed semantic language services for the documented STARK project and package configurations. Advertised diagnostics, hover, navigation, references, symbols, completion, signature and rename capabilities are derived from shared compiler analysis and have been validated through protocol tests. Known limitations and unsupported configurations remain explicitly listed.
 
-This is candidate-complete rather than closed because real VS Code Extension Development Host validation has not been recorded.
+This was candidate-complete rather than closed because real VS Code Extension Development Host validation had not been recorded. **CD-385 closed the gate on 2026-08-06 with that limit stated rather than removed:** hover, go-to-definition and find-references are interactively confirmed; diagnostics, formatting, completion, signature help, rename, document symbols and semantic tokens remain protocol-tested only, and DEV-012 stays open and narrowed to those seven. See `STARKLANG/docs/compiler/GATE-C8-CLOSURE.md` §2.
 
 **Update, 2026-07-31 — partially recorded.** The owner exercised the extension interactively in VS Code 1.130.0 (macOS 26.5.2 arm64), extension `starklang.stark-language@0.2.0` built from commit `662842c`, against a real STARK package. **Hover, go-to-definition and find-references work.** Rename, diagnostics, formatting, completion, signature help, document symbols and semantic tokens were not exercised and remain protocol-tested only.
 
@@ -89,5 +90,5 @@ C8 changes are scoped to language-server, semantic-query, editor integration, an
 
 ## Exit Conclusion
 
-`C8-CANDIDATE-COMPLETE`
+`C8-CLOSED` (CD-385). The gate closed on the claim in `GATE-C8-CLOSURE.md` §2, which is narrower than "all advertised features interactively validated".
 

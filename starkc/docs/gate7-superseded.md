@@ -34,7 +34,7 @@ authorised, and the label was simply never revisited.
 | Evidence | Closed | What it settled that Gate 7 could not |
 | --- | --- | --- |
 | Gate C7 — native compilation, debug and release, on Linux, macOS and Windows | 2026-07-31 | STARK compiles and runs general-purpose programs natively on three Tier-1 platforms, over a qualified standard-library subset. Gate 7's native evidence was a single tensor deployment host. |
-| Gate C8 — compiler-backed language services (LSP, VS Code) | candidate-complete | Editor integration exists and is backed by the compiler's own analysis, not a parallel model. |
+| Gate C8 — compiler-backed language services (LSP, VS Code) | closed 2026-08-06 (CD-385); candidate-complete when this table was written | Editor integration exists and is backed by the compiler's own analysis, not a parallel model. |
 | HC0–HC13 — an HTTP/1.1 and HTTPS client written in STARK | 2026-08-03 | The language is expressive enough to write a network client *in itself*, qualified against adversarial peers on three platforms. This is the single largest thing Gate 7 had no way to anticipate. |
 | 24 first-party packages, capability-declared host access, native providers | ongoing through 2026-08-03 | There is a package ecosystem, a provider ABI, affine host resources and cross-provider ownership transfer. |
 | Installer Phase I — release archives, platform installers, versioned install tree, `stark doctor` | 2026-08-03 | The toolchain can be installed and verified off a checkout. |

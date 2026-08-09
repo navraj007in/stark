@@ -19,7 +19,7 @@
 //! them (the formatter, `starkc/src/formatter/`).
 
 use crate::diag::Diagnostic;
-use crate::source::{SourceFile, Span};
+use crate::source::{SourceFile, SourceId, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Token {
@@ -258,8 +258,8 @@ const MAX_IDENT_LEN: usize = 255;
 
 /// Lex an entire file. Always returns a token stream ending in `Eof`;
 /// errors are reported as diagnostics with `Error` placeholder tokens.
-pub fn tokenize(file: &SourceFile) -> (Vec<Token>, Vec<Diagnostic>) {
-    let (tokens, _comments, diags) = tokenize_with_comments(file);
+pub fn tokenize(file: &SourceFile, source: SourceId) -> (Vec<Token>, Vec<Diagnostic>) {
+    let (tokens, _comments, diags) = tokenize_with_comments(file, source);
     (tokens, diags)
 }
 
@@ -267,8 +267,12 @@ pub fn tokenize(file: &SourceFile) -> (Vec<Token>, Vec<Diagnostic>) {
 /// ordered by position. The token stream is identical to `tokenize`'s (the
 /// parser still never sees comments); only tooling that must preserve or
 /// reformat comments (the formatter) needs this entry point.
-pub fn tokenize_with_comments(file: &SourceFile) -> (Vec<Token>, Vec<Comment>, Vec<Diagnostic>) {
+pub fn tokenize_with_comments(
+    file: &SourceFile,
+    source: SourceId,
+) -> (Vec<Token>, Vec<Comment>, Vec<Diagnostic>) {
     let mut lexer = Lexer {
+        source,
         src: file.src.as_bytes(),
         pos: 0,
         tokens: Vec::new(),
@@ -285,11 +289,17 @@ pub fn tokenize_with_comments(file: &SourceFile) -> (Vec<Token>, Vec<Comment>, V
 /// would produce spans relative to the copy, and every diagnostic inside an interpolated string
 /// would point at the wrong place — so the lexer is pointed at the original buffer instead, with a
 /// start and an end.
-pub fn tokenize_range(file: &SourceFile, lo: u32, hi: u32) -> (Vec<Token>, Vec<Diagnostic>) {
+pub fn tokenize_range(
+    file: &SourceFile,
+    source: SourceId,
+    lo: u32,
+    hi: u32,
+) -> (Vec<Token>, Vec<Diagnostic>) {
     let src = file.src.as_bytes();
     let hi = (hi as usize).min(src.len());
     let lo = (lo as usize).min(hi);
     let mut lexer = Lexer {
+        source,
         src: &src[..hi],
         pos: lo,
         tokens: Vec::new(),
@@ -323,6 +333,9 @@ pub enum CommentKind {
 }
 
 struct Lexer<'src> {
+    /// AS1b-ii: the source these tokens belong to. Every span the lexer mints names it, because a
+    /// byte offset without a source is what DEV-122 was.
+    source: SourceId,
     src: &'src [u8],
     pos: usize,
     tokens: Vec<Token>,
@@ -351,7 +364,7 @@ impl Lexer<'_> {
             }
         }
         let end = self.src.len() as u32;
-        self.push(TokenKind::Eof, Span::point(end));
+        self.push(TokenKind::Eof, Span::point_in(self.source, end));
     }
 
     // --- infrastructure -------------------------------------------------
@@ -365,7 +378,7 @@ impl Lexer<'_> {
     }
 
     fn span_from(&self, start: usize) -> Span {
-        Span::new(start as u32, self.pos as u32)
+        Span::in_source(self.source, start as u32, self.pos as u32)
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) {
@@ -583,7 +596,7 @@ impl Lexer<'_> {
                     if self.peek(0).is_some_and(|b| b.is_ascii_hexdigit()) {
                         self.pos += 1;
                     } else {
-                        let span = Span::new(esc_start as u32, self.pos as u32);
+                        let span = Span::in_source(self.source, esc_start as u32, self.pos as u32);
                         self.error("Invalid escape sequence: \\x expects two hex digits", span);
                         return false;
                     }
@@ -876,8 +889,8 @@ mod tests {
     use super::*;
 
     fn lex(src: &str) -> (Vec<TokenKind>, Vec<String>) {
-        let file = SourceFile::new("test.stark", src);
-        let (tokens, diags) = tokenize(&file);
+        let file = crate::source::registered_for_test("test.stark", src);
+        let (tokens, diags) = tokenize(&file, file.id());
         let kinds = tokens.iter().map(|t| t.kind).collect();
         let msgs = diags.iter().map(|d| d.message.clone()).collect();
         (kinds, msgs)
@@ -1136,8 +1149,8 @@ mod tests {
     }
 
     fn comments(src: &str) -> Vec<(CommentKind, &str)> {
-        let file = SourceFile::new("test.stark", src);
-        let (_, comments, _) = tokenize_with_comments(&file);
+        let file = crate::source::registered_for_test("test.stark", src);
+        let (_, comments, _) = tokenize_with_comments(&file, file.id());
         comments
             .iter()
             .map(|c| (c.kind, &src[c.span.lo as usize..c.span.hi as usize]))
@@ -1175,8 +1188,8 @@ mod tests {
 
     #[test]
     fn token_stream_is_unaffected_by_comment_collection() {
-        let file = SourceFile::new("test.stark", "a // line\nb /* c */ d");
-        let (tokens, _) = tokenize(&file);
+        let file = crate::source::registered_for_test("test.stark", "a // line\nb /* c */ d");
+        let (tokens, _) = tokenize(&file, file.id());
         let kinds: Vec<_> = tokens.iter().map(|t| t.kind).collect();
         assert_eq!(kinds, vec![Ident, Ident, Ident, Eof]);
     }

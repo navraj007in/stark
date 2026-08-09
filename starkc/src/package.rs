@@ -3,218 +3,21 @@ use std::path::{Path, PathBuf};
 
 use crate::source_extensions::is_stark_source;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum JsonValue {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    Array(Vec<JsonValue>),
-    Object(std::collections::HashMap<String, JsonValue>),
-}
-
-impl JsonValue {
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            JsonValue::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    /// WP-C7.8: added alongside the existing accessors when `capabilities` became the first
-    /// array-valued manifest field.
-    pub fn as_array(&self) -> Option<&[JsonValue]> {
-        match self {
-            JsonValue::Array(items) => Some(items),
-            _ => None,
-        }
-    }
-
-    pub fn as_object(&self) -> Option<&std::collections::HashMap<String, JsonValue>> {
-        match self {
-            JsonValue::Object(o) => Some(o),
-            _ => None,
-        }
-    }
-}
+/// **AS5-c: manifests are read by the compiler's one JSON authority.**
+///
+/// This module owned a second parser. It agreed with the LSP transport's on 3 of 12 constructs,
+/// and it was the LESS conformant of the two despite being the one that reads files people write by
+/// hand: it rejected every `\u` escape and every exponent number (valid input), while accepting
+/// trailing commas, raw control characters and leading-zero numbers (invalid input).
+///
+/// AS5 CE9 decision: **trailing commas and leading-zero numbers are now rejected.** A manifest is a
+/// durable configuration contract, and accepting non-JSON syntax creates compatibility debt for no
+/// benefit. `AS0-MANIFEST-STRICTNESS-AUDIT.md` established that every first-party manifest is
+/// already strict-clean, so this is a third-party narrowing, not a repository migration.
+pub use crate::json::{JsonNumber, JsonValue};
 
 pub fn parse_json(input: &str) -> Result<JsonValue, String> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut pos = 0;
-
-    fn skip_whitespace(chars: &[char], pos: &mut usize) {
-        while *pos < chars.len() && chars[*pos].is_whitespace() {
-            *pos += 1;
-        }
-    }
-
-    fn parse_value(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        skip_whitespace(chars, pos);
-        if *pos >= chars.len() {
-            return Err("Unexpected EOF".to_string());
-        }
-        match chars[*pos] {
-            '{' => parse_object(chars, pos),
-            '[' => parse_array(chars, pos),
-            '"' => parse_string(chars, pos),
-            't' | 'f' => parse_bool(chars, pos),
-            'n' => parse_null(chars, pos),
-            '-' | '0'..='9' => parse_number(chars, pos),
-            c => Err(format!("Unexpected character: {}", c)),
-        }
-    }
-
-    fn parse_object(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        *pos += 1;
-        let mut map = std::collections::HashMap::new();
-        loop {
-            skip_whitespace(chars, pos);
-            if *pos >= chars.len() {
-                return Err("Unterminated object".to_string());
-            }
-            if chars[*pos] == '}' {
-                *pos += 1;
-                break;
-            }
-            if chars[*pos] != '"' {
-                return Err("Expected string key in object".to_string());
-            }
-            let key = match parse_string(chars, pos)? {
-                JsonValue::String(s) => s,
-                _ => unreachable!(),
-            };
-            skip_whitespace(chars, pos);
-            if *pos >= chars.len() || chars[*pos] != ':' {
-                return Err("Expected ':' after key in object".to_string());
-            }
-            *pos += 1;
-            let val = parse_value(chars, pos)?;
-            map.insert(key, val);
-            skip_whitespace(chars, pos);
-            if *pos >= chars.len() {
-                return Err("Unterminated object".to_string());
-            }
-            if chars[*pos] == '}' {
-                *pos += 1;
-                break;
-            }
-            if chars[*pos] != ',' {
-                return Err(format!(
-                    "Expected ',' or '}}' in object, got '{}'",
-                    chars[*pos]
-                ));
-            }
-            *pos += 1;
-        }
-        Ok(JsonValue::Object(map))
-    }
-
-    fn parse_array(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        *pos += 1;
-        let mut list = Vec::new();
-        loop {
-            skip_whitespace(chars, pos);
-            if *pos >= chars.len() {
-                return Err("Unterminated array".to_string());
-            }
-            if chars[*pos] == ']' {
-                *pos += 1;
-                break;
-            }
-            let val = parse_value(chars, pos)?;
-            list.push(val);
-            skip_whitespace(chars, pos);
-            if *pos >= chars.len() {
-                return Err("Unterminated array".to_string());
-            }
-            if chars[*pos] == ']' {
-                *pos += 1;
-                break;
-            }
-            if chars[*pos] != ',' {
-                return Err("Expected ',' or ']' in array".to_string());
-            }
-            *pos += 1;
-        }
-        Ok(JsonValue::Array(list))
-    }
-
-    fn parse_string(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        *pos += 1;
-        let mut s = String::new();
-        while *pos < chars.len() {
-            let c = chars[*pos];
-            if c == '"' {
-                *pos += 1;
-                return Ok(JsonValue::String(s));
-            }
-            if c == '\\' {
-                *pos += 1;
-                if *pos >= chars.len() {
-                    return Err("Unterminated escape sequence in string".to_string());
-                }
-                let esc = chars[*pos];
-                match esc {
-                    '"' => s.push('"'),
-                    '\\' => s.push('\\'),
-                    '/' => s.push('/'),
-                    'b' => s.push('\x08'),
-                    'f' => s.push('\x0c'),
-                    'n' => s.push('\n'),
-                    'r' => s.push('\r'),
-                    't' => s.push('\t'),
-                    _ => return Err(format!("Unsupported escape: \\{}", esc)),
-                }
-            } else {
-                s.push(c);
-            }
-            *pos += 1;
-        }
-        Err("Unterminated string".to_string())
-    }
-
-    fn parse_bool(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        if *pos + 4 <= chars.len() && chars[*pos..*pos + 4] == ['t', 'r', 'u', 'e'] {
-            *pos += 4;
-            Ok(JsonValue::Bool(true))
-        } else if *pos + 5 <= chars.len() && chars[*pos..*pos + 5] == ['f', 'a', 'l', 's', 'e'] {
-            *pos += 5;
-            Ok(JsonValue::Bool(false))
-        } else {
-            Err("Expected boolean value".to_string())
-        }
-    }
-
-    fn parse_null(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        if *pos + 4 <= chars.len() && chars[*pos..*pos + 4] == ['n', 'u', 'l', 'l'] {
-            *pos += 4;
-            Ok(JsonValue::Null)
-        } else {
-            Err("Expected null value".to_string())
-        }
-    }
-
-    fn parse_number(chars: &[char], pos: &mut usize) -> Result<JsonValue, String> {
-        let start = *pos;
-        if *pos < chars.len() && chars[*pos] == '-' {
-            *pos += 1;
-        }
-        while *pos < chars.len() && (chars[*pos].is_ascii_digit() || chars[*pos] == '.') {
-            *pos += 1;
-        }
-        let num_str: String = chars[start..*pos].iter().collect();
-        match num_str.parse::<f64>() {
-            Ok(n) => Ok(JsonValue::Number(n)),
-            Err(e) => Err(format!("Invalid number '{}': {}", num_str, e)),
-        }
-    }
-
-    let val = parse_value(&chars, &mut pos)?;
-    skip_whitespace(&chars, &mut pos);
-    if pos < chars.len() {
-        return Err("Trailing characters after JSON value".to_string());
-    }
-    Ok(val)
+    crate::json::parse(input).map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -546,7 +349,62 @@ pub struct ProviderResourceBinding {
     pub resource: String,
 }
 
+/// The one logical identity for a file inside a package: `<package>/<path within the package>`,
+/// always `/`-joined so the same workspace observes identically on every platform.
+///
+/// DEV-113-A established this scheme for the parser. AS1a makes it the *only* scheme: a physical
+/// source had acquired a second identity because `analyze_project` and three CLI paths each built
+/// the entry `SourceFile` from `entry.to_string_lossy()` instead. PKG-IDENTITY-001 requires a
+/// package token to be "never an absolute checkout path", and §15.2 requires relocation stability —
+/// neither survives a second, path-shaped identity for the same file.
+pub fn logical_source_name(package: &str, package_root: &Path, file: &Path) -> String {
+    let relative = file
+        .strip_prefix(package_root)
+        .ok()
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|| {
+            file.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+    format!("{package}/{relative}")
+}
+
 impl Package {
+    /// The package's own directory — the manifest's parent.
+    pub fn root_dir(&self) -> PathBuf {
+        self.manifest_path
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_default()
+    }
+
+    /// The entry file's single logical identity.
+    pub fn entry_logical_name(&self) -> String {
+        logical_source_name(&self.name, &self.root_dir(), &self.entry)
+    }
+
+    /// **The one way to build a package entry's `SourceFile`.** Logical name for identity, real
+    /// disk path for module resolution and for pointing a human at a file.
+    ///
+    /// AS1a: every caller that needs this file goes through here. Building it by hand is what
+    /// produced two `SourceRecord`s for one physical file, made the phantom the only `Root`, and
+    /// leaked the checkout path into the native build key.
+    pub fn entry_source_file(
+        &self,
+        contents: impl Into<String>,
+    ) -> std::sync::Arc<crate::source::SourceFile> {
+        std::sync::Arc::new(
+            crate::source::SourceFile::new(self.entry_logical_name(), contents)
+                .with_disk_path(self.entry.clone()),
+        )
+    }
+
     pub fn from_manifest(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read manifest at '{}': {}", path.display(), e))?;

@@ -34,7 +34,7 @@
 //!
 //! # Producers
 //!
-//! Enumerated from `typecheck.rs`'s core-method signature arms rather than guessed — every method
+//! Enumerated from `typecheck/traits.rs`'s `core_method_signature` arms rather than guessed — every method
 //! whose DECLARED RETURN mentions `Ty::Ref`. `append` and `write` mention `Ty::Ref` only in their
 //! parameters and are excluded. Ordinary-language producers (slice expressions, aliases, function
 //! returns) are included as controls: the law covers all producers of a normalized reference type,
@@ -45,9 +45,30 @@ mod support;
 use starkc::mir::lower::lower_program;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
-use starkc::source::SourceFile;
 use starkc::typecheck;
-use std::sync::Arc;
+
+/// AS1b-ii: a real registered source for a hand-built MIR program.
+/// The one registry a hand-built `MirProgram` in this file is measured against.
+///
+/// AS1b-iii: a fixture used to state its source twice — a `RegisteredSource` for the spans and an
+/// unrelated `Arc<SourceFile>` in `MirProgram::files`, often under a different name. Nothing
+/// checked that they agreed, which is the duplication the amendment removes. Now the program
+/// carries the registry the handle came from, so there is nothing to keep in step.
+fn test_sources() -> starkc::source::SourceTable {
+    let mut registry = starkc::source::SourceRegistry::default();
+    registry.intern(std::sync::Arc::new(starkc::source::SourceFile::new(
+        "test.stark",
+        "",
+    )));
+    registry.freeze()
+}
+
+fn test_source() -> starkc::source::RegisteredSource {
+    test_sources()
+        .entry()
+        .expect("the registry was just populated")
+        .clone()
+}
 
 /// A producer of a reference-typed value, and the STARK expression that produces one.
 struct Producer {
@@ -143,12 +164,15 @@ fn program_for(producer: &Producer, use_mode: &str) -> String {
 /// matrix doubles as documentation of the acceptance surface and stays honest if that surface
 /// widens later.
 fn check_and_lower(src: &str, tag: &str) -> Result<String, String> {
-    let file = Arc::new(SourceFile::new(format!("{tag}.stark"), src.to_string()));
+    let file = std::sync::Arc::new(starkc::source::SourceFile::new(
+        format!("{tag}.stark"),
+        src.to_string(),
+    ));
     let (ast, pd) = parse(&file, ParseMode::Program);
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(first) = checked
         .diagnostics
         .iter()
@@ -160,7 +184,11 @@ fn check_and_lower(src: &str, tag: &str) -> Result<String, String> {
             first.message
         ));
     }
-    match lower_program(&hir, &checked.tables, file) {
+    match lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    ) {
         Ok(program) => Ok(program.dump()),
         Err(e) => Err(format!("LOWER: {}", e.what)),
     }
@@ -403,13 +431,10 @@ mod inv_move_001 {
         self, BasicBlock, Constant, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Operand,
         Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
     };
-    use starkc::source::{SourceFile, Span};
-    use std::sync::Arc;
 
     fn info() -> SourceInfo {
         SourceInfo {
-            file: mir::FileId(0),
-            span: Span { lo: 0, hi: 0 },
+            span: super::test_source().synthetic_span(),
             origin: mir::Origin::UserCode,
         }
     }
@@ -465,7 +490,8 @@ mod inv_move_001 {
             entry: mir::BlockId(0),
         };
         MirProgram {
-            files: vec![Arc::new(SourceFile::new("inv_move_001.stark", ""))],
+            entry_source: super::test_source().id(),
+            sources: super::test_sources(),
             bodies: vec![body],
             types: TypeContext::default(),
             mir_version: mir::MIR_VERSION.to_string(),

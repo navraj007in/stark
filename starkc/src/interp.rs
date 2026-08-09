@@ -6,14 +6,13 @@ use crate::hir::{
     self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
 };
 use crate::literal::{self, LitValue};
-use crate::source::{SourceFile, Span};
-use crate::typecheck::{Ty, TypeTables};
+use crate::source::Span;
+use crate::typecheck::{DisplayPath, DisplayStep, Ty, TypeTables};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::rc::Rc;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -40,17 +39,6 @@ pub struct RuntimeError {
     /// than risk defaulting it to whatever category the other engines reported. Every other trap
     /// leaves this `None` and keeps its existing prose-matched classification.
     pub trap_category: Option<crate::mir::TrapCategory>,
-    /// DEV-113-B: the file the error was raised in.
-    ///
-    /// The span alone is not enough for a multi-file program: `call_callable` swaps `self.file` so a
-    /// body executes against its OWN file (DEV-069), and without carrying that here every trap was
-    /// attributed to the ENTRY file — so a trap inside a dependency was reported at the caller, and
-    /// the oracle disagreed with MIR about which file trapped. The interpreter always knew; it threw
-    /// the answer away at the raise site.
-    ///
-    /// `None` only for errors constructed before execution begins (entrypoint selection), where
-    /// there is no executing file yet.
-    pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
 /// This implementation's call-depth capacity (WP-C7.9 Packet F, `LIMIT-RESOURCE-001`).
@@ -119,7 +107,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -132,7 +119,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -144,7 +130,6 @@ impl RuntimeError {
             class: FailureClass::InternalInvariant,
             limitation: Some(limitation),
             trap_category: None,
-            file: None,
         }
     }
 
@@ -158,7 +143,6 @@ impl RuntimeError {
             class: FailureClass::HostResource,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 
@@ -174,7 +158,6 @@ impl RuntimeError {
             class: FailureClass::Trap,
             limitation: None,
             trap_category: Some(category),
-            file: None,
         }
     }
 
@@ -185,7 +168,6 @@ impl RuntimeError {
             class: FailureClass::Entry,
             limitation: None,
             trap_category: None,
-            file: None,
         }
     }
 }
@@ -219,8 +201,13 @@ pub struct ExecutionOutcome {
 /// Evaluate every declared constant before execution. This uses the same
 /// abstract-machine operations as the interpreter, but only after a closed
 /// syntactic-subset check has excluded runtime state and side effects.
-pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> Vec<Diagnostic> {
-    let mut interpreter = Interpreter::new(hir, file.clone(), tables);
+pub fn check_constants(hir: &Hir, tables: &TypeTables) -> Vec<Diagnostic> {
+    // AS1b-ii-d: the entry source comes from the program's own registry rather than being threaded
+    // in beside it. An empty registry means nothing was parsed, so there are no constants either.
+    let Some(entry) = hir.sources.entry().cloned() else {
+        return Vec::new();
+    };
+    let mut interpreter = Interpreter::new(hir, entry, tables);
     interpreter.frames.push(Frame::default());
     let mut diagnostics = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
@@ -228,36 +215,22 @@ pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) ->
         let hir::ItemKind::Const { value, .. } = &item.kind else {
             continue;
         };
-        let item_file = hir
-            .item_files
-            .get(&item_id)
-            .cloned()
-            .unwrap_or_else(|| file.clone());
         if let Err((span, message)) = constant_expr_allowed(hir, *value) {
-            diagnostics.push(
-                Diagnostic::error(message, span)
-                    .with_code("E0215")
-                    .with_file(item_file),
-            );
+            diagnostics.push(Diagnostic::error(message, span).with_code("E0215"));
             continue;
         }
-        // DEV-088 (WP-C4.7 corpus): evaluate the initializer against the file that DECLARES the
-        // constant. The diagnostic already carried `item_file`, but evaluation ran with the
-        // interpreter still pointed at the ENTRY file, so a cross-file `const`'s literal was
-        // read from the wrong text — `pub const N: Int32 = 31415;` in a dependency failed
-        // "invalid literal". Same per-item file discipline as DEV-069's three body funnels;
-        // constants were a fourth site that closure missed because no corpus case had one.
-        let restore = std::mem::replace(&mut interpreter.file, item_file.clone());
+        // AS1b-ii: DEV-088's swap is gone with DEV-069's three. It existed because a cross-file
+        // `const`'s literal was read against the ENTRY file's text — `pub const N: Int32 = 31415;`
+        // in a dependency failed "invalid literal". A literal's span now names the file it came
+        // from, so the read is right without pointing the interpreter at anything.
         let outcome = interpreter.eval_const_item(item_id);
-        interpreter.file = restore;
         if let Err(error) = outcome {
             diagnostics.push(
                 Diagnostic::error(
                     format!("constant evaluation failed: {}", error.message),
                     error.span,
                 )
-                .with_code("E0215")
-                .with_file(item_file),
+                .with_code("E0215"),
             );
         }
     }
@@ -389,7 +362,7 @@ fn constant_expr_allowed(hir: &Hir, expr: ExprId) -> Result<(), (Span, &'static 
 /// format a `Float32` value using its own shortest-round-trip digits once it's nested inside a
 /// tuple/array/struct/collection and reaches the generic recursive `Display for Value` impl,
 /// which has no static-type context to consult. Math builtins (`sqrt`, `sin`, `cos`, ...) are
-/// typed `Float64 -> Float64` only (`typecheck.rs`'s builtin signatures), so they always
+/// typed `Float64 -> Float64` only (`typecheck/body.rs`'s builtin signatures), so they always
 /// produce `F64` and never need to preserve an argument's width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FloatWidth {
@@ -420,8 +393,15 @@ enum Value {
     },
     Vec(Vec<Option<Value>>),
     Boxed(Box<Option<Value>>),
-    Option(Option<Box<Value>>),
-    Result(Result<Box<Value>, Box<Value>>),
+    /// **DEV-209: the payload is SLOT-backed, like every other component.**
+    ///
+    /// `Box<Value>` could not be named by a `Projection`, so PAT-BIND-001's "a binding to a
+    /// non-`Copy` component receives `&C`, borrowing the component in place" had no storage to
+    /// point at for a prelude payload — and the borrowed matcher fell back to the owned rule,
+    /// moving out of a borrow. The rule is uniform over variant payloads, struct fields and tuple
+    /// elements; the specialised representation was what failed to preserve a language-level place.
+    Option(Option<Box<Option<Value>>>),
+    Result(Result<Box<Option<Value>>, Box<Option<Value>>>),
     Range {
         start: i128,
         end: i128,
@@ -573,6 +553,143 @@ impl Value {
 /// boundary in A4 is a deliberate edit here rather than a new string literal. It appears in the
 /// diagnostic because "expected `&[UInt8]`, found owned `Vec`" is far cheaper to act on when it
 /// also says whether that happened at a parameter or a return.
+/// **How an invocation's generic environment is supplied.** Explicit in every case: a callable with
+/// no generics is [`InvocationEnv::Empty`], not missing metadata, so "nothing to install" and
+/// "nobody installed it" stay distinguishable — the confusion DEV-197 lived in.
+enum InvocationEnv {
+    /// Not generic, and encloses no instantiation.
+    Empty,
+    /// The checker published an instantiation against this call expression.
+    Published(ExprId),
+    /// Concrete bindings a specialiser produced (bound dispatch, trait defaults).
+    Concrete(Vec<(crate::typecheck::GenericBinder, Ty)>),
+    /// A function value's captured bindings, already concrete at capture time (DEV-178).
+    /// Installed through the pre-existing `push_captured_env`, not a second helper.
+    Captured(FunctionValue),
+}
+
+/// **Test-only producer mutations — AS3 / DEV-121 class evidence.**
+///
+/// Twelve wired boundaries that never fire prove nothing: "found no defect" and "is not running"
+/// look identical from outside. This is the control that separates them.
+///
+/// **The mutation is applied to a PRODUCER, never to `check_value_for_ty`.** Corrupting the
+/// predicate would only show that the predicate detects an artificial mismatch; corrupting a
+/// producer shows that a real value, taking a real path, is stopped by the real funnel at the
+/// intended boundary. Each arm below is a place where the interpreter *constructs* a
+/// representation, and the mutation makes it construct the wrong one.
+///
+/// `#[cfg(test)]` throughout: no part of this compiles into a shipped compiler, so there is no
+/// runtime switch that could corrupt a real build.
+///
+/// **Carried on the `Interpreter`, not in a global or a thread-local.** The first attempt used a
+/// thread-local and every mutation silently failed to arm: `run` executes the program on a
+/// *spawned* thread with a larger stack (`on_interpreter_stack`), so the interpreter never saw
+/// what the test thread set. A process-global would have armed correctly and been worse — the
+/// test harness runs tests in parallel, so an armed mutation would have corrupted whatever
+/// unrelated test happened to be executing beside it. A field on the instance is scoped to exactly
+/// the one execution under test.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ProducerMutation {
+    /// Class 1 — owned/view. `String::as_str` and `Vec::as_slice` emit OWNED storage where the
+    /// declared type is a view. The original DEV-121 pairing.
+    OwnedForView,
+    /// Class 2 — reference. A `&self` receiver binds the pointee BY VALUE instead of a
+    /// `Value::Ref` into the caller's place. The materialization defect, deliberately reintroduced.
+    OwnedForReference,
+    /// Class 3 — function value. A function item coerces to something that is not a function.
+    NonFunctionValue,
+    /// Class 4 — aggregate. A declared field receives a mis-represented value, injected AFTER the
+    /// producer-side boundary has already accepted it so the aggregate boundary is what must catch
+    /// it.
+    WrongAggregateField,
+    /// Audit 10-D — a function value keeps its identity but LOSES its captured generic bindings.
+    /// The representation stays a `Value::Function`, so only the environment is corrupted: this is
+    /// DEV-178's defect, not DEV-121's.
+    StripFunctionValueBindings,
+    /// Audit 10-E — a mis-represented value reaches an element/field WRITE, injected after the
+    /// producer boundary accepted it so the write boundary is what must catch it. The aggregate
+    /// class already has a control at construction; this is the other route into typed storage.
+    WrongElementWrite,
+}
+
+/// **Test-only environment mutation — AS3 #2 requalification.**
+///
+/// AS3 criterion 2 claims that every dispatch class installs the checker-selected generic
+/// environment. The claim is only meaningful if OMITTING the environment is observable, and
+/// DEV-197 is the standing proof that it often was not: nine dispatch sites installed nothing at
+/// all and every test passed, because the bodies involved never mentioned their own parameters.
+///
+/// So the requalification does not assert that a table has an entry. It removes the environment at
+/// the single installation point and requires the run to fail — once per dispatch class, on a
+/// witness whose behaviour genuinely depends on the instantiation.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EnvMutation {
+    /// The environment is selected and delivered, and then not installed — exactly DEV-197's
+    /// shape. Not "install the wrong bindings": an absent environment is the failure the
+    /// architecture is claimed to prevent.
+    DropEnvironment,
+}
+
+/// **Where a body's `self` comes from, before it is materialized.**
+///
+/// Materialization belongs to the invocation authority rather than to each caller, because the
+/// binding it produces must match the receiver type the checker published — which is what
+/// `RepBoundary::Receiver` will compare against.
+///
+/// The destructor case is why this exists. Destruction holds an OWNED value, but a
+/// `Drop::drop(&mut self)` publishes `&mut Self`. Handing the owned value straight in would make
+/// the receiver boundary reject every destructor, and the only sound answers are to materialize a
+/// real reference or to weaken `&mut T` — the second would gut DEV-121 exactly when it is being
+/// closed.
+enum ReceiverSource {
+    /// A free function or associated function.
+    None,
+    /// A method receiver already at a caller-side place.
+    Place { kind: hir::Receiver, place: Place },
+    /// A destructor's owned value. Materialized into temporary backing storage in the CALLER's
+    /// frame, so the body-visible `self` is a genuine `Value::Ref` and the mutated value can be
+    /// read back afterwards.
+    OwnedForDrop(Value),
+}
+
+/// **What happens to the frame when a body finishes.** A destructor differs from an ordinary call
+/// in two ways that were previously expressed by having a whole second executor: it hands back the
+/// receiver's FINAL value (a `Drop::drop(&mut self)` may legally mutate or replace fields, and the
+/// recursive field destruction must see that), and it does not run `cleanup_current_frame`, because
+/// it is already inside destruction.
+///
+/// Making the difference a parameter is what lets one executor serve both — it is not a new
+/// semantic rule, it is the existing difference named.
+#[derive(Clone)]
+enum BodyEpilogue {
+    /// Ordinary call: clean the frame's locals, return the body's value.
+    Call,
+    /// Destructor: return the receiver's final value, read back from the temporary backing
+    /// storage its `self` reference pointed at; the enclosing destruction walk owns the remaining
+    /// locals. Pairs only with [`ReceiverSource::OwnedForDrop`], which is what creates that
+    /// storage — the authority holds the place, so no caller can hand back a different one.
+    Destructor,
+    /// Method: like `Call`, plus two things a method owes its caller — a `&mut self` receiver is
+    /// written back on the error path, and a returned reference derived from `self` is rebased onto
+    /// the CALLER's receiver place (DEV-035), because the place it carries points into the frame
+    /// that was just popped.
+    Method {
+        receiver_kind: hir::Receiver,
+        receiver_local: LocalId,
+        receiver_place: Place,
+    },
+}
+
+/// A callable selected together with the environment it must run under. Constructing one is the
+/// only way to reach [`Interpreter::execute_body`].
+struct ResolvedInvocation {
+    callable: Callable,
+    environment: InvocationEnv,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepBoundary {
     LetBinding,
@@ -586,6 +703,11 @@ pub enum RepBoundary {
     FieldWrite,
     ElementWrite,
     AggregateField,
+    /// **The producer side.** Every other variant names a place a value comes to REST; this one
+    /// names the moment a value is produced by an expression and handed to whatever consumes it.
+    /// It is what covers inline values that never bind to a local — a builtin's argument, an
+    /// operand of a runtime operation — which the eleven destination boundaries cannot see.
+    ExpressionResult,
 }
 
 impl RepBoundary {
@@ -604,6 +726,7 @@ impl RepBoundary {
             RepBoundary::FieldWrite => "a field write",
             RepBoundary::ElementWrite => "an element write",
             RepBoundary::AggregateField => "an aggregate field",
+            RepBoundary::ExpressionResult => "an expression result",
         }
     }
 }
@@ -871,10 +994,10 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Boxed(value) => write!(f, "Box({})", display_slot(value)),
-            Value::Option(Some(value)) => write!(f, "Some({value})"),
+            Value::Option(Some(value)) => write!(f, "Some({})", display_slot(value)),
             Value::Option(None) => write!(f, "None"),
-            Value::Result(Ok(value)) => write!(f, "Ok({value})"),
-            Value::Result(Err(value)) => write!(f, "Err({value})"),
+            Value::Result(Ok(value)) => write!(f, "Ok({})", display_slot(value)),
+            Value::Result(Err(value)) => write!(f, "Err({})", display_slot(value)),
             Value::Range {
                 start,
                 end,
@@ -1068,6 +1191,54 @@ impl PartialOrd for Value {
     }
 }
 
+/// **DEV-209: read a prelude payload that must be present.**
+///
+/// The slot's `None` is the representation of a MOVE, and the ownership checker is what prevents a
+/// program from reading moved storage. So an operation that requires a complete `Some`/`Ok`/`Err`
+/// and finds an empty slot has been handed a value the checker should have rejected: that is an
+/// `InternalInvariant`, not a new runtime outcome. Introducing a "use of moved value" trap here
+/// would invent a language-level category to describe a compiler defect.
+fn require_live_payload<'a>(
+    slot: &'a Option<Value>,
+    context: &'static str,
+    span: Span,
+) -> Result<&'a Value, RuntimeError> {
+    slot.as_ref().ok_or_else(|| {
+        RuntimeError::internal(
+            format!("{context}: the variant's payload has already been moved out"),
+            span,
+        )
+    })
+}
+
+/// **DEV-209: take a prelude payload, for an operation that genuinely consumes it.**
+///
+/// `unwrap`, `?`, an owned pattern binding, a consuming combinator and destruction are moves, and
+/// `Some(v) -> None` is how the move is represented. Only code intentionally performing one should
+/// call this; everything else uses [`require_live_payload`].
+fn take_payload(
+    slot: &mut Option<Value>,
+    context: &'static str,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    slot.take().ok_or_else(|| {
+        RuntimeError::internal(
+            format!("{context}: the variant's payload has already been moved out"),
+            span,
+        )
+    })
+}
+
+/// [`take_payload`] for an OWNED payload box — the by-value match form, which is how most
+/// consuming operations receive it.
+fn own_payload(
+    mut slot: Box<Option<Value>>,
+    context: &'static str,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    take_payload(&mut slot, context, span)
+}
+
 fn display_slot(value: &Option<Value>) -> String {
     value
         .as_ref()
@@ -1099,6 +1270,13 @@ enum Projection {
     /// prevents structural mutation, so the position cannot change while the
     /// projection is usable.
     MapIndex(usize),
+    /// **DEV-209: the payload of a prelude `Option`/`Result`.**
+    ///
+    /// Named rather than spelled `Index(0)` on purpose. `Index` carries INDEXING semantics — its
+    /// projection failure is classified as an index-out-of-bounds trap (`projection_failure`) —
+    /// and an absent payload behind a discriminant that already matched is not an index trap. It
+    /// is an invariant violation, and the two must not report as the same thing.
+    VariantPayload(usize),
 }
 
 /// DEV-065: an out-of-range `Index` projection is the language's index-out-of-bounds TRAP
@@ -1117,6 +1295,10 @@ fn projection_failure(projection: &Projection, span: Span) -> RuntimeError {
         // Not a language trap: reaching a moved-out field means the compiler let something through
         // that it should have rejected, or the interpreter lost track of a move.
         Projection::Field(_) => RuntimeError::internal("use of moved or invalid field", span),
+        // Not an index trap: the discriminant already matched, so the payload must be there.
+        Projection::VariantPayload(_) => {
+            RuntimeError::internal("a matched variant's payload is absent", span)
+        }
     }
 }
 
@@ -1172,10 +1354,6 @@ struct Callable {
     receiver: Option<(hir::Receiver, LocalId)>,
     params: Vec<LocalId>,
     body: BlockId,
-    /// DEV-069: the file that DECLARES this body. Spans are file-relative, so every span read
-    /// while executing the body (literals, field names, path segments) must resolve against
-    /// this file — not the entry file, and not the caller's file.
-    file: Arc<SourceFile>,
 }
 
 fn is_valid_main_return(ty: &Ty) -> bool {
@@ -1205,7 +1383,7 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
                 u8::try_from(value).map_err(|_| {
                     RuntimeError::with_category(
                         "invalid-exit-status",
-                        Span::point(0),
+                        Span::synthetic(span.source),
                         crate::mir::TrapCategory::InvalidExitStatus,
                     )
                 })
@@ -1218,11 +1396,19 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
     }
 
     match value {
-        Value::Result(Ok(value)) => Ok((checked_status(*value, span)?, String::new())),
-        Value::Result(Err(message)) => match *message {
-            Value::String(message) | Value::Str(message) => Ok((1, format!("{message}\n"))),
-            _ => Err(RuntimeError::new("entrypoint error is not a String", span)),
-        },
+        Value::Result(Ok(value)) => Ok((
+            checked_status(
+                own_payload(value, "the entrypoint's Ok payload", span)?,
+                span,
+            )?,
+            String::new(),
+        )),
+        Value::Result(Err(message)) => {
+            match own_payload(message, "the entrypoint's Err payload", span)? {
+                Value::String(message) | Value::Str(message) => Ok((1, format!("{message}\n"))),
+                _ => Err(RuntimeError::new("entrypoint error is not a String", span)),
+            }
+        }
         value => Ok((checked_status(value, span)?, String::new())),
     }
 }
@@ -1258,16 +1444,61 @@ pub fn on_interpreter_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
 
 pub fn run(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
     on_interpreter_stack(move || run_here(hir, file, tables))
 }
 
+/// What a test armed for one execution. Both axes are independent: a producer mutation corrupts a
+/// VALUE, an environment mutation removes an INSTANTIATION.
+#[cfg(test)]
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Mutations {
+    pub(crate) producer: Option<ProducerMutation>,
+    pub(crate) env: Option<EnvMutation>,
+}
+
+/// One mutated execution, with the evidence that the mutation was actually reached.
+#[cfg(test)]
+pub(crate) struct MutatedRun {
+    pub(crate) result: Result<Execution, RuntimeError>,
+    /// **Why this is reported rather than assumed.** A dispatch-class control whose witness never
+    /// reaches the installation point would "detect" nothing and look like a pass. Requiring a
+    /// non-zero count is what makes each of the seven classes evidence about ITS OWN path.
+    pub(crate) env_mutations_applied: usize,
+}
+
+/// [`run`] with mutations armed, for the DEV-121 and AS3 #2 evidence. Test-only.
+#[cfg(test)]
+pub(crate) fn run_mutated(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+    mutations: Mutations,
+) -> MutatedRun {
+    on_interpreter_stack(move || {
+        let mut interpreter = Interpreter::new(hir, file, tables);
+        interpreter.mutation = mutations.producer;
+        interpreter.env_mutation = mutations.env;
+        let outcome = interpreter.run_main();
+        let env_mutations_applied = interpreter.env_mutations_applied;
+        let result = outcome.map(|(status, exit_stderr)| Execution {
+            output: interpreter.output.clone(),
+            status,
+            stderr: format!("{}{exit_stderr}", interpreter.stderr),
+        });
+        MutatedRun {
+            result,
+            env_mutations_applied,
+        }
+    })
+}
+
 /// [`run`] without the stack switch, for a caller that is already on a suitable stack.
 fn run_here(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
     let mut interpreter = Interpreter::new(hir, file, tables);
@@ -1298,11 +1529,19 @@ impl ExecutionOutcome {
 }
 
 /// Run `main`, keeping both streams whatever the outcome. See [`ExecutionOutcome`].
-pub fn run_capturing(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+pub fn run_capturing(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+) -> ExecutionOutcome {
     on_interpreter_stack(move || run_capturing_here(hir, file, tables))
 }
 
-fn run_capturing_here(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> ExecutionOutcome {
+fn run_capturing_here(
+    hir: &Hir,
+    file: crate::source::RegisteredSource,
+    tables: &TypeTables,
+) -> ExecutionOutcome {
     let mut interpreter = Interpreter::new(hir, file, tables);
     match interpreter.run_main() {
         Ok((status, exit_stderr)) => ExecutionOutcome {
@@ -1323,7 +1562,7 @@ fn run_capturing_here(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> 
 /// printing different prefixes before the same trap are observably different.
 pub fn run_with_partial_output(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
 ) -> Result<Execution, (RuntimeError, String)> {
     match run_capturing(hir, file, tables) {
@@ -1349,7 +1588,7 @@ pub fn run_with_partial_output(
 /// (`test_runner::run_test`) to invoke each discovered `test_*` function.
 pub fn run_item(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
     item: ItemId,
 ) -> Result<Execution, RuntimeError> {
@@ -1358,7 +1597,7 @@ pub fn run_item(
 
 fn run_item_here(
     hir: &Hir,
-    file: Arc<SourceFile>,
+    file: crate::source::RegisteredSource,
     tables: &TypeTables,
     item: ItemId,
 ) -> Result<Execution, RuntimeError> {
@@ -1367,7 +1606,15 @@ fn run_item_here(
     let callable = interpreter
         .item_callable(item)
         .ok_or_else(|| RuntimeError::new("item is not executable", span))?;
-    interpreter.call_callable(callable, None, Vec::new(), span)?;
+    interpreter.invoke_callable(
+        ResolvedInvocation {
+            callable,
+            environment: InvocationEnv::Empty,
+        },
+        ReceiverSource::None,
+        Vec::new(),
+        span,
+    )?;
     Ok(Execution {
         output: interpreter.output,
         status: 0,
@@ -1378,7 +1625,10 @@ fn run_item_here(
 
 struct Interpreter<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
+    /// AS1b-ii: the ENTRY source, registered. Frames still record the file that declares each body
+    /// (DEV-069) because MIR and diagnostics read it; once every span carries its own source that
+    /// per-frame tracking has nothing left to decide.
+    file: crate::source::RegisteredSource,
     tables: &'a TypeTables,
     frames: Vec<Frame>,
     output: String,
@@ -1387,6 +1637,8 @@ struct Interpreter<'a> {
     /// PROC-STREAM-001 requires of two separate streams.
     stderr: String,
     copy_items: HashSet<ItemId>,
+    /// Nominals with a user destructor, by resolved identity (DEV-210's published authority).
+    drop_items: HashSet<ItemId>,
     pending_propagation: Option<Value>,
     const_cache: HashMap<ItemId, Value>,
     const_stack: Vec<ItemId>,
@@ -1401,6 +1653,16 @@ struct Interpreter<'a> {
     /// a guard holding `&mut self.generic_frames` would conflict with the `&mut self` call it is
     /// meant to wrap.
     generic_frames: std::rc::Rc<std::cell::RefCell<Vec<HashMap<String, Ty>>>>,
+    /// The one producer mutation armed for this execution, if any. See [`ProducerMutation`].
+    #[cfg(test)]
+    mutation: Option<ProducerMutation>,
+    /// The environment mutation armed for this execution, if any. See [`EnvMutation`].
+    #[cfg(test)]
+    env_mutation: Option<EnvMutation>,
+    /// How many times the environment mutation actually fired. A dispatch-class control that
+    /// never reached the installation point would otherwise "pass" by testing nothing.
+    #[cfg(test)]
+    env_mutations_applied: usize,
 }
 
 /// RAII guard for one entry of [`Interpreter::generic_frames`].
@@ -1421,7 +1683,243 @@ impl Drop for GenericFrame {
     }
 }
 
+// ---------------------------------------------------------------- the representation model --
+
+/// **The canonical `Ty` → `Value` relation, as a free function.**
+///
+/// Lifted out of `Interpreter` so the CHECKER can consult the same answer. It depends on nothing
+/// but the type, the value and the Copy set — a `&self` receiver was never carrying anything else.
+///
+/// Two consumers, one authority: the oracle asks *"does this value represent this type"*, and the
+/// checker asks *"can this type reach a value boundary at all"* — the second derived from the first
+/// by [`ty_is_runtime_representable`] rather than by a second classification.
+fn value_matches_ty_with(expected: &Ty, value: &Value, copy_items: &HashSet<ItemId>) -> bool {
+    use crate::ast::Primitive;
+    let kind = value.kind();
+    match expected {
+        // ---------------------------------------------------------------- §6.2 scalars/text --
+        Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
+        Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
+        Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
+        // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
+        // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
+        Ty::Primitive(
+            Primitive::Int8
+            | Primitive::Int16
+            | Primitive::Int32
+            | Primitive::Int64
+            | Primitive::UInt8
+            | Primitive::UInt16
+            | Primitive::UInt32
+            | Primitive::UInt64,
+        ) => kind == ValueKind::Int,
+        // `Value::Float` DOES carry a width, so it is checked: this examines information the
+        // model genuinely possesses.
+        Ty::Primitive(Primitive::Float32) => {
+            matches!(value, Value::Float(_, FloatWidth::F32))
+        }
+        Ty::Primitive(Primitive::Float64) => {
+            matches!(value, Value::Float(_, FloatWidth::F64))
+        }
+        // **Owned `String` has two spellings in the type system**, found by this match refusing
+        // to compile without both: the resolver maps the name `String` to
+        // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
+        // Both are the same owned type and both must permit exactly `Value::String`; covering
+        // only the `Core` one would have left every `String` binding unvalidated.
+        Ty::Primitive(Primitive::String) => kind == ValueKind::String,
+        // An unsized `str` is never a standalone value — only `&str` is (§6.6).
+        Ty::Primitive(Primitive::Str) => false,
+        // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
+        // boundary with one means extension gating failed.
+        Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
+
+        // ------------------------------------------------------------------ §6.4 references --
+        // **`&mut [T]` has the same two representations `&[T]` has.** `Value::Slice(place, ..)`
+        // is a view *into a place*: writing through it writes to that place, so it is exactly
+        // as much a reference as `Value::Ref` is, and it is what `&mut v[1..3]` produces. The
+        // one-line mutable arm predated the slice-view representation and so admitted only
+        // `Ref` — asymmetric with `shared_ref_matches` by omission, not by rule.
+        Ty::Ref {
+            mutable: true,
+            inner,
+        } => {
+            kind == ValueKind::Ref
+                || (matches!(inner.as_ref(), Ty::Slice(_)) && kind == ValueKind::Slice)
+        }
+        Ty::Ref {
+            mutable: false,
+            inner,
+        } => shared_ref_matches_with(inner, value, copy_items),
+
+        // --------------------------------------------------- §6.3 owned aggregates/collections --
+        Ty::Tuple(elements) => match value {
+            Value::Tuple(slots) => slots.len() == elements.len(),
+            _ => false,
+        },
+        Ty::Array(_, len) => match value {
+            Value::Array(slots) => slots.len() as u64 == *len,
+            _ => false,
+        },
+        Ty::Struct(item, _) => match value {
+            Value::Struct { item: actual, .. } => actual == item,
+            _ => false,
+        },
+        Ty::Enum(item, _) => match value {
+            Value::Enum { item: actual, .. } => actual == item,
+            _ => false,
+        },
+        Ty::Core(core, _) => Interpreter::core_ty_matches(*core, kind),
+        Ty::Range(_) => kind == ValueKind::Range,
+        Ty::Fn { .. } => kind == ValueKind::Function,
+
+        // -------------------------------------------------------- §6.6 never at a boundary --
+        // Listed individually rather than folded into a `_` arm: each is a distinct compiler
+        // defect, and a wildcard here would also swallow any `Ty` variant added later.
+        Ty::Slice(_) => false,
+        Ty::Never => false,
+        Ty::Param(_) => false,
+        Ty::Infer(_) => false,
+        Ty::Error => false,
+        // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
+        // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
+        // one means extension gating failed.
+        Ty::Extension(_) => false,
+    }
+}
+
+fn shared_ref_matches_with(inner: &Ty, value: &Value, copy_items: &HashSet<ItemId>) -> bool {
+    use crate::ast::Primitive;
+    let kind = value.kind();
+
+    // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
+    // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
+    // storage.
+    if matches!(inner, Ty::Primitive(Primitive::Str)) {
+        return kind == ValueKind::Str || kind == ValueKind::Ref;
+    }
+
+    // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
+    // one; `Vec`/`Array` immediately is the owned-storage error again.
+    if matches!(inner, Ty::Slice(_)) {
+        return kind == ValueKind::Slice || kind == ValueKind::Ref;
+    }
+
+    if kind == ValueKind::Ref {
+        return true;
+    }
+
+    // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
+    // cannot consume, invalidate or destroy the referent, so the two representations are
+    // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
+    // for convenience.
+    pointee_is_copy_with(inner, copy_items) && value_matches_ty_with(inner, value, copy_items)
+}
+
+/// Whether a shared reference's pointee is `Copy`. The CHECKER's predicate, never a second one.
+fn pointee_is_copy_with(ty: &Ty, copy_items: &HashSet<ItemId>) -> bool {
+    crate::typecheck::is_copy_type_with(ty, copy_items)
+}
+
+/// **Can a value of type `ty` exist at a runtime value boundary at all?**
+///
+/// DEV-206 asks a question one step upstream of DEV-121. DEV-121 asks *given a valid runtime type
+/// `T`, does `V` represent it*; this asks *should `T` have been allowed to reach a value boundary*.
+/// `[T]` is the case that made the difference visible: publishing it for `v[0..2]` is correct —
+/// it is a place of unsized type — and letting it escape into `println(...)` is not.
+///
+/// **Derived, not enumerated.** A second list of "runtime-representable types" beside
+/// `value_matches_ty` would be exactly the duplicate semantic authority this campaign removed. So
+/// the answer is obtained by ASKING the relation: a type that no representation satisfies cannot
+/// exist at a value boundary. The probe below is exhaustive over `ValueKind`, so a new runtime
+/// representation forces someone to say what it is here.
+pub fn ty_is_runtime_representable(ty: &Ty, copy_items: &HashSet<ItemId>) -> bool {
+    ValueKind::ALL
+        .iter()
+        .any(|kind| value_matches_ty_with(ty, &probe_value(*kind, ty), copy_items))
+}
+
+/// One representative value per runtime representation, for [`ty_is_runtime_representable`].
+///
+/// Contents are irrelevant and deliberately minimal — the relation reads shape, never payload
+/// (`a_value_kind_names_the_shape_and_not_the_contents`). Exhaustive on purpose: adding a
+/// `ValueKind` without a probe would silently shrink what the property considers representable.
+fn probe_value(kind: ValueKind, ty: &Ty) -> Value {
+    let place = || Place {
+        frame: 0,
+        local: LocalId(0),
+        projections: Vec::new(),
+    };
+    match kind {
+        ValueKind::Unit => Value::Unit,
+        ValueKind::Bool => Value::Bool(false),
+        ValueKind::Int => Value::Int(0),
+        ValueKind::Float => Value::Float(0.0, FloatWidth::F64),
+        ValueKind::Char => Value::Char('a'),
+        ValueKind::Str => Value::Str(String::new()),
+        ValueKind::String => Value::String(String::new()),
+        // **Arity comes from the TYPE.** The relation checks a tuple's arity and an array's
+        // length, so a fixed-size probe would report `[Int32; 3]` unrepresentable — a wrong answer
+        // about the type rather than about the relation. This supplies a fair witness, not a
+        // second opinion about what is representable.
+        ValueKind::Tuple => Value::Tuple(match ty {
+            Ty::Tuple(elements) => vec![None; elements.len()],
+            _ => Vec::new(),
+        }),
+        ValueKind::Array => Value::Array(match ty {
+            Ty::Array(_, len) => vec![None; *len as usize],
+            _ => Vec::new(),
+        }),
+        ValueKind::Struct => Value::Struct {
+            item: ItemId(0),
+            fields: BTreeMap::new(),
+        },
+        ValueKind::Enum => Value::Enum {
+            item: ItemId(0),
+            variant: 0,
+            fields: Vec::new(),
+            named: BTreeMap::new(),
+        },
+        ValueKind::Vec => Value::Vec(Vec::new()),
+        ValueKind::Boxed => Value::Boxed(Box::new(None)),
+        ValueKind::Option => Value::Option(None),
+        ValueKind::Result => Value::Result(Ok(Box::new(Some(Value::Unit)))),
+        ValueKind::Range => Value::Range {
+            start: 0,
+            end: 0,
+            inclusive: false,
+        },
+        ValueKind::Slice => Value::Slice(place(), 0, 0),
+        ValueKind::Ref => Value::Ref(place()),
+        ValueKind::Function => Value::Function(FunctionValue {
+            item: ItemId(0),
+            bindings: Vec::new(),
+        }),
+        ValueKind::CharsIter => Value::CharsIter(String::new(), 0),
+        ValueKind::SplitIter => Value::SplitIter(Vec::new(), 0),
+        ValueKind::VecIter => Value::VecIter(place(), 0),
+        ValueKind::HashMap => Value::HashMap(InsertionMap::new()),
+        ValueKind::HashSet => Value::HashSet(InsertionSet::new()),
+        ValueKind::HashMapKeysIter => Value::HashMapKeysIter(Vec::new(), 0),
+        ValueKind::HashMapValuesIter => Value::HashMapValuesIter(Vec::new(), 0),
+        ValueKind::HashMapIter => Value::HashMapIter(Vec::new(), 0),
+        ValueKind::HashSetIter => Value::HashSetIter(Vec::new(), 0),
+        ValueKind::MapIter => Value::MapIter(Box::new(Value::Unit), ItemId(0)),
+        ValueKind::FilterIter => Value::FilterIter(Box::new(Value::Unit), ItemId(0)),
+        ValueKind::Random => Value::Random(0),
+        ValueKind::IOError => Value::IOError(IOErrorKind::Other(String::new())),
+        ValueKind::File => Value::File(FileResource(Rc::new(RefCell::new(None)))),
+        ValueKind::Ordering => Value::Ordering(std::cmp::Ordering::Equal),
+    }
+}
+
 impl<'a> Interpreter<'a> {
+    /// The registered id of the entry source. Used where a failure has no position of its own —
+    /// an interpreter invariant, a missing entrypoint — so it names a real source instead of a
+    /// fabricated one.
+    fn entry_source(&self) -> crate::source::SourceId {
+        self.file.id()
+    }
+
     fn default_value_for(&self, value: &Value) -> Value {
         match value {
             Value::Unit => Value::Unit,
@@ -1483,9 +1981,15 @@ impl<'a> Interpreter<'a> {
                 Value::Boxed(Box::new(default_inner))
             }
             Value::Option(_) => Value::Option(None),
+            // A default mirrors the shape, INCLUDING whether the payload is still there: a moved
+            // payload's default is still moved.
             Value::Result(res) => match res {
-                Ok(val) => Value::Result(Ok(Box::new(self.default_value_for(val)))),
-                Err(err) => Value::Result(Err(Box::new(self.default_value_for(err)))),
+                Ok(val) => Value::Result(Ok(Box::new(
+                    (**val).as_ref().map(|value| self.default_value_for(value)),
+                ))),
+                Err(err) => Value::Result(Err(Box::new(
+                    (**err).as_ref().map(|value| self.default_value_for(value)),
+                ))),
             },
             Value::Range {
                 start: _,
@@ -1521,10 +2025,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn new(hir: &'a Hir, file: Arc<SourceFile>, tables: &'a TypeTables) -> Self {
+    fn new(hir: &'a Hir, file: crate::source::RegisteredSource, tables: &'a TypeTables) -> Self {
         // WP-C6.1g-a: the interpreter's Copy set is the same structural+impl eligibility the
         // checker and MIR use (OWN-COPY-001, amended), so all three engines agree.
         let copy_items = crate::typecheck::copy_eligible_types(hir);
+        let drop_items = crate::typecheck::nominals_with_destructor(hir);
         Self {
             hir,
             file,
@@ -1533,11 +2038,24 @@ impl<'a> Interpreter<'a> {
             output: String::new(),
             stderr: String::new(),
             copy_items,
+            drop_items,
             pending_propagation: None,
             const_cache: HashMap::new(),
             const_stack: Vec::new(),
             generic_frames: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            #[cfg(test)]
+            mutation: None,
+            #[cfg(test)]
+            env_mutation: None,
+            #[cfg(test)]
+            env_mutations_applied: 0,
         }
+    }
+
+    /// Whether `mutation` is the one armed for this execution.
+    #[cfg(test)]
+    fn mutation_armed(&self, mutation: ProducerMutation) -> bool {
+        self.mutation == Some(mutation)
     }
 
     fn eval_const_item(&mut self, item: ItemId) -> Result<Value, RuntimeError> {
@@ -1580,37 +2098,32 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Read a span belonging to the body currently EXECUTING. `call_callable` keeps `self.file`
-    /// on the executing body's declaring file, so this is correct for literals, path segments,
-    /// and other spans inside that body — and wrong for spans of any other item, which must go
-    /// through `item_text` (DEV-069).
+    /// Read a span, against the source the span itself names.
     ///
-    /// Non-panicking since WP-C4.7-4: reading a foreign span used to abort the interpreter with
-    /// "byte index N out of bounds" whenever the other file was longer (DEV-069 shape (a)).
+    /// **AS1b-ii: this is the whole point of the packet.** There used to be two readers —
+    /// `text`, which indexed the ambient `self.file` and was correct only for the body currently
+    /// executing, and `item_text`, which took an `ItemId` to find the right file for a
+    /// cross-item read (DEV-069). Choosing between them was a judgement every call site had to
+    /// make, and getting it wrong produced a plausible wrong answer rather than an error.
+    ///
+    /// A span now names its source, so there is nothing to choose. `item_text` delegates here and
+    /// its `ItemId` is redundant; the ambient `self.file` no longer participates in reading at all.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
-            .unwrap_or("?")
-    }
-
-    /// The file that declares `item`.
-    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
-        match self.hir.item_files.get(&item) {
-            Some(file) => file.clone(),
-            None => self.file.clone(),
+        match self.hir.sources.get(span.source) {
+            Some(file) => file
+                .src
+                .get(span.lo as usize..span.hi as usize)
+                .unwrap_or("?"),
+            None => "?",
         }
     }
 
-    /// Read a span belonging to `item`, against the file that declares it (DEV-069). Used for
-    /// every cross-item read: another struct's field names, another impl's method names, a
-    /// trait's method names.
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        };
-        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
+    /// Read a span belonging to `item`.
+    ///
+    /// Retained only so DEV-069's call sites keep reading as they did; the `item` argument no
+    /// longer decides anything, because the span carries its own source.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
     fn run_main(&mut self) -> Result<(u8, String), RuntimeError> {
@@ -1641,7 +2154,7 @@ impl<'a> Interpreter<'a> {
         let Some(&main) = mains.first() else {
             return Err(RuntimeError::entry(
                 "program has no 'main' function",
-                Span::point(0),
+                Span::synthetic(self.entry_source()),
             ));
         };
         if mains.len() != 1 {
@@ -1678,7 +2191,15 @@ impl<'a> Interpreter<'a> {
         let callable = self.item_callable(main).ok_or_else(|| {
             RuntimeError::new("'main' is not executable", self.hir.item(main).span)
         })?;
-        let result = self.call_callable(callable, None, Vec::new(), self.hir.item(main).span)?;
+        let result = self.invoke_callable(
+            ResolvedInvocation {
+                callable,
+                environment: InvocationEnv::Empty,
+            },
+            ReceiverSource::None,
+            Vec::new(),
+            self.hir.item(main).span,
+        )?;
         main_result_to_status(result, self.hir.item(main).span)
     }
 
@@ -1690,20 +2211,193 @@ impl<'a> Interpreter<'a> {
             receiver: None,
             params: def.sig.params.iter().map(|param| param.local).collect(),
             body: def.body,
-            file: self.item_file(item),
         })
     }
 
-    fn call_callable(
+    /// The published environment for a `Display` render position, keyed the way the plan is.
+    fn display_env(&self, root: ExprId, path: &DisplayPath) -> InvocationEnv {
+        self.tables
+            .display_uses
+            .get(&(root, path.clone()))
+            .and_then(|id| self.tables.callable_uses.get(id.0 as usize))
+            .and_then(|use_| self.env_for_use(use_))
+            .unwrap_or(InvocationEnv::Empty)
+    }
+
+    /// **The environment a published `CallableUse` calls for.**
+    ///
+    /// One mapping from the checker's `GenericEnvironment` to the interpreter's `InvocationEnv`,
+    /// so every consumer of a published selection installs the same thing. Six method-dispatch
+    /// paths installed nothing at all before Packet 1 made the parameter mandatory — operators,
+    /// qualified core-trait calls, container `Eq`, `Iterator::next` and both `Display` paths.
+    ///
+    /// `FromBoundSelection` returns `None`: a bound selection's environment comes from the
+    /// specialiser, which produces it atomically with the body, and reconstructing it here would be
+    /// the second answer Rule 1 forbids.
+    fn env_for_use(&self, use_: &crate::typecheck::CallableUse) -> Option<InvocationEnv> {
+        match &use_.environment {
+            crate::typecheck::GenericEnvironment::Static(bindings) => {
+                Some(InvocationEnv::Concrete(bindings.clone()))
+            }
+            crate::typecheck::GenericEnvironment::FromBoundSelection => None,
+            crate::typecheck::GenericEnvironment::FromFunctionValue => None,
+        }
+    }
+
+    /// The published environment for a core-trait dispatch at `expr`, or `Empty` when the selection
+    /// is a non-generic `Static` one. Used by the operator, iterator and `Display` paths, which all
+    /// select through `selected_core_trait_callable`.
+    fn core_trait_env(&self, expr: ExprId, core: CoreTrait) -> InvocationEnv {
+        self.selected_core_trait_callable(expr, core)
+            .as_ref()
+            .and_then(|use_| self.env_for_use(use_))
+            .unwrap_or(InvocationEnv::Empty)
+    }
+
+    /// **DEV-035:** a reference returned from a `&self`/`&mut self` method that was derived from
+    /// `self` carries a `Place` pointing into the method's own — just popped — frame, so any later
+    /// dereference failed with "dangling reference". Rebase it onto the caller-side receiver place,
+    /// preserving projections taken inside the method.
+    ///
+    /// References into the method's OTHER locals are left untouched: the borrow checker's
+    /// return-escape check (E0103) rejects those, and if one ever slipped through the existing
+    /// "dangling reference" trap is the correct backstop, not a silent rebase.
+    fn rebase_if_method(
+        &self,
+        mut value: Value,
+        body_frame: usize,
+        epilogue: &BodyEpilogue,
+    ) -> Value {
+        if let BodyEpilogue::Method {
+            receiver_local,
+            receiver_place,
+            ..
+        } = epilogue
+        {
+            rebase_frame_refs(&mut value, body_frame, *receiver_local, receiver_place);
+        }
+        value
+    }
+
+    /// **AS3 Packet 1: the ONE invocation authority.**
+    ///
+    /// Rule 1 — *no executable callable body without an invocation authority*. Body, generic
+    /// environment and published signature must be established **atomically** before execution.
+    ///
+    /// The pattern this replaces —
+    ///
+    /// ```text
+    /// push environment
+    /// call_callable(...)
+    /// ```
+    ///
+    /// — put the first step on each call site, and DEV-197 is what that costs: two dispatch paths
+    /// omitted it, ran their bodies with `T` unbound, and looked correct because no boundary
+    /// consulted the callee's declared types. An environment a caller can forget is not an
+    /// invariant.
+    ///
+    /// [`Self::execute_body`] is the raw executor; this is its only production caller.
+    fn invoke_callable(
+        &mut self,
+        invocation: ResolvedInvocation,
+        receiver: ReceiverSource,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        self.invoke_with_epilogue(invocation, receiver, args, BodyEpilogue::Call, span)
+    }
+
+    /// The authority proper. [`Self::invoke_callable`] is the ordinary-call spelling; a destructor
+    /// differs only in its [`BodyEpilogue`], so it shares this entry rather than owning a second
+    /// executor.
+    fn invoke_with_epilogue(
+        &mut self,
+        invocation: ResolvedInvocation,
+        receiver: ReceiverSource,
+        args: Vec<Value>,
+        epilogue: BodyEpilogue,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let ResolvedInvocation {
+            callable,
+            environment,
+        } = invocation;
+        // Installed FIRST and live for the whole call, so every boundary below resolves
+        // `Ty::Param` against the callee's own instantiation.
+        let _env = self.install_invocation_env(&environment, span)?;
+        self.execute_body(callable, receiver, args, epilogue, span)
+    }
+
+    /// Install an invocation's environment. Every variant is explicit: "this callable has no
+    /// generics" is [`InvocationEnv::Empty`], never absent metadata.
+    fn install_invocation_env(
+        &mut self,
+        environment: &InvocationEnv,
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        // AS3 #2 control: deliver the environment and then fail to install it.
+        #[cfg(test)]
+        if self.env_mutation == Some(EnvMutation::DropEnvironment) {
+            self.env_mutations_applied += 1;
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
+        match environment {
+            InvocationEnv::Empty => Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            }),
+            InvocationEnv::Published(call_expr) => self.push_callable_env(*call_expr, span),
+            InvocationEnv::Concrete(bindings) => self.push_resolved_env(bindings, span),
+            // **One authority for captured bindings.** `push_captured_env` already existed; a
+            // second helper doing the same job was a duplicate introduced during the Return
+            // wiring, and is deleted.
+            InvocationEnv::Captured(callee) => Ok(self.push_captured_env(callee)),
+        }
+    }
+
+    /// **The raw body executor.** Its only production caller is [`Self::invoke_callable`], because
+    /// reaching it directly is how a body comes to run without its generic environment (DEV-197).
+    /// Do not add a second caller; route through the authority.
+    fn execute_body(
         &mut self,
         callable: Callable,
-        receiver: Option<Value>,
+        receiver: ReceiverSource,
         args: Vec<Value>,
+        epilogue: BodyEpilogue,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         if args.len() != callable.params.len() {
             return Err(RuntimeError::new("runtime argument count mismatch", span));
         }
+        // **The declared signature, looked up ONCE, before anything is bound.**
+        //
+        // A missing signature is an INVARIANT VIOLATION, not an exemption. A3b's claim is that
+        // every executable body has a published signature; an `Option` here would reintroduce the
+        // "missing metadata means skip validation" pattern AS3 spent this sprint deleting, and
+        // would let any future body that loses its entry quietly stop being checked.
+        //
+        // Hoisted from the return boundary so the receiver and the parameters are read against the
+        // SAME published signature the return is. Three boundaries, one lookup: a body cannot be
+        // checked on the way out but unchecked on the way in.
+        let signature = self
+            .tables
+            .callable_types
+            .get(&callable.body)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                        "missing callable signature for executable body {:?} — A3b publishes one \
+                         for every executable body, so this is a publication defect, not a \
+                         callable class to exempt",
+                        callable.body
+                    ),
+                    span,
+                )
+            })?;
         // **A3: `pending_propagation` is an intra-expression adapter, never live across a call.**
         //
         // It is interpreter state, not frame state, and `expect_value` parks a propagated value
@@ -1738,33 +2432,147 @@ impl<'a> Interpreter<'a> {
                 span,
             ));
         }
+        // **Materialization.** The binding produced here must match the receiver type the checker
+        // published, which is what `RepBoundary::Receiver` compares against.
+        let mut drop_backing = None;
+        let materialized = match receiver {
+            ReceiverSource::None => None,
+            // WP-C2.2 (DEV-034): a by-value receiver CONSUMES the already-resolved place — proper
+            // move semantics, including partial moves out of fields — rather than re-evaluating the
+            // receiver expression, which was a confirmed double-evaluation bug.
+            ReceiverSource::Place {
+                kind: hir::Receiver::Value,
+                place,
+            } => Some(self.take_place(&place, span)?),
+            // Class 2 mutation: bind the pointee BY VALUE, which is the materialization defect
+            // the destructor case was repaired for.
+            #[cfg(test)]
+            ReceiverSource::Place { ref place, .. }
+                if self.mutation_armed(ProducerMutation::OwnedForReference) =>
+            {
+                Some(self.place_value(place, span)?.clone())
+            }
+            // DEV-070 (A2): `&self`/`&mut self` bind a genuine REFERENCE to the caller's place,
+            // not a clone.
+            ReceiverSource::Place { place, .. } => Some(Value::Ref(place)),
+            // The destructor case: an owned value becomes a real `&mut Self` by giving it backing
+            // storage in the CALLER's frame, which outlives the body and can be read back.
+            ReceiverSource::OwnedForDrop(value) => {
+                let backing = self.promote_to_owned_temp_place(value, span)?;
+                drop_backing = Some(backing.clone());
+                Some(Value::Ref(backing))
+            }
+        };
         let mut frame = Frame::default();
-        if let (Some((_, local)), Some(value)) = (callable.receiver, receiver) {
+        if let (Some((_, local)), Some(value)) = (callable.receiver, materialized) {
+            // **The RECEIVER boundary.** `callable_types` records the receiver *as the body binds
+            // it* — `Self` for `self`, `&Self` for `&self`, `&mut Self` for `&mut self` — so this
+            // compares the materialized binding against exactly what the body will read.
+            //
+            // A destructor passes here with no `Drop`-shaped exception: its `ReceiverSource::
+            // OwnedForDrop` became a genuine `Value::Ref` into caller-frame backing storage, which
+            // is what `&mut Self` means. That is the whole reason materialization moved into the
+            // authority.
+            let declared = signature.receiver.as_ref().ok_or_else(|| {
+                RuntimeError::internal(
+                    "a callable with a runtime receiver has no receiver in its published \
+                     signature — A3b forms both from the same declaration, so they cannot \
+                     legitimately disagree",
+                    span,
+                )
+            })?;
+            self.check_value_for_ty(declared, &value, span, RepBoundary::Receiver)?;
             frame.insert(local, Some(value));
         }
-        for (local, value) in callable.params.iter().copied().zip(args) {
+        // **The PARAMETER boundary** — the second uncovered site DEV-121 named. Read against the
+        // published signature rather than `local_types`, so a parameter is checked by the contract
+        // the CALLEE declared, under the callee's own instantiation.
+        if signature.params.len() != callable.params.len() {
+            return Err(RuntimeError::internal(
+                format!(
+                    "published signature for body {:?} declares {} parameters but the callable \
+                     binds {} — A3b forms both from the same declaration",
+                    callable.body,
+                    signature.params.len(),
+                    callable.params.len()
+                ),
+                span,
+            ));
+        }
+        for ((local, declared), value) in callable
+            .params
+            .iter()
+            .copied()
+            .zip(signature.params.iter())
+            .zip(args)
+        {
+            self.check_value_for_ty(declared, &value, span, RepBoundary::Parameter)?;
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
-        // DEV-069: a body executes against ITS OWN file. Saved and restored around the call so a
-        // cross-file call returns the caller's file — this is the interpreter's analogue of
-        // typecheck's per-item file swap, and it must be restored on the error path too.
-        let caller_file = std::mem::replace(&mut self.file, callable.file);
-        let mut result = self.eval_block(callable.body);
-        if let Err(error) = &mut result {
-            // DEV-113-B: stamp the file the error was raised in, at the innermost frame that has not
-            // already been stamped. One choke point rather than sixty raise sites, and it is the
-            // right one: `self.file` is still the callee's here — the line below restores the
-            // caller's — and the `is_none` guard means the innermost stamp survives as the error
-            // propagates outward.
-            if error.file.is_none() {
-                error.file = Some(self.file.clone());
-            }
-        }
-        if result.is_err() {
-            self.file = caller_file;
+        let body_frame = self.frames.len() - 1;
+        // AS1b-ii: DEV-069's per-call file swap is GONE. It existed so `self.file` named the
+        // executing body's file while `text()` sliced against it; `text()` now slices against the
+        // source the span itself names, so there is nothing for the swap to keep correct.
+        // DEV-113-B stamped the raising file onto the error here, because a trap inside a
+        // dependency was otherwise attributed to the entry file. AS1b-ii-d deleted the stamp: it
+        // was derived from `error.span.source`, so it was a copy of something the error already
+        // carried, and a copy is a thing that can disagree.
+        let result = self.eval_block(callable.body);
+        if let BodyEpilogue::Destructor = epilogue {
+            // The pairing is structural: only `OwnedForDrop` creates backing storage, so a
+            // `Destructor` epilogue without it is a miswired call site, not a program error.
+            let Some(backing) = drop_backing else {
+                self.frames.pop();
+                return Err(RuntimeError::internal(
+                    "a `Destructor` epilogue ran without an owned receiver to give back",
+                    span,
+                ));
+            };
+            // The destructor's own locals belong to the enclosing destruction walk, so no
+            // `cleanup_current_frame` here — and the receiver comes back because `drop()` may have
+            // mutated or replaced fields that the recursive field destruction must then see.
             self.frames.pop();
-            return result.map(|_| Value::Unit);
+            result?;
+            // Read the (possibly mutated) value back out of the backing storage the body's `self`
+            // referenced. `Drop::drop(&mut self)` may replace fields, and the recursive field
+            // destruction that follows must see that.
+            let restored = self.take_place(&backing, span).ok();
+            // **Not `unwrap_or(Unit)`.** The callable has a receiver, it was inserted, and a
+            // `Drop` body cannot legitimately make its own receiver binding vanish — so `None`
+            // here is an interpreter defect. Falling back to `Unit` would let a representation or
+            // lifetime bug erase the receiver and have destruction continue on nothing, silently
+            // skipping the recursive field destruction that follows.
+            return restored.ok_or_else(|| {
+                RuntimeError::internal(
+                    "the `Drop` receiver disappeared while its destructor executed",
+                    span,
+                )
+            });
+        }
+        if let Err(error) = result {
+            if let BodyEpilogue::Method {
+                receiver_kind,
+                receiver_local,
+                ref receiver_place,
+            } = epilogue
+            {
+                // A `&mut self` receiver is written back even on the error path: the caller's place
+                // was emptied to make the binding, and leaving it empty would lose the value.
+                let restored = self
+                    .frame_mut()
+                    .values
+                    .get_mut(&receiver_local)
+                    .and_then(Option::take);
+                let place = receiver_place.clone();
+                self.frames.pop();
+                if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
+                    self.place_slot_mut(&place, span)?.replace(restored);
+                }
+                return Err(error);
+            }
+            self.frames.pop();
+            return Err(error);
         }
         let flow = result?;
         // The other half of the invariant: nothing may still be parked on the way out either. A
@@ -1777,12 +2585,39 @@ impl<'a> Interpreter<'a> {
                 span,
             ));
         }
+        // A `&self` receiver is taken back out before cleanup so the method's own locals are
+        // destroyed without the borrowed receiver among them — the ordering `call_user_method`
+        // established, preserved here rather than restated there.
+        if let BodyEpilogue::Method {
+            receiver_kind: hir::Receiver::Ref,
+            receiver_local,
+            ..
+        } = epilogue
+        {
+            let _restored = self
+                .frame_mut()
+                .values
+                .get_mut(&receiver_local)
+                .and_then(Option::take);
+        }
         self.cleanup_current_frame()?;
-        self.file = caller_file;
         self.frames.pop();
+        let declared_ret = &signature.ret;
         match flow {
-            Flow::Value(value) | Flow::Return(value) => Ok(value),
-            Flow::Propagate(value) => Ok(value),
+            // The RETURN boundary, against the same published signature the receiver and the
+            // parameters were read against.
+            Flow::Value(value) | Flow::Return(value) => {
+                self.check_value_for_ty(declared_ret, &value, span, RepBoundary::Return)?;
+                Ok(self.rebase_if_method(value, body_frame, &epilogue))
+            }
+            // **The PROPAGATION boundary.** A `?` that leaves the body IS the body's return value —
+            // §6.5 requires the error type to match, so the propagated `Result::Err`/`Option::None`
+            // is read against the declared return type exactly as an explicit `return` is. Leaving
+            // it unchecked meant `?` was the one way out of a function that no boundary observed.
+            Flow::Propagate(value) => {
+                self.check_value_for_ty(declared_ret, &value, span, RepBoundary::Propagation)?;
+                Ok(self.rebase_if_method(value, body_frame, &epilogue))
+            }
             Flow::Break(_) | Flow::Continue => {
                 Err(RuntimeError::new("loop control escaped a function", span))
             }
@@ -1832,10 +2667,17 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
-                if let Some(value) = value.as_ref() {
-                    self.check_value_representation(*local, value, stmt.span)?;
+                // A `let` with no initialiser binds nothing yet — definite assignment (§4) is
+                // what guarantees the read cannot precede the write, so there is no value to check
+                // and an empty slot is the correct state, not an unchecked one.
+                match value {
+                    Some(value) => {
+                        self.bind_typed_local(*local, value, stmt.span, RepBoundary::LetBinding)?
+                    }
+                    None => {
+                        self.frame_mut().insert(*local, None);
+                    }
                 }
-                self.frame_mut().insert(*local, value);
                 Ok(Flow::Value(Value::Unit))
             }
             hir::StmtKind::Return(expr) => {
@@ -1879,7 +2721,14 @@ impl<'a> Interpreter<'a> {
         span: Span,
         boundary: RepBoundary,
     ) -> Result<(), RuntimeError> {
-        let concrete = self.concrete_runtime_ty(expected, span)?;
+        // The resolution failure carries no boundary of its own, and "an unsubstituted parameter
+        // reached a value boundary" is unactionable without knowing WHICH — so name it here.
+        let concrete = self
+            .concrete_runtime_ty(expected, span)
+            .map_err(|mut error| {
+                error.message = format!("{} [at {}]", error.message, boundary.as_str());
+                error
+            })?;
         if self.value_matches_ty(&concrete, value) {
             return Ok(());
         }
@@ -1893,24 +2742,66 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
-    /// [`check_value_for_ty`] against a local's declared type.
+    /// **The one way a value comes to rest in a local.** AS3 Packet 3.
     ///
-    /// A local with no recorded type is not an error here: the tables do not type every internal
-    /// local the interpreter creates, and inventing a type to check against would be worse than
-    /// checking nothing. A6's producer inventory is what closes that gap, by finding the producers
-    /// rather than by guessing at the consumers.
-    #[allow(dead_code)]
-    fn check_local_value(
-        &self,
+    /// `let`, a `match` arm's pattern bindings, and both `for` forms each did their own
+    /// `frame_mut().insert(local, Some(value))`, and only two of the four checked anything. That is
+    /// how DEV-121 survived: the check was a thing a site could remember to do, so the sites that
+    /// forgot were indistinguishable from the sites with nothing to check.
+    ///
+    /// Every caller names its own [`RepBoundary`], because "a value entered a local" is not
+    /// actionable — which of the four is. The expected type is `local_types[local]`, the checker's
+    /// answer for that binding, never anything reconstructed from the value.
+    ///
+    /// **A missing `local_types` entry is an `InternalInvariant`, not a skip.** Every caller here
+    /// is a LANGUAGE-level binding — a `let`, a `match` arm's pattern binding, a `for` loop item —
+    /// and the checker types all of them. Inheriting
+    /// [`Self::check_local_value_if_typed`]'s permissiveness would have left a missing-metadata
+    /// escape inside a wire the inventory reports as `Wired`: structurally present, silently
+    /// inert for any binding whose entry went missing. That is the pattern this sprint exists to
+    /// delete, and a funnel is exactly where it would be least visible.
+    fn bind_typed_local(
+        &mut self,
         local: LocalId,
-        value: &Value,
+        value: Value,
         span: Span,
         boundary: RepBoundary,
     ) -> Result<(), RuntimeError> {
-        let Some(ty) = self.tables.local_types.get(&local) else {
-            return Ok(());
-        };
-        self.check_value_for_ty(&ty.clone(), value, span, boundary)
+        let expected = self
+            .tables
+            .local_types
+            .get(&local)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                        "missing checker-published local type at {} — every language-level \
+                         binding is typed, so this is a publication defect, not a binding to \
+                         exempt",
+                        boundary.as_str()
+                    ),
+                    span,
+                )
+            })?;
+        self.check_value_for_ty(&expected, &value, span, boundary)?;
+        self.frame_mut().insert(local, Some(value));
+        Ok(())
+    }
+
+    /// [`check_value_for_ty`] against an expression's published type.
+    ///
+    /// A missing entry is `internal`: the checker types every expression it accepts, so an absent
+    /// one means the tables and the tree disagree.
+    fn check_expr_value(&self, expr: ExprId, value: &Value) -> Result<(), RuntimeError> {
+        let span = self.hir.expr(expr).span;
+        let declared = self.tables.expr_types.get(&expr).cloned().ok_or_else(|| {
+            RuntimeError::internal(
+                "no published type for an evaluated expression — the checker types every \
+                 expression it accepts, so this is a table/tree disagreement",
+                span,
+            )
+        })?;
+        self.check_value_for_ty(&declared, value, span, RepBoundary::ExpressionResult)
     }
 
     /// The relation of WP-VALUE-REP-TOTAL §6, as executable code.
@@ -1923,116 +2814,7 @@ impl<'a> Interpreter<'a> {
     /// representation the alternatives are named individually, so "permitted" is always a closed
     /// set and never an absence of opinion.
     fn value_matches_ty(&self, expected: &Ty, value: &Value) -> bool {
-        use crate::ast::Primitive;
-        let kind = value.kind();
-        match expected {
-            // ---------------------------------------------------------------- §6.2 scalars/text --
-            Ty::Primitive(Primitive::Unit) => kind == ValueKind::Unit,
-            Ty::Primitive(Primitive::Bool) => kind == ValueKind::Bool,
-            Ty::Primitive(Primitive::Char) => kind == ValueKind::Char,
-            // Width is not carried by `Value::Int`, so there is nothing about it to observe here.
-            // The payload's numeric domain belongs to checked arithmetic (§6.2.1).
-            Ty::Primitive(
-                Primitive::Int8
-                | Primitive::Int16
-                | Primitive::Int32
-                | Primitive::Int64
-                | Primitive::UInt8
-                | Primitive::UInt16
-                | Primitive::UInt32
-                | Primitive::UInt64,
-            ) => kind == ValueKind::Int,
-            // `Value::Float` DOES carry a width, so it is checked: this examines information the
-            // model genuinely possesses.
-            Ty::Primitive(Primitive::Float32) => {
-                matches!(value, Value::Float(_, FloatWidth::F32))
-            }
-            Ty::Primitive(Primitive::Float64) => {
-                matches!(value, Value::Float(_, FloatWidth::F64))
-            }
-            // **Owned `String` has two spellings in the type system**, found by this match refusing
-            // to compile without both: the resolver maps the name `String` to
-            // `Ty::Primitive(Primitive::String)`, while `Ty::Core(CoreType::String, _)` also occurs.
-            // Both are the same owned type and both must permit exactly `Value::String`; covering
-            // only the `Core` one would have left every `String` binding unvalidated.
-            Ty::Primitive(Primitive::String) => kind == ValueKind::String,
-            // An unsized `str` is never a standalone value — only `&str` is (§6.6).
-            Ty::Primitive(Primitive::Str) => false,
-            // `tensor` extension element types (D3). Not executable in Core v1, so reaching a value
-            // boundary with one means extension gating failed.
-            Ty::Primitive(Primitive::Float16 | Primitive::BFloat16) => false,
-
-            // ------------------------------------------------------------------ §6.4 references --
-            Ty::Ref { mutable: true, .. } => kind == ValueKind::Ref,
-            Ty::Ref {
-                mutable: false,
-                inner,
-            } => self.shared_ref_matches(inner, value),
-
-            // --------------------------------------------------- §6.3 owned aggregates/collections --
-            Ty::Tuple(elements) => match value {
-                Value::Tuple(slots) => slots.len() == elements.len(),
-                _ => false,
-            },
-            Ty::Array(_, len) => match value {
-                Value::Array(slots) => slots.len() as u64 == *len,
-                _ => false,
-            },
-            Ty::Struct(item, _) => match value {
-                Value::Struct { item: actual, .. } => actual == item,
-                _ => false,
-            },
-            Ty::Enum(item, _) => match value {
-                Value::Enum { item: actual, .. } => actual == item,
-                _ => false,
-            },
-            Ty::Core(core, _) => Self::core_ty_matches(*core, kind),
-            Ty::Range(_) => kind == ValueKind::Range,
-            Ty::Fn { .. } => kind == ValueKind::Function,
-
-            // -------------------------------------------------------- §6.6 never at a boundary --
-            // Listed individually rather than folded into a `_` arm: each is a distinct compiler
-            // defect, and a wildcard here would also swallow any `Ty` variant added later.
-            Ty::Slice(_) => false,
-            Ty::Never => false,
-            Ty::Param(_) => false,
-            Ty::Infer(_) => false,
-            Ty::Error => false,
-            // Tensor, model and model-error types live INSIDE `Ty::Extension`; they are not
-            // separate `Ty` variants. Not executable in Core v1, so reaching a value boundary with
-            // one means extension gating failed.
-            Ty::Extension(_) => false,
-        }
-    }
-
-    /// `&T` for shared `T` — the multi-valued row, and the one that has to be a rule rather than a
-    /// list (§6.4, §6.8).
-    fn shared_ref_matches(&self, inner: &Ty, value: &Value) -> bool {
-        use crate::ast::Primitive;
-        let kind = value.kind();
-
-        // `&str`: a detached view, or a reference to text. NOT an owned `String` — that is the
-        // DEV-121 pairing, where the static type says borrowed and move behaviour sees owned
-        // storage.
-        if matches!(inner, Ty::Primitive(Primitive::Str)) {
-            return kind == ValueKind::Str || kind == ValueKind::Ref;
-        }
-
-        // `&[T]`: a view. A `Ref` to the container is accepted only because real producers make
-        // one; `Vec`/`Array` immediately is the owned-storage error again.
-        if matches!(inner, Ty::Slice(_)) {
-            return kind == ValueKind::Slice || kind == ValueKind::Ref;
-        }
-
-        if kind == ValueKind::Ref {
-            return true;
-        }
-
-        // The bare-value form, licensed ONLY by the pointee being Copy: copying a Copy pointee
-        // cannot consume, invalidate or destroy the referent, so the two representations are
-        // indistinguishable to any observation the oracle can make. Never extended to non-Copy `T`
-        // for convenience.
-        self.pointee_is_copy(inner) && self.value_matches_ty(inner, value)
+        value_matches_ty_with(expected, value, &self.copy_items)
     }
 
     /// §6.5. One representation each, named individually — a "these are all iterators" row would be
@@ -2080,6 +2862,14 @@ impl<'a> Interpreter<'a> {
             Some(map) => crate::typecheck::substitute_ty(ty, map),
             None => ty.clone(),
         };
+        // **Then discharge associated-type projections.** `fn first<T: Holder>(t: T) -> T::Item`
+        // publishes `Param("T::Item")`, and substitution cannot touch it: the environment binds
+        // `T`, not `T::Item`. Once `T` is concrete the projection has exactly one answer, and the
+        // checker already computed it — `tables.assoc_projections`, keyed by (implementing
+        // nominal, associated name). Consulted rather than re-derived; an oracle-local scan of the
+        // impl set would be a third authority for a question `normalize_projections` and MIR's
+        // `ProgramMeta` already answer.
+        let concrete = self.resolve_projections(&concrete);
         if crate::typecheck::ty_contains_param(&concrete) {
             return Err(RuntimeError::internal(
                 format!(
@@ -2092,74 +2882,43 @@ impl<'a> Interpreter<'a> {
         Ok(concrete)
     }
 
-    /// Whether the pointee of a shared reference is `Copy`, which is what licenses the bare-value
-    /// representation. Answered by the CHECKER's predicate, never by a second one here.
-    fn pointee_is_copy(&self, ty: &Ty) -> bool {
-        crate::typecheck::is_copy_type_with(ty, &self.copy_items)
-    }
-
-    /// **INV-VALUE-REP-001: a binding's runtime representation must match its declared type.**
+    /// Replace every resolvable `Param("Base::Assoc")` in `ty` with the checker's binding.
     ///
-    /// WP-COPY-CANON's law is that Copy/move behaviour AND the representation carrying it follow
-    /// from the normalized semantic type, never from the expression that produced the value.
-    /// DEV-121 broke the second half: `let view = owner.bytes();` had `view: &[UInt8]` in the type
-    /// tables and an OWNED `Value::Vec` at runtime. Passing it therefore moved it, and the caller's
-    /// binding was emptied — on a program the checker and MIR both accepted, with correct MIR.
-    ///
-    /// # Why this is narrow on purpose
-    ///
-    /// It asserts ONE direction of one pairing: a binding whose declared type is a reference to an
-    /// unsized sequence (`&[T]`, `&str`) must not hold an owned `Vec`/`String`. It deliberately
-    /// does not assert a total type→representation mapping, because the oracle's value model is not
-    /// one: `&Int32` may legitimately arrive as the scalar itself through auto-deref, and a rule
-    /// claiming otherwise would fire on correct programs and have to be weakened — which is how an
-    /// invariant becomes advisory. A narrow rule that always means something beats a broad one with
-    /// exemptions. Widening is a separate change with its own evidence.
-    ///
-    /// The type tables are already on the interpreter (`self.tables`); the claim in DEV-121 that
-    /// the oracle is "untyped at runtime" was only half right. It has the types at every `let`, and
-    /// simply never consulted them.
-    ///
-    /// A firing is a COMPILER defect, not a user error, so the message says so and names the DEV.
-    fn check_value_representation(
-        &self,
-        local: LocalId,
-        value: &Value,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        let Some(ty) = self.tables.local_types.get(&local) else {
-            return Ok(());
-        };
-        let Ty::Ref { inner, .. } = ty else {
-            return Ok(());
-        };
-        let expects_view = matches!(
-            inner.as_ref(),
-            Ty::Slice(_) | Ty::Primitive(crate::ast::Primitive::Str)
-        );
-        if !expects_view {
-            return Ok(());
+    /// `Base` is looked up in the active generic frame; its nominal selects the impl, and
+    /// `assoc_projections` gives the impl's `type Assoc = ...`. A projection whose base is still
+    /// parametric is left alone — `ty_contains_param` then reports it, which is the correct
+    /// outcome: an unresolvable projection at a value boundary is a missing instantiation, not
+    /// something to guess at.
+    fn resolve_projections(&self, ty: &Ty) -> Ty {
+        let mut projections = std::collections::BTreeSet::new();
+        crate::typecheck::collect_ty_params(ty, &mut projections);
+        let frames = self.generic_frames.borrow();
+        let bindings = frames.last();
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        for name in projections {
+            let Some((base, assoc)) = name.split_once("::") else {
+                continue;
+            };
+            // The base may be bound in the environment (`T`) or already concrete in the type.
+            let base_ty = match bindings.and_then(|b| b.get(base)) {
+                Some(ty) => ty.clone(),
+                None => continue,
+            };
+            let Some(nominal) = nominal_item_of_ty(&base_ty) else {
+                continue;
+            };
+            if let Some(bound) = self
+                .tables
+                .assoc_projections
+                .get(&(nominal, assoc.to_string()))
+            {
+                map.insert(name.clone(), bound.clone());
+            }
         }
-        let owned = match value {
-            Value::Vec(_) => "an owned Vec",
-            Value::String(_) => "an owned String",
-            _ => return Ok(()),
-        };
-        // **A0: this is a compiler defect, not a language trap.** The prose said "internal" from the
-        // day it was written while `RuntimeError::new` classified it `FailureClass::Trap` — so a
-        // representation failure in the ORACLE was presentable to the differential harness as a
-        // legitimate program outcome. That is the worst possible classification for it: the HIR
-        // interpreter is what MIR and native are compared against, so a trap-classified oracle bug
-        // invites the comparator to pressure the other engines into reproducing it. `internal`
-        // makes the harness fail loudly instead.
-        Err(RuntimeError::internal(
-            format!(
-                "internal: binding declared `{ty:?}` holds {owned} — a reference type must be \
-                 represented by a view, never by owned storage, or passing it consumes what it \
-                 only borrows (DEV-121)"
-            ),
-            span,
-        ))
+        if map.is_empty() {
+            return ty.clone();
+        }
+        crate::typecheck::substitute_ty(ty, &map)
     }
 
     /// WP-FMT-001: pack a source-level format specification into the runtime's spec word.
@@ -2234,6 +2993,9 @@ impl<'a> Interpreter<'a> {
     /// agree by construction rather than by coincidence.
     fn render_format_field(
         &mut self,
+        // AS3 Boundary 4: the field expression is its own Display root — the checker keyed the
+        // plan on exactly this id, from `check_format_field`.
+        field: ExprId,
         value: Value,
         spec: &crate::ast::FormatSpec,
         span: Span,
@@ -2270,7 +3032,7 @@ impl<'a> Interpreter<'a> {
                 _ => {}
             }
         }
-        let (text, arg_place) = self.display_text(value, span)?;
+        let (text, arg_place) = self.display_text(field, value, span)?;
         // A BORROWED field must not run the value's destructor: `display_text` promoted a copy of
         // a place's contents, and the place still owns the original.
         if owned {
@@ -2312,12 +3074,24 @@ impl<'a> Interpreter<'a> {
                                 (self.clone_place_value(&place, *expr_span)?, false)
                             } else {
                                 match self.eval_expr(*expr)? {
-                                    Flow::Value(value) => (value, true),
+                                    // **DEV-203: this consumed an expression result unchecked.**
+                                    // An interpolated field is precisely the "inline value entering
+                                    // a runtime operation" class `ExpressionResult` exists for — it
+                                    // never binds to a local, so no destination boundary sees it —
+                                    // and it reached the renderer through a direct `eval_expr`
+                                    // rather than through `expect_value`.
+                                    Flow::Value(value) => {
+                                        self.check_expr_value(*expr, &value)?;
+                                        (value, true)
+                                    }
+                                    // Not a boundary: control flow leaving the interpolation is
+                                    // returned to the enclosing expression, carrying no value that
+                                    // comes to rest here.
                                     other => return Ok(other),
                                 }
                             };
                             let rendered =
-                                self.render_format_field(value, spec, *expr_span, owned)?;
+                                self.render_format_field(*expr, value, spec, *expr_span, owned)?;
                             out.push_str(&rendered);
                         }
                     }
@@ -2466,7 +3240,15 @@ impl<'a> Interpreter<'a> {
                         expr.span,
                     )?
                 };
-                self.write_place(&place, value, expr.span)?;
+                // Audit 10-E: injected after the producer boundary accepted the value, so the
+                // WRITE boundary is what must refuse it.
+                #[cfg(test)]
+                let value = if self.mutation_armed(ProducerMutation::WrongElementWrite) {
+                    Value::Unit
+                } else {
+                    value
+                };
+                self.write_place(&place, value, *lhs, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
             }
             hir::ExprKind::Range { lo, hi, inclusive } => {
@@ -2506,9 +3288,17 @@ impl<'a> Interpreter<'a> {
             hir::ExprKind::Try(inner) => {
                 let value = self.expect_value(*inner)?;
                 match value {
-                    Value::Option(Some(value)) => Ok(Flow::Value(*value)),
+                    Value::Option(Some(value)) => Ok(Flow::Value(own_payload(
+                        value,
+                        "`?` on a `Some`",
+                        expr.span,
+                    )?)),
                     Value::Option(None) => Ok(Flow::Propagate(Value::Option(None))),
-                    Value::Result(Ok(value)) => Ok(Flow::Value(*value)),
+                    Value::Result(Ok(value)) => Ok(Flow::Value(own_payload(
+                        value,
+                        "`?` on an `Ok`",
+                        expr.span,
+                    )?)),
                     Value::Result(Err(value)) => Ok(Flow::Propagate(Value::Result(Err(value)))),
                     _ => Err(RuntimeError::new(
                         "'?' requires Option or Result",
@@ -2546,7 +3336,7 @@ impl<'a> Interpreter<'a> {
                 Ok(Flow::Value(Value::Array(vec![Some(value); count])))
             }
             hir::ExprKind::StructLit { res, fields, .. } => {
-                self.eval_struct_lit(*res, fields, expr.span)
+                self.eval_struct_lit(expr_id, *res, fields, expr.span)
             }
             hir::ExprKind::If {
                 cond,
@@ -2588,7 +3378,12 @@ impl<'a> Interpreter<'a> {
                     let mut bindings = Vec::new();
                     if self.match_source(arm.pat, &source, &mut bindings)? {
                         for (local, value) in &bindings {
-                            self.frame_mut().insert(*local, Some(value.clone()));
+                            self.bind_typed_local(
+                                *local,
+                                value.clone(),
+                                expr.span,
+                                RepBoundary::MatchBinding,
+                            )?;
                         }
                         let flow = self.eval_expr(arm.body)?;
                         let locals: Vec<_> = bindings.iter().map(|(local, _)| *local).collect();
@@ -2656,7 +3451,14 @@ impl<'a> Interpreter<'a> {
                     Value::Range { .. } | Value::Array(_) | Value::Vec(_) | Value::Slice(..) => {
                         let mut remaining = self.iter_values(iterable, expr.span)?.into_iter();
                         while let Some(value) = remaining.next() {
-                            self.frame_mut().insert(*local, Some(value));
+                            // INV-VALUE-REP-001 at the LOOP ITEM — the blind spot DEV-121
+                            // UPDATE 2 named. Both known instances of the class arrived here.
+                            self.bind_typed_local(
+                                *local,
+                                value,
+                                expr.span,
+                                RepBoundary::LoopBinding,
+                            )?;
                             let flow = self.eval_block(*body)?;
                             self.cleanup_locals(&[*local])?;
                             match flow {
@@ -2681,9 +3483,18 @@ impl<'a> Interpreter<'a> {
                         let iterator_place = self.promote_to_temp_place(iterator, expr.span)?;
                         let mut escaped = None;
                         while let Some(value) =
-                            self.next_for_iterator(&iterator_place, expr.span)?
+                            self.next_for_iterator(&iterator_place, expr_id, expr.span)?
                         {
-                            self.frame_mut().insert(*local, Some(value));
+                            // The USER-iterator form checked nothing at all — the same loop
+                            // boundary as the branch above, reached through `Iterator::next`
+                            // instead of a built-in iterable. Two spellings of one binding, and
+                            // only one of them was covered.
+                            self.bind_typed_local(
+                                *local,
+                                value,
+                                expr.span,
+                                RepBoundary::LoopBinding,
+                            )?;
                             let flow = self.eval_block(*body)?;
                             self.cleanup_locals(&[*local])?;
                             match flow {
@@ -2714,7 +3525,24 @@ impl<'a> Interpreter<'a> {
 
     fn expect_value(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
         match self.eval_expr(expr)? {
-            Flow::Value(value) => Ok(value),
+            // **The PRODUCER-side boundary.** AS3 Packet 6.
+            //
+            // The eleven destination boundaries see values that come to rest. A value handed
+            // straight to a builtin or a runtime operation never binds to anything, so none of them
+            // sees it — the gap the inventory recorded and could not name, because `RepBoundary`
+            // had no variant for it. `expect_value` is the funnel every such value passes through,
+            // and it carries the `ExprId`, so `expr_types[expr]` is the checker's own answer.
+            //
+            // Defence in depth, not a second authority: this and every destination check consume
+            // the same `check_value_for_ty`.
+            Flow::Value(value) => {
+                self.check_expr_value(expr, &value)?;
+                Ok(value)
+            }
+            // NOT checked against this expression: the parked value is a PROPAGATION, whose type is
+            // the enclosing function's return type, and the `Unit` handed back is a placeholder the
+            // caller discards. `RepBoundary::Propagation` reads it against the right type at the
+            // body boundary.
             Flow::Propagate(value) => {
                 self.pending_propagation = Some(value);
                 Ok(Value::Unit)
@@ -2804,11 +3632,11 @@ impl<'a> Interpreter<'a> {
         let text = self.text(span);
         let value = literal::eval_lit_value(lit, text, &self.hir.str_lits)
             .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
-        // WP-C1.5 (DEV-015): defense-in-depth mirror of typecheck.rs's suffixed-literal
+        // WP-C1.5 (DEV-015): defense-in-depth mirror of the checker's suffixed-literal
         // magnitude check (`check_expr`'s `Lit::Int` arm) -- re-verified here in case a literal
         // ever reaches evaluation without having gone through that check (e.g. a future
         // alternate entry point). Unsuffixed-literal-vs-inferred-type magnitude is not
-        // re-checked here since that requires the type table typecheck.rs already consulted;
+        // re-checked here since that requires the type table the checker already consulted;
         // trusting the already-validated static type for that half is the same trust boundary
         // `check_integer_range` (used elsewhere in this file) already relies on.
         if let (
@@ -2853,11 +3681,18 @@ impl<'a> Interpreter<'a> {
                 // **DEV-178: capture the instantiation here, where it is selected.** The later
                 // call cannot recover it — see `FunctionValue`. Concretised against the ACTIVE
                 // frame before storage, because the value may outlive that frame.
-                hir::ItemKind::Fn(_) => Ok(Value::Function(self.capture_function_value(
-                    item,
-                    expr,
-                    self.hir.expr(expr).span,
-                )?)),
+                hir::ItemKind::Fn(_) => {
+                    // Class 3 mutation: a function item coerces to a non-function value.
+                    #[cfg(test)]
+                    if self.mutation_armed(ProducerMutation::NonFunctionValue) {
+                        return Ok(Value::Unit);
+                    }
+                    Ok(Value::Function(self.capture_function_value(
+                        item,
+                        expr,
+                        self.hir.expr(expr).span,
+                    )?))
+                }
                 hir::ItemKind::Const { .. } => self.eval_const_item(item),
                 _ => Err(RuntimeError::new(
                     "item is not a runtime value",
@@ -2944,6 +3779,239 @@ impl<'a> Interpreter<'a> {
     /// place expression (see `resolve_comparison_operand`) -- grouped into one tuple parameter
     /// per side to keep the parameter count under clippy's `too_many_arguments` threshold rather
     /// than passing four related values separately.
+    /// Resolve a published `Bound` obligation at this call, if there is one.
+    ///
+    /// AS3 Boundary 4c. `Self` is concrete here — it is the receiver's own type — so the
+    /// specialiser has what it needs. Returns `None` when the checker published no bound use for
+    /// this expression, which is every ordinary concrete method call.
+    /// **AS3 Boundary 4 (DEV-192): the body behind an operator whose operand is a bounded
+    /// generic parameter.**
+    ///
+    /// `a == b` / `a < b` inside `fn f<T: Eq>` / `fn f<T: Ord>` publishes a `Bound` use whose
+    /// `self_ty` is the parameter itself. Substituting it through the active generic frame gives
+    /// the concrete `Self` — arguments included, which is what a generic impl needs to unify.
+    ///
+    /// The operator path cannot use [`Self::specialised_bound_callable`]: `eval_binary` receives
+    /// evaluated operand VALUES, not their expressions, and a runtime `Value` carries no type
+    /// arguments. The published `self_ty` does.
+    fn specialised_operator_callable(
+        &self,
+        expr: ExprId,
+        core: CoreTrait,
+        span: Span,
+    ) -> Option<Callable> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Bound {
+                        trait_: hir::BoundTrait::Core(c)
+                    } if c == core
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            self_ty,
+            trait_args,
+            method_args,
+        } = &use_.selection
+        else {
+            return None;
+        };
+        let mut self_ty = self.concrete_runtime_ty(self_ty, span).ok()?;
+        while let Ty::Ref { inner, .. } = self_ty {
+            self_ty = *inner;
+        }
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        self.callable_for_body(resolved.body)
+    }
+
+    /// **AS3 Boundary 4: consume the checker's `Static` selection for a method call.**
+    ///
+    /// The census found this as an engine asymmetry: MIR added `static_selected_key` and the
+    /// interpreter kept scanning by name, so the two engines answered an ordinary method call by
+    /// different means. They agreed — which is the state DEV-192 was hiding in.
+    ///
+    /// Only `Inherent`, `TraitImpl` and `Qualified` provenances are eligible; an operator's
+    /// `CoreTrait` use can be published against the same expression and names a different callable.
+    /// The Static environment published with the selection at `expr`, if any.
+    fn static_selected_env(&self, expr: ExprId) -> Vec<(crate::typecheck::GenericBinder, Ty)> {
+        let Some(ids) = self.tables.callable_uses_by_expr.get(&expr) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find_map(|u| match &u.environment {
+                crate::typecheck::GenericEnvironment::Static(bindings) if !bindings.is_empty() => {
+                    Some(bindings.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn static_selected_callable(&self, expr: ExprId) -> Option<Callable> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Inherent
+                        | crate::typecheck::DispatchProvenance::TraitImpl { .. }
+                        | crate::typecheck::DispatchProvenance::Qualified { .. }
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.callable_for_body(*body)
+    }
+
+    fn specialised_bound_callable(
+        &self,
+        expr: ExprId,
+        base: ExprId,
+    ) -> Option<(Callable, Vec<(crate::typecheck::GenericBinder, Ty)>)> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| matches!(u.selection, crate::typecheck::CalleeSelection::Bound { .. }))?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            trait_args,
+            method_args,
+            ..
+        } = &use_.selection
+        else {
+            return None;
+        };
+        // **DEV-187's repair: the concrete `Self` INCLUDING its type arguments.**
+        //
+        // This passed the bare nominal head, taken from the runtime `Value` — which carries no type
+        // arguments, so `impl<T> Describe for W2<T>` never matched and both engines silently fell
+        // back to their old scans. The checker knows the receiver's type at this expression, and
+        // `concrete_runtime_ty` substitutes it through the active generic frame using the shared
+        // `substitute_ty`. No new machinery, and no change to the runtime representation.
+        let declared = self.tables.expr_types.get(&base)?;
+        let self_ty = self
+            .concrete_runtime_ty(declared, self.hir.expr(base).span)
+            .ok()?;
+        // Auto-deref: a receiver of `&T` selects on `T`.
+        let mut self_ty = self_ty;
+        while let Ty::Ref { inner, .. } = self_ty {
+            self_ty = *inner;
+        }
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        let callable = self.callable_for_body(resolved.body)?;
+        Some((callable, resolved.environment))
+    }
+
+    /// The runnable form of a body the checker already selected.
+    ///
+    /// **AS3 Boundary 3: this is a LOOKUP keyed on the checker's answer, not a selection.**
+    /// `find_method` searches by NAME across every impl on a nominal and decides which body wins;
+    /// this takes the body the checker published and finds the locals needed to run it. The
+    /// difference is the whole packet: one asks "which body does `a == b` mean", the other asks
+    /// "how do I enter this body".
+    fn callable_for_body(&self, body: BlockId) -> Option<Callable> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let owner = ItemId(idx as u32);
+            let _ = owner;
+            match &item.kind {
+                hir::ItemKind::Fn(def) if def.body == body => {
+                    return Some(Callable {
+                        receiver: def.sig.receiver.zip(def.sig.receiver_local),
+                        params: def.sig.params.iter().map(|param| param.local).collect(),
+                        body: def.body,
+                    })
+                }
+                hir::ItemKind::Impl { items, .. } => {
+                    for impl_item in items {
+                        if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            if def.body == body {
+                                return Some(Callable {
+                                    receiver: def.sig.receiver.zip(def.sig.receiver_local),
+                                    params: def
+                                        .sig
+                                        .params
+                                        .iter()
+                                        .map(|param| param.local)
+                                        .collect(),
+                                    body: def.body,
+                                });
+                            }
+                        }
+                    }
+                }
+                hir::ItemKind::Trait { items, .. } => {
+                    for trait_item in items {
+                        if let hir::TraitItem::Method { sig, body: Some(b) } = trait_item {
+                            if *b == body {
+                                return Some(Callable {
+                                    receiver: sig.receiver.zip(sig.receiver_local),
+                                    params: sig.params.iter().map(|param| param.local).collect(),
+                                    body: *b,
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The callable the checker selected for a compiler-known trait operation at `expr`.
+    ///
+    /// **AS3 Boundary 3: consumption.** This replaces `find_method(nominal, "eq", Some(CoreTrait))`
+    /// at the operator sites — a scan of every impl on the nominal, run again at execution time
+    /// after the checker had already decided. Choosing among published records is consumption;
+    /// scanning the HIR and re-running selection is what this removes.
+    ///
+    /// `None` means the checker published nothing for this expression, which for an operator means
+    /// it reaches no user body — a primitive comparison. The caller keeps its built-in path.
+    fn selected_core_trait_callable(
+        &self,
+        expr: ExprId,
+        core: CoreTrait,
+    ) -> Option<crate::typecheck::CallableUse> {
+        let ids = self.tables.callable_uses_by_expr.get(&expr)?;
+        ids.iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|use_| {
+                matches!(
+                    use_.provenance,
+                    crate::typecheck::DispatchProvenance::CoreTrait { core: c } if c == core
+                )
+            })
+            .cloned()
+    }
+
     fn eval_binary(
         &mut self,
         op: BinOp,
@@ -2961,7 +4029,7 @@ impl<'a> Interpreter<'a> {
             // when one exists, per 03-Type-System.md "Operators and Traits" (`==`/`!=` desugar
             // to `Eq::eq`) -- structural `Value` equality was previously used unconditionally,
             // even for struct/enum values whose type has a real, type-checker-verified `impl Eq`
-            // with custom comparison logic (typecheck.rs's `require_operator_bound` already
+            // with custom comparison logic (typecheck/body.rs's `require_operator_bound` already
             // requires such an impl to exist for any struct/enum `==`, so this dispatch cannot
             // find a program that type-checks but has no matching impl). Primitives and
             // Ty::Core container types (Option/Result/Vec/Box/String) have no user-overridable
@@ -2969,11 +4037,27 @@ impl<'a> Interpreter<'a> {
             // structural comparison remains exactly correct for them -- only struct/enum values
             // are looked up here. See COMPILER-STATE.md DEV-008.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(
-                    Some(nominal),
-                    "eq",
-                    Some(Res::CoreTrait(hir::CoreTrait::Eq)),
-                ) {
+                // AS3 Boundary 3: CONSUME the checker's selection instead of scanning for a
+                // method named "eq". `nominal` is retained only to decide whether a user body is
+                // involved at all — the choice of body is the checker's, published at this
+                // expression.
+                let _ = nominal;
+                if let Some(method) = self
+                    .selected_core_trait_callable(expr, hir::CoreTrait::Eq)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                    // **AS3 Boundary 4 (DEV-192): the late-bound equality case.** When the operand
+                    // is a bounded generic parameter the selection is `Bound`, and this fell
+                    // through to the primitive path — which for `==` meant STRUCTURAL comparison
+                    // silently replacing the user's `impl Eq`, and for `<` meant the trap "invalid
+                    // binary operation". Now the shared specialiser answers it.
+                    .or_else(|| self.specialised_operator_callable(expr, hir::CoreTrait::Eq, span))
+                {
                     // Correction-brief Issue 2: `Eq::eq(&self, &other)` borrows both operands --
                     // it never takes ownership. Passing owned clones here (the pre-fix
                     // behavior) is observably wrong two different ways: the receiver's clone
@@ -3000,7 +4084,7 @@ impl<'a> Interpreter<'a> {
                     let result = self.call_user_method(
                         method,
                         receiver_place.clone(),
-                        Value::Ref(receiver_place),
+                        self.core_trait_env(expr, hir::CoreTrait::Eq),
                         vec![Value::Ref(argument_place)],
                         span,
                     )?;
@@ -3019,11 +4103,24 @@ impl<'a> Interpreter<'a> {
             // `Ord::cmp`, just as equality above dispatches through `Eq::eq`. The type checker
             // has already required a matching `Ord` implementation.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(
-                    Some(nominal),
-                    "cmp",
-                    Some(Res::CoreTrait(hir::CoreTrait::Ord)),
-                ) {
+                // AS3 Boundary 3: as above, for ordering.
+                let _ = nominal;
+                if let Some(method) = self
+                    .selected_core_trait_callable(expr, hir::CoreTrait::Ord)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                    // **AS3 Boundary 4 (DEV-192): the late-bound ordering case.** When the operand
+                    // is a bounded generic parameter the selection is `Bound`, and this fell
+                    // through to the primitive path — which for `==` meant STRUCTURAL comparison
+                    // silently replacing the user's `impl Eq`, and for `<` meant the trap "invalid
+                    // binary operation". Now the shared specialiser answers it.
+                    .or_else(|| self.specialised_operator_callable(expr, hir::CoreTrait::Ord, span))
+                {
                     // Same fix as the `Eq::eq` dispatch above: `Ord::cmp(&self, &other)` borrows
                     // both operands.
                     let receiver_place = match left_place {
@@ -3037,7 +4134,7 @@ impl<'a> Interpreter<'a> {
                     let ordering = self.call_user_method(
                         method,
                         receiver_place.clone(),
-                        Value::Ref(receiver_place),
+                        self.core_trait_env(expr, hir::CoreTrait::Ord),
                         vec![Value::Ref(argument_place)],
                         span,
                     )?;
@@ -3334,7 +4431,9 @@ impl<'a> Interpreter<'a> {
                     self.layout_query(*b, callee, span).map(Flow::Value)
                 }
                 Res::Builtin(builtin) => match self.eval_call_arguments(args)? {
-                    Ok(values) => self.call_builtin(*builtin, values, span).map(Flow::Value),
+                    Ok(values) => self
+                        .call_builtin(*builtin, values, args, span)
+                        .map(Flow::Value),
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
                 Res::Item(item) => match self.eval_call_arguments(args)? {
@@ -3351,9 +4450,16 @@ impl<'a> Interpreter<'a> {
                         // `push_generic_frame` bound only a free function's own parameters and did
                         // not compose with an enclosing instantiation; `push_callable_env` does
                         // both, so a generic call inside a generic body now resolves too.
-                        let _frame = self.push_callable_env(callee, span)?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Published(callee),
+                            },
+                            ReceiverSource::None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
@@ -3372,10 +4478,10 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 Res::TraitMember(trait_id, member) => {
-                    self.call_qualified_trait(*trait_id, *member, args, span)
+                    self.call_qualified_trait(expr_id, *trait_id, *member, args, span)
                 }
                 Res::CoreTraitMember(core_trait, _) => {
-                    self.call_qualified_core_trait(*core_trait, args, span)
+                    self.call_qualified_core_trait(expr_id, *core_trait, args, span)
                 }
                 Res::AssociatedFn(item, name) => match self.eval_call_arguments(args)? {
                     Ok(values) => {
@@ -3384,8 +4490,23 @@ impl<'a> Interpreter<'a> {
                             .ok_or_else(|| {
                                 RuntimeError::new("associated function not found", span)
                             })?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        // **A4: install the instantiation, as the `Res::Item` path already does.**
+                        //
+                        // This path pushed no generic environment, so `Stack::identity<T>(6)` ran
+                        // its body with `T` unbound. Nothing observed it while no boundary consulted
+                        // the declared type; the RETURN boundary did, immediately, on its first run.
+                        // AS3 criterion 2 says every dispatch installs the checker-selected
+                        // environment — this one did not.
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Published(callee),
+                            },
+                            ReceiverSource::None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
@@ -3407,8 +4528,24 @@ impl<'a> Interpreter<'a> {
                             let callable = self.item_callable(callee.item).ok_or_else(|| {
                                 RuntimeError::new("expression is not callable", span)
                             })?;
-                            self.call_callable(callable, None, values, span)
-                                .map(Flow::Value)
+                            // **A4: install the instantiation the VALUE carries.**
+                            //
+                            // DEV-178 put `bindings` on `FunctionValue` precisely because a
+                            // function value's instantiation cannot be recovered from the call
+                            // site — `Ty::Fn` cannot say which one produced it. This path then
+                            // discarded them, so `let f: fn(Int32) -> Int32 = identity;` ran
+                            // `identity<T>`'s body with `T` unbound. Invisible until the RETURN
+                            // boundary consulted the declared type.
+                            self.invoke_callable(
+                                ResolvedInvocation {
+                                    callable,
+                                    environment: InvocationEnv::Captured(callee.clone()),
+                                },
+                                ReceiverSource::None,
+                                values,
+                                span,
+                            )
+                            .map(Flow::Value)
                         }
                         Err(propagated) => Ok(Flow::Propagate(propagated)),
                     }
@@ -3431,8 +4568,16 @@ impl<'a> Interpreter<'a> {
                         let callable = self
                             .item_callable(callee.item)
                             .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
-                        self.call_callable(callable, None, values, span)
-                            .map(Flow::Value)
+                        self.invoke_callable(
+                            ResolvedInvocation {
+                                callable,
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            ReceiverSource::None,
+                            values,
+                            span,
+                        )
+                        .map(Flow::Value)
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 }
@@ -3524,11 +4669,38 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<FunctionValue, RuntimeError> {
         let Some(env) = self.tables.callable_instantiations.get(&use_expr) else {
+            // **DEV-204: an absent instantiation must not silently mean "no generics".**
+            //
+            // This returned an empty-binding `FunctionValue` for ANY missing entry, which is the
+            // DEV-178 defect written as a fallback: a generic function coerced to a value would
+            // carry nothing, and `Ty::Fn` cannot say which instantiation produced it, so nothing
+            // downstream could recover it. The two meanings of absence are separated by
+            // information we already have — whether the item declares generics at all.
+            let generics = match &self.hir.item(item).kind {
+                hir::ItemKind::Fn(def) => def.sig.generics.len(),
+                _ => 0,
+            };
+            if generics > 0 {
+                return Err(RuntimeError::internal(
+                    format!(
+                        "DEV-178: a generic function with {generics} parameter(s) was coerced to a                          function value with no published instantiation — the bindings are fixed                          at the coercion and cannot be recovered from `Ty::Fn` at the call"
+                    ),
+                    span,
+                ));
+            }
             return Ok(FunctionValue {
                 item,
                 bindings: Vec::new(),
             });
         };
+        // Audit 10-D: keep the value, lose the instantiation.
+        #[cfg(test)]
+        if self.mutation_armed(ProducerMutation::StripFunctionValueBindings) {
+            return Ok(FunctionValue {
+                item,
+                bindings: Vec::new(),
+            });
+        }
         // The published environment must belong to the body this item actually runs — the
         // signature is body-keyed and the environment call-site-keyed, so their agreement is
         // asserted rather than assumed.
@@ -3592,8 +4764,42 @@ impl<'a> Interpreter<'a> {
         // first, then `Self` is substituted through them before its own concretisation. A flat
         // single-pass loop leaves `Self = Wrapper<Param("T")>` and fails at the first value
         // boundary.
+        self.push_bindings(&env.bindings, span)
+    }
+
+    /// **AS3 Boundary 4: install a generic environment the SPECIALISER produced.**
+    ///
+    /// A `Bound` call's environment cannot be published: the body is only chosen once `Self` is
+    /// concrete, which is here. `specialize_bound_callable` returns those bindings, and without
+    /// installing them a trait DEFAULT body reached through a bound runs with no `Self` at all —
+    /// so `self.name()` inside it resolves nothing. That was the `pkg/07-traits` regression: the
+    /// name scan used to paper over the missing environment by finding `name` on the runtime
+    /// value's nominal.
+    fn push_resolved_env(
+        &mut self,
+        bindings: &[(crate::typecheck::GenericBinder, Ty)],
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
+        if bindings.is_empty() {
+            return Ok(GenericFrame {
+                frames: self.generic_frames.clone(),
+                pushed: false,
+            });
+        }
+        self.push_bindings(bindings, span)
+    }
+
+    /// The two-pass installation shared by both. **`Self` is resolved second, on purpose:** it is
+    /// published as the impl's self type (`Wrapper<T>`), which mentions the impl's own parameters,
+    /// so it cannot be concretised until they are. A flat single pass leaves
+    /// `Self = Wrapper<Param("T")>` and fails at the first value boundary.
+    fn push_bindings(
+        &mut self,
+        bindings: &[(crate::typecheck::GenericBinder, Ty)],
+        span: Span,
+    ) -> Result<GenericFrame, RuntimeError> {
         let mut concrete: HashMap<String, Ty> = HashMap::new();
-        for (binder, ty) in &env.bindings {
+        for (binder, ty) in bindings {
             if matches!(binder, crate::typecheck::GenericBinder::SelfType) {
                 continue;
             }
@@ -3602,7 +4808,7 @@ impl<'a> Interpreter<'a> {
                 self.concrete_runtime_ty(ty, span)?,
             );
         }
-        for (binder, ty) in &env.bindings {
+        for (binder, ty) in bindings {
             if !matches!(binder, crate::typecheck::GenericBinder::SelfType) {
                 continue;
             }
@@ -3668,13 +4874,22 @@ impl<'a> Interpreter<'a> {
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
+        // AS3 Boundary 4: the ARGUMENT expressions, so the print family can key the Display plan
+        // on the same root the checker used. `call_builtin` receives evaluated values, which carry
+        // no identity of their own.
+        arg_exprs: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                let (text, arg_place) = self.display_text(deref, span)?;
+                let root = arg_exprs.first().copied();
+                let (text, arg_place) = match root {
+                    Some(root) => self.display_text(root, deref, span)?,
+                    // No argument expression: `print()` with nothing to render.
+                    None => (self.format_runtime_value(&deref, span)?, None),
+                };
                 self.output.push_str(&text);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
@@ -3829,7 +5044,7 @@ impl<'a> Interpreter<'a> {
             Builtin::CharFromU32 => {
                 let code = u32_arg(args.pop(), span)?;
                 Ok(Value::Option(
-                    char::from_u32(code).map(|ch| Box::new(Value::Char(ch))),
+                    char::from_u32(code).map(|ch| Box::new(Some(Value::Char(ch)))),
                 ))
             }
             Builtin::VecNew => Ok(Value::Vec(Vec::new())),
@@ -3848,21 +5063,21 @@ impl<'a> Interpreter<'a> {
                 Some(Value::Boxed(value)) => Ok((*value).unwrap_or(Value::Unit)),
                 _ => Err(RuntimeError::new("Box::into_inner expects Box", span)),
             },
-            Builtin::Some => Ok(Value::Option(args.pop().map(Box::new))),
+            Builtin::Some => Ok(Value::Option(args.pop().map(|value| Box::new(Some(value))))),
             Builtin::None => Ok(Value::Option(None)),
-            Builtin::Ok => Ok(Value::Result(Ok(Box::new(
+            Builtin::Ok => Ok(Value::Result(Ok(Box::new(Some(
                 args.pop().unwrap_or(Value::Unit),
-            )))),
-            Builtin::Err => Ok(Value::Result(Err(Box::new(
+            ))))),
+            Builtin::Err => Ok(Value::Result(Err(Box::new(Some(
                 args.pop().unwrap_or(Value::Unit),
-            )))),
+            ))))),
             Builtin::ReadFile => {
                 let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::read_to_string(path) {
-                    Ok(value) => Value::Result(Ok(Box::new(Value::String(value)))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(value) => Value::Result(Ok(Box::new(Some(Value::String(value))))),
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             Builtin::WriteFile => {
@@ -3872,10 +5087,10 @@ impl<'a> Interpreter<'a> {
                 let content = self.string_arg_deref(args.pop(), span)?;
                 let path = self.string_arg_deref(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
-                    Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(()) => Value::Result(Ok(Box::new(Some(Value::Unit)))),
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             Builtin::FileOpen | Builtin::FileCreate => {
@@ -3886,10 +5101,12 @@ impl<'a> Interpreter<'a> {
                     std::fs::File::create(path)
                 };
                 Ok(match result {
-                    Ok(file) => Value::Result(Ok(Box::new(Value::File(FileResource::new(file))))),
-                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                    Ok(file) => {
+                        Value::Result(Ok(Box::new(Some(Value::File(FileResource::new(file))))))
+                    }
+                    Err(error) => Value::Result(Err(Box::new(Some(Value::IOError(
                         IOErrorKind::from_io_error(&error),
-                    )))),
+                    ))))),
                 })
             }
             // -- Phase 4E: Math constants and functions --
@@ -4012,7 +5229,12 @@ impl<'a> Interpreter<'a> {
             Builtin::Eprint | Builtin::Eprintln => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                let (text, arg_place) = self.display_text(deref, span)?;
+                let root = arg_exprs.first().copied();
+                let (text, arg_place) = match root {
+                    Some(root) => self.display_text(root, deref, span)?,
+                    // No argument expression: `print()` with nothing to render.
+                    None => (self.format_runtime_value(&deref, span)?, None),
+                };
                 self.stderr.push_str(&text);
                 if builtin == Builtin::Eprintln {
                     self.stderr.push('\n');
@@ -4037,39 +5259,10 @@ impl<'a> Interpreter<'a> {
             Builtin::MathPi | Builtin::MathE => {
                 Err(RuntimeError::new("PI/E are constants, not callable", span))
             }
-            Builtin::TensorZeros
-            | Builtin::TensorOnes
-            | Builtin::TensorFull
-            | Builtin::TensorFromVec
-            | Builtin::TensorAdd
-            | Builtin::TensorSub
-            | Builtin::TensorMul
-            | Builtin::TensorDiv
-            | Builtin::TensorMin
-            | Builtin::TensorMax
-            | Builtin::TensorEq
-            | Builtin::TensorNe
-            | Builtin::TensorLt
-            | Builtin::TensorLe
-            | Builtin::TensorGt
-            | Builtin::TensorGe
-            | Builtin::TensorBroadcastTo
-            | Builtin::TensorMatMul
-            | Builtin::TensorBatchMatMul
-            | Builtin::TensorConcat
-            | Builtin::TensorPermute
-            | Builtin::TensorReshape
-            | Builtin::TensorSliceAxis
-            | Builtin::TensorTranspose
-            | Builtin::TensorSumAxis
-            | Builtin::TensorMeanAxis
-            | Builtin::TensorArgMax
-            | Builtin::TensorSum
-            | Builtin::TensorSoftmax
-            | Builtin::TensorCast
-            | Builtin::TensorScale255
-            | Builtin::TensorNormalize
-            | Builtin::TensorToDevice => Err(RuntimeError::new(
+            // AS6: one refusal, not thirty-three patterns for it. The oracle has no tensor
+            // runtime at all, so the answer does not vary by operation — and enumerating them here
+            // made Core's interpreter carry the extension's catalogue to say so.
+            Builtin::Tensor(_) => Err(RuntimeError::new(
                 "tensor operations are not supported in the Core interpreter",
                 span,
             )),
@@ -4107,7 +5300,31 @@ impl<'a> Interpreter<'a> {
         // first impl on this nominal declaring it, so two bounds naming two different same-named
         // traits both reached the same implementation.
         let trait_filter = self.tables.bound_trait_calls.get(&expr_id).copied();
-        let method = match self.find_method(nominal, &name, trait_filter) {
+        // **AS3 Boundary 4c: consume the shared bound specialiser.**
+        //
+        // A `Bound` use fixes the obligation; the body becomes knowable here, where the receiver is
+        // a concrete value. Resolving it through `bound_dispatch` rather than `find_method` means
+        // the interpreter and MIR ask ONE authority the same question — and it is the only path
+        // that reaches a trait DEFAULT body by construction rather than by the scan happening to
+        // fall through to one.
+        // A `Bound` resolution also yields the ENVIRONMENT the body must run under; a `Static`
+        // one's environment is published and installed by `push_callable_env`.
+        let mut bound_env: Option<Vec<(crate::typecheck::GenericBinder, Ty)>> = None;
+        let specialised = self.static_selected_callable(expr_id).or_else(|| {
+            self.specialised_bound_callable(expr_id, base)
+                .map(|(callable, env)| {
+                    bound_env = Some(env);
+                    callable
+                })
+        });
+        // **AS3 Boundary 4: no name-scan fallback.** This ended in
+        // `.or_else(|| self.find_method(nominal, &name, trait_filter))`. Instrumented across nine
+        // suites — both differentials, iterators, bound identity, adversarial trait impls,
+        // cross-package generics, associated types and Display dispatch — it fired **zero** times
+        // once the `Static` selection was consumed. Deleted rather than annotated: unreached in the
+        // suites you ran is not unreachable, and an annotation is what let DEV-191 hide.
+        let _ = (&name, trait_filter);
+        let method = match specialised {
             Some(method) => method,
             // DEV-DISPLAY-DISPATCH: the receiver's STATIC type is a generic parameter, so
             // `is_core_value` above could not classify it — `Ty::Param` names no shape. The
@@ -4139,11 +5356,22 @@ impl<'a> Interpreter<'a> {
         };
         match self.eval_call_arguments(args)? {
             Ok(values) => {
-                // A3c-S: the callee's generic environment, live for the whole call. The guard's
-                // `Drop` covers traps, propagation and internal failures, which a manual pop after
-                // `?` would not.
-                let _env = self.push_callable_env(expr_id, span)?;
-                self.call_user_method(method, receiver_place, receiver_value, values, span)
+                // **Packet 1: an explicit environment, chosen once.** A `Bound` selection carries
+                // the specialiser's concrete bindings; everything else consumes what the checker
+                // published against this call expression.
+                //
+                // **DEV-202: this site used to INSTALL it as well, and then pass it on.** The
+                // authority installs it too, so every method call pushed the callee's
+                // instantiation twice — and, worse, the outer guard was live while the CALLER's
+                // receiver place was still being resolved and materialized. Caller-side work under
+                // the callee's environment is the same scope error P6 exists to prevent, running
+                // in the other direction. Choosing the environment here and installing it there is
+                // the split the authority was created for.
+                let environment = match bound_env {
+                    Some(bindings) => InvocationEnv::Concrete(bindings),
+                    None => InvocationEnv::Published(expr_id),
+                };
+                self.call_user_method(method, receiver_place, environment, values, span)
                     .map(Flow::Value)
             }
             Err(propagated) => Ok(Flow::Propagate(propagated)),
@@ -4152,6 +5380,8 @@ impl<'a> Interpreter<'a> {
 
     fn call_qualified_trait(
         &mut self,
+        // AS3 Boundary 4: the call expression, so the checker's `Qualified` selection can be read.
+        call_expr: ExprId,
         trait_id: ItemId,
         member: u32,
         args: &[ExprId],
@@ -4169,17 +5399,29 @@ impl<'a> Interpreter<'a> {
         };
         // WP-C2.2 (DEV-034/DEV-035): same single-resolution receiver handling as `call_method`.
         let receiver_place = self.core_receiver_place(*first, span)?;
-        let receiver = self.clone_place_value(&receiver_place, span)?;
+        // `<T as Tr>::m()` is a `Qualified` dispatch the checker already resolved; scanning the
+        // receiver's nominal for the member name re-decided it.
         let method = self
-            .find_method(
-                nominal_item(&receiver),
-                &method_name,
-                Some(Res::Item(trait_id)),
-            )
+            .static_selected_callable(call_expr)
+            .or_else(|| {
+                self.specialised_bound_callable(call_expr, *first)
+                    .map(|(c, _)| c)
+            })
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        let _ = (&method_name, trait_id);
+        // A qualified call may land on a trait DEFAULT body, which runs with `Self` parametric.
+        // Install the binding the checker published, or `self.other()` inside it resolves nothing.
+        let bindings = self.static_selected_env(call_expr);
+        let _env = self.push_resolved_env(&bindings, span)?;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
-                .call_user_method(method, receiver_place, receiver, values, span)
+                .call_user_method(
+                    method,
+                    receiver_place,
+                    InvocationEnv::Concrete(bindings),
+                    values,
+                    span,
+                )
                 .map(Flow::Value),
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
@@ -4195,6 +5437,7 @@ impl<'a> Interpreter<'a> {
     /// spelling of the same dispatch, not a separate mechanism.
     fn call_qualified_core_trait(
         &mut self,
+        call_expr: ExprId,
         core_trait: CoreTrait,
         args: &[ExprId],
         span: Span,
@@ -4205,121 +5448,28 @@ impl<'a> Interpreter<'a> {
             return Err(RuntimeError::new("trait call requires receiver", span));
         };
         let receiver_place = self.core_receiver_place(*first, span)?;
-        let receiver = self.clone_place_value(&receiver_place, span)?;
+        // A qualified core-trait call publishes through `publish_operator_use`, so it carries
+        // `CoreTrait` provenance — the same record `a == b` produces, because it is the same
+        // dispatch spelled explicitly.
         let method = self
-            .find_method(
-                nominal_item(&receiver),
-                method_name,
-                Some(Res::CoreTrait(core_trait)),
-            )
+            .selected_core_trait_callable(call_expr, core_trait)
+            .and_then(|use_| match use_.selection {
+                crate::typecheck::CalleeSelection::Static { body, .. } => {
+                    self.callable_for_body(body)
+                }
+                crate::typecheck::CalleeSelection::Bound { .. }
+                | crate::typecheck::CalleeSelection::FunctionValue => None,
+            })
+            .or_else(|| self.specialised_operator_callable(call_expr, core_trait, span))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        let environment = self.core_trait_env(call_expr, core_trait);
+        let _ = method_name;
         match self.eval_call_arguments(rest)? {
             Ok(values) => self
-                .call_user_method(method, receiver_place, receiver, values, span)
+                .call_user_method(method, receiver_place, environment, values, span)
                 .map(Flow::Value),
             Err(propagated) => Ok(Flow::Propagate(propagated)),
         }
-    }
-
-    fn find_method(
-        &self,
-        nominal: Option<ItemId>,
-        name: &str,
-        trait_filter: Option<Res>,
-    ) -> Option<Callable> {
-        // WP-C2.2 (DEV-026): inherent methods shadow trait methods of the same name
-        // unconditionally (03-Type-System.md "Method Calls and Auto-Borrowing", rule 1).
-        // Previously a single source-order scan returned whichever matching impl block
-        // appeared first in the file — a trait impl declared above an inherent impl won,
-        // observably flipping which body ran based on item order alone. Two passes: inherent
-        // impls first, then trait impls. A trait-qualified call (`trait_filter` set) skips the
-        // inherent pass entirely, since it names the trait explicitly.
-        if trait_filter.is_none() {
-            if let Some(callable) = self.find_method_pass(nominal, name, None, true) {
-                return Some(callable);
-            }
-        }
-        self.find_method_pass(nominal, name, trait_filter, false)
-    }
-
-    fn find_method_pass(
-        &self,
-        nominal: Option<ItemId>,
-        name: &str,
-        trait_filter: Option<Res>,
-        inherent_only: bool,
-    ) -> Option<Callable> {
-        let nominal = nominal?;
-        // DEV-069: this scans EVERY impl in the program, including impls from other files, so
-        // both the method names and the resulting body's file come from the impl's own item.
-        self.hir.items.iter().enumerate().find_map(|(idx, item)| {
-            let impl_id = ItemId(idx as u32);
-            let hir::ItemKind::Impl {
-                trait_,
-                self_ty,
-                items,
-                ..
-            } = &item.kind
-            else {
-                return None;
-            };
-            if inherent_only != trait_.is_none() {
-                return None;
-            }
-            if trait_filter.is_some_and(
-                |expected| !matches!(trait_, Some(reference) if reference.res == expected),
-            ) {
-                return None;
-            }
-            if !matches!(
-                &self.hir.ty(*self_ty).kind,
-                hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
-            ) {
-                return None;
-            }
-            let overridden = items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == name => {
-                    Some(Callable {
-                        receiver: def.sig.receiver.zip(def.sig.receiver_local),
-                        params: def.sig.params.iter().map(|param| param.local).collect(),
-                        body: def.body,
-                        file: self.item_file(impl_id),
-                    })
-                }
-                _ => None,
-            });
-            // WP-C1.3 (2026-07-17): fall back to the trait's own default method body
-            // (`TraitItem::Method { body: Some(_), .. }`, 03-Type-System.md trait defaults) when
-            // this impl block doesn't override the method. The HIR already carries default
-            // bodies (they were simply never consulted here) -- confirmed empirically that a
-            // trait method with a real body, left un-overridden by an implementing struct,
-            // failed with "method not found" before this fix. See COMPILER-STATE.md DEV-013.
-            overridden.or_else(|| {
-                let trait_id = match trait_.as_ref()?.res {
-                    Res::Item(id) => id,
-                    _ => return None,
-                };
-                let hir::ItemKind::Trait {
-                    items: trait_items, ..
-                } = &self.hir.item(trait_id).kind
-                else {
-                    return None;
-                };
-                trait_items.iter().find_map(|item| match item {
-                    hir::TraitItem::Method {
-                        sig,
-                        body: Some(body),
-                    } if self.item_text(trait_id, sig.name) == name => Some(Callable {
-                        receiver: sig.receiver.zip(sig.receiver_local),
-                        params: sig.params.iter().map(|param| param.local).collect(),
-                        body: *body,
-                        // The default body lives in the TRAIT's file, not the impl's.
-                        file: self.item_file(trait_id),
-                    }),
-                    _ => None,
-                })
-            })
-        })
     }
 
     fn find_associated_fn(&self, nominal: ItemId, name: &str) -> Option<Callable> {
@@ -4351,7 +5501,6 @@ impl<'a> Interpreter<'a> {
                         receiver: None,
                         params: def.sig.params.iter().map(|param| param.local).collect(),
                         body: def.body,
-                        file: self.item_file(impl_id),
                     })
                 }
                 _ => None,
@@ -4373,109 +5522,44 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// **A method invocation, through the one authority.**
+    ///
+    /// This was the last of three body-execution funnels: it pushed its own frame, called
+    /// `eval_block` and popped, duplicating `execute_body` so that a method could carry its own
+    /// epilogue. That epilogue is now [`BodyEpilogue::Method`], so the difference is a parameter
+    /// and the executor is shared.
+    ///
+    /// The environment is supplied by the CALLER, which is what selected the body — a `Bound`
+    /// selection carries the specialiser's bindings, everything else the checker's published
+    /// instantiation.
     fn call_user_method(
         &mut self,
         callable: Callable,
         receiver_place: Place,
-        // Kept for call-site symmetry (nominal lookup resolves from it); the `&self` binding
-        // itself is a genuine reference since DEV-070's fix, so the clone is no longer bound.
-        _receiver_value: Value,
+        environment: InvocationEnv,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         let Some((receiver_kind, receiver_local)) = callable.receiver else {
             return Err(RuntimeError::new("method has no receiver", span));
         };
-        let receiver = match receiver_kind {
-            // WP-C2.2 (DEV-034): consume the already-resolved place (proper move semantics for
-            // non-Copy receivers, including partial moves out of fields) instead of re-evaluating
-            // the receiver expression — the source of the confirmed double-evaluation bug.
-            hir::Receiver::Value => self.take_place(&receiver_place, span)?,
-            // DEV-070 (A2): a `&self` receiver binds a genuine REFERENCE to the caller's place,
-            // not a value clone — the same fix the correction brief applied to `Eq::eq`/
-            // `Ord::cmp` dispatch (Issue 2). With the clone, `*self` failed "cannot dereference
-            // non-reference"; field reads worked only via the deref-normalizing place walk.
-            // Observationally equivalent otherwise: the referent cannot be mutated while the
-            // method runs (shared borrow, single-threaded), and the old clone was discarded
-            // without STARK drop effects. (`&mut self` keeps its take/write-back model.)
-            hir::Receiver::Ref => Value::Ref(receiver_place.clone()),
-            // **DEV-180: a `&mut self` receiver is a REFERENCE, like `&self`.**
-            //
-            // It used to take the owned value out of the caller's slot, bind that as `self`, and
-            // write it back afterwards — so a local typed `&mut Self` held a `Struct` for the whole
-            // body, the flattening WP-VALUE-REP-TOTAL §6.4 forbids. DEV-070 moved `&self` to a
-            // genuine reference and left this alone; its safety argument ("the referent cannot
-            // mutate during the call") is about SHARED borrows and never applied here.
-            //
-            // Nothing required take/write-back: writing through a mutable reference already works
-            // for every `&mut` parameter in the language, and this uses that same path. Mutation
-            // permission comes from the static type and the borrow checker, not from the runtime
-            // representation — now identical for both borrowed receivers.
-            hir::Receiver::RefMut => Value::Ref(receiver_place.clone()),
-        };
-        let mut frame = Frame::default();
-        frame.insert(receiver_local, Some(receiver));
-        for (local, value) in callable.params.iter().copied().zip(args) {
-            frame.insert(local, Some(value));
-        }
-        self.frames.push(frame);
-        let method_frame = self.frames.len() - 1;
-        // DEV-069: a method body executes against the file that declares its impl (or, for an
-        // un-overridden trait default, the trait's file) — this is the second body-execution
-        // funnel alongside `call_callable`, and it needs the same swap. Restored on BOTH exits.
-        let caller_file = std::mem::replace(&mut self.file, callable.file);
-        let result = self.eval_block(callable.body);
-        if let Err(error) = result {
-            self.file = caller_file;
-            let restored = self
-                .frame_mut()
-                .values
-                .get_mut(&receiver_local)
-                .and_then(Option::take);
-            self.frames.pop();
-            if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
-                self.place_slot_mut(&receiver_place, span)?
-                    .replace(restored);
-            }
-            return Err(error);
-        }
-        let flow = result?;
-        // DEV-180: only a shared receiver still needs taking back out of the frame; a `&mut`
-        // receiver was never removed from the caller's place, so there is nothing to restore.
-        let restored = if receiver_kind == hir::Receiver::Ref {
-            self.frame_mut()
-                .values
-                .get_mut(&receiver_local)
-                .and_then(Option::take)
-        } else {
-            None
-        };
-        let _ = &restored;
-        // Destructors for the method's own locals still belong to the method's file, so the
-        // restore happens after cleanup (matching `call_callable`).
-        self.cleanup_current_frame()?;
-        self.file = caller_file;
-        self.frames.pop();
-
-        let mut value = match flow {
-            Flow::Value(value) | Flow::Return(value) => value,
-            Flow::Propagate(value) => value,
-            Flow::Break(_) | Flow::Continue => {
-                return Err(RuntimeError::new("loop control escaped a method", span))
-            }
-        };
-        // WP-C2.2 (DEV-035): a reference returned from a `&self`/`&mut self` method that was
-        // derived from `self` (e.g. `&self.field`, or `self.items.iter()`) carries a `Place`
-        // pointing into the method's own — just popped — call frame, so any later dereference
-        // failed with "dangling reference" (confirmed empirically: an ordinary getter returning
-        // `&self.value` crashed unconditionally). Rebase such places onto the caller-side
-        // receiver place, preserving any field/index projections taken inside the method.
-        // References into other locals of the popped frame are left untouched: the borrow
-        // checker's return-escape check (E0103, WP-C1.4) rejects those at compile time, and if
-        // one ever slips through, the existing "dangling reference" trap is the correct
-        // backstop, not a silent rebase.
-        rebase_frame_refs(&mut value, method_frame, receiver_local, &receiver_place);
-        Ok(value)
+        self.invoke_with_epilogue(
+            ResolvedInvocation {
+                callable,
+                environment,
+            },
+            ReceiverSource::Place {
+                kind: receiver_kind,
+                place: receiver_place.clone(),
+            },
+            args,
+            BodyEpilogue::Method {
+                receiver_kind,
+                receiver_local,
+                receiver_place,
+            },
+            span,
+        )
     }
 
     /// DEV-DISPLAY-DISPATCH: whether the receiver expression's static type is (a reference to) a
@@ -4505,6 +5589,8 @@ impl<'a> Interpreter<'a> {
     /// target` match so discarded values can be routed through `drop_value`.
     fn call_collection_ownership_method(
         &mut self,
+        // AS3 Boundary 4: the originating call, for the element `Eq::eq` lookup.
+        call_expr: Option<ExprId>,
         receiver_place: &Place,
         name: &str,
         arguments: &mut Vec<Value>,
@@ -4526,7 +5612,7 @@ impl<'a> Interpreter<'a> {
                 let key = arguments.first().cloned();
                 let position = if let Some(key) = key.as_ref() {
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    self.language_position(&keys, key, span)?
+                    self.language_position(call_expr, &keys, key, span)?
                 } else {
                     None
                 };
@@ -4537,7 +5623,7 @@ impl<'a> Interpreter<'a> {
                         };
                         let mut place = receiver_place.clone();
                         place.projections.push(Projection::MapIndex(index));
-                        Ok(Some(Value::Option(Some(Box::new(Value::Ref(place))))))
+                        Ok(Some(Value::Option(Some(Box::new(Some(Value::Ref(place)))))))
                     }
                     "insert" => {
                         if arguments.len() < 2 {
@@ -4556,7 +5642,7 @@ impl<'a> Interpreter<'a> {
                             // The stored key remains; ownership of the newly supplied equal key
                             // is consumed by the call and must be destroyed.
                             self.drop_value(key)?;
-                            Ok(Some(Value::Option(old.map(Box::new))))
+                            Ok(Some(Value::Option(old.map(|value| Box::new(Some(value))))))
                         } else {
                             match self.place_value_mut(receiver_place, span)? {
                                 Value::HashMap(map) => map.0.push((key, Some(value))),
@@ -4575,7 +5661,9 @@ impl<'a> Interpreter<'a> {
                                 _ => unreachable!(),
                             };
                         self.drop_value(stored_key)?;
-                        Ok(Some(Value::Option(value.map(Box::new))))
+                        Ok(Some(Value::Option(
+                            value.map(|value| Box::new(Some(value))),
+                        )))
                     }
                     "contains_key" => Ok(Some(Value::Bool(position.is_some()))),
                     "clear" => {
@@ -4597,7 +5685,7 @@ impl<'a> Interpreter<'a> {
             Value::HashSet(set) => {
                 let value = arguments.first().cloned();
                 let position = if let Some(value) = value.as_ref() {
-                    self.language_position(&set.0, value, span)?
+                    self.language_position(call_expr, &set.0, value, span)?
                 } else {
                     None
                 };
@@ -4649,12 +5737,16 @@ impl<'a> Interpreter<'a> {
 
     fn language_position(
         &mut self,
+        // AS3 Boundary 4: the container call this comparison serves. `Vec::contains`,
+        // `HashSet::insert`, `HashMap::get` — the checker publishes the element's `Eq::eq` against
+        // exactly this expression, which is what let this path stop scanning.
+        call_expr: Option<ExprId>,
         values: &[Value],
         needle: &Value,
         span: Span,
     ) -> Result<Option<usize>, RuntimeError> {
         for (index, value) in values.iter().enumerate() {
-            if self.language_equal(value.clone(), needle.clone(), span)? {
+            if self.language_equal(call_expr, value.clone(), needle.clone(), span)? {
                 return Ok(Some(index));
             }
         }
@@ -4663,24 +5755,42 @@ impl<'a> Interpreter<'a> {
 
     fn language_equal(
         &mut self,
+        call_expr: Option<ExprId>,
         left: Value,
         right: Value,
         span: Span,
     ) -> Result<bool, RuntimeError> {
         let left = self.deref_value(left, span)?;
         let right = self.deref_value(right, span)?;
-        if let Some(nominal) = nominal_item(&left) {
-            if let Some(method) = self.find_method(
-                Some(nominal),
-                "eq",
-                Some(Res::CoreTrait(hir::CoreTrait::Eq)),
-            ) {
+        if nominal_item(&left).is_some() {
+            // **AS3 Boundary 4: the follow-up this site recorded is done.**
+            //
+            // It used to scan for a member named `eq`, because `language_equal` is reached from a
+            // collection lookup with runtime values and no expression id — the case
+            // `WP-CALLABLE-USE-TOTAL.md` §3.2 named when it rejected `ExprId` as the sole key.
+            // The answer was not a new key: it was to thread the ORIGINATING call down and have
+            // the checker publish the element's `Eq::eq` against it
+            // (`publish_core_element_eq_use`). Inventing an id to look up would have been a
+            // fabricated correspondence; threading the real one is not.
+            if let Some(method) = call_expr.and_then(|expr| {
+                self.selected_core_trait_callable(expr, hir::CoreTrait::Eq)
+                    .and_then(|use_| match use_.selection {
+                        crate::typecheck::CalleeSelection::Static { body, .. } => {
+                            self.callable_for_body(body)
+                        }
+                        crate::typecheck::CalleeSelection::Bound { .. }
+                        | crate::typecheck::CalleeSelection::FunctionValue => None,
+                    })
+                    .or_else(|| self.specialised_operator_callable(expr, CoreTrait::Eq, span))
+            }) {
                 let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
                 let argument_place = self.promote_to_temp_place(right, span)?;
                 return match self.call_user_method(
                     method,
                     receiver_place,
-                    left,
+                    call_expr
+                        .map(|e| self.core_trait_env(e, CoreTrait::Eq))
+                        .unwrap_or(InvocationEnv::Empty),
                     vec![Value::Ref(argument_place)],
                     span,
                 )? {
@@ -4725,6 +5835,10 @@ impl<'a> Interpreter<'a> {
         args: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        // Copied out before the receiver's storage is borrowed mutably below; the seams for the
+        // view producers sit inside those borrows and cannot re-borrow `self`.
+        #[cfg(test)]
+        let armed = self.mutation;
         let receiver_ty = self
             .tables
             .expr_types
@@ -4754,9 +5868,13 @@ impl<'a> Interpreter<'a> {
             arguments[0] = self.deref_value(arguments[0].clone(), span)?;
         }
         self.flatten_string_refs(&mut arguments, span)?;
-        if let Some(result) =
-            self.call_collection_ownership_method(&receiver_place, name, &mut arguments, span)?
-        {
+        if let Some(result) = self.call_collection_ownership_method(
+            expr_id,
+            &receiver_place,
+            name,
+            &mut arguments,
+            span,
+        )? {
             return Ok(result);
         }
         let mut values = arguments.into_iter();
@@ -4807,7 +5925,7 @@ impl<'a> Interpreter<'a> {
                 return Err(RuntimeError::new("File::close expects File", span));
             };
             resource.0.borrow_mut().take();
-            return Ok(Value::Result(Ok(Box::new(Value::Unit))));
+            return Ok(Value::Result(Ok(Box::new(Some(Value::Unit)))));
         }
         // DEV-076 (WP-C4.7-8.1 prerequisite): `unwrap_or` CONSUMES the receiver and discards
         // exactly one of the two values — the payload or the default. It has to be intercepted
@@ -4832,15 +5950,16 @@ impl<'a> Interpreter<'a> {
             return match receiver {
                 Value::Option(Some(payload)) => {
                     self.drop_value(default)?;
-                    Ok(*payload)
+                    own_payload(payload, "`unwrap_or` on a `Some`", span)
                 }
                 Value::Option(None) => Ok(default),
                 Value::Result(Ok(payload)) => {
                     self.drop_value(default)?;
-                    Ok(*payload)
+                    own_payload(payload, "`unwrap_or` on an `Ok`", span)
                 }
                 Value::Result(Err(error)) => {
-                    self.drop_value(*error)?;
+                    let error = own_payload(error, "`unwrap_or` on an `Err`", span)?;
+                    self.drop_value(error)?;
                     Ok(default)
                 }
                 other => Err(RuntimeError::new(
@@ -4877,31 +5996,91 @@ impl<'a> Interpreter<'a> {
             return match (receiver, name) {
                 (Value::Option(option), "map") => match option {
                     Some(value) => {
-                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
-                        Ok(Value::Option(Some(Box::new(mapped))))
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            ReceiverSource::None,
+                            vec![own_payload(
+                                value,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
+                            span,
+                        )?;
+                        Ok(Value::Option(Some(Box::new(Some(mapped)))))
                     }
                     None => Ok(Value::Option(None)),
                 },
                 (Value::Option(option), "and_then") => match option {
-                    Some(value) => self.call_callable(callable, None, vec![*value], span),
+                    Some(value) => self.invoke_callable(
+                        ResolvedInvocation {
+                            callable: callable.clone(),
+                            environment: InvocationEnv::Captured(callee.clone()),
+                        },
+                        ReceiverSource::None,
+                        vec![own_payload(
+                            value,
+                            "a consuming combinator's payload",
+                            span,
+                        )?],
+                        span,
+                    ),
                     None => Ok(Value::Option(None)),
                 },
                 (Value::Result(result), "map") => match result {
                     Ok(value) => {
-                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
-                        Ok(Value::Result(Ok(Box::new(mapped))))
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            ReceiverSource::None,
+                            vec![own_payload(
+                                value,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
+                            span,
+                        )?;
+                        Ok(Value::Result(Ok(Box::new(Some(mapped)))))
                     }
                     Err(error) => Ok(Value::Result(Err(error))),
                 },
                 (Value::Result(result), "map_err") => match result {
                     Ok(value) => Ok(Value::Result(Ok(value))),
                     Err(error) => {
-                        let mapped = self.call_callable(callable, None, vec![*error], span)?;
-                        Ok(Value::Result(Err(Box::new(mapped))))
+                        let mapped = self.invoke_callable(
+                            ResolvedInvocation {
+                                callable: callable.clone(),
+                                environment: InvocationEnv::Captured(callee.clone()),
+                            },
+                            ReceiverSource::None,
+                            vec![own_payload(
+                                error,
+                                "a consuming combinator's payload",
+                                span,
+                            )?],
+                            span,
+                        )?;
+                        Ok(Value::Result(Err(Box::new(Some(mapped)))))
                     }
                 },
                 (Value::Result(result), "and_then") => match result {
-                    Ok(value) => self.call_callable(callable, None, vec![*value], span),
+                    Ok(value) => self.invoke_callable(
+                        ResolvedInvocation {
+                            callable: callable.clone(),
+                            environment: InvocationEnv::Captured(callee.clone()),
+                        },
+                        ReceiverSource::None,
+                        vec![own_payload(
+                            value,
+                            "a consuming combinator's payload",
+                            span,
+                        )?],
+                        span,
+                    ),
                     Err(error) => Ok(Value::Result(Err(error))),
                 },
                 (_, _) => Err(RuntimeError::new(
@@ -4918,7 +6097,9 @@ impl<'a> Interpreter<'a> {
         }
         if name == "hash" {
             let receiver = self.place_value(&receiver_place, span)?;
-            return Ok(Value::Int(standard_hash(receiver, &receiver_ty)? as i128));
+            return Ok(Value::Int(
+                standard_hash(receiver, &receiver_ty, self.entry_source())? as i128,
+            ));
         }
         // WP-C4.7-6.2: `Ord::cmp` on a primitive receiver (06's `impl Ord for Int32` and
         // "similar for other types"). The checker admits this only for totally-ordered
@@ -4946,9 +6127,9 @@ impl<'a> Interpreter<'a> {
             let resource = resource.clone();
             let mut file = resource.0.borrow_mut();
             let Some(file) = file.as_mut() else {
-                return Ok(Value::Result(Err(Box::new(Value::IOError(
+                return Ok(Value::Result(Err(Box::new(Some(Value::IOError(
                     IOErrorKind::InvalidInput,
-                )))));
+                ))))));
             };
             let io_result: Result<(), std::io::Error> = match name {
                 "read_to_string" => {
@@ -4956,7 +6137,7 @@ impl<'a> Interpreter<'a> {
                     match file.read_to_end(&mut bytes) {
                         Ok(_) => match String::from_utf8(bytes) {
                             Ok(text) => {
-                                return Ok(Value::Result(Ok(Box::new(Value::String(text)))))
+                                return Ok(Value::Result(Ok(Box::new(Some(Value::String(text))))))
                             }
                             Err(_) => Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
@@ -4970,7 +6151,7 @@ impl<'a> Interpreter<'a> {
                     let text = string_arg(values.next(), span)?;
                     match file.write(text.as_bytes()) {
                         Ok(count) => {
-                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                            return Ok(Value::Result(Ok(Box::new(Some(Value::Int(count as i128))))))
                         }
                         Err(error) => Err(error),
                     }
@@ -4979,16 +6160,16 @@ impl<'a> Interpreter<'a> {
                     let bytes = self.file_bytes_arg(values.next(), span)?;
                     match file.write(&bytes) {
                         Ok(count) => {
-                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                            return Ok(Value::Result(Ok(Box::new(Some(Value::Int(count as i128))))))
                         }
                         Err(error) => Err(error),
                     }
                 }
                 _ => unreachable!(),
             };
-            return Ok(Value::Result(Err(Box::new(Value::IOError(
+            return Ok(Value::Result(Err(Box::new(Some(Value::IOError(
                 IOErrorKind::from_io_error(&io_result.unwrap_err()),
-            )))));
+            ))))));
         }
         // WP-C1.3 (2026-07-17): generic `.clone()` for every core-type value. `Value` already
         // derives Rust `Clone` (a deep/structural copy, which is exactly STARK's Clone semantics
@@ -5028,11 +6209,13 @@ impl<'a> Interpreter<'a> {
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    let position = self.language_position(&keys, &key, span)?;
+                    let position = self.language_position(expr_id, &keys, &key, span)?;
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
-                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
+                    return Ok(Value::Option(
+                        position.map(|_| Box::new(Some(Value::Ref(place)))),
+                    ));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -5041,7 +6224,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Option(
                         self.place_value(&place, span)
                             .ok()
-                            .map(|_| Box::new(Value::Ref(place))),
+                            .map(|_| Box::new(Some(Value::Ref(place)))),
                     ));
                 }
             }
@@ -5057,11 +6240,13 @@ impl<'a> Interpreter<'a> {
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
                     let keys = map.keys().cloned().collect::<Vec<_>>();
-                    let position = self.language_position(&keys, &key, span)?;
+                    let position = self.language_position(expr_id, &keys, &key, span)?;
                     if let Some(index) = position {
                         place.projections.push(Projection::MapIndex(index));
                     }
-                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
+                    return Ok(Value::Option(
+                        position.map(|_| Box::new(Some(Value::Ref(place)))),
+                    ));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -5070,7 +6255,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(Value::Option(
                         self.place_value(&place, span)
                             .ok()
-                            .map(|_| Box::new(Value::Ref(place))),
+                            .map(|_| Box::new(Some(Value::Ref(place)))),
                     ));
                 }
             }
@@ -5131,7 +6316,7 @@ impl<'a> Interpreter<'a> {
             let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
             let iter_mut = self.place_value_mut(&place, span)?;
             *iter_mut = updated_iter;
-            return Ok(Value::Option(next_val.map(Box::new)));
+            return Ok(Value::Option(next_val.map(|value| Box::new(Some(value)))));
         }
         if name == "extend" {
             let iter_arg = values
@@ -5175,6 +6360,7 @@ impl<'a> Interpreter<'a> {
                                     let mut arguments = vec![key, value];
                                     let returned = self
                                         .call_collection_ownership_method(
+                                            expr_id,
                                             &place,
                                             "insert",
                                             &mut arguments,
@@ -5188,6 +6374,7 @@ impl<'a> Interpreter<'a> {
                             Value::HashSet(_) => {
                                 let mut arguments = vec![deref_val];
                                 self.call_collection_ownership_method(
+                                    expr_id,
                                     &place,
                                     "insert",
                                     &mut arguments,
@@ -5270,7 +6457,10 @@ impl<'a> Interpreter<'a> {
                 let mut set = InsertionSet::new();
                 for x in items.into_iter().flatten() {
                     let value = self.deref_value(x, span)?;
-                    if self.language_position(&set.0, &value, span)?.is_some() {
+                    if self
+                        .language_position(expr_id, &set.0, &value, span)?
+                        .is_some()
+                    {
                         self.drop_value(value)?;
                     } else {
                         set.0.push(value);
@@ -5284,7 +6474,7 @@ impl<'a> Interpreter<'a> {
                         let k = self.deref_value(p[0].clone().unwrap_or(Value::Unit), span)?;
                         let v = self.deref_value(p[1].clone().unwrap_or(Value::Unit), span)?;
                         let keys = map.keys().cloned().collect::<Vec<_>>();
-                        if let Some(index) = self.language_position(&keys, &k, span)? {
+                        if let Some(index) = self.language_position(expr_id, &keys, &k, span)? {
                             let old = map.0[index].1.replace(v);
                             self.drop_value(k)?;
                             if let Some(old) = old {
@@ -5348,7 +6538,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let iter_mut = self.place_value_mut(&place, span)?;
                 *iter_mut = iter_val;
-                return Ok(Value::Option(Some(Box::new(acc))));
+                return Ok(Value::Option(Some(Box::new(Some(acc)))));
             } else {
                 let iter_mut = self.place_value_mut(&place, span)?;
                 *iter_mut = iter_val;
@@ -5426,7 +6616,7 @@ impl<'a> Interpreter<'a> {
             }
             let iter_mut = self.place_value_mut(&place, span)?;
             *iter_mut = iter_val;
-            return Ok(Value::Option(found.map(Box::new)));
+            return Ok(Value::Option(found.map(|value| Box::new(Some(value)))));
         }
         if name == "map" {
             let place = receiver_place.clone();
@@ -5505,7 +6695,7 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Unit)
                 }
                 "pop" => Ok(Value::Option(
-                    string.pop().map(|ch| Box::new(Value::Char(ch))),
+                    string.pop().map(|ch| Box::new(Some(Value::Char(ch)))),
                 )),
                 "clear" => {
                     string.clear();
@@ -5523,7 +6713,14 @@ impl<'a> Interpreter<'a> {
                 // `Value::Ref` is what a `&str` of a place actually is, and `deref_place` /
                 // `deref_value` already normalise through it, so the receiver of a chained call
                 // resolves back to the `String`'s own place.
-                "as_str" => Ok(Value::Ref(receiver_place.clone())),
+                "as_str" => {
+                    // Class 1 mutation: emit the owned `String` where `&str` is declared.
+                    #[cfg(test)]
+                    if armed == Some(ProducerMutation::OwnedForView) {
+                        return Ok(Value::String(string.clone()));
+                    }
+                    Ok(Value::Ref(receiver_place.clone()))
+                }
                 "trim" => Ok(Value::Str(string.trim().to_string())),
                 "contains" => Ok(Value::Bool(
                     string.contains(&string_arg(values.next(), span)?),
@@ -5537,7 +6734,7 @@ impl<'a> Interpreter<'a> {
                 "find" => Ok(Value::Option(
                     string
                         .find(&string_arg(values.next(), span)?)
-                        .map(|index| Box::new(Value::Int(index as i128))),
+                        .map(|index| Box::new(Some(Value::Int(index as i128)))),
                 )),
                 "replace" => {
                     let from = string_arg(values.next(), span)?;
@@ -5628,7 +6825,9 @@ impl<'a> Interpreter<'a> {
                     vector.push(values.next());
                     Ok(Value::Unit)
                 }
-                "pop" => Ok(Value::Option(vector.pop().flatten().map(Box::new))),
+                "pop" => Ok(Value::Option(
+                    vector.pop().flatten().map(|value| Box::new(Some(value))),
+                )),
                 "insert" => {
                     let index = usize_arg(values.next(), span)?;
                     if index > vector.len() {
@@ -5656,7 +6855,14 @@ impl<'a> Interpreter<'a> {
                     vector.clear();
                     Ok(Value::Unit)
                 }
-                "as_slice" => Ok(Value::Slice(receiver_place.clone(), 0, vector.len())),
+                "as_slice" => {
+                    // Class 1 mutation: emit the owned `Vec` where `&[T]` is declared.
+                    #[cfg(test)]
+                    if armed == Some(ProducerMutation::OwnedForView) {
+                        return Ok(Value::Vec(vector.clone()));
+                    }
+                    Ok(Value::Slice(receiver_place.clone(), 0, vector.len()))
+                }
                 _ => Err(RuntimeError::new(
                     format!("unsupported Vec method '{name}'"),
                     span,
@@ -5673,7 +6879,7 @@ impl<'a> Interpreter<'a> {
             Value::Option(option) => match name {
                 "is_some" => Ok(Value::Bool(option.is_some())),
                 "is_none" => Ok(Value::Bool(option.is_none())),
-                "unwrap" => option.take().map(|value| *value).ok_or_else(|| {
+                "unwrap" => option.take().and_then(|value| *value).ok_or_else(|| {
                     // R-01/CD-141 shape: STATE the category rather than leaving it to prose
                     // matching. `oracle_category` refused these outright with a stale "Option/Result
                     // are WP-C5.3c" message, so a corpus case for OPT-UNWRAP could not be compared
@@ -5686,7 +6892,8 @@ impl<'a> Interpreter<'a> {
                 }),
                 "unwrap_or" => Ok(option
                     .take()
-                    .map_or_else(|| values.next().unwrap_or(Value::Unit), |value| *value)),
+                    .and_then(|value| *value)
+                    .unwrap_or_else(|| values.next().unwrap_or(Value::Unit))),
                 _ => Err(RuntimeError::new(
                     format!("unsupported Option method '{name}'"),
                     span,
@@ -5695,16 +6902,16 @@ impl<'a> Interpreter<'a> {
             Value::Result(result) => match name {
                 "is_ok" => Ok(Value::Bool(result.is_ok())),
                 "is_err" => Ok(Value::Bool(result.is_err())),
-                "unwrap" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                    Ok(value) => Ok(*value),
+                "unwrap" => match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(value) => own_payload(value, "`unwrap` on an `Ok`", span),
                     Err(error) => Err(RuntimeError::with_category(
-                        format!("called unwrap on Err({error})"),
+                        format!("called unwrap on Err({})", display_slot(&error)),
                         span,
                         crate::mir::TrapCategory::UnwrapErr,
                     )),
                 },
-                "unwrap_or" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                    Ok(value) => Ok(*value),
+                "unwrap_or" => match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(value) => own_payload(value, "`unwrap_or` on an `Ok`", span),
                     Err(_) => Ok(values.next().unwrap_or(Value::Unit)),
                 },
                 _ => Err(RuntimeError::new(
@@ -5721,14 +6928,18 @@ impl<'a> Interpreter<'a> {
                         .next()
                         .ok_or_else(|| RuntimeError::new("HashMap::insert expects value", span))?;
                     Ok(Value::Option(
-                        map.insert(k, Some(v)).flatten().map(Box::new),
+                        map.insert(k, Some(v))
+                            .flatten()
+                            .map(|value| Box::new(Some(value))),
                     ))
                 }
                 "remove" => {
                     let k = values.next().ok_or_else(|| {
                         RuntimeError::new("HashMap::remove expects key ref", span)
                     })?;
-                    Ok(Value::Option(map.remove(&k).flatten().map(Box::new)))
+                    Ok(Value::Option(
+                        map.remove(&k).flatten().map(|value| Box::new(Some(value))),
+                    ))
                 }
                 "contains_key" => {
                     let k = values.next().ok_or_else(|| {
@@ -5922,12 +7133,32 @@ impl<'a> Interpreter<'a> {
         Ok(Ok(completed.into_iter().map(Some).collect()))
     }
 
+    /// **The `AggregateField` boundary lives here.** AS3 Packet 5.
+    ///
+    /// The expected type is the field's DECLARED type, instantiated for this literal —
+    /// `aggregate_field_types[lit]`, published by the checker at the same point it unified the
+    /// initialisers against it. Deliberately not `expr_types[init]`: that is the type of the
+    /// expression that produced the value, so comparing the value against it would assert nothing,
+    /// and it does not exist at all for a shorthand field (`W { v }`), which has no initialiser
+    /// expression. The field NAME is the key, so shorthand is covered by the same lookup.
     fn eval_struct_lit(
         &mut self,
+        lit: ExprId,
         res: Res,
         fields: &[hir::FieldInit],
         span: Span,
     ) -> Result<Flow, RuntimeError> {
+        let declared = self.tables.aggregate_field_types.get(&lit).ok_or_else(|| {
+            RuntimeError::internal(
+                "no published field types for an aggregate literal — the checker publishes them \
+                 wherever it checks the initialisers, so this is a publication defect",
+                span,
+            )
+        })?;
+        let declared: BTreeMap<String, Ty> = declared
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect();
         let mut values = BTreeMap::new();
         let mut completed_order: Vec<String> = Vec::new();
         for field in fields {
@@ -5958,6 +7189,29 @@ impl<'a> Interpreter<'a> {
                     field.name,
                 )?
             };
+            // Class 4 mutation: injected AFTER the producer-side boundary has accepted the value,
+            // so `AggregateField` is what must catch it rather than `ExpressionResult`.
+            #[cfg(test)]
+            let value = if self.mutation_armed(ProducerMutation::WrongAggregateField) {
+                Value::Unit
+            } else {
+                value
+            };
+            // An initialiser for a field the nominal does not declare is a checker error the
+            // program cannot reach execution with, so an absent entry here is a table/tree
+            // disagreement rather than a field to skip.
+            let field_ty = declared.get(&name).ok_or_else(|| {
+                RuntimeError::internal(
+                    format!("aggregate literal initialises undeclared field '{name}'"),
+                    field.name,
+                )
+            })?;
+            self.check_value_for_ty(
+                &field_ty.clone(),
+                &value,
+                field.name,
+                RepBoundary::AggregateField,
+            )?;
             completed_order.push(name.clone());
             values.insert(name, Some(value));
         }
@@ -6023,13 +7277,12 @@ impl<'a> Interpreter<'a> {
     /// (literals, discriminants, arities) read through the place and are unaffected — a test never
     /// moves anything, so reading it by value was never the defect.
     ///
-    /// **Scope, stated rather than approximated.** A prelude `Option`/`Result` payload is stored as
-    /// `Box<Value>` rather than in a slot, so no `Projection` names it and it cannot be borrowed in
-    /// place. Those payloads fall back to the owned rule here, and creating a reference to a
-    /// temporary clone instead is refused deliberately: it would give the binding a referent the
-    /// program cannot observe mutations through, which is worse than a stated narrowing. Every
-    /// other component — struct field, tuple element, array element, and user-enum variant payload
-    /// — borrows in place.
+    /// **Uniform over every component (DEV-209).** Struct field, tuple element, array element,
+    /// user-enum payload — and, since the prelude payload became slot-backed,
+    /// `Option`/`Result` too. That last one was a stated narrowing for as long as `Box<Value>` had
+    /// no `Projection` to name it, and the narrowing was the defect: PAT-BIND-001 is uniform over
+    /// variant payloads, struct fields and tuple elements, so a specialised runtime representation
+    /// that could not participate was the thing that had to change.
     fn match_pattern_borrowed(
         &mut self,
         pat: PatId,
@@ -6092,8 +7345,29 @@ impl<'a> Interpreter<'a> {
                         }
                         Ok(true)
                     }
-                    // `Option`/`Result` payloads are not slot-backed; see this function's header.
-                    // The owned rule applies, and the component binds by value.
+                    // **DEV-209: the prelude payload borrows in place, like every other
+                    // component.** It used to fall back to the owned rule here — moving out of a
+                    // borrow — because `Box<Value>` had no `Projection` to name it. It is
+                    // slot-backed now, so PAT-BIND-001 has the storage it always required.
+                    (Res::Builtin(Builtin::Some), Value::Option(Some(_)))
+                    | (Res::Builtin(Builtin::Ok), Value::Result(Ok(_))) => {
+                        let Some(sub) = pats.first() else {
+                            return Ok(true);
+                        };
+                        let mut child = place.clone();
+                        child.projections.push(Projection::VariantPayload(0));
+                        self.match_pattern_borrowed(*sub, &child, bindings)
+                    }
+                    (Res::Builtin(Builtin::Err), Value::Result(Err(_))) => {
+                        let Some(sub) = pats.first() else {
+                            return Ok(true);
+                        };
+                        let mut child = place.clone();
+                        child.projections.push(Projection::VariantPayload(1));
+                        self.match_pattern_borrowed(*sub, &child, bindings)
+                    }
+                    // A discriminant that does not match, and every non-prelude shape, still reads
+                    // through the owned matcher: a test moves nothing.
                     _ => self.match_pattern(pat, &value, bindings),
                 }
             }
@@ -6265,13 +7539,13 @@ impl<'a> Interpreter<'a> {
                         },
                     ) if item == actual && variant == actual_variant => fields.clone(),
                     (Res::Builtin(Builtin::Some), Value::Option(Some(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (Res::Builtin(Builtin::Ok), Value::Result(Ok(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (Res::Builtin(Builtin::Err), Value::Result(Err(value))) => {
-                        vec![Some((**value).clone())]
+                        vec![(**value).clone()]
                     }
                     (
                         Res::Builtin(Builtin::IOErrorOther),
@@ -6391,15 +7665,45 @@ impl<'a> Interpreter<'a> {
             // (including the container's own `Drop` impl, if any).
             return self.drop_value(value);
         }
+        // **DEV-212: a nominal with its OWN destructor is destroyed whole, never decomposed.**
+        //
+        // PAT-DROP-001 destroys "every still-owned, unbound component of the hidden scrutinee",
+        // and the decomposition below implements exactly that — but for a type carrying its own
+        // `Drop`, decomposing is what makes the type's destructor never run at all. `match e` on
+        // an `impl Drop` enum printed the arm and nothing else, in BOTH engines.
+        //
+        // Sound because DEV-211 now refuses any binding that would MOVE a component out of such a
+        // value: the only bindings that reach here copied a `Copy` component, which PAT-DROP-001
+        // says "remains initialized in the hidden scrutinee". So the value really is complete, and
+        // complete is exactly what its destructor requires.
         let kind = &self.hir.pat(pat).kind;
+        // A bound value MOVED into the binding; the arm's scope destroys it. Decided BEFORE the
+        // whole-value rule below — the first version of that rule ran first and destroyed a bound
+        // `Drop` element a second time.
+        if matches!(kind, hir::PatKind::Binding { .. }) {
+            return Ok(());
+        }
+        // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
+        //
+        // PAT-DROP-001 destroys "every still-owned, unbound component of the hidden scrutinee", and
+        // the decomposition below implements that — but for a type carrying its own `Drop`,
+        // decomposing is what makes that destructor never run at all.
+        //
+        // Sound because DEV-211 refuses any binding that would MOVE a component out of such a
+        // value: every binding reaching here copied a `Copy` component, which PAT-DROP-001 says
+        // "remains initialized in the hidden scrutinee". The value is complete, which is what its
+        // destructor requires.
+        if nominal_item(&value).is_some_and(|item| self.drop_items.contains(&item)) {
+            return self.drop_value(value);
+        }
         match kind {
             hir::PatKind::Binding { .. } => Ok(()),
             hir::PatKind::TupleVariant { pats, .. } => {
                 let pats = pats.clone();
                 let payloads: Vec<Option<Value>> = match value {
                     Value::Enum { fields, .. } => fields,
-                    Value::Option(Some(inner)) => vec![Some(*inner)],
-                    Value::Result(Ok(inner)) | Value::Result(Err(inner)) => vec![Some(*inner)],
+                    Value::Option(Some(inner)) => vec![*inner],
+                    Value::Result(Ok(inner)) | Value::Result(Err(inner)) => vec![*inner],
                     Value::IOError(IOErrorKind::Other(msg)) => vec![Some(Value::String(msg))],
                     _ => return Ok(()),
                 };
@@ -6521,25 +7825,49 @@ impl<'a> Interpreter<'a> {
     fn next_for_iterator(
         &mut self,
         iterator_place: &Place,
+        for_expr: ExprId,
         span: Span,
     ) -> Result<Option<Value>, RuntimeError> {
         let current = self.clone_place_value(iterator_place, span)?;
         let next = if nominal_item(&current).is_some() {
+            // AS3 Boundary 4: CONSUME the checker's `Iterator::next` selection. The scan below
+            // is transitional and goes when `find_method` does.
             let method = self
-                .find_method(
-                    nominal_item(&current),
-                    "next",
-                    Some(Res::CoreTrait(hir::CoreTrait::Iterator)),
-                )
+                .selected_core_trait_callable(for_expr, hir::CoreTrait::Iterator)
+                .and_then(|use_| match use_.selection {
+                    crate::typecheck::CalleeSelection::Static { body, .. } => {
+                        self.callable_for_body(body)
+                    }
+                    // AS3 Boundary 4: `Bound` needs the shared specialiser, not this path.
+                    crate::typecheck::CalleeSelection::Bound { .. }
+                    | crate::typecheck::CalleeSelection::FunctionValue => None,
+                })
+                // A late-bound iterator (`for x in it` where `it: T` and `T: Iterator`) resolves
+                // through the shared specialiser, not through a name scan.
+                .or_else(|| {
+                    self.specialised_bound_callable(for_expr, for_expr)
+                        .map(|(c, _)| c)
+                })
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
-            self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
+            let iterator_env = self.core_trait_env(for_expr, hir::CoreTrait::Iterator);
+            self.call_user_method(
+                method,
+                iterator_place.clone(),
+                iterator_env,
+                Vec::new(),
+                span,
+            )?
         } else {
             let (next, updated) = self.iterator_step(current, Some(iterator_place), span)?;
             *self.place_value_mut(iterator_place, span)? = updated;
-            Value::Option(next.map(Box::new))
+            Value::Option(next.map(|value| Box::new(Some(value))))
         };
         match next {
-            Value::Option(Some(value)) => Ok(Some(*value)),
+            Value::Option(Some(value)) => Ok(Some(own_payload(
+                value,
+                "`Iterator::next` returned a `Some`",
+                span,
+            )?)),
             Value::Option(None) => Ok(None),
             _ => Err(RuntimeError::new("Iterator::next must return Option", span)),
         }
@@ -6745,7 +8073,7 @@ impl<'a> Interpreter<'a> {
         let Some(target) = self.frames.get_mut(frame) else {
             return Err(RuntimeError::new(
                 "internal: promotion into a frame that does not exist",
-                Span { lo: 0, hi: 0 },
+                Span::synthetic(self.entry_source()),
             ));
         };
         let local_id = LocalId(1000000 + target.values.len() as u32);
@@ -6807,8 +8135,15 @@ impl<'a> Interpreter<'a> {
         // expression.** The instantiation was selected at the coercion; this call site knows only
         // the function's type. `_env` lives for the whole call and its `Drop` covers traps,
         // propagation and internal failures.
-        let _env = self.push_captured_env(&callee);
-        self.call_callable(callable, None, values, span)
+        self.invoke_callable(
+            ResolvedInvocation {
+                callable,
+                environment: InvocationEnv::Captured(callee),
+            },
+            ReceiverSource::None,
+            values,
+            span,
+        )
     }
 
     /// Install a function value's captured environment for the duration of its call.
@@ -7111,23 +8446,134 @@ impl<'a> Interpreter<'a> {
     /// `finish_display` to run the argument's destructor (ordinary by-value call ownership). If
     /// `fmt` traps, the `?` propagates and the argument is not dropped (traps abort; destructors
     /// do not run).
+    /// The rendered root's concrete static type, substituted through the active generic frame.
+    ///
+    /// `None` when the checker recorded no type for the expression, which the walk below treats as
+    /// "cannot decide the step" rather than as a licence to guess.
+    fn display_root_ty(&self, root: ExprId, span: Span) -> Result<Option<Ty>, RuntimeError> {
+        let Some(declared) = self.tables.expr_types.get(&root) else {
+            return Ok(None);
+        };
+        Ok(Some(self.concrete_runtime_ty(declared, span)?))
+    }
+
+    /// The static type one step down, mirroring the checker's own walk.
+    fn display_child_ty(ty: Option<&Ty>, step: DisplayStep) -> Option<Ty> {
+        let mut ty = ty?;
+        // A reference renders as its referent, exactly as the checker's walk peels it.
+        while let Ty::Ref { inner, .. } = ty {
+            ty = inner;
+        }
+        match (step, ty) {
+            (DisplayStep::TupleField(index), Ty::Tuple(elems)) => {
+                elems.get(index as usize).cloned()
+            }
+            (DisplayStep::ArrayElement, Ty::Array(elem, _))
+            | (DisplayStep::SliceElement, Ty::Slice(elem)) => Some((**elem).clone()),
+            (DisplayStep::VecElement, Ty::Core(crate::hir::CoreType::Vec, args))
+            | (DisplayStep::OptionSome, Ty::Core(crate::hir::CoreType::Option, args))
+            | (DisplayStep::ResultOk, Ty::Core(crate::hir::CoreType::Result, args)) => {
+                args.first().cloned()
+            }
+            (DisplayStep::ResultErr, Ty::Core(crate::hir::CoreType::Result, args)) => {
+                args.get(1).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// Which element step a sequence value's STATIC type calls for. `Value::Array` and `Value::Vec`
+    /// are one runtime shape but three static ones, and the checker keyed them apart.
+    fn display_element_step(ty: Option<&Ty>) -> DisplayStep {
+        let mut ty = ty;
+        while let Some(Ty::Ref { inner, .. }) = ty {
+            ty = Some(inner);
+        }
+        match ty {
+            Some(Ty::Array(..)) => DisplayStep::ArrayElement,
+            Some(Ty::Slice(..)) => DisplayStep::SliceElement,
+            _ => DisplayStep::VecElement,
+        }
+    }
+
+    /// **The published body for one render position.**
+    ///
+    /// `Static` names it outright. `Bound` is late-bound — `println(x)` inside
+    /// `fn show<T: Display>` cannot name a body at check time — so it goes through the shared
+    /// specialiser with `Self` taken from the published parametric type, substituted through the
+    /// active generic frame. Same resolution the operator path uses; no second algorithm.
+    fn display_callable(
+        &self,
+        root: ExprId,
+        path: &DisplayPath,
+        span: Span,
+    ) -> Result<Option<Callable>, RuntimeError> {
+        let Some(id) = self.tables.display_uses.get(&(root, path.clone())) else {
+            return Ok(None);
+        };
+        let Some(use_) = self.tables.callable_uses.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                Ok(self.callable_for_body(*body))
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                self_ty,
+                trait_args,
+                method_args,
+            } => {
+                let mut self_ty = self.concrete_runtime_ty(self_ty, span)?;
+                while let Ty::Ref { inner, .. } = self_ty {
+                    self_ty = *inner;
+                }
+                let Some(resolved) = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(self.callable_for_body(resolved.body))
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => Ok(None),
+        }
+    }
+
     fn display_text(
         &mut self,
+        // **AS3 Boundary 4: the root the checker keyed its dispatch plan on.** A `println`
+        // argument or an interpolation field; both are roots in their own right.
+        root: ExprId,
         value: Value,
         span: Span,
     ) -> Result<(String, Option<Place>), RuntimeError> {
-        if let Value::Struct { item, .. } | Value::Enum { item, .. } = &value {
-            let item = *item;
-            if let Some(callable) =
-                self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
+        if let Value::Struct { .. } | Value::Enum { .. } = &value {
+            // **No improvisation here either.** This branch used to fall through to
+            // `format_runtime_value` — the aggregate debug form — whenever the lookup missed, which
+            // is the same defect as `display_deep`'s old `value.to_string()`, one level up. It
+            // survived the first mutation pass because the top-level path was still silently
+            // answering for itself; the mutation is what exposed it. A user nominal that reached
+            // here passed E0500, so a missing publication is an internal invariant violation.
+            let Some(callable) = self.display_callable(root, &DisplayPath::default(), span)? else {
+                return Err(RuntimeError::new(
+                    "internal invariant: no Display use published for a checked user nominal",
+                    span,
+                ));
+            };
             {
                 // Give the by-value argument its own storage so `&self` can borrow it.
                 let place = self.promote_to_owned_temp_place(value, span)?;
-                let receiver_value = self.clone_place_value(&place, span)?;
                 let result = self.call_user_method(
                     callable,
                     place.clone(),
-                    receiver_value,
+                    self.display_env(root, &DisplayPath::default()),
                     Vec::new(),
                     span,
                 );
@@ -7147,6 +8593,21 @@ impl<'a> Interpreter<'a> {
         // nested user nominal runs its own `Display::fmt`, NOT the aggregate `{field: value}` debug
         // form — matching the native lowering (`emit_display_value`). The whole composite is promoted
         // to a place so it is dropped exactly once after its bytes are submitted (Contract C).
+        // **DEV-207: a slice VIEW is a composite too, and it was not in this list.**
+        //
+        // So it fell to `format_runtime_value` — the structural debug form — and a `struct X` with
+        // its own `Display` printed `{n: 1}` instead of running `X::fmt`. The checker had published
+        // `DisplayPath([SliceElement])` for the position all along; nothing consumed it.
+        //
+        // Handled BEFORE the block below rather than added to it: a slice borrows its elements, so
+        // there is no owned composite to promote and nothing for the caller to drop afterwards.
+        // Promoting it would give a view its own drop-registered storage.
+        if let Value::Slice(..) = &value {
+            let ty = self.display_root_ty(root, span)?;
+            let text =
+                self.display_deep(root, &value, ty.as_ref(), DisplayPath::default(), span)?;
+            return Ok((text, None));
+        }
         if let Value::Tuple(_)
         | Value::Array(_)
         | Value::Vec(_)
@@ -7155,7 +8616,9 @@ impl<'a> Interpreter<'a> {
         {
             let place = self.promote_to_owned_temp_place(value, span)?;
             let snapshot = self.clone_place_value(&place, span)?;
-            let text = self.display_deep(&snapshot, span)?;
+            let ty = self.display_root_ty(root, span)?;
+            let text =
+                self.display_deep(root, &snapshot, ty.as_ref(), DisplayPath::default(), span)?;
             return Ok((text, Some(place)));
         }
         Ok((self.format_runtime_value(&value, span)?, None))
@@ -7170,23 +8633,38 @@ impl<'a> Interpreter<'a> {
     /// A nested nominal is CLONED to give `fmt` a `&self` place; a Rust clone runs no STARK
     /// destructor, and the clone is discarded WITHOUT `drop_value`, so the real element is still
     /// dropped exactly once by its owning composite (Contract C) — never a double destructor.
-    fn display_deep(&mut self, value: &Value, span: Span) -> Result<String, RuntimeError> {
+    fn display_deep(
+        &mut self,
+        root: ExprId,
+        value: &Value,
+        ty: Option<&Ty>,
+        path: DisplayPath,
+        span: Span,
+    ) -> Result<String, RuntimeError> {
         match value {
-            Value::Struct { item, .. } | Value::Enum { item, .. } => {
-                let item = *item;
-                let Some(callable) =
-                    self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
-                else {
-                    // No `Display` impl — under E0500 this cannot reach a displayable composite;
-                    // fall back to the aggregate rendering defensively.
-                    return Ok(value.to_string());
+            Value::Struct { .. } | Value::Enum { .. } => {
+                // **AS3 Boundary 4: consume, and do not improvise on absence.**
+                //
+                // This scanned the nominal's impls for a member named `fmt`, and on failure
+                // returned `value.to_string()` — the aggregate debug form. That defensive arm is
+                // gone. The checker published a body for every position it will render (E0500
+                // rejects the rest), so a missing entry HERE is an internal invariant violation,
+                // not permission to substitute a different rendering. Silently answering with a
+                // second algorithm when the published one is missing is exactly what DEV-192 cost.
+                let Some(callable) = self.display_callable(root, &path, span)? else {
+                    return Err(RuntimeError::new(
+                        format!(
+                            "internal invariant: no Display use published at {path:?} for a \
+                             checked user nominal"
+                        ),
+                        span,
+                    ));
                 };
                 let place = self.promote_to_owned_temp_place(value.clone(), span)?;
-                let receiver_value = self.clone_place_value(&place, span)?;
                 let text = match self.call_user_method(
                     callable,
                     place.clone(),
-                    receiver_value,
+                    self.display_env(root, &path),
                     Vec::new(),
                     span,
                 )? {
@@ -7202,32 +8680,118 @@ impl<'a> Interpreter<'a> {
                 let _ = self.take_place(&place, span);
                 Ok(text)
             }
-            Value::Tuple(elems) => Ok(format!("({})", self.display_deep_slots(elems, span)?)),
-            Value::Array(elems) | Value::Vec(elems) => {
-                Ok(format!("[{}]", self.display_deep_slots(elems, span)?))
+            Value::Tuple(elems) => {
+                let mut parts = Vec::with_capacity(elems.len());
+                for (index, slot) in elems.iter().enumerate() {
+                    let step = DisplayStep::TupleField(index as u32);
+                    let elem_ty = Self::display_child_ty(ty, step);
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("({})", parts.join(", ")))
             }
-            Value::Option(Some(inner)) => Ok(format!("Some({})", self.display_deep(inner, span)?)),
+            // **The static type decides the step, not the value.** `Value::Array` and `Value::Vec`
+            // share this arm — the runtime representation does not distinguish them — while the
+            // checker keyed `ArrayElement` and `VecElement` separately. Reading the step off the
+            // type is what keeps the two walks in step; guessing here, or trying both keys, would
+            // let a mismatch pass as a hit.
+            Value::Array(elems) | Value::Vec(elems) => {
+                let step = Self::display_element_step(ty);
+                let elem_ty = Self::display_child_ty(ty, step);
+                let mut parts = Vec::with_capacity(elems.len());
+                for slot in elems.iter() {
+                    // One published position, executed once per element: the plan is static, the
+                    // loop is the renderer's. No record per runtime element.
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            // **DEV-207: a slice VIEW renders through the plan, not structurally.**
+            //
+            // The checker publishes `DisplayPath([SliceElement])` for this position, and the walk
+            // had no arm for `Value::Slice` — so the value fell through to `format_runtime_value`,
+            // which renders structurally. A `struct X` with its own `Display` printed `{n: 1}`
+            // instead of calling `X::fmt`: a published selection the engine did not consume, which
+            // is the AS3 Boundary 4 class exactly.
+            //
+            // Unreachable until DEV-206, because `&[T]` was refused by `Display` eligibility
+            // outright; bare `[T]` was accepted and rendered structurally, so the same defect was
+            // there and could not be seen through a correct program.
+            Value::Slice(place, start, end) => {
+                let elements = match self.place_value(place, span)? {
+                    Value::Array(elements) | Value::Vec(elements) => elements.clone(),
+                    _ => return Err(RuntimeError::new("slice base is unavailable", span)),
+                };
+                if start > end || *end > elements.len() {
+                    return Err(RuntimeError::new("slice range out of bounds", span));
+                }
+                let step = DisplayStep::SliceElement;
+                let elem_ty = Self::display_child_ty(ty, step);
+                let mut parts = Vec::with_capacity(end - start);
+                for slot in &elements[*start..*end] {
+                    parts.push(self.display_slot(
+                        root,
+                        slot,
+                        elem_ty.as_ref(),
+                        path.child(step),
+                        span,
+                    )?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            Value::Option(Some(inner)) => {
+                let step = DisplayStep::OptionSome;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering a `Some`", span)?;
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Some({text})"))
+            }
             Value::Option(None) => Ok("None".to_string()),
-            Value::Result(Ok(inner)) => Ok(format!("Ok({})", self.display_deep(inner, span)?)),
-            Value::Result(Err(inner)) => Ok(format!("Err({})", self.display_deep(inner, span)?)),
+            Value::Result(Ok(inner)) => {
+                let step = DisplayStep::ResultOk;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering an `Ok`", span)?;
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Ok({text})"))
+            }
+            Value::Result(Err(inner)) => {
+                let step = DisplayStep::ResultErr;
+                let inner_ty = Self::display_child_ty(ty, step);
+                let inner = require_live_payload(inner, "rendering an `Err`", span)?;
+                let text =
+                    self.display_deep(root, inner, inner_ty.as_ref(), path.child(step), span)?;
+                Ok(format!("Err({text})"))
+            }
             other => Ok(other.to_string()),
         }
     }
 
-    /// The `", "`-joined rendering of a tuple/array/Vec's slots, each through [`display_deep`].
-    fn display_deep_slots(
+    /// One tuple/array/Vec slot, or `<moved>` for an emptied one.
+    fn display_slot(
         &mut self,
-        slots: &[Option<Value>],
+        root: ExprId,
+        slot: &Option<Value>,
+        ty: Option<&Ty>,
+        path: DisplayPath,
         span: Span,
     ) -> Result<String, RuntimeError> {
-        let mut parts = Vec::with_capacity(slots.len());
-        for slot in slots {
-            match slot {
-                Some(value) => parts.push(self.display_deep(value, span)?),
-                None => parts.push("<moved>".to_string()),
-            }
+        match slot {
+            Some(value) => self.display_deep(root, value, ty, path, span),
+            None => Ok("<moved>".to_string()),
         }
-        Ok(parts.join(", "))
     }
 
     /// DEV-089: destroy a `print`/`println` by-value argument AFTER its formatted bytes have been
@@ -7285,7 +8849,52 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| RuntimeError::new("use of moved value", span))
     }
 
-    fn write_place(&mut self, place: &Place, value: Value, span: Span) -> Result<(), RuntimeError> {
+    /// **The one path by which a value is written into existing storage.** AS3 Packet 4.
+    ///
+    /// Three of the eleven boundaries live here — `Assignment`, `FieldWrite` and `ElementWrite` —
+    /// and which one this write *is* follows from the place's last projection, not from the caller.
+    /// The earlier framing assumed a field or an element could not be checked because neither has a
+    /// local to key on; both do have a checker-published type, because both are named by an
+    /// EXPRESSION, and `expr_types[target]` is the checker's answer for it whatever the projection
+    /// depth.
+    ///
+    /// A missing `expr_types` entry is an `internal` invariant failure. The checker types every
+    /// expression it accepts, and the only caller is a real `Assign` left-hand side — so an absent
+    /// entry means the tables and the tree disagree, which is not a case to skip validation for.
+    fn write_place(
+        &mut self,
+        place: &Place,
+        value: Value,
+        target: ExprId,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        let boundary = match place.projections.last() {
+            None => RepBoundary::Assignment,
+            Some(Projection::Field(_)) => RepBoundary::FieldWrite,
+            // A map entry is an element of a container exactly as an indexed slot is; the two
+            // differ in how the position is found, not in what the write means.
+            Some(Projection::Index(_) | Projection::MapIndex(_)) => RepBoundary::ElementWrite,
+            // DEV-209: a variant's payload is a COMPONENT of an aggregate, named positionally
+            // rather than by identifier — the same kind of write as a struct field, and not an
+            // element of a container, whose count varies at runtime.
+            Some(Projection::VariantPayload(_)) => RepBoundary::FieldWrite,
+        };
+        let declared = self
+            .tables
+            .expr_types
+            .get(&target)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::internal(
+                    format!(
+                    "no published type for the target of {} — the checker types every expression \
+                     it accepts, so this is a table/tree disagreement, not a write to exempt",
+                    boundary.as_str()
+                ),
+                    span,
+                )
+            })?;
+        self.check_value_for_ty(&declared, &value, span, boundary)?;
         let previous = self.place_slot_mut(place, span)?.replace(value);
         if let Some(previous) = previous {
             self.drop_value(previous)?;
@@ -7356,9 +8965,12 @@ impl<'a> Interpreter<'a> {
             }
             Value::Option(value) => value
                 .as_deref()
+                .and_then(Option::as_ref)
                 .is_none_or(|value| self.value_is_copy(value)),
             Value::Result(value) => match value {
-                Ok(value) | Err(value) => self.value_is_copy(value),
+                Ok(value) | Err(value) => (**value)
+                    .as_ref()
+                    .is_none_or(|value| self.value_is_copy(value)),
             },
             // DEV-087 (WP-C4.7-9 corpus): a `Value::Slice` IS a shared reference — `&[T]` — and
             // shared references are `Copy` (03-Type-System; `Value::Ref` above is treated the
@@ -7441,38 +9053,40 @@ impl<'a> Interpreter<'a> {
                 ));
             }
             if let Some(callable) = self.find_drop(item) {
-                let mut frame = Frame::default();
-                // Move the real value into the destructor's `self` binding rather than a clone:
-                // `Drop::drop(&mut self)` may legally mutate or replace fields (e.g. via
-                // `replace(&mut self.field, ..)`), and those mutations must be visible to the
-                // recursive field destruction below. A cloned receiver would let the destructor
-                // observe and mutate a throwaway copy while `value` itself stayed pristine,
-                // causing the pre-destructor field state to be dropped a second time and any
-                // replacement value installed during `drop()` to never be dropped at all.
-                let receiver_local = callable.receiver.map(|(_, local)| local);
-                if let Some(local) = receiver_local {
-                    frame.insert(local, Some(value));
-                    value = Value::Unit;
+                // **Packet 1: the destructor body goes through the invocation authority.**
+                //
+                // This was the THIRD body-execution funnel — its own frame push, `eval_block` and
+                // pop, alongside `execute_body` and `call_user_method`. A destructor running with
+                // the wrong environment is the DEV-176 shape exactly, so it is the last funnel that
+                // should have had its own copy.
+                //
+                // **The environment is provably `Empty`, not assumed.** A generic `Drop` impl is
+                // refused immediately above (DEV-176/A3c-D), so a destructor body only ever runs
+                // for a non-generic impl, which has no parameters to bind.
+                //
+                // The receiver is MOVED in, not cloned: `Drop::drop(&mut self)` may mutate or
+                // replace fields, and the recursive field destruction below must see that. The
+                // `Destructor` epilogue hands it back.
+                if callable.receiver.is_none() {
+                    return Err(RuntimeError::internal(
+                        "a `Drop::drop` implementation without a receiver reached destruction",
+                        self.hir.item(item).span,
+                    ));
                 }
-                self.frames.push(frame);
-                // DEV-069: the THIRD body-execution funnel (alongside `call_callable` and
-                // `call_user_method`) — a destructor body belongs to the file declaring its
-                // `Drop` impl, which need not be the file of the code going out of scope.
-                let caller_file = std::mem::replace(&mut self.file, callable.file);
-                let result = self.eval_block(callable.body);
-                self.file = caller_file;
-                if let Some(local) = receiver_local {
-                    if let Some(restored) = self
-                        .frame_mut()
-                        .values
-                        .get_mut(&local)
-                        .and_then(Option::take)
-                    {
-                        value = restored;
-                    }
-                }
-                self.frames.pop();
-                result?;
+                // The value is MOVED into backing storage by the authority, and the body's `self`
+                // becomes a genuine `&mut Self` reference to it — so the published receiver type
+                // and the runtime binding agree without a `Drop`-shaped exemption.
+                let dtor_span = self.hir.item(item).span;
+                value = self.invoke_with_epilogue(
+                    ResolvedInvocation {
+                        callable,
+                        environment: InvocationEnv::Empty,
+                    },
+                    ReceiverSource::OwnedForDrop(value),
+                    Vec::new(),
+                    BodyEpilogue::Destructor,
+                    dtor_span,
+                )?;
             }
         }
         match &mut value {
@@ -7526,13 +9140,21 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Value::Option(child) => {
-                if let Some(child) = child.take() {
-                    self.drop_value(*child)?;
+                if let Some(mut child) = child.take() {
+                    if let Some(child) = child.take() {
+                        self.drop_value(child)?;
+                    }
                 }
             }
-            Value::Result(result) => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
-                Ok(child) | Err(child) => self.drop_value(*child)?,
-            },
+            Value::Result(result) => {
+                match std::mem::replace(result, Ok(Box::new(Some(Value::Unit)))) {
+                    Ok(mut child) | Err(mut child) => {
+                        if let Some(child) = child.take() {
+                            self.drop_value(child)?;
+                        }
+                    }
+                }
+            }
             Value::HashMap(map) => {
                 for (key, child) in std::mem::take(&mut map.0).into_iter().rev() {
                     if let Some(child) = child {
@@ -7606,7 +9228,7 @@ impl<'a> Interpreter<'a> {
             let hir::ItemKind::Impl { trait_: Some(reference), self_ty, items, .. } = &candidate.kind else { return None; };
             if reference.res != Res::CoreTrait(hir::CoreTrait::Drop) || !matches!(&self.hir.ty(*self_ty).kind, hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item) { return None; }
             items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body, file: self.item_file(impl_id) }),
+                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body }),
                 _ => None,
             })
         })
@@ -7684,10 +9306,14 @@ fn rebase_frame_refs(
             }
         }
         Value::Option(Some(inner)) => {
-            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            if let Some(inner) = inner.as_mut() {
+                rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            }
         }
         Value::Result(Ok(inner)) | Value::Result(Err(inner)) => {
-            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            if let Some(inner) = inner.as_mut() {
+                rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            }
         }
         Value::MapIter(inner, _) | Value::FilterIter(inner, _) => {
             rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
@@ -7710,6 +9336,10 @@ fn rebase_frame_refs(
 
 fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<Value>> {
     match (value, projection) {
+        // DEV-209: the prelude payload, now a slot like every other component.
+        (Value::Option(Some(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Ok(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Err(slot)), Projection::VariantPayload(1)) => Some(slot),
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get(name),
         // WP-C7.9 Packet C: a tuple-variant payload is slot-backed like any other component, but
@@ -7735,6 +9365,10 @@ fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<V
 
 fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a mut Option<Value>> {
     match (value, projection) {
+        // DEV-209, matching `project`.
+        (Value::Option(Some(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Ok(slot)), Projection::VariantPayload(0)) => Some(slot),
+        (Value::Result(Err(slot)), Projection::VariantPayload(1)) => Some(slot),
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get_mut(name),
         // WP-C7.9 Packet C, matching `project`: the positional payload of a tuple variant.
@@ -7752,6 +9386,19 @@ fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a 
         (Value::HashMap(map), Projection::MapIndex(index)) => {
             map.0.get_mut(*index).map(|(_, value)| value)
         }
+        _ => None,
+    }
+}
+
+/// The nominal an associated-type projection's base selects. `nominal_item` answers the same
+/// question for a runtime `Value`; this one answers it for a `Ty`, which is what a projection has.
+/// References are looked through — `&H::Item` projects through `H` — and anything without a
+/// nominal (a primitive, a tuple, a core container) implements no user trait with an associated
+/// type, so `None` is the honest answer rather than a guess.
+fn nominal_item_of_ty(ty: &Ty) -> Option<ItemId> {
+    match ty {
+        Ty::Struct(item, _) | Ty::Enum(item, _) => Some(*item),
+        Ty::Ref { inner, .. } => nominal_item_of_ty(inner),
         _ => None,
     }
 }
@@ -7897,7 +9544,11 @@ fn canonicalize_float_result(result: Result<Value, RuntimeError>) -> Result<Valu
     })
 }
 
-fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
+fn standard_hash(
+    value: &Value,
+    ty: &Ty,
+    entry_source: crate::source::SourceId,
+) -> Result<u64, RuntimeError> {
     fn push_u64(bytes: &mut Vec<u8>, value: u64) {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -7955,16 +9606,21 @@ fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
             }
             (Value::Option(value), Ty::Core(hir::CoreType::Option, types)) if types.len() == 1 => {
                 let mut bytes = vec![0x04, u8::from(value.is_some())];
-                if let Some(value) = value {
+                if let Some(value) = value.as_deref().and_then(Option::as_ref) {
                     frame(&mut bytes, encode(value, &types[0])?);
                 }
                 Some(bytes)
             }
             (Value::Result(value), Ty::Core(hir::CoreType::Result, types)) if types.len() == 2 => {
                 let mut bytes = vec![0x05, u8::from(value.is_err())];
-                match value {
-                    Ok(value) => frame(&mut bytes, encode(value, &types[0])?),
-                    Err(value) => frame(&mut bytes, encode(value, &types[1])?),
+                match value
+                    .as_ref()
+                    .map(|v| (**v).as_ref())
+                    .map_err(|v| (**v).as_ref())
+                {
+                    Ok(Some(value)) => frame(&mut bytes, encode(value, &types[0])?),
+                    Err(Some(value)) => frame(&mut bytes, encode(value, &types[1])?),
+                    Ok(None) | Err(None) => return None,
                 }
                 Some(bytes)
             }
@@ -7973,7 +9629,10 @@ fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
     }
 
     let bytes = encode(value, ty).ok_or_else(|| {
-        RuntimeError::new("type has no standard Hash implementation", Span::new(0, 0))
+        RuntimeError::new(
+            "type has no standard Hash implementation",
+            Span::synthetic(entry_source),
+        )
     })?;
     let mut hash = 14_695_981_039_346_656_037u64;
     for byte in bytes {
@@ -8018,7 +9677,7 @@ fn float_arg(value: Option<Value>, span: Span) -> Result<f64, RuntimeError> {
 
 /// Numeric comparison for `math::min`/`math::max`/`clamp` (`T: Ord`, Int or
 /// Float only — a narrower runtime scope than the unconstrained type
-/// variable these builtins get in `typecheck.rs`; see
+/// variable these builtins get in `typecheck/body.rs`; see
 /// `docs/PHASE8_GRAMMAR_GAPS.md`'s note on `assert_eq`/`Eq` for the same
 /// pattern elsewhere).
 fn numeric_cmp(
@@ -8084,12 +9743,22 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         | (Value::Array(left), Value::Array(right))
         | (Value::Vec(left), Value::Vec(right)) => slots_equal(left, right),
         (Value::Option(left), Value::Option(right)) => match (left, right) {
-            (Some(left), Some(right)) => values_equal(left, right),
+            (Some(left), Some(right)) => match (left.as_ref(), right.as_ref()) {
+                (Some(left), Some(right)) => values_equal(left, right),
+                (None, None) => true,
+                _ => false,
+            },
             (None, None) => true,
             _ => false,
         },
         (Value::Result(left), Value::Result(right)) => match (left, right) {
-            (Ok(left), Ok(right)) | (Err(left), Err(right)) => values_equal(left, right),
+            (Ok(left), Ok(right)) | (Err(left), Err(right)) => {
+                match (left.as_ref(), right.as_ref()) {
+                    (Some(left), Some(right)) => values_equal(left, right),
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
             _ => false,
         },
         (Value::Boxed(left), Value::Boxed(right)) => match (left.as_ref(), right.as_ref()) {
@@ -8163,7 +9832,9 @@ mod tests {
     use super::*;
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
+    use crate::source::SourceFile;
     use crate::typecheck;
+    use std::sync::Arc;
 
     /// Type-check only, returning the diagnostics — for tests that assert a REJECTION rather
     /// than an execution result.
@@ -8171,7 +9842,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        typecheck::analyze(&hir, file).diagnostics
+        typecheck::analyze(&hir).diagnostics
     }
 
     fn stark_string_literal_contents(value: &str) -> String {
@@ -8234,7 +9905,15 @@ mod tests {
 
         interp.pending_propagation = Some(Value::Int(7));
         let error = interp
-            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                ReceiverSource::None,
+                Vec::new(),
+                interp.file.synthetic_span(),
+            )
             .err()
             .expect("a parked propagation must not cross into a call");
 
@@ -8260,7 +9939,15 @@ mod tests {
 
         assert!(interp.pending_propagation.is_none());
         assert!(interp
-            .call_callable(callable, None, Vec::new(), Span { lo: 0, hi: 0 })
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                ReceiverSource::None,
+                Vec::new(),
+                interp.file.synthetic_span(),
+            )
             .is_ok());
         assert!(
             interp.pending_propagation.is_none(),
@@ -8275,12 +9962,16 @@ mod tests {
     /// The relation is a pure function of a type and a value, so it does not need a running
     /// program — but it DOES need the `Copy` set, which is computed from the HIR, so a real
     /// interpreter is cheaper than faking one.
-    fn relation_probe(source: &str) -> (Hir, Arc<SourceFile>, TypeTables) {
+    fn relation_probe(source: &str) -> (Hir, crate::source::RegisteredSource, TypeTables) {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let tables = typecheck::analyze(&hir, file.clone()).tables;
-        (hir, file, tables)
+        let tables = typecheck::analyze(&hir).tables;
+        // AS1b-ii: the identity the parse registered, not a fresh one.
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        (hir, registered, tables)
     }
 
     /// A place standing for "somewhere in the frame". The relation only ever asks a value's SHAPE,
@@ -8317,7 +10008,9 @@ mod tests {
     #[test]
     fn a_borrowed_text_type_permits_a_view_and_refuses_owned_storage() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         assert!(interp.value_matches_ty(&str_ref(), &Value::Str(String::from("x"))));
         assert!(interp.value_matches_ty(&str_ref(), &Value::Ref(probe_place())));
@@ -8331,7 +10024,9 @@ mod tests {
     #[test]
     fn a_borrowed_slice_permits_a_view_and_refuses_owned_storage() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         assert!(interp.value_matches_ty(&byte_slice_ref(), &Value::Slice(probe_place(), 0, 0)));
         assert!(!interp.value_matches_ty(&byte_slice_ref(), &Value::Vec(Vec::new())));
@@ -8347,7 +10042,9 @@ mod tests {
     #[test]
     fn a_shared_reference_flattens_only_when_the_pointee_is_copy() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let int_ref = Ty::Ref {
             mutable: false,
@@ -8372,7 +10069,9 @@ mod tests {
     #[test]
     fn a_mutable_reference_is_never_flattened_even_for_a_copy_pointee() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let mut_int = Ty::Ref {
             mutable: true,
@@ -8388,7 +10087,9 @@ mod tests {
     #[test]
     fn both_spellings_of_owned_string_permit_the_same_representation() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let primitive = Ty::Primitive(crate::ast::Primitive::String);
         let core = Ty::Core(hir::CoreType::String, Vec::new());
@@ -8407,7 +10108,9 @@ mod tests {
     #[test]
     fn nominals_are_matched_by_identity_and_aggregates_by_arity() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let one = Ty::Struct(ItemId(1), Vec::new());
         assert!(interp.value_matches_ty(
@@ -8446,7 +10149,9 @@ mod tests {
     #[test]
     fn unsized_and_non_runtime_types_permit_nothing() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let standalone_slice = Ty::Slice(Box::new(Ty::Primitive(crate::ast::Primitive::UInt8)));
         assert!(!interp.value_matches_ty(&standalone_slice, &Value::Slice(probe_place(), 0, 0)));
@@ -8467,13 +10172,15 @@ mod tests {
     #[test]
     fn an_unsubstituted_parameter_is_refused_before_the_relation_sees_it() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let error = interp
             .check_value_for_ty(
                 &Ty::Param(String::from("T")),
                 &Value::Int(1),
-                Span { lo: 0, hi: 0 },
+                interp.file.synthetic_span(),
                 RepBoundary::Parameter,
             )
             .expect_err("an unsubstituted parameter cannot be validated against");
@@ -8491,13 +10198,15 @@ mod tests {
     #[test]
     fn the_diagnostic_names_the_boundary_and_the_shapes_but_not_the_contents() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         let error = interp
             .check_value_for_ty(
                 &byte_slice_ref(),
                 &Value::Vec(Vec::new()),
-                Span { lo: 0, hi: 0 },
+                interp.file.synthetic_span(),
                 RepBoundary::Parameter,
             )
             .expect_err("an owned Vec behind `&[UInt8]` is a mismatch");
@@ -8519,7 +10228,9 @@ mod tests {
     #[test]
     fn a_matching_value_is_accepted_at_every_boundary() {
         let (hir, file, tables) = relation_probe("fn main() {}");
+        let probe_span = file.synthetic_span();
         let interp = Interpreter::new(&hir, file, &tables);
+        let _ = probe_span;
 
         for boundary in [
             RepBoundary::LetBinding,
@@ -8539,7 +10250,7 @@ mod tests {
                     .check_value_for_ty(
                         &str_ref(),
                         &Value::Str(String::from("x")),
-                        Span { lo: 0, hi: 0 },
+                        interp.file.synthetic_span(),
                         boundary,
                     )
                     .is_ok(),
@@ -8634,7 +10345,7 @@ mod tests {
         let file = Arc::new(SourceFile::new("test.stark", "fn main() {}"));
         let (ast, _) = parse(&file, ParseMode::Program);
         let (hir, _) = resolve(&ast, file.clone());
-        let mut tables = typecheck::analyze(&hir, file.clone()).tables;
+        let mut tables = typecheck::analyze(&hir).tables;
 
         // A local the tables declare as `&[UInt8]` — a borrowed view.
         let local = LocalId(0);
@@ -8648,9 +10359,23 @@ mod tests {
             },
         );
 
-        let interpreter = Interpreter::new(&hir, file, &tables);
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        let probe_span = registered.synthetic_span();
+        let interpreter = Interpreter::new(&hir, registered, &tables);
+        let expected = tables
+            .local_types
+            .get(&local)
+            .cloned()
+            .expect("the probe just declared this local");
         let error = interpreter
-            .check_value_representation(local, &Value::Vec(Vec::new()), Span { lo: 0, hi: 0 })
+            .check_value_for_ty(
+                &expected,
+                &Value::Vec(Vec::new()),
+                probe_span,
+                RepBoundary::LetBinding,
+            )
             .expect_err("an owned Vec behind a `&[UInt8]` binding is a representation mismatch");
 
         assert_eq!(
@@ -8693,7 +10418,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        typecheck::analyze(&hir, file)
+        typecheck::analyze(&hir)
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == crate::diag::Severity::Error)
@@ -8701,6 +10426,26 @@ mod tests {
     }
 
     fn execute(source: &str) -> Result<Execution, RuntimeError> {
+        execute_with(source, None)
+    }
+
+    /// `execute`, with one producer mutation armed for this run only.
+    fn execute_with(
+        source: &str,
+        mutation: Option<ProducerMutation>,
+    ) -> Result<Execution, RuntimeError> {
+        execute_mutated(
+            source,
+            Mutations {
+                producer: mutation,
+                env: None,
+            },
+        )
+        .result
+    }
+
+    /// `execute`, with any combination of mutations armed for this run only.
+    fn execute_mutated(source: &str, mutations: Mutations) -> MutatedRun {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, parse_diags) = parse(&file, ParseMode::Program);
         assert!(parse_diags.is_empty(), "parse diagnostics: {parse_diags:?}");
@@ -8709,7 +10454,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics
@@ -8718,7 +10463,477 @@ mod tests {
             "type diagnostics: {:?}",
             checked.diagnostics
         );
-        run(&hir, file, &checked.tables)
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        run_mutated(&hir, registered, &checked.tables, mutations)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // DEV-121 CLASS EVIDENCE — four producer mutations, four forcing boundaries
+    // ---------------------------------------------------------------------------------------
+    //
+    // Exit criterion 5 asks for a CLASS-level statement, not one regression case. Twelve wired
+    // boundaries are not that statement on their own: a boundary that never fires is
+    // indistinguishable from a boundary that is not running, and Packet 6 in particular found no
+    // defect while firing on every expression the interpreter evaluates.
+    //
+    // Each test below follows the same three-step shape, which is what makes it evidence rather
+    // than decoration:
+    //
+    //   1. the witness program runs CLEAN unmutated — a "detection" on an already-broken program
+    //      proves nothing;
+    //   2. one PRODUCER is mutated (never `check_value_for_ty`, which would only show the
+    //      predicate detects an artificial mismatch);
+    //   3. the real funnel refuses it, classified `InternalInvariant`, NAMING the intended
+    //      boundary — so a mutation caught by the wrong wire is a failure, not a pass.
+    //
+    // The four classes and their forcing sites are the owner's, recorded 2026-08-08:
+    //
+    //   owned/view          -> ExpressionResult
+    //   reference           -> Receiver
+    //   function value      -> ExpressionResult
+    //   aggregate/container -> AggregateField
+
+    /// Runs `source` twice: once clean, once with `mutation` armed. Returns the mutated run's
+    /// error after asserting the clean run succeeded.
+    fn mutation_must_be_caught(
+        source: &str,
+        mutation: ProducerMutation,
+        boundary: RepBoundary,
+    ) -> RuntimeError {
+        // Step 1 — the witness must genuinely pass first.
+        execute(source).unwrap_or_else(|error| {
+            panic!("witness must run clean before it is mutated: {error:?}")
+        });
+
+        // Step 2 — arm one producer mutation, on THIS execution only. Nothing global is touched,
+        // so a test running in parallel beside this one is unaffected.
+        let error = execute_with(source, Some(mutation))
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{mutation:?} produced a mis-represented value and NOTHING \
+                                       refused it — the boundary is inert"
+                )
+            });
+
+        // Step 3 — refused as a compiler defect, at the intended wire.
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "a representation defect is a compiler defect, never a language trap: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(boundary.as_str()),
+            "{mutation:?} must be caught at {} — a mutation caught by a different wire is not \
+             evidence for this class. Got: {}",
+            boundary.as_str(),
+            error.message
+        );
+        error
+    }
+
+    /// **Class 1 — owned/view.** The original DEV-121 pairing: a producer of `&str`/`&[T]` emits
+    /// OWNED storage instead of a view, so passing the value MOVES what it only borrows.
+    #[test]
+    fn class_1_an_owned_value_behind_a_view_type_is_refused() {
+        let error = mutation_must_be_caught(
+            "fn main() { let s = String::from(\"abc\"); let v = s.as_str(); println(v); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
+        );
+        assert!(
+            error.message.contains("String"),
+            "the diagnostic should name the representation actually found: {}",
+            error.message
+        );
+    }
+
+    /// Class 1, the sequence half — `Vec::as_slice` emitting an owned `Vec` where `&[T]` is
+    /// declared. Both halves of the class are exercised because the two have separate producers.
+    #[test]
+    fn class_1_an_owned_vec_behind_a_slice_type_is_refused() {
+        mutation_must_be_caught(
+            "fn main() { let v: Vec<Int32> = Vec::new(); let s = v.as_slice(); println(s.len()); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
+        );
+    }
+
+    /// **Class 2 — reference.** A `&self` receiver binds the pointee BY VALUE instead of a
+    /// `Value::Ref` into the caller's place. This is the destructor materialization defect
+    /// deliberately reintroduced, and it is why the receiver boundary had to pass for `Drop`
+    /// without a `Drop`-shaped exemption: an exemption there would have made this mutation
+    /// undetectable for every destructor.
+    ///
+    /// **The pointee must be NON-`Copy`, and the first witness got that wrong.** §6.4 licenses the
+    /// bare-value form for a `Copy` pointee — copying it cannot consume, invalidate or destroy the
+    /// referent, so the two representations are indistinguishable to any observation the oracle can
+    /// make. A `struct Holder { n: Int32 }` is `Copy`-eligible, so the mutation was not a violation
+    /// there and the relation was right to accept it. Only a non-`Copy` pointee makes the owned
+    /// form observably wrong, which is exactly what the class is about.
+    #[test]
+    fn class_2_an_owned_value_behind_a_reference_receiver_is_refused() {
+        mutation_must_be_caught(
+            "struct Holder { name: String } \
+             impl Holder { fn peek(&self) -> Int32 { 1 } } \
+             fn main() { let h = Holder { name: String::from(\"x\") }; println(h.peek()); }",
+            ProducerMutation::OwnedForReference,
+            RepBoundary::Receiver,
+        );
+    }
+
+    /// **Class 3 — function value.** A function item coerces to something that is not a function.
+    /// The declared type is `fn(Int32) -> Int32`; §6 permits exactly one representation for it.
+    #[test]
+    fn class_3_a_non_function_behind_a_function_type_is_refused() {
+        mutation_must_be_caught(
+            "fn identity(x: Int32) -> Int32 { x } \
+             fn main() { let f: fn(Int32) -> Int32 = identity; println(f(41)); }",
+            ProducerMutation::NonFunctionValue,
+            RepBoundary::ExpressionResult,
+        );
+    }
+
+    /// **Class 4 — aggregate.** A declared field receives a mis-represented value.
+    ///
+    /// The mutation is injected AFTER the producer-side boundary has already accepted the value,
+    /// which is the point: with `ExpressionResult` live it would otherwise catch nearly everything
+    /// upstream, and this class needs to show that the AGGREGATE wire independently works.
+    #[test]
+    fn class_4_a_mis_represented_aggregate_field_is_refused() {
+        mutation_must_be_caught(
+            "struct Pair { a: Int32, b: Int32 } \
+             fn main() { let p = Pair { a: 1, b: 2 }; println(p.a + p.b); }",
+            ProducerMutation::WrongAggregateField,
+            RepBoundary::AggregateField,
+        );
+    }
+
+    /// **Audit 10-D — an independent function-value challenge.**
+    ///
+    /// Class 3 corrupts the function value's REPRESENTATION. This corrupts its captured generic
+    /// context while leaving a perfectly valid `Value::Function` in place, which is DEV-178's
+    /// defect rather than DEV-121's: the bindings are fixed at the coercion and `Ty::Fn` cannot
+    /// say which instantiation produced them, so nothing downstream can reconstruct them.
+    ///
+    /// The witness answers `size_of::<T>()`, so losing the bindings cannot pass unnoticed the way
+    /// DEV-197's identity-shaped witnesses did.
+    #[test]
+    fn audit_10d_a_function_value_stripped_of_its_bindings_is_refused() {
+        let source = "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+                      fn main() { let f: fn(Float64) -> Int32 = width; println(f(1.5)); }";
+        assert_eq!(execute(source).expect("witness runs").output, "8\n");
+        let error = execute_with(source, Some(ProducerMutation::StripFunctionValueBindings))
+            .expect_err("a function value with no instantiation must not execute its body");
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "losing a captured instantiation is a compiler defect: {}",
+            error.message
+        );
+    }
+
+    /// **Audit 10-E — the other route into typed storage.**
+    ///
+    /// The aggregate class already has a control at CONSTRUCTION. This one writes into storage that
+    /// already exists, which reaches the boundary through `write_place` rather than through
+    /// `eval_struct_lit` — a different funnel with a different expected-type source.
+    #[test]
+    fn audit_10e_a_mis_represented_write_into_existing_storage_is_refused() {
+        mutation_must_be_caught(
+            "fn main() { let mut n: Int32 = 1; n = 2; println(n); }",
+            ProducerMutation::WrongElementWrite,
+            RepBoundary::Assignment,
+        );
+    }
+
+    /// **Audit 10-C, independent of class 2.** Class 2 mutates a `&self` receiver; this is the
+    /// EXCLUSIVE form, where losing place identity also loses the caller's mutation.
+    #[test]
+    fn audit_10c_a_mut_self_receiver_must_keep_place_identity() {
+        mutation_must_be_caught(
+            "struct Holder { name: String } \
+             impl Holder { fn touch(&mut self) -> Int32 { 1 } } \
+             fn main() { let mut h = Holder { name: String::from(\"x\") }; println(h.touch()); }",
+            ProducerMutation::OwnedForReference,
+            RepBoundary::Receiver,
+        );
+    }
+
+    /// **DEV-203 adversary.** An interpolated field is an inline value entering a runtime
+    /// operation: it never binds to a local, so no destination boundary sees it. It reached the
+    /// renderer through a direct `eval_expr`, so the producer boundary did not see it either.
+    ///
+    /// Written as the mutation that would have caught it: `s.as_str()` inside `f"{...}"`, with the
+    /// view producer emitting owned storage. Before the repair this rendered happily.
+    #[test]
+    fn an_interpolated_field_is_a_checked_expression_result() {
+        mutation_must_be_caught(
+            "fn main() { let s = String::from(\"abc\"); println(f\"{s.as_str()}\"); }",
+            ProducerMutation::OwnedForView,
+            RepBoundary::ExpressionResult,
+        );
+    }
+
+    /// **The control on the controls.** The mutation must be OFF unless a test arms it — otherwise
+    /// the four tests above would be reporting on a permanently broken interpreter rather than on
+    /// an injected defect, and every other test in this suite would be failing too.
+    ///
+    /// Asserted through the real entry point rather than by reading a flag, because "the default
+    /// is off" is a claim about what `run` does, not about a field's initialiser.
+    #[test]
+    fn no_producer_mutation_is_armed_by_default() {
+        let source = "struct Pair { a: Int32, b: Int32 } \
+                      fn main() { let p = Pair { a: 1, b: 2 }; println(p.a + p.b); }";
+        assert_eq!(execute(source).expect("clean by default").output, "3\n");
+        assert_eq!(
+            execute_with(source, None)
+                .expect("explicitly unmutated")
+                .output,
+            "3\n",
+            "passing `None` must be identical to not arming at all"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // AS3 #2 REQUALIFICATION — environment installation, proved by omission
+    // ---------------------------------------------------------------------------------------
+    //
+    // The criterion was recorded PASS once before on tests that asserted a table had an entry.
+    // DEV-197 is what that missed: nine dispatch sites installed no environment at all and every
+    // test passed, because the bodies involved never mentioned their own parameters. An
+    // environment that is never consulted cannot be observed to be absent.
+    //
+    // So this requalification proves the claim by OMISSION. Each of the seven dispatch classes gets
+    // a witness whose answer genuinely depends on its instantiation — `size_of::<T>()`, which is
+    // 8 for `Float64` and 4 for `Int32` — and the environment is then removed at the single
+    // installation point. Three things must hold for each class:
+    //
+    //   1. the witness passes unmutated, with the instantiation-dependent answer;
+    //   2. the mutation is REACHED — a control that never reaches the installer would "detect"
+    //      nothing and look like a pass, which is precisely how DEV-197 hid;
+    //   3. the run fails as `InternalInvariant` — never Empty, never a skip, never a default.
+
+    /// The three-step check every dispatch-class control runs. Returns the mutated run's error.
+    fn environment_omission_must_be_observable(
+        class: &str,
+        source: &str,
+        expected_output: &str,
+    ) -> RuntimeError {
+        // 1. The witness genuinely passes, with the answer its instantiation determines.
+        let clean = execute(source)
+            .unwrap_or_else(|error| panic!("{class}: witness must run clean: {error:?}"));
+        assert_eq!(
+            clean.output, expected_output,
+            "{class}: the witness must depend on its instantiation, or removing the environment \
+             cannot be observed — that is exactly how DEV-197 stayed hidden"
+        );
+
+        // 2 and 3. Remove the environment at the installation point.
+        let run = execute_mutated(
+            source,
+            Mutations {
+                producer: None,
+                env: Some(EnvMutation::DropEnvironment),
+            },
+        );
+        assert!(
+            run.env_mutations_applied > 0,
+            "{class}: the installation point was never reached, so this control tests nothing \
+             about this dispatch class"
+        );
+        let error = run.result.err().unwrap_or_else(|| {
+            panic!(
+                "{class}: the environment was removed and the program still succeeded — \
+                    omission is unobservable for this dispatch class"
+            )
+        });
+        assert_eq!(
+            error.class,
+            FailureClass::InternalInvariant,
+            "{class}: a missing environment is a compiler defect, never a language trap: {}",
+            error.message
+        );
+        error
+    }
+
+    /// **D1 — free generic function.** `Static` selection, `Static` environment.
+    #[test]
+    fn d1_a_free_generic_function_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D1",
+            "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+             fn main() { println(width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D2 — generic associated function.** One of the two paths DEV-197 was opened for.
+    #[test]
+    fn d2_a_generic_associated_function_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D2",
+            "struct S { v: Int32 } \
+             impl S { fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } } \
+             fn main() { println(S::width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D3 — generic inherent method.**
+    #[test]
+    fn d3_a_generic_inherent_method_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D3",
+            "struct S { v: Int32 } \
+             impl S { fn width<T>(&self, x: T) -> Int32 { size_of::<T>() as Int32 } } \
+             fn main() { let s = S { v: 0 }; println(s.width(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D4 — operator dispatch into a generic impl.**
+    ///
+    /// This class already has real-world evidence: DEV-201 was exactly this defect, shipped, and
+    /// caught by the receiver boundary as a MISSED TRAP against MIR. The control is added anyway
+    /// so the requalification is reproducible rather than resting on history.
+    #[test]
+    fn d4_operator_dispatch_into_a_generic_impl_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D4",
+            "struct W<T> { v: T } \
+             impl<T> Eq for W<T> { fn eq(&self, other: &W<T>) -> Bool { size_of::<T>() == 8 } } \
+             fn main() { let a = W { v: 1.5 }; let b = W { v: 2.5 }; \
+                         if a == b { println(1); } else { println(0); } }",
+            "1\n",
+        );
+    }
+
+    /// **D5 — bound trait dispatch.** The body and environment come from the shared specialiser
+    /// atomically; removing the environment must not leave the body running.
+    #[test]
+    fn d5_bound_trait_dispatch_needs_its_environment() {
+        environment_omission_must_be_observable(
+            "D5",
+            "trait Sz { fn sz(&self) -> Int32; } \
+             struct P<T> { v: T } \
+             impl<T> Sz for P<T> { fn sz(&self) -> Int32 { size_of::<T>() as Int32 } } \
+             fn use_it<S: Sz>(s: S) -> Int32 { s.sz() } \
+             fn main() { println(use_it(P { v: 1.5 })); }",
+            "8\n",
+        );
+    }
+
+    /// **D6 — function value.** DEV-178 put the bindings on the VALUE precisely because
+    /// `Ty::Fn` cannot say which instantiation produced it, and DEV-197 found the call site
+    /// discarding them.
+    ///
+    /// The witness is deliberately NOT identity-shaped. DEV-197's original two defects were
+    /// invisible because both bodies returned their argument unchanged, so an unbound `T` changed
+    /// no answer; a control with that property would reproduce the blindness it is testing for.
+    #[test]
+    fn d6_a_function_value_needs_its_captured_bindings() {
+        environment_omission_must_be_observable(
+            "D6",
+            "fn width<T>(x: T) -> Int32 { size_of::<T>() as Int32 } \
+             fn main() { let f: fn(Float64) -> Int32 = width; println(f(1.5)); }",
+            "8\n",
+        );
+    }
+
+    /// **D7 — nested generic calls, which tests RESTORATION as well as installation.**
+    ///
+    /// `outer<T = Float64>` calls `inner<U = Int32>` and then reads `size_of::<T>()` again. The
+    /// witness answers `848`: 8 before, 4 inside, 8 after. A stale frame would answer `844`, and
+    /// the two instantiations are deliberately different so that a restoration bug cannot pass by
+    /// coincidence.
+    #[test]
+    fn d7_nested_generic_calls_install_and_restore() {
+        environment_omission_must_be_observable(
+            "D7",
+            "fn inner<U>(x: U) -> Int32 { size_of::<U>() as Int32 } \
+             fn outer<T>(x: T) -> Int32 { \
+                 let a = size_of::<T>() as Int32; \
+                 let m = inner(1); \
+                 let b = size_of::<T>() as Int32; \
+                 a * 100 + m * 10 + b \
+             } \
+             fn main() { println(outer(1.5)); }",
+            "848\n",
+        );
+    }
+
+    /// **P8, stated as its own assertion.** D7's witness passing is the restoration proof, but it
+    /// is worth failing loudly on its own: `848` means the caller's `T` survived a callee that
+    /// installed a different one, and `844` means it did not.
+    #[test]
+    fn p8_a_callees_environment_does_not_outlive_it() {
+        let execution = execute(
+            "fn inner<U>(x: U) -> Int32 { size_of::<U>() as Int32 } \
+             fn outer<T>(x: T) -> Int32 { \
+                 let a = size_of::<T>() as Int32; \
+                 let m = inner(1); \
+                 let b = size_of::<T>() as Int32; \
+                 a * 100 + m * 10 + b \
+             } \
+             fn main() { println(outer(1.5)); }",
+        )
+        .expect("must run");
+        assert_eq!(
+            execution.output, "848\n",
+            "the caller's instantiation must be restored after a callee installed a different \
+             one: 8 before, 4 inside, 8 after"
+        );
+    }
+
+    /// **P2 — an invocation's environment is an explicit state, never an absent one.**
+    ///
+    /// Exhaustive on purpose: adding an `InvocationEnv` variant fails to compile here until
+    /// someone states what it means and confirms the installer handles it. That is the forcing
+    /// function, not the assertion below.
+    #[test]
+    fn p2_every_invocation_environment_variant_is_explicit() {
+        fn describe(env: &InvocationEnv) -> &'static str {
+            match env {
+                InvocationEnv::Empty => "explicitly no generics — not absent metadata",
+                InvocationEnv::Published(_) => "the environment published at this call expression",
+                InvocationEnv::Concrete(_) => {
+                    "bindings the checker or specialiser already resolved"
+                }
+                InvocationEnv::Captured(_) => "bindings the function value carries (DEV-178)",
+            }
+        }
+        let variants = [InvocationEnv::Empty, InvocationEnv::Concrete(Vec::new())];
+        for env in &variants {
+            assert!(!describe(env).is_empty());
+        }
+    }
+
+    /// **P6 — the environment is installed BEFORE the typed call boundaries read anything.**
+    ///
+    /// Not a source-order assertion: D4's receiver type is `&W<T>`, so if the receiver boundary ran
+    /// before installation it would see an unsubstituted `T` on a correct program. It does not —
+    /// the unmutated witness passes — and when the environment is removed, that is exactly the
+    /// boundary that catches it.
+    #[test]
+    fn p6_typed_boundaries_run_while_the_environment_is_active() {
+        let error = environment_omission_must_be_observable(
+            "P6",
+            "struct W<T> { v: T } \
+             impl<T> Eq for W<T> { fn eq(&self, other: &W<T>) -> Bool { size_of::<T>() == 8 } } \
+             fn main() { let a = W { v: 1.5 }; let b = W { v: 2.5 }; \
+                         if a == b { println(1); } else { println(0); } }",
+            "1\n",
+        );
+        assert!(
+            error.message.contains(RepBoundary::Receiver.as_str()),
+            "a receiver typed `&W<T>` must be read against the callee's own instantiation, so \
+             removing it fails at the receiver boundary. Got: {}",
+            error.message
+        );
     }
 
     #[test]
@@ -8787,7 +11002,7 @@ mod tests {
         );
     }
 
-    /// WP-C1.3 regression test for the companion typecheck.rs finding made while investigating
+    /// WP-C1.3 regression test for the companion checker finding made while investigating
     /// DEV-008: `Ty::Core` container types (Option/Result/Vec) had no arm in
     /// `require_operator_bound` at all, so `==` on `Option<Int32>` was unconditionally rejected
     /// by the type checker even though Int32 is obviously Eq. Confirms both that it now
@@ -10114,7 +12329,7 @@ mod tests {
             resolve_diags.is_empty(),
             "resolve diagnostics: {resolve_diags:?}"
         );
-        let checked = typecheck::analyze(&hir, file.clone());
+        let checked = typecheck::analyze(&hir);
         assert!(
             checked
                 .diagnostics
@@ -10123,7 +12338,10 @@ mod tests {
             "type diagnostics: {:?}",
             checked.diagnostics
         );
-        let mut interpreter = Interpreter::new(&hir, file.clone(), &checked.tables);
+        let registered = hir
+            .source_named(&file.name)
+            .expect("the parse registered this file");
+        let mut interpreter = Interpreter::new(&hir, registered, &checked.tables);
         let item_id = (0..hir.items.len())
             .map(|index| ItemId(index as u32))
             .find(|item| {
@@ -10135,7 +12353,15 @@ mod tests {
             .item_callable(item_id)
             .unwrap_or_else(|| panic!("'{function_name}' is not callable"));
         interpreter
-            .call_callable(callable, None, Vec::new(), span)
+            .invoke_callable(
+                ResolvedInvocation {
+                    callable,
+                    environment: InvocationEnv::Empty,
+                },
+                ReceiverSource::None,
+                Vec::new(),
+                span,
+            )
             .unwrap_or_else(|error| panic!("evaluating '{function_name}' failed: {error:?}"))
     }
 
@@ -10322,7 +12548,7 @@ mod tests {
         assert_eq!(execution.output, "3\n");
     }
 
-    /// DEV-060 [CLOSED]: end-to-end confirmation that the fixed program (see `typecheck.rs`'s
+    /// DEV-060 [CLOSED]: end-to-end confirmation that the fixed program (see `typecheck/mod.rs`'s
     /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
     /// decisive diagnostic-level regression) both type-checks *and* executes correctly -- two
     /// calls to an un-overridden trait default method on the same receiver now produce the
@@ -10422,7 +12648,7 @@ mod tests {
         assert_eq!(execution.output, "42\n5\nnone\n8\n7\nerror\n");
     }
 
-    /// Companion regression for DEV-060 (see `typecheck.rs`'s
+    /// Companion regression for DEV-060 (see `typecheck/mod.rs`'s
     /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
     /// decisive diagnostic-level regression): two calls to an *overridden* trait method (not a
     /// default fallback) are unaffected by DEV-060.
@@ -10465,7 +12691,7 @@ mod tests {
 
     /// DEV-051 end-to-end: a trait default method calling a sibling trait method through `self`
     /// (both directly, and transitively through a chain of two default methods) now type-checks
-    /// *and* executes correctly. See `typecheck.rs`'s `trait_default_method_calling_sibling_
+    /// *and* executes correctly. See `typecheck/mod.rs`'s `trait_default_method_calling_sibling_
     /// trait_method_through_self_type_checks` for the type-checking half of this regression.
     #[test]
     fn trait_default_method_calling_sibling_trait_method_through_self_executes() {
@@ -10496,7 +12722,7 @@ mod tests {
     /// matched *any* value with no diagnostic -- confirmed to produce **wrong runtime output**,
     /// not merely a spurious rejection: `match Some(5) { None => 999, Some(a) => a }` printed
     /// `999`. This is the decisive end-to-end regression for that fix; `resolve.rs`/
-    /// `typecheck.rs` carry the resolution/type-checking half.
+    /// `typecheck/` carries the resolution/type-checking half.
     #[test]
     fn bare_none_pattern_matches_by_value_not_as_a_wildcard() {
         let execution = execute(

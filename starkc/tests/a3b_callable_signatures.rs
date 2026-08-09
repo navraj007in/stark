@@ -81,7 +81,7 @@ fn analyse(source: &str) -> (Hir, typecheck::TypeCheckResult) {
     assert!(parse_diags.is_empty(), "parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let _ = LanguageOptions::CORE;
     (hir, checked)
 }

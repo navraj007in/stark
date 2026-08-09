@@ -25,7 +25,7 @@ fn run(source: &str) -> Result<u8, starkc::interp::RuntimeError> {
     assert!(parse_diags.is_empty(), "parse: {parse_diags:?}");
     let (hir, resolve_diags) = resolve(&ast, file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -33,7 +33,12 @@ fn run(source: &str) -> Result<u8, starkc::interp::RuntimeError> {
         .collect();
     assert!(errors.is_empty(), "the program must type-check: {errors:?}");
     let _ = LanguageOptions::CORE;
-    interp::run_capturing(&hir, file, &checked.tables).result
+    interp::run_capturing(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .result
 }
 
 /// **The control.** A free generic function resolves its parameter, so the defect is specific to
@@ -90,8 +95,12 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let outcome = interp::run_capturing(&hir, file, &checked.tables);
+    let checked = typecheck::analyze(&hir);
+    let outcome = interp::run_capturing(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    );
     assert!(
         outcome.result.is_ok(),
         "a generic method must resolve its parameter: {:?}",
@@ -131,8 +140,12 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let outcome = interp::run_capturing(&hir, file, &checked.tables);
+    let checked = typecheck::analyze(&hir);
+    let outcome = interp::run_capturing(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    );
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     assert_eq!(
         outcome.output, "4\n8\n",
@@ -170,8 +183,12 @@ fn main() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let outcome = interp::run_capturing(&hir, file, &checked.tables);
+    let checked = typecheck::analyze(&hir);
+    let outcome = interp::run_capturing(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    );
     assert!(
         outcome.result.is_ok(),
         "with the environment installed this must now succeed: {:?}",

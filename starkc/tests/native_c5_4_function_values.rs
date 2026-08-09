@@ -36,15 +36,19 @@ fn compile(source: &str, tag: &str) -> (MirProgram, String) {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     let _verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
     let versions = build_versions(
         "0.0.0-test".to_string(),
@@ -286,9 +290,13 @@ fn the_entry_main_used_as_a_function_value_builds_natively() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
-    let program =
-        lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("{}", e.what));
+    let checked = typecheck::analyze(&hir);
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{}", e.what));
     let verified = verify_program(&program).unwrap();
     let dir = std::env::temp_dir().join(format!("stark_c5_4c_entry_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

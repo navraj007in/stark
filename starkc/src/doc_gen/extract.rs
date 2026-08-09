@@ -96,6 +96,8 @@ pub struct DocExample {
 struct Ctx<'a> {
     ast: &'a Ast,
     file: &'a SourceFile,
+    /// AS1b-ii: derived from the AST being documented, not threaded in separately.
+    source: crate::source::SourceId,
     comments: &'a [Comment],
     tokens: &'a [Token],
 }
@@ -105,10 +107,16 @@ struct Ctx<'a> {
 /// `impl TypeName { ... }` blocks' public methods into the matching
 /// struct/enum's members.
 pub fn extract(ast: &Ast, file: &SourceFile, comments: &[Comment]) -> Vec<DocItem> {
-    let (tokens, _) = tokenize(file);
+    // AS1b-ii: the id comes from the AST being documented, which already registered this source.
+    let source = ast
+        .sources
+        .id_for_name(&file.name)
+        .expect("the parse registered this file");
+    let (tokens, _) = tokenize(file, source);
     let ctx = Ctx {
         ast,
         file,
+        source,
         comments,
         tokens: &tokens,
     };
@@ -139,7 +147,7 @@ pub fn extract(ast: &Ast, file: &SourceFile, comments: &[Comment]) -> Vec<DocIte
         let span = methods
             .first()
             .map(|method| method.span)
-            .unwrap_or(Span::new(0, 0));
+            .unwrap_or(Span::synthetic(ctx.source));
         let module_path = methods
             .first()
             .map(|method| method.module_path.clone())
@@ -265,7 +273,7 @@ fn header_span(tokens: &[Token], item_span: Span) -> Span {
             TokenKind::LBrace | TokenKind::LParen | TokenKind::LBracket => depth += 1,
             TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket => depth -= 1,
             TokenKind::Semi if depth == 0 => {
-                return Span::new(item_span.lo, t.span.lo);
+                return Span::in_source(item_span.source, item_span.lo, t.span.lo);
             }
             _ => {}
         }
@@ -274,7 +282,7 @@ fn header_span(tokens: &[Token], item_span: Span) -> Span {
         // the header, including any `<...>` generics or `(...)` params
         // already accounted for by the depth tracking above.
         if t.kind == TokenKind::LBrace && depth == 1 {
-            return Span::new(item_span.lo, t.span.lo);
+            return Span::in_source(item_span.source, item_span.lo, t.span.lo);
         }
     }
     item_span
@@ -303,7 +311,8 @@ fn doc_item_for(ctx: &Ctx, id: ast::ItemId, mod_path: &[String]) -> Option<DocIt
                 .iter()
                 .filter(|f| f.is_pub)
                 .map(|f| {
-                    let field_span = Span::new(f.name.lo, ast.ty(f.ty).span.hi);
+                    let field_span =
+                        Span::in_source(f.name.source, f.name.lo, ast.ty(f.ty).span.hi);
                     DocItem {
                         name: text(file, f.name).to_string(),
                         module_path: PENDING_MODULE_PATH.to_string(),

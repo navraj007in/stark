@@ -50,7 +50,7 @@ fn diagnostics(tag: &str, body: &str) -> Vec<String> {
         .map(|d| format!("{}: {}", d.code.clone().unwrap_or_default(), d.message))
         .collect();
     if out.is_empty() {
-        out = typecheck::check(&hir, file)
+        out = typecheck::check(&hir)
             .iter()
             .filter(|d| d.severity == Severity::Error)
             .map(|d| format!("{}: {}", d.code.clone().unwrap_or_default(), d.message))

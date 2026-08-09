@@ -43,18 +43,26 @@ fn accepted(tag: &str, src: &str) {
     assert!(pd.is_empty(), "{tag} must PARSE: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let hir_exec = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
+    let hir_exec = interp::run_with_partial_output(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
     assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
     let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
     assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
@@ -67,7 +75,7 @@ fn rejected_e0103(tag: &str, src: &str) {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<_> = checked
         .diagnostics
         .iter()

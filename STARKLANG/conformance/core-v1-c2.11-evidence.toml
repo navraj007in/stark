@@ -17,49 +17,49 @@ negative_tests = ["starkc/src/lexer.rs::string_errors"]
 [[rule]]
 id = "TYPE-ALIAS-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs"]
+source = ["starkc/src/typecheck/"]
 positive_tests = ["starkc/tests/gate2_valid.rs::aliases_are_transparent_and_boxed_recursion_is_sized"]
 negative_tests = ["starkc/tests/gate2_valid.rs::alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected"]
 
 [[rule]]
 id = "TYPE-WF-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs"]
+source = ["starkc/src/typecheck/"]
 positive_tests = ["starkc/tests/gate2_valid.rs::aliases_are_transparent_and_boxed_recursion_is_sized"]
 negative_tests = ["starkc/tests/gate2_valid.rs::alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected"]
 
 [[rule]]
 id = "TRAIT-ASSOC-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs", "starkc/src/interp.rs"]
+source = ["starkc/src/typecheck/", "starkc/src/interp.rs"]
 positive_tests = ["starkc/src/interp.rs::executes_trait_associated_conversion_functions"]
-negative_tests = ["starkc/src/typecheck.rs::ambiguous_trait_associated_functions_require_qualification"]
+negative_tests = ["starkc/src/typecheck/mod.rs::ambiguous_trait_associated_functions_require_qualification"]
 
 [[rule]]
 id = "TRAIT-COHERENCE-002"
 status = "implemented"
-source = ["starkc/src/typecheck.rs"]
-positive_tests = ["starkc/src/typecheck.rs::trait_associated_conversion_function_resolves"]
-negative_tests = ["starkc/src/typecheck.rs::positive_bounds_do_not_make_unifying_impl_heads_disjoint"]
+source = ["starkc/src/typecheck/"]
+positive_tests = ["starkc/src/typecheck/mod.rs::trait_associated_conversion_function_resolves"]
+negative_tests = ["starkc/src/typecheck/mod.rs::positive_bounds_do_not_make_unifying_impl_heads_disjoint"]
 
 [[rule]]
 id = "OWN-CARRY-001"
 status = "implemented"
-source = ["starkc/src/borrowck.rs", "starkc/src/typecheck.rs"]
-positive_tests = ["starkc/src/typecheck.rs::generic_reference_fields_propagate_borrows_without_becoming_illegal_fields"]
-negative_tests = ["starkc/src/typecheck.rs::returning_nested_reference_to_local_is_rejected"]
+source = ["starkc/src/borrowck.rs", "starkc/src/typecheck/"]
+positive_tests = ["starkc/src/typecheck/mod.rs::generic_reference_fields_propagate_borrows_without_becoming_illegal_fields"]
+negative_tests = ["starkc/src/typecheck/mod.rs::returning_nested_reference_to_local_is_rejected"]
 
 [[rule]]
 id = "PAT-USEFUL-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs"]
+source = ["starkc/src/typecheck/"]
 positive_tests = ["starkc/tests/gate2_valid.rs::test_distinct_integer_literal_patterns_are_not_flagged_unreachable"]
 negative_tests = ["starkc/tests/gate2_valid.rs::test_duplicate_integer_literal_pattern_is_still_flagged_unreachable"]
 
 [[rule]]
 id = "CONST-DECL-001"
 status = "implemented"
-source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+source = ["starkc/src/interp.rs", "starkc/src/typecheck/"]
 positive_tests = ["starkc/tests/gate2_valid.rs::constant_subset_is_evaluated_at_compile_time"]
 negative_tests = ["starkc/tests/gate2_valid.rs::constants_reject_runtime_forms_cycles_and_traps"]
 
@@ -101,7 +101,7 @@ negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_a
 [[rule]]
 id = "NUM-CAST-001"
 status = "implemented"
-source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+source = ["starkc/src/interp.rs", "starkc/src/typecheck/"]
 positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
 negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
 
@@ -115,14 +115,14 @@ negative_tests = ["starkc/src/interp.rs::float32_cast_to_float64_uses_float64_ro
 [[rule]]
 id = "NUM-FLOAT-OP-001"
 status = "implemented"
-source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+source = ["starkc/src/interp.rs", "starkc/src/typecheck/"]
 positive_tests = ["starkc/src/interp.rs::every_nan_producing_path_yields_the_same_canonical_bits_for_float64"]
 negative_tests = ["starkc/src/interp.rs::negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero"]
 
 [[rule]]
 id = "NUM-FLOAT-TRAIT-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs"]
+source = ["starkc/src/typecheck/"]
 positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
 negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]
 
@@ -164,9 +164,9 @@ negative_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_a
 [[rule]]
 id = "MOD-REEXPORT-001"
 status = "implemented"
-source = ["starkc/src/resolve.rs", "starkc/src/typecheck.rs"]
-positive_tests = ["starkc/src/typecheck.rs::public_api_accepts_a_type_made_nameable_by_public_reexport"]
-negative_tests = ["starkc/src/typecheck.rs::public_api_rejects_private_signature_types"]
+source = ["starkc/src/resolve.rs", "starkc/src/typecheck/"]
+positive_tests = ["starkc/src/typecheck/mod.rs::public_api_accepts_a_type_made_nameable_by_public_reexport"]
+negative_tests = ["starkc/src/typecheck/mod.rs::public_api_rejects_private_signature_types"]
 
 [[rule]]
 id = "PKG-MANIFEST-001"
@@ -220,21 +220,21 @@ negative_tests = ["starkc/src/interp.rs::float32_arithmetic_result_nested_in_tup
 [[rule]]
 id = "STD-HASH-001"
 status = "implemented"
-source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+source = ["starkc/src/interp.rs", "starkc/src/typecheck/"]
 positive_tests = ["starkc/src/interp.rs::builtin_display_and_hash_are_directly_callable"]
 negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]
 
 [[rule]]
 id = "STD-IO-001"
 status = "implemented"
-source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+source = ["starkc/src/interp.rs", "starkc/src/typecheck/"]
 positive_tests = ["starkc/src/interp.rs::file_is_a_first_class_noncopy_resource"]
 negative_tests = ["starkc/tests/gate3_execution.rs::file_io_returns_results_instead_of_silently_failing"]
 
 [[rule]]
 id = "STD-CONVERT-001"
 status = "implemented"
-source = ["starkc/src/typecheck.rs", "starkc/src/interp.rs"]
+source = ["starkc/src/typecheck/", "starkc/src/interp.rs"]
 positive_tests = ["starkc/src/interp.rs::executes_trait_associated_conversion_functions"]
 negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
 

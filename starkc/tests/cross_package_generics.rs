@@ -61,7 +61,7 @@ fn compile_app(root: &Path) -> Compiled {
     ));
     let (hir, resolve_diags) = resolve(&ast, root_file.clone());
     assert!(resolve_diags.is_empty(), "resolve: {resolve_diags:?}");
-    let checked = typecheck::analyze(&hir, root_file.clone());
+    let checked = typecheck::analyze(&hir);
     let type_errors: Vec<String> = checked
         .diagnostics
         .iter()
@@ -69,7 +69,16 @@ fn compile_app(root: &Path) -> Compiled {
         .map(|d| d.message.clone())
         .collect();
     let program = if type_errors.is_empty() {
-        lower_program(&hir, &checked.tables, root_file).ok()
+        lower_program(
+            &hir,
+            &checked.tables,
+            // AS1b-ii: the package entry is registered under its LOGICAL name, not the
+
+            // checkout path `root_file` carries.
+            hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+                .expect("the parse registered the package entry"),
+        )
+        .ok()
     } else {
         None
     };

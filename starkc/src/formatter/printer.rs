@@ -1017,7 +1017,8 @@ impl<'a> Printer<'a> {
             }
             ItemKind::Model(def) => {
                 let (name, generics, ports) = (def.name, def.generics.clone(), &def.ports);
-                self.write("model ");
+                self.write(crate::extensions::tensor::syntax::MODEL_KEYWORD);
+                self.write(" ");
                 let t = self.text(name);
                 self.write(t);
                 self.generics_decl(&generics);

@@ -50,12 +50,9 @@ impl Difference {
     }
 }
 
+/// AS5-f: delegates to the compiler's one escaping authority (DEV-184).
 pub fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    crate::json::escape(s)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -153,7 +150,7 @@ fn extract_declaration(
     if !resolution_diagnostics.is_empty() {
         return Err(frontend_error("resolve", &resolution_diagnostics));
     }
-    let type_diagnostics = crate::typecheck::check_with_options(&hir, file.clone(), options);
+    let type_diagnostics = crate::typecheck::check_with_options(&hir, options);
     if type_diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)

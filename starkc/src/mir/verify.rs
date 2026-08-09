@@ -20,7 +20,7 @@
 //! V-IDX-1/2  MIR-0010 (index-proof discipline violation)
 //! V-FN-1     MIR-0011 (arithmetic/comparison on a FnPtr operand)
 //! V-RT-1     MIR-0012 (runtime callee signature mismatch)
-//! V-SRC-1    MIR-0013 (SourceInfo missing a valid FileId)
+//! V-SRC-1    MIR-0013 (SourceInfo names a source the program cannot resolve)
 //! V-REF-1    MIR-0014 (write crossing a Deref of a shared reference — C4.5e-0)
 //! V-STR-1/2  MIR-0015 (invalid Str constant / String|str in a structural op / bad Trap msg — A1)
 //! V-COPY-1   MIR-0016 (Copy-only runtime op on a non-Copy element type — A1; Vec ops land e-2)
@@ -491,9 +491,20 @@ impl<'a> BodyCx<'a> {
         self.verify_terminator(term, bi);
     }
 
+    /// V-SRC-1: every `SourceInfo` names a source this program can resolve.
+    ///
+    /// AS1b-iii changed what this proves. It used to check that a MIR-local `FileId` was in range
+    /// for `MirProgram::files` — validating a secondary identity the lowerer had minted for itself,
+    /// while saying nothing about the `SourceId` the span carried and everything downstream would
+    /// eventually need. Now there is one identity, and the verifier resolves it against the
+    /// program's registry, which is a claim lowering cannot satisfy by construction.
     fn verify_source(&mut self, info: &SourceInfo, bi: u32) {
-        if (info.file.0 as usize) >= self.program.files.len() {
-            self.err("MIR-0013", bi, "SourceInfo carries an invalid FileId");
+        if self.program.sources.get(info.span.source).is_none() {
+            self.err(
+                "MIR-0013",
+                bi,
+                "SourceInfo names a source absent from the program's source registry",
+            );
         }
     }
 
@@ -1943,7 +1954,7 @@ impl<'a> BodyCx<'a> {
                 );
             }
             // A6: Vec iteration is a borrowed cursor (no snapshot), so `T` need NOT be Copy.
-            VecClear if self.mir_needs_drop(&t) => {
+            VecClear if self.requires_drop_glue(&t) => {
                 self.err(
                     "MIR-0016",
                     bi,
@@ -2335,67 +2346,12 @@ impl<'a> BodyCx<'a> {
         }
     }
 
-    /// A1: precise droppability, mirroring lowering's `ty_needs_drop` so the verifier never
-    /// rejects a valid lowering (String/Vec always; a nominal with an own `Drop` impl or a
-    /// droppable field; recursion through aggregates). Distinct from the conservative
-    /// `may_need_drop` used by the Drop-terminator sanity check.
-    fn mir_needs_drop(&self, ty: &MirTy) -> bool {
-        match ty {
-            MirTy::String | MirTy::Core(..) => true,
-            MirTy::Struct(item, args) => {
-                let key = (item.0, args.clone());
-                self.program.types.drop_impls.contains_key(&key)
-                    || self
-                        .program
-                        .types
-                        .struct_fields
-                        .get(&key)
-                        .is_some_and(|fs| fs.iter().any(|f| self.mir_needs_drop(f)))
-            }
-            MirTy::Enum(EnumRef::User(item), args) => {
-                let key = (item.0, args.clone());
-                self.program.types.drop_impls.contains_key(&key)
-                    || self
-                        .program
-                        .types
-                        .enum_variants
-                        .get(&key)
-                        .is_some_and(|vs| {
-                            vs.iter().any(|v| v.iter().any(|f| self.mir_needs_drop(f)))
-                        })
-            }
-            MirTy::Enum(_, args) => args.iter().any(|a| self.mir_needs_drop(a)),
-            MirTy::Tuple(elems) => elems.iter().any(|e| self.mir_needs_drop(e)),
-            MirTy::Array(elem, _) => self.mir_needs_drop(elem),
-
-            // **A11 §5: a host resource's drop IS its provider close.** This arm is not
-            // documentation of an old fix — exhaustiveness FOUND it. `HostResource` was falling
-            // into `_ => false` here, so this predicate and `may_need_drop` (the verifier's other
-            // copy of "does this need dropping") disagreed about resources, and this one was the
-            // wrong way round. The SEVENTH catch-all to swallow the variant, and the first found by
-            // the compiler rather than by a leak.
-            MirTy::HostResource(_) => true,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.** See `may_need_drop`.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::Slice(_)
-            | MirTy::Ref { .. }
-            | MirTy::FnPtr { .. } => false,
-        }
+    /// A1: precise droppability. **AS4: the rule itself lives in
+    /// [`requires_drop_glue`]** — this is a delegate, so the verifier and any measurement of the
+    /// rule cannot drift. It was a method reading only `self.program.types`, which made it
+    /// unmeasurable without constructing a per-body context.
+    fn requires_drop_glue(&self, ty: &MirTy) -> bool {
+        requires_drop_glue(&self.program.types, ty)
     }
 
     /// A1: is `ty` `Copy` at the MIR level? Primitives/refs/fn-values/all-Copy aggregates are
@@ -2885,11 +2841,51 @@ fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {
     a[..n] == b[..n]
 }
 
+/// AS4: a test-only window onto `may_need_drop`, so the drop-rule matrix in `mir::lower` can
+/// measure the conservative rule alongside the precise one without widening production visibility.
+/// Measurement only — it adds no caller and changes no behaviour.
+#[cfg(test)]
+pub(crate) fn may_need_drop_for_inventory(ty: &MirTy) -> bool {
+    may_need_drop(ty)
+}
+
+/// **AS4 — the verifier's view of `requires_drop_glue`.** The rule itself lives in
+/// [`crate::mir::drop_rule`]; this supplies the facts from the FINISHED `TypeContext`. The
+/// structural recursion and the `CoreType` classification are no longer duplicated here.
+pub(crate) fn requires_drop_glue(types: &crate::mir::TypeContext, ty: &MirTy) -> bool {
+    crate::mir::drop_rule::requires_drop_glue_with(ty, &TypeContextDropFacts { types })
+}
+
+/// The verifier answers nominal questions from the frozen MIR type table.
+struct TypeContextDropFacts<'a> {
+    types: &'a crate::mir::TypeContext,
+}
+
+impl crate::mir::drop_rule::DropFacts for TypeContextDropFacts<'_> {
+    fn has_user_destructor(&self, item: crate::hir::ItemId, args: &[MirTy]) -> bool {
+        self.types.drop_impls.contains_key(&(item.0, args.to_vec()))
+    }
+
+    fn struct_fields(&self, item: crate::hir::ItemId, args: &[MirTy]) -> Option<Vec<MirTy>> {
+        self.types
+            .struct_fields
+            .get(&(item.0, args.to_vec()))
+            .cloned()
+    }
+
+    fn enum_variants(&self, item: crate::hir::ItemId, args: &[MirTy]) -> Option<Vec<Vec<MirTy>>> {
+        self.types
+            .enum_variants
+            .get(&(item.0, args.to_vec()))
+            .cloned()
+    }
+}
+
 fn may_need_drop(ty: &MirTy) -> bool {
     match ty {
         // A11 §5: a host resource's drop IS its provider close, so it always may need one. The SIXTH
         // `MirTy` catch-all to swallow this variant -- and the second copy of "does this need
-        // dropping", after `lower::ty_needs_drop`. Two implementations of one rule, each corrected
+        // dropping", after `lower::ty_requires_drop_glue`. Two implementations of one rule, each corrected
         // separately: lowering stopped emitting the `Drop`, and when that was fixed the verifier
         // rejected the `Drop` it now emitted.
         MirTy::HostResource(_) => true,

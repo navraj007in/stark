@@ -99,15 +99,19 @@ fn generated_crate_builds_against_an_installed_runtime_offline() {
     assert!(pd.is_empty(), "parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "typecheck: {errs:?}");
-    let program =
-        lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .unwrap_or_else(|e| panic!("lower: {}", e.what));
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("verify: {e:?}"));
 
     let root = std::env::temp_dir().join(format!("stark_c63_install_{}", std::process::id()));
