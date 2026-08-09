@@ -43,12 +43,12 @@ BOTH KILLED   ->  the strongest outcome. Two independently implemented tables th
 
 | ID | Semantic rule | Implementation A | Implementation B | Intended relationship | One-sided mutation A | One-sided mutation B | External / control evidence | Disposition |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AS8-DA-001` | Which primitives are integers (`ESF-TYPE-001` family; 03 numeric semantics) | `typecheck::types::is_integer` — 14 call sites | `typecheck::types::is_integer_primitive` — 1 call site | **None intended.** Both `pub(super)`, same module, byte-identical, same bottom layer of the AS7 DAG. No independence value is available at one layer of one module | `AS8-MUT-018` | `AS8-MUT-024` | — | **Consolidate AFTER AS8**, per owner ruling, unless a trial exposes a live defect. Not a DEV: identical copies cannot disagree |
-| `AS8-DA-002` | Which `RuntimeFn`s are Vec operations | `mir::interp::is_vec_runtime` | `mir::verify::is_vec_runtime_fn` | **Plausibly deliberate.** `verify.rs` exists to CHECK the lowering `interp.rs` executes; an independent table is what lets it disagree | `AS8-MUT-026` | `AS8-MUT-027` | `mir_verify`, `mir_differential` | **PENDING TRIAL — do not consolidate** |
-| `AS8-DA-003` | Which `RuntimeFn`s are Box operations | `mir::interp::is_box_runtime` | `mir::verify::is_box_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-028` | `AS8-MUT-029` | as above | **PENDING TRIAL — do not consolidate** |
-| `AS8-DA-004` | Which `RuntimeFn`s are Slice operations | `mir::interp::is_slice_runtime` | `mir::verify::is_slice_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-030` | `AS8-MUT-031` | as above | **PENDING TRIAL — do not consolidate** |
+| `AS8-DA-001` | Which primitives are integers (`ESF-TYPE-001` family; 03 numeric semantics) | `typecheck::types::is_integer` — 14 call sites | `typecheck::types::is_integer_primitive` — 1 call site | **None intended.** Both `pub(super)`, same module, byte-identical, same bottom layer of the AS7 DAG. No independence value is available at one layer of one module | `AS8-MUT-018` **KILLED** (9) | `AS8-MUT-024` **KILLED** (4) | `entire_frozen_corpus_agrees`, both sides | **Consolidate AFTER AS8**, per owner ruling, unless a trial exposes a live defect. Not a DEV: identical copies cannot disagree |
+| `AS8-DA-002` | Which `RuntimeFn`s are Vec operations | `mir::interp::is_vec_runtime` | `mir::verify::is_vec_runtime_fn` | **Plausibly deliberate.** `verify.rs` exists to CHECK the lowering `interp.rs` executes; an independent table is what lets it disagree | `AS8-MUT-026` **KILLED** (1) | `AS8-MUT-027` **KILLED** (1) | `mir_differential` (copy A); an `unreachable!()` in `vec_runtime_sig` (copy B) | **BOTH COVERED, NEITHER CROSS-CHECKS — see the finding below** |
+| `AS8-DA-003` | Which `RuntimeFn`s are Box operations | `mir::interp::is_box_runtime` | `mir::verify::is_box_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-028` **KILLED** (4) | `AS8-MUT-029` **KILLED** (4) | as above | **BOTH COVERED, NEITHER CROSS-CHECKS** |
+| `AS8-DA-004` | Which `RuntimeFn`s are Slice operations | `mir::interp::is_slice_runtime` | `mir::verify::is_slice_runtime_fn` | as `AS8-DA-002` | `AS8-MUT-030` **KILLED** (1) | `AS8-MUT-031` **KILLED** (1) | as above | **BOTH COVERED, NEITHER CROSS-CHECKS** |
 | `AS8-DA-006` | Does this type need drop glue (`ESF-DROP-002`; A11 §5, 05) | `mir::drop_rule::requires_drop_glue_with`, reached from `lower::ty_requires_drop_glue` — **precise** | `mir::verify::may_need_drop` — **deliberately conservative** | **Deliberate, asymmetric, and documented.** The verifier over-approximates on purpose so it can reject a missing drop without reimplementing the precise rule. AS4 added `may_need_drop_for_inventory`, a test-only window, expressly to measure the conservative rule against the precise one | — | `AS8-MUT-037` | AS4 drop-rule matrix; `a11_host_resource`, `c788_resource_lifecycle` | **KEEP. The positive exemplar.** Two implementations, an explicit intended relationship, and a measurement harness for the gap between them |
-| `AS8-DA-005` | `ScalarTy` → STARK primitive spelling | `provider_synth::scalar_src` | `provider_derive::scalar_name` | **Unclear.** Two stages of provider generation naming the same mapping; neither is a check on the other | `AS8-MUT-032` | `AS8-MUT-033` | `a10_provider_bind`, `c788_starkc_build` | **PENDING TRIAL** |
+| `AS8-DA-005` | `ScalarTy` → STARK primitive spelling | `provider_synth::scalar_src` | `provider_derive::scalar_name` | **Unclear.** Two stages of provider generation naming the same mapping; neither is a check on the other | `AS8-MUT-032` **KILLED** (2) | `AS8-MUT-033` **SURVIVED** (0) | `c788_io_*` package build (copy A only) | **ASYMMETRIC: copy B can drift silently. Architectural residual — AS8-R12** |
 
 ## `AS8-DA-006` is the proof that this is a lower bound
 
@@ -66,6 +66,42 @@ It is also the case that most argues for the owner ruling against reflexive cons
 is deliberate, the asymmetry is the point, and AS4 built a measurement window for the gap. The right
 disposition is KEEP, and it would have been invisible to a policy of "consolidate what the scanner
 finds".
+
+## What the paired trials actually showed (2026-08-09)
+
+**All three interpreter/verifier pairs were killed on BOTH sides — and that does not mean what the
+decision tree's "both killed" branch assumes.** The kill *messages* say who did the killing, and it
+is neither copy:
+
+```text
+copy A, interpreter   mir_differential
+                      "oracle succeeded (stdout ...) but MIR failed:
+                       Internal(\"runtime VecClear (string group) unhandled\")"
+copy B, verifier      an unreachable!() on a DIFFERENT path
+                      "internal error: entered unreachable code:
+                       Vec ops resolve through vec_runtime_sig, not runtime_sig"
+```
+
+So copy A is guarded by the **three-engine differential**, and copy B by an **assertion elsewhere in
+the compiler**. **Neither copy is acting as a control on the other.** The verifier's table is not
+what catches a wrong interpreter table, and vice versa.
+
+That matters for the disposition, and it cuts against my own first reading of the results as much as
+against the instinct to consolidate:
+
+> The owner ruling's concern was that consolidating would **destroy** an independent check.
+> Measurement says that check **is not currently there** — both copies are covered, by third
+> parties. Consolidating `AS8-DA-002/003/004` would therefore lose no control that exists today.
+> It would also gain little beyond removing drift risk, and it would create genuine shared fate
+> where there is presently none.
+
+**Left as an owner call rather than resolved here**, because the ruling was explicitly about this
+dimension and the evidence refines the question rather than answering it: *is the redundancy worth
+keeping for a control that could be built, or consolidated because that control was never built?*
+
+`AS8-DA-005` is the unambiguous one. `scalar_src` is exercised by the `stark-io` package build;
+`scalar_name` is exercised by nothing — mutating `ScalarTy::U8` to spell `UInt16` survived every
+selected suite. **One copy of a two-copy rule can drift silently. AS8-R12.**
 
 ## This is a lower bound, not an inventory
 

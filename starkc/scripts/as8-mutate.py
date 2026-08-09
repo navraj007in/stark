@@ -555,6 +555,12 @@ def run(cmd, **kw):
 # AS8-MUT-002 to a pushed branch; every C6.5 job failed and the cause read as a refactor
 # regression for the better part of an hour. Restoring in `finally` was never enough on its own,
 # because nothing PROVED the file was restored and nothing stopped a commit from racing it.
+# THE GUARD IS NECESSARY AND NOT SUFFICIENT, and the gap is worth stating precisely.
+# `finally` restores after a normal exit or an exception. It does NOT run when the process is
+# KILLED — and on 2026-08-09 the DA batch was killed mid-trial and left AS8-MUT-030 applied to
+# `mir/interp.rs` in the working tree. The pre-trial check below catches that on the NEXT run, which
+# is the recovery path: if it refuses, run `git diff -- <file>` and `git restore` the mutation
+# before doing anything else. Never commit while a batch is in flight.
 def assert_matches_head(path, when):
     rel = os.path.relpath(path, ROOT)
     r = run(["git", "diff", "--quiet", "HEAD", "--", rel])
@@ -594,7 +600,13 @@ def trial(spec, verbose):
     started = time.time()
     try:
         open(path, "w", encoding="utf-8").write(original.replace(spec["find"], spec["repl"], 1))
-        build = run(["cargo", "build", "--quiet", "-p", "starkc", "--tests"])
+        # Build ONLY the targets this trial runs. `--tests` builds all 209 integration binaries,
+        # each of which links the whole starkc lib, and every trial invalidates the lib — so the
+        # harness was relinking ~205 binaries it would never execute. On 2026-08-09 that filled the
+        # disk to 99% and a single build stretched to 32 minutes before anyone noticed the cause
+        # was space, not code. Building the selected targets keeps BUILD_FAILED a distinct outcome
+        # while doing a fraction of the work.
+        build = run(["cargo", "build", "--quiet", "-p", "starkc"] + spec["tests"])
         if build.returncode != 0:
             return dict(spec_id=spec["id"], result="BUILD_FAILED",
                         detail="the mutant does not compile; it is not a semantic mutation",
