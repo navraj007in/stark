@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-214 repaired under OD-9. Gate C10 OPENED 2026-08-09 (CD-395). **DEV-012 CLOSED** by owner verification. Remaining before C10-Q: toolchain-branch integration, §8.2a re-run, E9/E10/E11 |
+| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. Remaining before C10-Q: **E9** (24 open deviations need disposition), **E10**, **E11** |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -441,6 +441,37 @@ cannot be timed offline at all.** Measuring a third of the appendix and labellin
 "import/verify/deploy" would be worse than measuring none. **OWNER DECISION:** authorise driving the
 generator for import/verify and record deploy as unmeasurable offline, or accept the empty appendix
 with this explanation as the reason. Either satisfies OD-8; guessing does not.
+
+### C10-R, same day — the freshness rule fired, and the evidence survived the merge
+
+`C10-MUTATION-LEDGER.md` §6. Candidate `29ce610` (`develop` `eb60dec` merged in).
+
+**PR #15 moved five files on the mutation-evidence list**, and §8.2a marked **31 of 41 trials
+STALE** — 6 because the mutated code moved (`mir/lower.rs`, `resolve.rs`), 28 because the killing
+suite moved (`three_engine_differential`, `a11_host_resource`, `c788_resource_lifecycle`).
+
+**Yesterday the rule returned "all FRESH" twice and looked like ceremony. Today it stopped C10-Q
+citing 31 measurements of a compiler that no longer exists.**
+
+**Owner decision: re-run the subset backing published claims, not all 31.** Plan §8.2 scopes
+mutation to claims C10 intends to publish, and C10-F marks Core language compatibility UNCOMMITTED —
+so trials backing unpublished Core rules need not be refreshed. Nine re-run: all six clause-1
+trials, plus MUT-017/037 (host-resource typing, backing the COMMITTED provider claims) and MUT-036
+(MIR verifier, backing the COMMITTED rejection claim). **Twenty-two are recorded HISTORICAL**, and
+C10-Q owes the disclosure that its mutation evidence is 9 current + 22 historical + 10 fresh-by-hash.
+
+**Result: 9/9 reproduce AS8's recorded outcome, killer counts included.** The integration changed
+`resolve.rs` and `mir/lower.rs` without changing any measured control relationship — verified rather
+than assumed. `AS8-R13` and `AS8-R14` both still hold at the candidate.
+
+**One reading trap, recorded because it would be easy to misreport.** The harness prints UNEXPECTED
+against `expect`, which encodes **EI5's original prediction** — not against what AS8 measured. So
+`MUT-034/035/037/039` print UNEXPECTED while matching AS8 exactly. Calling those new surprises would
+be misreading the tool.
+
+`as8-mutate.py` gains `--only` (select trial ids ACROSS batches), because stale trials do not line
+up with AS8's batches and duplicating their definitions would create the second copy that drifts —
+the `AS8-DA-*` failure mode, inside the tool built to detect it.
 
 ### C10-D, same day — a control built, and a C10-A2 claim refuted by measurement
 
