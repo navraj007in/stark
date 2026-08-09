@@ -52,7 +52,13 @@ disagree, the dated record wins and this block is stale — fix it in the same c
 
 ---
 
-## CD-395 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
+## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
+
+> **RENUMBERED from CD-395 at integration, 2026-08-09.** Both this branch and Gate C10 allocated
+> `CD-395` on the same day, to different decisions, while working in parallel. C10's landed on
+> `develop` first (PR #13, merge `1d20123`), so **C10 keeps 395 and this record moves to 396** —
+> the rule is arrival order on the trunk, not authorship order. Nothing about the decision below
+> has changed; only its number.
 
 **Owner-approved implementation of WP-PKG-TOOLCHAIN-ROOT.** Three distribution choices are now
 load-bearing rather than inferred from directory names:

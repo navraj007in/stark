@@ -6563,7 +6563,15 @@ instead of asserting that a table is populated.
   agree on `7\ndtor\n`, alongside the DEV-211 case asserting the move is refused — so the pair
   distinguishes "destructor runs" from "cannot match a `Drop` enum at all".
 
-## DEV-214 — the root application capability envelope was informational [CLOSED, 2026-08-09]
+## DEV-219 — the root application capability envelope was informational [CLOSED, 2026-08-09]
+
+> **RENUMBERED from DEV-214 at integration, 2026-08-09.** This branch and Gate C10 both allocated
+> `DEV-214` on the same day: here for the capability envelope, on `develop` for a
+> left-associative operator chain that aborts the compiler (found by C10-B, repaired under OD-9).
+> C10's landed on the trunk first, so **C10 keeps 214 and this record becomes 219** — the next free
+> number after this branch's own `DEV-215..218`, which do not collide and are unchanged.
+>
+> The deviation itself is untouched: same finding, same closure, same evidence.
 
 Provider manifests already rejected a binding outside their own declaration, but the root package
 did not approve the transitive graph: deleting every root capability still built and performed host
