@@ -1,11 +1,23 @@
 # WP-ARCHITECTURE-STABILIZATION — Compiler architecture consolidation programme
 
-**Status:** **IN EXECUTION — Sprints 1, 2 and 3 CLOSED. Campaign A PASS. Sprint 4 (AS6 → AS7 → AS8)
-in execution on `wp-arch-stability/sprint-4`.** Campaign B was **APPROVED by owner decision on
-2026-08-08** (§1). **AS6 CLOSED 2026-08-08** (`AS6-EXIT-QUALIFICATION.md`) and **AS7 CLOSED 2026-08-08**
-(`AS7-EXIT-QUALIFICATION.md`). AS8 is the remaining Sprint 4 packet: assurance written against the
-frozen AS6/AS7 result, which it may not be batched with.
-**Date:** 2026-08-06, status reconciled 2026-08-08.
+**Status:** **COMPLETE — all four sprints CLOSED. Campaign A PASS, Campaign B EXITED PASS
+2026-08-09.**
+
+```text
+Sprint 1   CLOSED    AS-SPRINT1-CLOSEOUT.md
+Sprint 2   CLOSED    AS-SPRINT2-CLOSEOUT.md          AS1b, AS5
+Sprint 3   CLOSED    Campaign A PASS                 AS0-AS4
+Sprint 4   CLOSED    AS-SPRINT4-CLOSEOUT.md, PASS    AS6 (CD-390), AS7 (CD-391, criterion 2
+                     re-qualified CD-393), AS8 (CD-394)
+Campaign B EXITED    CAMPAIGN-B-EXIT-REPORT.md, PASS — a prerequisite for C10, and it makes no
+                     stability or conformance claim itself
+```
+
+Both sprints landed on `develop` as **merge commits** — `645997d` (Sprint 3) and `d79ad03`
+(Sprint 4) — with no rebase, squash or cherry-pick, so every packet SHA these records cite still
+resolves. Nothing in this programme remains open; **the next gate is C10 release qualification.**
+
+**Date:** 2026-08-06, status reconciled 2026-08-08, **closed 2026-08-09**.
 **Owning track:** compiler, under `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md`.
 **Roadmap relationship:** this is a proposed compiler work-package programme, not a second live
 project roadmap. `ROADMAP.md` remains the only live platform plan. If the later campaigns are
