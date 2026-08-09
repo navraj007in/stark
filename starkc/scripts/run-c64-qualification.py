@@ -324,7 +324,13 @@ CLASSIFIED_IGNORES = {
         "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "
         "Outside the C6.4 Core-runtime matrix."
     ),
-    "c10e_lsp_latency": (
+    # NOTE THE MODULE PATH. The two entries above are INTEGRATION tests, whose libtest names have
+    # no module prefix — which makes a bare key look correct here. This one is a UNIT test in
+    # `src/lsp/server.rs`, so its complete libtest name carries the path, and a bare
+    # `c10e_lsp_latency` key does not match. Verified against real `cargo test` output rather than
+    # inferred: the emitted line is
+    #     test lsp::server::tests::c10e_lsp_latency ... ignored, measurement, not an assertion
+    "lsp::server::tests::c10e_lsp_latency": (
         "C10-E measurement harness, not an assertion: it prints LSP cold-open, "
         "edit-to-diagnostic and workspace-symbol latencies and has no pass/fail condition "
         "beyond completing. Run deliberately with `--ignored --nocapture`. A timing test in "
