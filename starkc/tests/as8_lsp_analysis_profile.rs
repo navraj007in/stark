@@ -4,7 +4,7 @@
 //!
 //!   * "Profile LSP package analysis on representative multi-file projects."
 //!   * "Replace whole-package `ProjectAnalysis` duplication per open URI WHERE MEASUREMENT SHOWS
-//!      MATERIAL COST."
+//!     MATERIAL COST."
 //!
 //! `lsp::state::ServerState` keeps `compilation_cache: HashMap<String, CompilationResult>`, and a
 //! `CompilationResult` owns a whole `ProjectAnalysis` — AST, HIR, resolution tables, type tables,
@@ -41,7 +41,9 @@ fn stage(base: &std::path::Path, modules: usize) -> std::path::PathBuf {
     for m in 0..modules {
         main.push_str(&format!("mod m{m};\n"));
         let mut body = String::new();
-        body.push_str(&format!("pub struct S{m} {{ pub a: Int32, pub b: Int32 }}\n"));
+        body.push_str(&format!(
+            "pub struct S{m} {{ pub a: Int32, pub b: Int32 }}\n"
+        ));
         body.push_str(&format!(
             "impl S{m} {{ pub fn sum(&self) -> Int32 {{ self.a + self.b }} \
              pub fn scaled(&self, k: Int32) -> Int32 {{ self.a * k + self.b }} }}\n"
@@ -86,7 +88,10 @@ fn analyse(app: &std::path::Path) -> (std::time::Duration, usize) {
 #[test]
 fn as8_lsp_package_analysis_profile() {
     println!("\nAS8 LSP package-analysis profile");
-    println!("{:>8}  {:>12}  {:>14}  {:>10}", "modules", "one analysis", "x8 open URIs", "diags");
+    println!(
+        "{:>8}  {:>12}  {:>14}  {:>10}",
+        "modules", "one analysis", "x8 open URIs", "diags"
+    );
 
     for &modules in &[4usize, 8, 16, 32] {
         let base = unique_base(&format!("m{modules}"));

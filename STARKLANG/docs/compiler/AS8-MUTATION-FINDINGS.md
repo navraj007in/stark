@@ -43,6 +43,13 @@ than reinterpreted afterwards.
 | `AS8-MUT-021` | `RA-SHIFT` | remove STARK's shift-count check | KILLED | KILLED | **CONFIRMED** | 1 | `invalid_shift_trap_agrees` |
 | `AS8-MUT-022` | `RA-DROP` | array destruction order reversed | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
 | `AS8-MUT-023` | `EV-CORPUS-C6` | trap assignment, vs the corpus alone | KILLED | KILLED | **CONFIRMED** | 1 | `the_corpus_replays_through_every_required_engine` |
+| `AS8-MUT-034` | resolver visibility | every item visible everywhere | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-038` | resolver visibility | = MUT-034, vs `--lib` | KILLED | KILLED | **CONFIRMED** | 2 | `module_paths_imports_and_visibility_are_enforced` |
+| `AS8-MUT-035` | resolver visibility | non-`pub` re-export is visible | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-039` | resolver visibility | = MUT-035, vs `--lib` | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-036` | MIR verifier | move paths never prefix-related | KILLED | KILLED | **CONFIRMED** | 3 | `dev117_drop_elaboration_moves_are_exempt…` |
+| `AS8-MUT-037` | MIR verifier | `may_need_drop` HostResource ⇒ false | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
+| `AS8-MUT-026`…`033` | `AS8-DA-002`…`005` | paired one-sided duplicate trials | KILLED ×8 | 7 KILLED, 1 SURVIVED | see `AS8-DUPLICATE-AUTHORITIES.md` | 1–4 | |
 
 Per EI5, kill rates are **not pooled**. Every trial above is `SHARED_AUTHORITY`, so the meaningful
 split is by killer independence, not by tag:
@@ -413,3 +420,35 @@ Recorded because both defects had the shape this packet exists to find.
 ---
 
 ---
+
+---
+
+## Finding 10 — non-`pub` re-export visibility has no control anywhere
+
+Batch 9 mutated two resolver visibility rules. Both survived `conformance` and
+`three_engine_differential`, and the trial note *asserted* that `--lib` would kill them because
+`resolve.rs` carries its own unit tests. **Half of that assertion was wrong, and batch 9b is why it
+was tested rather than written down.**
+
+```text
+MUT-034 / MUT-038   every item visible from every module
+                    survived the fixtures; KILLED by resolve.rs's own unit tests
+MUT-035 / MUT-039   a non-`pub` re-export becomes visible outside its module
+                    survived the fixtures AND the unit tests AND the differential
+```
+
+07 says `use` without `pub` must not re-export. Nothing in the tree enforces it. Had I trusted the
+note, this packet would have recorded "the spec fixtures do not cover visibility" — true, but a
+much smaller and materially different claim than the one the measurement supports. **AS8-R13.**
+
+## Finding 11 — the verifier's conservative drop rule is unguarded where its Copy twin is not
+
+`MUT-017` classified a host resource `Copy`-eligible in `mir_ty_is_copy` and was **killed by three
+tests**, one named `a_host_resource_is_never_copy`. `MUT-037` made the verifier's `may_need_drop`
+return `false` for the same nominal and **survived every selected suite**.
+
+Both arms encode A11 §5 — a host resource's drop IS its provider close — and the `may_need_drop`
+source comment records the two copies historically disagreeing in production. **The Copy half has a
+purpose-built control; the drop half has none.** That is `AS8-DA-006`'s verifier side, and
+**AS8-R14**.
+

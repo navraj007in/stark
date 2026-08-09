@@ -1533,7 +1533,11 @@ mod tests {
 
         let mut server = Server::new();
         // Two files of ONE package open. Each gets its own whole-package analysis.
-        server.state.open_document(main_uri.clone(), 1, "mod child;\nfn main() { }\n".to_string());
+        server.state.open_document(
+            main_uri.clone(),
+            1,
+            "mod child;\nfn main() { }\n".to_string(),
+        );
         server.compile_document(&main_uri);
         server.state.open_document(
             child_uri.clone(),
