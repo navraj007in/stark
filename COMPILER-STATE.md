@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **Next: C10-Q — owner decision under CE8.** Evidence package drafted: `C10-Q-EVIDENCE-PACKAGE.md`, deriving PASS-WITH-DEVIATIONS as a RECOMMENDATION, not a decision |
+| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **Next: C10-Q — owner decision under CE8.** `C10-Q-EVIDENCE-PACKAGE.md` re-derived: **3 of 23 deviations do not reproduce** (DEV-005/177/181 all already fixed), so population A is 21 and NO deviation accepts what the spec forbids. Recommendation PASS-WITH-DEVIATIONS **conditional on reproducing the remaining 20** |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |

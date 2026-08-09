@@ -7155,3 +7155,66 @@ consequence  C10-Q must NOT name DEV-005 as a release deviation. Naming a deviat
 ```
 
 **Population A drops from 24 live-OPEN to 23.**
+
+## DEV-177 — CLOSED (2026-08-09). Already enforced; the ledger was never updated
+
+**Verified at `076b4dc`.** The reproducer from this entry is rejected:
+
+```text
+$ starkc check repro.stark
+Error: [E0204] generic parameter 'T' duplicates another generic parameter in scope
+  --> repro.stark:4:15
+ 4 |     fn choose<T>(self, value: T) -> T {
+   |               ^ 'T' is already declared by the enclosing impl
+   = related: repro.stark:3:6: 'T' first declared here
+check EXIT=1
+```
+
+**Negative control:** the same program with distinct names (`fn choose<U>`) still compiles — `OK`,
+exit 0. So the rule is enforced, not the construct broken. The other arm of NAME-SHADOW-001,
+`fn f<T, T>`, is rejected identically.
+
+**Fixed by `78bd84c` — "DEV-177: enforce NAME-SHADOW-001, which was never enforced at all".** The
+repair landed and this entry was never moved to CLOSED.
+
+**Consequence for C10-Q, and it is the largest single change to the claim.** DEV-177 was the *only*
+population-A deviation that **accepted a program the specification forbids**. With it closed, **no
+open deviation makes a conformance claim false** — every remaining one either refuses what the spec
+allows or executes an accepted program wrongly. The C10-Q derivation moves from *"PASS is not
+supported because a claim would be FALSE"* to *"PASS is not supported because 84 rules are
+unattributed"*, which is a different and weaker objection.
+
+## DEV-181 — CLOSED (2026-08-09). Already fixed; the ledger was never updated
+
+**Verified at `076b4dc`.** The reproducer compiles and runs:
+
+```text
+$ starkc check dev181.stark     OK, exit 0
+$ starkc run   dev181.stark     prints 1, exit 0
+```
+
+`x = x.method()` — the everyday idiom this entry called its own worst consequence — works.
+
+**Fixed by `57ff6b9` — "DEV-181: `x = x.method()` was refused by the borrow checker".**
+
+**Consequence:** the row C10's disposition register flagged as *"the highest user-friction item"*
+does not exist.
+
+---
+
+# Ledger hygiene finding (C10-Q preparation, 2026-08-09)
+
+**Three of twenty-three population-A deviations do not reproduce**: `DEV-005` (removed by AS2's
+one-pipeline consolidation), `DEV-177` (`78bd84c`), `DEV-181` (`57ff6b9`).
+
+**13% of the "open" list was fiction**, and all three were named in a drafted release claim.
+
+The cause is structural, not careless: this ledger is **append-only**, so closing a deviation
+requires a deliberate new entry, and a repair landed under a different work packet has no mechanism
+forcing that entry to be written. Each of these three was fixed by a commit whose message names the
+DEV number — the information existed; nothing connected it to the ledger.
+
+**The rule this produces, and C10-Q depends on it:** a deviation may not be named in a release
+claim on the strength of its ledger entry. It must be **reproduced at the candidate head**, or
+closed. OD-7 imposed exactly this on `DEV-005` and it found one; applying it to only one entry was
+the mistake.

@@ -72,12 +72,43 @@ performance         one platform (Darwin-arm64); ONNX appendix EMPTY (inputs una
 ## 2.4 Deviations
 
 ```text
-A  23 live-OPEN compiler deviations, every one owned and dispositioned
-   ONE of them ACCEPTS WHAT THE SPEC FORBIDS: DEV-177 (NAME-SHADOW-001)
-   the other 22 either REFUSE what the spec allows, or execute an accepted program wrongly
+A  21 live-OPEN compiler deviations, every one owned and dispositioned
+   NONE of them accepts what the specification forbids — see the correction below
 B   5 release/distribution — DEV-165, standalone toolchain, offline build, signing, tier-3
 C  20 assurance residuals — including AS8-R2/R10/R13/R14, all still true at the candidate
 ```
+
+> ### CORRECTED 2026-08-09 — THREE of twenty-three deviations do not reproduce
+>
+> This package's first draft named 23 deviations, and stated that **DEV-177 accepts a program the
+> specification forbids** — the one subtraction that made a conformance claim FALSE rather than
+> narrow. **DEV-177 was already fixed** by `78bd84c`, whose message is literally *"DEV-177: enforce
+> NAME-SHADOW-001, which was never enforced at all"*. The ledger was never updated.
+>
+> ```text
+> DEV-005   does not reproduce — removed by AS2's one-pipeline consolidation
+> DEV-177   does not reproduce — 78bd84c. E0204 is emitted, with a related span
+> DEV-181   does not reproduce — 57ff6b9. `x = x.method()` compiles and runs
+> ```
+>
+> **13% of the "open" list was fiction, and all three were named in a drafted release claim.**
+>
+> The cause is structural: the ledger is append-only, so closing an entry needs a deliberate new
+> heading, and a repair landing under a different work packet has nothing forcing that heading to
+> be written. All three fixes name their DEV number in the commit message — the information
+> existed and nothing connected it to the ledger.
+>
+> **The rule this produces: a deviation may not be named in a release claim on the strength of its
+> ledger entry. It must be REPRODUCED at the candidate head, or closed.** OD-7 imposed exactly
+> that on `DEV-005` and it found one; applying it to a single entry was the mistake.
+>
+> **Reproduction status of the remaining 21 — stated honestly, because it bounds this package:**
+>
+> ```text
+> REPRODUCED at 076b4dc   DEV-172   Int8::MIN and Int64::MIN rejected, E0008 — still real
+> NOT YET REPRODUCED      the other 20. Their entries are inherited, and three of the last
+>                         twenty-three inherited entries were wrong
+> ```
 
 ---
 
@@ -88,9 +119,9 @@ C  20 assurance residuals — including AS8-R2/R10/R13/R14, all still true at th
 ## 3.1 Subtractions, each with its source
 
 ```text
-DEV-177            NAME-SHADOW-001 is VIOLATED BY ACCEPTANCE. No unqualified conformance claim
-                   may cover it — this is the only subtraction that makes a claim FALSE rather
-                   than narrow
+DEV-177            WITHDRAWN — it does not reproduce. NO REMAINING DEVIATION ACCEPTS WHAT THE
+                   SPECIFICATION FORBIDS, so no subtraction now makes a claim FALSE. Every
+                   remaining one makes a claim NARROW
 84 + 27 rules      per-rule conformance cannot be claimed over the full 168; 56 carry
                    function-precision evidence
 DEV-140..145       six CD-342 layer defects DEFINE the supported native subset. A native claim
@@ -114,7 +145,8 @@ performance        one platform. No cross-platform performance claim
 ```text
 STARK Core v1 front end, interpreter, MIR, and native backend: conforming for the listed
 platform matrix, with deviations DEV-083, DEV-120, DEV-122, DEV-140..145, DEV-156, DEV-157,
-DEV-159..162, DEV-167, DEV-168, DEV-172, DEV-177, DEV-178, DEV-180, DEV-181, DEV-186.
+DEV-159..162, DEV-167, DEV-168, DEV-172, DEV-178, DEV-180, DEV-186.
+(DEV-177 and DEV-181 REMOVED — they do not reproduce. 21 deviations, not 23.)
 
 Platform matrix: aarch64-apple-darwin and x86_64-unknown-linux-gnu (Tier-1);
 x86_64-pc-windows-msvc (Tier-2, no tier-1 qualification record).
@@ -123,7 +155,8 @@ x86_64-apple-darwin (tier-3) is PACKAGED AND UNEXERCISED and is excluded.
 Conformance is claimed per-rule for the 56 of 168 granular rules carrying function-precision
 positive and negative evidence; the remaining 112 are exercised but not per-rule attributed.
 
-NAME-SHADOW-001 is NOT conformant: DEV-177 accepts a program the specification forbids.
+NAME-SHADOW-001 IS conformant — DEV-177 was fixed by `78bd84c` and the ledger had not caught up.
+No rule is violated by acceptance.
 
 Language services: compiler-derived, protocol-conformant, and interactively validated by the
 owner in the recorded environment.
@@ -138,16 +171,30 @@ Tensor extension v0.1: deferred research. No claim.
 Charter §5.3's vocabulary. **The owner chooses; this is the derivation, not the choice.**
 
 ```text
-PASS                    NOT SUPPORTED. DEV-177 accepts what the spec forbids, and 84 rules are
-                        unattributed. A bare "conforming" claim would be false
-PASS-WITH-DEVIATIONS    SUPPORTED by the evidence above, on the wording in §3.2
-REVISE                  supportable if the owner judges DEV-177 or T3/T7 must close first
-BLOCKED                 not indicated — no evidence gap prevents a credible NARROW claim
+PASS                    NOT SUPPORTED — but the REASON changed. It is no longer "a claim would be
+                        FALSE" (DEV-177 is closed); it is that 84 of 168 rules are unattributed
+                        and 21 deviations remain. A bare "conforming" claim would OVERSTATE, not
+                        lie
+PASS-WITH-DEVIATIONS    SUPPORTED, on §3.2's wording, IF the 20 unreproduced deviations are
+                        verified first — see the condition below
+REVISE                  SUPPORTABLE, and now more defensible than when this package was drafted:
+                        three of twenty-three named deviations did not exist, so the claim's own
+                        deviation list is not yet trustworthy
+BLOCKED                 not indicated
 ```
 
-**Recommendation: PASS-WITH-DEVIATIONS**, on §3.2's wording. Offered as a recommendation because
-CE8 reserves the decision, and because §17.2 forbids choosing the wording before the evidence — the
-wording above was derived after E1–E11, not before.
+## 3.4 The condition this package now carries
+
+**Recommendation: PASS-WITH-DEVIATIONS, conditional on reproducing the remaining 20 deviations at
+`076b4dc` first.**
+
+A release claim naming 21 deviations is only as good as the list. **Three of the last
+twenty-three were fiction**, and each would have been published as a known limitation of a
+compiler that does not have it. Naming a deviation that no longer exists is its own false claim —
+the same argument OD-7 used for DEV-005, now with a 3-in-23 base rate behind it.
+
+**REVISE is the honest alternative** if the owner would rather not spend that pass: it says the
+evidence is sound and one bounded verification remains, which is exactly the situation.
 
 ---
 
