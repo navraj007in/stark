@@ -1719,11 +1719,34 @@ this table):
 | C7.8 qualification record comparison | `C7.8 qualification record comparison` | aggregator |
 | the single branch-protection check | `ci-complete` | aggregator |
 
-**Immediately visible consequence:** conformance-fixture evidence, the mutation controls and the
-external sample suite are **single-platform**. Any release claim of the form "conforming on the
-listed platform matrix" that rests on those jobs is claiming more than the evidence covers, unless
-the claim is scoped to what the multi-platform jobs actually run. **C10-A2 must surface this per
-row, and C10-Q must not paper over it.**
+> ### CORRECTED 2026-08-09 by E10 — this paragraph was WRONG, and wrong in the pessimistic direction
+>
+> It read: *"conformance-fixture evidence, the mutation controls and the external sample suite are
+> **single-platform** … any release claim … is claiming more than the evidence covers."*
+>
+> **The dedicated JOBS are single-platform. The TESTS are not.** `build-and-test` runs
+> `cargo test --workspace --all-targets --all-features` on all three platforms. A Windows job log
+> from CI run `31312610019` shows **213 test binaries**, including every suite this paragraph
+> called single-platform:
+>
+> ```text
+> conformance.rs   three_engine_differential.rs   mir_differential.rs
+> c61f_structural_copy.rs   c6_generated_corpus.rs   c6_mutation.rs
+> c10b_robustness.rs   c10c_security.rs   dev214_expression_depth.rs
+> ```
+>
+> **What the linux-only jobs actually add is tooling and consistency checking, not conformance
+> testing:** spec-regeneration sync, fixture-extraction sync, coverage-database consistency, the
+> evidence report, Miri, and the pinned external suite.
+>
+> **The real platform gaps are narrower and different.** `C6.4 tier-1 qualification` and
+> `C6.5 corpus replay` run on **linux + macos only**; Windows gets the Tier-2 gap probe instead. So
+> what Windows lacks is the *platform-qualification record and cross-engine corpus replay*, not the
+> conformance suite.
+>
+> **This error understated the evidence**, which is worth recording as carefully as an overstatement
+> — a qualification campaign that quietly under-claims is still reporting something untrue, and it
+> was repeated in three documents before a Windows log was actually read.
 
 ## 14.1a CI evidence is CONCURRENCY-DEPENDENT — found the hard way, 2026-08-09
 
@@ -2192,7 +2215,7 @@ Carried into C10-0 so none is lost. **None is repaired by this plan.**
 | 6 | Test-target count: 210 top-level integration targets at HEAD; AS8 recorded 209 | `starkc/tests/` | C10-0 reconciles and records the method |
 | 7 | "581 tests across 5 targets" (CD-394) is a **scoped** run, and reads like a tree total | `COMPILER-STATE.md` CD-394 | §7.3 — never cite it as the tree's count |
 | 8 | **168** granular rules (not 161 — A1-F1) vs 36 with precise evidence; **85 AGGREGATE, 42 ABSENT** | `CORE-V1-COMPLETENESS.md` vs `core-v1-c2.11-evidence.toml`; DEV-017 | MEASURED by C10-A1. And `ABSENT` means the INVENTORY cites nothing, not that nothing tests it (A1-F3) |
-| 9 | Conformance fixtures, C6.5 mutation controls and the external sample suite are **linux-x64 only** | `ci.yml` | §14.1 — surfaced per dashboard row; must not be generalised to "three platforms" |
+| 9 | ~~Conformance fixtures, C6.5 mutation controls and the external sample suite are linux-x64 only~~ **WITHDRAWN by E10.** The dedicated JOBS are; the TESTS run on all three via `build-and-test` — 213 binaries on Windows, verified in run `31312610019`. The real gap is `C6.4 qualification` + `C6.5 corpus replay` on **linux+macos only** | `ci.yml`, Windows job log | §14.1 — the corrected map, and an error that UNDERSTATED the evidence |
 | 10 | The only performance report is macOS-arm64 | `c75-report-macos-arm64.json` | §12.4 |
 | 11 | `RA-LINTS` suppresses two deny-by-default lints in generated code, narrowing rustc-as-control | `RUSTC-ASSUMPTION-INVENTORY.md`, EI3 | §5.4 — named in every dashboard row whose control is rustc |
 | 12 | `ENGINE-SHARED-FATE-REGISTER.md`'s prose and `engine-shared-fate.json` disagreed on `ESF-PROV-001` until AS8; the JSON is authoritative | the register's own header | C10 reads the JSON, not the prose, for that row |

@@ -136,9 +136,16 @@ C10-P §1.2a             "green evidence on all three platforms"        full-mat
                                                                        31294314143 + 31295224000
 ```
 
-Checked because C10-0's finding F1 established that spec-fixture conformance, the C6.5 mutation
-controls and the external sample suite are **linux-x64 only** — so a "three platforms" claim is not
-automatically safe in this repository.
+Checked because a "three platforms" claim is not automatically safe in this repository.
+
+> **CORRECTED 2026-08-09 by E10.** This paragraph originally justified the check by asserting that
+> spec-fixture conformance, the C6.5 mutation controls and the external sample suite are
+> "linux-x64 only". **That is true of the dedicated JOBS and false of the TESTS** —
+> `build-and-test` runs `cargo test --workspace --all-targets` on all three platforms, and a
+> Windows log shows **213 test binaries** including `conformance.rs`,
+> `three_engine_differential.rs` and `c6_mutation.rs`. The real gap is narrower: `C6.4 tier-1
+> qualification` and `C6.5 corpus replay` run on **linux + macos only**. The check itself was
+> right; its stated reason was not.
 
 ---
 
