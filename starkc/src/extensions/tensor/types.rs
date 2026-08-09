@@ -685,6 +685,9 @@ impl UnifyCtx {
         dims: &mut HashMap<DimVar, DimVar>,
         dtypes: &mut HashMap<u32, DType>,
         devices: &mut HashMap<DeviceVar, Device>,
+        // AS1b-ii: the call site being freshened. A dimension variable with no recorded
+        // provenance takes its identity from here rather than from a fabricated source.
+        at: Span,
     ) -> Result<TensorKind, UnifyError> {
         let fresh_dtype = |ctx: &mut Self, dtype: DType, map: &mut HashMap<u32, DType>| {
             if let DType::Var(id) = dtype {
@@ -706,7 +709,7 @@ impl UnifyCtx {
                             } else {
                                 let provenance = self.provenance.get(&variable).cloned().unwrap_or(
                                     DimProvenance {
-                                        span: Span { lo: 0, hi: 0 },
+                                        span: Span::synthetic(at.source),
                                         origin: OriginKind::Param,
                                         label: format!("?d{}", variable.0),
                                     },
@@ -757,7 +760,7 @@ mod tests {
     use super::*;
 
     fn span() -> Span {
-        Span { lo: 0, hi: 0 }
+        crate::source::registered_for_test("tensor.stark", "").synthetic_span()
     }
     fn prov(label: &str) -> DimProvenance {
         DimProvenance {

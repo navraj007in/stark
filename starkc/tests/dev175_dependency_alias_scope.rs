@@ -121,7 +121,7 @@ fn assert_resolves(tag: &str, packages: &[Pkg]) {
         .map(|d| d.message.clone())
         .collect();
     assert!(errors.is_empty(), "{tag} must resolve, got {errors:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let type_errors: Vec<String> = checked
         .diagnostics
         .iter()

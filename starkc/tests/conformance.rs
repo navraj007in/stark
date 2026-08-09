@@ -163,10 +163,13 @@ fn corpus_files() -> Vec<String> {
     names
 }
 
-fn lex_fixture(name: &str) -> (SourceFile, Vec<TokenKind>, usize) {
+fn lex_fixture(name: &str) -> (starkc::source::RegisteredSource, Vec<TokenKind>, usize) {
     let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
     let file = SourceFile::new(name.to_string(), src);
-    let (tokens, diags) = tokenize(&file);
+    let mut registry = starkc::source::SourceRegistry::default();
+    let registered = registry.intern(std::sync::Arc::new(file));
+    let (tokens, diags) = tokenize(&registered, registered.id());
+    let file = registered;
     let kinds = tokens.iter().map(|t| t.kind).collect();
     (file, kinds, diags.len())
 }
@@ -260,7 +263,7 @@ fn check_fixture(name: &str, mode: Mode) -> Vec<String> {
         let file_arc = std::sync::Arc::new(file);
         let (hir, mut sem_diags) = starkc::resolve::resolve(&tree, file_arc.clone());
         diags.append(&mut sem_diags);
-        let mut type_diags = starkc::typecheck::check(&hir, file_arc);
+        let mut type_diags = starkc::typecheck::check(&hir);
         diags.append(&mut type_diags);
     }
     diags.into_iter().filter_map(|d| d.code).collect()

@@ -45,7 +45,7 @@ fn symbols(root: &Path) -> Vec<String> {
     ));
     let (hir, rd) = resolve(&ast, rf.clone());
     assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, rf.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<String> = checked
         .diagnostics
         .iter()
@@ -53,8 +53,15 @@ fn symbols(root: &Path) -> Vec<String> {
         .map(|d| d.message.clone())
         .collect();
     assert!(errs.is_empty(), "typecheck: {errs:?}");
-    let program =
-        lower_program(&hir, &checked.tables, rf).unwrap_or_else(|e| panic!("lower: {}", e.what));
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        // AS1b-ii: the entry is registered under its LOGICAL name; `rf` above is path-named,
+        // and the difference between those two is what this case measures.
+        hir.source_named(&graph.packages[&graph.root_package_name].entry_logical_name())
+            .expect("the parse registered the package entry"),
+    )
+    .unwrap_or_else(|e| panic!("lower: {}", e.what));
     let mut s: Vec<String> = program
         .bodies
         .iter()

@@ -33,7 +33,7 @@ fn diagnostics(source: &str) -> Vec<Diagnostic> {
             .filter(|d| d.severity == Severity::Error),
     );
     out.extend(
-        typecheck::analyze(&hir, file)
+        typecheck::analyze(&hir)
             .diagnostics
             .into_iter()
             .filter(|d| d.severity == Severity::Error),

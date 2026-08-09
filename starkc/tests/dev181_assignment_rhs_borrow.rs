@@ -36,7 +36,7 @@ fn errors(source: &str) -> Vec<String> {
             .filter(|d| d.severity == Severity::Error)
             .map(|d| format!("{}: {}", d.code.clone().unwrap_or_default(), d.message)),
     );
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     out.extend(
         checked
             .diagnostics
@@ -47,7 +47,6 @@ fn errors(source: &str) -> Vec<String> {
     out.extend(
         starkc::borrowck::check(
             &hir,
-            file,
             &checked.tables.expr_types,
             &checked.tables.local_types,
         )

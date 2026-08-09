@@ -32,7 +32,7 @@ fn rejected_with(tag: &str, code: &str, src: &str) {
         rd.is_empty(),
         "{tag}: must reach the checker, got resolve errors {rd:?}"
     );
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let codes: Vec<String> = checked
         .diagnostics
         .iter()

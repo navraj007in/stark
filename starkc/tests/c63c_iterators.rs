@@ -145,7 +145,7 @@ fn refused_by_front_end(tag: &str, src: &str) {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errs: Vec<_> = checked
         .diagnostics
         .iter()
@@ -167,7 +167,7 @@ fn rejected_by_front_end(tag: &str, src: &str) {
     assert!(pd.is_empty(), "{tag} parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics
@@ -316,7 +316,7 @@ fn vec_index_non_copy_is_refused_by_the_borrow_checker() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let diag = checked
         .diagnostics
         .iter()
@@ -416,7 +416,7 @@ fn ref_scrutinee_with_constructor_patterns_is_rejected() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     let diag = checked
         .diagnostics
         .iter()
@@ -447,7 +447,7 @@ fn ref_scrutinee_without_constructor_patterns_is_accepted() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     assert!(
         !checked
             .diagnostics
@@ -586,7 +586,7 @@ fn owned_vec_argument_still_moves() {
     assert!(pd.is_empty(), "{pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{rd:?}");
-    let checked = typecheck::analyze(&hir, file);
+    let checked = typecheck::analyze(&hir);
     assert!(
         checked
             .diagnostics

@@ -53,8 +53,26 @@ pub struct Ast {
     /// extension, D2/D5). Empty for Core-only programs.
     pub dims: Vec<DimExprNode>,
     pub root: Root,
-    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
-    pub synthetic_spans: std::collections::HashMap<Span, String>,
+    /// AS1b-ii-b: the source each item was parsed from, by IDENTITY.
+    ///
+    /// This was `ItemId -> Arc<SourceFile>`, which made it a second source *authority* alongside
+    /// the registry: consumers selected a file from here and indexed spans against it. An id
+    /// cannot be a rival authority — it can only name what the registry already decided.
+    pub item_sources: std::collections::HashMap<ItemId, crate::source::SourceId>,
+    /// Every source this AST was parsed from, interned in load order (AS1b-i).
+    ///
+    /// This is where `SourceId`s come from. Allocation used to happen in `build_source_map`, after
+    /// the whole front end had run, which meant a span could not carry the identity of the file it
+    /// indexes. Files are registered here as the parser loads them, so identity exists from the
+    /// moment source does.
+    pub sources: crate::source::SourceRegistry,
+    /// AS1b-ii-d: names of items the compiler synthesised, keyed by ITEM.
+    ///
+    /// Dependency-package `mod` wrappers have no source text. Their names used to be encoded as
+    /// spans at `lo >= 0x8000_0000` — a name wearing a location's clothes, which forced every span
+    /// consumer to know that some spans index no file, and blocked span→location resolution from
+    /// ever being total. A name is not a location, so it is no longer stored as one.
+    pub synthetic_names: std::collections::HashMap<ItemId, String>,
     /// DEV-173: every string literal's DECODED value, in allocation order.
     ///
     /// A literal used to be re-decoded from its own source span on demand. That works only while
@@ -649,11 +667,10 @@ pub enum PortDir {
 }
 
 impl PortDir {
+    /// AS6: the spelling belongs to the extension that owns model ports, and the parser matches
+    /// against the same table, so parse and print cannot drift.
     pub fn keyword(self) -> &'static str {
-        match self {
-            PortDir::Input => "input",
-            PortDir::Output => "output",
-        }
+        crate::extensions::tensor::syntax::port_keyword(self)
     }
 }
 
@@ -763,6 +780,33 @@ pub enum UseTree {
 // ---------------------------------------------------------------- arena --
 
 impl Ast {
+    /// Intern `file` and hand back the shared `Arc`.
+    ///
+    /// Callers hold a `&SourceFile` (the parser borrows one), so this copies it exactly once, on
+    /// first sight, and returns the same `Arc` on every later call for that name.
+    /// The source an item was parsed from. Mirrors `Hir::item_file`: the map names an id, the
+    /// registry answers, and there is no second authority to disagree with it.
+    pub fn item_file(&self, item: ItemId) -> Option<&std::sync::Arc<crate::source::SourceFile>> {
+        self.item_sources
+            .get(&item)
+            .and_then(|id| self.sources.get(*id))
+            .map(|source| source.file())
+    }
+
+    pub fn interned_source(
+        &mut self,
+        file: &crate::source::SourceFile,
+    ) -> crate::source::RegisteredSource {
+        if let Some(id) = self.sources.id_for_name(&file.name) {
+            return self.sources.get(id).expect("just looked it up").clone();
+        }
+        let mut owned = crate::source::SourceFile::new(file.name.clone(), file.src.clone());
+        if let Some(path) = &file.disk_path {
+            owned = owned.with_disk_path(path.clone());
+        }
+        self.sources.intern(std::sync::Arc::new(owned))
+    }
+
     /// WP-FMT-001: the current arena sizes, for [`Ast::remap_spans_since`].
     pub fn marks(&self) -> ArenaMarks {
         ArenaMarks {
@@ -790,7 +834,7 @@ impl Ast {
             let lo = map.get(span.lo as usize).copied();
             let hi = map.get(span.hi as usize).copied();
             if let (Some(lo), Some(hi)) = (lo, hi) {
-                *span = Span::new(lo, hi);
+                *span = Span::in_source(span.source, lo, hi);
             }
         };
         for node in &mut self.types[marks.types..] {

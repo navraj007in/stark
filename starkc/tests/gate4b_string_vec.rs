@@ -22,7 +22,7 @@ fn execute_snippet(source: &str) -> String {
         resolve_diagnostics
     );
 
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -30,7 +30,13 @@ fn execute_snippet(source: &str) -> String {
         .collect();
     assert!(errors.is_empty(), "typecheck failed: {:?}", errors);
 
-    interp::run(&hir, file, &checked.tables).unwrap().output
+    interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap()
+    .output
 }
 
 #[test]

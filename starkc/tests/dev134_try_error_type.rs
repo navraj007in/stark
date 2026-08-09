@@ -43,7 +43,7 @@ fn check(src: &str, tag: &str) -> Option<String> {
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     checked
         .diagnostics
         .iter()
@@ -279,7 +279,7 @@ fn non_result_return_reports_once_not_twice() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let try_errors = checked
         .diagnostics
         .iter()

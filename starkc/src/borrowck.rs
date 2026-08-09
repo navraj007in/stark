@@ -3,10 +3,9 @@
 use crate::ast::UnOp;
 use crate::diag::Diagnostic;
 use crate::hir::{self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, Res, StmtId};
-use crate::source::{SourceFile, Span};
+use crate::source::Span;
 use crate::typecheck::Ty;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Borrow {
@@ -50,11 +49,13 @@ struct Place {
 
 pub struct BorrowChecker<'a> {
     hir: &'a Hir,
-    file: Arc<SourceFile>,
     diags: Vec<Diagnostic>,
     expr_types: &'a HashMap<ExprId, Ty>,
     local_types: &'a HashMap<LocalId, Ty>,
     copy_types: HashSet<ItemId>,
+    /// Nominals with a user destructor, by RESOLVED identity (DEV-210). Read from the checker's
+    /// authority rather than rescanned here.
+    drop_items: HashSet<ItemId>,
 
     // Active borrow tracking
     active_borrows: Vec<Borrow>,
@@ -75,17 +76,16 @@ pub struct BorrowChecker<'a> {
 
 pub fn check(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -99,18 +99,17 @@ pub fn check(
 
 pub fn check_fn(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
     def: &hir::FnDef,
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -123,7 +122,6 @@ pub fn check_fn(
 
 pub fn check_snippet(
     hir: &Hir,
-    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
     local_types: &HashMap<LocalId, Ty>,
     stmts: &[StmtId],
@@ -131,11 +129,11 @@ pub fn check_snippet(
 ) -> Vec<Diagnostic> {
     let mut checker = BorrowChecker {
         hir,
-        file,
         diags: Vec::new(),
         expr_types,
         local_types,
         copy_types: collect_copy_types(hir),
+        drop_items: crate::typecheck::nominals_with_destructor(hir),
         active_borrows: Vec::new(),
         moved_places: HashSet::new(),
         overlap_reported: HashSet::new(),
@@ -153,37 +151,31 @@ pub fn check_snippet(
 }
 
 impl<'a> BorrowChecker<'a> {
-    /// Read a span belonging to the item being checked (`check_crate` keeps `self.file` on the
-    /// current item's file). Cross-item reads must use `item_text` instead (DEV-069).
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-ii-d: this used to slice `self.file`, "the file of the item being checked", which
+    /// `check_crate` re-aimed per item (WP-C1.4, DEV-069) — right for that item's spans and wrong
+    /// for every other item's, hence the separate `item_text`. Both are one read now.
     /// Non-panicking since WP-C4.7-4: an out-of-range span was a compiler crash before.
     fn text(&self, span: Span) -> &str {
-        self.file
-            .src
-            .get(span.lo as usize..span.hi as usize)
+        self.hir
+            .sources
+            .get(span.source)
+            .and_then(|file| file.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
     }
 
-    /// Read a span belonging to `item`, against the file that DECLARES it — multi-file programs
-    /// parse each file separately, so spans are only meaningful against their own file
-    /// (DEV-069).
-    fn item_text(&self, item: hir::ItemId, span: Span) -> &str {
-        let src = match self.hir.item_files.get(&item) {
-            Some(file) => &file.src,
-            None => &self.file.src,
-        };
-        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
+    /// AS1b-ii-d: the item is no longer consulted — `span` names its own source.
+    fn item_text(&self, _item: hir::ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
-    /// WP-C1.4 (2026-07-17): backfill `.with_file()` when a diagnostic doesn't already carry one,
-    /// mirroring resolve.rs's `push_diag` (WP-C1.2, DEV-006's resolve half) and typecheck.rs's
-    /// per-item backfill. Every raw `self.diags.push(...)` call site in this file was converted
-    /// to go through this method instead. See COMPILER-STATE.md DEV-006.
+    /// WP-C1.4 (2026-07-17) routed every `self.diags.push(...)` in this file through here so a
+    /// diagnostic could be stamped with the file being checked (DEV-006).
+    ///
+    /// AS1b-ii-d removed the stamp: a span names its own source, so attribution is no longer a
+    /// second thing that can be right or wrong. The funnel stays.
     fn push_diag(&mut self, diag: Diagnostic) {
-        let diag = if diag.file.is_none() {
-            diag.with_file(self.file.clone())
-        } else {
-            diag
-        };
         self.diags.push(diag);
     }
 
@@ -292,6 +284,85 @@ impl<'a> BorrowChecker<'a> {
     /// borrowed scrutinee. Wildcards, literals, and path (unit-variant) patterns bind nothing
     /// and stay legal — matching by reference is fine, it is only *taking ownership* that is
     /// not — as does any `Copy` binding, which copies rather than moves.
+    /// Whether the scrutinee's own type is a nominal carrying a user destructor.
+    ///
+    /// Reads the published authority (DEV-210), not a private scan.
+    fn scrutinee_nominal_has_drop(&self, scrutinee: hir::ExprId) -> bool {
+        match self.expr_types.get(&scrutinee) {
+            Some(Ty::Struct(id, _) | Ty::Enum(id, _)) => self.drop_items.contains(id),
+            _ => false,
+        }
+    }
+
+    /// DEV-211's walk. Structurally the same as [`Self::reject_moves_out_of_borrow`] — a different
+    /// reason for the same prohibition, so it is a sibling rather than a flag on that one: the
+    /// diagnostics must say different things, and a shared walk with a mode parameter would make
+    /// both messages harder to get right than either is separately.
+    fn reject_moves_out_of_drop_scrutinee(&mut self, pat: hir::PatId) {
+        let node = self.hir.pat(pat);
+        let span = node.span;
+        match &node.kind {
+            hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => {}
+            hir::PatKind::Binding { local, .. } => {
+                let is_non_copy = self
+                    .local_types
+                    .get(local)
+                    .is_some_and(|ty| !self.is_copy_type(ty));
+                if is_non_copy {
+                    self.push_diag(
+                        Diagnostic::error(
+                            format!(
+                                "cannot move '{}' out of a value whose type implements Drop: the \
+                                 destructor requires the complete value (OWN-PARTIAL-001)",
+                                self.text(span)
+                            ),
+                            span,
+                        )
+                        .with_code("E0100")
+                        .with_label("match through a reference, or bind a Copy component"),
+                    );
+                }
+            }
+            hir::PatKind::TupleVariant { pats, .. }
+            | hir::PatKind::Tuple(pats)
+            | hir::PatKind::Array(pats) => {
+                for pat in pats {
+                    self.reject_moves_out_of_drop_scrutinee(*pat);
+                }
+            }
+            hir::PatKind::Struct { fields, .. } => {
+                let fields: Vec<(Option<hir::PatId>, Option<LocalId>, Span)> = fields
+                    .iter()
+                    .map(|field| (field.pat, field.local, field.name))
+                    .collect();
+                for (pat, local, name) in fields {
+                    match (pat, local) {
+                        (Some(pat), _) => self.reject_moves_out_of_drop_scrutinee(pat),
+                        (None, Some(local)) => {
+                            let is_non_copy = self
+                                .local_types
+                                .get(&local)
+                                .is_some_and(|ty| !self.is_copy_type(ty));
+                            if is_non_copy {
+                                self.push_diag(
+                                    Diagnostic::error(
+                                        "cannot move a field out of a value whose type implements \
+                                         Drop: the destructor requires the complete value \
+                                         (OWN-PARTIAL-001)",
+                                        name,
+                                    )
+                                    .with_code("E0100"),
+                                );
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+            hir::PatKind::Error => {}
+        }
+    }
+
     fn reject_moves_out_of_borrow(&mut self, pat: hir::PatId) {
         let node = self.hir.pat(pat);
         let span = node.span;
@@ -358,50 +429,24 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// **AS4: one Copy authority over `Ty`.** This was a second implementation of
+    /// `typecheck::is_copy_with_impls`, kept aligned by hand — its own comment said so — and it had
+    /// drifted: a `_ => false` wildcard swallowed `Ty::Never`, which 03-Type-System.md calls `Copy`
+    /// ("reference values, function values, `Unit`, and `!` are `Copy`"), and `Ty::Extension`,
+    /// where the checker consults the tensor's own answer.
+    ///
+    /// Measured before merging (`as4_copy_rule_inventory`): the two agreed on every sample except
+    /// `Never`. Delegating adopts the checker's answer, and the public entry point it needs
+    /// (`is_copy_type_with`) already existed — this duplicate never had to be written.
     fn is_copy_type(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Primitive(primitive) => !matches!(
-                primitive,
-                crate::ast::Primitive::String | crate::ast::Primitive::Str
-            ),
-            Ty::Error | Ty::Ref { mutable: false, .. } => true,
-            // WP-C6.1g-a: `Copy` per-instance — the nominal must be eligible AND every type
-            // argument `Copy` (so `H<&P>` is Copy, `H<&mut P>` / `H<String>` are Move). Recursing
-            // the arguments here is what keeps the move checker aligned with the type checker's
-            // `is_copy_with_impls`; omitting it was the DEV-072-class divergence structural Copy
-            // would otherwise open.
-            Ty::Struct(item, args) | Ty::Enum(item, args) => {
-                self.copy_types.contains(item) && args.iter().all(|arg| self.is_copy_type(arg))
-            }
-            Ty::Core(CoreType::Option | CoreType::Result, args) => {
-                args.iter().all(|arg| self.is_copy_type(arg))
-            }
-            Ty::Tuple(elements) => elements.iter().all(|element| self.is_copy_type(element)),
-            Ty::Array(element, _) => self.is_copy_type(element),
-            // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop /
-            // TYPE-FN-001 — repeated use of a fn-typed local (e.g. `f(f(x))`) must not be
-            // flagged as a move.
-            Ty::Fn { .. } => true,
-            _ => false,
-        }
+        crate::typecheck::is_copy_type_with(ty, &self.copy_types)
     }
 
     fn check_crate(&mut self) {
-        // WP-C1.4 (2026-07-17): swap `self.file` to each item's own file (from
-        // `hir.item_files`, the same side table resolve.rs/typecheck.rs already use) before
-        // checking it, so `push_diag`'s backfill attributes diagnostics to the file the item
-        // actually came from rather than always the crate's top-level file -- for multi-file
-        // packages, every borrow-check diagnostic for a non-root-file item was previously
-        // misattributed to the root file. See COMPILER-STATE.md DEV-006.
-        let root_file = self.file.clone();
-        for (index, item) in self.hir.items.iter().enumerate() {
-            let item_id = ItemId(index as u32);
-            self.file = self
-                .hir
-                .item_files
-                .get(&item_id)
-                .cloned()
-                .unwrap_or_else(|| root_file.clone());
+        // WP-C1.4 (2026-07-17) pointed `self.file` at each item's own file before checking it, so
+        // that a borrow-check diagnostic for a non-root-file item was not misattributed to the root
+        // (DEV-006). AS1b-ii-d: spans carry their source, so there is no file to aim.
+        for item in self.hir.items.iter() {
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(def);
@@ -424,7 +469,6 @@ impl<'a> BorrowChecker<'a> {
                 _ => {}
             }
         }
-        self.file = root_file;
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
@@ -888,6 +932,23 @@ impl<'a> BorrowChecker<'a> {
                 if self.scrutinee_reads_through_ref(*scrutinee) {
                     for arm in arms {
                         self.reject_moves_out_of_borrow(arm.pat);
+                    }
+                } else if self.scrutinee_nominal_has_drop(*scrutinee) {
+                    // **DEV-211: OWN-PARTIAL-001 applies to a matched component too.**
+                    //
+                    // "Moving a field from a type that implements `Drop` is prohibited, because its
+                    // destructor requires the complete value." A `match` that binds a non-`Copy`
+                    // payload out of an owned `Drop` nominal is that move — the destructor cannot
+                    // then run on a complete value, and PAT-DROP-001 destroys only the *unbound*
+                    // components, so nothing runs the type's own destructor at all.
+                    //
+                    // Measured before repairing: `impl Drop for E` with `match e { E::A(s) => … }`
+                    // printed the arm and never the destructor, in BOTH the HIR oracle and MIR.
+                    // The engines agreed, so this was a front-end conformance defect rather than an
+                    // engine divergence — the checker had the rule for struct fields
+                    // (`local_has_drop`) and never applied it to a matched component.
+                    for arm in arms {
+                        self.reject_moves_out_of_drop_scrutinee(arm.pat);
                     }
                 }
                 let moved_before = self.moved_places.clone();
@@ -1547,37 +1608,22 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
+    /// **DEV-210: answered by identity, not by spelling.**
+    ///
+    /// This scanned the impl set itself and asked whether the written trait name
+    /// `.ends_with("Drop")` — so `impl MyDrop for S` made `S` "implement `Drop`", and a legal
+    /// partial move out of one of its fields was refused with E0100. Valid Core, rejected, because
+    /// a user trait's name happened to end in four particular letters. CD-379 settled the identity
+    /// rule for `Display`; this is the same defect, and the fix is to stop having a private answer
+    /// at all.
     fn local_has_drop(&self, local: LocalId) -> bool {
         let Some(ty) = self.local_types.get(&local) else {
             return false;
         };
-        let item_id = match ty {
-            Ty::Struct(id, _) | Ty::Enum(id, _) => *id,
-            _ => return false,
-        };
-        // DEV-069: the trait name written on each impl belongs to that impl's own file.
-        self.hir.items.iter().enumerate().any(|(idx, item)| {
-            let impl_id = hir::ItemId(idx as u32);
-            let hir::ItemKind::Impl {
-                trait_: Some(trait_ref),
-                self_ty,
-                ..
-            } = &item.kind
-            else {
-                return false;
-            };
-            let is_drop = self
-                .item_text(impl_id, trait_ref.path.span)
-                .ends_with("Drop");
-            let matches_type = matches!(
-                &self.hir.ty(*self_ty).kind,
-                hir::TypeKind::Path {
-                    res: Res::Item(id),
-                    ..
-                } if *id == item_id
-            );
-            is_drop && matches_type
-        })
+        match ty {
+            Ty::Struct(id, _) | Ty::Enum(id, _) => self.drop_items.contains(id),
+            _ => false,
+        }
     }
 
     fn check_return_escape(&mut self, expr_id: ExprId) {
@@ -1755,4 +1801,123 @@ fn places_overlap(left: &Place, right: &Place) -> bool {
     left.local == right.local
         && (is_prefix(&left.projections, &right.projections)
             || is_prefix(&right.projections, &left.projections))
+}
+
+/// **AS4 — the Copy rule over `Ty`: two implementations, measured before consolidation.**
+///
+/// `borrowck::is_copy_type` and `typecheck::is_copy_with_impls` both answer "is this `Ty` `Copy`?"
+/// — the same question in the same type language, unlike the MIR/checker split, where different
+/// type languages justify separate code. `borrowck`'s own comment says it exists to stay "aligned
+/// with the type checker's `is_copy_with_impls`", which is an alignment maintained by hand.
+///
+/// RB0's method: measure before merging, and record what differs.
+#[cfg(test)]
+mod as4_copy_rule_inventory {
+    use crate::hir::{CoreType, ItemId};
+    use crate::typecheck::{is_copy_type_with, Ty};
+    use std::collections::HashSet;
+
+    /// The borrowck implementation, lifted verbatim so the matrix compares the RULES rather than
+    /// the surrounding machinery. Deleted along with the original once they are shown equivalent.
+    fn borrowck_rule(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
+        match ty {
+            Ty::Primitive(primitive) => !matches!(
+                primitive,
+                crate::ast::Primitive::String | crate::ast::Primitive::Str
+            ),
+            Ty::Error | Ty::Ref { mutable: false, .. } => true,
+            Ty::Struct(item, args) | Ty::Enum(item, args) => {
+                copy_types.contains(item) && args.iter().all(|arg| borrowck_rule(arg, copy_types))
+            }
+            Ty::Core(CoreType::Option | CoreType::Result, args) => {
+                args.iter().all(|arg| borrowck_rule(arg, copy_types))
+            }
+            Ty::Tuple(elements) => elements.iter().all(|e| borrowck_rule(e, copy_types)),
+            Ty::Array(element, _) => borrowck_rule(element, copy_types),
+            Ty::Fn { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn samples() -> Vec<(&'static str, Ty)> {
+        let i32t = || Ty::Primitive(crate::ast::Primitive::Int32);
+        let string = || Ty::Primitive(crate::ast::Primitive::String);
+        vec![
+            ("Int32", i32t()),
+            ("String", string()),
+            ("Str", Ty::Primitive(crate::ast::Primitive::Str)),
+            ("Unit", Ty::Primitive(crate::ast::Primitive::Unit)),
+            ("Error", Ty::Error),
+            ("Never", Ty::Never),
+            ("Param", Ty::Param("T".to_string())),
+            (
+                "&T",
+                Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(i32t()),
+                },
+            ),
+            (
+                "&mut T",
+                Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(i32t()),
+                },
+            ),
+            ("Slice", Ty::Slice(Box::new(i32t()))),
+            ("Range", Ty::Range(Box::new(i32t()))),
+            (
+                "Fn",
+                Ty::Fn {
+                    params: vec![i32t()],
+                    ret: Box::new(i32t()),
+                },
+            ),
+            ("Tuple(Int32)", Ty::Tuple(vec![i32t()])),
+            ("Tuple(String)", Ty::Tuple(vec![string()])),
+            ("Array(Int32)", Ty::Array(Box::new(i32t()), 2)),
+            ("Array(String)", Ty::Array(Box::new(string()), 2)),
+            ("Option(Int32)", Ty::Core(CoreType::Option, vec![i32t()])),
+            ("Option(String)", Ty::Core(CoreType::Option, vec![string()])),
+            (
+                "Result(Int32,Int32)",
+                Ty::Core(CoreType::Result, vec![i32t(), i32t()]),
+            ),
+            ("Vec(Int32)", Ty::Core(CoreType::Vec, vec![i32t()])),
+            ("HashMap", Ty::Core(CoreType::HashMap, vec![i32t(), i32t()])),
+            ("Struct(eligible)", Ty::Struct(ItemId(0), Vec::new())),
+            ("Struct(ineligible)", Ty::Struct(ItemId(1), Vec::new())),
+            (
+                "Struct(eligible,<String>)",
+                Ty::Struct(ItemId(0), vec![string()]),
+            ),
+            ("Enum(eligible)", Ty::Enum(ItemId(0), Vec::new())),
+        ]
+    }
+
+    /// **The finding, pinned.** The two disagree on exactly one sample, and it is the wildcard's
+    /// doing: `borrowck`'s `_ => false` swallows `Ty::Never`, which the checker calls `Copy` (03:
+    /// "reference values, function values, `Unit`, and `!` are `Copy`").
+    ///
+    /// `Ty::Extension` would be a second, but a tensor type cannot be built here without the
+    /// extension's machinery; it is recorded in the audit rather than sampled.
+    #[test]
+    fn the_two_copy_rules_over_ty_are_measured_against_each_other() {
+        let mut copy_types = HashSet::new();
+        copy_types.insert(ItemId(0));
+        let mut disagree = Vec::new();
+        for (name, ty) in samples() {
+            let checker = is_copy_type_with(&ty, &copy_types);
+            let borrow = borrowck_rule(&ty, &copy_types);
+            if checker != borrow {
+                disagree.push(format!("{name}: checker={checker} borrowck={borrow}"));
+            }
+        }
+        assert_eq!(
+            disagree,
+            vec!["Never: checker=true borrowck=false"],
+            "the Copy rule over `Ty` exists twice; this pins where the copies differ so \
+             consolidation is evidence-led"
+        );
+    }
 }

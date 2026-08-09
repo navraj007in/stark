@@ -52,41 +52,13 @@ pub enum Builtin {
     None,
     Ok,
     Err,
-    TensorZeros,
-    TensorOnes,
-    TensorFull,
-    TensorFromVec,
-    TensorAdd,
-    TensorSub,
-    TensorMul,
-    TensorDiv,
-    TensorMin,
-    TensorMax,
-    TensorEq,
-    TensorNe,
-    TensorLt,
-    TensorLe,
-    TensorGt,
-    TensorGe,
-    TensorBroadcastTo,
-    TensorMatMul,
-    TensorBatchMatMul,
-    TensorConcat,
-    TensorPermute,
-    TensorReshape,
-    TensorSliceAxis,
-    TensorTranspose,
-    TensorSumAxis,
-    TensorMeanAxis,
-    TensorArgMax,
-    TensorSum,
-    TensorSoftmax,
-    TensorCast,
-    TensorToDevice,
-    /// `scale_255()` — value-range transition ByteRange -> UnitRange (Gate 7).
-    TensorScale255,
-    /// `normalize()` — value-range transition UnitRange -> Normalized (Gate 7).
-    TensorNormalize,
+    /// **AS6: the tensor extension's operations, behind one Core-owned variant.**
+    ///
+    /// Thirty-three `Tensor*` variants sat here, making this Core enum the extension's method
+    /// catalogue — criterion 2's "open-ended ... method catalogues" in a central Core module. The
+    /// set lives with the extension now, and Core's phases dispatch once rather than thirty-three
+    /// times.
+    Tensor(crate::extensions::tensor::TensorBuiltin),
     SizeOf,
     AlignOf,
     Swap,
@@ -230,15 +202,30 @@ pub struct Hir {
     pub pats: Vec<PatNode>,
     pub blocks: Vec<BlockNode>,
     pub root: Root,
-    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    /// AS1b-ii-b: the source each item was parsed from, by identity (see `Ast::item_sources`).
+    pub item_sources: std::collections::HashMap<ItemId, crate::source::SourceId>,
+    /// Every source this program was parsed from, frozen after parsing.
+    ///
+    /// Carried here so that every phase holding a `&Hir` — type checking, borrow checking, MIR
+    /// lowering, execution — can resolve a `SourceId` without being handed a separate lookup. It
+    /// is the read-only authority the interpreter's ambient `self.file` used to stand in for.
+    /// AS1b-iii: a frozen table, not a registry. This was described as "frozen after parsing"
+    /// while being a `SourceRegistry` with a public `&mut intern` — a freeze held by convention.
+    pub sources: crate::source::SourceTable,
     /// WP-C6.2b-F1: the defining module id of each item, so the type checker can enforce member
     /// and field visibility (private is exact-module, matching `resolve::item_is_visible_from`).
     pub item_modules: std::collections::HashMap<ItemId, u32>,
     pub publicly_nameable_items: std::collections::HashSet<ItemId>,
-    /// C4.5f-3c: names for synthetic spans (dependency-package `mod` wrappers use spans at
-    /// `lo >= 0x8000_0000` that index no real file). Copied from the AST so consumers past
-    /// resolution (MIR lowering's module-path walk) can read them.
-    pub synthetic_spans: std::collections::HashMap<crate::source::Span, String>,
+    /// AS1b-ii-d (was C4.5f-3c): names of items the compiler synthesised, keyed by ITEM.
+    ///
+    /// Remapped from the AST through `item_map` at resolution, not cloned: AST and HIR item ids are
+    /// different spaces. Consumers past resolution — MIR lowering's module-path walk — read it here.
+    ///
+    /// Dependency-package `mod` wrappers have no source text. Their names used to be encoded as
+    /// spans at `lo >= 0x8000_0000` — a name wearing a location's clothes, which forced every span
+    /// consumer to know that some spans index no file, and blocked span→location resolution from
+    /// ever being total. A name is not a location, so it is no longer stored as one.
+    pub synthetic_names: std::collections::HashMap<ItemId, String>,
     /// DEV-173: every string literal's decoded value, copied from the AST. A `Lit::Str` names its
     /// entry, so no pass re-decodes a literal from its span.
     pub str_lits: Vec<String>,
@@ -742,6 +729,30 @@ pub enum UseTree {
 // --------------------------------------------------------------- arena --
 
 impl Hir {
+    /// The registered source with this logical name, if this program was parsed from it.
+    ///
+    /// The one supported way to recover a `RegisteredSource` from a compiled program — for callers
+    /// that hold a `SourceFile` and need the identity this compilation gave it.
+    pub fn source_named(&self, name: &str) -> Option<crate::source::RegisteredSource> {
+        self.sources
+            .id_for_name(name)
+            .and_then(|id| self.sources.get(id))
+            .cloned()
+    }
+
+    /// The source an item was parsed from.
+    ///
+    /// AS1b-ii-b: the one way from an item to its file. Callers used to hold an `Arc<SourceFile>`
+    /// taken straight out of `item_files` and index spans against it, which made that map a rival
+    /// source *authority*. Now the map names an id and the registry answers — one authority, and
+    /// the id cannot disagree with it.
+    pub fn item_file(&self, item: ItemId) -> Option<&std::sync::Arc<crate::source::SourceFile>> {
+        self.item_sources
+            .get(&item)
+            .and_then(|id| self.sources.get(*id))
+            .map(|source| source.file())
+    }
+
     pub fn alloc_type(&mut self, kind: TypeKind, span: Span) -> TypeId {
         self.types.push(TypeNode { kind, span });
         TypeId(self.types.len() as u32 - 1)

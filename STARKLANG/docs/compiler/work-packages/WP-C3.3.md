@@ -11,12 +11,19 @@ selects (WP-C3.4, CE5).
 
 ## Deliverables (done)
 
-- `starkc/tests/spike_cranelift.rs` — isolated HIR→Cranelift-IR lowerer, object emission, `cc`
-  link to a standalone executable, run/diff harness over the frozen corpus (interpreter oracle).
+> **Historical — the spike artifacts were retired 2026-08-06.** WP-C3.4 (CE5) selected
+> `SELECT-GENERATED` on 2026-07-19, which is the condition this spike's own report set for its
+> removal. The test and its dependencies no longer exist in the tree; the measurements and the
+> head-to-head comparison survive in the spike report, which remains the evidence of record.
+> Retired under WP-ARCHITECTURE-STABILIZATION Sprint 1.
+
+- ~~`starkc/tests/spike_cranelift.rs`~~ (removed) — isolated HIR→Cranelift-IR lowerer, object
+  emission, `cc` link to a standalone executable, run/diff harness over the frozen corpus
+  (interpreter oracle).
 - `starkc/docs/compiler/spikes/WP-C3.3-direct-cranelift.md` — spike report + head-to-head table
-  vs WP-C3.2, with an explicit timing caveat (no general performance-multiple claim).
-- Cranelift dev-dependencies (pinned 0.110 for rustc-1.93 compatibility) with a necessity note in
-  `Cargo.toml`; dev-only, not part of the shipped compiler surface.
+  vs WP-C3.2, with an explicit timing caveat (no general performance-multiple claim). **Retained.**
+- ~~Cranelift dev-dependencies~~ (removed; pinned 0.110 for rustc-1.93 compatibility) with a
+  necessity note in `Cargo.toml`; dev-only, never part of the shipped compiler surface.
 
 ## Result
 

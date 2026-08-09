@@ -104,7 +104,14 @@ fn validate_example_in_context(file_source: &str, example_code: &str) -> Result<
         );
     };
 
-    crate::interp::run_item(hir, file, tables, example_item)
+    // AS1b-ii: the registered source for this example, from the analysis that parsed it.
+    let registered = hir
+        .sources
+        .id_for_name(&file.name)
+        .and_then(|id| hir.sources.get(id))
+        .expect("the analysis registered this file")
+        .clone();
+    crate::interp::run_item(hir, registered, tables, example_item)
         .map(|_| ())
         .map_err(|e| format!("runtime error: {}", e.message))
 }

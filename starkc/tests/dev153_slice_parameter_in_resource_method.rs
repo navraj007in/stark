@@ -55,7 +55,7 @@ fn build(src: &str, tag: &str) -> Result<(), String> {
     assert!(pd.is_empty(), "{tag}: parse: {pd:?}");
     let (hir, rd) = resolve(&ast, file.clone());
     assert!(rd.is_empty(), "{tag}: resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     if let Some(first) = checked
         .diagnostics
         .iter()
@@ -67,8 +67,12 @@ fn build(src: &str, tag: &str) -> Result<(), String> {
             first.message
         ));
     }
-    let program =
-        lower_program(&hir, &checked.tables, file).map_err(|e| format!("LOWER: {}", e.what))?;
+    let program = lower_program(
+        &hir,
+        &checked.tables,
+        hir.source_named(&file.name).expect("registered"),
+    )
+    .map_err(|e| format!("LOWER: {}", e.what))?;
     starkc::mir::verify::verify_program(&program).map_err(|errors| {
         format!(
             "VERIFY {}",

@@ -22,7 +22,7 @@ fn execute_snippet(source: &str) -> String {
         resolve_diagnostics
     );
 
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()
@@ -30,7 +30,13 @@ fn execute_snippet(source: &str) -> String {
         .collect();
     assert!(errors.is_empty(), "typecheck failed: {:?}", errors);
 
-    interp::run(&hir, file, &checked.tables).unwrap().output
+    interp::run(
+        &hir,
+        hir.source_named(&file.name).expect("registered"),
+        &checked.tables,
+    )
+    .unwrap()
+    .output
 }
 
 /// WP-C5.3e (CD-067): these are the values of the named target contract `stark-64-v1`, not of any
@@ -128,7 +134,7 @@ fn test_float_hash_bound_rejected() {
     ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
-    let checked = typecheck::analyze(&hir, file.clone());
+    let checked = typecheck::analyze(&hir);
     let errors: Vec<_> = checked
         .diagnostics
         .iter()

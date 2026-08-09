@@ -90,7 +90,7 @@ fn compile(raw_layer: &str) -> Vec<String> {
             .map(|d| format!("resolve: {d:?}"))
             .collect();
     }
-    starkc::typecheck::analyze(&hir, file)
+    starkc::typecheck::analyze(&hir)
         .diagnostics
         .iter()
         .filter(|d| d.severity == starkc::diag::Severity::Error)

@@ -2,323 +2,29 @@
 
 use std::collections::HashMap;
 
-/// Minimal JSON value type (no external serde_json dependency).
-#[derive(Debug, Clone, PartialEq)]
-pub enum JsonValue {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    Array(Vec<JsonValue>),
-    Object(HashMap<String, JsonValue>),
-}
+/// **AS5-c: the LSP transport no longer owns a JSON implementation.**
+///
+/// It had its own `JsonValue`, parser and escaper. The parser agreed with `package.rs`'s on 3 of 12
+/// constructs — they were two grammars, not one that drifted — and it accepted trailing input after
+/// a complete value, so a truncated or concatenated frame parsed as its first value and the
+/// remainder vanished. The escaper left 29 C0 control characters raw on the wire (DEV-184), and the
+/// value model decoded every number to `f64` (DEV-185).
+///
+/// The message types below are the protocol-specific model and stay here. Parsing, the value type
+/// and escaping come from `crate::json`.
+pub use crate::json::{JsonNumber, JsonValue};
 
-impl JsonValue {
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            JsonValue::String(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            JsonValue::Number(n) => Some(*n as i64),
-            _ => None,
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            JsonValue::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&[JsonValue]> {
-        match self {
-            JsonValue::Array(arr) => Some(arr),
-            _ => None,
-        }
-    }
-
-    pub fn get(&self, key: &str) -> Option<&JsonValue> {
-        match self {
-            JsonValue::Object(obj) => obj.get(key),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for JsonValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            JsonValue::Null => write!(f, "null"),
-            JsonValue::Bool(b) => write!(f, "{}", b),
-            JsonValue::Number(n) => {
-                if n.fract() == 0.0 {
-                    write!(f, "{}", *n as i64)
-                } else {
-                    write!(f, "{}", n)
-                }
-            }
-            JsonValue::String(s) => write!(f, "\"{}\"", escape_json_string(s)),
-            JsonValue::Array(arr) => {
-                let items = arr
-                    .iter()
-                    .map(|v| v.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                write!(f, "[{}]", items)
-            }
-            JsonValue::Object(obj) => {
-                let mut entries = obj.iter().collect::<Vec<_>>();
-                entries.sort_by_key(|(left, _)| *left);
-                let items = entries
-                    .into_iter()
-                    .map(|(k, v)| format!("\"{}\":{}", escape_json_string(k), v))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                write!(f, "{{{}}}", items)
-            }
-        }
-    }
-}
-
-fn escape_json_string(s: &str) -> String {
-    let mut result = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => result.push_str("\\\""),
-            '\\' => result.push_str("\\\\"),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            _ => result.push(c),
-        }
-    }
-    result
-}
-
-/// Parse minimal JSON (enough for LSP messages)
+/// Parse one complete JSON value.
+///
+/// AS5 CE9 decision: **trailing non-whitespace input after the value is rejected.** A JSON-RPC frame
+/// contains exactly one JSON value; accepting `{"jsonrpc":"2.0",...} garbage` weakens framing and
+/// hides malformed clients. C8's protocol baseline already expected this rejection, so the
+/// implementation now matches the contract it was written against.
+///
+/// Returns `Option` for source compatibility with the call sites; `crate::json::parse` carries the
+/// message and byte offset for callers that want them.
 pub fn parse_json(s: &str) -> Option<JsonValue> {
-    let mut chars = s.trim().chars().peekable();
-    parse_json_value(&mut chars)
-}
-
-fn parse_json_value(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    skip_whitespace(chars);
-
-    match chars.peek()? {
-        '{' => parse_json_object(chars),
-        '[' => parse_json_array(chars),
-        '"' => parse_json_string(chars).map(JsonValue::String),
-        't' | 'f' => parse_json_bool(chars),
-        'n' => parse_json_null(chars),
-        '-' | '0'..='9' => parse_json_number(chars),
-        _ => None,
-    }
-}
-
-fn parse_json_object(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    chars.next()?; // consume '{'
-    let mut obj = HashMap::new();
-
-    skip_whitespace(chars);
-    if chars.peek() == Some(&'}') {
-        chars.next();
-        return Some(JsonValue::Object(obj));
-    }
-
-    loop {
-        skip_whitespace(chars);
-        let key = parse_json_string(chars)?;
-        skip_whitespace(chars);
-        if chars.next() != Some(':') {
-            return None;
-        }
-        skip_whitespace(chars);
-        let value = parse_json_value(chars)?;
-        obj.insert(key, value);
-
-        skip_whitespace(chars);
-        match chars.peek() {
-            Some(',') => {
-                chars.next();
-            }
-            Some('}') => {
-                chars.next();
-                break;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(JsonValue::Object(obj))
-}
-
-fn parse_json_array(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    chars.next()?; // consume '['
-    let mut arr = Vec::new();
-
-    skip_whitespace(chars);
-    if chars.peek() == Some(&']') {
-        chars.next();
-        return Some(JsonValue::Array(arr));
-    }
-
-    loop {
-        skip_whitespace(chars);
-        arr.push(parse_json_value(chars)?);
-
-        skip_whitespace(chars);
-        match chars.peek() {
-            Some(',') => {
-                chars.next();
-            }
-            Some(']') => {
-                chars.next();
-                break;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(JsonValue::Array(arr))
-}
-
-/// The four hex digits of a `\uXXXX` escape, with `\u` already consumed.
-///
-/// Returns `None` on a non-hex digit or on end of input, so a malformed escape fails the parse
-/// instead of contributing nothing to a value that is then reported as successfully parsed.
-fn read_hex4(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<u32> {
-    let mut value = 0u32;
-    for _ in 0..4 {
-        value = value * 16 + chars.next()?.to_digit(16)?;
-    }
-    Some(value)
-}
-
-/// One `\u` escape, decoding a UTF-16 surrogate pair into the scalar it denotes (RFC 8259 §7).
-///
-/// **DEV-182.** This used to read four hex digits, call `char::from_u32`, and *discard the escape
-/// when that failed* — which it always does for a surrogate half, since a surrogate is not a Rust
-/// `char`. There was no pairing step and no error, so a valid escaped `U+1F600` parsed to the
-/// **empty string** and an unpaired surrogate was accepted as the empty string. Both parsers
-/// returned success; only the value was wrong, which is why no verdict-based comparison could see
-/// it. An editor sending a non-BMP character in any string — a completion label, a file path, a
-/// diagnostic message — lost it silently.
-fn parse_unicode_escape(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<char> {
-    const HIGH: std::ops::RangeInclusive<u32> = 0xD800..=0xDBFF;
-    const LOW: std::ops::RangeInclusive<u32> = 0xDC00..=0xDFFF;
-
-    let first = read_hex4(chars)?;
-    if HIGH.contains(&first) {
-        // A high surrogate is only meaningful paired with a low one, and the pair must be written
-        // as a second `\u` escape. Anything else is invalid JSON, including a bare non-BMP
-        // character or a second high surrogate.
-        if chars.next()? != '\\' || chars.next()? != 'u' {
-            return None;
-        }
-        let low = read_hex4(chars)?;
-        if !LOW.contains(&low) {
-            return None;
-        }
-        let combined = 0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00);
-        return char::from_u32(combined);
-    }
-    if LOW.contains(&first) {
-        // A low surrogate with no high surrogate before it denotes nothing.
-        return None;
-    }
-    char::from_u32(first)
-}
-
-fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<String> {
-    if chars.next() != Some('"') {
-        return None;
-    }
-
-    let mut result = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(result),
-            '\\' => match chars.next()? {
-                '"' => result.push('"'),
-                '\\' => result.push('\\'),
-                '/' => result.push('/'),
-                'b' => result.push('\u{0008}'),
-                'f' => result.push('\u{000C}'),
-                'n' => result.push('\n'),
-                'r' => result.push('\r'),
-                't' => result.push('\t'),
-                'u' => result.push(parse_unicode_escape(chars)?),
-                _ => return None,
-            },
-            _ => result.push(c),
-        }
-    }
-    None
-}
-
-fn parse_json_bool(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    let mut word = String::new();
-    while let Some(&c) = chars.peek() {
-        if c.is_alphanumeric() {
-            word.push(chars.next().unwrap());
-        } else {
-            break;
-        }
-    }
-
-    match word.as_str() {
-        "true" => Some(JsonValue::Bool(true)),
-        "false" => Some(JsonValue::Bool(false)),
-        _ => None,
-    }
-}
-
-fn parse_json_null(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    let mut word = String::new();
-    for _ in 0..4 {
-        if let Some(c) = chars.next() {
-            word.push(c);
-        }
-    }
-
-    if word == "null" {
-        Some(JsonValue::Null)
-    } else {
-        None
-    }
-}
-
-fn parse_json_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<JsonValue> {
-    let mut num_str = String::new();
-
-    if chars.peek() == Some(&'-') {
-        num_str.push(chars.next().unwrap());
-    }
-
-    while let Some(&c) = chars.peek() {
-        if c.is_numeric() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
-            num_str.push(chars.next().unwrap());
-        } else {
-            break;
-        }
-    }
-
-    num_str.parse::<f64>().ok().map(JsonValue::Number)
-}
-
-fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars>) {
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
-            chars.next();
-        } else {
-            break;
-        }
-    }
+    crate::json::parse(s).ok()
 }
 
 /// LSP message type.
@@ -448,8 +154,8 @@ mod tests {
     #[test]
     fn object_encoding_is_deterministic_and_key_sorted() {
         let value = JsonValue::Object(HashMap::from([
-            ("zeta".to_string(), JsonValue::Number(2.0)),
-            ("alpha".to_string(), JsonValue::Number(1.0)),
+            ("zeta".to_string(), JsonValue::number_from_i64(2)),
+            ("alpha".to_string(), JsonValue::number_from_i64(1)),
         ]));
         assert_eq!(value.to_string(), r#"{"alpha":1,"zeta":2}"#);
         assert_eq!(value.to_string(), value.to_string());

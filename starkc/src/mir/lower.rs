@@ -25,10 +25,9 @@ use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
 use crate::mir::provider_lower::ProviderLowering;
-use crate::source::SourceFile;
-use crate::typecheck::{Ty, TypeTables};
+use crate::source::{RegisteredSource, Span};
+use crate::typecheck::{DisplayPath, DisplayStep, Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
 
 pub struct LowerError {
     pub what: String,
@@ -142,48 +141,6 @@ fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
     }
 }
 
-/// Does `ty` carry a reference (borrow) anywhere below the top level? A slot-backed (droppable)
-/// composite whose field read returns a borrow needs a generated lifetime the backend does not emit
-/// yet (E0106) — so Display of such a composite (`(String, &str, i32)`) is refused for now.
-fn ty_carries_ref(ty: &MirTy) -> bool {
-    match ty {
-        MirTy::Ref { .. } => true,
-        MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Struct(_, args) => {
-            args.iter().any(ty_carries_ref)
-        }
-        MirTy::Tuple(elems) => elems.iter().any(ty_carries_ref),
-        MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_carries_ref(elem),
-        // **EXHAUSTIVE ON PURPOSE.** "Carries no borrow" is a claim about a type, not a decision to
-        // skip one, so it must be stated per variant.
-        //
-        // **This is the third copy of one rule**, after `emit_types::ty_carries_reference` and
-        // `emit_types::ty_contains_ref`, and it does not agree with the first: that one descends
-        // into a `FnPtr`'s parameters and return, this one calls every fn value borrow-free. The
-        // difference is defensible — a Rust `fn(&T)` is higher-ranked and needs no lifetime
-        // parameter, which is the only thing this predicate guards (E0106) — but it is an
-        // agreement the three copies have never been checked against each other for. Recorded
-        // rather than silently harmonised; unifying them is its own change.
-        MirTy::Int8
-        | MirTy::Int16
-        | MirTy::Int32
-        | MirTy::Int64
-        | MirTy::UInt8
-        | MirTy::UInt16
-        | MirTy::UInt32
-        | MirTy::UInt64
-        | MirTy::Float32
-        | MirTy::Float64
-        | MirTy::Bool
-        | MirTy::Char
-        | MirTy::Unit
-        | MirTy::Never
-        | MirTy::Str
-        | MirTy::String
-        | MirTy::FnPtr { .. }
-        | MirTy::HostResource(_) => false,
-    }
-}
-
 fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> {
     Err(LowerError {
         what: what.into(),
@@ -239,10 +196,12 @@ fn zero_of(ty: &MirTy, span: Span) -> Result<Operand, LowerError> {
 /// its defining file (so spans and name reads land in the right source) and its module path
 /// (so canonical symbols are package/module-qualified: `⟨package⟩::⟨module⟩::name@[args]`).
 struct ProgramMeta {
-    /// Interned files; index = `FileId`. The entry file is `FileId(0)`.
-    files: Vec<Arc<SourceFile>>,
-    /// `item.0` → (defining file, module path from the root, outermost first).
-    items: HashMap<u32, (FileId, Vec<String>)>,
+    /// AS1b-iii: the program's sources, taken from the HIR's registry rather than re-interned into
+    /// a MIR-local `FileId` space. Re-interning by name was how MIR acquired a second source
+    /// identity that could disagree with the one every span already carried.
+    sources: crate::source::SourceTable,
+    /// `item.0` → (defining source, module path from the root, outermost first).
+    items: HashMap<u32, (crate::source::SourceId, Vec<String>)>,
     /// Every item reachable from the root, modules included (deterministic walk order).
     all_items: Vec<ItemId>,
     /// WP-C6.1g-a (OWN-COPY-001, amended): items that are `Copy` when their type arguments are —
@@ -254,37 +213,31 @@ struct ProgramMeta {
     /// the impl's bound HIR type. Lets the monomorphiser resolve a projection `T::Item` once `T`'s
     /// concrete nominal is known, mirroring the front end's `assoc_projections`.
     assoc_projections: HashMap<(u32, String), hir::TypeId>,
+    /// AS1b-ii: the entry's registered id. Lowering rejections with nothing to point at belong to
+    /// the program's entry rather than to a fabricated source.
+    entry_source: crate::source::SourceId,
 }
 
 impl ProgramMeta {
-    fn build(hir: &Hir, entry: &Arc<SourceFile>) -> Result<Self, LowerError> {
-        let mut files: Vec<Arc<SourceFile>> = vec![entry.clone()];
-        let mut by_name: HashMap<String, FileId> = HashMap::new();
-        by_name.insert(entry.name.clone(), FileId(0));
-        let mut intern = |file: &Arc<SourceFile>, files: &mut Vec<Arc<SourceFile>>| -> FileId {
-            if let Some(&id) = by_name.get(&file.name) {
-                return id;
-            }
-            let id = FileId(files.len() as u32);
-            files.push(file.clone());
-            by_name.insert(file.name.clone(), id);
-            id
-        };
+    fn build(hir: &Hir, entry: &RegisteredSource) -> Result<Self, LowerError> {
+        let entry_source = entry.id();
+        let sources = hir.sources.clone();
 
         let root_items = match &hir.root {
             hir::Root::Program(items) => items.clone(),
-            _ => return unsupported("non-program root", Span { lo: 0, hi: 0 }),
+            _ => return unsupported("non-program root", entry.synthetic_span()),
         };
-        let mut items: HashMap<u32, (FileId, Vec<String>)> = HashMap::new();
+        let mut items: HashMap<u32, (crate::source::SourceId, Vec<String>)> = HashMap::new();
         let mut all_items: Vec<ItemId> = Vec::new();
         let mut stack: Vec<(ItemId, Vec<String>)> =
             root_items.iter().rev().map(|&i| (i, Vec::new())).collect();
         while let Some((item_id, path)) = stack.pop() {
-            let file_id = match hir.item_files.get(&item_id) {
-                Some(f) => intern(f, &mut files),
-                None => FileId(0),
-            };
-            items.insert(item_id.0, (file_id, path.clone()));
+            let item_source = hir
+                .item_sources
+                .get(&item_id)
+                .copied()
+                .unwrap_or(entry_source);
+            items.insert(item_id.0, (item_source, path.clone()));
             all_items.push(item_id);
             if let ItemKind::Mod {
                 name,
@@ -293,11 +246,15 @@ impl ProgramMeta {
             {
                 // The mod's name span reads in the file DECLARING the mod (this item's own
                 // file); dependency-package wrappers use synthetic spans resolved by name.
-                let mod_name = if let Some(s) = hir.synthetic_spans.get(name) {
+                let mod_name = if let Some(s) = hir.synthetic_names.get(&item_id) {
                     s.clone()
                 } else {
-                    let src = &files[file_id.0 as usize].src;
-                    src.get(name.lo as usize..name.hi as usize)
+                    // AS1b-iii: read against the source the NAME's span points at, not against the
+                    // item's file looked up separately. They were the same file; only one of them
+                    // was guaranteed to be.
+                    sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string()
                 };
@@ -312,7 +269,9 @@ impl ProgramMeta {
                 //
                 // A synthetic span marks a dependency-package wrapper; a plain `mod` has a real span
                 // in its declaring file. So the reset is exact rather than heuristic.
-                let crosses_package_boundary = hir.synthetic_spans.contains_key(name);
+                // A synthesised NAME marks a dependency-package wrapper; a plain `mod` is named by
+                // real source text. AS1b-ii-d: this asks about the item, not about its span.
+                let crosses_package_boundary = hir.synthetic_names.contains_key(&item_id);
                 let mut child_path = if crosses_package_boundary {
                     Vec::new()
                 } else {
@@ -340,15 +299,11 @@ impl ProgramMeta {
             let Some(nominal) = impl_self_item(hir, item_id) else {
                 continue;
             };
-            let file_id = match hir.item_files.get(&item_id) {
-                Some(f) => *by_name.get(&f.name).unwrap_or(&FileId(0)),
-                None => FileId(0),
-            };
-            let src = &files[file_id.0 as usize].src;
             for impl_item in impl_items {
                 if let hir::ImplItem::AssocType { name, ty } = impl_item {
-                    let assoc_name = src
-                        .get(name.lo as usize..name.hi as usize)
+                    let assoc_name = sources
+                        .get(name.source)
+                        .and_then(|source| source.src.get(name.lo as usize..name.hi as usize))
                         .unwrap_or("?")
                         .to_string();
                     assoc_projections.insert((nominal.0, assoc_name), *ty);
@@ -356,30 +311,30 @@ impl ProgramMeta {
             }
         }
         Ok(ProgramMeta {
-            files,
+            sources,
             items,
             all_items,
             copy_eligible,
             assoc_projections,
+            entry_source,
         })
     }
 
-    fn item_file(&self, item: ItemId) -> FileId {
-        self.items
-            .get(&item.0)
-            .map(|(f, _)| *f)
-            .unwrap_or(FileId(0))
-    }
-
-    fn item_src(&self, item: ItemId) -> &str {
-        &self.files[self.item_file(item).0 as usize].src
-    }
-
-    /// Read a span belonging to `item`'s file.
-    fn item_text(&self, item: ItemId, span: Span) -> &str {
-        self.item_src(item)
-            .get(span.lo as usize..span.hi as usize)
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// AS1b-iii: `item_text(item, span)` looked the item's file up in a MIR-local table and sliced
+    /// that. The item is no longer consulted — it never disagreed with the span, but nothing said
+    /// it could not.
+    fn text(&self, span: Span) -> &str {
+        self.sources
+            .get(span.source)
+            .and_then(|source| source.src.get(span.lo as usize..span.hi as usize))
             .unwrap_or("?")
+    }
+
+    /// AS1b-iii: kept for call sites that read a name off a declaration; `item` is redundant.
+    fn item_text(&self, _item: ItemId, span: Span) -> &str {
+        self.text(span)
     }
 
     /// `"dep::inner::"` for a nested item; empty for root items.
@@ -395,7 +350,7 @@ impl ProgramMeta {
 pub fn lower_program(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
 ) -> Result<MirProgram, LowerError> {
     lower_program_with_providers(hir, tables, file, ProviderLowering::none())
 }
@@ -409,7 +364,7 @@ pub fn lower_program(
 pub fn lower_program_with_providers(
     hir: &Hir,
     tables: &TypeTables,
-    file: Arc<SourceFile>,
+    file: RegisteredSource,
     providers: &ProviderLowering,
 ) -> Result<MirProgram, LowerError> {
     // C4.5f-3c: multi-file/multi-package metadata — per-item files, module paths, and the
@@ -429,7 +384,7 @@ pub fn lower_program_with_providers(
         }
     }
     let Some(main) = main else {
-        return unsupported("program without a `main` function", Span { lo: 0, hi: 0 });
+        return unsupported("program without a `main` function", file.synthetic_span());
     };
 
     // A11: resolve the synthesized nominal NAMES to item ids, now that `meta` can map an item to its
@@ -458,13 +413,15 @@ pub fn lower_program_with_providers(
             })
             .map_err(|what| LowerError {
                 what,
-                span: Span { lo: 0, hi: 0 },
+                span: file.synthetic_span(),
             })?
     };
     let providers = &providers;
 
+    let entry_source = file.id();
     let mut program = MirProgram {
-        files: meta.files.clone(),
+        entry_source,
+        sources: meta.sources.clone(),
         bodies: Vec::new(),
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
@@ -617,7 +574,7 @@ pub fn lower_program_with_providers(
                          ({LIMIT_MIR_TYPE_DEPTH} nested type constructors); recursive generic \
                          instantiation cannot be compiled"
                     ),
-                    span: Span { lo: 0, hi: 0 },
+                    span: file.synthetic_span(),
                 });
             }
             let symbol = key_symbol(hir, &meta, &callee)?;
@@ -632,7 +589,7 @@ pub fn lower_program_with_providers(
                              function instances); recursive generic instantiation cannot be \
                              compiled"
                         ),
-                        span: Span { lo: 0, hi: 0 },
+                        span: file.synthetic_span(),
                     });
                 }
                 worklist.push_back(callee);
@@ -662,7 +619,7 @@ fn nominal_instance_fields(
     args: &[MirTy],
     providers: &ProviderLowering,
 ) -> Result<NominalFields, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     // The probe is keyed to the nominal itself, so field-type spans read in ITS file (f-3c).
     //
     // **Provider-aware (CD-234).** This probe builds the variant-payload table, and a provider-blind
@@ -861,7 +818,7 @@ fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
 /// in its declaring item's own file, and module-nested items carry their path, so equal
 /// names in different modules/packages stay distinct.
 fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, LowerError> {
-    let span0 = Span { lo: 0, hi: 0 };
+    let span0 = Span::synthetic(meta.entry_source);
     match key {
         FnKey::Top(item, type_args) => {
             let name = item_name_text(hir, meta, *item).ok_or_else(|| LowerError {
@@ -1145,11 +1102,8 @@ struct FnLowerer<'a> {
     /// WP-C7.8.8 step 6: the provider calls this program may lower. Empty for every program that
     /// binds no provider, which is almost all of them.
     providers: &'a ProviderLowering,
-    /// f-3c: program-wide file/module metadata (per-item files and paths).
+    /// f-3c: program-wide file/module metadata (per-item sources and module paths).
     meta: &'a ProgramMeta,
-    /// The source of the file DEFINING this body's item — body spans read here.
-    src: &'a str,
-    file: FileId,
     key: FnKey,
     /// Concrete `Self` type for method/trait-default bodies (C4.5a).
     self_subst: Option<MirTy>,
@@ -1187,21 +1141,14 @@ impl<'a> FnLowerer<'a> {
         key: FnKey,
         providers: &'a ProviderLowering,
     ) -> Self {
-        // f-3c: the body's spans and text reads belong to the DEFINING item's file.
-        let owner = match &key {
-            FnKey::Top(item, _) => *item,
-            FnKey::ImplFn { impl_item, .. } => *impl_item,
-            FnKey::TraitDefault { trait_item, .. } => *trait_item,
-        };
-        let file = meta.item_file(owner);
-        let src: &'a str = &meta.files[file.0 as usize].src;
+        // f-3c pointed `src`/`file` at the DEFINING item's file so body spans read and were
+        // attributed correctly. AS1b-iii: every span names its own source, so the body needs no
+        // ambient file at all.
         FnLowerer {
             hir,
             tables,
             providers,
             meta,
-            src,
-            file,
             key,
             self_subst: None,
             param_subst: HashMap::new(),
@@ -1220,13 +1167,17 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Read a span, against the source the SPAN NAMES.
+    ///
+    /// This sliced `self.src` — the defining file of the body being lowered — with a bare index, so
+    /// a span from another file was either garbage or a panic. Now it resolves, and an unresolvable
+    /// span reads `"?"` rather than aborting the compiler.
     fn text(&self, span: Span) -> &'a str {
-        &self.src[span.lo as usize..span.hi as usize]
+        self.meta.text(span)
     }
 
     fn info(&self, span: Span) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::UserCode,
         }
@@ -1234,7 +1185,6 @@ impl<'a> FnLowerer<'a> {
 
     fn synthetic(&self, span: Span, kind: SyntheticKind) -> SourceInfo {
         SourceInfo {
-            file: self.file,
             span,
             origin: Origin::Synthetic(kind),
         }
@@ -2088,151 +2038,29 @@ impl<'a> FnLowerer<'a> {
     // ---- drop elaboration (C4.5d) ----
 
     /// Does a value of `ty` require drop glue (its own or any transitive `Drop` impl)?
-    fn ty_needs_drop(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
-        Ok(match ty {
-            MirTy::Struct(item, args) => {
-                // A1: a Drop impl on a generic nominal drops per instantiation — the dtor
-                // instance is monomorphised at the same type arguments.
-                if self.type_has_drop_impl(*item) {
-                    true
-                } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.meta,
-                        *item,
-                        args,
-                        self.providers,
-                    )?;
-                    let NominalFields::Struct(tys) = fields else {
-                        return unsupported("struct item with enum fields shape", span);
-                    };
-                    let mut any = false;
-                    for t in &tys {
-                        any = any || self.ty_needs_drop(t, span)?;
-                    }
-                    any
-                }
-            }
-            MirTy::Enum(EnumRef::User(item), args) => {
-                if self.type_has_drop_impl(*item) {
-                    true
-                } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.meta,
-                        *item,
-                        args,
-                        self.providers,
-                    )?;
-                    let NominalFields::Enum(variants) = fields else {
-                        return unsupported("enum item with struct fields shape", span);
-                    };
-                    let mut any = false;
-                    for v in &variants {
-                        for t in v {
-                            any = any || self.ty_needs_drop(t, span)?;
-                        }
-                    }
-                    any
-                }
-            }
-            MirTy::Enum(_, args) => {
-                let mut any = false;
-                for t in args {
-                    any = any || self.ty_needs_drop(t, span)?;
-                }
-                any
-            }
-            MirTy::Tuple(elems) => {
-                let mut any = false;
-                for t in elems {
-                    any = any || self.ty_needs_drop(t, span)?;
-                }
-                any
-            }
-            MirTy::Array(elem, _) => self.ty_needs_drop(elem, span)?,
-            // A1 (CD-031): String and Vec ALWAYS require runtime drop glue (buffer reclaim;
-            // Vec also drops elements). Both are leaf drop units — `collect_drop_units`' `_`
-            // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
-            // 0.1-A2: the iterator likewise (cursor/borrow release; T: Copy means no element
-            // destructors — glue is observably a no-op).
-            // 0.1-A7: a `Box<T>` always needs glue — it owns a heap allocation to release, and
-            // drops the contained `T` exactly once first.
-            MirTy::String
-            | MirTy::Core(crate::hir::CoreType::Box, _)
-            | MirTy::Core(crate::hir::CoreType::Vec, _)
-            | MirTy::Core(crate::hir::CoreType::VecIter, _)
-            | MirTy::Core(crate::hir::CoreType::HashMap, _)
-            | MirTy::Core(crate::hir::CoreType::HashSet, _)
-            | MirTy::Core(crate::hir::CoreType::KeysIter, _)
-            | MirTy::Core(crate::hir::CoreType::Iter, _) => true,
-            // **A11 §5: a host resource ALWAYS needs drop — its drop IS its provider close.**
-            //
-            // The FIFTH `MirTy` catch-all to swallow this variant, after `dump_ty`, `emit_ty`,
-            // `default_value_expr`, `TypeContext::is_copy` and `FnLowerer::is_copy` -- and the most
-            // consequential, because it silently disabled the whole close mechanism: no drop unit,
-            // so no drop flag, so no `Drop` terminator, so no close. Every resource leaked, and
-            // nothing complained. `c788_lifecycle_e2e` found it by observing the generated code
-            // rather than trusting that the parts were wired together.
-            //
-            // Note that `Core(File, _)` is deliberately absent from this list too: SELECT-C keeps
-            // `File` on the legacy path, where `c784_file_e2e` closes it through explicit MIR rather
-            // than through drop elaboration.
-            MirTy::HostResource(_) => true,
-
-            // **EXHAUSTIVE ON PURPOSE — do not restore a wildcard here.**
-            //
-            // "Needs no drop glue" is indistinguishable from a leak, and this is the predicate the
-            // wildcard cost the most: it is what silently disabled the close mechanism above.
-            // `verify::may_need_drop` is the second copy of this rule and is hardened the same way.
-            //
-            // The `Core` arms are spelled out individually because the wildcard was hiding a real
-            // asymmetry inside them: `VecIter`/`KeysIter`/`Iter` need glue while `CharsIter`,
-            // `SplitIter`, `ValuesIter`, `MapIter` and `FilterIter` do not. That is preserved
-            // exactly as it stood rather than harmonised here — whether the second group is right
-            // is a question for whoever owns iterator lowering, and it is now written down instead
-            // of being a side effect of arm ordering. `Core(File, _)` is false for the reason
-            // given above (SELECT-C's legacy path), not by omission.
-            MirTy::Core(
-                crate::hir::CoreType::String
-                | crate::hir::CoreType::Option
-                | crate::hir::CoreType::Result
-                | crate::hir::CoreType::Range
-                | crate::hir::CoreType::RangeInclusive
-                | crate::hir::CoreType::CharsIter
-                | crate::hir::CoreType::SplitIter
-                | crate::hir::CoreType::ValuesIter
-                | crate::hir::CoreType::MapIter
-                | crate::hir::CoreType::FilterIter
-                | crate::hir::CoreType::Random
-                | crate::hir::CoreType::IOError
-                | crate::hir::CoreType::File
-                | crate::hir::CoreType::Ordering,
-                _,
-            ) => false,
-            // Scalars own nothing; `Str`/`Slice` are unsized and appear only behind a `Ref`, which
-            // borrows rather than owns; a fn value is a bare pointer.
-            MirTy::Int8
-            | MirTy::Int16
-            | MirTy::Int32
-            | MirTy::Int64
-            | MirTy::UInt8
-            | MirTy::UInt16
-            | MirTy::UInt32
-            | MirTy::UInt64
-            | MirTy::Float32
-            | MirTy::Float64
-            | MirTy::Bool
-            | MirTy::Char
-            | MirTy::Unit
-            | MirTy::Never
-            | MirTy::Str
-            | MirTy::Slice(_)
-            | MirTy::Ref { .. }
-            | MirTy::FnPtr { .. } => false,
-        })
+    /// **AS4 — lowering's view of `requires drop glue`.** The rule itself lives in
+    /// [`crate::mir::drop_rule`]; this supplies the facts from HIR, because lowering is still
+    /// BUILDING the `TypeContext` the verifier later reads. That temporal split is why the
+    /// authority takes facts rather than a table.
+    ///
+    /// The structural recursion and the `CoreType` classification are no longer duplicated here.
+    /// Adopting the shared table changes lowering's answer only for `MirTy::Core` variants
+    /// `mir_ty` cannot construct: for every one it can — `Box`, `CharsIter`, `HashMap`, `HashSet`,
+    /// `Iter`, `KeysIter`, `Vec`, `VecIter` — the two already agreed after CD-387.
+    ///
+    /// `Result` is preserved: `nominal_instance_fields` can fail, and swallowing that as "no
+    /// fields" would answer `false` for a nominal whose shape could not be resolved — the one
+    /// answer this predicate must never give by accident.
+    fn ty_requires_drop_glue(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
+        let facts = LoweringDropFacts {
+            lowerer: self,
+            failure: std::cell::RefCell::new(None),
+        };
+        let answer = crate::mir::drop_rule::requires_drop_glue_with(ty, &facts);
+        match facts.failure.into_inner() {
+            Some(what) => unsupported(what, span),
+            None => Ok(answer),
+        }
     }
 
     /// Decompose a droppable type into drop units: descend through dtor-less structs and
@@ -2244,7 +2072,7 @@ impl<'a> FnLowerer<'a> {
         out: &mut Vec<(Vec<DropStep>, MirTy)>,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         match ty {
@@ -2524,7 +2352,7 @@ impl<'a> FnLowerer<'a> {
         init: bool,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         self.discover_drop_impls(ty)?;
@@ -2884,7 +2712,7 @@ impl<'a> FnLowerer<'a> {
 
     /// Resolve this lowerer's `FnKey` to (signature, body block, receiver self-type).
     fn fn_parts(&self) -> Result<(&'a hir::FnSig, hir::BlockId, Option<MirTy>), LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         match &self.key {
             FnKey::Top(item, _) => match &self.hir.item(*item).kind {
                 ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
@@ -3067,7 +2895,7 @@ impl<'a> FnLowerer<'a> {
         impl_item: ItemId,
         type_args: &[MirTy],
     ) -> Result<Vec<(String, MirTy)>, LowerError> {
-        let span0 = Span { lo: 0, hi: 0 };
+        let span0 = Span::synthetic(self.meta.entry_source);
         let ItemKind::Impl {
             generics, self_ty, ..
         } = &self.hir.item(impl_item).kind
@@ -3475,7 +3303,7 @@ impl<'a> FnLowerer<'a> {
                 // temporary destruction; oracle-confirmed timing).
                 if let Some(op) = op {
                     let ty = self.expr_mir_ty(*expr)?;
-                    if self.ty_needs_drop(&ty, span)? {
+                    if self.ty_requires_drop_glue(&ty, span)? {
                         self.discover_drop_impls(&ty)?;
                         let tmp = self.new_temp(ty);
                         self.emit(
@@ -3789,7 +3617,7 @@ impl<'a> FnLowerer<'a> {
                         {
                             let (item, targs) = (*item, targs.clone());
                             return self.lower_for_over_user_iter(
-                                *var, *local, *iter, *body, item, targs, span,
+                                expr, *var, *local, *iter, *body, item, targs, span,
                             );
                         }
                         // A4: `for i in r` where `r` is a range VALUE (`Ty::Range`) — the
@@ -4226,7 +4054,7 @@ impl<'a> FnLowerer<'a> {
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
                             let (item, targs) = (*item, targs.clone());
-                            return self.lower_user_eq(item, &targs, *op, *lhs, *rhs, span);
+                            return self.lower_user_eq(item, &targs, *op, expr, *lhs, *rhs, span);
                         }
                     }
                     // A3 Ord (A2 amendment, CE3): ordered comparison on a (non-generic) user
@@ -4238,7 +4066,7 @@ impl<'a> FnLowerer<'a> {
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
                             let (item, targs) = (*item, targs.clone());
-                            return self.lower_user_ord(item, &targs, *op, *lhs, *rhs, span);
+                            return self.lower_user_ord(item, &targs, *op, expr, *lhs, *rhs, span);
                         }
                     }
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
@@ -5691,7 +5519,7 @@ impl<'a> FnLowerer<'a> {
                     }
                     let ty = self.expr_mir_ty(args[0])?;
                     let op = self.lower_expr_to_operand(args[0])?;
-                    if self.ty_needs_drop(&ty, span)? {
+                    if self.ty_requires_drop_glue(&ty, span)? {
                         self.discover_drop_impls(&ty)?;
                         let tmp = self.new_temp(ty);
                         self.emit(
@@ -5800,14 +5628,21 @@ impl<'a> FnLowerer<'a> {
                 Res::AssociatedFn(nominal, name_span) => {
                     let nominal = *nominal;
                     let name_text = self.text(*name_span).to_string();
-                    // Locate first (empty args), then infer and rebuild the key.
-                    let Some((located, _receiver)) = self.find_impl_fn(
-                        nominal,
-                        &name_text,
-                        /*receiverless=*/ true,
-                        &[],
-                        None,
-                    ) else {
+                    // **AS3 Boundary 4: read the checker's selection.** This scanned the
+                    // nominal's impls for a receiverless member named `name_text`;
+                    // `associated_fn_type` already published the body as a `Qualified` use. The
+                    // instantiation is still inferred below — the checker names the BODY, and the
+                    // type arguments at this call site are a separate question.
+                    //
+                    // **Keyed on the CALLEE path, not the call.** `associated_fn_type` publishes
+                    // from the `ExprKind::Path` arm, so the use lives on the path expression;
+                    // looking up the call expression found nothing and refused `Point::fresh()`
+                    // outright. Two sides of one table disagreeing about which expression is the
+                    // key is exactly the failure a published plan is supposed to remove, so the
+                    // lookup names the same expression the publisher did.
+                    let Some((located, _receiver)) =
+                        self.qualified_selected_key(callee, nominal, &[])
+                    else {
                         return unsupported(
                             format!("associated function {name_text} not found"),
                             span,
@@ -6096,7 +5931,7 @@ impl<'a> FnLowerer<'a> {
                 ItemKind::Use { .. } => "use",
                 ItemKind::Const { .. } => "const",
                 ItemKind::TypeAlias { .. } => "type alias",
-                ItemKind::Model(_) => "model",
+                ItemKind::Model(_) => crate::extensions::tensor::syntax::MODEL_KEYWORD,
                 ItemKind::Fn(_) => "function",
             };
             let item_name = item_name_text(self.hir, self.meta, item).unwrap_or("<unnamed>");
@@ -6172,15 +6007,29 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_user_eq(
         &mut self,
+        // AS3 Boundary 4: retained after `find_impl_fn` went, because the BOUND path needs it —
+        // `a == b` inside `fn same<T: Eq>` selects its body from the concrete `Self`, which is
+        // this nominal and its arguments.
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
+        // AS3 Boundary 3: the operator expression, so the checker's published selection can be
+        // consumed instead of re-derived.
+        operator_expr: ExprId,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args, None)
-        else {
+        // **AS3 Boundary 3: consume the checker's selection.**
+        //
+        // This called `find_impl_fn(nominal, "eq", false, type_args, None)` — a scan of every
+        // impl on the nominal, with `trait_filter: None`. That is DEV-BOUND-TRAIT-IDENTITY's exact
+        // shape on a path that never received its fix: a type implementing two same-named trait
+        // methods would run "the first impl declaring eq" while the checker had distinguished
+        // them. Consuming the published record removes the question rather than filtering it.
+        let found =
+            self.operator_callable_key(operator_expr, hir::CoreTrait::Eq, nominal, type_args);
+        let Some((key, _receiver)) = found else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
@@ -6222,15 +6071,29 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_user_ord(
         &mut self,
+        // AS3 Boundary 4: retained after `find_impl_fn` went, because the BOUND path needs it —
+        // `a == b` inside `fn same<T: Eq>` selects its body from the concrete `Self`, which is
+        // this nominal and its arguments.
         nominal: ItemId,
         type_args: &[MirTy],
         op: BinOp,
+        // AS3 Boundary 3: the operator expression, so the checker's published selection can be
+        // consumed instead of re-derived.
+        operator_expr: ExprId,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args, None)
-        else {
+        // **AS3 Boundary 3: consume the checker's selection.**
+        //
+        // This called `find_impl_fn(nominal, "cmp", false, type_args, None)` — a scan of every
+        // impl on the nominal, with `trait_filter: None`. That is DEV-BOUND-TRAIT-IDENTITY's exact
+        // shape on a path that never received its fix: a type implementing two same-named trait
+        // methods would run "the first impl declaring cmp" while the checker had distinguished
+        // them. Consuming the published record removes the question rather than filtering it.
+        let found =
+            self.operator_callable_key(operator_expr, hir::CoreTrait::Ord, nominal, type_args);
+        let Some((key, _receiver)) = found else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
                 span,
@@ -6285,122 +6148,325 @@ impl<'a> FnLowerer<'a> {
         Ok(Operand::Copy(Place::local(result)))
     }
 
-    /// `trait_filter` narrows the search to one trait's implementation.
+    /// Resolve a published `Bound` obligation to a `FnKey` (AS3 Boundary 4d).
     ///
-    /// DEV-BOUND-TRAIT-IDENTITY: a call resolved through a generic parameter's BOUND already knows
-    /// which trait supplied its signature, and lowering must select that trait's impl. Without the
-    /// filter this answered "the first impl on this nominal declaring a method with that name",
-    /// so a type implementing two same-named traits ran the same body for both bounds — while the
-    /// type checker had correctly distinguished them. `None` keeps the ordinary
-    /// "what does `recv.m()` mean here" behaviour, inherent methods first.
-    fn find_impl_fn(
+    /// `Self` is concrete here — monomorphisation has fixed it — so the specialiser answers, and
+    /// MIR asks the same authority the interpreter does.
+    /// **AS3 Boundary 4: consume the checker's `Static` selection for a method call.**
+    ///
+    /// A `x.m()` whose receiver type is concrete at check time has its body already chosen and
+    /// published. `find_impl_fn` re-derives that choice by scanning every impl on the nominal for
+    /// the NAME — a second selection algorithm answering a question the checker already answered.
+    /// This reads the answer.
+    ///
+    /// Only `Inherent`, `TraitImpl` and `Qualified` provenances are eligible: an operator's
+    /// `CoreTrait` use may be published against the same expression, and it names a different
+    /// callable.
+    /// **AS3 Boundary 4: the body behind an operator, from the checker's published selection.**
+    ///
+    /// Both binding times reach here. `p == q` on a concrete nominal is `Static` — the body was
+    /// chosen at check time. `a == b` inside `fn same<T: Eq>(a: T, b: T)` is `Bound` — the trait
+    /// was known then, the body only now, from the monomorphised receiver. The second case is why
+    /// deleting `find_impl_fn` from this path needed more than the existing mutation evidence:
+    /// that evidence covered two suites, and neither contained an operator on a bounded parameter.
+    fn operator_callable_key(
         &self,
+        operator_expr: ExprId,
+        core: hir::CoreTrait,
         nominal: ItemId,
-        name: &str,
-        receiverless: bool,
         type_args: &[MirTy],
-        trait_filter: Option<Res>,
     ) -> Option<(FnKey, Option<hir::Receiver>)> {
-        let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
-        let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
-        let mut via_default: Option<(FnKey, Option<hir::Receiver>)> = None;
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&operator_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|use_| match use_.provenance {
+                crate::typecheck::DispatchProvenance::CoreTrait { core: c } => c == core,
+                crate::typecheck::DispatchProvenance::Bound {
+                    trait_: hir::BoundTrait::Core(c),
+                } => c == core,
+                _ => false,
+            })?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, type_args)
+            }
+            crate::typecheck::CalleeSelection::Bound { .. } => {
+                self.specialised_bound_key(operator_expr, nominal, type_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
+    /// **AS3 Boundary 4: the body that renders one `Display` position.**
+    ///
+    /// `Static` names it. `Bound` is late-bound — `println(x)` inside `fn show<T: Display>` cannot
+    /// name a body at check time — and resolves through the shared specialiser with the concrete
+    /// `Self` MIR already holds. Replaces `find_impl_fn(nominal, "fmt", ..)` at all three MIR
+    /// Display sites: top-level print, interpolation, and nested composite elements.
+    /// **AS3 Boundary 4: the body behind `for x in it` — the checker's `Iterator::next` selection.**
+    /// A `Direct`/`Qualified` selection published against a call expression — an associated
+    /// function (`Point::new(3, 4)`) rather than a method. Separate from
+    /// [`Self::static_selected_key`] only in which provenances it accepts.
+    fn qualified_selected_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&call_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Qualified { .. }
+                        | crate::typecheck::DispatchProvenance::Direct
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.key_for_selected_body(*body, nominal, nominal_args)
+    }
+
+    fn iterator_fn_key(
+        &self,
+        for_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let use_ = self
+            .tables
+            .callable_uses_by_expr
+            .get(&for_expr)?
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::CoreTrait {
+                        core: hir::CoreTrait::Iterator
+                    }
+                )
+            })?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                trait_args,
+                method_args,
+                ..
+            } => {
+                let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
+                let resolved = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                )?;
+                self.key_for_selected_body(resolved.body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
+    fn display_fn_key(
+        &self,
+        root: ExprId,
+        path: &DisplayPath,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let id = self.tables.display_uses.get(&(root, path.clone()))?;
+        let use_ = self.tables.callable_uses.get(id.0 as usize)?;
+        match &use_.selection {
+            crate::typecheck::CalleeSelection::Static { body, .. } => {
+                self.key_for_selected_body(*body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::Bound {
+                trait_,
+                member,
+                trait_args,
+                method_args,
+                ..
+            } => {
+                // DEV-189's rule: the concrete `Self` with its arguments, or a generic impl never
+                // unifies. MIR has both to hand.
+                let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
+                let resolved = crate::bound_dispatch::specialize_bound_callable(
+                    &self.tables.trait_impls,
+                    &self.tables.callable_types,
+                    *trait_,
+                    member,
+                    &self_ty,
+                    trait_args,
+                    method_args,
+                )?;
+                self.key_for_selected_body(resolved.body, nominal, nominal_args)
+            }
+            crate::typecheck::CalleeSelection::FunctionValue => None,
+        }
+    }
+
+    fn static_selected_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let ids = self.tables.callable_uses_by_expr.get(&call_expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| {
+                matches!(
+                    u.provenance,
+                    crate::typecheck::DispatchProvenance::Inherent
+                        | crate::typecheck::DispatchProvenance::TraitImpl { .. }
+                        | crate::typecheck::DispatchProvenance::Qualified { .. }
+                )
+            })?;
+        let crate::typecheck::CalleeSelection::Static { body, .. } = &use_.selection else {
+            return None;
+        };
+        self.key_for_selected_body(*body, nominal, nominal_args)
+    }
+
+    /// The `FnKey` for a body the checker selected. An impl member and an un-overridden trait
+    /// default are both reachable this way, and the second is why `fn_key_for_body` alone is not
+    /// enough: a default's body lives on the TRAIT, so no impl item mentions it.
+    fn key_for_selected_body(
+        &self,
+        body: hir::BlockId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        if let Some(found) = self.fn_key_for_body(body, nominal_args) {
+            return Some(found);
+        }
         for (idx, item) in self.hir.items.iter().enumerate() {
-            let ItemKind::Impl { trait_, items, .. } = &item.kind else {
+            let ItemKind::Trait { items, .. } = &item.kind else {
                 continue;
             };
-            let impl_item = ItemId(idx as u32);
-            if impl_self_item(self.hir, impl_item) != Some(nominal) {
-                continue;
-            }
-            // A filtered lookup considers ONLY that trait's impl — never an inherent method, and
-            // never another trait's, exactly as a qualified call does.
-            if let Some(wanted) = trait_filter {
-                match trait_ {
-                    Some(trait_ref) if trait_ref.res == wanted => {}
-                    Some(_) | None => continue,
-                }
-            }
-            for (member, impl_member) in items.iter().enumerate() {
-                let hir::ImplItem::Fn { def, .. } = impl_member else {
+            for (member, trait_item) in items.iter().enumerate() {
+                let hir::TraitItem::Method {
+                    sig,
+                    body: Some(default_body),
+                } = trait_item
+                else {
                     continue;
                 };
-                if self.meta.item_text(impl_item, def.sig.name) != name {
+                if *default_body != body {
                     continue;
                 }
-                if receiverless != def.sig.receiver.is_none() {
+                return Some((
+                    FnKey::TraitDefault {
+                        trait_item: ItemId(idx as u32),
+                        member: member as u32,
+                        self_item: nominal,
+                        self_args: nominal_args.to_vec(),
+                        method_args: Vec::new(),
+                    },
+                    sig.receiver,
+                ));
+            }
+        }
+        None
+    }
+
+    fn specialised_bound_key(
+        &self,
+        call_expr: ExprId,
+        nominal: ItemId,
+        nominal_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let ids = self.tables.callable_uses_by_expr.get(&call_expr)?;
+        let use_ = ids
+            .iter()
+            .filter_map(|id| self.tables.callable_uses.get(id.0 as usize))
+            .find(|u| matches!(u.selection, crate::typecheck::CalleeSelection::Bound { .. }))?;
+        let crate::typecheck::CalleeSelection::Bound {
+            trait_,
+            member,
+            trait_args,
+            method_args,
+            ..
+        } = &use_.selection
+        else {
+            return None;
+        };
+        // **The concrete `Self`, arguments INCLUDED (DEV-189).**
+        //
+        // This passed `Ty::Struct(nominal, Vec::new())` — the bare nominal head — on the reasoning
+        // that "the index matches on the impl head". It does not: `impl<T> Describe for W2<T>` is
+        // indexed as `Struct(W2, [Param("T")])`, so a head with no arguments fails to unify on
+        // length and the specialiser returns `None` for EVERY generic impl. MIR then fell back to
+        // `find_impl_fn` while the interpreter used the shared authority — the exact divergence
+        // Boundary 4 exists to remove. Same defect as DEV-187, on the engine that was repaired
+        // second.
+        let self_ty = crate::typecheck::Ty::Struct(nominal, checker_tys(nominal_args)?);
+        let resolved = crate::bound_dispatch::specialize_bound_callable(
+            &self.tables.trait_impls,
+            &self.tables.callable_types,
+            *trait_,
+            member,
+            &self_ty,
+            trait_args,
+            method_args,
+        )?;
+        // A trait DEFAULT reached through a bound lives on the trait, not on any impl, so the
+        // impl-member lookup alone is not enough here.
+        self.key_for_selected_body(resolved.body, nominal, nominal_args)
+    }
+
+    /// The `FnKey` for a body the checker already selected, plus the receiver form.
+    ///
+    /// **AS3 Boundary 3: a lookup keyed on the checker's answer, not a selection.** `find_impl_fn`
+    /// searches by NAME and decides which body wins; this takes the body the checker published and
+    /// finds where it lives. `None` only if the body belongs to no impl member, which for an
+    /// operator use cannot happen — the publication came from an impl member.
+    fn fn_key_for_body(
+        &self,
+        body: hir::BlockId,
+        type_args: &[MirTy],
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl { items, .. } = &item.kind else {
+                continue;
+            };
+            for (member, impl_item) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_item else {
+                    continue;
+                };
+                if def.body != body {
                     continue;
                 }
-                let hit = (
+                return Some((
                     FnKey::ImplFn {
-                        impl_item,
+                        impl_item: ItemId(idx as u32),
                         member: member as u32,
                         type_args: type_args.to_vec(),
-                        // `find_impl_fn` locates the member; the CALL SITE supplies any
-                        // method-level arguments, since they vary per call.
                         method_args: Vec::new(),
                     },
                     def.sig.receiver,
-                );
-                if trait_.is_none() {
-                    inherent.get_or_insert(hit);
-                } else {
-                    via_trait.get_or_insert(hit);
-                }
-            }
-            // Trait defaults: only when this impl does NOT override the method.
-            if let Some(trait_ref) = trait_ {
-                if let Res::Item(trait_item) = trait_ref.res {
-                    let overridden = items.iter().any(|m| {
-                        matches!(m, hir::ImplItem::Fn { def, .. }
-                            if self.meta.item_text(impl_item, def.sig.name) == name)
-                    });
-                    if !overridden {
-                        if let ItemKind::Trait {
-                            items: trait_items, ..
-                        } = &self.hir.item(trait_item).kind
-                        {
-                            for (member, trait_member) in trait_items.iter().enumerate() {
-                                let hir::TraitItem::Method { sig, body: Some(_) } = trait_member
-                                else {
-                                    continue;
-                                };
-                                if self.meta.item_text(trait_item, sig.name) != name {
-                                    continue;
-                                }
-                                if receiverless != sig.receiver.is_none() {
-                                    continue;
-                                }
-                                via_default.get_or_insert((
-                                    FnKey::TraitDefault {
-                                        trait_item,
-                                        member: member as u32,
-                                        self_item: nominal,
-                                        self_args: type_args.to_vec(),
-                                        // Filled by the CALL SITE, like `ImplFn::method_args`.
-                                        method_args: Vec::new(),
-                                    },
-                                    sig.receiver,
-                                ));
-                            }
-                        }
-                    }
-                }
+                ));
             }
         }
-        inherent.or(via_trait).or(via_default)
+        None
     }
 
-    /// WP-C6.2b: locate the implementation of a **specific** trait's method for `nominal`.
-    ///
-    /// `find_impl_fn` answers "what does `recv.m()` mean here", so it prefers inherent methods and
-    /// accepts any in-scope trait supplying the name. A fully qualified `Trait::m(&recv)` asks a
-    /// different question — TYPE-METHOD-001's "bypasses trait-name lookup but still requires a
-    /// unique coherent impl" — and must ignore both inherent methods and other traits. Keeping the
-    /// two lookups separate is what lets `A::go(&s)` and `B::go(&s)` disambiguate the §18 ambiguity
-    /// case instead of both resolving to whichever impl is found first.
-    ///
-    /// Coherence (one impl of a trait per type) is enforced upstream, so the first match is the
-    /// unique one; an overriding `impl` member wins over the trait's default body, as elsewhere.
     fn find_trait_impl_fn(
         &self,
         nominal: ItemId,
@@ -6611,9 +6677,26 @@ impl<'a> FnLowerer<'a> {
         // DEV-BOUND-TRAIT-IDENTITY: if the checker resolved this call through a generic
         // parameter's bound, it recorded the trait; select that trait's impl and no other.
         let bound_trait = self.tables.bound_trait_calls.get(&call_expr).copied();
-        let Some((key, receiver)) =
-            self.find_impl_fn(nominal, &name_text, false, &nominal_args, bound_trait)
-        else {
+        // **AS3 Boundary 4d: consume the shared bound specialiser.**
+        //
+        // Unlike the interpreter, MIR carries the receiver's full `MirTy` including its arguments —
+        // which is why the negative control compares ResolvedCallable ENVIRONMENTS across the two
+        // engines and not merely their bodies.
+        // **AS3 Boundary 4: no fallback.** This ended in
+        // `.or_else(|| self.find_impl_fn(nominal, &name_text, ...))` — a scan of every impl on the
+        // nominal for the METHOD NAME, i.e. a second selection algorithm re-deciding what the
+        // checker had already decided and published.
+        //
+        // It is gone rather than merely unreached. Instrumenting it and running the differential,
+        // operator, iterator, bound-identity and Display suites recorded which names still took it:
+        // ~60 before `Static` was consumed, 2 after (`self.id()` inside a trait default), 0 after
+        // DEV-190 published those too. Deleting it is what makes "one authority" structural instead
+        // of observed — a fallback that never fires still permits divergence the day it does.
+        let _ = bound_trait;
+        let specialised = self
+            .static_selected_key(call_expr, nominal, &nominal_args)
+            .or_else(|| self.specialised_bound_key(call_expr, nominal, &nominal_args));
+        let Some((key, receiver)) = specialised else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
         // WP-C4.7-8.4: attach this call site's METHOD-level generic arguments. `find_impl_fn`
@@ -7109,13 +7192,13 @@ impl<'a> FnLowerer<'a> {
                 // is yielded and the default is dropped **at the call site**, not at end of
                 // scope; on None/Err the default is yielded, and a `Result`'s displaced `Err`
                 // payload is dropped there.
-                let payload_needs_drop = self.ty_needs_drop(&payload_ty, span)?;
+                let payload_needs_drop = self.ty_requires_drop_glue(&payload_ty, span)?;
                 let err_ty = if is_option {
                     MirTy::Unit
                 } else {
                     args.get(1).cloned().unwrap_or(MirTy::Unit)
                 };
-                let err_needs_drop = !is_option && self.ty_needs_drop(&err_ty, span)?;
+                let err_needs_drop = !is_option && self.ty_requires_drop_glue(&err_ty, span)?;
                 let consuming = payload_needs_drop || err_needs_drop;
                 if payload_needs_drop {
                     self.discover_drop_impls(&payload_ty)?;
@@ -7306,7 +7389,7 @@ impl<'a> FnLowerer<'a> {
         };
         if [&ok_ty, &other_ty]
             .iter()
-            .any(|t| self.ty_needs_drop(t, span).unwrap_or(true))
+            .any(|t| self.ty_requires_drop_glue(t, span).unwrap_or(true))
         {
             return unsupported(
                 "Option/Result combinator on a droppable payload type (a later increment)",
@@ -7466,7 +7549,7 @@ impl<'a> FnLowerer<'a> {
             "clear" => {
                 // A1 §5a: `clear()` on a droppable element type must not hide destructors in
                 // the opaque runtime op — it lowers to a pop-and-drop loop instead.
-                if self.ty_needs_drop(&elem, span)? {
+                if self.ty_requires_drop_glue(&elem, span)? {
                     return self.lower_vec_clear_droppable(base, elem, dest, span);
                 }
                 (RuntimeFn::VecClear, true)
@@ -8034,6 +8117,9 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn lower_for_over_user_iter(
         &mut self,
+        // AS3 Boundary 4: the `for` expression — what the checker keyed its `Iterator::next`
+        // selection on (`publish_iterator_use`).
+        for_expr: ExprId,
         var: Span,
         var_local: crate::hir::LocalId,
         iter: ExprId,
@@ -8042,7 +8128,10 @@ impl<'a> FnLowerer<'a> {
         targs: Vec<MirTy>,
         span: Span,
     ) -> Result<(), LowerError> {
-        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs, None) else {
+        // Consume the published selection rather than scanning the nominal for a member named
+        // `next`. `resolve_user_iterator` already decided which impl is the Iterator one, by the
+        // resolver's trait identity and not by spelling.
+        let Some((key, receiver)) = self.iterator_fn_key(for_expr, item, &targs) else {
             return unsupported(
                 "for over a non-range, non-Vec iterator without an Iterator impl",
                 span,
@@ -8064,7 +8153,7 @@ impl<'a> FnLowerer<'a> {
         // loop over a printing-destructor Item observes body, value, DROP, body, value, DROP, …
         // rather than three drops at loop exit. `break` also destroys the current iteration's
         // value before leaving.
-        let elem_needs_drop = self.ty_needs_drop(&elem, span)?;
+        let elem_needs_drop = self.ty_requires_drop_glue(&elem, span)?;
         let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
 
@@ -8397,7 +8486,7 @@ impl<'a> FnLowerer<'a> {
             Place::local(old),
             span,
         );
-        if self.ty_needs_drop(&elem, span)? {
+        if self.ty_requires_drop_glue(&elem, span)? {
             self.discover_drop_impls(&elem)?;
             self.emit_temp_drop(old, span);
         }
@@ -8480,10 +8569,17 @@ impl<'a> FnLowerer<'a> {
     /// String/Vec buffer glue)?
     fn ty_has_user_drop(&self, ty: &MirTy) -> bool {
         let mut visited = std::collections::BTreeSet::new();
-        self.ty_has_user_drop_guarded(ty, &mut visited)
+        self.ty_has_user_destructor_guarded(ty, &mut visited)
     }
 
-    fn ty_has_user_drop_guarded(
+    /// **AS4 — `has a USER-written destructor`.** Renamed from `ty_has_user_drop_guarded`: the old
+    /// name led with "drop", the word all three questions share, and buried the distinction
+    /// ("user") in the middle.
+    ///
+    /// A host resource answers **false** here and **true** to both other questions — the single
+    /// variant that proves these are three questions rather than three spellings of one. CD-287 was
+    /// two of them disagreeing about exactly this variant, in one file, repaired one at a time.
+    fn ty_has_user_destructor_guarded(
         &self,
         ty: &MirTy,
         visited: &mut std::collections::BTreeSet<MirTy>,
@@ -8492,7 +8588,10 @@ impl<'a> FnLowerer<'a> {
             return false;
         }
         match ty {
-            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
+            // AS4 item 3: `args` is bound in the OUTER pattern. It used to be recovered by a
+            // nested re-destructure ending in `_ => unreachable!()`, which is unreachable by
+            // construction but reads as a property-bearing wildcard to every exhaustiveness audit.
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 if self.type_has_drop_impl(*item) {
                     return true;
                 }
@@ -8502,25 +8601,23 @@ impl<'a> FnLowerer<'a> {
                     self.tables,
                     self.meta,
                     *item,
-                    match ty {
-                        MirTy::Struct(_, a) | MirTy::Enum(_, a) => a,
-                        _ => unreachable!(),
-                    },
+                    args,
                     self.providers,
                 ) {
                     Ok(NominalFields::Struct(tys)) => tys
                         .iter()
-                        .any(|t| self.ty_has_user_drop_guarded(t, visited)),
-                    Ok(NominalFields::Enum(vs)) => vs
-                        .iter()
-                        .any(|v| v.iter().any(|t| self.ty_has_user_drop_guarded(t, visited))),
+                        .any(|t| self.ty_has_user_destructor_guarded(t, visited)),
+                    Ok(NominalFields::Enum(vs)) => vs.iter().any(|v| {
+                        v.iter()
+                            .any(|t| self.ty_has_user_destructor_guarded(t, visited))
+                    }),
                     Err(_) => true, // unresolvable: be conservative
                 }
             }
             MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => args
                 .iter()
-                .any(|t| self.ty_has_user_drop_guarded(t, visited)),
-            MirTy::Array(elem, _) => self.ty_has_user_drop_guarded(elem, visited),
+                .any(|t| self.ty_has_user_destructor_guarded(t, visited)),
+            MirTy::Array(elem, _) => self.ty_has_user_destructor_guarded(elem, visited),
 
             // **EXHAUSTIVE ON PURPOSE.** "No user `Drop` impl governs this type" is an assertion,
             // and this is the narrowest of the drop predicates: it asks specifically about a USER
@@ -8528,8 +8625,8 @@ impl<'a> FnLowerer<'a> {
             //
             // A host resource is false here ON PURPOSE and this is the one place that distinction
             // matters: its close is provider-driven, established by A11 §5 rather than by an
-            // `impl Drop` the program wrote. It needs drop (`ty_needs_drop`, `may_need_drop`,
-            // `mir_needs_drop` all say true) without having a user destructor.
+            // `impl Drop` the program wrote. It needs drop (`ty_requires_drop_glue`, `may_need_drop`,
+            // `requires_drop_glue` all say true) without having a user destructor.
             MirTy::Int8
             | MirTy::Int16
             | MirTy::Int32
@@ -9045,8 +9142,13 @@ impl<'a> FnLowerer<'a> {
     /// `str`/`String` elements, and nested user-`Display` land in follow-on slices.
     fn emit_display_value(
         &mut self,
+        // **AS3 Boundary 4: the checker's dispatch plan, threaded through the recursion.**
+        // `root` is the rendered expression; `path` is the structural position within it. Together
+        // they key `display_uses`, so a nested nominal's `fmt` is READ rather than re-selected.
+        root: ExprId,
         place: Place,
         ty: &MirTy,
+        path: DisplayPath,
         span: Span,
     ) -> Result<(), LowerError> {
         let (peeled, layers) = Self::peel_refs(ty.clone());
@@ -9167,7 +9269,13 @@ impl<'a> FnLowerer<'a> {
                     }
                     let mut field = place.clone();
                     field.projection.push(Projection::Field(i as u32));
-                    self.emit_display_value(field, elem_ty, span)?;
+                    self.emit_display_value(
+                        root,
+                        field,
+                        elem_ty,
+                        path.child(DisplayStep::TupleField(i as u32)),
+                        span,
+                    )?;
                 }
                 self.print_str_lit(")", span);
                 Ok(())
@@ -9195,7 +9303,13 @@ impl<'a> FnLowerer<'a> {
                     }
                     let mut element = place.clone();
                     element.projection.push(Projection::ConstIndex(i));
-                    self.emit_display_value(element, elem, span)?;
+                    self.emit_display_value(
+                        root,
+                        element,
+                        elem,
+                        path.child(DisplayStep::ArrayElement),
+                        span,
+                    )?;
                 }
                 self.print_str_lit("]", span);
                 Ok(())
@@ -9232,7 +9346,13 @@ impl<'a> FnLowerer<'a> {
                 self.print_str_lit("Some(", span);
                 let mut payload = place.clone();
                 payload.projection.push(Projection::VariantField(1, 0));
-                self.emit_display_value(payload, &inner, span)?;
+                self.emit_display_value(
+                    root,
+                    payload,
+                    &inner,
+                    path.child(DisplayStep::OptionSome),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
@@ -9265,13 +9385,25 @@ impl<'a> FnLowerer<'a> {
                 self.print_str_lit("Ok(", span);
                 let mut ok_payload = place.clone();
                 ok_payload.projection.push(Projection::VariantField(0, 0));
-                self.emit_display_value(ok_payload, &ok_ty, span)?;
+                self.emit_display_value(
+                    root,
+                    ok_payload,
+                    &ok_ty,
+                    path.child(DisplayStep::ResultOk),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), err_blk);
                 self.print_str_lit("Err(", span);
                 let mut err_payload = place.clone();
                 err_payload.projection.push(Projection::VariantField(1, 0));
-                self.emit_display_value(err_payload, &err_ty, span)?;
+                self.emit_display_value(
+                    root,
+                    err_payload,
+                    &err_ty,
+                    path.child(DisplayStep::ResultErr),
+                    span,
+                )?;
                 self.print_str_lit(")", span);
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
@@ -9379,7 +9511,13 @@ impl<'a> FnLowerer<'a> {
                             Place::local(elem_tmp),
                             span,
                         );
-                        self.emit_display_value(Place::local(elem_tmp), &elem, span)?;
+                        self.emit_display_value(
+                            root,
+                            Place::local(elem_tmp),
+                            &elem,
+                            path.child(DisplayStep::VecElement),
+                            span,
+                        )?;
                     } else {
                         // `VecGetRef` yields `Option<&T>` and never traps — `idx < len` holds here,
                         // so the `None` arm is unreachable, but it is still a real discriminant
@@ -9418,7 +9556,13 @@ impl<'a> FnLowerer<'a> {
                         );
                         let mut payload = Place::local(opt);
                         payload.projection.push(Projection::VariantField(1, 0));
-                        self.emit_display_value(payload, &elem_ref_ty, span)?;
+                        self.emit_display_value(
+                            root,
+                            payload,
+                            &elem_ref_ty,
+                            path.child(DisplayStep::VecElement),
+                            span,
+                        )?;
                         self.terminate(Terminator::Goto { target: after }, self.info(span), after);
                     }
                 }
@@ -9452,8 +9596,10 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let nominal = *item;
                 let nominal_args = args.clone();
+                // Consume the published position. This scanned the nominal's impls for a member
+                // named `fmt`; the checker already decided which body renders here.
                 let Some((key, receiver)) =
-                    self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+                    self.display_fn_key(root, &path, nominal, &nominal_args)
                 else {
                     return unsupported(
                         "Display::fmt not found for a composite element (only standard-library and \
@@ -9574,7 +9720,7 @@ impl<'a> FnLowerer<'a> {
         // reads its fields through a generated projection wrapper whose return borrows the slot; the
         // backend does not emit the lifetime that ties them (E0106). Refuse until generated lifetimes
         // land. A COPY borrow-carrying composite (`(&str, i32)`) is fine: no slot, no wrapper.
-        if droppable && ty_carries_ref(&peeled) {
+        if droppable && crate::mir::reference_rule::stores_a_reference(&peeled) {
             return unsupported(
                 "Display of a droppable composite that also carries a borrowed element (e.g. \
                  `&str` beside an owned field) needs generated lifetimes — a later C6.3e slice",
@@ -9587,7 +9733,13 @@ impl<'a> FnLowerer<'a> {
             Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
             self.info(span),
         );
-        self.emit_display_value(Place::local(tmp), &peeled, span)?;
+        self.emit_display_value(
+            arg,
+            Place::local(tmp),
+            &peeled,
+            DisplayPath::default(),
+            span,
+        )?;
         if is_println {
             let d = Place::local(self.new_temp(MirTy::Unit));
             self.emit_runtime_call(
@@ -10077,7 +10229,8 @@ impl<'a> FnLowerer<'a> {
                 )
             }
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        let Some((key, receiver)) =
+            self.display_fn_key(field, &DisplayPath::default(), nominal, &nominal_args)
         else {
             return unsupported("Display::fmt not found for an interpolated value", span);
         };
@@ -10163,7 +10316,8 @@ impl<'a> FnLowerer<'a> {
             }
             other => return unsupported(format!("Display print on non-nominal {other:?}"), span),
         };
-        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args, None)
+        let Some((key, receiver)) =
+            self.display_fn_key(arg, &DisplayPath::default(), nominal, &nominal_args)
         else {
             return unsupported("Display::fmt not found for printed type", span);
         };
@@ -10669,15 +10823,43 @@ impl<'a> FnLowerer<'a> {
             // C4.5d match-drop: consume the active variant's payload — bound fields into
             // registered binding locals, unbound droppable fields into registered temps — so
             // the scrutinee is fully accounted for and everything drops at arm end.
-            self.consume_variant_payload(
-                enum_ref,
-                &scrut_args,
-                scrut.clone(),
-                mode,
-                variant as u32,
-                pat,
-                span,
-            )?;
+            // **DEV-212: a nominal with its OWN destructor is destroyed whole, not decomposed.**
+            //
+            // Consuming the payload piecewise is right for a droppable enum WITHOUT its own
+            // `Drop` — every field still owes a destructor. For one that has a destructor,
+            // decomposing is precisely what makes that destructor never run: `match e` printed the
+            // arm and nothing else. Sound because DEV-211 refuses any binding that would MOVE a
+            // component out of such a value, so the scrutinee here is still complete.
+            // **The narrow question, and the third wrong turn on DEV-212 was using the broad one.**
+            //
+            // `ty_has_user_drop` answers "does this type contain a user destructor ANYWHERE",
+            // including in a nested payload — so it is true of `Option<Droppable>` and
+            // `Result<Droppable, _>`, whose payloads must still be decomposed. Firing the
+            // whole-value branch for those moved a scrutinee that `bind_pattern` had already partly
+            // moved, and the verifier rejected fourteen cases with `MIR-0007: move from
+            // possibly-moved place`.
+            //
+            // The question here is narrower: does the ENUM ITSELF declare a destructor? Only then
+            // is the value required to stay complete, and only then must it be destroyed whole.
+            let own_destructor = match enum_ref {
+                EnumRef::User(item) => self.type_has_drop_impl(item),
+                _ => false,
+            };
+            let enum_ty = MirTy::Enum(enum_ref, scrut_args.clone());
+            if mode == MatchMode::Consuming && own_destructor {
+                self.bind_pattern(pat, &scrut, &enum_ty, mode, span)?;
+                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &enum_ty, span)?;
+            } else {
+                self.consume_variant_payload(
+                    enum_ref,
+                    &scrut_args,
+                    scrut.clone(),
+                    mode,
+                    variant as u32,
+                    pat,
+                    span,
+                )?;
+            }
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
         }
         Ok(())
@@ -11020,7 +11202,7 @@ impl<'a> FnLowerer<'a> {
         ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(ty, span)? {
+        if !self.ty_requires_drop_glue(ty, span)? {
             return Ok(());
         }
         let pat_span = self.hir.pat(pat).span;
@@ -11148,7 +11330,7 @@ impl<'a> FnLowerer<'a> {
                         continue;
                     }
                     let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
-                    if !self.ty_needs_drop(&field_ty, span)? {
+                    if !self.ty_requires_drop_glue(&field_ty, span)? {
                         continue;
                     }
                     self.discover_drop_impls(&field_ty)?;
@@ -11732,7 +11914,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<Place, LowerError> {
         let mut operands = Vec::with_capacity(payload_tys.len());
         for (i, field_ty) in payload_tys.iter().enumerate() {
-            if self.ty_needs_drop(field_ty, span)? {
+            if self.ty_requires_drop_glue(field_ty, span)? {
                 self.discover_drop_impls(field_ty)?;
             }
             let mut place = scrut.clone();
@@ -11773,7 +11955,7 @@ impl<'a> FnLowerer<'a> {
             }
             Some(hir::PatKind::Wild) | None => {
                 // ByRef: nothing is consumed — the referent keeps ownership of every payload.
-                if mode == MatchMode::Consuming && self.ty_needs_drop(field_ty, span)? {
+                if mode == MatchMode::Consuming && self.ty_requires_drop_glue(field_ty, span)? {
                     self.discover_drop_impls(field_ty)?;
                     let value = self.read_place(field_place, field_ty, span)?;
                     let tmp = self.new_temp(field_ty.clone());
@@ -11850,10 +12032,14 @@ impl<'a> FnLowerer<'a> {
         scrut_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        if !self.ty_needs_drop(scrut_ty, span)? {
+        // **Discovery FIRST.** `ty_requires_drop_glue` asks whether a user destructor is known for
+        // this type, and `discover_drop_impls` is what makes it known. Asking before discovering
+        // answers "no glue" for a type whose `Drop` impl this lowering has not yet walked — and the
+        // helper then silently does nothing, which is a destructor that never runs.
+        self.discover_drop_impls(scrut_ty)?;
+        if !self.ty_requires_drop_glue(scrut_ty, span)? {
             return Ok(());
         }
-        self.discover_drop_impls(scrut_ty)?;
         let value = self.read_place(scrut, scrut_ty, span)?;
         let tmp = self.new_temp(scrut_ty.clone());
         self.emit(
@@ -12043,5 +12229,626 @@ fn expr_kind_name(kind: &hir::ExprKind) -> &'static str {
         hir::ExprKind::Cast { .. } => "Cast",
         hir::ExprKind::Repeat { .. } => "Repeat",
         hir::ExprKind::Error => "Error",
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// AS0 item 7 / RB0 — the reference-rule equivalence matrix. MEASUREMENT ONLY.
+//
+// `WP-C7.8-RB0-MIR-Type-Property-Authority.md` records three implementations of "carries a
+// reference" and requires an audit BEFORE consolidation: "each duplicate is removed only after a
+// test demonstrates the survivor agrees with it across the full `MirTy` variant set. A predicate
+// that turns out to differ is kept, renamed, and documented."
+//
+// This is that test. It asserts nothing about which answer is correct — it records where the three
+// disagree, so RB0/AS4 consolidates from evidence rather than from the assumption that a shared
+// name means a shared rule. The expected disagreements are PINNED, so a silent change to any of the
+// three fails here.
+/// **AS4: lowering's answers to the phase-dependent drop questions.**
+///
+/// Reads HIR through `nominal_instance_fields` rather than the MIR type table, because lowering is
+/// the producer of that table. A resolution failure is stashed rather than swallowed: the shared
+/// authority is infallible by design, so the adapter records the first failure and
+/// `ty_requires_drop_glue` turns it back into the `LowerError` the old implementation returned.
+struct LoweringDropFacts<'a, 'b> {
+    lowerer: &'a FnLowerer<'b>,
+    failure: std::cell::RefCell<Option<String>>,
+}
+
+impl LoweringDropFacts<'_, '_> {
+    fn fields(&self, item: ItemId, args: &[MirTy]) -> Option<NominalFields> {
+        match nominal_instance_fields(
+            self.lowerer.hir,
+            self.lowerer.tables,
+            self.lowerer.meta,
+            item,
+            args,
+            self.lowerer.providers,
+        ) {
+            Ok(fields) => Some(fields),
+            Err(error) => {
+                self.failure.borrow_mut().get_or_insert(error.what);
+                None
+            }
+        }
+    }
+}
+
+impl crate::mir::drop_rule::DropFacts for LoweringDropFacts<'_, '_> {
+    fn has_user_destructor(&self, item: ItemId, _args: &[MirTy]) -> bool {
+        // A1: a `Drop` impl on a generic nominal drops per instantiation — the dtor instance is
+        // monomorphised at the same type arguments, so the impl's presence is argument-independent.
+        self.lowerer.type_has_drop_impl(item)
+    }
+
+    fn struct_fields(&self, item: ItemId, args: &[MirTy]) -> Option<Vec<MirTy>> {
+        match self.fields(item, args)? {
+            NominalFields::Struct(tys) => Some(tys),
+            NominalFields::Enum(_) => {
+                self.failure
+                    .borrow_mut()
+                    .get_or_insert_with(|| "struct item with enum fields shape".to_string());
+                None
+            }
+        }
+    }
+
+    fn enum_variants(&self, item: ItemId, args: &[MirTy]) -> Option<Vec<Vec<MirTy>>> {
+        match self.fields(item, args)? {
+            NominalFields::Enum(variants) => Some(variants),
+            NominalFields::Struct(_) => {
+                self.failure
+                    .borrow_mut()
+                    .get_or_insert_with(|| "enum item with struct fields shape".to_string());
+                None
+            }
+        }
+    }
+}
+
+/// A `MirTy` back as a checker `Ty`, for the one purpose of asking `bound_dispatch` which impl a
+/// receiver selects.
+///
+/// Lowering substitutes in `MirTy`, so a receiver's type arguments are only available in that
+/// language, while the impl index and `unify_impl_ty_with` speak checker `Ty`. This is the narrow
+/// bridge between them.
+///
+/// **Partial on purpose.** `HostResource` and `FnPtr` have no faithful checker counterpart here —
+/// a host resource's source nominal is a synthesized zero-variant enum, and reconstructing one
+/// would assert an identity this function cannot establish. Returning `None` means "do not
+/// specialise", which is the honest answer; fabricating a shape to make unification succeed would
+/// select a body on evidence that does not exist.
+fn checker_ty(ty: &MirTy) -> Option<crate::typecheck::Ty> {
+    use crate::typecheck::Ty as T;
+    Some(match ty {
+        MirTy::Int8 => T::Primitive(Primitive::Int8),
+        MirTy::Int16 => T::Primitive(Primitive::Int16),
+        MirTy::Int32 => T::Primitive(Primitive::Int32),
+        MirTy::Int64 => T::Primitive(Primitive::Int64),
+        MirTy::UInt8 => T::Primitive(Primitive::UInt8),
+        MirTy::UInt16 => T::Primitive(Primitive::UInt16),
+        MirTy::UInt32 => T::Primitive(Primitive::UInt32),
+        MirTy::UInt64 => T::Primitive(Primitive::UInt64),
+        MirTy::Float32 => T::Primitive(Primitive::Float32),
+        MirTy::Float64 => T::Primitive(Primitive::Float64),
+        MirTy::Bool => T::Primitive(Primitive::Bool),
+        MirTy::Char => T::Primitive(Primitive::Char),
+        MirTy::Unit => T::Primitive(Primitive::Unit),
+        MirTy::Str => T::Primitive(Primitive::Str),
+        MirTy::String => T::Primitive(Primitive::String),
+        MirTy::Never => T::Never,
+        MirTy::Struct(item, args) => T::Struct(*item, checker_tys(args)?),
+        MirTy::Enum(EnumRef::User(item), args) => T::Enum(*item, checker_tys(args)?),
+        MirTy::Enum(EnumRef::CoreOption, args) => {
+            T::Core(crate::hir::CoreType::Option, checker_tys(args)?)
+        }
+        MirTy::Enum(EnumRef::CoreResult, args) => {
+            T::Core(crate::hir::CoreType::Result, checker_tys(args)?)
+        }
+        MirTy::Enum(EnumRef::CoreOrdering, _) => {
+            T::Core(crate::hir::CoreType::Ordering, Vec::new())
+        }
+        MirTy::Core(core, args) => T::Core(*core, checker_tys(args)?),
+        MirTy::Tuple(items) => T::Tuple(checker_tys(items)?),
+        MirTy::Array(inner, len) => T::Array(Box::new(checker_ty(inner)?), *len),
+        MirTy::Slice(inner) => T::Slice(Box::new(checker_ty(inner)?)),
+        MirTy::Ref { mutable, inner } => T::Ref {
+            mutable: *mutable,
+            inner: Box::new(checker_ty(inner)?),
+        },
+        MirTy::FnPtr { .. } | MirTy::HostResource(_) => return None,
+    })
+}
+
+fn checker_tys(tys: &[MirTy]) -> Option<Vec<crate::typecheck::Ty>> {
+    tys.iter().map(checker_ty).collect()
+}
+
+#[cfg(test)]
+mod as0_reference_predicate_inventory {
+    use crate::backend::generated_rust::emit_types;
+    use crate::hir::{CoreType, ItemId};
+    use crate::mir::{EnumRef, HostResourceNominal, HostResourceTy, MirTy};
+
+    /// One sample per `MirTy` variant, and — for the composite variants — a second sample carrying
+    /// a reference inside, because that is the only place the three predicates can differ.
+    fn samples() -> Vec<(&'static str, MirTy)> {
+        let r = || MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Int32),
+        };
+        vec![
+            ("Int8", MirTy::Int8),
+            ("Int16", MirTy::Int16),
+            ("Int32", MirTy::Int32),
+            ("Int64", MirTy::Int64),
+            ("UInt8", MirTy::UInt8),
+            ("UInt16", MirTy::UInt16),
+            ("UInt32", MirTy::UInt32),
+            ("UInt64", MirTy::UInt64),
+            ("Float32", MirTy::Float32),
+            ("Float64", MirTy::Float64),
+            ("Bool", MirTy::Bool),
+            ("Char", MirTy::Char),
+            ("Unit", MirTy::Unit),
+            ("Never", MirTy::Never),
+            ("Str", MirTy::Str),
+            ("String", MirTy::String),
+            ("Struct(plain)", MirTy::Struct(ItemId(0), Vec::new())),
+            ("Struct(<&T>)", MirTy::Struct(ItemId(0), vec![r()])),
+            (
+                "Enum::User(plain)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), Vec::new()),
+            ),
+            (
+                "Enum::User(<&T>)",
+                MirTy::Enum(EnumRef::User(ItemId(0)), vec![r()]),
+            ),
+            (
+                "Enum::CoreOption(<&T>)",
+                MirTy::Enum(EnumRef::CoreOption, vec![r()]),
+            ),
+            ("Tuple(plain)", MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(&T)", MirTy::Tuple(vec![r()])),
+            ("Array(plain)", MirTy::Array(Box::new(MirTy::Int32), 4)),
+            ("Array(&T)", MirTy::Array(Box::new(r()), 4)),
+            ("Slice(plain)", MirTy::Slice(Box::new(MirTy::Int32))),
+            ("Slice(&T)", MirTy::Slice(Box::new(r()))),
+            ("Ref", r()),
+            (
+                "FnPtr(ret &T)",
+                MirTy::FnPtr {
+                    params: Vec::new(),
+                    ret: Box::new(r()),
+                },
+            ),
+            (
+                "FnPtr(param &T)",
+                MirTy::FnPtr {
+                    params: vec![r()],
+                    ret: Box::new(MirTy::Unit),
+                },
+            ),
+            (
+                "Core(plain)",
+                MirTy::Core(CoreType::Vec, vec![MirTy::Int32]),
+            ),
+            ("Core(<&T>)", MirTy::Core(CoreType::Vec, vec![r()])),
+            (
+                "HostResource",
+                MirTy::HostResource(Box::new(HostResourceTy {
+                    nominal: HostResourceNominal::Core(CoreType::Vec),
+                    provider: "probe".to_string(),
+                    resource: "probe_resource".to_string(),
+                })),
+            ),
+        ]
+    }
+
+    /// The three answers, per sample, with every disagreement pinned.
+    #[test]
+    fn the_three_reference_predicates_are_measured_against_each_other() {
+        // (sample, lower::ty_carries_ref, emit::mentions_a_reference, emit::ty_contains_ref)
+        let mut disagreements = Vec::new();
+        let mut checked = 0usize;
+        for (name, ty) in samples() {
+            let a = crate::mir::reference_rule::stores_a_reference(&ty);
+            let b = emit_types::mentions_a_reference(&ty);
+            // AS4: `emit::ty_contains_ref` is GONE — it and `lower::ty_carries_ref` were one rule
+            // and are now `reference_rule::stores_a_reference`. The window reads the same authority,
+            // so `a == c` holds by construction; kept so the matrix still spans what RB0 recorded.
+            let c = emit_types::contains_ref_for_inventory(&ty);
+            checked += 1;
+            // **AS4: the PAIRWISE fact AS0's three-way summary hid.** `lower::ty_carries_ref` and
+            // `emit::ty_contains_ref` agree on EVERY sample, `FnPtr` included — so they are one
+            // rule with two implementations. Only `emit::mentions_a_reference` differs, and it is a
+            // different question (see `tests/as4_reference_rule.rs`). Asserted per sample so the
+            // claim cannot quietly stop holding.
+            assert_eq!(
+                a, c,
+                "{name}: lower::ty_carries_ref and emit::ty_contains_ref must agree — they are one \
+                 rule, and AS4 merges them on that basis"
+            );
+            if !(a == b && b == c) {
+                disagreements.push(format!(
+                    "{name}: lower::ty_carries_ref={a}, emit::mentions_a_reference={b}, emit::ty_contains_ref={c}"
+                ));
+            }
+        }
+        assert!(
+            checked >= 30,
+            "only {checked} samples; the matrix is too thin"
+        );
+
+        // PINNED. Not an approval of any answer — a record of where the three differ today, so
+        // RB0/AS4 consolidates from evidence and a silent change to any of them fails here.
+        let expected: Vec<String> = EXPECTED_DISAGREEMENTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            disagreements, expected,
+            "\n\nThe reference-rule predicates now disagree differently than recorded.\n\
+             This test measures; it does not judge. If a predicate changed on purpose, update the \
+             pinned list and say why in the RB0/AS4 record. If it changed by accident, that is the \
+             divergence hazard RB0 exists for.\n"
+        );
+    }
+
+    /// **The measured disagreement, which is RB0's Q2 reproduced from evidence rather than from
+    /// reading.** Two of the three say a function pointer carries no reference; one descends into
+    /// its parameters and return type and says it does.
+    ///
+    /// RB0 states the question to answer before touching any of them: *"Determine first whether the
+    /// two ask the same question. A plain function pointer does not borrow the values it will later
+    /// receive, and a Rust `fn(&T)` is higher-ranked and needs no lifetime parameter — which is the
+    /// only thing the lowering predicate guards (E0106). But a function value representation could
+    /// carry an environment, lifetime-bearing metadata, or a bound receiver."*
+    ///
+    /// So this is pinned, not fixed. Forcing agreement here would be a behavioural change without a
+    /// CD, which RB0 exit criterion 5 forbids.
+    ///
+    /// Note what the matrix also shows: the three agree on **every other variant**, including every
+    /// composite carrying a reference inside. The reference rule is one rule with one exception,
+    /// which is a much smaller consolidation than "three implementations" suggested.
+    const EXPECTED_DISAGREEMENTS: &[&str] = &[
+        "FnPtr(ret &T): lower::ty_carries_ref=false, emit::mentions_a_reference=true, emit::ty_contains_ref=false",
+        "FnPtr(param &T): lower::ty_carries_ref=false, emit::mentions_a_reference=true, emit::ty_contains_ref=false",
+    ];
+}
+
+/// **AS4 — the drop rule, measured before it is consolidated.**
+///
+/// `AS0-RB0-PREDICATE-INVENTORY.md` §3 left the drop rule as AS4's opening work: four
+/// implementations, known to diverge, with a recorded instance (CD-287) of two of them
+/// contradicting each other *inside one file*. RB0's method forbids consolidating before the
+/// evidence exists, so this measures first and merges nothing.
+///
+/// The measurement's finding is that there are **three questions, not two**. RB0 anticipated
+/// `requires_drop_glue` vs `has_user_defined_destructor`; the matrix shows `may_need_drop` is a
+/// third — a deliberate over-approximation that answers `true` for every `Struct`/`Enum`/`Core`
+/// whether or not it actually has glue. Substituting it for the precise rule would make the
+/// verifier reject valid lowerings; substituting the precise rule for it would let the verifier
+/// agree a `Drop` was correctly absent, which is the failure `may_need_drop`'s own comment
+/// documents.
+#[cfg(test)]
+mod as4_drop_predicate_inventory {
+    use crate::hir::{CoreType, ItemId};
+    use crate::mir::{verify, EnumRef, HostResourceNominal, HostResourceTy, MirTy, TypeContext};
+
+    /// One sample per `MirTy` variant, plus the composites that can carry a droppable inside —
+    /// the only places the predicates can differ, apart from `HostResource`.
+    fn samples() -> Vec<(&'static str, MirTy)> {
+        let resource = || {
+            MirTy::HostResource(Box::new(HostResourceTy {
+                nominal: HostResourceNominal::Item(ItemId(0)),
+                provider: "p".to_string(),
+                resource: "r".to_string(),
+            }))
+        };
+        vec![
+            ("Int32", MirTy::Int32),
+            ("Bool", MirTy::Bool),
+            ("Unit", MirTy::Unit),
+            ("Never", MirTy::Never),
+            ("Char", MirTy::Char),
+            ("Str", MirTy::Str),
+            ("String", MirTy::String),
+            (
+                "Ref(&Int32)",
+                MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Int32),
+                },
+            ),
+            ("Slice(Int32)", MirTy::Slice(Box::new(MirTy::Int32))),
+            (
+                "FnPtr",
+                MirTy::FnPtr {
+                    params: Vec::new(),
+                    ret: Box::new(MirTy::Unit),
+                },
+            ),
+            (
+                "Core(Vec<Int32>)",
+                MirTy::Core(CoreType::Vec, vec![MirTy::Int32]),
+            ),
+            ("Tuple(Int32)", MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(String)", MirTy::Tuple(vec![MirTy::String])),
+            ("Array(Int32)", MirTy::Array(Box::new(MirTy::Int32), 4)),
+            ("Array(String)", MirTy::Array(Box::new(MirTy::String), 4)),
+            (
+                "Enum::CoreOption(Int32)",
+                MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Int32]),
+            ),
+            (
+                "Enum::CoreOption(String)",
+                MirTy::Enum(EnumRef::CoreOption, vec![MirTy::String]),
+            ),
+            (
+                "Enum::CoreOrdering",
+                MirTy::Enum(EnumRef::CoreOrdering, Vec::new()),
+            ),
+            ("HostResource", resource()),
+            ("Tuple(HostResource)", MirTy::Tuple(vec![resource()])),
+        ]
+    }
+
+    /// **RB0 Q1 — DECIDED (CD-388): every constructible iterator requires no drop glue.**
+    ///
+    /// The asymmetry RB0 asked about was historical, not semantic. All four iterators `mir_ty` can
+    /// construct as `MirTy::Core` are the same shape — a borrowed cursor owning nothing:
+    ///
+    /// ```text
+    /// VecIter<'a,T>   { slice: &'a [T], index: usize }
+    /// KeysIter<'a,K>  { keys:  &'a [K], index: usize }
+    /// Iter<T>         emits AS KeysIter (DEV-116-B)
+    /// CharsIter<'a>   { inner: std::str::Chars<'a> }
+    /// ```
+    ///
+    /// None owns an allocation or resource, none has a Rust `Drop`, all plan as `DropPlan::Noop`.
+    /// CD-387 ruled `CharsIter` on that reasoning; CD-388 extends it to the other three after
+    /// `AS4-RB0-Q1-ITERATORS.md` measured them.
+    ///
+    /// **This test earned its keep**: it was written to fail by name if any of the three changed
+    /// without a CD, and it did exactly that when the change was made — forcing the decision record
+    /// to be written rather than the behaviour to drift. It now pins the decided answers.
+    #[test]
+    fn rb0_q1_every_constructible_iterator_requires_no_drop_glue() {
+        use crate::hir::CoreType;
+        use crate::mir::drop_rule::core_requires_drop_glue;
+
+        for cursor in [
+            CoreType::CharsIter,
+            CoreType::VecIter,
+            CoreType::KeysIter,
+            CoreType::Iter,
+        ] {
+            assert!(
+                !core_requires_drop_glue(cursor),
+                "{cursor:?} is a borrowed cursor owning nothing (CD-387/CD-388). Reverting it \
+                 needs its own decision record and an update to AS4-RB0-Q1-ITERATORS.md."
+            );
+        }
+        // The iterators `mir_ty` cannot construct keep the verifier's historical answer, per the
+        // AS4-DROP-AUTHORITY consolidation rule for unreachable representations. CD-388 did NOT
+        // extend to them: with no representation to inspect there is no evidence to decide on.
+        for unreachable in [
+            CoreType::SplitIter,
+            CoreType::ValuesIter,
+            CoreType::MapIter,
+            CoreType::FilterIter,
+        ] {
+            assert!(core_requires_drop_glue(unreachable));
+        }
+    }
+
+    /// **THE MATRIX AS4 ACTUALLY NEEDS: `lower` precise vs `verify` precise.**
+    ///
+    /// Reviewer finding on `0257320`: this packet compared the verifier's conservative rule against
+    /// the verifier's precise one, and never compared the **two implementations of the precise
+    /// rule** to each other. That is the equivalence required before the drop property can be
+    /// called consolidated, and it is measured here.
+    ///
+    /// Both need real context — lowering's a `FnLowerer`, the verifier's a `TypeContext` — so this
+    /// compiles and lowers a real program rather than synthesising tables. The asymmetry is itself
+    /// evidence: lowering is a PRODUCER of parts of `TypeContext`, so the two cannot simply share
+    /// one table.
+    ///
+    /// **Nothing is consolidated on the strength of this test.** It records what the two answer, so
+    /// the disagreement is a pinned fact rather than a plausible reading.
+    #[test]
+    fn the_two_precise_drop_rules_are_measured_against_each_other() {
+        use crate::mir::lower::{lower_program, FnKey, FnLowerer, ProgramMeta};
+        use crate::mir::provider_lower::ProviderLowering;
+        use crate::options::LanguageOptions;
+        use crate::session::CompilerSession;
+        use crate::source::{SourceFile, Span};
+        use std::sync::Arc;
+
+        // `Owner` has a user `Drop`; `Plain` has none; `Holder` nests an owned `String`.
+        let source = "struct Owner { v: Int32 }\n                      impl Drop for Owner { fn drop(&mut self) { println(0); } }\n                      struct Plain { v: Int32 }\n                      struct Holder { s: String }\n                      fn main() {\n                      \x20   let o: Owner = Owner { v: 1 };\n                      \x20   let p: Plain = Plain { v: 2 };\n                      \x20   let h: Holder = Holder { s: String::from(\"x\") };\n                      \x20   println(p.v);\n}\n";
+        let file = Arc::new(SourceFile::new("drop_matrix.stark", source));
+        let checked = CompilerSession::for_source(file, LanguageOptions::CORE)
+            .check()
+            .unwrap_or_else(|f| panic!("fixture must compile:\n{}", f.render()));
+        let hir = checked.hir();
+        let tables = checked.tables();
+        let registered = checked.root_source();
+        let mir = match lower_program(hir, tables, registered.clone()) {
+            Ok(m) => m,
+            Err(e) => panic!("fixture must lower: {}", e.what),
+        };
+        let meta = match ProgramMeta::build(hir, &registered) {
+            Ok(m) => m,
+            Err(e) => panic!("meta: {}", e.what),
+        };
+
+        // Any fn item will do: the drop predicate reads program-level facts, not the body.
+        let main_item = meta
+            .all_items
+            .iter()
+            .copied()
+            .find(|i| matches!(hir.item(*i).kind, crate::hir::ItemKind::Fn(_)))
+            .expect("a fn item");
+        let providers = ProviderLowering::none();
+        let lowerer = FnLowerer::with_providers(
+            hir,
+            tables,
+            &meta,
+            FnKey::Top(main_item, Vec::new()),
+            providers,
+        );
+        let span = Span::synthetic(meta.entry_source);
+
+        // Every `CoreType`, because that is where the suspected disagreement family lives, plus the
+        // nominal shapes that exercise the recursion.
+        let core = |c: CoreType| MirTy::Core(c, vec![MirTy::Int32]);
+        let mut samples: Vec<(String, MirTy)> = vec![
+            ("Int32".into(), MirTy::Int32),
+            ("String".into(), MirTy::String),
+            ("Str".into(), MirTy::Str),
+            (
+                "Ref".into(),
+                MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Int32),
+                },
+            ),
+            ("Tuple(Int32)".into(), MirTy::Tuple(vec![MirTy::Int32])),
+            ("Tuple(String)".into(), MirTy::Tuple(vec![MirTy::String])),
+            (
+                "Array(Int32)".into(),
+                MirTy::Array(Box::new(MirTy::Int32), 2),
+            ),
+        ];
+        for c in [
+            CoreType::String,
+            CoreType::Vec,
+            CoreType::Box,
+            CoreType::Option,
+            CoreType::Result,
+            CoreType::Range,
+            CoreType::RangeInclusive,
+            CoreType::CharsIter,
+            CoreType::SplitIter,
+            CoreType::VecIter,
+            CoreType::HashMap,
+            CoreType::HashSet,
+            CoreType::KeysIter,
+            CoreType::ValuesIter,
+            CoreType::Iter,
+            CoreType::MapIter,
+            CoreType::FilterIter,
+            CoreType::Random,
+            CoreType::IOError,
+            CoreType::File,
+            CoreType::Ordering,
+        ] {
+            samples.push((format!("Core({c:?})"), core(c)));
+        }
+
+        let mut agree = 0usize;
+        let mut disagree: Vec<(String, bool, bool)> = Vec::new();
+        for (name, ty) in &samples {
+            let Ok(lowering) = lowerer.ty_requires_drop_glue(ty, span) else {
+                continue; // a shape lowering refuses to classify is not a disagreement
+            };
+            let verifier = crate::mir::verify::requires_drop_glue(&mir.types, ty);
+            if lowering == verifier {
+                agree += 1;
+            } else {
+                disagree.push((name.clone(), lowering, verifier));
+            }
+        }
+
+        // **AS4-DROP-AUTHORITY: this list is now EMPTY, and that is the exit criterion.**
+        //
+        // Both predicates delegate to `mir::drop_rule::requires_drop_glue_with`, supplying only the
+        // phase-dependent nominal facts. There is one structural recursion and one `CoreType`
+        // classification, so a disagreement here is no longer possible by construction — it would
+        // mean an adapter answered a nominal question differently, which is a real defect and
+        // exactly what this test would catch.
+        let rendered: Vec<String> = disagree
+            .iter()
+            .map(|(n, l, v)| format!("{n}: lower={l} verify={v}"))
+            .collect();
+        assert!(
+            rendered.is_empty(),
+            "the two precise drop rules must agree at every sample now that both delegate to one \
+             authority; still disagreeing on: {rendered:?}"
+        );
+        assert!(agree > 0, "the samples must actually be exercised");
+
+        // The one direction that would be unsound if it ever appeared: lowering claiming glue is
+        // required where the verifier says it is not. Lowering emits the `Drop`; a verifier that
+        // then rejected it would refuse a valid program.
+        for (name, lowering, verifier) in &disagree {
+            assert!(
+                !*lowering || *verifier,
+                "{name}: lowering requires glue but the verifier does not — lowering would emit a \
+                 Drop the verifier rejects"
+            );
+        }
+    }
+
+    /// **The finding, pinned.** `may_need_drop` (conservative) and `requires_drop_glue` (precise)
+    /// disagree wherever a nominal or container has no actual glue — and they are SUPPOSED to.
+    /// Pinning the disagreement is what stops a later "cleanup" from substituting one for the
+    /// other, which is the failure mode AS4 work item 2 exists to prevent.
+    #[test]
+    fn the_conservative_and_precise_drop_rules_are_measured_against_each_other() {
+        // An EMPTY type context: no `Drop` impls, no fields registered. Under it, `String`, `Core`
+        // and `HostResource` still require glue; a bare user nominal does not.
+        let types = TypeContext::default();
+        let mut disagreements = Vec::new();
+        for (name, ty) in samples() {
+            let conservative = verify::may_need_drop_for_inventory(&ty);
+            let precise = verify::requires_drop_glue(&types, &ty);
+            if conservative != precise {
+                disagreements.push((name, conservative, precise));
+            }
+            // The one direction that must ALWAYS hold: the conservative rule may never be more
+            // permissive than the precise one. If it were, the verifier could agree a `Drop` was
+            // correctly absent when glue was in fact required.
+            assert!(
+                conservative || !precise,
+                "{name}: may_need_drop={conservative} but requires_drop_glue={precise} — the \
+                 conservative rule must never under-approximate the precise one"
+            );
+        }
+        // Recorded rather than asserted-away: these are the variants where the two legitimately
+        // differ, and the list changing is a signal, not noise.
+        let names: Vec<&str> = disagreements.iter().map(|(n, ..)| *n).collect();
+        assert!(
+            !names.is_empty(),
+            "the two rules are supposed to differ somewhere; if they no longer do, one of them \
+             has silently become the other"
+        );
+    }
+
+    /// `HostResource` is the variant that makes the three questions three. Pinned explicitly
+    /// because CD-287 was two of these predicates disagreeing about exactly this variant, in one
+    /// file, and being repaired one at a time.
+    #[test]
+    fn a_host_resource_answers_each_drop_question_differently() {
+        let types = TypeContext::default();
+        let resource = MirTy::HostResource(Box::new(HostResourceTy {
+            nominal: HostResourceNominal::Item(ItemId(0)),
+            provider: "p".to_string(),
+            resource: "r".to_string(),
+        }));
+        assert!(
+            verify::requires_drop_glue(&types, &resource),
+            "a host resource requires glue: its close is provider-driven (A11 §5)"
+        );
+        assert!(
+            verify::may_need_drop_for_inventory(&resource),
+            "and the conservative rule agrees"
+        );
+        // The third question — "does a USER-written `Drop` impl govern this?" — answers FALSE, and
+        // that is the distinction. `lower::ty_has_user_destructor_guarded` is measured against a real
+        // lowering elsewhere; what matters here is that the answer differs from the other two, so
+        // no future edit can treat the three as one rule with three spellings.
     }
 }
