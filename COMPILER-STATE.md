@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C9  Next: AS8 exit, then the Sprint 4 Tier-3 closeout  Blocked: none
+Gate: C9  Next: Sprint 4 Tier-3 closeout, then Campaign B exit  Blocked: none
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
@@ -14,11 +14,11 @@ Optional tracks: ArtifactInfra=open  TensorExpansion=blocked (Gate 7 DEFER, unch
 
 | | |
 | --- | --- |
-| **Active packet** | **AS8** — assurance against the frozen AS6/AS7 result. Mutation trials, coverage baseline, pinned samples, LSP measurement, this compression |
+| **Active packet** | **none** — AS8 CLOSED 2026-08-09 (CD-394). Next is the **Sprint 4 Tier-3 closeout**, then the Campaign B exit report |
 | **Active branch** | `wp-arch-stability/as7-modularization` |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | OPEN — Part A closed for C9.0/C9.1/C9.2; **Part B blocked pending second-artifact evidence.** No provider generalisation is authorised from ONNX alone |
-| **Sprint 4** | AS6 CLOSED (CD-390), AS7 CLOSED (CD-391) with criterion 2 **re-qualified** (CD-393). AS8 is the last packet |
+| **Sprint 4** | AS6 CLOSED (CD-390), AS7 CLOSED (CD-391) with criterion 2 **re-qualified** (CD-393), **AS8 CLOSED (CD-394)**. Only the Tier-3 closeout remains |
 | **Campaign B** | Exits only when AS5–AS8 are complete or owner-deferred. Its report gates C10; it makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
 | **Tensor track** | Deferred research on Gate 7's own terms. Platform progress is **not** permission to reopen it |
@@ -39,8 +39,11 @@ ROADMAP.md (repo root)     the one live forward plan
 ```text
 DEV-012        interactive editor validation, seven features unvalidated  (C8, CD-385)
 Gate C9 Part B blocked: needs a second artifact; ONNX alone authorises nothing
-AS8-R1..R7     mutation/evidence residuals — see AS8-MUTATION-FINDINGS.md
-AS8-DA-001..6  duplicated authorities — see AS8-DUPLICATE-AUTHORITIES.md
+AS8-R1..R15    mutation/evidence residuals — see AS8-MUTATION-FINDINGS.md
+AS8-DA-001..6  duplicated authorities — see AS8-DUPLICATE-AUTHORITIES.md; DA-002/003/004
+               consolidate-or-keep is an OWNER CALL, measurement recorded
+DEV-213        LSP caches one whole-package analysis per open URI, invalidates only the edited
+               one; workspace/symbol returns stale names. Demonstrated at HEAD, not fixed
 PR #10 / #11   merge topology for sprint-3 and sprint-4 undecided; Sprint 4 cannot close on it
 ```
 
@@ -48,6 +51,87 @@ PR #10 / #11   merge topology for sprint-3 and sprint-4 undecided; Sprint 4 cann
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-394 — AS8 CLOSED, qualification PASS; the evidence base was overstated in three documents (2026-08-09)
+
+**`STARKLANG/docs/compiler/audits/AS8-EXIT-QUALIFICATION.md` is the record.** All five exit criteria
+met. Campaign B's last packet closes; the Sprint 4 Tier-3 closeout is what remains.
+
+### What AS8 measured, and what it changed
+
+39 compiler-source mutation trials across every rule family the packet's scope names — ownership,
+trap, drop, resolver, MIR verifier — plus paired one-sided trials on duplicated authorities.
+
+```text
+26 CONFIRMED the prediction    13 FALSIFIED it, IN BOTH DIRECTIONS
+```
+
+**That ratio is the packet's most useful single number.** EI5's predictions were reasoned from EI2's
+*reading* of the evidence base, and were wrong a third of the time — which is the argument for
+mutation over audit, made by the audit failing rather than by assertion.
+
+Four register entries were wrong before AS8 measured them, and one was wrong in the compiler's
+favour:
+
+```text
+ESF-COPY-001   "no control in-tree"       ->  c61f_structural_copy IS one (MUT-009/010/011);
+                                              critical -> high
+ESF-TRAP-001   one entry, INVISIBLE       ->  split 001a (vocabulary, INVISIBLE, no control
+                                              constructible) / 001b (assignment, PARTIALLY_VISIBLE,
+                                              caught by the oracle in 4 tests); high -> medium
+ESF-TYPE-001   "spec fixtures control it" ->  they do not (MUT-013); medium -> HIGH
+ESF-PROV-001   "two engines, not three"   ->  mir/verify.rs is an in-tree control (MUT-025).
+                                              EI2 counted ENGINES and the verifier is not one
+```
+
+### The one defect, and the fifteen residuals
+
+**DEV-213 — the LSP caches one whole-package `ProjectAnalysis` per open URI and invalidates only the
+edited one.** Demonstrated by a passing test at HEAD: rename a symbol in one open file and
+`workspace/symbol` returns both the new name and the name that no longer exists.
+
+It was found by a work item framed as a PERFORMANCE question — *"replace the duplication where
+measurement shows material cost"*. Measured cost is 22 ms for one analysis and 181 ms for eight open
+URIs, which is not material. **Answering the question as written closes the item and finds nothing.**
+The duplication's real consequence is N copies with independent invalidation.
+
+**No DEV was allocated for any mutation survivor**, per the owner ruling: a survivor means the
+evidence cannot detect a defect, not that the defect is present. AS8-R1..R15 carry those.
+
+### Duplicated authorities — a new dimension, deliberately NOT a register category
+
+Owner ruling: EI0's vocabulary answers *what kind* of authority something is; duplication answers
+*how many implementations exist and what relationship they have*. `AS8-DA-001..006` live outside the
+frozen enum.
+
+The ruling also corrected the instinct to consolidate, and measurement then refined the ruling: all
+three interpreter/verifier pairs were killed on both sides, **but the kill messages show neither
+copy is checking the other** — copy A by the differential, copy B by an `unreachable!()` elsewhere.
+So consolidating would lose no control that exists today, and create shared fate where there is
+none. **Left as an owner call.** `AS8-DA-005` is unambiguous: `scalar_name` can drift silently.
+
+### Governance surfaces repaired
+
+```text
+COMPILER-STATE.md      12,979 -> 6,681 lines; `# Current position` is now FIRST. `## Position` had
+                       been at line 5,456 describing Gate C5 closing four gates earlier, and a
+                       2,808-line section was still headed IN PROGRESS. Verified lossless:
+                       57/57 CD sections retained, zero lines lost
+KNOWN-DEVIATIONS.md    the same defect, sharper: append-only, so DEV-121's FIRST heading says OPEN
+                       and it is CLOSED 3,558 lines later. Index added naming the live heading
+lib.rs                 cited PLAN.md as the live plan and "Gates 1-3 ... interpreter", four gates
+                       after native compilation closed
+```
+
+### Evidence
+
+Clippy `--workspace --all-features --all-targets -D warnings` clean; `fmt --check` clean; 581 tests
+across 5 targets, 0 failed; pinned samples **34/34** at `b3b28e757f38d691e7309f168d1209e28ac459af`;
+coverage baseline published as `--lib` only and labelled as such.
+
+**Next:** the Sprint 4 Tier-3 closeout, then the Campaign B exit report. **Unresolved and owner-owned:**
+the PR #10 / PR #11 merge topology — Sprint 4 cannot close without deciding how AS7 and sprint-4 land
+on `develop`.
 
 ## CD-393 — AS7 criterion 2 re-qualified; CD-391's PASS is superseded, its closure stands (2026-08-09)
 

@@ -51,20 +51,25 @@ than reinterpreted afterwards.
 | `AS8-MUT-037` | MIR verifier | `may_need_drop` HostResource ⇒ false | KILLED | **SURVIVED** | UNEXPECTED | 0 | — |
 | `AS8-MUT-026`…`033` | `AS8-DA-002`…`005` | paired one-sided duplicate trials | KILLED ×8 | 7 KILLED, 1 SURVIVED | see `AS8-DUPLICATE-AUTHORITIES.md` | 1–4 | |
 
-Per EI5, kill rates are **not pooled**. Every trial above is `SHARED_AUTHORITY`, so the meaningful
-split is by killer independence, not by tag:
+Per EI5, kill rates are **not pooled**. The `BACKEND_ASSUMPTION` trials (020–022) and the
+`EVIDENCE_SHARED` trial (023) are reported in Findings 8 and the corpus note; for the
+`SHARED_AUTHORITY` majority the meaningful split is by **killer independence**, not by tag:
 
 ```text
-killed by CROSS_ENGINE_DERIVED evidence   4   MUT-001, 002, 004, 007
-killed by HAND_AUTHORED spec controls     3   MUT-009, 010, 011
-survived everything selected              6   MUT-003, 005, 006, 008, 012, 013
+39 trials    23 KILLED    16 SURVIVED
+
+survivors   003 005 006 008 012 013 014 015 016 019 022 033 034 035 037 039
+            of which 016 is VOID rather than negative — see Finding 6
 ```
 
-**Five of thirteen predictions were wrong, and they were wrong in BOTH directions** — three
-predicted survivors were killed, two predicted kills survived. That ratio is the packet's most
-useful single number: EI5's predictions were reasoned from EI2's reading of the evidence base, and
-they are right about as often as they are wrong. Nothing in the register earns belief until it has
-been mutated.
+**Thirteen of thirty-nine predictions were wrong, and wrong in BOTH directions** — predicted
+survivors that were killed (001, 002, 004) and predicted kills that survived (012, 013, 016, 019,
+022, 033, 034, 035, 037, 039).
+
+That ratio is the packet's most useful single number. **EI5's predictions were reasoned from EI2's
+READING of the evidence base, and a third of them were wrong** — which is the argument for mutation
+over audit, made by the audit failing rather than by anyone asserting it. Nothing in the register
+earns belief until it has been mutated.
 
 ## Finding 1 — the differential detects a Copy *contradiction*, never a Copy *error*
 
@@ -402,6 +407,23 @@ AS8-R10 ESF-TRAIT-001 has no control of any kind. MUT-014 and MUT-015 made Core 
 AS8-R11 EI2-R2 is corrected, in the compiler's favour: ESF-PROV-001 DOES have an in-tree
         independent control, `mir/verify.rs` (MUT-025, 4 kills). EI2 counted engines, and the
         verifier is not an engine. "Two engines, not three" understated the evidence.
+
+AS8-R12 AS8-DA-005 is asymmetric: `provider_synth::scalar_src` is exercised by the stark-io
+        package build (MUT-032, 2 kills); `provider_derive::scalar_name` is exercised by nothing
+        (MUT-033). One copy of a two-copy rule can drift silently.
+
+AS8-R13 Non-`pub` re-export visibility has NO control anywhere. MUT-035 survived the fixtures and
+        the differential; MUT-039, the same mutation against `--lib`, survived resolve.rs's own
+        unit tests too. 07 says `use` without `pub` must not re-export.
+        Its sibling rule IS controlled: MUT-038 was killed by those same unit tests.
+
+AS8-R14 `mir::verify::may_need_drop`'s HostResource arm is unguarded (MUT-037), while the
+        corresponding `mir_ty_is_copy` arm IS guarded (MUT-017, 3 kills including
+        `a_host_resource_is_never_copy`). Both encode A11 §5. This is AS8-DA-006's verifier half.
+
+AS8-R15 The full-corpus coverage baseline was attempted and stopped on a disk floor by a
+        deliberate watchdog. The published baseline is `--lib` ONLY and says so in its own title
+        and body. A partial measurement stopped on purpose is a usable result; a full disk is not.
 ```
 
 ## Method note — the harness had to be repaired mid-packet, twice

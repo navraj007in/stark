@@ -18,7 +18,7 @@ DUPLICATION          many implementations, one rule       copies drift, and the 
 
 ## The correction that shapes this file
 
-The first instinct on finding five duplicates was to consolidate them. **That is wrong by default,
+The first instinct on finding the scanner's five duplicates was to consolidate them. **That is wrong by default,
 and the owner ruling says why: a verifier can derive its value precisely from implementing the same
 rule independently.** Replacing both copies with one shared helper removes drift and *creates
 shared fate* — the verifier would then be unable to detect a wrong shared predicate. It converts a
