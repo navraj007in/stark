@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-A1 (census); C10-P open on DEV-012 only  Blocked: none
+Gate: C10  Next: C10-C (security); C10-A2 dashboard  Blocked: none (DEV-214 needs an owner call)
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0 COMPLETE**; **C10-P: DEV-213 CLOSED, DEV-012 still owed** (`audits/C10-P-LANGUAGE-SERVICES.md`). Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-A1 |
+| **Active packet** | C10-0, C10-P, C10-A1, **C10-B COMPLETE**. Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-C, then C10-A2 |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -45,10 +45,10 @@ frozen separately by OD-3; regenerate A with
 `python3 starkc/scripts/c10-deviation-populations.py`.
 
 ```text
-POPULATION A — compiler deviations (the CD-021 denominator)                          31
+POPULATION A — compiler deviations (the CD-021 denominator)                          32
 
-  live OPEN by the last ledger heading                                               17
-                                                    (was 18; DEV-213 CLOSED by C10-P)
+  live OPEN by the last ledger heading                                               18
+                                            (DEV-213 CLOSED by C10-P; DEV-214 opened by C10-B)
     DEV-012 interactive editor validation, 7 of 10 features    -> C10-P, needs a human
                                                                   in an editor (MANUAL evidence)
     DEV-140/141/142/143/144/145   the six CD-342 "layer defect" registrations —
@@ -59,6 +59,9 @@ POPULATION A — compiler deviations (the CD-021 denominator)                   
     DEV-172 no signed type expresses its min  DEV-177 generic-parameter shadowing accepted
     DEV-178 generic context not retained      DEV-180 HIR flattens &mut self receivers
     DEV-181 assignment-RHS borrow blocks it   DEV-186 LSP unbounded Content-Length
+    DEV-214 a left-associative operator chain ABORTS the compiler with a stack overflow
+            (65 terms on a 2 MiB thread stack). Found by C10-B. OWNER CALL: every fix
+            changes the accepted set, the architecture, or only moves the cliff
 
   OPEN HERE, owning NO heading in KNOWN-DEVIATIONS.md                                 6
     DEV-156 stark fmt evicts member doc comments   DEV-157 no MirTy::Never in the backend
@@ -274,6 +277,40 @@ and it names the precise 41 rows A2 starts from.
 way `check-conformance.py` checks them so a renamed TEST is caught, not merely a renamed file. The
 clean result is believed because `--self-test` injects a citation to a function that does not exist
 and the census reports it. Per the owner's amendment, no finding count was expected or targeted.
+
+### C10-B, same day — the robustness gate FAILS on one target, and the guard that should have caught it works
+
+`audits/C10-B-ROBUSTNESS.md`. Suite: `tests/c10b_robustness.rs`, 12 tests.
+
+**DEV-214 — a left-associative operator chain aborts the compiler with a stack overflow.** The
+parser HAS the right guard (`MAX_DEPTH = 200`, *"this code is nested too deeply to parse"*) and it
+bounds SYNTACTIC nesting, because that is what recurses in recursive descent. A chain does not
+recurse there — `parser.rs` implements the 16-level precedence table as one `loop` per level — so
+the counter never moves. **The AST is still n deep**, and the walks after the parser descend it.
+
+```text
+(((((...1...)))))  300 deep   ->  REJECTED cleanly     <- the bounded failure the gate asks for
+1 + 1 + ... + 1     65 terms  ->  SIGABRT              <- DEV-214
+```
+
+**The severity is in the stack size.** 8 MiB (a main thread): 240 OK, 250 aborts. **2 MiB (Rust's
+default for a SPAWNED thread, and what `cargo test` gives each test): 60 OK, 65 aborts.** ~30 KB of
+stack per AST level. The LSP analyses on a server thread, so an embedding sits on the low number.
+Found because `cargo test` overflowed where `cargo run` had not — the difference between them IS the
+finding, and a suite run only on a main thread would have reported a threshold four times too
+generous.
+
+**Not repaired, by rule rather than reluctance.** Counting chain depth would start rejecting
+200–245-term expressions that compile today — a change to the accepted/rejected program set, CE1/CE2
+and plan stop condition 5. Converting the walks to a worklist is the broad refactoring §3.2 forbids.
+Raising the stack moves the cliff without removing it. **Owner call.**
+
+Targets T1, T2, T4, T5, T6, T8 and both determinism checks PASS over ~2,000 cases. **T3 (package
+graphs) and T7 (malformed artifacts) were NOT RUN** and are named as such rather than dropped from
+the population — C10-Q may not claim robustness over them. DEV-186 is confirmed and characterised.
+
+The passes are believed because `aaa_harness_self_test_detects_an_injected_panic` runs first and
+proves, in both directions, that the driver reports a panic and does not fire on ordinary input.
 
 **DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
 features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3

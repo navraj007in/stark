@@ -6644,3 +6644,100 @@ it.
 **The standing qualification recorded when DEV-213 was filed is DISCHARGED.** Claims about
 `workspace/symbol` correctness under multi-file editing no longer need to be stated as qualified,
 within the bound above.
+
+## DEV-214 — a left-associative operator chain aborts the compiler with a stack overflow (OPEN, found by C10-B, 2026-08-09)
+
+**Demonstrated at HEAD.** `cargo run --manifest-path starkc/Cargo.toml --example c10b_repro -- 250`
+aborts with `fatal runtime error: stack overflow` (SIGABRT). Not a diagnostic, not a panic with a
+message — process death.
+
+### What is wrong
+
+The parser **has** a recursion guard: `MAX_DEPTH = 200` in `parser.rs`, reported as *"this code is
+nested too deeply to parse"*. It bounds **syntactic nesting** — parentheses, blocks, calls — because
+those are what recurse in a recursive-descent parser.
+
+A left-associative operator chain does **not** recurse in the parser. `parser.rs` implements *"the
+16-level precedence table literally (one function per level)"*, and each level is a `loop` that
+folds operands iteratively. `1 + 1 + 1 + ...` therefore never increments `depth`, and the guard
+never fires.
+
+**The AST it builds is nonetheless `n` deep**, and every recursive walk downstream of the parser
+descends it:
+
+```text
+parse + resolve             survive at n = 2000
++ typecheck                 overflows between n = 240 and n = 500
+full analyze_project        the walk that dies first
+```
+
+> **The guard bounds the nesting the parser recursed through, not the depth of the tree it
+> produced.** Those coincide for parentheses and diverge for operator chains.
+
+### Severity — it is worse than the headline number
+
+The threshold scales with the thread's stack. Measured with `examples/c10b_thread.rs`, macOS-arm64:
+
+```text
+8 MiB stack   a process main thread                       n = 240 OK,  n = 250 ABORTS
+2 MiB stack   Rust's default for a SPAWNED thread, and
+              what `cargo test` gives each test           n =  60 OK,  n =  65 ABORTS
+```
+
+~30 KB of stack per AST level. **On a default-stack thread, sixty-five `+` operators kill the
+process.** That matters because the LSP analyses on a server thread and the interpreter runs on a
+spawned thread — an embedding is on the low number, not the high one.
+
+`1 + 1 + ...` is a stand-in for the shape, not the only instance. Any left-associative chain
+qualifies: string concatenation, a long boolean condition, a numeric sum in generated or
+machine-written code. Sixty-five terms is not an exotic program.
+
+### Contrast, which is what makes this a GAP rather than an absence
+
+```text
+(((((...1...)))))  300 deep   ->  REJECTED, "this code is nested too deeply to parse"
+1 + 1 + ... + 1     65 terms  ->  SIGABRT
+```
+
+The bounded-failure behaviour the robustness gate asks for already exists. It is simply not
+reachable by this input shape.
+
+### Impact
+
+- **Compiler correctness:** none — no wrong answer is produced.
+- **Robustness / availability:** a valid, ordinary program aborts the compiler. Under C10-B's gate
+  (*no panic, no hang, bounded failure*) this is a **FAIL**, and it is the only one C10-B found.
+- **Security (C10-C surface S13, denial of service):** a hostile or merely generated source file
+  kills any process that compiles it. For a batch build that is a failed build; for a
+  long-running LSP server it is a crash.
+
+### Why C10-B did NOT repair it — and this is the disciplined answer, not reluctance
+
+Every available fix changes something an autonomous session may not change:
+
+1. **Count chain depth against `MAX_DEPTH`.** The effective limit becomes ~200 terms, so
+   expressions of 200–245 terms **that compile today would start being rejected**. That is a change
+   to the normative accepted/rejected program set — **CE1/CE2**, Charter §2.2, and C10 plan stop
+   condition 5.
+2. **Convert the recursive walks to an explicit worklist.** Correct, and a structural change to the
+   type checker and index builders — far outside a qualification campaign (plan §3.2).
+3. **Raise the stack, or run analysis on a large spawned thread.** An architectural decision about
+   where the compiler runs, and it does not remove the cliff — it moves it.
+
+**Owner decision required.** The choice between "reject deep chains cleanly" and "support them" is
+a language-surface decision, and the first option needs a number that only the owner can set.
+
+### Evidence
+
+```text
+starkc/tests/c10b_robustness.rs
+  t9_dev214_operator_chain_depth_is_unguarded_and_the_safe_boundary_holds
+      pins the SAFE side at 40 terms, below the lowest measured cliff, and pins the CONTRASTING
+      300-deep paren nesting as REJECTED so the guard's existence is part of the record
+starkc/examples/c10b_repro.rs      the failing side, as an example rather than a test: a stack
+                                   overflow aborts the whole test binary
+starkc/examples/c10b_thread.rs     the stack-size dependence
+```
+
+The failing side is deliberately **not** a test. It cannot be one: SIGABRT takes every other test in
+the binary with it.
