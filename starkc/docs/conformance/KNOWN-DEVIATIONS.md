@@ -6883,3 +6883,78 @@ that sets the variable globally** — including a mutation or coverage run.
 
 A read through a whole-value accessor on partially-moved storage. Sibling to DEV-158 (CLOSED) and
 DEV-160 (OPEN).
+
+## DEV-214 — REPAIRED under OD-9, with one criterion that cannot be met at MAX_DEPTH = 200 (2026-08-09)
+
+**Owner ruling OD-9 authorised the bounded repair.** The entry above stands unedited.
+
+### What was done
+
+`ast::max_expr_depth` computes the deepest expression tree **iteratively** — a forward
+dynamic-programming pass over the expression arena, iterated to a fixpoint rather than assuming the
+parser's child-before-parent allocation order. A recursive measurement would have overflowed on
+exactly the input it exists to reject.
+
+`analyze_project` enforces `parser::MAX_DEPTH` — **the same 200, now `pub`; no second limit was
+invented** — after parsing and before resolution, emitting `E0209` blamed on the deepest
+expression's own span. `each_child_expr` has **no `_ =>` arm**, so adding an `ExprKind` variant is a
+compile error rather than a silent hole.
+
+**One thing the first attempt got wrong, recorded because it is the interesting part.**
+`query::QueryIndex::build` walks the expression arena recursively and runs **unconditionally** —
+errors do not stop it, because a stale-but-present index is what lets an editor answer while a file
+is broken. So the guard fired, resolution and type checking were skipped, and the index then walked
+the same deep tree and aborted anyway. It is now skipped for over-limit input. `build_source_map`
+was checked and never touches `exprs`, so only the one consumer is short-circuited.
+
+### Measured result
+
+```text
+depth        8 MiB (process main thread)   2 MiB (spawned thread / LSP / cargo test)
+<= 60        accepted                      accepted
+61..=200     accepted                      ABORTS      <- residual, see below
+> 200        E0209, one diagnostic         E0209, one diagnostic
+```
+
+**The unbounded hole is closed.** 201, 250, 1,000 and 10,000 terms all produce exactly one
+diagnostic on a 2 MiB stack, where before the repair 65 terms killed the process.
+
+### The criterion that cannot be met, and why it is not a shortfall in the repair
+
+OD-9 required both *"a 200-term chain is still accepted"* and *"no stack overflow even on a 2 MiB
+thread"*. **Those cannot both hold at `MAX_DEPTH = 200`**: a 200-deep expression needs roughly 6 MiB
+of stack in the downstream walks, and the ruling forbids reducing the limit.
+
+So the residual is the window `61..=200` **on a small stack only** — depths the limit permits that a
+2 MiB thread cannot carry. Closing it needs one of three things, each an owner decision rather than
+an implementation choice:
+
+```text
+a stack-aware effective limit    lower the bound when analysis runs on a small stack
+iterative downstream walks       the broad refactoring OD-9 and plan §3.2 both forbid
+a documented minimum stack       state the requirement and let embedders meet it
+```
+
+**Recorded as OPEN-RESIDUAL rather than as DEV-214 remaining open**: the defect OD-9 named —
+unbounded depth reaching recursive passes — is fixed and verified on the small stack.
+
+### Evidence
+
+`starkc/tests/dev214_expression_depth.rs`, 9 tests. Every over-limit case runs on a **2 MiB thread**,
+because C10-B established the cliff scales with the stack and a main-thread test would have reported
+a threshold four times too generous. A regression surfaces as a failed `join`, not as a SIGABRT that
+takes the binary down.
+
+```text
+40 terms                     accepted, 2 MiB
+200 terms (exactly the limit) accepted, 8 MiB — and the residual test pins why not 2 MiB
+201 terms                     E0209, deterministic across runs, 2 MiB
+1,000 / 10,000 terms          E0209, no overflow, 2 MiB
+300 nested parentheses        still rejected BY THE PARSER — the contrast is preserved
+rejection is not a cascade    exactly one diagnostic; no partial semantic analysis
+the diagnostic has a real span inside the source, code E0209
+wide-but-shallow shapes       2,000-element tuple, 2,000 locals, 1,500 fields — unaffected
+```
+
+`cargo test --lib` 569 passed; `c10b_robustness` 12; `c10c_security` 5; `conformance` 3; clippy
+`--workspace --all-features --all-targets -D warnings` exit 0; `fmt --check` clean.
