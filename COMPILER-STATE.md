@@ -5,7 +5,7 @@
 *Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-0 -> C10-P + C10-A1  Blocked: none
+Gate: C10  Next: C10-A1 (census); C10-P open on DEV-012 only  Blocked: none
 Mandatory compiler path: Core=done   MIR=done   Native=done
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -15,7 +15,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0 COMPLETE** (`work-packages/C10-0-OPENING-INVENTORY.md`). Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-P + C10-A1 |
+| **Active packet** | **C10-0 COMPLETE**; **C10-P: DEV-213 CLOSED, DEV-012 still owed** (`audits/C10-P-LANGUAGE-SERVICES.md`). Gate C10 OPENED 2026-08-09 (CD-395). Next: C10-A1 |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
@@ -45,11 +45,12 @@ frozen separately by OD-3; regenerate A with
 `python3 starkc/scripts/c10-deviation-populations.py`.
 
 ```text
-POPULATION A — compiler deviations (the CD-021 denominator)                          32
+POPULATION A — compiler deviations (the CD-021 denominator)                          31
 
-  live OPEN by the last ledger heading                                               18
-    DEV-012 interactive editor validation, 7 of 10 features    -> C10-P
-    DEV-213 LSP per-URI analysis cache, stale workspace/symbol -> C10-P
+  live OPEN by the last ledger heading                                               17
+                                                    (was 18; DEV-213 CLOSED by C10-P)
+    DEV-012 interactive editor validation, 7 of 10 features    -> C10-P, needs a human
+                                                                  in an editor (MANUAL evidence)
     DEV-140/141/142/143/144/145   the six CD-342 "layer defect" registrations —
                                   these BOUND THE SUPPORTED SUBSET and are load-bearing
                                   for any native-conformance claim
@@ -204,6 +205,39 @@ execution branch         wp-c10/execution-plan
 **Next:** C10-P (DEV-213 repair, DEV-012 interactive validation) alongside C10-A1 (the 161-rule
 evidence census). **C10-Q remains an owner decision under CE8** — Charter §2.2 forbids a session
 claiming Core v1 conformance on its own authority. C10 proposes; the owner authorises.
+
+### C10-P, same day — DEV-213 CLOSED; DEV-012 cannot be closed by a session
+
+`audits/C10-P-LANGUAGE-SERVICES.md`. The LSP now invalidates per **package**, not per URI:
+`CompilationResult` records the `package_root` its whole-package analysis was built against, and
+`invalidate_package_of` sweeps every sibling sharing it — from `open`, `update` **and** `close`,
+because all three change the overlay set the analysis is computed from.
+
+**The pass is believed because the failure was demonstrated first.** With the sibling sweep
+disabled the flipped test fails with the defect's exact signature — `["alpha_symbol",
+"renamed_symbol"]`, both names present — and the control was then removed and the restore verified
+byte-identical. AS8's test is renamed and polarity-flipped rather than deleted, exactly as its own
+assertion message instructed. `c10-deviation-populations.py`, which knows nothing about the repair,
+independently reports population A's live-OPEN set dropping 18 → 17.
+
+Evidence: 48 LSP tests, 569 unit tests, clippy `--workspace --all-features --all-targets -D warnings`
+exit 0, `fmt --check` clean.
+
+**C10-0's freshness prediction held.** It stated in advance that an LSP-confined repair would
+disturb none of the 12 mutation-authority files or 13 control suites; the files changed are
+`src/lsp/state.rs` and `src/lsp/server.rs`. Every AS8 trial remains citable. Re-verified at C10-Q
+regardless.
+
+**The residual this packet creates, stated rather than left to be found:** invalidation is now more
+eager, so a package with many open URIs recompiles more often. AS8 measured the old duplication's
+cost as immaterial and the defect was never about cost — but **no before/after was taken here and
+none is claimed.** If an LSP workload enters C10-E's frozen set, this is the change to measure.
+
+**DEV-012 is NOT closed and cannot be by an autonomous session.** It needs a person exercising seven
+features in a real editor — MANUAL evidence under Charter §5.2. `C10-P-LANGUAGE-SERVICES.md` §3
+specifies the session so it can be done in one sitting, and records the rule that matters: check
+**values, not verdicts**, because DEV-182 passed protocol validation while silently decoding every
+escaped non-BMP character to the empty string.
 
 ## CD-394 — AS8 CLOSED, qualification PASS; the evidence base was overstated in three documents (2026-08-09)
 

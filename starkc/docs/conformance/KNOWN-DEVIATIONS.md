@@ -24,6 +24,7 @@
 | `DEV-195` | 2 | L5520 | **L5557** |  DEV-195 RULING (owner, CD-387, 2026-08-07) |
 | `DEV-196` | 2 | L5595 | **L5620** |  DEV-196 — ANSWERED by measurement (2026-08-07) |
 | `DEV-206` | 2 | L6186 | **L6201** | DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLO |
+| `DEV-213` | 2 | L46 | **L6566** | DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI |
 
 *Derived by `as8-reconcile-deviations.py`; no status is asserted here that the file does not
 already state in its own last heading for that deviation.*
@@ -6562,3 +6563,84 @@ instead of asserting that a table is populated.
 - **Evidence:** `a_copy_payload_of_a_drop_enum_still_runs_the_destructor` requires HIR and MIR to
   agree on `7\ndtor\n`, alongside the DEV-211 case asserting the move is refused — so the pair
   distinguishes "destructor runs" from "cannot match a `Drop` enum at all".
+
+## DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI
+
+**Repaired under Gate C10's C10-P packet (OD-4, CD-395).** The deviation's first heading, above,
+stands unedited: this file is append-only and that entry was correct when written.
+
+### What was wrong
+
+`ServerState::compilation_cache` is keyed by URI and each value owns a **whole-package**
+`ProjectAnalysis`. Three facts composed into a wrong answer:
+
+```text
+one full ProjectAnalysis cached PER OPEN URI
+update_document removed ONLY the edited URI's entry
+handle_workspace_symbol merges symbols from EVERY cached analysis
+```
+
+So a rename in `child.stark` left `main.stark`'s analysis — which describes the *whole package,
+including `child`* — carrying the old name, and `workspace/symbol` answered with both.
+
+### The repair
+
+`CompilationResult` gains `package_root: Option<PathBuf>`, stamped at compile time from the
+manifest the analysis was built against. `ServerState::invalidate_package_of` drops the URI's entry
+and every sibling entry sharing that package root. It is called from `open_document`,
+`update_document` **and** `close_document`, because all three change the overlay set that the
+package's analysis is computed from — not only the edit path where the defect was demonstrated.
+
+Two deliberate choices, recorded because each is the kind of thing a later reader will question:
+
+- **The package is read from the cache, not the filesystem.** The entry being invalidated already
+  recorded which package it analysed, so an edit stays a pure in-memory operation. A URI with no
+  cached entry has no siblings to find — the correct answer, not a missed case, because nothing
+  stale can exist for a package this server never analysed.
+- **`None` never matches `None`.** Single-file analyses carry no package root, and two unrelated
+  loose files must not invalidate each other.
+
+`package_root_for_document` is one function with two callers rather than two copies of "which
+package is this URI in" — a second copy is exactly the duplicated-authority shape `AS8-DA-*`
+catalogues.
+
+### Evidence, including the negative control
+
+`as8_editing_one_file_leaves_other_uris_cached_analyses_stale` is **renamed to
+`dev213_editing_one_file_invalidates_every_analysis_of_its_package` and its polarity flipped**,
+exactly as AS8's own assertion message instructed. It is not deleted: what it pins is the same fact
+either way — what `workspace/symbol` can see after a single-file edit.
+
+**The test was proved capable of failing before its pass was believed** (Gate C10's binding rule,
+inherited from AS8). With the sibling sweep disabled and single-URI removal restored, it fails with
+the defect's exact signature:
+
+```text
+DEV-213: `alpha_symbol` was renamed and must not survive in ANY cached analysis of this
+package ... got ["alpha_symbol", "renamed_symbol"]
+```
+
+The control was then removed and the restore verified byte-identical before the pass was recorded.
+
+Extended beyond AS8's case: after the sweep, recompiling the sibling must answer with the new name
+and only the new name — so the repair is shown to be an *invalidation* rather than a purge that
+merely hides the stale entry by emptying the cache.
+
+```text
+cargo test --manifest-path starkc/Cargo.toml --lib lsp::     48 passed, 0 failed
+cargo test --manifest-path starkc/Cargo.toml --lib          569 passed, 0 failed
+cargo clippy --workspace --all-features --all-targets -D warnings   exit 0, zero warnings
+cargo fmt --check                                            clean
+```
+
+### What this closure does NOT claim
+
+`workspace/symbol` is now correct under the multi-file editing pattern AS8 demonstrated. **It is
+not a claim that the LSP is correct**, and C8 is not reopened. `DEV-012` — seven advertised
+features with protocol evidence only — is separate and remains open; and `GATE-C8-CLOSURE.md` §4's
+standing limit still applies: protocol validation checks verdicts, not values, and DEV-182 survived
+it.
+
+**The standing qualification recorded when DEV-213 was filed is DISCHARGED.** Claims about
+`workspace/symbol` correctness under multi-file editing no longer need to be stated as qualified,
+within the bound above.
