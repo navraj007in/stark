@@ -9,7 +9,8 @@ blocks the release decision."*
 constrains release wording; **C** constrains the strength of evidence claims and asserts no defect.
 
 ```text
-A  compiler deviations      24 live-OPEN + 1 accepted-indefinitely + 1 dormant
+A  compiler deviations      23 live-OPEN + 1 accepted-indefinitely + 1 dormant
+                            (24 at first count; DEV-005 CLOSED on reproduction — §2.5)
 B  release/distribution      5
 C  assurance residuals      20
 ```
@@ -85,7 +86,7 @@ Exactly **one** deviation is in the first class.
 
 | ID | Disposition |
 | --- | --- |
-| **DEV-005** | OPEN, **ACCEPTED RELEASE DEVIATION** — CLI warning-policy drift, no safety impact. **Condition: one current-head reproduction before C10-Q**, because the entry is old enough that a later change may already have removed it |
+| **DEV-005** | ~~OPEN, accepted~~ → **CLOSED 2026-08-09. IT DOES NOT REPRODUCE.** The condition OD-7 attached found exactly what it was for. `check` and `run` both gate on errors and both report the warning; `run` executes. Negative control: an error still refuses both, so the gate is intact and merely no longer fires on warnings. Removed as a side effect of **AS2's one-pipeline** work. **C10-Q must NOT name it** — naming a deviation that no longer exists is its own false claim |
 | **DEV-083** | OPEN, **ACCEPTED-DEFERRED** — impl-head concrete position vs unresolved receiver argument. Constrains the Core Stable claim; does not block |
 | **DEV-011** | **ACCEPTED-INDEFINITELY** — doc comments as trivia. No normative requirement demands otherwise |
 | **DEV-179** | **DORMANT** — unreachable while iterator `map`/`filter` is refused by `E0105`. Not counted live |
@@ -142,5 +143,7 @@ THE FINDING Exactly ONE deviation (DEV-177) accepts what the specification forbi
             made NARROW and true, and it is DEV-177 that decides whether it can be made at all
             over NAME-SHADOW-001
 
-NOT DONE    DEV-005's required current-head reproduction (OD-7's condition), owed before C10-Q
+DONE        DEV-005's required current-head reproduction — and it CLOSED the deviation rather
+            than confirming it. One of 24 named deviations turned out not to exist, which is the
+            argument for requiring reproduction rather than inheriting a list
 ```

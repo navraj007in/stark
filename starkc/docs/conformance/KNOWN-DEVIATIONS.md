@@ -7091,3 +7091,67 @@ NOT CLAIMS  a value-level transcript. See above
 
 **C10-G status after this and C10-P's DEV-213 closure: both arms satisfied.** The Core v1 Compiler
 Stable language-services claim may be stated without the DEV-012 or DEV-213 qualifications.
+
+## DEV-005 — CLOSED (2026-08-09). It does not reproduce; AS2 removed it
+
+**OD-7 attached a condition to this entry: one current-head reproduction before C10-Q, "because the
+entry is old enough that a later change may already have removed it, and a release must not name a
+deviation that no longer exists."** The condition was right, and this is the result.
+
+### What it claimed
+
+`starkc check` gated on `severity != Error` while `starkc run` gated on `diagnostics.is_empty()`, so
+a program with one warning and zero errors was `OK` under `check` and refused outright by `run`.
+
+### Measured at `29ce610` — it does not reproduce
+
+Warning case, `unreachable code` after a `return`:
+
+```text
+$ starkc check warn.stark
+Warning: [W0005] unreachable code  --> warn.stark:4:5
+warn.stark: OK
+check EXIT=0
+
+$ starkc run warn.stark
+Warning: [W0005] unreachable code  --> warn.stark:4:5
+1
+run EXIT=0          <- the program RAN, and printed
+```
+
+**Both gate on errors. Both report the warning. `run` executes.** The divergence is gone.
+
+### The negative control, because "both exit 0" could equally mean `run` stopped gating at all
+
+```text
+$ starkc check err.stark    (let x: Int32 = "not an int")   EXIT=1
+$ starkc run   err.stark                                    EXIT=1
+```
+
+An error still refuses both. So `run`'s gate is intact and merely no longer fires on warnings —
+which is the fix, not a regression. Output is byte-identical across repeated runs.
+
+### Why it went away
+
+Not a targeted repair. **`AS2` — "the ONE pipeline" — removed the hand-assembled pipeline that
+`cmd_run` used to carry**, and `main.rs`'s own comment records both the change and the reasoning:
+
+> *"This command used to assemble parse → resolve → typecheck itself and gate each phase on
+> `diagnostics.is_empty()` rather than on errors — equivalent today, because only typecheck emits
+> warnings … but a warning added to parse or resolve would silently have become fatal here. **The
+> session gates on errors.**"*
+
+So the deviation was fixed as a side effect of removing a duplicated pipeline — which is exactly the
+class of defect Charter §1.5 rule 18 predicts when tools diverge, and exactly what consolidating them
+was expected to cure.
+
+### Disposition
+
+```text
+status       CLOSED — does not reproduce at the candidate
+supersedes   OD-7's "OPEN, ACCEPTED RELEASE DEVIATION"
+consequence  C10-Q must NOT name DEV-005 as a release deviation. Naming a deviation that no longer
+             exists is its own kind of false claim
+```
+
+**Population A drops from 24 live-OPEN to 23.**
