@@ -1,0 +1,8 @@
+{
+  "name": "stark-digest-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_digest": { "package": "stark-digest", "path": "../stark-digest", "version": "0.1.0" }
+  }
+}
