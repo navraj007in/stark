@@ -158,7 +158,9 @@ fn exercise_the_method_surface() {
     // Without this, a repair that ignored the duration entirely would pass the case above.
     match TcpStream::connect(peer(), duration_seconds(0u64)) {
         Ok(_stream) => {
-            panic("resource consumer: a zero connect timeout must be refused, not read as unbounded");
+            panic(
+                "resource consumer: a zero connect timeout must be refused, not read as unbounded",
+            );
         }
         Err(_error) => {}
     }
