@@ -7,7 +7,7 @@
 ```text
 Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second artifact
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
-                `develop -> main` AUTHORISED at 3e4d8c7 (CD-398, PR #21)
+                `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
 Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
@@ -22,7 +22,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 | | |
 | --- | --- |
 | **Active packet** | **NONE — the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
-| **Promotion** | **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate `develop` `3e4d8c7`, **PR #21**, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
+| **Promotion** | **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
 | **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
@@ -131,12 +131,17 @@ disagree, the dated record wins and this block is stale — fix it in the same c
 ## CD-398 — `develop -> main` PROMOTION AUTHORISED, on a compiler that is strictly better than the one it replaces (2026-08-10)
 
 **Owner decision under CE8: the `develop -> main` promotion is AUTHORISED.** This is the separate
-decision CD-397 said would follow and did not accompany it. Candidate: `develop` at `3e4d8c7`,
-whose compiler tree is the post-C10 repair programme's final candidate `5967a42`. PR #21.
+decision CD-397 said would follow and did not accompany it. Candidate: `develop` at the tip of
+**PR #21**, whose **compiler tree is the post-C10 repair programme's final candidate `5967a42`**.
+
+The compiler tree, not a branch SHA, is what this authorisation is over. Verified rather than
+asserted: `git diff --name-only 5967a42 HEAD` lists exactly two paths, both Markdown —
+`COMPILER-STATE.md` and the repair report — so **no compiler input has changed since the tree CI
+went green on**. A commit that changes one requires a new decision, not this one.
 
 ```text
 promotion          AUTHORISED (owner, CE8, 2026-08-10)
-candidate          develop 3e4d8c7 (compiler tree = 5967a42), PR #21 -> main
+candidate          develop @ PR #21 tip, compiler tree = 5967a42 -> main
 merge shape        MERGE COMMIT, history preserved — as PR #12 and PR #19 were
 condition          main is protected and requires `CI complete`. The authorisation is for THIS
                    tree on GREEN. A red required check withdraws it; it does not survive an
