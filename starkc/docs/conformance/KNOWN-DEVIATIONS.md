@@ -8443,3 +8443,84 @@ does not type-check at all, in any engine. Found while proving DEV-168's repair.
 
 **Working spelling exists:** the ordinary method form `x.fmt()` works, which is what DEV-166's
 repair delivered. Severity is ergonomic, not a correctness leak.
+
+## DEV-165 — RESOLVED: `connect_timeout` is applied, not accepted and ignored (2026-08-10)
+
+The reconciliation heading above recorded this as Population B, open, and deferred to the
+networking roadmap. **It is repaired instead.**
+
+### The defect went one layer deeper than the entry said
+
+The entry named the HTTP client, and the client was not the cause. `stark_net::connect` — the one
+connect API that takes a deadline — was:
+
+```stark
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    if !timeout.is_zero() { return Err(NetworkError::Unsupported); }
+    connect_socket_address(&address)
+}
+```
+
+**It refused every non-zero timeout**, and succeeded only for a zero duration — which reads as "no
+timeout" and is the opposite of what passing a `Duration` means. So `stark-http-client` used
+`connect_no_timeout` and was *correct to*: calling `connect` with its configured deadline would
+have failed every connection. Switching only the client would have broken it.
+
+`connect_to_any`'s own doc comment promised the behaviour the code did not have — "**timeout
+budget: PER ADDRESS ... each gets the deadline the caller asked for**" — sitting directly above the
+untimed call.
+
+### Repair, across four layers
+
+```text
+starkc/providers/stark-net-native.json   `stark_tcp_stream_connect_timeout`: buffer_in,
+                                          scalar_in u64, handle_out
+stark-net/native/src/lib.rs               the entry point, over TcpStream::connect_timeout;
+                                          plus the linkage extern and BOTH symbol-set lists
+stark-net/src/lib.stark                   `connect` routes through it
+stark-http-client/src/lib.stark           `connect_to_any` passes `config.connect_timeout`
+```
+
+`nanos` follows the convention `set_read_timeout` already established rather than inventing a
+second one — **zero means no timeout, and a non-zero duration that rounds to zero is raised to
+1ns** rather than silently becoming "block forever". At the STARK layer a zero duration is
+*rejected*, the same rule `timeout_nanos` applies to the read and write setters: zero is the one
+value where intent is ambiguous, and a caller who wants no bound says so by name with
+`connect_no_timeout`.
+
+The address is parsed in the provider rather than resolved there: `connect_timeout` takes one
+`SocketAddr` by construction, so resolving inside it would hide the per-address budget. Resolution
+and ordering stay in `stark-net`'s STARK surface where the caller can see them.
+
+### Evidence — a control someone else wrote, which fired
+
+`stark-net-resource-consumer` carried this, written when the defect was recorded:
+
+```text
+"Pinned rather than hidden: when a connect timeout lands, this assertion fails and forces this
+ consumer to be updated"
+```
+
+It required `TcpStream::connect(peer(), duration_seconds(5u64))` to FAIL. Against a live peer it
+now panics with *"connect-with-timeout works now — implement it properly and update this"*. **A
+control that was passing only because the feature was broken.** Its polarity is corrected: a real
+deadline connects, and a **new negative control** requires a zero duration to be refused — without
+which a repair that ignored the duration entirely would still pass.
+
+**The deadline is real, and measured.** Connecting to 203.0.113.1 — TEST-NET-3, RFC 5737,
+reserved for documentation and never routed, so a connection attempt has nowhere to go:
+
+```text
+connect(target, duration_seconds(2u64))   returned in 2.479s
+```
+
+Green: `stark-net-native` 11/11 (including both manifest/symbol-set gates, which caught two lists
+this repair had to update); starkc lib 579; a10 provider suites verify/resolve/bind/emit/call/
+resource; `stark-net-resource-consumer` prints `STARK_NET_RESOURCE_OK` against a live peer;
+`stark-http-client-consumer`, `stark-get` and `stark-tls-consumer` all build.
+
+### Residual
+
+`connect_no_timeout` remains, and is still the honest spelling for an unbounded connect. The HTTP
+client no longer uses it; `stark-net-resource-consumer` does, so the declared-surface gate is
+still satisfied.

@@ -284,6 +284,59 @@ pub unsafe extern "C" fn stark_tcp_stream_connect(
     ProviderStatus::SUCCESS
 }
 
+/// DEV-165: `stark_tcp_stream_connect_timeout`, an ABI v0.1 entry point.
+///
+/// `stark_net::connect` took a `Duration` and then refused every non-zero value with
+/// `Unsupported`, so an HTTP client could carry a `connect_timeout` in its config, pass it, and
+/// connect with no bound at all. The parameter was accepted and ignored — the failure mode where
+/// nothing reports an error and only the behaviour is wrong.
+///
+/// `nanos` follows the SAME convention `stark_tcp_stream_set_read_timeout` established, because
+/// two timeout conventions in one provider is how a caller ends up bounding one direction and not
+/// another: **zero means "no timeout"**, and a non-zero duration that rounds to zero is raised to
+/// 1ns rather than silently becoming "block forever".
+///
+/// Zero delegates to the untimed path rather than to `connect_timeout(.., 0)`, which is not a
+/// portable way to say "no bound" — several platforms reject or immediately time out a zero
+/// duration.
+///
+/// The address is PARSED here rather than resolved. `connect_timeout` takes one `SocketAddr` by
+/// construction, so a name that resolved to several addresses could not be attempted in order
+/// without hiding the per-address budget inside this call. Resolution and ordering stay in
+/// `stark-net`'s STARK surface where the caller can see them.
+///
+/// # Safety
+/// `address` must point to `len` initialised bytes the caller owns for the duration of this call, or be zero-length (ABI §9: a call-duration view, never a transfer).
+/// every out-pointer must be non-null, properly aligned and owned by the caller for this call; out-slots are written only on success (ABI §4.7).
+#[no_mangle]
+pub unsafe extern "C" fn stark_tcp_stream_connect_timeout(
+    address: BorrowedBuffer,
+    nanos: u64,
+    out_stream: *mut RawResourceHandle,
+) -> ProviderStatus {
+    let address = match address_from_buffer(address) {
+        Ok(address) => address,
+        Err(status) => return status,
+    };
+    let stream = match timeout_from_nanos(nanos) {
+        None => match TcpStream::connect(address) {
+            Ok(stream) => stream,
+            Err(error) => return map_io_error(&error),
+        },
+        Some(timeout) => {
+            let Ok(socket) = address.parse::<std::net::SocketAddr>() else {
+                return STATUS_INVALID_INPUT;
+            };
+            match TcpStream::connect_timeout(&socket, timeout) {
+                Ok(stream) => stream,
+                Err(error) => return map_io_error(&error),
+            }
+        }
+    };
+    unsafe { write_scalar(out_stream, insert_stream(stream)) };
+    ProviderStatus::SUCCESS
+}
+
 /// `stark_tcp_stream_read`, an ABI v0.1 entry point.
 ///
 /// # Safety
@@ -724,10 +777,7 @@ mod tests {
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-pc-windows-msvc".to_string(),
             ],
-            capabilities: vec![
-                "network-client".to_string(),
-                "network-listen".to_string(),
-            ],
+            capabilities: vec!["network-client".to_string(), "network-listen".to_string()],
             resource_types: vec![listener.clone(), stream.clone()],
             functions: vec![
                 FunctionDecl {
@@ -761,6 +811,21 @@ mod tests {
                     capability: "network-client".to_string(),
                     params: vec![
                         AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: stream.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    // DEV-165: connect WITH a deadline. `scalar_in` u64 nanos, matching the
+                    // convention `set_read_timeout` established rather than inventing a second one.
+                    name: "stark_tcp_stream_connect_timeout".to_string(),
+                    capability: "network-client".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarIn(ScalarTy::U64),
                         AbiParam::HandleOut {
                             resource_type: stream.clone(),
                         },
@@ -861,6 +926,11 @@ mod tests {
                 address: BorrowedBuffer,
                 out_stream: *mut RawResourceHandle,
             ) -> ProviderStatus;
+            pub fn stark_tcp_stream_connect_timeout(
+                address: BorrowedBuffer,
+                nanos: u64,
+                out_stream: *mut RawResourceHandle,
+            ) -> ProviderStatus;
             pub fn stark_tcp_stream_read(
                 stream: RawResourceHandle,
                 out_buffer: BorrowedBufferMut,
@@ -906,6 +976,7 @@ mod tests {
             "stark_tcp_listener_bind",
             "stark_tcp_listener_accept",
             "stark_tcp_stream_connect",
+            "stark_tcp_stream_connect_timeout",
             "stark_tcp_stream_read",
             "stark_tcp_stream_write",
             "stark_tcp_listener_close",
@@ -955,6 +1026,7 @@ mod tests {
             "stark_tcp_listener_bind",
             "stark_tcp_listener_accept",
             "stark_tcp_stream_connect",
+            "stark_tcp_stream_connect_timeout",
             "stark_tcp_stream_read",
             "stark_tcp_stream_write",
             "stark_tcp_stream_set_read_timeout",

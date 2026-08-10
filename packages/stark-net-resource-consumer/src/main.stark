@@ -129,20 +129,36 @@ fn exercise_the_method_surface() {
     // called from another package at all — which is why it stayed uncalled while every receiver
     // method around it was reachable.
     //
-    // CALLING IT IMMEDIATELY EXPOSED THAT IT DOES NOT WORK. `connect(address, timeout)` refuses
-    // EVERY non-zero timeout with `Unsupported`, so the natural connect API — the one that takes a
-    // deadline — has never connected to anything. It succeeds only for a ZERO duration, which
-    // reads as "no timeout" and is the opposite of what passing a `Duration` means. There is no
-    // connect-timeout in the provider ABI to implement it against; the declaration ran ahead of
-    // the capability.
+    // DEV-165 REPAIRED (2026-08-10). This assertion used to require FAILURE, because
+    // `connect(address, timeout)` refused every non-zero timeout with `Unsupported` — so the
+    // natural connect API, the one that takes a deadline, had never connected to anything. The
+    // note left here said "when a connect timeout lands, this assertion fails and forces this
+    // consumer to be updated". It landed, it fired, and this is that update.
     //
-    // Pinned rather than hidden: when a connect timeout lands, this assertion fails and forces
-    // this consumer to be updated, exactly as with `shutdown_write` below.
+    // The polarity is now the right way round: a real deadline CONNECTS.
     match TcpStream::connect(peer(), duration_seconds(5u64)) {
+        Ok(stream) => {
+            match close(stream) {
+                Ok(_unit) => {}
+                Err(_error) => {
+                    panic("resource consumer: closing a timed connect's stream failed");
+                }
+            }
+        }
+        Err(_error) => {
+            panic("resource consumer: connect-with-timeout failed against a live peer");
+        }
+    }
+
+    // NEGATIVE CONTROL. A ZERO duration is rejected rather than silently meaning "unbounded" —
+    // zero is the one value where the caller's intent is ambiguous, and reading it as "no bound"
+    // turns a deadline into its opposite. That is the same rule the read/write setters apply, and
+    // a caller that wants no bound says so by name with `connect_no_timeout`.
+    //
+    // Without this, a repair that ignored the duration entirely would pass the case above.
+    match TcpStream::connect(peer(), duration_seconds(0u64)) {
         Ok(_stream) => {
-            panic(
-                "resource consumer: connect-with-timeout works now — implement it properly and update this",
-            );
+            panic("resource consumer: a zero connect timeout must be refused, not read as unbounded");
         }
         Err(_error) => {}
     }

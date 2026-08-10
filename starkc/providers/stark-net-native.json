@@ -35,6 +35,12 @@
         "params": [{ "form": "buffer_in" }, { "form": "handle_out", "resource": "tcp_stream" }]
       },
       {
+        "symbol": "stark_tcp_stream_connect_timeout",
+        "capability": "network-client",
+        "may_block": true,
+        "params": [{ "form": "buffer_in" }, { "form": "scalar_in", "type": "u64" }, { "form": "handle_out", "resource": "tcp_stream" }]
+      },
+      {
         "symbol": "stark_tcp_stream_read",
         "capability": "network-client",
         "may_block": true,

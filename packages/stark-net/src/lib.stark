@@ -106,11 +106,22 @@ impl TcpStream {
     }
 }
 
+// DEV-165: this used to REFUSE every non-zero timeout with `Unsupported`, so the one connect API
+// that takes a deadline had never connected to anything — it succeeded only for a zero duration,
+// which reads as "no timeout" and is the opposite of what passing a `Duration` means. An HTTP
+// client could carry a `connect_timeout`, pass it, and get no bound at all.
+//
+// A ZERO duration is rejected here rather than silently meaning "unbounded", which is the rule
+// `timeout_nanos` already applies to the read and write setters: zero is the one value where the
+// caller's intent is genuinely ambiguous, and guessing it wrong turns a bound into its opposite.
+// A caller that wants no bound says so by name, with `connect_no_timeout`.
 pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
-    if !timeout.is_zero() {
-        return Err(NetworkError::Unsupported);
+    let nanos = timeout_nanos(Some(timeout))?;
+    let text = socket_address_text(&address);
+    match tcp_stream_connect_timeout_raw(text.as_str().bytes(), nanos) {
+        Ok(stream) => Ok(stream),
+        Err(error) => Err(map_network_error(error)),
     }
-    connect_socket_address(&address)
 }
 
 pub fn connect_no_timeout(address: SocketAddress) -> Result<TcpStream, NetworkError> {
