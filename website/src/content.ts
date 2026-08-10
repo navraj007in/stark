@@ -171,7 +171,7 @@ stark build --release`,
 export const packages = {
   title: 'Libraries, written in STARK',
   lede:
-    'Thirty-one first-party packages live in the repository, each with its own manifest, lock file and tests, and each exercised by a consumer package that has to actually call the surface it declares. The deepest is an HTTP/1.1 and HTTPS client — written in the language, not bound to a C library.',
+    'Thirty-two first-party packages live in the repository, each with its own manifest, lock file and tests, and each exercised by a consumer package that has to actually call the surface it declares. The deepest is an HTTP/1.1 and HTTPS client — written in the language, not bound to a C library.',
   groups: [
     { area: 'Encoding and text', items: 'ascii · base64 · hex · percent · checksum · uuid' },
     { area: 'Data formats', items: 'json · csv · form · mime · query' },
@@ -217,7 +217,7 @@ export const state = {
     'reference interpreter and mid-level IR interpreter',
     'native compilation, debug and release, on Linux, macOS and Windows',
     'multi-file modules, packages, lock files, semantic versioning',
-    '31 first-party packages, including an HTTP/1.1 and HTTPS client',
+    '32 first-party packages, including an HTTP/1.1 and HTTPS client',
     'manifest-declared host capabilities behind native providers',
     'tensor shape/dtype/device analysis and ONNX signature verification',
     'compiler-backed language services (LSP + VS Code extension)',

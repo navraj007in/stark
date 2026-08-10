@@ -61,7 +61,7 @@ These are the ones most often got wrong:
   another engine.
 - **Tooling**: `stark fmt`, `stark test`, `stark doc`, `stark doctor`, `starkc lsp` with a VS Code
   extension, and `starkide`, a terminal IDE.
-- **Packages**: 30 first-party libraries plus the `stark-get` application under `packages/`, with
+- **Packages**: 31 first-party libraries plus the `stark-get` application under `packages/`, with
   qualification consumers that must actually *call* the declared surfaces they cover. Includes an
   HTTP/1.1 and HTTPS client written in STARK
   (HC0–HC13, closed 2026-08-03), TLS, JSON, CSV, URL and the encoding family.
@@ -70,7 +70,7 @@ These are the ones most often got wrong:
   `clock`, `randomness`, `process-execution`, and `native-code`. The root manifest approves the
   transitive derived set; a native provider crate at `packages/<name>/native` satisfies it.
 - **Distribution**: release archives, platform installers, a versioned install tree, uninstall,
-  30 explicitly marked toolchain libraries, six provider crates, executable-relative local package
+  31 explicitly marked toolchain libraries, six provider crates, executable-relative local package
   resolution, and named package/provider checks in `stark doctor`.
 
 ## What does not exist

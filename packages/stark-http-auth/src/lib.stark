@@ -1,0 +1,231 @@
+use stark_base64::decode;
+use stark_base64::encode;
+
+pub enum Authorization {
+    Basic(String),
+    Bearer(String),
+}
+
+pub enum AuthError {
+    InvalidFormat,
+    UnsupportedScheme,
+    InvalidBasicCredentials,
+    InvalidBearerToken,
+}
+
+pub fn basic(username: &str, password: &str) -> String {
+    if contains_byte(username, 58u8) {
+        panic("stark-http-auth basic username must not contain colon");
+    }
+    let username_bytes = username.bytes();
+    let mut credentials: Vec<UInt8> = Vec::new();
+    let mut u: UInt64 = 0u64;
+    while u < username_bytes.len() {
+        credentials.push(username_bytes[u]);
+        u = u + 1u64;
+    }
+    credentials.push(58u8);
+    let password_bytes = password.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < password_bytes.len() {
+        credentials.push(password_bytes[i]);
+        i = i + 1u64;
+    }
+
+    let encoded = encode(credentials.as_slice());
+    let mut out = String::from("Basic ");
+    out.push_str(encoded.as_str());
+    out
+}
+
+pub fn bearer(token: &str) -> Result<String, AuthError> {
+    if !is_valid_bearer_token(token) {
+        return Err(AuthError::InvalidBearerToken);
+    }
+    let mut out = String::from("Bearer ");
+    out.push_str(token);
+    Ok(out)
+}
+
+pub fn parse(value: &str) -> Result<Authorization, AuthError> {
+    if value.bytes().len() == 0u64 || is_ascii_whitespace(value.bytes()[0u64]) || is_ascii_whitespace(
+        value.bytes()[value.bytes().len() - 1u64],
+    ) {
+        return Err(AuthError::InvalidFormat);
+    }
+
+    let space = match find_space(value) {
+        Some(index) => index,
+        None => {
+            return Err(AuthError::InvalidFormat);
+        }
+    };
+    if space == 0u64 || space + 1u64 >= value.bytes().len() {
+        return Err(AuthError::InvalidFormat);
+    }
+
+    let scheme = value.substring(0u64, space);
+    let credentials_start = first_non_space(value, space);
+    if credentials_start >= value.bytes().len() {
+        return Err(AuthError::InvalidFormat);
+    }
+    let credentials = value.substring(credentials_start, value.bytes().len());
+
+    if ascii_equal_ignore_case(scheme, "Basic") {
+        parse_basic(credentials)
+    } else if ascii_equal_ignore_case(scheme, "Bearer") {
+        parse_bearer(credentials)
+    } else {
+        Err(AuthError::UnsupportedScheme)
+    }
+}
+
+pub fn to_string(auth: &Authorization) -> String {
+    match *auth {
+        Authorization::Basic(encoded) => {
+            let mut out = String::from("Basic ");
+            out.push_str(encoded.as_str());
+            out
+        }
+        Authorization::Bearer(token) => {
+            let mut out = String::from("Bearer ");
+            out.push_str(token.as_str());
+            out
+        }
+    }
+}
+
+fn parse_basic(credentials: &str) -> Result<Authorization, AuthError> {
+    match decode(credentials) {
+        Ok(bytes) => {
+            if !is_valid_basic_bytes(bytes.as_slice()) {
+                return Err(AuthError::InvalidBasicCredentials);
+            }
+            Ok(Authorization::Basic(encode(bytes.as_slice())))
+        }
+        Err(_) => Err(AuthError::InvalidBasicCredentials),
+    }
+}
+
+fn parse_bearer(token: &str) -> Result<Authorization, AuthError> {
+    if !is_valid_bearer_token(token) {
+        Err(AuthError::InvalidBearerToken)
+    } else {
+        Ok(Authorization::Bearer(String::from(token)))
+    }
+}
+
+fn is_valid_basic_bytes(bytes: &[UInt8]) -> Bool {
+    let mut found_colon = false;
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == 58u8 {
+            found_colon = true;
+        } else if byte < 32u8 || byte == 127u8 {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    found_colon
+}
+
+fn is_valid_bearer_token(token: &str) -> Bool {
+    let bytes = token.bytes();
+    let n = bytes.len();
+    if n == 0u64 {
+        return false;
+    }
+    let mut seen_padding = false;
+    let mut i: UInt64 = 0u64;
+    while i < n {
+        let byte = bytes[i];
+        if byte == 61u8 {
+            seen_padding = true;
+        } else {
+            if seen_padding {
+                return false;
+            }
+            if !is_bearer_token_byte(byte) {
+                return false;
+            }
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn is_bearer_token_byte(byte: UInt8) -> Bool {
+    is_alpha(byte) || is_digit(byte) || byte == 45u8 || byte == 46u8 || byte == 95u8 || byte == 126u8 || byte == 43u8 || byte == 47u8
+}
+
+fn contains_byte(text: &str, target: UInt8) -> Bool {
+    let bytes = text.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == target {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+fn find_space(text: &str) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 32u8 {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn first_non_space(text: &str, space: UInt64) -> UInt64 {
+    let bytes = text.bytes();
+    let mut i = space;
+    while i < bytes.len() && bytes[i] == 32u8 {
+        i = i + 1u64;
+    }
+    i
+}
+
+fn ascii_equal_ignore_case(left: &str, right: &str) -> Bool {
+    let a = left.bytes();
+    let b = right.bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i: UInt64 = 0u64;
+    while i < a.len() {
+        if to_lower_byte(a[i]) != to_lower_byte(b[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+fn to_lower_byte(byte: UInt8) -> UInt8 {
+    if byte >= 65u8 && byte <= 90u8 {
+        byte + 32u8
+    } else {
+        byte
+    }
+}
+
+fn is_alpha(byte: UInt8) -> Bool {
+    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
+}
+
+fn is_digit(byte: UInt8) -> Bool {
+    byte >= 48u8 && byte <= 57u8
+}
+
+fn is_ascii_whitespace(byte: UInt8) -> Bool {
+    byte == 9u8 || byte == 10u8 || byte == 11u8 || byte == 12u8 || byte == 13u8 || byte == 32u8
+}
+
+mod tests;

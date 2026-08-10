@@ -136,6 +136,11 @@ CASES = [
         expected_stdout="content-id:ok\n",
     ),
     PackageCase(
+        package="stark-http-auth",
+        consumer="stark-http-auth-consumer",
+        expected_stdout="http-auth:ok\n",
+    ),
+    PackageCase(
         package="stark-uuid",
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",

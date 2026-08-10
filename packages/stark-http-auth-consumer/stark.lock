@@ -1,0 +1,20 @@
+{
+  "capability_vocabulary": 1,
+  "packages": [
+    {
+      "name": "stark_base64",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    },
+    {
+      "name": "stark_http_auth",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_base64": "0.1.0"
+      }
+    }
+  ]
+}

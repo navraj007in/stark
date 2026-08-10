@@ -1,0 +1,8 @@
+{
+  "name": "stark-http-auth-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_http_auth": { "package": "stark-http-auth", "path": "../stark-http-auth", "version": "0.1.0" }
+  }
+}
