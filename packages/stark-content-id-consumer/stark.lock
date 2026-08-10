@@ -1,0 +1,28 @@
+{
+  "capability_vocabulary": 1,
+  "packages": [
+    {
+      "name": "stark_content_id",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_digest": "0.1.0"
+      }
+    },
+    {
+      "name": "stark_digest",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_hex": "0.1.0"
+      }
+    },
+    {
+      "name": "stark_hex",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    }
+  ]
+}

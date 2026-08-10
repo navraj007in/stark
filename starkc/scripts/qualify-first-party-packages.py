@@ -131,6 +131,11 @@ CASES = [
         expected_stdout="sha256:ok\n",
     ),
     PackageCase(
+        package="stark-content-id",
+        consumer="stark-content-id-consumer",
+        expected_stdout="content-id:ok\n",
+    ),
+    PackageCase(
         package="stark-uuid",
         consumer="stark-uuid-consumer",
         expected_stdout="f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n",
