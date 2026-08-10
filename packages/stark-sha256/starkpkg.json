@@ -1,0 +1,9 @@
+{
+  "name": "stark-sha256",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "distribution": { "toolchain": true },
+  "dependencies": {
+    "stark_digest": { "package": "stark-digest", "path": "../stark-digest", "version": "0.1.0" }
+  }
+}
