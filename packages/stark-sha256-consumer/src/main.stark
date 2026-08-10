@@ -1,0 +1,28 @@
+use stark_digest::equals;
+use stark_digest::parse_hex;
+use stark_digest::DigestAlgorithm;
+use stark_sha256::hash;
+use stark_sha256::hash_hex;
+
+fn main() {
+    let input: &[UInt8] = &[97u8, 98u8, 99u8];
+    let digest = hash(input);
+    let expected = match parse_hex(
+        DigestAlgorithm::Sha256,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    ) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            panic("expected digest parse failed");
+        }
+    };
+
+    if !equals(&digest, &expected) {
+        panic("hash digest mismatch");
+    }
+    if hash_hex(input).as_str() != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
+        panic("hash hex mismatch");
+    }
+
+    println("sha256:ok");
+}

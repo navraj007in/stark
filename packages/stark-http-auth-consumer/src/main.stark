@@ -1,0 +1,64 @@
+use stark_http_auth::basic;
+use stark_http_auth::bearer;
+use stark_http_auth::parse;
+use stark_http_auth::to_string;
+use stark_http_auth::AuthError;
+
+fn main() {
+    let basic_value = match basic("Aladdin", "open sesame") {
+        Ok(value) => value,
+        Err(_) => {
+            panic("basic construction failed");
+        }
+    };
+    if basic_value.as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("basic construction failed");
+    }
+    let parsed_basic = match parse(basic_value.as_str()) {
+        Ok(auth) => auth,
+        Err(_) => {
+            panic("basic parse failed");
+        }
+    };
+    if to_string(&parsed_basic).as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("basic canonicalization failed");
+    }
+
+    let bearer_value = match bearer("abc.def") {
+        Ok(value) => value,
+        Err(_) => {
+            panic("bearer construction failed");
+        }
+    };
+    let parsed_bearer = match parse(bearer_value.as_str()) {
+        Ok(auth) => auth,
+        Err(_) => {
+            panic("bearer parse failed");
+        }
+    };
+    if to_string(&parsed_bearer).as_str() != "Bearer abc.def" {
+        panic("bearer canonicalization failed");
+    }
+
+    match parse("Bearer abc def") {
+        Err(AuthError::InvalidBearerToken) => {}
+        Err(_) => {
+            panic("expected invalid bearer token");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+
+    match basic("user:name", "pass") {
+        Err(AuthError::InvalidBasicCredentials) => {}
+        Err(_) => {
+            panic("expected invalid basic credentials");
+        }
+        Ok(_) => {
+            panic("expected basic construction failure");
+        }
+    }
+
+    println("http-auth:ok");
+}

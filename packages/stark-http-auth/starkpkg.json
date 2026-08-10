@@ -1,0 +1,9 @@
+{
+  "name": "stark-http-auth",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "distribution": { "toolchain": true },
+  "dependencies": {
+    "stark_base64": { "package": "stark-base64", "path": "../stark-base64", "version": "0.1.0" }
+  }
+}

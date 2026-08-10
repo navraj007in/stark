@@ -1,0 +1,105 @@
+use stark_digest::algorithm;
+use stark_digest::equals as digest_equals;
+use stark_digest::parse_hex;
+use stark_digest::to_hex;
+use stark_digest::Digest;
+use stark_digest::DigestAlgorithm;
+use stark_digest::DigestError;
+
+pub struct ContentId { digest: Digest }
+
+pub enum ContentIdError {
+    InvalidFormat,
+    UnsupportedAlgorithm,
+    InvalidDigest(DigestError),
+}
+
+pub fn from_digest(digest: Digest) -> ContentId {
+    ContentId { digest }
+}
+
+pub fn parse(text: &str) -> Result<ContentId, ContentIdError> {
+    let separator = match find_colon(text) {
+        Some(index) => index,
+        None => {
+            return Err(ContentIdError::InvalidFormat);
+        }
+    };
+
+    if separator == 0u64 || separator + 1u64 == text.bytes().len() {
+        return Err(ContentIdError::InvalidFormat);
+    }
+    if has_second_colon(text, separator + 1u64) {
+        return Err(ContentIdError::InvalidFormat);
+    }
+    if has_boundary_whitespace(text, separator) {
+        return Err(ContentIdError::InvalidFormat);
+    }
+
+    let name = text.substring(0u64, separator);
+    let digest_text = text.substring(separator + 1u64, text.bytes().len());
+    if name != "sha256" {
+        return Err(ContentIdError::UnsupportedAlgorithm);
+    }
+
+    match parse_hex(DigestAlgorithm::Sha256, digest_text) {
+        Ok(parsed) => Ok(from_digest(parsed)),
+        Err(error) => Err(ContentIdError::InvalidDigest(error)),
+    }
+}
+
+pub fn digest(id: &ContentId) -> &Digest {
+    &id.digest
+}
+
+pub fn to_string(id: &ContentId) -> String {
+    match algorithm(&id.digest) {
+        DigestAlgorithm::Sha256 => {
+            let mut out = String::new();
+            out.push_str("sha256:");
+            out.push_str(to_hex(&id.digest).as_str());
+            out
+        }
+    }
+}
+
+pub fn equals(left: &ContentId, right: &ContentId) -> Bool {
+    digest_equals(&left.digest, &right.digest)
+}
+
+fn find_colon(text: &str) -> Option<UInt64> {
+    let bytes = text.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if bytes[i] == 58u8 {
+            return Some(i);
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+fn has_second_colon(text: &str, start: UInt64) -> Bool {
+    let bytes = text.bytes();
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == 58u8 {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+fn has_boundary_whitespace(text: &str, separator: UInt64) -> Bool {
+    let bytes = text.bytes();
+    is_ascii_whitespace(bytes[0u64]) || is_ascii_whitespace(bytes[bytes.len() - 1u64]) || is_ascii_whitespace(
+        bytes[separator - 1u64],
+    ) || is_ascii_whitespace(bytes[separator + 1u64])
+}
+
+fn is_ascii_whitespace(byte: UInt8) -> Bool {
+    byte == 9u8 || byte == 10u8 || byte == 11u8 || byte == 12u8 || byte == 13u8 || byte == 32u8
+}
+
+mod tests;
