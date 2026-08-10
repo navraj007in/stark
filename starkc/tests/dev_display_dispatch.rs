@@ -745,3 +745,70 @@ fn main() {
         "debug and release native builds disagreed"
     );
 }
+
+// --------------------------------------------------------------- DEV-167, closed by CE1 decision --
+
+/// **DEV-167 — `to_string()` on a `Display` bound is refused, and that is the decided behaviour.**
+///
+/// This is not a defect pin; it is a *decision* pin. `06-Standard-Library.md` declares
+/// `trait ToString { fn to_string(&self) -> String; }` and gives `str::to_string`, but **never
+/// promises that every `Display` type carries the method form**. Making that promise is a
+/// normative Core change — CE1, Charter §2.3 — and the owner decided (2026-08-10) to keep the
+/// free-function form rather than take it.
+///
+/// The sanctioned spelling is `stark_fmt::to_string<T: Display>(value: &T) -> String`, exercised
+/// on a user-defined type by `packages/stark-fmt/src/tests.stark::test_to_string_free_function`.
+///
+/// **Why this test exists rather than only a ledger paragraph.** The cheap implementation of
+/// `to_string()` is a resolver branch keyed on the method *name*, and that is exactly the two-tier
+/// trait model DEV-166 removed — method visibility depending on whether a trait is compiler-known.
+/// Someone reaching for that branch for ergonomic reasons breaks this test and has to reopen the
+/// CE1 decision instead of quietly reversing it.
+#[test]
+fn to_string_on_a_display_bound_is_refused_by_decision() {
+    let messages = rejects_at_typecheck(
+        "dd_to_string_bound",
+        "\
+fn show<T: Display>(value: &T) -> String {
+    value.to_string()
+}
+
+fn main() {}
+",
+        "E0302",
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("to_string")),
+        "expected the refusal to name `to_string`, got {messages:?}"
+    );
+    // The negative control for THIS decision: the refusal must be the ordinary "no trait in scope
+    // declares it" wording, NOT the missing-bound diagnostic. `Display` is already bounded here —
+    // suggesting it would be advice the user has taken, and would mean resolution believed
+    // `to_string` was reachable from some bound.
+    assert!(
+        !messages.iter().any(|m| m.contains("requires the bound")),
+        "`to_string` is not obtainable by adding a bound; the missing-bound diagnostic would be \
+         wrong advice here, got {messages:?}"
+    );
+}
+
+/// The counterpart that must keep working: `fmt()` — the method Core DOES contribute through a
+/// `Display` bound — is unaffected by DEV-167's disposition. A "fix" that reached `to_string` by
+/// widening what a compiler-known bound contributes would change this file's positive cases; a
+/// fix that narrowed it would break this one.
+#[test]
+fn the_display_bound_still_contributes_fmt_after_the_to_string_decision() {
+    agree_completing_with_stdout(
+        "dd_fmt_after_167",
+        "\
+fn show<T: Display>(value: &T) -> String {
+    value.fmt()
+}
+
+fn main() {
+    println(show(&7).as_str());
+}
+",
+        "7\n",
+    );
+}

@@ -7434,3 +7434,152 @@ minimums, this has a working form — `18446744073709551615u64` produces the cor
 an ergonomic gap, not an unwritable value. Fixing it means changing which literals may enter an
 inference variable, which is DEV-015's area and affects defaulting for every unsuffixed literal.
 Recorded rather than bundled into an unrelated repair.
+
+## DEV-120 — CLOSED, RECLASSIFIED AS DOCUMENTED LIMIT (post-C10 repair programme, P8, 2026-08-10)
+
+The entry above stands unedited. This heading records the disposition §14 required, reached by
+reproduction rather than by re-reading the entry.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`. No compiler source changed.
+
+### The five questions §14.1 required, answered by reproduction
+
+Reproducer — unbounded self-recursion with no base case:
+
+```stark
+fn down(n: Int32) -> Int32 { return down(n + 1); }
+fn main() { println(down(0)); }
+```
+
+```text
+Does the normative contract require unbounded recursion?   NO — LIMIT-RESOURCE-001 makes capacities
+                                                           implementation/target-defined.
+Does it require graceful resource-limit reporting?         ONLY "when the host permits".
+Does native execution fail gracefully or abort?            ABORTS. exit 134 (SIGABRT),
+                                                           "fatal runtime error: stack overflow".
+Do HIR and MIR report the limit deterministically?         YES. Classified host/resource failure,
+                                                           "call depth limit reached (512 frames)",
+                                                           stable exit 2, no process abort.
+Is native stack exhaustion bounded before host abort?      NO. The generated binary recurses on the
+                                                           host stack and the host terminates it.
+```
+
+### Why this closes rather than repairing
+
+The gap between exit 2 and exit 134 is real and is **not** being denied. It closes because the rule
+that governs it already permits the divergence twice over: capacities are implementation-defined, so
+512 frames and a stack-shaped native capacity are not required to agree, and the reporting duty is
+qualified by "when the host permits" — a signalled stack overflow is the host declining. **No claim
+is made that the two capacities match**, and resource exhaustion is excluded from engine comparison
+by construction, so the three-engine claim is untouched.
+
+Owner ruling D4 (WP-C7.9) already decided the repair question in the other direction: record the
+boundary rather than instrument the backend. Bounding it natively means per-call depth
+instrumentation in every generated function — paid by every program, to report a host-defined
+condition it still could not fully cover, since host stack growth from the runtime or a provider
+stays invisible to it. This disposition does not reopen D4; it stops carrying a settled decision as
+an open defect.
+
+**§14's explicit warning was observed: the number was not raised.** `MAX_CALL_DEPTH` is unchanged.
+
+**Residual, stated rather than hidden:** a program that recurses without a base case is reported
+cleanly under `stark run` and dies by signal when built natively. That asymmetry is now a documented
+limit, not an open deviation. If native execution ever acquires a reason to bound call depth for its
+own sake, this reopens as a repair — the original entry's "owning gate: none scheduled" still holds.
+
+**Evidence:** `starkc/tests/resource_exhaustion.rs` (interpreter side, pre-existing); the native
+side reproduced above at the baseline SHA.
+
+## DEV-167 — CLOSED, CE1 DECIDED: the method form is a non-promise, not a gap (2026-08-10)
+
+The entry above stands unedited. It correctly identified this as blocked on a
+blanket-implementation decision and correctly called that decision CE-shaped. **The owner made it.**
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced first
+
+```stark
+fn show<T: Display>(value: &T) -> String { return value.to_string(); }
+```
+
+```text
+[E0302] method 'to_string' not found for type 'T'
+        no trait in scope declares a method named 'to_string'
+```
+
+Refused at **name resolution**, identically under all three engines. This is not an engine
+disagreement and not a backend gap — nothing to reconcile, because the language does not have it.
+
+### Why there was no conformance gap to repair
+
+`06-Standard-Library.md:817` declares `trait ToString { fn to_string(&self) -> String; }` and
+`:446` gives `str::to_string`. **Neither promises that every `Display` type carries the method
+form.** The implementation matches the specification exactly. The only live question was whether
+Core v1 *should* make that promise — a change to the language contract, **CE1**, Charter §2.3.
+
+### Decision (owner, CE1, 2026-08-10): keep the free function; close as a documented non-promise
+
+The two alternatives and why neither was taken:
+
+```text
+impl<T: Display> ToString for T   Permitted by the spec, but it CLOSES the trait. See below.
+
+resolver branch on "to_string"    Reintroduces exactly the two-tier trait model DEV-166 removed
+                                  (RESOLVED, DEV-DISPLAY-DISPATCH) — method visibility depending
+                                  on whether a trait is compiler-known. Trades a closed defect
+                                  for ergonomics.
+```
+
+### Correcting the original entry's reason for the blanket option
+
+The entry above says "Core v1 has neither blanket implementations nor extension traits." **The
+blanket half is wrong, and the real objection is stronger.** `03-Type-System.md`
+TRAIT-COHERENCE-002 permits them: "Blanket implementations are permitted only when the overlap test
+proves them disjoint from every other implementation."
+
+The decisive clause is the one before it: **"Positive trait bounds never make unifying heads
+disjoint."** The head of `impl<T: Display> ToString for T` is `ToString for T`, and `T` unifies with
+every type. The `T: Display` bound does **not** narrow it for overlap purposes — disjointness is
+proved only by incompatible nominal constructors, unequal concrete types, or different trait
+identities, none of which apply.
+
+So the blanket impl is admissible only while it is the **only** `ToString` implementation in the
+resolved package graph, and it permanently forecloses any other: a user writing
+`impl ToString for MyType` — to render a type differently from its `Display` form, which is a
+legitimate thing to want — would be rejected by coherence, in a package that may not even contain
+the blanket impl. Core v1 has no specialization, no negative implementations and no
+declaration-order priority to escape with. **That is the cost: not implementation difficulty, but
+converting `ToString` from a trait users may implement into a closed trait derived from `Display`.**
+
+### What is supported
+
+`stark_fmt::to_string<T: Display>(value: &T) -> String` — `packages/stark-fmt/src/lib.stark:75`.
+It is a real workaround, not a notional one: exercised on a **user-defined** type by
+`packages/stark-fmt/src/tests.stark::test_to_string_free_function` (`to_string(&p)` → `"(0,0)"`)
+and by the consumer at `packages/stark-fmt-consumer/src/main.stark:46`.
+
+### The decision is pinned by tests, not only by this paragraph
+
+`starkc/tests/dev_display_dispatch.rs`:
+
+```text
+to_string_on_a_display_bound_is_refused_by_decision
+    positive  the refusal is E0302 and names `to_string`
+    negative  it must NOT be the missing-bound diagnostic — `Display` is already bounded, so
+              "requires the bound" would be advice the user has already taken, and would mean
+              resolution believed `to_string` was reachable from some bound
+
+the_display_bound_still_contributes_fmt_after_the_to_string_decision
+    negative  `fmt()` — the method a Display bound DOES contribute — still dispatches. A change
+              that reached `to_string` by widening compiler-known bound contribution, or that
+              narrowed contribution to exclude it, fails one of these two.
+```
+
+The first test fails the moment someone adds the name-keyed resolver branch, which forces the CE1
+decision to be reopened deliberately rather than reversed quietly for ergonomic reasons. That is
+the whole point of pinning a decision rather than documenting one.
+
+**Residual:** none as a defect. `value.to_string()` on a `T: Display` remains refused **by
+decision**. If Core v1 ever acquires blanket implementations for independent reasons, this becomes
+a natural consequence of that feature and should be revisited then — not before, and not on its own.
