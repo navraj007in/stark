@@ -1127,8 +1127,59 @@ impl<'a> BodyCx<'a> {
         }
     }
 
+    /// DEV-157 — `!` coerces to any type (`03-Type-System.md`, "Rules"), and that has to hold
+    /// STRUCTURALLY, not just at the top level.
+    ///
+    /// `let t: (Int32, Int32) = (1, panic("p"));` lowers an aggregate of type
+    /// `Tuple([Int32, Never])` into a place of type `Tuple([Int32, Int32])`. The shallow check —
+    /// `actual != Never` — saw two unequal tuples and rejected a program the specification
+    /// admits. A composite with an uninhabited component is itself uninhabited, so no value of it
+    /// ever reaches the assignment; permitting it here is the coercion rule, not a relaxation of
+    /// type checking.
+    ///
+    /// Only `Never` is permissive. Every other mismatch still fails, and the recursion is
+    /// structural rather than a blanket "compatible enough".
+    fn never_coercible(actual: &MirTy, expected: &MirTy) -> bool {
+        if actual == expected || *actual == MirTy::Never {
+            return true;
+        }
+        match (actual, expected) {
+            (MirTy::Tuple(a), MirTy::Tuple(e)) => {
+                a.len() == e.len() && a.iter().zip(e).all(|(a, e)| Self::never_coercible(a, e))
+            }
+            (MirTy::Array(a, an), MirTy::Array(e, en)) => an == en && Self::never_coercible(a, e),
+            (MirTy::Slice(a), MirTy::Slice(e)) => Self::never_coercible(a, e),
+            (MirTy::Struct(ai, aa), MirTy::Struct(ei, ea)) => {
+                ai == ei
+                    && aa.len() == ea.len()
+                    && aa.iter().zip(ea).all(|(a, e)| Self::never_coercible(a, e))
+            }
+            (MirTy::Enum(ai, aa), MirTy::Enum(ei, ea)) => {
+                ai == ei
+                    && aa.len() == ea.len()
+                    && aa.iter().zip(ea).all(|(a, e)| Self::never_coercible(a, e))
+            }
+            (MirTy::Core(ac, aa), MirTy::Core(ec, ea)) => {
+                ac == ec
+                    && aa.len() == ea.len()
+                    && aa.iter().zip(ea).all(|(a, e)| Self::never_coercible(a, e))
+            }
+            (
+                MirTy::Ref {
+                    mutable: am,
+                    inner: ai,
+                },
+                MirTy::Ref {
+                    mutable: em,
+                    inner: ei,
+                },
+            ) => am == em && Self::never_coercible(ai, ei),
+            _ => false,
+        }
+    }
+
     fn expect_ty(&mut self, expected: &MirTy, actual: &MirTy, what: &str, bi: u32) {
-        if expected != actual && *actual != MirTy::Never {
+        if !Self::never_coercible(actual, expected) {
             self.err(
                 "MIR-0004",
                 bi,

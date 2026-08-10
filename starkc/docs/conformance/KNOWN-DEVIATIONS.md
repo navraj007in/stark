@@ -7672,3 +7672,104 @@ dev_display_dispatch, layer audit, mir_differential. `cargo fmt --check` clean.
 
 **Residual:** none for this defect. The `Never` positions that remain unbuildable natively are
 DEV-157's, not this one — see its entry.
+
+## DEV-157 — CLOSED, REPAIRED: `!` has a native representation, and it is uninhabited (post-C10 P3, 2026-08-10)
+
+The entry above stands unedited, including its warning that this was "one probe away from being
+filed as a false closure." That warning was earned twice more here: the position matrix §9.1
+required found **two** further defects the entry did not name, one of them an internal compiler
+error.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### The position matrix, built by probe
+
+22 programs, each run under the HIR oracle and built natively. Classified per §9.1:
+
+```text
+SUPPORTED AT BASELINE      statement expression; match arm (inhabited arm first);
+                           return/tail position
+REFUSED EARLY, CORRECTLY   nothing — see "accepted set" below
+INTERNAL COMPILER ERROR    if/else join; match with the diverging arm FIRST; `else { return; }`;
+                           unannotated join                              -> DEV-220
+MIR LOWERING FAILURE       if/else join (`block in value position yielded no value`)
+BACKEND FAILURE            local initialiser; argument position; tuple, array and struct
+                           elements; nested composite                    -> this entry
+```
+
+### Three distinct repairs, in three phases
+
+**1. `typecheck` — registered separately as DEV-220.** A diverging arm captured the join's
+inference variable. Not absorbed here: the root cause is inference, not representation, and §19.4
+requires a defect class in an unrelated phase to be registered on its own.
+
+**2. `mir/lower.rs` — the else arm now tolerates a diverging block.** The then arm already did
+(`if let Some(v) = then_value`); the else arm routed through `lower_expr_to_operand` and demanded
+a value. `if c { x } else { return; }` — not an error path, ordinary control flow — could not be
+built natively. Nothing is assigned on a path that never reaches the join, which is the rule the
+then arm already relied on.
+
+**3. `backend` — `MirTy::Never` is `core::convert::Infallible`, an EMPTY enum.**
+
+§9.2's rule was that no runtime storage may be invented for an uninhabited value. None is:
+
+```text
+emit_types::emit_ty_at    MirTy::Never -> core::convert::Infallible (uninhabited, zero-sized)
+emit_types::mentions_never a composite with an uninhabited component is itself uninhabited
+emit_bodies               such a local is declared UNINITIALISED, never default-initialised
+```
+
+`default_value_expr` still refuses `Never` and is right to — there is no value to fabricate. The
+local is the result place of a diverging expression; control never reaches its assignment.
+**rustc's own definite-assignment analysis is the standing check on that claim**: a `Never` local
+that were genuinely read fails to compile rather than reading fabricated storage.
+
+**4. `mir/verify.rs` — the never-coercion allowance is now STRUCTURAL.** `expect_ty` permitted
+`Never` only at the top level, so `(1, panic("p"))` into a `(Int32, Int32)` place was rejected
+`MIR-0004: expected Tuple([Int32, Int32]), found Tuple([Int32, Never])`. `03-Type-System.md` says
+`!` coerces to *any* type; a composite with an uninhabited component is itself uninhabited and no
+value of it reaches the assignment. `never_coercible` recurses structurally — **only `Never` is
+permissive; every other mismatch still fails.** Found by the three-engine harness and by nothing
+else: `stark build` alone accepted the program.
+
+### The accepted program set changed, and it changed TOWARD the specification
+
+```stark
+let x: Int32 = 1 + panic("p");
+```
+
+was refused `[E0500] type '!' does not satisfy operator trait 'Num'`, and is now accepted (and
+traps, in all three engines). **That refusal was an artefact of DEV-220**, not a rule: the literal's
+variable had been bound to `Never`, so the operator check ran against `!` instead of `Int32`.
+`03-Type-System.md` line 67 is unqualified — "An expression of type `!` coerces to any other type"
+— so accepting it is conformance, not widening. Recorded explicitly because a change to the
+accepted set is normally CE1/CE2 territory; this one required no decision because the
+specification already stated the outcome.
+
+### Evidence
+
+`three_engine_differential.rs`, seven cases, all three engines agreeing on trap category AND exact
+trap line:
+
+```text
+dev157_never_in_a_local_initialiser          dev157_never_inside_an_array
+dev157_never_in_argument_position            dev157_never_in_a_struct_field
+dev157_never_inside_a_tuple
+
+dev157_a_diverging_call_still_diverges       NEGATIVE (§9.3): a backend that gave `Never` real
+                                             storage and let control fall through completes here
+dev157_code_after_a_diverging_initialiser_is_unreachable
+                                             NEGATIVE: statements after an unreachable initialiser
+                                             never run
+```
+
+**Proved capable of failing:** with the `MirTy::Never` representation removed, 6 of 7 fail. The
+seventh is `..._still_diverges`, which correctly passes either way — it guards a *different* wrong
+fix, and a control that failed for the absence of the repair would not be controlling anything.
+
+Green: 576 lib, 132 conformance, 126 three-engine, 23 dev_display_dispatch, 8 mir_differential,
+layer audit, adversarial accepted-surface audit. `cargo fmt --check` clean; clippy
+`--workspace --all-features --all-targets -D warnings` clean.
+
+**Residual:** `loop { }` with no `break` has type `!` per TYPE-LOOP-001; it builds, and was
+verified by building rather than running, because running it correctly never terminates.

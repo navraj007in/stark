@@ -2928,3 +2928,123 @@ fn main() {
 }
 "#
 );
+
+// DEV-157 — `!` has a native representation, and it is an UNINHABITED one.
+//
+// The entry's original reproducer (`Err(_) => panic(..)` in match-arm value position) already
+// built; the defect was alive in the positions that put a `Never`-typed RESULT PLACE in front of
+// the backend — a local initialiser, an argument, a tuple/array/struct element. `emit_ty_at` had
+// no `MirTy::Never` case at all, so every one of them failed with "MirTy Never has no C5.3a
+// generated-Rust representation yet".
+//
+// The representation is `core::convert::Infallible`: an empty enum. §9.2's rule was that no
+// runtime storage may be invented for an uninhabited value, and this invents none — the local is
+// declared UNINITIALISED, because control never reaches its assignment. rustc's own
+// definite-assignment analysis is the standing check on that: a `Never` local that were genuinely
+// read would fail to compile rather than read fabricated storage.
+three_engine_test!(
+    dev157_never_in_a_local_initialiser,
+    "dev157_local",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = panic("boom");
+    assert_eq(x, 0);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_in_argument_position,
+    "dev157_arg",
+    traps(TrapCategory::Panic, 7),
+    r#"
+fn take(n: Int32) -> Int32 {
+    return n;
+}
+
+fn main() {
+    let x: Int32 = take(panic("boom"));
+    assert_eq(x, 0);
+}
+"#
+);
+
+// A composite with an uninhabited component is itself uninhabited. This is the case that
+// `mentions_never` exists for: representing bare `Never` alone left this failing in
+// `default_value_expr` instead, one layer further on.
+three_engine_test!(
+    dev157_never_inside_a_tuple,
+    "dev157_tuple",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let t: (Int32, Int32) = (1, panic("boom"));
+    assert_eq(t.0, 1);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_inside_an_array,
+    "dev157_array",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let a: [Int32; 2] = [1, panic("boom")];
+    assert_eq(a[0], 1);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_in_a_struct_field,
+    "dev157_struct",
+    traps(TrapCategory::Panic, 8),
+    r#"
+struct P {
+    a: Int32,
+    b: Int32,
+}
+
+fn main() {
+    let p = P { a: 1, b: panic("boom") };
+    assert_eq(p.a, 1);
+}
+"#
+);
+
+// NEGATIVE CONTROL — §9.3: an ordinary diverging function still diverges, and the trap is the
+// observation. A backend that gave `Never` real storage and let control fall through would
+// complete here instead of trapping, and this is the case that says so.
+three_engine_test!(
+    dev157_a_diverging_call_still_diverges,
+    "dev157_diverges",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn always_panics() -> Int32 {
+    panic("boom")
+}
+
+fn main() {
+    let x: Int32 = always_panics();
+    assert_eq(x, 0);
+}
+"#
+);
+
+// NEGATIVE CONTROL — the statements AFTER an unreachable initialiser never run. If the panic did
+// not actually terminate the block, this completes with exit 0 and prints, and the trap
+// expectation fails.
+three_engine_test!(
+    dev157_code_after_a_diverging_initialiser_is_unreachable,
+    "dev157_unreachable",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = panic("boom");
+    assert_eq(x, 0);
+    assert_eq(1, 2);
+}
+"#
+);

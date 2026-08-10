@@ -4193,11 +4193,23 @@ impl<'a> FnLowerer<'a> {
                     );
                 }
                 self.terminate(Terminator::Goto { target: join }, self.info(span), else_id);
-                let else_value = self.lower_expr_to_operand(*else_expr)?;
-                self.emit(
-                    Statement::Assign(Place::local(dest), Rvalue::Use(else_value)),
-                    self.info(span),
-                );
+                // DEV-157: the else arm must tolerate a DIVERGING block exactly as the then arm
+                // above does. `else { panic("p") }` and `else { return; }` yield no value, and
+                // routing them through `lower_expr_to_operand` demanded one — "block in value
+                // position yielded no value" — so a shape as ordinary as
+                // `if c { x } else { return; }` could not be built natively. Nothing is assigned
+                // on a path that never reaches the join, which is what the then arm already
+                // relied on; this is the same rule applied to the other side, not a new one.
+                let else_value = match self.hir.expr(*else_expr).kind {
+                    hir::ExprKind::Block(block) => self.lower_block_value(block)?,
+                    _ => Some(self.lower_expr_to_operand(*else_expr)?),
+                };
+                if let Some(else_value) = else_value {
+                    self.emit(
+                        Statement::Assign(Place::local(dest), Rvalue::Use(else_value)),
+                        self.info(span),
+                    );
+                }
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 let ty = self.locals[dest.0 as usize].ty.clone();
                 self.read_place(Place::local(dest), &ty, span)
