@@ -8195,3 +8195,86 @@ closure needs either cross-block absorption (DEV-160b's own deferred work packag
 
 **Residual for users:** the shape has a working spelling — bind the fields to locals before the
 call — which is what `stark-http-client` already does and documents at `src/lib.stark`.
+
+## DEV-160 — the rustc leak is sealed; the capability half remains (OPEN, post-C10 P2 continued, 2026-08-10)
+
+Supersedes the disposition immediately above, which recorded that no bounded closure was
+admissible. **That was true of the repair attempted there, and not true in general.** The entry is
+left standing because the failed attempt is the reason this one is correct.
+
+### What the first attempt got wrong
+
+Making `conflicts` consult `borrow_provenance` over-refused `stark_http_client::follow`. The cause
+was one propagation rule, not the idea:
+
+```rust
+Rvalue::Use(Operand::Copy(p) | Operand::Move(p)) => vec![p.local.0],
+```
+
+**A move transfers ownership.** `follow` does `let mut url = builder.url;` and then
+`send_once(.., url.as_str(), headers, body)`. After that move, `url` owns its own slot, and
+borrowing it does not borrow `builder` — but provenance propagated through the move, so the
+reference looked like a borrow of `builder`, whose siblings were also moved. The reproducer is
+genuinely different: it borrows `r.url` **in place**, while `r` still owns it.
+
+### Repair
+
+```text
+borrow_provenance   a MOVE severs provenance; only copies and references propagate
+conflicts           consults provenance, so a borrow arriving from an EARLIER block is visible
+                    before the early return that was skipping the DEV-160b refusal
+```
+
+The refusal was never missing. It was **unreachable for its own case**: `plan_for_call` returned
+`None` first, because a cross-block borrow is not among the call block's own borrows.
+
+### Measured, in both directions — the direction that caught the first attempt
+
+```text
+reproducer `send(r.url.as_str(), r.body)`   E0502 in generated code -> REFUSED BY NAME
+stark-get (HTTPS application)               builds, unchanged
+5 consumer applications                     build, unchanged
+dev160_call_site_thunk                      8/8, incl. the DEV-160d under-refusal guard
+```
+
+**The accepted program set is unchanged.** Eight borrow/move shapes built with the pre- and
+post-repair compilers and classified:
+
+```text
+in-block borrow + sibling move        BUILDS -> BUILDS
+fields moved to locals first          BUILDS -> BUILDS      (the `follow` shape)
+borrow + Copy sibling                 BUILDS -> BUILDS
+borrow outliving the call             REFUSED -> REFUSED    (DEV-160d, unchanged)
+two sibling moves                     BUILDS -> BUILDS
+borrow + sibling .len() in one call   BUILDS -> BUILDS
+cross-block `as_str()` + move         E0502  -> REFUSED BY NAME
+same, with a trailing field read      E0502  -> REFUSED BY NAME
+```
+
+Only the two leaks changed, and each became a named refusal. **Nothing that built stops building
+and nothing newly builds** — §12.3 is satisfied without a subset claim being widened.
+
+### What this does and does not settle
+
+§23's exit criterion 3 — "the exact supported boundary is enforced by STARK rather than delegated
+accidentally to rustc" — is now **MET for the demonstrated shape**. `E0502` no longer reaches a
+user for it.
+
+DEV-160 **stays OPEN** for the capability half: these programs are valid STARK and still do not
+build. Closing that is DEV-160b's cross-block absorption — the thunk absorbing the borrow-producing
+call across the block boundary — which remains its own deferred work package under the owner ruling
+of 2026-08-03.
+
+### The residual risk, stated rather than hidden
+
+Provenance answers "this value may derive from that slot", not "a live borrow of that slot reaches
+this call". Those differ, and the first attempt is proof that the gap has teeth. Severing on moves
+removes the false positive that mattered, and the corpus and package evidence above found no other
+— **but absence of a counterexample is not a proof of precision.**
+
+The precise mechanism is a backward walk of the reference's own def-use chain (producer call →
+its reference argument → the `RefOf` that seeded it), admitted only when the producer dominates the
+consumer on one straight-line path with nothing observable between. That analysis is needed anyway
+for cross-block absorption to decide what it may absorb, and it should replace the provenance
+heuristic here when it lands — one authority deciding both, which is the property this module
+already holds elsewhere. Recorded now so the interim is retired deliberately rather than forgotten.

@@ -236,6 +236,19 @@ trait model DEV-166 removed. The decision is pinned by two tests in
   `stark_http_client::follow`, breaking the `stark-get` build**. Reverted; the measurement is kept
   because the finding is that the cheap closure is not admissible. §23's exit criterion 3 for
   DEV-160 is NOT met, and the entry now says so instead of asserting it is.
+- **DEV-160 UPDATE, same day: the rustc leak IS sealed.** The first attempt's over-refusal had one
+  cause, not a fatal one — `borrow_provenance` propagated across `Rvalue::Use(Operand::Move(p))`.
+  A move TRANSFERS OWNERSHIP: `follow` does `let mut url = builder.url;`, after which borrowing
+  `url` does not borrow `builder`. Severing provenance on moves fixes the false positive, and
+  `conflicts` can then consult provenance so a borrow arriving from an earlier block is visible
+  before the early return that was making the DEV-160b refusal unreachable for its own case.
+  Measured with the pre- and post-repair compilers over eight borrow/move shapes: **the two E0502
+  leaks became named refusals and nothing else moved** — nothing that built stops building, nothing
+  newly builds, so no subset claim widened. §23 criterion 3 is met for the demonstrated shape.
+  **DEV-160 stays OPEN for the capability half**: the programs are valid STARK and still do not
+  build, which is DEV-160b's cross-block absorption under the 2026-08-03 owner ruling. Residual
+  recorded: provenance answers "may derive from", not "a live borrow reaches here", and the precise
+  def-use walk that cross-block absorption needs anyway should replace this heuristic when it lands.
 
 **DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
