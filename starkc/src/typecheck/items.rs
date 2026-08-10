@@ -309,6 +309,7 @@ impl TypeChecker<'_> {
         // chance to constrain a literal) but BEFORE the deferred bound checks below, which must
         // see a concrete type rather than an open variable.
         self.default_unconstrained_int_literals();
+        self.default_never_coerced_vars();
 
         // WP-C4.7-9 audit: `print`/`println` require a `Display`-able argument.
         let display = std::mem::take(&mut self.display_checks);

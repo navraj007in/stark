@@ -252,6 +252,19 @@ pub fn emit_block_body(
             ));
             continue;
         }
+        // DEV-157: an UNINHABITED local has no default value to fabricate, and needs none. It is
+        // the result place of a diverging expression, so control never reaches its assignment and
+        // nothing can read it. Declaring it uninitialised keeps rustc's definite-assignment
+        // analysis as the check on that claim, exactly as the reference lane above does; a
+        // default-initialised form would have to invent a value of a type that has none.
+        if emit_types::mentions_never(&decl.ty) {
+            out.push_str(&format!(
+                "    #[allow(unused_variables)] let {}: {};\n",
+                emit_places::local_name(i as u32),
+                emit_types::emit_ty(&decl.ty)?
+            ));
+            continue;
+        }
         if !slotted {
             let ty = emit_types::emit_ty(&decl.ty)?;
             let default = emit_types::default_value_expr(&decl.ty, env.types)?;

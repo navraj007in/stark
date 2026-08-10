@@ -332,6 +332,16 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
                 lt2 = iter_lifetime_args(at, None)
             )
         }
+        // DEV-157: `!` is represented by an UNINHABITED Rust type, not by storage.
+        //
+        // `core::convert::Infallible` is an empty enum, so this creates no runtime value and no
+        // value of it can be constructed -- which is the property that matters. Nothing is
+        // fabricated to "silence the backend": a `Never`-typed local exists in MIR only as the
+        // result place of a diverging expression, control never reaches past the diverging
+        // terminator, and `emit_bodies` therefore declares it UNINITIALISED rather than
+        // default-initialised. rustc's own definite-assignment analysis is the check that this
+        // stays true -- a `Never` local that were ever really read would fail to compile.
+        MirTy::Never => "core::convert::Infallible".to_string(),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
@@ -364,6 +374,44 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// a reference, or a tuple/array/instantiation containing one. Declared reference *fields* are
 /// forbidden by 03 rule 1 and rejected by the front end, so a nominal only carries a borrow through
 /// its type arguments.
+/// DEV-157 — whether `ty` is UNINHABITED, i.e. mentions `!` anywhere.
+///
+/// A composite with an uninhabited component is itself uninhabited: no value of `(Int32, !)` can
+/// ever exist, because building one requires evaluating a diverging expression. Such a local
+/// therefore has no default value to fabricate and must be declared uninitialised, exactly as a
+/// bare `Never` local is — `default_value_expr` refuses it, and rightly.
+///
+/// Exhaustive for the same reason `mentions_a_reference` is: this ASSERTS a property, so a
+/// wildcard would make every future variant silently claim to be inhabited.
+pub fn mentions_never(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Never => true,
+        MirTy::Tuple(elements) => elements.iter().any(mentions_never),
+        MirTy::Array(element, _) | MirTy::Slice(element) => mentions_never(element),
+        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+            args.iter().any(mentions_never)
+        }
+        MirTy::FnPtr { params, ret } => params.iter().any(mentions_never) || mentions_never(ret),
+        MirTy::Ref { inner, .. } => mentions_never(inner),
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64
+        | MirTy::Float32
+        | MirTy::Float64
+        | MirTy::Bool
+        | MirTy::Char
+        | MirTy::Unit
+        | MirTy::Str
+        | MirTy::String
+        | MirTy::HostResource(_) => false,
+    }
+}
+
 pub fn mentions_a_reference(ty: &MirTy) -> bool {
     match ty {
         MirTy::Ref { .. } => true,

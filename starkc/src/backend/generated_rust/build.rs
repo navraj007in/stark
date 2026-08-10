@@ -11,7 +11,7 @@ use crate::backend::version::{self, BuildVersions};
 use crate::mir::MirProgram;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn build_and_link(
@@ -58,6 +58,11 @@ pub fn build_and_link(
         .join(options.profile.as_str())
         .join(&build_key);
     let expected_manifest = build_manifest_json(&versions, &build_key, &layout, &selection);
+    // DEV-159: everything from here to the caller's artifact install touches ONE content-addressed
+    // directory, and two `stark build` processes of the same program reach it concurrently. The
+    // guard travels out in `NativeArtifact` so it outlives this function -- the binary is read and
+    // copied by the caller, and releasing here would leave that read unprotected.
+    let build_lock = BuildLock::acquire(&crate_dir)?;
     reject_stale_artifact_version(&crate_dir, &expected_manifest)?;
     let src_dir = crate_dir.join("src");
     std::fs::create_dir_all(&src_dir)
@@ -263,6 +268,7 @@ pub fn build_and_link(
     Ok(NativeArtifact {
         binary_path,
         build_dir: crate_dir,
+        build_lock,
     })
 }
 
@@ -270,6 +276,120 @@ const BIN_NAME: &str = "stark_program";
 
 fn generated_binary_filename(executable_suffix: &str) -> String {
     format!("{BIN_NAME}{executable_suffix}")
+}
+
+/// **DEV-159 — mutual exclusion over ONE generated-crate directory.**
+///
+/// The build directory is content-addressed (`compute_build_key`), which is deliberate: two builds
+/// of the same program reuse one directory. That reuse is exactly what makes them collide. Two
+/// `stark build` processes ran `reject_stale_artifact_version` (which can `remove_dir_all` the
+/// directory), rewrote `Cargo.toml`/`main.rs`/`Cargo.lock` non-atomically, invoked Cargo, and then
+/// read the produced binary — all in the same directory, with nothing sequencing them. Measured at
+/// six concurrent builds of one program: **73 failures in 240 builds**, in two signatures — a
+/// generated crate Cargo could not build, and an artifact that had vanished by the time it was
+/// installed.
+///
+/// Cargo takes its own lock on its target directory, so the compilation itself was never the
+/// unsynchronised part. Everything this compiler does *around* it was.
+///
+/// **The mutual exclusion is `create_dir`, not a sleep.** Creating a directory is an atomic
+/// test-and-set on every filesystem this compiler targets: it either creates and returns success,
+/// or fails `AlreadyExists`, and never both for two callers. The backoff below is how a loser
+/// WAITS for the winner; correctness does not depend on its duration. §11.2's "do not rely on
+/// sleeps" forbids sleeping *instead of* synchronising, which is the opposite of this.
+///
+/// Scope is one build key, not the compiler: two builds of DIFFERENT programs have different keys,
+/// different directories, and never contend. §11.2 permits global serialisation only if narrower
+/// isolation is impossible, and it is not.
+pub(crate) struct BuildLock {
+    path: PathBuf,
+}
+
+impl BuildLock {
+    /// How long a lock directory may go untouched before it is treated as abandoned. A build
+    /// killed mid-flight (Ctrl-C, a CI timeout, an OOM) leaves its lock behind, and a compiler
+    /// that then blocked forever would have traded a race for a hang.
+    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(900);
+    const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1800);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+    fn acquire(crate_dir: &Path) -> Result<Self, BackendDiagnostic> {
+        let path = lock_path_for(crate_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                BackendDiagnostic::Io(format!("creating {}: {e}", parent.display()))
+            })?;
+        }
+        let started = std::time::Instant::now();
+        loop {
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                // **WINDOWS: a removed directory is not immediately re-creatable.** `remove_dir`
+                // marks it for deletion and the name lingers until the last handle closes, during
+                // which `create_dir` returns ERROR_ACCESS_DENIED -- `PermissionDenied`, not
+                // `AlreadyExists`. Treating that as fatal made a tight acquire/release cycle fail
+                // on Windows and nowhere else; it is a contended lock, so it waits like one.
+                //
+                // A genuinely un-creatable path still terminates: it spins to `WAIT_LIMIT` and
+                // reports with the path named, rather than looping forever.
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(e) => {
+                    return Err(BackendDiagnostic::Io(format!(
+                        "acquiring the build lock at {}: {e}",
+                        path.display()
+                    )))
+                }
+            }
+            if Self::is_abandoned(&path) {
+                // Best-effort: if another process breaks it first, our next `create_dir` wins or
+                // loses on the ordinary path. Nothing here assumes the removal succeeded.
+                let _ = std::fs::remove_dir(&path);
+                continue;
+            }
+            if started.elapsed() > Self::WAIT_LIMIT {
+                return Err(BackendDiagnostic::Io(format!(
+                    "timed out waiting for the build lock at {} -- another `stark build` of the                      same program has held it for over {} seconds. If no such build is running,                      remove that directory.",
+                    path.display(),
+                    Self::WAIT_LIMIT.as_secs()
+                )));
+            }
+            std::thread::sleep(Self::POLL);
+        }
+    }
+
+    fn is_abandoned(path: &Path) -> bool {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        let Ok(modified) = meta.modified() else {
+            return false;
+        };
+        modified
+            .elapsed()
+            .map(|age| age > Self::STALE_AFTER)
+            .unwrap_or(false)
+    }
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+
+/// Beside the crate directory rather than inside it: `reject_stale_artifact_version` may
+/// `remove_dir_all` the crate directory while the lock is held, and a lock that removal deleted
+/// would release itself mid-build.
+fn lock_path_for(crate_dir: &Path) -> PathBuf {
+    let name = crate_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "build".to_string());
+    match crate_dir.parent() {
+        Some(parent) => parent.join(format!(".{name}.lock")),
+        None => PathBuf::from(format!(".{name}.lock")),
+    }
 }
 
 fn reject_stale_artifact_version(
@@ -733,6 +853,93 @@ fn json_str(s: &str) -> String {
 fn write_file(path: &Path, contents: &str) -> Result<(), BackendDiagnostic> {
     std::fs::write(path, contents)
         .map_err(|e| BackendDiagnostic::Io(format!("writing {}: {e}", path.display())))
+}
+
+#[cfg(test)]
+mod dev159_build_lock {
+    //! **DEV-159 — the build-directory lock, and the control that proves it is doing something.**
+    //!
+    //! The field evidence is a stress run: six concurrent `stark build` invocations of ONE program,
+    //! from a cold artifact directory. Before the lock, **73 failures in 240 builds** in two
+    //! signatures — a generated crate Cargo could not build, and an artifact that had vanished by
+    //! the time it was installed. After, **0 in 240** (debug) and **0 in 200** at eight-way
+    //! concurrency (release).
+    //!
+    //! A stress run is not a regression test: it is slow and its failure rate is a probability, so
+    //! a broken lock could pass one. What is pinned here instead is the property the stress run
+    //! depends on — that two acquisitions of the same lock cannot overlap. Make `acquire` a no-op
+    //! and this fails immediately and deterministically, which is §11.3's requirement.
+
+    use super::BuildLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn two_acquisitions_of_one_build_directory_cannot_overlap() {
+        let dir = std::env::temp_dir().join(format!("stark-dev159-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let crate_dir = dir.join("deadbeef");
+
+        let inside = Arc::new(AtomicUsize::new(0));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let crate_dir = crate_dir.clone();
+            let inside = Arc::clone(&inside);
+            let overlaps = Arc::clone(&overlaps);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..25 {
+                    let guard = BuildLock::acquire(&crate_dir).expect("acquire");
+                    // If the lock excludes, this is the only thread between the two fences.
+                    if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    std::thread::yield_now();
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                    drop(guard);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            overlaps.load(Ordering::SeqCst),
+            0,
+            "two holders were inside the same build lock at once"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lock must not survive its holder. A build killed mid-flight leaves the directory
+    /// behind, and a compiler that then blocked forever would have traded a race for a hang.
+    #[test]
+    fn the_lock_is_released_when_its_guard_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("stark-dev159-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let crate_dir = dir.join("cafebabe");
+
+        let first = BuildLock::acquire(&crate_dir).expect("first acquire");
+        drop(first);
+        // Would block to the wait limit if release did not happen.
+        let second = BuildLock::acquire(&crate_dir).expect("second acquire after release");
+        drop(second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Different programs have different build keys, so they must never contend. A lock keyed on
+    /// anything coarser -- the target directory, the profile, a global -- serialises the whole
+    /// compiler, which §11.2 permits only if narrower isolation is impossible.
+    #[test]
+    fn different_build_keys_do_not_contend() {
+        let dir = std::env::temp_dir().join(format!("stark-dev159-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = BuildLock::acquire(&dir.join("aaaaaaaa")).expect("a");
+        let b = BuildLock::acquire(&dir.join("bbbbbbbb")).expect("b");
+        drop(a);
+        drop(b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

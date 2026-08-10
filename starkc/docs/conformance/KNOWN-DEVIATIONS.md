@@ -7434,3 +7434,1093 @@ minimums, this has a working form — `18446744073709551615u64` produces the cor
 an ergonomic gap, not an unwritable value. Fixing it means changing which literals may enter an
 inference variable, which is DEV-015's area and affects defaulting for every unsuffixed literal.
 Recorded rather than bundled into an unrelated repair.
+
+## DEV-120 — CLOSED, RECLASSIFIED AS DOCUMENTED LIMIT (post-C10 repair programme, P8, 2026-08-10)
+
+The entry above stands unedited. This heading records the disposition §14 required, reached by
+reproduction rather than by re-reading the entry.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`. No compiler source changed.
+
+### The five questions §14.1 required, answered by reproduction
+
+Reproducer — unbounded self-recursion with no base case:
+
+```stark
+fn down(n: Int32) -> Int32 { return down(n + 1); }
+fn main() { println(down(0)); }
+```
+
+```text
+Does the normative contract require unbounded recursion?   NO — LIMIT-RESOURCE-001 makes capacities
+                                                           implementation/target-defined.
+Does it require graceful resource-limit reporting?         ONLY "when the host permits".
+Does native execution fail gracefully or abort?            ABORTS. exit 134 (SIGABRT),
+                                                           "fatal runtime error: stack overflow".
+Do HIR and MIR report the limit deterministically?         YES. Classified host/resource failure,
+                                                           "call depth limit reached (512 frames)",
+                                                           stable exit 2, no process abort.
+Is native stack exhaustion bounded before host abort?      NO. The generated binary recurses on the
+                                                           host stack and the host terminates it.
+```
+
+### Why this closes rather than repairing
+
+The gap between exit 2 and exit 134 is real and is **not** being denied. It closes because the rule
+that governs it already permits the divergence twice over: capacities are implementation-defined, so
+512 frames and a stack-shaped native capacity are not required to agree, and the reporting duty is
+qualified by "when the host permits" — a signalled stack overflow is the host declining. **No claim
+is made that the two capacities match**, and resource exhaustion is excluded from engine comparison
+by construction, so the three-engine claim is untouched.
+
+Owner ruling D4 (WP-C7.9) already decided the repair question in the other direction: record the
+boundary rather than instrument the backend. Bounding it natively means per-call depth
+instrumentation in every generated function — paid by every program, to report a host-defined
+condition it still could not fully cover, since host stack growth from the runtime or a provider
+stays invisible to it. This disposition does not reopen D4; it stops carrying a settled decision as
+an open defect.
+
+**§14's explicit warning was observed: the number was not raised.** `MAX_CALL_DEPTH` is unchanged.
+
+**Residual, stated rather than hidden:** a program that recurses without a base case is reported
+cleanly under `stark run` and dies by signal when built natively. That asymmetry is now a documented
+limit, not an open deviation. If native execution ever acquires a reason to bound call depth for its
+own sake, this reopens as a repair — the original entry's "owning gate: none scheduled" still holds.
+
+**Evidence:** `starkc/tests/resource_exhaustion.rs` (interpreter side, pre-existing); the native
+side reproduced above at the baseline SHA.
+
+## DEV-167 — CLOSED, CE1 DECIDED: the method form is a non-promise, not a gap (2026-08-10)
+
+The entry above stands unedited. It correctly identified this as blocked on a
+blanket-implementation decision and correctly called that decision CE-shaped. **The owner made it.**
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced first
+
+```stark
+fn show<T: Display>(value: &T) -> String { return value.to_string(); }
+```
+
+```text
+[E0302] method 'to_string' not found for type 'T'
+        no trait in scope declares a method named 'to_string'
+```
+
+Refused at **name resolution**, identically under all three engines. This is not an engine
+disagreement and not a backend gap — nothing to reconcile, because the language does not have it.
+
+### Why there was no conformance gap to repair
+
+`06-Standard-Library.md:817` declares `trait ToString { fn to_string(&self) -> String; }` and
+`:446` gives `str::to_string`. **Neither promises that every `Display` type carries the method
+form.** The implementation matches the specification exactly. The only live question was whether
+Core v1 *should* make that promise — a change to the language contract, **CE1**, Charter §2.3.
+
+### Decision (owner, CE1, 2026-08-10): keep the free function; close as a documented non-promise
+
+The two alternatives and why neither was taken:
+
+```text
+impl<T: Display> ToString for T   Permitted by the spec, but it CLOSES the trait. See below.
+
+resolver branch on "to_string"    Reintroduces exactly the two-tier trait model DEV-166 removed
+                                  (RESOLVED, DEV-DISPLAY-DISPATCH) — method visibility depending
+                                  on whether a trait is compiler-known. Trades a closed defect
+                                  for ergonomics.
+```
+
+### Correcting the original entry's reason for the blanket option
+
+The entry above says "Core v1 has neither blanket implementations nor extension traits." **The
+blanket half is wrong, and the real objection is stronger.** `03-Type-System.md`
+TRAIT-COHERENCE-002 permits them: "Blanket implementations are permitted only when the overlap test
+proves them disjoint from every other implementation."
+
+The decisive clause is the one before it: **"Positive trait bounds never make unifying heads
+disjoint."** The head of `impl<T: Display> ToString for T` is `ToString for T`, and `T` unifies with
+every type. The `T: Display` bound does **not** narrow it for overlap purposes — disjointness is
+proved only by incompatible nominal constructors, unequal concrete types, or different trait
+identities, none of which apply.
+
+So the blanket impl is admissible only while it is the **only** `ToString` implementation in the
+resolved package graph, and it permanently forecloses any other: a user writing
+`impl ToString for MyType` — to render a type differently from its `Display` form, which is a
+legitimate thing to want — would be rejected by coherence, in a package that may not even contain
+the blanket impl. Core v1 has no specialization, no negative implementations and no
+declaration-order priority to escape with. **That is the cost: not implementation difficulty, but
+converting `ToString` from a trait users may implement into a closed trait derived from `Display`.**
+
+### What is supported
+
+`stark_fmt::to_string<T: Display>(value: &T) -> String` — `packages/stark-fmt/src/lib.stark:75`.
+It is a real workaround, not a notional one: exercised on a **user-defined** type by
+`packages/stark-fmt/src/tests.stark::test_to_string_free_function` (`to_string(&p)` → `"(0,0)"`)
+and by the consumer at `packages/stark-fmt-consumer/src/main.stark:46`.
+
+### The decision is pinned by tests, not only by this paragraph
+
+`starkc/tests/dev_display_dispatch.rs`:
+
+```text
+to_string_on_a_display_bound_is_refused_by_decision
+    positive  the refusal is E0302 and names `to_string`
+    negative  it must NOT be the missing-bound diagnostic — `Display` is already bounded, so
+              "requires the bound" would be advice the user has already taken, and would mean
+              resolution believed `to_string` was reachable from some bound
+
+the_display_bound_still_contributes_fmt_after_the_to_string_decision
+    negative  `fmt()` — the method a Display bound DOES contribute — still dispatches. A change
+              that reached `to_string` by widening compiler-known bound contribution, or that
+              narrowed contribution to exclude it, fails one of these two.
+```
+
+The first test fails the moment someone adds the name-keyed resolver branch, which forces the CE1
+decision to be reopened deliberately rather than reversed quietly for ergonomic reasons. That is
+the whole point of pinning a decision rather than documenting one.
+
+**Residual:** none as a defect. `value.to_string()` on a `T: Display` remains refused **by
+decision**. If Core v1 ever acquires blanket implementations for independent reasons, this becomes
+a natural consequence of that feature and should be revisited then — not before, and not on its own.
+
+## DEV-220 — a diverging arm captured the join's inference variable (RESOLVED, post-C10 P3, 2026-08-10)
+
+Found while building §9.1's `Never` position matrix for DEV-157, and registered separately under
+the repair programme's §19.4 rather than absorbed into it: the root cause is in **typecheck
+inference**, not in MIR or backend representation, which is what DEV-157 is about.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Normative expectation
+
+`!` coerces to every type. It therefore **constrains nothing** — joining a diverging arm with an
+inhabited one yields the inhabited arm's type.
+
+### Current behaviour at baseline: an internal compiler error
+
+```stark
+fn main() { let x: Int32 = if true { 1 } else { panic("p") }; println(x); }
+```
+
+```text
+Error: internal compiler error: DEV-121 representation mismatch at an expression result:
+       expected `Never`, found `Int`
+```
+
+`return` reaches it identically, and that shape is not an error path at all:
+
+```stark
+let x: Int32 = if true { 1 } else { return; };
+```
+
+### Cause, and its relationship to DEV-218
+
+**DEV-218 (CLOSED 2026-08-09) created the precondition, and correctly so.** It made a block produce
+`!` when its reachable path diverges. What no rule then covered is that `!` must not be *bound to*
+an open variable. `infer.rs::unify` matched its `(Ty::Infer(id), other)` arm before
+`(Ty::Never, _) | (_, Ty::Never)`, so `unify(?T, Never)` bound `?T := Never`. The expression's
+recorded type became `Never` while the value produced at run time was the inhabited arm's, and
+**DEV-121's representation guard — closed, and working exactly as designed — caught it.** The ICE
+is the invariant doing its job; the defect is upstream of it.
+
+**Why DEV-218's evidence did not catch this.** Its three programs put the inhabited arm where it
+resolved the variable *first*; `Never` then met an already-concrete type and the correct
+no-op arm applied. Reversing a match's arm order is sufficient to reproduce. The pre-existing
+match-arm probe in DEV-157's own entry passes for exactly this reason — it is `Ok(n) => n` first.
+
+### Repair
+
+```text
+typecheck/infer.rs   the `(Ty::Never, _) | (_, Ty::Never)` arm moves ABOVE the `Infer` arms, and
+                     records the open variable rather than binding it
+typecheck/state.rs   `never_coerced_vars`
+typecheck/infer.rs   `default_never_coerced_vars`, run from `items.rs` AFTER integer-literal
+                     defaulting
+```
+
+**The fallback pass is not optional, and its ordering is load-bearing.** Dropping the binding alone
+merely moved the failure: a variable constrained by nothing else stayed open and reached MIR as
+`type Infer(TypeVarId(0))` — the exact escape `default_unconstrained_int_literals` documents itself
+as preventing. It defaults to `Never` only after integer defaulting has had its turn, so
+`let x = if c { 1 } else { panic(..) };` still yields `Int32`.
+
+### Evidence, and it was proved capable of failing
+
+`three_engine_differential.rs`, five cases, all three engines:
+
+```text
+dev220_if_join_with_a_diverging_else                 diverging arm SECOND
+dev220_match_join_with_the_diverging_arm_first       diverging arm FIRST — the variable is fully
+                                                     open when `Never` arrives
+dev220_if_join_with_an_early_return                  `return`, not `panic`
+dev220_the_diverging_arm_still_traps_when_taken      NEGATIVE: taking the diverging path still
+                                                     traps `Panic`. A "fix" treating the arm as an
+                                                     ordinary value of the join type passes the
+                                                     first three and fails this
+dev220_an_unannotated_join_still_defaults_to_int32   NEGATIVE: literal defaulting still wins over
+                                                     the `!` fallback. A fallback that ran first,
+                                                     or bound eagerly at the unify site, yields
+                                                     `Never` here and fails
+```
+
+**With the arm moved back below `Infer`, all five fail; with the repair, all five pass.** Verified
+by reverting the repair in place rather than by assertion.
+
+Green alongside: 576 lib, 132 conformance, 114 three-engine (before these five), 23
+dev_display_dispatch, layer audit, mir_differential. `cargo fmt --check` clean.
+
+**Residual:** none for this defect. The `Never` positions that remain unbuildable natively are
+DEV-157's, not this one — see its entry.
+
+## DEV-157 — CLOSED, REPAIRED: `!` has a native representation, and it is uninhabited (post-C10 P3, 2026-08-10)
+
+The entry above stands unedited, including its warning that this was "one probe away from being
+filed as a false closure." That warning was earned twice more here: the position matrix §9.1
+required found **two** further defects the entry did not name, one of them an internal compiler
+error.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### The position matrix, built by probe
+
+22 programs, each run under the HIR oracle and built natively. Classified per §9.1:
+
+```text
+SUPPORTED AT BASELINE      statement expression; match arm (inhabited arm first);
+                           return/tail position
+REFUSED EARLY, CORRECTLY   nothing — see "accepted set" below
+INTERNAL COMPILER ERROR    if/else join; match with the diverging arm FIRST; `else { return; }`;
+                           unannotated join                              -> DEV-220
+MIR LOWERING FAILURE       if/else join (`block in value position yielded no value`)
+BACKEND FAILURE            local initialiser; argument position; tuple, array and struct
+                           elements; nested composite                    -> this entry
+```
+
+### Three distinct repairs, in three phases
+
+**1. `typecheck` — registered separately as DEV-220.** A diverging arm captured the join's
+inference variable. Not absorbed here: the root cause is inference, not representation, and §19.4
+requires a defect class in an unrelated phase to be registered on its own.
+
+**2. `mir/lower.rs` — the else arm now tolerates a diverging block.** The then arm already did
+(`if let Some(v) = then_value`); the else arm routed through `lower_expr_to_operand` and demanded
+a value. `if c { x } else { return; }` — not an error path, ordinary control flow — could not be
+built natively. Nothing is assigned on a path that never reaches the join, which is the rule the
+then arm already relied on.
+
+**3. `backend` — `MirTy::Never` is `core::convert::Infallible`, an EMPTY enum.**
+
+§9.2's rule was that no runtime storage may be invented for an uninhabited value. None is:
+
+```text
+emit_types::emit_ty_at    MirTy::Never -> core::convert::Infallible (uninhabited, zero-sized)
+emit_types::mentions_never a composite with an uninhabited component is itself uninhabited
+emit_bodies               such a local is declared UNINITIALISED, never default-initialised
+```
+
+`default_value_expr` still refuses `Never` and is right to — there is no value to fabricate. The
+local is the result place of a diverging expression; control never reaches its assignment.
+**rustc's own definite-assignment analysis is the standing check on that claim**: a `Never` local
+that were genuinely read fails to compile rather than reading fabricated storage.
+
+**4. `mir/verify.rs` — the never-coercion allowance is now STRUCTURAL.** `expect_ty` permitted
+`Never` only at the top level, so `(1, panic("p"))` into a `(Int32, Int32)` place was rejected
+`MIR-0004: expected Tuple([Int32, Int32]), found Tuple([Int32, Never])`. `03-Type-System.md` says
+`!` coerces to *any* type; a composite with an uninhabited component is itself uninhabited and no
+value of it reaches the assignment. `never_coercible` recurses structurally — **only `Never` is
+permissive; every other mismatch still fails.** Found by the three-engine harness and by nothing
+else: `stark build` alone accepted the program.
+
+### The accepted program set changed, and it changed TOWARD the specification
+
+```stark
+let x: Int32 = 1 + panic("p");
+```
+
+was refused `[E0500] type '!' does not satisfy operator trait 'Num'`, and is now accepted (and
+traps, in all three engines). **That refusal was an artefact of DEV-220**, not a rule: the literal's
+variable had been bound to `Never`, so the operator check ran against `!` instead of `Int32`.
+`03-Type-System.md` line 67 is unqualified — "An expression of type `!` coerces to any other type"
+— so accepting it is conformance, not widening. Recorded explicitly because a change to the
+accepted set is normally CE1/CE2 territory; this one required no decision because the
+specification already stated the outcome.
+
+### Evidence
+
+`three_engine_differential.rs`, seven cases, all three engines agreeing on trap category AND exact
+trap line:
+
+```text
+dev157_never_in_a_local_initialiser          dev157_never_inside_an_array
+dev157_never_in_argument_position            dev157_never_in_a_struct_field
+dev157_never_inside_a_tuple
+
+dev157_a_diverging_call_still_diverges       NEGATIVE (§9.3): a backend that gave `Never` real
+                                             storage and let control fall through completes here
+dev157_code_after_a_diverging_initialiser_is_unreachable
+                                             NEGATIVE: statements after an unreachable initialiser
+                                             never run
+```
+
+**Proved capable of failing:** with the `MirTy::Never` representation removed, 6 of 7 fail. The
+seventh is `..._still_diverges`, which correctly passes either way — it guards a *different* wrong
+fix, and a control that failed for the absence of the repair would not be controlling anything.
+
+Green: 576 lib, 132 conformance, 126 three-engine, 23 dev_display_dispatch, 8 mir_differential,
+layer audit, adversarial accepted-surface audit. `cargo fmt --check` clean; clippy
+`--workspace --all-features --all-targets -D warnings` clean.
+
+**Residual:** `loop { }` with no `break` has type `!` per TYPE-LOOP-001; it builds, and was
+verified by building rather than running, because running it correctly never terminates.
+
+## DEV-168 — CLOSED, REPAIRED: the qualified core-trait call lowers (post-C10 P4, 2026-08-10)
+
+The entry above stands unedited.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced
+
+```stark
+impl Display for P { fn fmt(&self) -> String { return "P".to_string(); } }
+let s: String = Display::fmt(&p);
+```
+
+```text
+stark run   -> P                                       (front end and HIR oracle, both fine)
+stark build -> native build does not yet support this program: callee form (C4.5)
+```
+
+### Cause
+
+`lower_call` matched `Res::TraitMember(trait_item, member)` and reached into
+`hir::ItemKind::Trait` for the signature. **A compiler-known trait has no such item** — the same
+fact DEV-166 was about — so `Display::fmt` resolves to `Res::CoreTraitMember` instead, matched no
+arm, and fell through to the catch-all.
+
+### Repair, and what it deliberately does NOT add
+
+§10.2 forbade a second trait-dispatch authority. None was added:
+
+```text
+check_qualified_core_trait_call   ALREADY selects the impl member and publishes it, through
+                                  publish_operator_use -- the same publisher `a == b` uses,
+                                  with DispatchProvenance::CoreTrait
+operator_callable_key             ALREADY consumes exactly that provenance, and already handles
+                                  both binding times: Static for a concrete nominal, Bound for a
+                                  bounded generic parameter
+```
+
+The new `Res::CoreTraitMember` arm **reads that published answer** and emits the call. No impl
+scan, no unification, no trait name special-cased, no generic substitution rediscovered in the
+backend — the arm is routing, not selection. The receiver still weakens `&mut` to `&` when the
+selected member takes `&self` (C6.1f-b2), and, as in the user-trait arm, no auto-borrow applies
+because the receiver is written explicitly.
+
+### Evidence
+
+`three_engine_differential.rs`:
+
+```text
+dev168_qualified_core_trait_call_on_a_concrete_nominal
+dev168_qualified_core_trait_call_through_a_generic_impl   impl<T: Display> Display for W<T> --
+                                                          fails if lowering re-derives the
+                                                          callable instead of reading the
+                                                          checker's substitution
+dev168_qualified_eq_matches_the_operator_it_spells        a DIFFERENT core trait, so the repair is
+                                                          not keyed to `Display`; `Eq::eq(&a,&b)`
+                                                          and `a == b` select the same impl
+```
+
+**`dev_display_dispatch.rs::qualified_calls_disambiguate_the_two_traits` is upgraded from
+front-end-and-oracle to full three-engine agreement.** That test is the one this entry named as its
+evidence, and its doc comment recorded the gap; it now proves the gap closed rather than describing
+it. It exercises both spellings — `Display::fmt` (repaired here) and `OtherFormat::fmt` (the user
+trait path, which already lowered) — so a future divergence between them is pinned by the
+interleaved output.
+
+**Negative control:** `a_qualified_core_trait_call_without_an_impl_is_still_refused`. A type with no
+`Display` impl is still refused `E0500`, naming both the type and the trait. Because the repair
+reads a publication rather than scanning, a type that never produced one cannot reach lowering at
+all — a backend-side impl scan would, and would fail this.
+
+**Proved capable of failing:** with the arm removed, all three `dev168_*` cases fail.
+
+Green: 576 lib, 132 conformance, 129 three-engine, 24 dev_display_dispatch, 17 as3_display_plan,
+5 as3_invocation_authority, 8 mir_differential, layer audit, adversarial accepted-surface audit.
+
+### Residual — a SEPARATE front-end gap, not this one
+
+```stark
+fn show<T: Display>(x: &T) -> String { return Display::fmt(x); }
+```
+
+is refused `[E0500] type 'T' does not implement 'Display'`. `check_qualified_core_trait_call`
+selects by scanning impls for the receiver's nominal type and never consults the parameter's
+BOUNDS, so a bounded generic receiver finds nothing. This is a **front-end over-rejection**,
+pre-existing and independent of this repair — DEV-168 was explicitly "type-checks and runs under
+the oracle, MIR refuses", and this shape does not type-check at all. Registered here rather than
+absorbed, per §19.4. The ordinary method form (`x.fmt()`) works, so it has a working spelling.
+
+## DEV-140 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+Assessed individually as §12.1 requires. Not grouped with DEV-141..145 — §12.2's rule is satisfied
+by no pair of them.
+
+```text
+reproduced          YES. layer_audit L7153, an ENFORCING gate since CD-342: it fails on an
+                    unregistered finding and equally on a registered one that stops reproducing,
+                    so a green run is the reproduction evidence.
+user-visible shape  `v.insert(0u64, 2)` -- a `Vec` method outside the implemented lowering set.
+consumer            NONE. No first-party package calls insert/extend/truncate/sort/reverse/
+                    contains/dedup/split_off/drain/retain on a Vec.
+missing layer       There is no `RuntimeFn::VecInsert`. Adding it spans FOUR layers: the RuntimeFn
+                    enum, a `stark_runtime` implementation, backend emission, and the MIR
+                    verifier's runtime-callee signature table (V-RT-1/MIR-0012).
+radius              Feature addition, not a repair. Each new method repeats all four layers.
+disposition         DEFERRED. §12.1 step 6 permits repair only if bounded; this is not, and §24
+                    directs that application pressure drive it. §12.3 forbids widening native
+                    claims beyond tested shapes, and there is no shape to test against a consumer.
+```
+
+Front end and HIR oracle accept and run it; MIR refuses before any code is emitted. **No
+soundness impact** — an accepted-but-unbuildable refusal, the E0105 class, caught at compile time.
+
+## DEV-141 — reproduced, a std-full profile boundary (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L8093.
+user-visible shape  `HashMap<Int32, D>` where `D` implements `Drop`.
+consumer            NONE. No first-party package declares a `HashMap` of any element type.
+missing layer       Lowering has no drop elaboration for map values carrying a destructor.
+radius              **This is a PROFILE boundary, not only an implementation gap.** The refusal
+                    text names it: "reserved -- std-full". `06-Standard-Library.md` defines
+                    `core-min` and `std-full`; the built profile is core-min, which does not carry
+                    these collections. Repairing it means implementing part of a profile this
+                    build does not claim.
+disposition         DEFERRED, and the reason is different from its five siblings: closing it is
+                    not a defect repair but a profile expansion. Reclassifying it as a documented
+                    profile boundary is arguably more accurate than "layer defect" and is left as
+                    an owner decision rather than taken here.
+```
+
+## DEV-142 — reproduced, needs generated lifetimes, deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L9130.
+user-visible shape  `(String, &str)` printed as a tuple -- a droppable composite that also carries
+                    a borrowed element.
+consumer            NONE.
+missing layer       The drop plan for a composite mixing an owned droppable and a borrow needs
+                    GENERATED LIFETIMES in the emitted Rust -- a later C6.3e slice.
+radius              The largest of the six. Generated lifetimes are a backend capability, not a
+                    method; nothing else in the six needs them.
+disposition         DEFERRED.
+```
+
+## DEV-143 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L5346.
+user-visible shape  `assert_eq(x, y)` where the operands are a user struct with `impl Eq`.
+consumer            NONE, and this was checked closely because tests are where it would bite
+                    first. Every `assert_eq` across the first-party packages compares a scalar or
+                    a string -- `.len()`, `.as_str()`, an index projection's field. Not one
+                    compares a user-defined type.
+missing layer       TWO phases. The checker types `assert_eq` as `fn(T, T) -> Unit` with no `Eq`
+                    requirement and publishes NO selection, so there is nothing for MIR to read;
+                    MIR then refuses the user-nominal operand. A repair must add the publication
+                    (as `println` does for Display, via `display_checks`/`record_display_plan`)
+                    and then dispatch through it.
+radius              Bounded-ish and the most tractable of the six -- it would reuse the same
+                    published-selection path DEV-168 now routes through. Still a two-phase change
+                    to a builtin's contract, and it moves an existing refusal from MIR to the
+                    checker, which is the shape CD-294 records as not always cheap (E0106 was
+                    reverted for exactly that reason).
+disposition         DEFERRED, with a note that this is the one to do FIRST if application pressure
+                    appears. `a == b` on a user nominal already works in all three engines, so the
+                    working spelling exists.
+```
+
+## DEV-144 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L3698: `type Core(ValuesIter, [Primitive(Int32)]) (C4.5)`.
+user-visible shape  `for` driving an iterator that is neither a range nor a `Vec` cursor.
+consumer            NONE. No first-party package writes `for x in <expr>()` over such an iterator.
+missing layer       Lowering implements the range and `Vec` cursors; other iterables reach an
+                    unsupported site. `iterator_fn_key` already exists to read the checker's
+                    `Iterator::next` selection, so the authority is present -- what is missing is
+                    the per-cursor lowering for each Core iterator type.
+radius              One cursor type at a time. Not shared with any other deviation here.
+disposition         DEFERRED.
+```
+
+## DEV-145 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L6450: `method to_uppercase on String`.
+user-visible shape  A method call whose receiver auto-derefs to a type lowering does not carry.
+consumer            NONE. No first-party package calls to_uppercase/to_lowercase/trim/replace/
+                    starts_with/ends_with/find/split_at/repeat.
+missing layer       Same four-layer shape as DEV-140 -- RuntimeFn, runtime implementation, backend
+                    emission, verifier signature -- but on `String` rather than `Vec`.
+radius              Feature addition per method.
+disposition         DEFERRED.
+```
+
+## P6 — the six layer defects: individually assessed, repair deferred (2026-08-10)
+
+**Not a bulk deferral: six separate assessments, above.** Recorded together only to state the
+finding that applies across them, and the two conclusions that required all six to see.
+
+**Finding: zero application pressure.** Not one of the six shapes is used by any first-party
+package. §12.1 step 3 asks whether a real package needs the shape; for all six the answer is no.
+
+**§12.2's grouping rule is satisfied by no pair.** The six name FOUR different missing authorities:
+
+```text
+C4.5e runtime-method sub-slice      DEV-140 (Vec), DEV-145 (String)
+std-full collections                DEV-141
+C6.3e generated lifetimes           DEV-142
+Eq-impl dispatch for a builtin      DEV-143
+C4.5 iterator cursor lowering       DEV-144
+```
+
+DEV-140 and DEV-145 come closest — the same four-layer shape — and still fail the rule: different
+receiver type, different runtime functions, different negative controls. "Both are in generated
+Rust" and "both are a method sub-slice" are exactly the insufficient groupings §12.2 names.
+
+**Why they are not repaired here.** §12.1 step 6 permits repair only if bounded; none is. §12.3
+forbids widening the native claim beyond tested shapes, and with no consumer there is no shape to
+test. §24 is explicit that `application hits it -> reproduce -> repair boundedly` is preferable to
+`deviation exists -> redesign backend until count is zero`.
+
+**These six continue to DEFINE the supported native subset**, which is what the original CD-342
+registration was for. The layer audit keeps them honest in both directions: it fails on an
+unregistered finding AND on a registered one that stops reproducing.
+
+**Owner decision, 2026-08-10:** record the assessment and defer. Population unchanged at 9.
+
+## DEV-159 — RESOLVED: the generated-crate directory is now mutually excluded (post-C10 P5, 2026-08-10)
+
+Both earlier headings stand unedited, including the C10-Q pass's refusal to call it settled. That
+refusal was right: it was never confirmed OR falsified, only carried.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced, and not marginally
+
+§11.1's rule is that a single successful build settles nothing. So: six concurrent `stark build`
+invocations of ONE program, from a cold artifact directory, forty iterations.
+
+```text
+BEFORE   73 failures / 240 builds   (N=6 concurrent, debug)
+```
+
+Two distinct signatures, both from the same cause:
+
+```text
+"the STARK native backend generated a crate that Cargo could not build"
+"could not install native artifact ... No such file or directory (os error 2)"
+```
+
+### Cause — and the content-addressed directory is not the fix, it is the collision
+
+§11.2 lists "content-addressed build directory" as a candidate remedy. **It was already there**
+(`compute_build_key`, since CD-044/055/067 — long before this deviation was reported) and it is
+precisely why two builds of the same program land in the same directory. That reuse is deliberate
+and worth keeping.
+
+What had no sequencing was everything this compiler does *around* Cargo, all against that one
+directory:
+
+```text
+reject_stale_artifact_version    can remove_dir_all the directory
+write_file                       std::fs::write -- truncate-then-write, not atomic
+cargo build                      Cargo locks its OWN target dir, so this part was never the problem
+reading the produced binary      done by the CALLER, after build_and_link returns
+```
+
+### Repair
+
+`BuildLock`, held from before the stale check until the artifact is dropped — which is **after the
+caller installs the binary**, because that read is one of the two failure signatures. The guard
+travels out in `NativeArtifact` for exactly that reason.
+
+**The mutual exclusion is `create_dir`, not a sleep.** Creating a directory is an atomic
+test-and-set: two callers cannot both succeed. The backoff is only how a loser waits, and
+correctness does not depend on its duration — §11.2's "do not rely on sleeps" forbids sleeping
+*instead of* synchronising, which is the opposite of this. No `unsafe` (the crate forbids it) and
+**no new dependency**, which matters for a compiler whose dependency surface is `sha2` and its own
+crates.
+
+Scope is one build key. Two builds of different programs have different keys and never contend —
+§11.2 permits global serialisation only if narrower isolation is impossible, and it is not. An
+abandoned lock (a build killed by Ctrl-C, a CI timeout, an OOM) is broken by age, so the repair
+cannot trade a race for a hang.
+
+The lock lives BESIDE the crate directory, not inside it: `reject_stale_artifact_version` may
+remove that directory while the lock is held, and a lock deleted by that removal would release
+itself mid-build.
+
+### Measured result
+
+```text
+BEFORE   73 failures / 240 builds   (N=6, debug)
+AFTER     0 failures / 240 builds   (N=6, debug)
+AFTER     0 failures / 200 builds   (N=8, release)
+```
+
+### Negative control — §11.3
+
+A stress run is not a regression test: it is slow and its failure rate is a probability, so a
+broken lock could pass one. What is pinned instead is the property the stress run depends on.
+
+`build::dev159_build_lock::two_acquisitions_of_one_build_directory_cannot_overlap` — eight threads,
+25 acquisitions each, counting overlaps between the guard's fences. **With the exclusion neutered
+(`acquire` returning a guard without creating the directory) it fails immediately and
+deterministically**, which is what §11.3 asks for; the stress run's sensitivity is a probability,
+this one's is not. Two further controls pin that the guard releases on drop, and that different
+build keys do not contend — a lock keyed on anything coarser would serialise the whole compiler.
+
+Green: 579 lib, 132 conformance, 129 three-engine, 24 dev_display_dispatch, 8 dev160_call_site_thunk,
+15 c64_platform_matrix. `cargo fmt --check` clean; clippy `--workspace --all-features --all-targets
+-D warnings` clean.
+
+**Residual:** measured on macOS, one machine, with a small program. The mechanism is filesystem
+atomicity rather than anything program- or platform-specific, and CI covers the three Tier-1
+platforms, but the STRESS NUMBERS above are from this host and are not claimed for others.
+
+## DEV-180 — RESOLVED (post-C10 P1, repair commit `1db9760`, 2026-08-10)
+
+The owner's ruling that this follows C10-Q was observed: the repair landed after the gate closed.
+
+Receiver materialisation already bound `Value::Ref(caller_place)` for `&mut self`. What remained
+was the epilogue from when it did not — an error path that took the callee's receiver local and
+wrote it back into the caller's place, an algorithm whose only purpose was to simulate a mutable
+reference by taking the value and putting it back. With a genuine reference bound, the caller's
+place is never emptied, so there is nothing to restore, and the value it would have restored is
+itself a `Value::Ref`. `&mut self` also joins `&self` in leaving the frame before cleanup: a
+borrowed receiver must not be among the locals destroyed at method exit.
+
+`rebase_frame_refs` is untouched — a returned `&mut` still needs rebasing out of the method frame,
+and the entry's own list of forbidden repairs names removing it as the mistake to avoid.
+
+Evidence: `as3_receiver_materialization` 7/7, `interp::tests` 144/144, and the negative controls the
+entry named (`audit_10c_a_mut_self_receiver_must_keep_place_identity`, by-value self still consumes,
+shared receiver does not consume).
+
+## DEV-160 — the record corrected: `E0502` DOES reach the user (OPEN, post-C10 P2, 2026-08-10)
+
+§8.1 asked for the exact live shape and a classification before choosing a repair layer. Both are
+below, and the reproduction contradicts what this deviation was believed to be.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Correction to the record
+
+The C10-Q-era reading — carried into the post-C10 reproduction pass — was that DEV-160's remaining
+gap is *backend completeness with the boundary enforced by name*, never delegated to rustc. The
+`emit_call_thunk` module header says exactly that: b, c and d are "refused by name ... because the
+alternative is `E0502` inside this generated module".
+
+**That is not true for at least one shape.** Reproducer:
+
+```stark
+struct Req { url: String, body: String }
+fn send(u: &str, b: String) -> UInt64 { return u.len() + b.len(); }
+fn main() {
+    let r = Req { url: "http://x".to_string(), body: "hi".to_string() };
+    println(send(r.url.as_str(), r.body));
+}
+```
+
+```text
+stark run   -> 10
+stark build -> error: the STARK native backend generated a crate that Cargo could not build
+               generated crate: error[E0502]: cannot borrow `_1` as mutable because it is also
+               borrowed as immutable  --> src/main.rs:103:96
+```
+
+**This is the failure §8 names as the one the architecture must not have:** STARK accepts, generated
+Rust is emitted, rustc rejects it, and the user is shown a borrow error about a line they did not
+write.
+
+### Classification (§8.1): D, with a DETECTION gap
+
+Not A or B — the front end is right, the accesses are disjoint. Not C. It is D, and the specific
+mechanism is that the refusal written for this shape is **unreachable for it**:
+
+```text
+plan_for_call
+  absorbable_borrows(...)      derived from the call's OWN block
+  if !conflicts(...) -> None   <-- returns here for a cross-block borrow
+  ...
+  DEV-160b refusal             <-- written for `builder.url.as_str()`, never reached
+```
+
+`as_str()` runs in an earlier block, so its `&str` is not among this block's borrows; the argument
+list looks like a single access to `_1`; no thunk is planned; and the named refusal downstream never
+runs.
+
+### A repair was implemented, measured, and REVERTED
+
+Making `conflicts` consult `borrow_provenance` (which does trace across blocks) makes the refusal
+reachable, and the reproducer above then fails with the named DEV-160b message and its workaround
+instead of `E0502`. All compiler suites stayed green, including `dev160_call_site_thunk` 8/8.
+
+**It over-refuses shipping code.** `stark-get` — the HTTPS application — stopped building:
+`stark_http_client::follow@[]` was refused, and `follow` is a path that builds today and is already
+written in the workaround form this deviation recommends. Provenance over-approximates by design: it
+reports that a value derives from a slot, not that a borrow of that slot is still live where rustc
+looks. Narrowing it to exactly rustc's answer means modelling rustc's borrow checker over generated
+code, which is §19.3's "repair requires architectural expansion".
+
+Reverted. `stark-get` builds again. **The measurement is kept because it is the finding:** the cheap
+fix for the detection gap is not admissible, and that is worth more than an untested claim that it
+would work.
+
+### Disposition
+
+OPEN. §23's exit criterion 3 for this deviation — "its exact supported boundary is enforced by STARK
+rather than delegated accidentally to rustc" — is **NOT met**, and this entry now records why
+rather than asserting that it is.
+
+What is now known that was not before: the boundary has a hole; the hole is a reachability gap in
+`plan_for_call`, not a missing refusal; the obvious closure over-refuses real code; and the honest
+closure needs either cross-block absorption (DEV-160b's own deferred work package, owner ruling
+2026-08-03) or a liveness-accurate provenance that provenance is not.
+
+**Residual for users:** the shape has a working spelling — bind the fields to locals before the
+call — which is what `stark-http-client` already does and documents at `src/lib.stark`.
+
+## DEV-160 — the rustc leak is sealed; the capability half remains (OPEN, post-C10 P2 continued, 2026-08-10)
+
+Supersedes the disposition immediately above, which recorded that no bounded closure was
+admissible. **That was true of the repair attempted there, and not true in general.** The entry is
+left standing because the failed attempt is the reason this one is correct.
+
+### What the first attempt got wrong
+
+Making `conflicts` consult `borrow_provenance` over-refused `stark_http_client::follow`. The cause
+was one propagation rule, not the idea:
+
+```rust
+Rvalue::Use(Operand::Copy(p) | Operand::Move(p)) => vec![p.local.0],
+```
+
+**A move transfers ownership.** `follow` does `let mut url = builder.url;` and then
+`send_once(.., url.as_str(), headers, body)`. After that move, `url` owns its own slot, and
+borrowing it does not borrow `builder` — but provenance propagated through the move, so the
+reference looked like a borrow of `builder`, whose siblings were also moved. The reproducer is
+genuinely different: it borrows `r.url` **in place**, while `r` still owns it.
+
+### Repair
+
+```text
+borrow_provenance   a MOVE severs provenance; only copies and references propagate
+conflicts           consults provenance, so a borrow arriving from an EARLIER block is visible
+                    before the early return that was skipping the DEV-160b refusal
+```
+
+The refusal was never missing. It was **unreachable for its own case**: `plan_for_call` returned
+`None` first, because a cross-block borrow is not among the call block's own borrows.
+
+### Measured, in both directions — the direction that caught the first attempt
+
+```text
+reproducer `send(r.url.as_str(), r.body)`   E0502 in generated code -> REFUSED BY NAME
+stark-get (HTTPS application)               builds, unchanged
+5 consumer applications                     build, unchanged
+dev160_call_site_thunk                      8/8, incl. the DEV-160d under-refusal guard
+```
+
+**The accepted program set is unchanged.** Eight borrow/move shapes built with the pre- and
+post-repair compilers and classified:
+
+```text
+in-block borrow + sibling move        BUILDS -> BUILDS
+fields moved to locals first          BUILDS -> BUILDS      (the `follow` shape)
+borrow + Copy sibling                 BUILDS -> BUILDS
+borrow outliving the call             REFUSED -> REFUSED    (DEV-160d, unchanged)
+two sibling moves                     BUILDS -> BUILDS
+borrow + sibling .len() in one call   BUILDS -> BUILDS
+cross-block `as_str()` + move         E0502  -> REFUSED BY NAME
+same, with a trailing field read      E0502  -> REFUSED BY NAME
+```
+
+Only the two leaks changed, and each became a named refusal. **Nothing that built stops building
+and nothing newly builds** — §12.3 is satisfied without a subset claim being widened.
+
+### What this does and does not settle
+
+§23's exit criterion 3 — "the exact supported boundary is enforced by STARK rather than delegated
+accidentally to rustc" — is now **MET for the demonstrated shape**. `E0502` no longer reaches a
+user for it.
+
+DEV-160 **stays OPEN** for the capability half: these programs are valid STARK and still do not
+build. Closing that is DEV-160b's cross-block absorption — the thunk absorbing the borrow-producing
+call across the block boundary — which remains its own deferred work package under the owner ruling
+of 2026-08-03.
+
+### The residual risk, stated rather than hidden
+
+Provenance answers "this value may derive from that slot", not "a live borrow of that slot reaches
+this call". Those differ, and the first attempt is proof that the gap has teeth. Severing on moves
+removes the false positive that mattered, and the corpus and package evidence above found no other
+— **but absence of a counterexample is not a proof of precision.**
+
+The precise mechanism is a backward walk of the reference's own def-use chain (producer call →
+its reference argument → the `RefOf` that seeded it), admitted only when the producer dominates the
+consumer on one straight-line path with nothing observable between. That analysis is needed anyway
+for cross-block absorption to decide what it may absorb, and it should replace the provenance
+heuristic here when it lands — one authority deciding both, which is the property this module
+already holds elsewhere. Recorded now so the interim is retired deliberately rather than forgotten.
+
+# Reconciliation: sixteen IDs COMPILER-STATE.md tracked and this ledger never did
+
+`c10-deviation-populations.py` reports a bucket named "POPULATION A — named in COMPILER-STATE.md,
+owning no heading here". It held sixteen IDs. They were never open defects hiding from the tool;
+they were resolved in `COMPILER-STATE.md` prose and never given a heading the ledger could
+classify. The consequence was narrow and real: **"population A is N" was only ever true of the
+ledger-derived set**, and a reader of `COMPILER-STATE.md` got a different number.
+
+Each is closed below with the evidence that settled it. **Probed, not taken on the prose's word** —
+this repository's own record is that 7 of 23 deviations did not reproduce at the C10-Q anchor, and
+that DEV-157 was "one probe away from being filed as a false closure". A paragraph asserting a fix
+is exactly the thing that needs checking.
+
+Probes run at `9a0557f`, outside the repository tree.
+
+## DEV-091 — out-of-range float→int cast at 64-bit widths (RESOLVED, reconciled 2026-08-10)
+
+```stark
+let f: Float64 = 1.0e19; let n: Int64 = f as Int64;
+```
+
+```text
+HIR     Error: runtime error: numeric cast out of range
+native  error: runtime trap: cast failure
+```
+
+Traps in both engines. `1.0e19` exceeds `Int64::MAX` (~9.22e18) and is precisely the shape the
+defect admitted, because both sides compared against `max as f64`, which rounds UP at 64-bit width.
+
+## DEV-096 — the trap CATEGORY for an out-of-range cast (RESOLVED, reconciled 2026-08-10)
+
+Settled by the same probe, and it is a different claim from DEV-091's: the oracle reported every
+out-of-range cast as an arithmetic overflow. It now says **"numeric cast out of range"**, and native
+says **"cast failure"** — the cast category, not the arithmetic one. Recorded separately because a
+probe that only checked "it traps" would have passed while the category was still wrong.
+
+## DEV-097 — bounds-check span blame (RESOLVED, reconciled 2026-08-10)
+
+```stark
+let v: [Int32; 3] = [1, 2, 3]; let i: UInt64 = 7u64; println(v[i]);
+```
+
+Traps `index out of bounds` in HIR and native. **Bounded claim:** this probe confirms the trap
+fires and agrees across engines; the entry's specific complaint was that the two ends of one bounds
+check blamed different columns, and a full column-level re-check is not claimed here.
+
+## DEV-099 — a layout query on an ARRAY type (RESOLVED, reconciled 2026-08-10)
+
+The entry read as a live pre-existing defect: `size_of::<[Int32; 4]>()` "reaches lowering and dies
+with 'field type form (C4.5)'".
+
+```text
+HIR     16
+native  builds, prints 16
+```
+
+**It does not reproduce.** Fixed at some point between 2026-07-23 and now, and never recorded.
+This is the one of the sixteen that most needed a probe rather than a reading.
+
+## DEV-092 — symbol sanitization injectivity (RESOLVED, reconciled 2026-08-10)
+
+`backend::generated_rust::mangle` states injectivity as its purpose in three places and carries the
+round-trip-through-a-decoder test the entry called for. `mangle::` suite green, 9 passed.
+
+## DEV-095 — the generated-crate build key (RESOLVED, reconciled 2026-08-10)
+
+Recorded as a WP-C5.3 opening condition and explicitly NOT fixed at the time. It is fixed now:
+`build.rs`'s test module is titled "DEV-095's cache-invalidation coverage — every semantic input
+that can affect generated code must change the build key", with one test per input so a failure
+names the input that stopped being covered. `build::tests` green, 24 passed.
+
+## DEV-101 — cross-package generic typecheck provenance (RESOLVED, reconciled 2026-08-10)
+
+`tests/cross_package_generics.rs` green, 11 passed.
+
+## DEV-093 — native success-path tests observed no computed values (RESOLVED, reconciled 2026-08-10)
+
+Both were recorded FIXED in `COMPILER-STATE.md` when found, and neither is a user-visible language
+behaviour a probe can reach: DEV-093 was native success-path tests asserting only `exit == 0`
+(fixed by making them observe computed values, which is what every three-engine case now does), and
+DEV-094 was the version-mismatch message naming the wrong version on each side. Closed on the
+recorded evidence, and this heading says so rather than implying a probe was run.
+
+## DEV-098 — `Operand::Copy` on a `&mut` reference (ACCEPTED-INDEFINITELY, reconciled 2026-08-10)
+
+Never a defect. A deliberate, verifier-accepted MIR shape that the `Copy` classification does not
+describe, recorded as NOT a regression when found. Dispositioned rather than closed, on OD-7's
+distinction: it needs an owner and a statement, never a repair.
+
+## DEV-002 — stale conformance counts (RESOLVED, reconciled 2026-08-10)
+
+A tooling-hygiene finding. `check-conformance.py` now warns on `missing` entries that still carry
+`source`/`tests` fields and on likely-semantic-rejection rules with zero recorded tests.
+
+## DEV-094 — the version-mismatch message named the wrong version on each side (RESOLVED, reconciled 2026-08-10)
+
+`version::check` assigned the LINKED runtime's `RUNTIME_VERSION` to `expected_runtime_version` and
+the generation-time value to the other side, so each half of the message named the wrong one.
+Recorded FIXED in `COMPILER-STATE.md` when found. Not a language behaviour a probe can reach, and
+this heading says that rather than implying one was run.
+
+## DEV-158 — install through a whole-value accessor (RESOLVED, CD-371, reconciled 2026-08-10)
+
+Already closed under its own CD in `COMPILER-STATE.md`; what was missing was a heading here. Its
+sibling DEV-162 closed under CD-372, and DEV-160a under CD-374 — the same family, and the only one
+of the four still live is DEV-160's capability half.
+
+## DEV-163 — a read timeout did not report as a timeout on Unix (RESOLVED, CD-375, reconciled 2026-08-10)
+
+```text
+Unix     SO_RCVTIMEO expires -> EAGAIN       -> ErrorKind::WouldBlock -> Interrupted
+Windows  SO_RCVTIMEO expires -> WSAETIMEDOUT -> ErrorKind::TimedOut
+```
+
+One platform reported the wrong classification for the same condition — the platform-divergence
+shape `stark-layout-verification` exists for. Closed under CD-375.
+
+## DEV-164 — closed in the same packet as DEV-163 (RESOLVED, CD-375, reconciled 2026-08-10)
+
+## DEV-182 — a parser decoded escaped non-BMP characters to the empty string (RESOLVED, reconciled 2026-08-10)
+
+Closed, and the reason it is still cited is worth keeping: **both sides reported success and only
+the VALUE was wrong**, so it passed protocol validation. That is why C10-B promises diagnostic
+codes, spans and text SEPARATELY from determinism — byte-identical output for the same source says
+nothing about whether the output is right.
+
+## DEV-165 — `connect_timeout` accepted and ignored — POPULATION B, not A (reconciled 2026-08-10)
+
+**The one of the sixteen that is genuinely open — and it is not Population A.** It is an
+HTTP-client defect, not a compiler one; the audit that found it said so explicitly. It belongs to
+**Population B (release/distribution)**, which constrains public wording rather than conformance,
+is frozen by hand per OD-3, and is already owned: *deferred to the networking roadmap*.
+
+Given a heading here so the tool stops reporting it as unclassified, **not** to move it into
+Population A. It is not a compiler-track defect and must not inflate that count.
+
+**This heading deliberately carries no bare `OPEN`, and therefore sorts to ADJUDICATE.** That is the
+correct answer, not a dodge: the tool's own note says adjudicate is where a human decides and a
+regex that guessed would be doing it badly. Which population an ID belongs to is exactly such a
+decision. It is OPEN — in Population B, which OD-3 freezes by hand and which this file cannot
+derive.
+
+## DEV-221 — a qualified core-trait call on a BOUNDED generic parameter (OPEN, registered 2026-08-10)
+
+Registered so it stops being a residual paragraph inside DEV-168 with no number of its own.
+
+```stark
+fn show<T: Display>(x: &T) -> String { return Display::fmt(x); }
+```
+
+```text
+[E0500] type 'T' does not implement 'Display'
+```
+
+`check_qualified_core_trait_call` selects by scanning impls for the receiver's nominal type and
+never consults the parameter's BOUNDS, so a bounded generic receiver finds nothing. A **front-end
+over-rejection**: `T: Display` says T implements Display, so TYPE-METHOD-001's qualified form
+should be available.
+
+Distinct from DEV-168, which was "type-checks and runs under the oracle, MIR refuses" — this shape
+does not type-check at all, in any engine. Found while proving DEV-168's repair.
+
+**Working spelling exists:** the ordinary method form `x.fmt()` works, which is what DEV-166's
+repair delivered. Severity is ergonomic, not a correctness leak.
+
+## DEV-165 — RESOLVED: `connect_timeout` is applied, not accepted and ignored (2026-08-10)
+
+The reconciliation heading above recorded this as Population B, open, and deferred to the
+networking roadmap. **It is repaired instead.**
+
+### The defect went one layer deeper than the entry said
+
+The entry named the HTTP client, and the client was not the cause. `stark_net::connect` — the one
+connect API that takes a deadline — was:
+
+```stark
+pub fn connect(address: SocketAddress, timeout: Duration) -> Result<TcpStream, NetworkError> {
+    if !timeout.is_zero() { return Err(NetworkError::Unsupported); }
+    connect_socket_address(&address)
+}
+```
+
+**It refused every non-zero timeout**, and succeeded only for a zero duration — which reads as "no
+timeout" and is the opposite of what passing a `Duration` means. So `stark-http-client` used
+`connect_no_timeout` and was *correct to*: calling `connect` with its configured deadline would
+have failed every connection. Switching only the client would have broken it.
+
+`connect_to_any`'s own doc comment promised the behaviour the code did not have — "**timeout
+budget: PER ADDRESS ... each gets the deadline the caller asked for**" — sitting directly above the
+untimed call.
+
+### Repair, across four layers
+
+```text
+starkc/providers/stark-net-native.json   `stark_tcp_stream_connect_timeout`: buffer_in,
+                                          scalar_in u64, handle_out
+stark-net/native/src/lib.rs               the entry point, over TcpStream::connect_timeout;
+                                          plus the linkage extern and BOTH symbol-set lists
+stark-net/src/lib.stark                   `connect` routes through it
+stark-http-client/src/lib.stark           `connect_to_any` passes `config.connect_timeout`
+```
+
+`nanos` follows the convention `set_read_timeout` already established rather than inventing a
+second one — **zero means no timeout, and a non-zero duration that rounds to zero is raised to
+1ns** rather than silently becoming "block forever". At the STARK layer a zero duration is
+*rejected*, the same rule `timeout_nanos` applies to the read and write setters: zero is the one
+value where intent is ambiguous, and a caller who wants no bound says so by name with
+`connect_no_timeout`.
+
+The address is parsed in the provider rather than resolved there: `connect_timeout` takes one
+`SocketAddr` by construction, so resolving inside it would hide the per-address budget. Resolution
+and ordering stay in `stark-net`'s STARK surface where the caller can see them.
+
+### Evidence — a control someone else wrote, which fired
+
+`stark-net-resource-consumer` carried this, written when the defect was recorded:
+
+```text
+"Pinned rather than hidden: when a connect timeout lands, this assertion fails and forces this
+ consumer to be updated"
+```
+
+It required `TcpStream::connect(peer(), duration_seconds(5u64))` to FAIL. Against a live peer it
+now panics with *"connect-with-timeout works now — implement it properly and update this"*. **A
+control that was passing only because the feature was broken.** Its polarity is corrected: a real
+deadline connects, and a **new negative control** requires a zero duration to be refused — without
+which a repair that ignored the duration entirely would still pass.
+
+**The deadline is real, and measured.** Connecting to 203.0.113.1 — TEST-NET-3, RFC 5737,
+reserved for documentation and never routed, so a connection attempt has nowhere to go:
+
+```text
+connect(target, duration_seconds(2u64))   returned in 2.479s
+```
+
+Green: `stark-net-native` 11/11 (including both manifest/symbol-set gates, which caught two lists
+this repair had to update); starkc lib 579; a10 provider suites verify/resolve/bind/emit/call/
+resource; `stark-net-resource-consumer` prints `STARK_NET_RESOURCE_OK` against a live peer;
+`stark-http-client-consumer`, `stark-get` and `stark-tls-consumer` all build.
+
+### Residual
+
+`connect_no_timeout` remains, and is still the honest spelling for an unbounded connect. The HTTP
+client no longer uses it; `stark-net-resource-consumer` does, so the declared-surface gate is
+still satisfied.

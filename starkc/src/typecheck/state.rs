@@ -32,7 +32,7 @@ use crate::hir::Res;
 use crate::hir::{self, BlockId, ExprId, Hir, ItemId, LocalId};
 use crate::options::LanguageOptions;
 use crate::source::Span;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// AS7 Packet 2 — outer values displaced by entering a `Self`-carrying scope: an impl, a trait's
 /// default bodies, or a method whose receiver fixes `Self`.
@@ -67,6 +67,17 @@ pub struct TypeChecker<'a> {
     /// 'Int32'". These vars are integer-KINDED: they unify only with primitive integer types,
     /// and binding one range-checks the value.
     pub(super) int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
+
+    /// DEV-220 — variables that `unify` saw against `Never` and deliberately left OPEN.
+    ///
+    /// `!` coerces to every type, so it must not capture a variable (that was the defect: a
+    /// diverging `if`/`match` arm bound the join's variable to `Never` and the expression then
+    /// claimed a type no value of it ever had). But a variable constrained by NOTHING ELSE still
+    /// has to land somewhere before MIR, and `Never` is the right answer there — it is the only
+    /// type the program ever offered. Recorded here and settled in
+    /// `default_never_coerced_vars`, after integer-literal defaulting, so a literal that is also
+    /// never-coerced (`if c { 1 } else { panic(..) }` unannotated) still defaults to `Int32`.
+    pub(super) never_coerced_vars: HashSet<TypeVarId>,
 
     /// DEV-172 — the integer literal that is the direct operand of a unary `-`, if the checker is
     /// currently descending into one.
@@ -210,6 +221,7 @@ impl<'a> TypeChecker<'a> {
             diags: Vec::new(),
             subst: HashMap::new(),
             int_literal_vars: HashMap::new(),
+            never_coerced_vars: HashSet::new(),
             negated_int_literal: None,
             display_checks: Vec::new(),
             display_plans: Vec::new(),

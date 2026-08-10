@@ -180,7 +180,23 @@ pub fn plan_for_call(
         return Ok(None);
     };
     let (borrows, escaping) = absorbable_borrows(body, block_index, args, env)?;
-    if !conflicts(args, &borrows, &escaping, env)? {
+    let call_provenance = borrow_provenance(body, env)?;
+    let mut by_value_tys: BTreeMap<u32, MirTy> = BTreeMap::new();
+    for arg in args.iter() {
+        if let Operand::Move(place) | Operand::Copy(place) = arg {
+            if !emit_places::is_slot_local(place.local.0, env)? {
+                by_value_tys.insert(place.local.0, env.place_ty(place)?);
+            }
+        }
+    }
+    if !conflicts(
+        args,
+        &borrows,
+        &escaping,
+        &call_provenance,
+        &by_value_tys,
+        env,
+    )? {
         return Ok(None);
     }
 
@@ -326,7 +342,7 @@ pub fn plan_for_call(
     //
     // Absorbing it would mean absorbing the intermediate CALL as well, across a block boundary.
     // That is a larger mechanism than this increment carries, so the case is refused by name.
-    let provenance = borrow_provenance(body, env)?;
+    let provenance = &call_provenance;
     let participating: std::collections::BTreeSet<u32> = slots.iter().map(|s| s.local).collect();
     for (local, index) in &by_value_provenance {
         // A value that CANNOT carry a borrow is not a conflict however it was computed. Without
@@ -574,7 +590,10 @@ fn borrow_provenance(
                 }
                 let sources: Vec<u32> = match rvalue {
                     Rvalue::RefOf { place, .. } => vec![place.local.0],
-                    Rvalue::Use(Operand::Copy(p) | Operand::Move(p)) => vec![p.local.0],
+                    // EXPERIMENT: a MOVE transfers ownership -- after `let url = builder.url;`
+                    // borrowing `url` does not borrow `builder`.
+                    Rvalue::Use(Operand::Copy(p)) => vec![p.local.0],
+                    Rvalue::Use(Operand::Move(_)) => Vec::new(),
                     // A borrow-carrying aggregate: `Option<&T>`, a tuple of references. The value
                     // carries every borrow its components carried.
                     Rvalue::Aggregate(_, operands) => operands
@@ -671,6 +690,8 @@ fn conflicts(
     args: &[Operand],
     borrows: &BTreeMap<u32, Borrow>,
     escaping: &BTreeMap<u32, Borrow>,
+    provenance: &BTreeMap<u32, std::collections::BTreeSet<u32>>,
+    by_value_tys: &BTreeMap<u32, MirTy>,
     env: &emit_places::TyEnv,
 ) -> Result<bool, BackendDiagnostic> {
     let mut seen: BTreeMap<u32, (u32, bool)> = BTreeMap::new();
@@ -690,6 +711,16 @@ fn conflicts(
             continue;
         }
         if !emit_places::is_slot_local(place.local.0, env)? {
+            if let Some(sources) = provenance.get(&place.local.0) {
+                if by_value_tys
+                    .get(&place.local.0)
+                    .is_some_and(may_carry_borrow)
+                {
+                    for source in sources {
+                        seen.entry(*source).or_insert((0, false)).0 += 1;
+                    }
+                }
+            }
             continue;
         }
         // A MOVE takes `&mut` in the reference form, whether it is a whole-local `take()` or a

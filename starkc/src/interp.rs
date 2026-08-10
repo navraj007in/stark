@@ -2551,26 +2551,6 @@ impl<'a> Interpreter<'a> {
             });
         }
         if let Err(error) = result {
-            if let BodyEpilogue::Method {
-                receiver_kind,
-                receiver_local,
-                ref receiver_place,
-            } = epilogue
-            {
-                // A `&mut self` receiver is written back even on the error path: the caller's place
-                // was emptied to make the binding, and leaving it empty would lose the value.
-                let restored = self
-                    .frame_mut()
-                    .values
-                    .get_mut(&receiver_local)
-                    .and_then(Option::take);
-                let place = receiver_place.clone();
-                self.frames.pop();
-                if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
-                    self.place_slot_mut(&place, span)?.replace(restored);
-                }
-                return Err(error);
-            }
             self.frames.pop();
             return Err(error);
         }
@@ -2585,11 +2565,11 @@ impl<'a> Interpreter<'a> {
                 span,
             ));
         }
-        // A `&self` receiver is taken back out before cleanup so the method's own locals are
-        // destroyed without the borrowed receiver among them — the ordering `call_user_method`
-        // established, preserved here rather than restated there.
+        // Borrowed receivers are taken back out before cleanup so the method's own locals are
+        // destroyed without a non-owning alias among them. `&mut self` is a genuine reference into
+        // caller storage now, not a taken value that needs write-back.
         if let BodyEpilogue::Method {
-            receiver_kind: hir::Receiver::Ref,
+            receiver_kind: hir::Receiver::Ref | hir::Receiver::RefMut,
             receiver_local,
             ..
         } = epilogue

@@ -44,7 +44,6 @@ use stark_http_parser::ParseProgress;
 use stark_http_serialize::serialize_request;
 use stark_http_serialize::HostAuthority;
 use stark_net::close;
-use stark_net::connect_no_timeout;
 use stark_net::default_resolve_limits;
 use stark_net::read;
 use stark_net::resolve;
@@ -535,7 +534,17 @@ fn connect_to_any(addresses: &Vec<ResolvedAddress>, config: &ClientConfig) -> Re
     while index < n {
         let candidate = &addresses[index];
         let target = socket_address(candidate.address, candidate.port);
-        match connect_no_timeout(target) {
+        // DEV-165: the per-address budget this function's own doc comment promises — "each gets
+        // the deadline the caller asked for" — is now actually applied. It said that while calling
+        // `connect_no_timeout`, because `stark_net::connect` refused every non-zero timeout with
+        // `Unsupported` until the provider gained a connect-with-timeout entry point. The config
+        // field was accepted and ignored: a caller could set `connect_timeout` and connect with no
+        // bound at all, with nothing reporting an error.
+        //
+        // `ClientConfig` already requires a non-zero connect timeout (its own test asserts it), so
+        // the zero case `stark_net::connect` refuses is outside this client's contract.
+        // Qualified, not imported: a bare `connect` in scope shadows `TlsStream::connect` below.
+        match stark_net::connect(target, config.connect_timeout) {
             Ok(stream) => {
                 let mut owned = stream;
                 // Timeouts are set immediately after connect and before any I/O, so no read or

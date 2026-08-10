@@ -2,11 +2,17 @@
 
 # Current position
 
-*Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
+*Charter §2.4 position line. Updated 2026-08-10. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-Q (OWNER, CE8)  Blocked: none — E1..E11 all met at 076b4dc
-Mandatory compiler path: Core=done   MIR=done   Native=done
+Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second artifact
+Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
+                `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
+Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
+Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221
+Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
+                 capability half OPEN). It is the only one of the eight any written code reaches
+Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
@@ -15,13 +21,15 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
+| **Active packet** | **NONE — the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
+| **Promotion** | **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
+| **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
-| **Gate C10** | **CLOSED 2026-08-09 — PASS-WITH-DEVIATIONS** (owner decision under CE8). Claim, residuals and derivation: `C10-Q-EVIDENCE-PACKAGE.md` §3.2/§3.2a. **16 deviations**, every one reproduced at the candidate rather than inherited — seven of the 23 at the anchor did not reproduce and were closed. Named residuals, accepted rather than required: robustness targets **T3 and T7 declared and NOT RUN** (no robustness claim over either), and **seven security surfaces with a defence and no falsifier** (R-S03/05/06/09/11/14/15) — named, not claimed. Conformance is per-rule for 56 of 168 granular rules. Distribution is integrity-verified, NOT authenticated. **This does not authorise `develop -> main`** |
+| **Gate C10** | **CLOSED 2026-08-09 — PASS-WITH-DEVIATIONS** (owner decision under CE8). Claim, residuals and derivation: `C10-Q-EVIDENCE-PACKAGE.md` §3.2/§3.2a. **16 deviations**, every one reproduced at the candidate rather than inherited — seven of the 23 at the anchor did not reproduce and were closed. Named residuals, accepted rather than required: robustness targets **T3 and T7 declared and NOT RUN** (no robustness claim over either), and **seven security surfaces with a defence and no falsifier** (R-S03/05/06/09/11/14/15) — named, not claimed. Conformance is per-rule for 56 of 168 granular rules. Distribution is integrity-verified, NOT authenticated. **This did not authorise `develop -> main`** — CD-398 did, separately, on 2026-08-10. **The 16 is the count AT THE C10 DECISION and is not current** — the post-C10 repair programme took population A to **8**; see the Active packet row |
 | **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
-| **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
+| **Campaign B** | **EXITED PASS 2026-08-09** — `audits/CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
 | **Tensor track** | Deferred research on Gate 7's own terms. Platform progress is **not** permission to reopen it |
 
@@ -29,7 +37,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 ```text
 this file, top             the current position — you are reading it
-this file, CD-393 down     the append-only decision record, newest first
+this file, CD-398 down     the append-only decision record, newest first
 AS8-MUTATION-FINDINGS.md   what the mutation trials actually showed
 ENGINE-SHARED-FATE-...     which semantic rules no engine can independently check
 state-archive/             closed gate detail and session records, verbatim
@@ -38,14 +46,20 @@ ROADMAP.md (repo root)     the one live forward plan
 
 ## Known open, at a glance
 
-**CORRECTED 2026-08-09 (CD-395, finding F2). This block listed TWO deviations; there are
-THIRTY-TWO.** It was not wrong about the two, and it says of itself that it is a summary — but a
+**SUPERSEDED FOR POPULATION A, 2026-08-10.** The census below is the state at the C10 anchor and
+is kept for provenance. **Population A is now 8** — DEV-140/141/142/143/144/145, DEV-160, DEV-221 —
+per `STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`, which computed it with
+`python3 starkc/scripts/c10-deviation-populations.py` at every step. Populations B and C below are
+unchanged **except** DEV-165, which the repair programme resolved. Read the entries below as history;
+read the report for what is open.
+
+*Prior correction, 2026-08-09 (CD-395, finding F2): this block listed TWO deviations; there were
+THIRTY-TWO. It was not wrong about the two, and it says of itself that it is a summary — but a
 qualification session that trusted it would have carried 2 instead of 32. The three populations are
-frozen separately by OD-3; regenerate A with
-`python3 starkc/scripts/c10-deviation-populations.py`.
+frozen separately by OD-3.*
 
 ```text
-POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 accepted + 1 dormant
+POPULATION A — as at the C10 anchor (SUPERSEDED; now 8)       26 OPEN + 1 accepted + 1 dormant
 
   live OPEN by the last ledger heading                                               26
                             OD-7 adjudicated all 8 unsettled entries and BACKFILLED the 6 that
@@ -89,7 +103,8 @@ POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 acce
                                  live, because nothing can reach it)
 
 POPULATION B — release/distribution (constrains WORDING, not conformance)
-    DEV-165 connect_timeout accepted and ignored; standalone toolchain PARTIAL;
+    DEV-165 connect_timeout accepted and ignored -- RESOLVED 2026-08-10 (`1913b19`, `5967a42`);
+    standalone toolchain PARTIAL;
     offline package build NOT PROVEN; signed distribution NOT PROVEN (integrity, not
     authenticity); x86_64-apple-darwin tier-3 PACKAGED AND NEVER EXECUTED (F1)
 
@@ -110,6 +125,72 @@ Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
 
 **This block is a summary and is not authoritative over the records below it.** Where they
 disagree, the dated record wins and this block is stale — fix it in the same change.
+
+---
+
+## CD-398 — `develop -> main` PROMOTION AUTHORISED, on a compiler that is strictly better than the one it replaces (2026-08-10)
+
+**Owner decision under CE8: the `develop -> main` promotion is AUTHORISED.** This is the separate
+decision CD-397 said would follow and did not accompany it. Candidate: `develop` at the tip of
+**PR #21**, whose **compiler tree is the post-C10 repair programme's final candidate `5967a42`**.
+
+The compiler tree, not a branch SHA, is what this authorisation is over. Verified rather than
+asserted: `git diff --name-only 5967a42 HEAD` lists exactly two paths, both Markdown —
+`COMPILER-STATE.md` and the repair report — so **no compiler input has changed since the tree CI
+went green on**. A commit that changes one requires a new decision, not this one.
+
+```text
+promotion          AUTHORISED (owner, CE8, 2026-08-10)
+candidate          develop @ PR #21 tip, compiler tree = 5967a42 -> main
+merge shape        MERGE COMMIT, history preserved — as PR #12 and PR #19 were
+condition          main is protected and requires `CI complete`. The authorisation is for THIS
+                   tree on GREEN. A red required check withdraws it; it does not survive an
+                   override
+release wording    UNCHANGED. CD-397's PASS-WITH-DEVIATIONS still governs
+```
+
+**What the authorisation rests on.** The tree being promoted is not new work — it is the tree
+`main` already carries, with a repair programme layered over it and nothing else. `main`'s compiler
+is `689d26d`, which is precisely the programme's *starting baseline*, so the comparison is a strict
+one rather than a trade: **population A 13 -> 8**, no deviation opened that was not also closed,
+and no engine disagreement remains in the repaired set. CI and C7.8 Native Capabilities were both
+green at `5967a42` across Linux, macOS and Windows — fmt, clippy, full tests, first-party packages,
+C6.4 qualification, C6.5 corpus replay, mutation controls, the P1 REST workload, release package
+smoke, external samples, and the DEV-160 Miri guard. That CI failed twice first, on real defects in
+the new work, is part of why the final candidate is trusted rather than a caveat against it.
+
+**The one change that is a boundary change, not a repair.** DEV-160's cross-block borrow shape used
+to escape native lowering and reach the user as a raw `rustc E0502` inside `mod stark_proj` — the
+exact outcome CD-374 claimed the named refusal prevented, and the finding CD-397 recorded and
+deliberately did not act on. It is now a STARK-owned named refusal. **The capability limitation is
+unchanged; only the compiler's boundary is.** Promoting is therefore not a claim that the shape
+works. It is a claim that the compiler no longer fails as a Rust compiler when it meets it.
+
+**What this decision does NOT do.** It is a promotion of a branch, not an upgrade of a claim.
+
+```text
+it does not strengthen the conformance claim   PASS-WITH-DEVIATIONS, per-rule for 56 of 168
+                                               granular rules, stands exactly as CD-397 wrote it
+it does not authenticate distribution          archives remain unsigned. Integrity, not
+                                               authenticity
+it does not close DEV-140..145                 they still define the supported native subset. The
+                                               repair report's per-entry table records each as
+                                               "assessed, deferred — no consumer"; DEV-141 is a
+                                               `std-full` PROFILE boundary and not a defect at all
+it does not close DEV-160 or DEV-221           population A is 8 after this merge, not 0
+it does not discharge T3 / T7 or the seven     they remain NAMED RESIDUALS, unchanged
+   security surfaces
+it does not close C9 Part B                    that still needs a second artifact
+it does not reopen the tensor track            Gate 7 productisation DEFER stands
+```
+
+**Why now rather than after more repair.** Of the eight deviations that remain, the repair report
+finds only DEV-160's capability half is reached by any code anyone has written; the other seven are
+supported-subset boundary and one ergonomic residual. Holding a strictly better compiler off `main`
+to shrink a population that no consumer is hitting would trade real qualified improvement for a
+smaller number. The next compiler campaign starts from the promoted tree.
+
+**Next:** the standalone toolchain / C9 Part B second artifact. No compiler gate is active.
 
 ---
 
@@ -153,9 +234,167 @@ consolidations (AS3 method resolution, AS1b span identity), so no commit names t
 a reproducer finds those. DEV-157 was one probe from a false closure in the other direction — the
 shape its entry named now builds, while the defect is alive in other `Never` positions.
 
-**Next:** DEV-180 as its own packet, per the owner's ruling that it follows C10-Q and not precede it.
+**Next:** the post-C10 deviation repair programme, running P0 (reproduction) then P1 (DEV-180),
+per the owner's ruling that DEV-180 follows C10-Q and does not precede it.
 
-**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
+**Post-C10 repair programme, P0 + P8 (2026-08-10, baseline `689d26d`).** Reproduction pass
+extended over the whole remaining population — `audits/POST-C10-DEVIATION-REPRODUCTION.md`.
+**No deviation failed to reproduce**; the ledger is accurate at this baseline. **DEV-120 CLOSED —
+RECLASSIFIED AS DOCUMENTED LIMIT** (population A 13 -> 12): the interpreters classify call-depth
+exhaustion cleanly (exit 2, 512 frames) and a native binary dies by SIGABRT (exit 134), which
+`LIMIT-RESOURCE-001` permits twice over — capacities are implementation-defined and the reporting
+duty is qualified by "when the host permits". Owner ruling D4 (WP-C7.9) had already decided the
+repair question; the entry was carrying a settled decision as an open defect. `MAX_CALL_DEPTH`
+unchanged. **DEV-167 RAISED AS CE1** rather than resolved: `06-Standard-Library.md` declares
+`ToString` but never promises every `Display` type has the method form, so there was no
+conformance gap — only a language question the packet must not answer by implementation
+convenience. **DECIDED (owner, CE1, 2026-08-10): keep the free function; CLOSED as a
+documented non-promise** (population A 12 -> 11). Neither alternative was taken — blanket
+impls are a language feature, and a name-keyed resolver branch would reintroduce the two-tier
+trait model DEV-166 removed. The decision is pinned by two tests in
+`tests/dev_display_dispatch.rs`, so reversing it fails CI rather than passing unnoticed.
+
+**Post-C10 repair programme, P3 + P4 + P6 (2026-08-10, baseline `689d26d`). Population A 11 -> 9.**
+
+- **DEV-220 NEW, REGISTERED AND REPAIRED.** Found while building §9.1's `Never` position matrix,
+  and registered separately per §19.4 because the root cause is inference, not representation. A
+  diverging arm CAPTURED the join's inference variable: `unify` tried its `Infer` arm before its
+  `Never` arm, so `unify(?T, Never)` bound `?T := Never` and the expression claimed a type no value
+  of it ever had. **DEV-121's representation guard — closed, and working exactly as designed —
+  caught it as an internal compiler error on `let x: Int32 = if c { 1 } else { panic("p") };` and
+  on the far more ordinary `else { return; }`.** DEV-218 (CLOSED 2026-08-09) created the
+  precondition correctly by making diverging blocks produce `!`; nothing then stopped `!` binding a
+  variable. Its three programs put the inhabited arm first, which is why reversing a match's arm
+  order reproduces. Repair: the `Never` arm moves ABOVE the `Infer` arms and records the open
+  variable; `default_never_coerced_vars` settles it AFTER integer-literal defaulting, so
+  `let x = if c { 1 } else { panic(..) };` still yields `Int32`. Five three-engine cases, two of
+  them negative controls; all five fail with the repair reverted in place.
+- **DEV-157 CLOSED, REPAIRED.** Four repairs across three phases, not one — DEV-220 in typecheck,
+  a diverging-else tolerance in MIR lowering, `MirTy::Never` as `core::convert::Infallible` (an
+  EMPTY enum, with the local declared uninitialised so no storage is invented for an uninhabited
+  value), and a STRUCTURAL never-coercion allowance in the verifier. That last was found by the
+  three-engine harness and by nothing else: `stark build` alone accepted the program the verifier
+  rejected. **One accepted-set change, toward the specification:** `1 + panic("p")` was refused
+  `E0500` as an artefact of DEV-220 and is now accepted, per `03-Type-System.md` line 67's
+  unqualified "an expression of type `!` coerces to any other type".
+- **DEV-168 CLOSED, REPAIRED, with no second trait-dispatch authority.**
+  `check_qualified_core_trait_call` already publishes the selection through the same publisher
+  `a == b` uses; `operator_callable_key` already consumes that provenance. The new
+  `Res::CoreTraitMember` lowering arm reads that answer. `qualified_calls_disambiguate_the_two_traits`
+  — the test this deviation named as its evidence, whose comment recorded the gap — is upgraded
+  from front-end-and-oracle to full three-engine agreement. **Residual registered separately:**
+  `Display::fmt(x)` on a BOUNDED generic parameter is refused `E0500` at the front end, because
+  selection scans impls and never consults bounds. Pre-existing and independent.
+- **DEV-140..145 ASSESSED INDIVIDUALLY, REPAIR DEFERRED (owner decision).** §12.1 step 3's question
+  answered for each: **not one of the six shapes is used by any first-party package.** They name
+  FOUR different missing authorities, so §12.2's grouping rule is satisfied by no pair. Each needs
+  a multi-layer feature addition, not a bounded repair; DEV-141 is a `std-full` PROFILE boundary
+  rather than a defect at all. §24's `application hits it -> reproduce -> repair boundedly` governs.
+  They continue to define the supported native subset, kept honest in both directions by the
+  enforcing layer audit.
+
+**Post-C10 repair programme, P1 + P5 + P2 (2026-08-10). Population A 9 -> 7.**
+
+- **DEV-180 RESOLVED**, repair commit `1db9760`, after C10-Q as the owner ruled.
+- **DEV-159 RESOLVED, and it was reproduced rather than argued.** Six concurrent `stark build`
+  invocations of ONE program from a cold artifact directory: **73 failures in 240 builds**, in two
+  signatures — a generated crate Cargo could not build, and an artifact that had vanished by the
+  time it was installed. The content-addressed build directory §11.2 lists as a remedy was already
+  there and is *why* they collide; what had no sequencing was everything this compiler does around
+  Cargo (the stale check's `remove_dir_all`, non-atomic writes, and the caller's read of the
+  binary). `BuildLock` excludes on `create_dir` — an atomic test-and-set, no `unsafe`, no new
+  dependency — scoped to one build key, held until the artifact is dropped so the caller's install
+  is covered. **0/240 debug, 0/200 at eight-way release.** The §11.3 control is a unit test that
+  fails deterministically when the exclusion is neutered, because a stress run's sensitivity is
+  only a probability.
+- **DEV-160 STAYS OPEN, and the record is corrected.** The C10-Q-era reading — carried into the
+  post-C10 reproduction pass — was that the boundary is refused by name and never delegated to
+  rustc. **It is not, for at least one shape.** `send(r.url.as_str(), r.body)` reaches the user as
+  `error[E0502]` inside the generated crate: `plan_for_call` returns `None` before the DEV-160b
+  refusal written for exactly that shape, because a borrow arriving from an earlier block is not
+  among the call block's own borrows. A repair was implemented (make `conflicts` consult
+  `borrow_provenance`) — it works on the reproducer, keeps every suite green, and **over-refuses
+  `stark_http_client::follow`, breaking the `stark-get` build**. Reverted; the measurement is kept
+  because the finding is that the cheap closure is not admissible. §23's exit criterion 3 for
+  DEV-160 is NOT met, and the entry now says so instead of asserting it is.
+- **DEV-160 UPDATE, same day: the rustc leak IS sealed.** The first attempt's over-refusal had one
+  cause, not a fatal one — `borrow_provenance` propagated across `Rvalue::Use(Operand::Move(p))`.
+  A move TRANSFERS OWNERSHIP: `follow` does `let mut url = builder.url;`, after which borrowing
+  `url` does not borrow `builder`. Severing provenance on moves fixes the false positive, and
+  `conflicts` can then consult provenance so a borrow arriving from an earlier block is visible
+  before the early return that was making the DEV-160b refusal unreachable for its own case.
+  Measured with the pre- and post-repair compilers over eight borrow/move shapes: **the two E0502
+  leaks became named refusals and nothing else moved** — nothing that built stops building, nothing
+  newly builds, so no subset claim widened. §23 criterion 3 is met for the demonstrated shape.
+  **DEV-160 stays OPEN for the capability half**: the programs are valid STARK and still do not
+  build, which is DEV-160b's cross-block absorption under the 2026-08-03 owner ruling. Residual
+  recorded: provenance answers "may derive from", not "a live borrow reaches here", and the precise
+  def-use walk that cross-block absorption needs anyway should replace this heuristic when it lands.
+
+**Bookkeeping reconciliation (2026-08-10). The "named here, owning no heading in the ledger"
+bucket is now EMPTY — it held sixteen.**
+
+Those sixteen were never open defects hiding from the tool: they were resolved in this file's prose
+and never given a heading `KNOWN-DEVIATIONS.md` could classify. The consequence was narrow and real
+— **"population A is N" was only ever true of the ledger-derived set**, and a reader of this file
+got a different number. Each now carries a closing heading with the evidence that settled it.
+
+**Probed, not taken on the prose's word**, because this project's own record is that 7 of 23
+deviations did not reproduce at the C10-Q anchor. DEV-091/096 (out-of-range 64-bit float→int cast:
+traps, and as a CAST failure rather than an arithmetic one), DEV-097 (bounds check), DEV-099
+(`size_of::<[Int32; 4]>()`) were probed in both engines; DEV-092, DEV-095 and DEV-101 were settled
+against their live test suites (mangle 9, build::tests 24, cross_package_generics 11).
+
+**DEV-099 is the one that justified probing rather than reading.** It was recorded as a live
+PRE-EXISTING defect — a layout query on an array type failing to lower — and it does not reproduce.
+Fixed at some point after 2026-07-23 and never recorded.
+
+Two are not simple closures:
+
+- **DEV-098 → ACCEPTED-INDEFINITELY.** Never a defect: a deliberate, verifier-accepted MIR shape
+  the `Copy` classification does not describe.
+- **DEV-165 → ADJUDICATE, deliberately.** It is OPEN, but in **Population B** (release/distribution
+  wording), is an HTTP-client defect rather than a compiler one — the audit that found it said so —
+  and is already deferred to the networking roadmap. Its heading carries no bare `OPEN` precisely
+  so it does not inflate Population A. Which population an ID belongs to is a human decision, which
+  is what ADJUDICATE is for.
+
+**DEV-221 REGISTERED.** The DEV-168 residual now has a number instead of being a paragraph inside
+another entry: `Display::fmt(x)` on a BOUNDED generic parameter is refused `[E0500] type 'T' does
+not implement 'Display'`, because selection scans impls and never consults bounds. A front-end
+over-rejection, distinct from DEV-168 (which type-checked and failed at lowering). Ergonomic — the
+ordinary method form `x.fmt()` works.
+
+**Population A is 8**: DEV-140..145, DEV-160's capability half, and DEV-221.
+
+**PROGRAMME CLOSED (2026-08-10). Final report:
+`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`.**
+
+```text
+baseline  689d26d      final  5967a42      population A  13 -> 8
+CI        run 31353396547 SUCCESS, 24/24 jobs, all three Tier-1 platforms
+          run 31353396543 SUCCESS (C7.8 Native Capabilities)
+```
+
+**DEV-165 REPAIRED** (population B, so it does not move the count). It went a layer deeper than its
+entry said: `stark_net::connect` refused every non-zero timeout, so the HTTP client's
+`connect_no_timeout` was correct and switching only the client would have failed every connection.
+A new provider operation, its native implementation, `stark_net::connect` and the client were
+changed together. A control written when the defect was recorded — requiring the connect to FAIL —
+fired against a live peer; its polarity is corrected and a zero-duration refusal control added.
+Measured: a 2-second deadline against RFC 5737 TEST-NET-3 returned in 2.479s.
+
+**CI failed twice before it passed, and both failures were this programme's own work.** The record
+keeps them rather than showing only the green run. (1) `windows-x64`: the DEV-159 build lock treated
+Windows' pending-delete `PermissionDenied` as fatal — a real portability defect no macOS run could
+reach. (2) all three platforms: `stark fmt --check`, STARK's own source formatter, which is separate
+from `cargo fmt` and had been clean throughout.
+
+**§23 criterion 3 is PARTIAL, and is recorded as partial.** DEV-160's `E0502` leak is sealed, so the
+boundary is enforced by STARK rather than delegated to rustc; the capability half — those programs
+are valid STARK and still do not build — remains DEV-160b's own deferred work package.
+
+**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
 

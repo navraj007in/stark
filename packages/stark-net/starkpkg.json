@@ -27,6 +27,10 @@
         "capability": "network-client",
         "symbol": "stark_tcp_stream_connect"
       },
+      "tcp_stream_connect_timeout_raw": {
+        "capability": "network-client",
+        "symbol": "stark_tcp_stream_connect_timeout"
+      },
       "tcp_stream_read_raw": {
         "capability": "network-client",
         "symbol": "stark_tcp_stream_read"
