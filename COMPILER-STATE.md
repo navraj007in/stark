@@ -153,9 +153,66 @@ consolidations (AS3 method resolution, AS1b span identity), so no commit names t
 a reproducer finds those. DEV-157 was one probe from a false closure in the other direction — the
 shape its entry named now builds, while the defect is alive in other `Never` positions.
 
-**Next:** DEV-180 as its own packet, per the owner's ruling that it follows C10-Q and not precede it.
+**Next:** the post-C10 deviation repair programme, running P0 (reproduction) then P1 (DEV-180),
+per the owner's ruling that DEV-180 follows C10-Q and does not precede it.
 
-**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
+**Post-C10 repair programme, P0 + P8 (2026-08-10, baseline `689d26d`).** Reproduction pass
+extended over the whole remaining population — `audits/POST-C10-DEVIATION-REPRODUCTION.md`.
+**No deviation failed to reproduce**; the ledger is accurate at this baseline. **DEV-120 CLOSED —
+RECLASSIFIED AS DOCUMENTED LIMIT** (population A 13 -> 12): the interpreters classify call-depth
+exhaustion cleanly (exit 2, 512 frames) and a native binary dies by SIGABRT (exit 134), which
+`LIMIT-RESOURCE-001` permits twice over — capacities are implementation-defined and the reporting
+duty is qualified by "when the host permits". Owner ruling D4 (WP-C7.9) had already decided the
+repair question; the entry was carrying a settled decision as an open defect. `MAX_CALL_DEPTH`
+unchanged. **DEV-167 RAISED AS CE1** rather than resolved: `06-Standard-Library.md` declares
+`ToString` but never promises every `Display` type has the method form, so there was no
+conformance gap — only a language question the packet must not answer by implementation
+convenience. **DECIDED (owner, CE1, 2026-08-10): keep the free function; CLOSED as a
+documented non-promise** (population A 12 -> 11). Neither alternative was taken — blanket
+impls are a language feature, and a name-keyed resolver branch would reintroduce the two-tier
+trait model DEV-166 removed. The decision is pinned by two tests in
+`tests/dev_display_dispatch.rs`, so reversing it fails CI rather than passing unnoticed.
+
+**Post-C10 repair programme, P3 + P4 + P6 (2026-08-10, baseline `689d26d`). Population A 11 -> 9.**
+
+- **DEV-220 NEW, REGISTERED AND REPAIRED.** Found while building §9.1's `Never` position matrix,
+  and registered separately per §19.4 because the root cause is inference, not representation. A
+  diverging arm CAPTURED the join's inference variable: `unify` tried its `Infer` arm before its
+  `Never` arm, so `unify(?T, Never)` bound `?T := Never` and the expression claimed a type no value
+  of it ever had. **DEV-121's representation guard — closed, and working exactly as designed —
+  caught it as an internal compiler error on `let x: Int32 = if c { 1 } else { panic("p") };` and
+  on the far more ordinary `else { return; }`.** DEV-218 (CLOSED 2026-08-09) created the
+  precondition correctly by making diverging blocks produce `!`; nothing then stopped `!` binding a
+  variable. Its three programs put the inhabited arm first, which is why reversing a match's arm
+  order reproduces. Repair: the `Never` arm moves ABOVE the `Infer` arms and records the open
+  variable; `default_never_coerced_vars` settles it AFTER integer-literal defaulting, so
+  `let x = if c { 1 } else { panic(..) };` still yields `Int32`. Five three-engine cases, two of
+  them negative controls; all five fail with the repair reverted in place.
+- **DEV-157 CLOSED, REPAIRED.** Four repairs across three phases, not one — DEV-220 in typecheck,
+  a diverging-else tolerance in MIR lowering, `MirTy::Never` as `core::convert::Infallible` (an
+  EMPTY enum, with the local declared uninitialised so no storage is invented for an uninhabited
+  value), and a STRUCTURAL never-coercion allowance in the verifier. That last was found by the
+  three-engine harness and by nothing else: `stark build` alone accepted the program the verifier
+  rejected. **One accepted-set change, toward the specification:** `1 + panic("p")` was refused
+  `E0500` as an artefact of DEV-220 and is now accepted, per `03-Type-System.md` line 67's
+  unqualified "an expression of type `!` coerces to any other type".
+- **DEV-168 CLOSED, REPAIRED, with no second trait-dispatch authority.**
+  `check_qualified_core_trait_call` already publishes the selection through the same publisher
+  `a == b` uses; `operator_callable_key` already consumes that provenance. The new
+  `Res::CoreTraitMember` lowering arm reads that answer. `qualified_calls_disambiguate_the_two_traits`
+  — the test this deviation named as its evidence, whose comment recorded the gap — is upgraded
+  from front-end-and-oracle to full three-engine agreement. **Residual registered separately:**
+  `Display::fmt(x)` on a BOUNDED generic parameter is refused `E0500` at the front end, because
+  selection scans impls and never consults bounds. Pre-existing and independent.
+- **DEV-140..145 ASSESSED INDIVIDUALLY, REPAIR DEFERRED (owner decision).** §12.1 step 3's question
+  answered for each: **not one of the six shapes is used by any first-party package.** They name
+  FOUR different missing authorities, so §12.2's grouping rule is satisfied by no pair. Each needs
+  a multi-layer feature addition, not a bounded repair; DEV-141 is a `std-full` PROFILE boundary
+  rather than a defect at all. §24's `application hits it -> reproduce -> repair boundedly` governs.
+  They continue to define the supported native subset, kept honest in both directions by the
+  enforcing layer audit.
+
+**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
 

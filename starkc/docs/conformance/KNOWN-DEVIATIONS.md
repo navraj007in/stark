@@ -7862,3 +7862,143 @@ BOUNDS, so a bounded generic receiver finds nothing. This is a **front-end over-
 pre-existing and independent of this repair — DEV-168 was explicitly "type-checks and runs under
 the oracle, MIR refuses", and this shape does not type-check at all. Registered here rather than
 absorbed, per §19.4. The ordinary method form (`x.fmt()`) works, so it has a working spelling.
+
+## DEV-140 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+Assessed individually as §12.1 requires. Not grouped with DEV-141..145 — §12.2's rule is satisfied
+by no pair of them.
+
+```text
+reproduced          YES. layer_audit L7153, an ENFORCING gate since CD-342: it fails on an
+                    unregistered finding and equally on a registered one that stops reproducing,
+                    so a green run is the reproduction evidence.
+user-visible shape  `v.insert(0u64, 2)` -- a `Vec` method outside the implemented lowering set.
+consumer            NONE. No first-party package calls insert/extend/truncate/sort/reverse/
+                    contains/dedup/split_off/drain/retain on a Vec.
+missing layer       There is no `RuntimeFn::VecInsert`. Adding it spans FOUR layers: the RuntimeFn
+                    enum, a `stark_runtime` implementation, backend emission, and the MIR
+                    verifier's runtime-callee signature table (V-RT-1/MIR-0012).
+radius              Feature addition, not a repair. Each new method repeats all four layers.
+disposition         DEFERRED. §12.1 step 6 permits repair only if bounded; this is not, and §24
+                    directs that application pressure drive it. §12.3 forbids widening native
+                    claims beyond tested shapes, and there is no shape to test against a consumer.
+```
+
+Front end and HIR oracle accept and run it; MIR refuses before any code is emitted. **No
+soundness impact** — an accepted-but-unbuildable refusal, the E0105 class, caught at compile time.
+
+## DEV-141 — reproduced, a std-full profile boundary (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L8093.
+user-visible shape  `HashMap<Int32, D>` where `D` implements `Drop`.
+consumer            NONE. No first-party package declares a `HashMap` of any element type.
+missing layer       Lowering has no drop elaboration for map values carrying a destructor.
+radius              **This is a PROFILE boundary, not only an implementation gap.** The refusal
+                    text names it: "reserved -- std-full". `06-Standard-Library.md` defines
+                    `core-min` and `std-full`; the built profile is core-min, which does not carry
+                    these collections. Repairing it means implementing part of a profile this
+                    build does not claim.
+disposition         DEFERRED, and the reason is different from its five siblings: closing it is
+                    not a defect repair but a profile expansion. Reclassifying it as a documented
+                    profile boundary is arguably more accurate than "layer defect" and is left as
+                    an owner decision rather than taken here.
+```
+
+## DEV-142 — reproduced, needs generated lifetimes, deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L9130.
+user-visible shape  `(String, &str)` printed as a tuple -- a droppable composite that also carries
+                    a borrowed element.
+consumer            NONE.
+missing layer       The drop plan for a composite mixing an owned droppable and a borrow needs
+                    GENERATED LIFETIMES in the emitted Rust -- a later C6.3e slice.
+radius              The largest of the six. Generated lifetimes are a backend capability, not a
+                    method; nothing else in the six needs them.
+disposition         DEFERRED.
+```
+
+## DEV-143 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L5346.
+user-visible shape  `assert_eq(x, y)` where the operands are a user struct with `impl Eq`.
+consumer            NONE, and this was checked closely because tests are where it would bite
+                    first. Every `assert_eq` across the first-party packages compares a scalar or
+                    a string -- `.len()`, `.as_str()`, an index projection's field. Not one
+                    compares a user-defined type.
+missing layer       TWO phases. The checker types `assert_eq` as `fn(T, T) -> Unit` with no `Eq`
+                    requirement and publishes NO selection, so there is nothing for MIR to read;
+                    MIR then refuses the user-nominal operand. A repair must add the publication
+                    (as `println` does for Display, via `display_checks`/`record_display_plan`)
+                    and then dispatch through it.
+radius              Bounded-ish and the most tractable of the six -- it would reuse the same
+                    published-selection path DEV-168 now routes through. Still a two-phase change
+                    to a builtin's contract, and it moves an existing refusal from MIR to the
+                    checker, which is the shape CD-294 records as not always cheap (E0106 was
+                    reverted for exactly that reason).
+disposition         DEFERRED, with a note that this is the one to do FIRST if application pressure
+                    appears. `a == b` on a user nominal already works in all three engines, so the
+                    working spelling exists.
+```
+
+## DEV-144 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L3698: `type Core(ValuesIter, [Primitive(Int32)]) (C4.5)`.
+user-visible shape  `for` driving an iterator that is neither a range nor a `Vec` cursor.
+consumer            NONE. No first-party package writes `for x in <expr>()` over such an iterator.
+missing layer       Lowering implements the range and `Vec` cursors; other iterables reach an
+                    unsupported site. `iterator_fn_key` already exists to read the checker's
+                    `Iterator::next` selection, so the authority is present -- what is missing is
+                    the per-cursor lowering for each Core iterator type.
+radius              One cursor type at a time. Not shared with any other deviation here.
+disposition         DEFERRED.
+```
+
+## DEV-145 — reproduced, no consumer, repair deferred (OPEN, post-C10 P6 §12.1 assessment, 2026-08-10)
+
+```text
+reproduced          YES. layer_audit L6450: `method to_uppercase on String`.
+user-visible shape  A method call whose receiver auto-derefs to a type lowering does not carry.
+consumer            NONE. No first-party package calls to_uppercase/to_lowercase/trim/replace/
+                    starts_with/ends_with/find/split_at/repeat.
+missing layer       Same four-layer shape as DEV-140 -- RuntimeFn, runtime implementation, backend
+                    emission, verifier signature -- but on `String` rather than `Vec`.
+radius              Feature addition per method.
+disposition         DEFERRED.
+```
+
+## P6 — the six layer defects: individually assessed, repair deferred (2026-08-10)
+
+**Not a bulk deferral: six separate assessments, above.** Recorded together only to state the
+finding that applies across them, and the two conclusions that required all six to see.
+
+**Finding: zero application pressure.** Not one of the six shapes is used by any first-party
+package. §12.1 step 3 asks whether a real package needs the shape; for all six the answer is no.
+
+**§12.2's grouping rule is satisfied by no pair.** The six name FOUR different missing authorities:
+
+```text
+C4.5e runtime-method sub-slice      DEV-140 (Vec), DEV-145 (String)
+std-full collections                DEV-141
+C6.3e generated lifetimes           DEV-142
+Eq-impl dispatch for a builtin      DEV-143
+C4.5 iterator cursor lowering       DEV-144
+```
+
+DEV-140 and DEV-145 come closest — the same four-layer shape — and still fail the rule: different
+receiver type, different runtime functions, different negative controls. "Both are in generated
+Rust" and "both are a method sub-slice" are exactly the insufficient groupings §12.2 names.
+
+**Why they are not repaired here.** §12.1 step 6 permits repair only if bounded; none is. §12.3
+forbids widening the native claim beyond tested shapes, and with no consumer there is no shape to
+test. §24 is explicit that `application hits it -> reproduce -> repair boundedly` is preferable to
+`deviation exists -> redesign backend until count is zero`.
+
+**These six continue to DEFINE the supported native subset**, which is what the original CD-342
+registration was for. The layer audit keeps them honest in both directions: it fails on an
+unregistered finding AND on a registered one that stops reproducing.
+
+**Owner decision, 2026-08-10:** record the assessment and defer. Population unchanged at 9.
