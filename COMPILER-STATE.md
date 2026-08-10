@@ -2,11 +2,16 @@
 
 # Current position
 
-*Charter §2.4 position line. Updated 2026-08-09. **Read this block, not the chronology below.***
+*Charter §2.4 position line. Updated 2026-08-10. **Read this block, not the chronology below.***
 
 ```text
-Gate: C10  Next: C10-Q (OWNER, CE8)  Blocked: none — E1..E11 all met at 076b4dc
-Mandatory compiler path: Core=done   MIR=done   Native=done
+Gate: POST-C10 (no gate active)  Next: `develop -> main` promotion decision (OWNER)
+Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397)
+Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
+Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221
+Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
+                 capability half OPEN). It is the only one of the eight any written code reaches
+Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
 ```
@@ -15,13 +20,15 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
+| **Active packet** | **NONE — the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
+| **Promotion** | `develop -> main` is the **open question**, and it was deliberately left open by CD-397 — the C10 decision qualified the compiler and explicitly did **not** authorise promotion. It needs its own owner decision, recorded here, before the merge lands |
+| **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
 | **Gate C9** | Part A CLOSED (C9.0/C9.1/C9.2). **Part B DEFERRED** pending second-artifact evidence; no provider generalisation from ONNX alone (CE7). **Does NOT block C10** — CD-395, OD-1 |
-| **Gate C10** | **CLOSED 2026-08-09 — PASS-WITH-DEVIATIONS** (owner decision under CE8). Claim, residuals and derivation: `C10-Q-EVIDENCE-PACKAGE.md` §3.2/§3.2a. **16 deviations**, every one reproduced at the candidate rather than inherited — seven of the 23 at the anchor did not reproduce and were closed. Named residuals, accepted rather than required: robustness targets **T3 and T7 declared and NOT RUN** (no robustness claim over either), and **seven security surfaces with a defence and no falsifier** (R-S03/05/06/09/11/14/15) — named, not claimed. Conformance is per-rule for 56 of 168 granular rules. Distribution is integrity-verified, NOT authenticated. **This does not authorise `develop -> main`** |
+| **Gate C10** | **CLOSED 2026-08-09 — PASS-WITH-DEVIATIONS** (owner decision under CE8). Claim, residuals and derivation: `C10-Q-EVIDENCE-PACKAGE.md` §3.2/§3.2a. **16 deviations**, every one reproduced at the candidate rather than inherited — seven of the 23 at the anchor did not reproduce and were closed. Named residuals, accepted rather than required: robustness targets **T3 and T7 declared and NOT RUN** (no robustness claim over either), and **seven security surfaces with a defence and no falsifier** (R-S03/05/06/09/11/14/15) — named, not claimed. Conformance is per-rule for 56 of 168 granular rules. Distribution is integrity-verified, NOT authenticated. **This does not authorise `develop -> main`**. **The 16 is the count AT THE C10 DECISION and is not current** — the post-C10 repair programme took population A to **8**; see the Active packet row |
 | **Sprint 4** | **CLOSED.** AS6 (CD-390), AS7 (CD-391, criterion 2 re-qualified CD-393), AS8 (CD-394), Tier-3 closeout PASS |
-| **Campaign B** | **EXITED PASS 2026-08-09** — `CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
+| **Campaign B** | **EXITED PASS 2026-08-09** — `audits/CAMPAIGN-B-EXIT-REPORT.md`. It gates C10 and makes no stability or conformance claim itself |
 | **Native backend** | SELECTED — generated Rust, behind verified MIR, Cranelift kept open as a C7-gated migration (CD-026) |
 | **Tensor track** | Deferred research on Gate 7's own terms. Platform progress is **not** permission to reopen it |
 
@@ -38,14 +45,20 @@ ROADMAP.md (repo root)     the one live forward plan
 
 ## Known open, at a glance
 
-**CORRECTED 2026-08-09 (CD-395, finding F2). This block listed TWO deviations; there are
-THIRTY-TWO.** It was not wrong about the two, and it says of itself that it is a summary — but a
+**SUPERSEDED FOR POPULATION A, 2026-08-10.** The census below is the state at the C10 anchor and
+is kept for provenance. **Population A is now 8** — DEV-140/141/142/143/144/145, DEV-160, DEV-221 —
+per `STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`, which computed it with
+`python3 starkc/scripts/c10-deviation-populations.py` at every step. Populations B and C below are
+unchanged **except** DEV-165, which the repair programme resolved. Read the entries below as history;
+read the report for what is open.
+
+*Prior correction, 2026-08-09 (CD-395, finding F2): this block listed TWO deviations; there were
+THIRTY-TWO. It was not wrong about the two, and it says of itself that it is a summary — but a
 qualification session that trusted it would have carried 2 instead of 32. The three populations are
-frozen separately by OD-3; regenerate A with
-`python3 starkc/scripts/c10-deviation-populations.py`.
+frozen separately by OD-3.*
 
 ```text
-POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 accepted + 1 dormant
+POPULATION A — as at the C10 anchor (SUPERSEDED; now 8)       26 OPEN + 1 accepted + 1 dormant
 
   live OPEN by the last ledger heading                                               26
                             OD-7 adjudicated all 8 unsettled entries and BACKFILLED the 6 that
@@ -89,7 +102,8 @@ POPULATION A — compiler deviations (the CD-021 denominator)   26 OPEN + 1 acce
                                  live, because nothing can reach it)
 
 POPULATION B — release/distribution (constrains WORDING, not conformance)
-    DEV-165 connect_timeout accepted and ignored; standalone toolchain PARTIAL;
+    DEV-165 connect_timeout accepted and ignored -- RESOLVED 2026-08-10 (`1913b19`, `5967a42`);
+    standalone toolchain PARTIAL;
     offline package build NOT PROVEN; signed distribution NOT PROVEN (integrity, not
     authenticity); x86_64-apple-darwin tier-3 PACKAGED AND NEVER EXECUTED (F1)
 
