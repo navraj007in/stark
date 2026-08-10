@@ -8278,3 +8278,168 @@ consumer on one straight-line path with nothing observable between. That analysi
 for cross-block absorption to decide what it may absorb, and it should replace the provenance
 heuristic here when it lands — one authority deciding both, which is the property this module
 already holds elsewhere. Recorded now so the interim is retired deliberately rather than forgotten.
+
+# Reconciliation: sixteen IDs COMPILER-STATE.md tracked and this ledger never did
+
+`c10-deviation-populations.py` reports a bucket named "POPULATION A — named in COMPILER-STATE.md,
+owning no heading here". It held sixteen IDs. They were never open defects hiding from the tool;
+they were resolved in `COMPILER-STATE.md` prose and never given a heading the ledger could
+classify. The consequence was narrow and real: **"population A is N" was only ever true of the
+ledger-derived set**, and a reader of `COMPILER-STATE.md` got a different number.
+
+Each is closed below with the evidence that settled it. **Probed, not taken on the prose's word** —
+this repository's own record is that 7 of 23 deviations did not reproduce at the C10-Q anchor, and
+that DEV-157 was "one probe away from being filed as a false closure". A paragraph asserting a fix
+is exactly the thing that needs checking.
+
+Probes run at `9a0557f`, outside the repository tree.
+
+## DEV-091 — out-of-range float→int cast at 64-bit widths (RESOLVED, reconciled 2026-08-10)
+
+```stark
+let f: Float64 = 1.0e19; let n: Int64 = f as Int64;
+```
+
+```text
+HIR     Error: runtime error: numeric cast out of range
+native  error: runtime trap: cast failure
+```
+
+Traps in both engines. `1.0e19` exceeds `Int64::MAX` (~9.22e18) and is precisely the shape the
+defect admitted, because both sides compared against `max as f64`, which rounds UP at 64-bit width.
+
+## DEV-096 — the trap CATEGORY for an out-of-range cast (RESOLVED, reconciled 2026-08-10)
+
+Settled by the same probe, and it is a different claim from DEV-091's: the oracle reported every
+out-of-range cast as an arithmetic overflow. It now says **"numeric cast out of range"**, and native
+says **"cast failure"** — the cast category, not the arithmetic one. Recorded separately because a
+probe that only checked "it traps" would have passed while the category was still wrong.
+
+## DEV-097 — bounds-check span blame (RESOLVED, reconciled 2026-08-10)
+
+```stark
+let v: [Int32; 3] = [1, 2, 3]; let i: UInt64 = 7u64; println(v[i]);
+```
+
+Traps `index out of bounds` in HIR and native. **Bounded claim:** this probe confirms the trap
+fires and agrees across engines; the entry's specific complaint was that the two ends of one bounds
+check blamed different columns, and a full column-level re-check is not claimed here.
+
+## DEV-099 — a layout query on an ARRAY type (RESOLVED, reconciled 2026-08-10)
+
+The entry read as a live pre-existing defect: `size_of::<[Int32; 4]>()` "reaches lowering and dies
+with 'field type form (C4.5)'".
+
+```text
+HIR     16
+native  builds, prints 16
+```
+
+**It does not reproduce.** Fixed at some point between 2026-07-23 and now, and never recorded.
+This is the one of the sixteen that most needed a probe rather than a reading.
+
+## DEV-092 — symbol sanitization injectivity (RESOLVED, reconciled 2026-08-10)
+
+`backend::generated_rust::mangle` states injectivity as its purpose in three places and carries the
+round-trip-through-a-decoder test the entry called for. `mangle::` suite green, 9 passed.
+
+## DEV-095 — the generated-crate build key (RESOLVED, reconciled 2026-08-10)
+
+Recorded as a WP-C5.3 opening condition and explicitly NOT fixed at the time. It is fixed now:
+`build.rs`'s test module is titled "DEV-095's cache-invalidation coverage — every semantic input
+that can affect generated code must change the build key", with one test per input so a failure
+names the input that stopped being covered. `build::tests` green, 24 passed.
+
+## DEV-101 — cross-package generic typecheck provenance (RESOLVED, reconciled 2026-08-10)
+
+`tests/cross_package_generics.rs` green, 11 passed.
+
+## DEV-093 — native success-path tests observed no computed values (RESOLVED, reconciled 2026-08-10)
+
+Both were recorded FIXED in `COMPILER-STATE.md` when found, and neither is a user-visible language
+behaviour a probe can reach: DEV-093 was native success-path tests asserting only `exit == 0`
+(fixed by making them observe computed values, which is what every three-engine case now does), and
+DEV-094 was the version-mismatch message naming the wrong version on each side. Closed on the
+recorded evidence, and this heading says so rather than implying a probe was run.
+
+## DEV-098 — `Operand::Copy` on a `&mut` reference (ACCEPTED-INDEFINITELY, reconciled 2026-08-10)
+
+Never a defect. A deliberate, verifier-accepted MIR shape that the `Copy` classification does not
+describe, recorded as NOT a regression when found. Dispositioned rather than closed, on OD-7's
+distinction: it needs an owner and a statement, never a repair.
+
+## DEV-002 — stale conformance counts (RESOLVED, reconciled 2026-08-10)
+
+A tooling-hygiene finding. `check-conformance.py` now warns on `missing` entries that still carry
+`source`/`tests` fields and on likely-semantic-rejection rules with zero recorded tests.
+
+## DEV-094 — the version-mismatch message named the wrong version on each side (RESOLVED, reconciled 2026-08-10)
+
+`version::check` assigned the LINKED runtime's `RUNTIME_VERSION` to `expected_runtime_version` and
+the generation-time value to the other side, so each half of the message named the wrong one.
+Recorded FIXED in `COMPILER-STATE.md` when found. Not a language behaviour a probe can reach, and
+this heading says that rather than implying one was run.
+
+## DEV-158 — install through a whole-value accessor (RESOLVED, CD-371, reconciled 2026-08-10)
+
+Already closed under its own CD in `COMPILER-STATE.md`; what was missing was a heading here. Its
+sibling DEV-162 closed under CD-372, and DEV-160a under CD-374 — the same family, and the only one
+of the four still live is DEV-160's capability half.
+
+## DEV-163 — a read timeout did not report as a timeout on Unix (RESOLVED, CD-375, reconciled 2026-08-10)
+
+```text
+Unix     SO_RCVTIMEO expires -> EAGAIN       -> ErrorKind::WouldBlock -> Interrupted
+Windows  SO_RCVTIMEO expires -> WSAETIMEDOUT -> ErrorKind::TimedOut
+```
+
+One platform reported the wrong classification for the same condition — the platform-divergence
+shape `stark-layout-verification` exists for. Closed under CD-375.
+
+## DEV-164 — closed in the same packet as DEV-163 (RESOLVED, CD-375, reconciled 2026-08-10)
+
+## DEV-182 — a parser decoded escaped non-BMP characters to the empty string (RESOLVED, reconciled 2026-08-10)
+
+Closed, and the reason it is still cited is worth keeping: **both sides reported success and only
+the VALUE was wrong**, so it passed protocol validation. That is why C10-B promises diagnostic
+codes, spans and text SEPARATELY from determinism — byte-identical output for the same source says
+nothing about whether the output is right.
+
+## DEV-165 — `connect_timeout` accepted and ignored — POPULATION B, not A (reconciled 2026-08-10)
+
+**The one of the sixteen that is genuinely open — and it is not Population A.** It is an
+HTTP-client defect, not a compiler one; the audit that found it said so explicitly. It belongs to
+**Population B (release/distribution)**, which constrains public wording rather than conformance,
+is frozen by hand per OD-3, and is already owned: *deferred to the networking roadmap*.
+
+Given a heading here so the tool stops reporting it as unclassified, **not** to move it into
+Population A. It is not a compiler-track defect and must not inflate that count.
+
+**This heading deliberately carries no bare `OPEN`, and therefore sorts to ADJUDICATE.** That is the
+correct answer, not a dodge: the tool's own note says adjudicate is where a human decides and a
+regex that guessed would be doing it badly. Which population an ID belongs to is exactly such a
+decision. It is OPEN — in Population B, which OD-3 freezes by hand and which this file cannot
+derive.
+
+## DEV-221 — a qualified core-trait call on a BOUNDED generic parameter (OPEN, registered 2026-08-10)
+
+Registered so it stops being a residual paragraph inside DEV-168 with no number of its own.
+
+```stark
+fn show<T: Display>(x: &T) -> String { return Display::fmt(x); }
+```
+
+```text
+[E0500] type 'T' does not implement 'Display'
+```
+
+`check_qualified_core_trait_call` selects by scanning impls for the receiver's nominal type and
+never consults the parameter's BOUNDS, so a bounded generic receiver finds nothing. A **front-end
+over-rejection**: `T: Display` says T implements Display, so TYPE-METHOD-001's qualified form
+should be available.
+
+Distinct from DEV-168, which was "type-checks and runs under the oracle, MIR refuses" — this shape
+does not type-check at all, in any engine. Found while proving DEV-168's repair.
+
+**Working spelling exists:** the ordinary method form `x.fmt()` works, which is what DEV-166's
+repair delivered. Severity is ergonomic, not a correctness leak.

@@ -250,6 +250,42 @@ trait model DEV-166 removed. The decision is pinned by two tests in
   recorded: provenance answers "may derive from", not "a live borrow reaches here", and the precise
   def-use walk that cross-block absorption needs anyway should replace this heuristic when it lands.
 
+**Bookkeeping reconciliation (2026-08-10). The "named here, owning no heading in the ledger"
+bucket is now EMPTY — it held sixteen.**
+
+Those sixteen were never open defects hiding from the tool: they were resolved in this file's prose
+and never given a heading `KNOWN-DEVIATIONS.md` could classify. The consequence was narrow and real
+— **"population A is N" was only ever true of the ledger-derived set**, and a reader of this file
+got a different number. Each now carries a closing heading with the evidence that settled it.
+
+**Probed, not taken on the prose's word**, because this project's own record is that 7 of 23
+deviations did not reproduce at the C10-Q anchor. DEV-091/096 (out-of-range 64-bit float→int cast:
+traps, and as a CAST failure rather than an arithmetic one), DEV-097 (bounds check), DEV-099
+(`size_of::<[Int32; 4]>()`) were probed in both engines; DEV-092, DEV-095 and DEV-101 were settled
+against their live test suites (mangle 9, build::tests 24, cross_package_generics 11).
+
+**DEV-099 is the one that justified probing rather than reading.** It was recorded as a live
+PRE-EXISTING defect — a layout query on an array type failing to lower — and it does not reproduce.
+Fixed at some point after 2026-07-23 and never recorded.
+
+Two are not simple closures:
+
+- **DEV-098 → ACCEPTED-INDEFINITELY.** Never a defect: a deliberate, verifier-accepted MIR shape
+  the `Copy` classification does not describe.
+- **DEV-165 → ADJUDICATE, deliberately.** It is OPEN, but in **Population B** (release/distribution
+  wording), is an HTTP-client defect rather than a compiler one — the audit that found it said so —
+  and is already deferred to the networking roadmap. Its heading carries no bare `OPEN` precisely
+  so it does not inflate Population A. Which population an ID belongs to is a human decision, which
+  is what ADJUDICATE is for.
+
+**DEV-221 REGISTERED.** The DEV-168 residual now has a number instead of being a paragraph inside
+another entry: `Display::fmt(x)` on a BOUNDED generic parameter is refused `[E0500] type 'T' does
+not implement 'Display'`, because selection scans impls and never consults bounds. A front-end
+over-rejection, distinct from DEV-168 (which type-checked and failed at lowering). Ergonomic — the
+ordinary method form `x.fmt()` works.
+
+**Population A is 8**: DEV-140..145, DEV-160's capability half, and DEV-221.
+
 **DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
