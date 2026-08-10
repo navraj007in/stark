@@ -1,0 +1,334 @@
+use stark_digest::from_bytes;
+use stark_digest::to_hex;
+use stark_digest::Digest;
+use stark_digest::DigestAlgorithm;
+
+const MASK32: UInt64 = 0xFFFF_FFFFu64;
+const MAX_SHA256_BYTES: UInt64 = 0x1FFF_FFFF_FFFF_FFFFu64;
+const K: [UInt32; 64] = [
+    0x428A_2F98u32,
+    0x7137_4491u32,
+    0xB5C0_FBCFu32,
+    0xE9B5_DBA5u32,
+    0x3956_C25Bu32,
+    0x59F1_11F1u32,
+    0x923F_82A4u32,
+    0xAB1C_5ED5u32,
+    0xD807_AA98u32,
+    0x1283_5B01u32,
+    0x2431_85BEu32,
+    0x550C_7DC3u32,
+    0x72BE_5D74u32,
+    0x80DE_B1FEu32,
+    0x9BDC_06A7u32,
+    0xC19B_F174u32,
+    0xE49B_69C1u32,
+    0xEFBE_4786u32,
+    0x0FC1_9DC6u32,
+    0x240C_A1CCu32,
+    0x2DE9_2C6Fu32,
+    0x4A74_84AAu32,
+    0x5CB0_A9DCu32,
+    0x76F9_88DAu32,
+    0x983E_5152u32,
+    0xA831_C66Du32,
+    0xB003_27C8u32,
+    0xBF59_7FC7u32,
+    0xC6E0_0BF3u32,
+    0xD5A7_9147u32,
+    0x06CA_6351u32,
+    0x1429_2967u32,
+    0x27B7_0A85u32,
+    0x2E1B_2138u32,
+    0x4D2C_6DFCu32,
+    0x5338_0D13u32,
+    0x650A_7354u32,
+    0x766A_0ABBu32,
+    0x81C2_C92Eu32,
+    0x9272_2C85u32,
+    0xA2BF_E8A1u32,
+    0xA81A_664Bu32,
+    0xC24B_8B70u32,
+    0xC76C_51A3u32,
+    0xD192_E819u32,
+    0xD699_0624u32,
+    0xF40E_3585u32,
+    0x106A_A070u32,
+    0x19A4_C116u32,
+    0x1E37_6C08u32,
+    0x2748_774Cu32,
+    0x34B0_BCB5u32,
+    0x391C_0CB3u32,
+    0x4ED8_AA4Au32,
+    0x5B9C_CA4Fu32,
+    0x682E_6FF3u32,
+    0x748F_82EEu32,
+    0x78A5_636Fu32,
+    0x84C8_7814u32,
+    0x8CC7_0208u32,
+    0x90BE_FFFAu32,
+    0xA450_6CEBu32,
+    0xBEF9_A3F7u32,
+    0xC671_78F2u32,
+];
+
+pub fn hash(input: &[UInt8]) -> Digest {
+    internal_self_check();
+    let padded = pad_message(input);
+    let mut h0 = 0x6A09_E667u32;
+    let mut h1 = 0xBB67_AE85u32;
+    let mut h2 = 0x3C6E_F372u32;
+    let mut h3 = 0xA54F_F53Au32;
+    let mut h4 = 0x510E_527Fu32;
+    let mut h5 = 0x9B05_688Cu32;
+    let mut h6 = 0x1F83_D9ABu32;
+    let mut h7 = 0x5BE0_CD19u32;
+
+    let mut offset: UInt64 = 0u64;
+    while offset < padded.len() {
+        let state = compress_block(h0, h1, h2, h3, h4, h5, h6, h7, padded.as_slice(), offset);
+        h0 = state[0u64];
+        h1 = state[1u64];
+        h2 = state[2u64];
+        h3 = state[3u64];
+        h4 = state[4u64];
+        h5 = state[5u64];
+        h6 = state[6u64];
+        h7 = state[7u64];
+        offset = offset + 64u64;
+    }
+
+    let mut bytes: Vec<UInt8> = Vec::new();
+    append_be_u32(&mut bytes, h0);
+    append_be_u32(&mut bytes, h1);
+    append_be_u32(&mut bytes, h2);
+    append_be_u32(&mut bytes, h3);
+    append_be_u32(&mut bytes, h4);
+    append_be_u32(&mut bytes, h5);
+    append_be_u32(&mut bytes, h6);
+    append_be_u32(&mut bytes, h7);
+
+    if bytes.len() != 32u64 {
+        panic("stark-sha256 internal digest length invariant failed");
+    }
+
+    match from_bytes(DigestAlgorithm::Sha256, bytes) {
+        Ok(digest) => digest,
+        Err(_) => {
+            panic("stark-sha256 digest construction invariant failed");
+        }
+    }
+}
+
+pub fn hash_hex(input: &[UInt8]) -> String {
+    let digest = hash(input);
+    to_hex(&digest)
+}
+
+fn internal_self_check() {
+    if add2(0xFFFF_FFFFu32, 1u32) != 0u32 {
+        panic("wrap add one mismatch");
+    }
+    if add2(0xFFFF_FFFFu32, 0xFFFF_FFFFu32) != 0xFFFF_FFFEu32 {
+        panic("wrap add max mismatch");
+    }
+    if add2(0x8000_0000u32, 0x8000_0000u32) != 0u32 {
+        panic("wrap add high-bit mismatch");
+    }
+    if rotr32(0x8000_0001u32, 1u32) != 0xC000_0000u32 {
+        panic("rotate high-bit mismatch");
+    }
+    if choose(0xFFFF_0000u32, 0x1234_5678u32, 0x9ABC_DEF0u32) != 0x1234_DEF0u32 {
+        panic("choice mismatch");
+    }
+    if majority(0xFFFF_0000u32, 0xFF00_FF00u32, 0x0F0F_0F0Fu32) != 0xFF0F_0F00u32 {
+        panic("majority mismatch");
+    }
+    if big_sigma0(0x6A09_E667u32) != 0xCE20_B47Eu32 {
+        panic("big sigma0 mismatch");
+    }
+    if big_sigma1(0x510E_527Fu32) != 0x3587_272Bu32 {
+        panic("big sigma1 mismatch");
+    }
+    if small_sigma0(0x6162_6380u32) != 0x940E_90EFu32 {
+        panic("small sigma0 mismatch");
+    }
+    if small_sigma1(0x000F_0000u32) != 0x6000_03C6u32 {
+        panic("small sigma1 mismatch");
+    }
+
+    let block: &[UInt8] = &[0x61u8, 0x62u8, 0x63u8, 0x80u8];
+    if read_be_u32(block, 0u64) != 0x6162_6380u32 {
+        panic("read be u32 mismatch");
+    }
+
+    let mut out: Vec<UInt8> = Vec::new();
+    append_be_u32(&mut out, 0x6162_6380u32);
+    if out.len() != 4u64 || out[0u64] != 0x61u8 || out[1u64] != 0x62u8 || out[2u64] != 0x63u8 || out[3u64] != 0x80u8 {
+        panic("append be u32 mismatch");
+    }
+
+    let mut len: Vec<UInt8> = Vec::new();
+    append_be_u64(&mut len, 24u64);
+    if len.len() != 8u64 || len[6u64] != 0u8 || len[7u64] != 24u8 {
+        panic("append be u64 mismatch");
+    }
+
+    let abc: &[UInt8] = &[97u8, 98u8, 99u8];
+    let padded = pad_message(abc);
+    if padded.len() != 64u64 || padded[3u64] != 0x80u8 || padded[63u64] != 24u8 {
+        panic("padding mismatch");
+    }
+}
+
+fn add2(a: UInt32, b: UInt32) -> UInt32 {
+    (a as UInt64 + b as UInt64 & MASK32) as UInt32
+}
+
+fn add4(a: UInt32, b: UInt32, c: UInt32, d: UInt32) -> UInt32 {
+    (a as UInt64 + b as UInt64 + c as UInt64 + d as UInt64 & MASK32) as UInt32
+}
+
+fn add5(a: UInt32, b: UInt32, c: UInt32, d: UInt32, e: UInt32) -> UInt32 {
+    (a as UInt64 + b as UInt64 + c as UInt64 + d as UInt64 + e as UInt64 & MASK32) as UInt32
+}
+
+fn rotr32(x: UInt32, n: UInt32) -> UInt32 {
+    let right = x >> n;
+    let left = (x as UInt64 << 32u64 - n as UInt64 & MASK32) as UInt32;
+    right | left
+}
+
+fn choose(x: UInt32, y: UInt32, z: UInt32) -> UInt32 {
+    x & y ^ (x ^ 0xFFFF_FFFFu32) & z
+}
+
+fn majority(x: UInt32, y: UInt32, z: UInt32) -> UInt32 {
+    x & y ^ x & z ^ y & z
+}
+
+fn big_sigma0(x: UInt32) -> UInt32 {
+    rotr32(x, 2u32) ^ rotr32(x, 13u32) ^ rotr32(x, 22u32)
+}
+
+fn big_sigma1(x: UInt32) -> UInt32 {
+    rotr32(x, 6u32) ^ rotr32(x, 11u32) ^ rotr32(x, 25u32)
+}
+
+fn small_sigma0(x: UInt32) -> UInt32 {
+    rotr32(x, 7u32) ^ rotr32(x, 18u32) ^ x >> 3u32
+}
+
+fn small_sigma1(x: UInt32) -> UInt32 {
+    rotr32(x, 17u32) ^ rotr32(x, 19u32) ^ x >> 10u32
+}
+
+fn pad_message(input: &[UInt8]) -> Vec<UInt8> {
+    let byte_length = input.len();
+    if byte_length > MAX_SHA256_BYTES {
+        panic("stark-sha256 input length exceeds SHA-256 length field");
+    }
+
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < byte_length {
+        out.push(input[i]);
+        i = i + 1u64;
+    }
+    out.push(0x80u8);
+
+    while out.len() % 64u64 != 56u64 {
+        out.push(0u8);
+    }
+
+    append_be_u64(&mut out, byte_length * 8u64);
+    out
+}
+
+fn compress_block(
+    h0: UInt32,
+    h1: UInt32,
+    h2: UInt32,
+    h3: UInt32,
+    h4: UInt32,
+    h5: UInt32,
+    h6: UInt32,
+    h7: UInt32,
+    block: &[UInt8],
+    offset: UInt64,
+) -> Vec<UInt32> {
+    let mut w: Vec<UInt32> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < 16u64 {
+        w.push(read_be_u32(block, offset + i * 4u64));
+        i = i + 1u64;
+    }
+    while i < 64u64 {
+        let wm16 = w[i - 16u64];
+        let wm15 = w[i - 15u64];
+        let wm7 = w[i - 7u64];
+        let wm2 = w[i - 2u64];
+        let scheduled = add4(wm16, small_sigma0(wm15), wm7, small_sigma1(wm2));
+        w.push(scheduled);
+        i = i + 1u64;
+    }
+
+    let mut a = h0;
+    let mut b = h1;
+    let mut c = h2;
+    let mut d = h3;
+    let mut e = h4;
+    let mut f = h5;
+    let mut g = h6;
+    let mut h = h7;
+
+    i = 0u64;
+    while i < 64u64 {
+        let t1 = add5(h, big_sigma1(e), choose(e, f, g), K[i], w[i]);
+        let t2 = add2(big_sigma0(a), majority(a, b, c));
+        h = g;
+        g = f;
+        f = e;
+        e = add2(d, t1);
+        d = c;
+        c = b;
+        b = a;
+        a = add2(t1, t2);
+        i = i + 1u64;
+    }
+
+    let mut state: Vec<UInt32> = Vec::new();
+    state.push(add2(h0, a));
+    state.push(add2(h1, b));
+    state.push(add2(h2, c));
+    state.push(add2(h3, d));
+    state.push(add2(h4, e));
+    state.push(add2(h5, f));
+    state.push(add2(h6, g));
+    state.push(add2(h7, h));
+    state
+}
+
+fn read_be_u32(bytes: &[UInt8], offset: UInt64) -> UInt32 {
+    bytes[offset] as UInt32 << 24u32 | bytes[offset + 1u64] as UInt32 << 16u32 | bytes[offset + 2u64] as UInt32 << 8u32 | bytes[offset + 3u64] as UInt32
+}
+
+fn append_be_u32(out: &mut Vec<UInt8>, value: UInt32) {
+    out.push((value >> 24u32 & 0xFFu32) as UInt8);
+    out.push((value >> 16u32 & 0xFFu32) as UInt8);
+    out.push((value >> 8u32 & 0xFFu32) as UInt8);
+    out.push((value & 0xFFu32) as UInt8);
+}
+
+fn append_be_u64(out: &mut Vec<UInt8>, value: UInt64) {
+    out.push((value >> 56u64 & 0xFFu64) as UInt8);
+    out.push((value >> 48u64 & 0xFFu64) as UInt8);
+    out.push((value >> 40u64 & 0xFFu64) as UInt8);
+    out.push((value >> 32u64 & 0xFFu64) as UInt8);
+    out.push((value >> 24u64 & 0xFFu64) as UInt8);
+    out.push((value >> 16u64 & 0xFFu64) as UInt8);
+    out.push((value >> 8u64 & 0xFFu64) as UInt8);
+    out.push((value & 0xFFu64) as UInt8);
+}
+
+mod tests;

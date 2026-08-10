@@ -8,7 +8,7 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 28 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, native compilation, compiler-backed language services, 32 first-party packages — among them an HTTP/1.1 and HTTPS client written in STARK — and a release installer for macOS, Linux and Windows.
 
 ### Where the compiler actually is
 
@@ -193,7 +193,7 @@ Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](s
 
 ### First-party packages
 
-The repository carries 27 libraries plus the `stark-get` application under [`packages/`](packages/).
+The repository carries 31 libraries plus the `stark-get` application under [`packages/`](packages/).
 Each library owns a `starkpkg.json`, lock file and test suite; qualification consumers must
 actually *call* every covered public surface.
 
@@ -345,7 +345,7 @@ payload replaces the manifest with it. Release archives are unsigned; a public d
 needs a signed manifest, a trusted release key, signature verification before installation, and
 platform notarisation. None of that exists yet.
 
-The package carries the 27 toolchain-marked first-party STARK libraries under
+The package carries the 31 toolchain-marked first-party STARK libraries under
 `lib/stark/packages/<name>/`, plus the six first-party native provider crates under
 `lib/stark/packages/<name>/native`, so a clean machine builds clock, filesystem, environment,
 random, TCP/DNS and TLS programs from a stock install. Version-only dependencies search the
@@ -543,7 +543,7 @@ not fine-grained incremental compilation, and it is not trying to be.
 `stark build` requires Rust 1.85 or newer and uses the locally installed
 `stark-runtime` crate without network access. Release archives for macOS, Linux
 and Windows carry the `stark`, `starkc` and `starkide` binaries, that runtime,
-the provider ABI, 27 first-party libraries, six provider crates, a hash manifest and platform
+the provider ABI, 31 first-party libraries, six provider crates, a hash manifest and platform
 installers; see
 [`starkc/README.md`](starkc/README.md#release-binaries).
 
@@ -639,7 +639,7 @@ The following areas are working:
   seven features);
 * lock files (`stark.lock`) with SHA-256 content hashing;
 * offline and locked build modes;
-* 27 first-party libraries plus the `stark-get` application, with consumer packages that call the
+* 31 first-party libraries plus the `stark-get` application, with consumer packages that call the
   release-qualified surfaces;
 * manifest-declared host capabilities backed by native provider crates — clock, filesystem,
   environment, random, TCP/DNS and TLS — with cross-provider ownership transfer and affine host

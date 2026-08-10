@@ -1,0 +1,9 @@
+{
+  "name": "stark-content-id-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_content_id": { "package": "stark-content-id", "path": "../stark-content-id", "version": "0.1.0" },
+    "stark_digest": { "package": "stark-digest", "path": "../stark-digest", "version": "0.1.0" }
+  }
+}

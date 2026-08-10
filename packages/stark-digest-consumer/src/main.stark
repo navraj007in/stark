@@ -1,0 +1,53 @@
+use stark_digest::algorithm;
+use stark_digest::bytes_copy;
+use stark_digest::equals;
+use stark_digest::from_bytes;
+use stark_digest::parse_hex;
+use stark_digest::to_hex;
+use stark_digest::DigestAlgorithm;
+use stark_digest::DigestError;
+
+fn main() {
+    let parsed = match parse_hex(
+        DigestAlgorithm::Sha256,
+        "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F",
+    ) {
+
+        Ok(digest) => digest,
+        Err(_) => {
+            panic("parse failed");
+        }
+    };
+
+    let copied = bytes_copy(&parsed);
+    let rebuilt = match from_bytes(DigestAlgorithm::Sha256, copied) {
+        Ok(digest) => digest,
+        Err(_) => {
+            panic("rebuild failed");
+        }
+    };
+
+    match algorithm(&rebuilt) {
+        DigestAlgorithm::Sha256 => {}
+    }
+
+    if !equals(&parsed, &rebuilt) {
+        panic("equal digest comparison failed");
+    }
+
+    match parse_hex(DigestAlgorithm::Sha256, "0z") {
+        Err(DigestError::InvalidHex(index, byte)) => {
+            if index != 1u64 || byte != 122u8 {
+                panic("invalid hex payload mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected invalid hex");
+        }
+        Ok(_) => {
+            panic("expected invalid hex failure");
+        }
+    }
+
+    println(to_hex(&rebuilt).as_str());
+}

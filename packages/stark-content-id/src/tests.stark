@@ -1,0 +1,235 @@
+use stark_digest::equals as digest_equals;
+use stark_digest::parse_hex;
+use stark_digest::DigestAlgorithm;
+use stark_digest::DigestError;
+use super::digest;
+use super::equals;
+use super::from_digest;
+use super::parse;
+use super::to_string;
+use super::ContentIdError;
+
+const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const EMPTY_ID: &str = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const ABC_HEX: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+const ABC_ID: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+fn parse_ok(text: &str) -> super::ContentId {
+    match parse(text) {
+        Ok(id) => id,
+        Err(_) => {
+            panic("expected content id parse success");
+        }
+    }
+}
+
+fn assert_invalid_format(text: &str) {
+    match parse(text) {
+        Err(ContentIdError::InvalidFormat) => {}
+        Err(_) => {
+            panic("expected invalid format");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn assert_unsupported_algorithm(text: &str) {
+    match parse(text) {
+        Err(ContentIdError::UnsupportedAlgorithm) => {}
+        Err(_) => {
+            panic("expected unsupported algorithm");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn assert_invalid_digest(text: &str) {
+    match parse(text) {
+        Err(ContentIdError::InvalidDigest(_)) => {}
+        Err(_) => {
+            panic("expected invalid digest");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn test_parse_canonical_vectors() {
+    let empty = parse_ok(EMPTY_ID);
+    if to_string(&empty).as_str() != EMPTY_ID {
+        panic("empty content id mismatch");
+    }
+
+    let abc = parse_ok(ABC_ID);
+    if to_string(&abc).as_str() != ABC_ID {
+        panic("abc content id mismatch");
+    }
+}
+
+fn test_from_digest_to_string_and_digest_access() {
+    let parsed_digest = match parse_hex(DigestAlgorithm::Sha256, ABC_HEX) {
+        Ok(value) => value,
+        Err(_) => {
+            panic("expected digest parse success");
+        }
+    };
+    let id = from_digest(parsed_digest);
+    if to_string(&id).as_str() != ABC_ID {
+        panic("from digest rendering mismatch");
+    }
+
+    let reference = digest(&id);
+    let expected_id = parse_ok(ABC_ID);
+    if !digest_equals(reference, digest(&expected_id)) {
+        panic("digest reference mismatch");
+    }
+    if to_string(&id).as_str() != ABC_ID {
+        panic("digest access mutated id");
+    }
+}
+
+fn test_parse_to_digest_to_string_and_idempotence() {
+    let id = parse_ok(ABC_ID);
+    let expected = parse_ok(ABC_ID);
+    if !digest_equals(digest(&id), digest(&expected)) {
+        panic("parse digest mismatch");
+    }
+
+    let rendered = to_string(&id);
+    let reparsed = parse_ok(rendered.as_str());
+    if to_string(&reparsed).as_str() != rendered.as_str() {
+        panic("content id render is not idempotent");
+    }
+}
+
+fn test_uppercase_and_mixed_case_digest_canonicalize() {
+    let upper = parse_ok("sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855");
+    if to_string(&upper).as_str() != EMPTY_ID {
+        panic("uppercase digest did not canonicalize");
+    }
+
+    let mixed = parse_ok("sha256:Ba7816Bf8F01cFeA414140dE5DAe2223B00361A396177A9Cb410Ff61f20015Ad");
+    if to_string(&mixed).as_str() != ABC_ID {
+        panic("mixed-case digest did not canonicalize");
+    }
+}
+
+fn test_equals() {
+    let left = parse_ok(ABC_ID);
+    let right = parse_ok(ABC_ID);
+    let empty = parse_ok(EMPTY_ID);
+
+    if !equals(&left, &left) {
+        panic("id should equal itself");
+    }
+    if !equals(&left, &right) {
+        panic("equal ids mismatch");
+    }
+    if equals(&left, &empty) {
+        panic("different ids compared equal");
+    }
+
+    let rendered_left = to_string(&left);
+    let rendered_empty = to_string(&empty);
+    if rendered_left.as_str() != ABC_ID || rendered_empty.as_str() != EMPTY_ID {
+        panic("equals mutated an input");
+    }
+}
+
+fn test_invalid_format() {
+    assert_invalid_format("");
+    assert_invalid_format("sha256");
+    assert_invalid_format(":");
+    assert_invalid_format(":abc");
+    assert_invalid_format("sha256:");
+    assert_invalid_format("sha256::abc");
+    assert_invalid_format(
+        " sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_invalid_format(
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ",
+    );
+    assert_invalid_format(
+        "sha256 :e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_invalid_format(
+        "sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+}
+
+fn test_unsupported_algorithms() {
+    assert_unsupported_algorithm(
+        "SHA256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_unsupported_algorithm(
+        "Sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_unsupported_algorithm(
+        "sha1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_unsupported_algorithm(
+        "md5:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_unsupported_algorithm(
+        "blake3:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+}
+
+fn test_invalid_digest_text() {
+    assert_invalid_digest("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85");
+    assert_invalid_digest(
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550",
+    );
+    assert_invalid_digest("sha256:z3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert_invalid_digest("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599zb7852b855");
+    assert_invalid_digest("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85z");
+    assert_invalid_digest(
+        "sha256:0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_invalid_digest(
+        "sha256:e3b0-c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_invalid_format(
+        "sha256:e3b0:c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    assert_invalid_digest(
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934 ca495991b7852b855",
+    );
+}
+
+fn test_invalid_digest_payload_is_preserved() {
+    match parse("sha256:z3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") {
+        Err(ContentIdError::InvalidDigest(DigestError::InvalidHex(index, byte))) => {
+            if index != 0u64 || byte != 122u8 {
+                panic("invalid digest payload mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected invalid hex payload");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn test_determinism() {
+    let id = parse_ok(ABC_ID);
+    let first = to_string(&id);
+    let second = to_string(&id);
+    let third = to_string(&id);
+    if first.as_str() != second.as_str() || first.as_str() != third.as_str() {
+        panic("content id rendering is not deterministic");
+    }
+
+    let parsed_a = parse_ok(ABC_ID);
+    let parsed_b = parse_ok(ABC_ID);
+    if !equals(&parsed_a, &parsed_b) {
+        panic("content id parse is not deterministic");
+    }
+}

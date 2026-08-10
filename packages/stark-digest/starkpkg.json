@@ -1,0 +1,9 @@
+{
+  "name": "stark-digest",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "distribution": { "toolchain": true },
+  "dependencies": {
+    "stark_hex": { "package": "stark-hex", "path": "../stark-hex", "version": "0.1.0" }
+  }
+}

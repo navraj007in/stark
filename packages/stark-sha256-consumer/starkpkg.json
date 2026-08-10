@@ -1,0 +1,9 @@
+{
+  "name": "stark-sha256-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_sha256": { "package": "stark-sha256", "path": "../stark-sha256", "version": "0.1.0" },
+    "stark_digest": { "package": "stark-digest", "path": "../stark-digest", "version": "0.1.0" }
+  }
+}

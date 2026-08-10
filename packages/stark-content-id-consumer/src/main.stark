@@ -1,0 +1,50 @@
+use stark_content_id::digest;
+use stark_content_id::equals;
+use stark_content_id::from_digest;
+use stark_content_id::parse;
+use stark_content_id::to_string;
+use stark_content_id::ContentIdError;
+use stark_digest::equals as digest_equals;
+use stark_digest::parse_hex;
+use stark_digest::DigestAlgorithm;
+
+fn main() {
+    let text = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let id = match parse(text) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            panic("content id parse failed");
+        }
+    };
+
+    let hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let raw = match parse_hex(DigestAlgorithm::Sha256, hex) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            panic("digest parse failed");
+        }
+    };
+    let from_raw = from_digest(raw);
+
+    if !equals(&id, &from_raw) {
+        panic("content ids should compare equal");
+    }
+    if to_string(&id).as_str() != text {
+        panic("content id rendering mismatch");
+    }
+    if !digest_equals(digest(&id), digest(&from_raw)) {
+        panic("digest references should compare equal");
+    }
+
+    match parse("sha1:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") {
+        Err(ContentIdError::UnsupportedAlgorithm) => {}
+        Err(_) => {
+            panic("expected unsupported algorithm");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+
+    println("content-id:ok");
+}

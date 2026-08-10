@@ -1,0 +1,233 @@
+use super::basic;
+use super::bearer;
+use super::parse;
+use super::to_string;
+use super::AuthError;
+use super::Authorization;
+
+fn parse_ok(value: &str) -> Authorization {
+    match parse(value) {
+        Ok(auth) => auth,
+        Err(_) => {
+            panic("expected auth parse success");
+        }
+    }
+}
+
+fn bearer_ok(token: &str) -> String {
+    match bearer(token) {
+        Ok(value) => value,
+        Err(_) => {
+            panic("expected bearer success");
+        }
+    }
+}
+
+fn basic_ok(username: &str, password: &str) -> String {
+    match basic(username, password) {
+        Ok(value) => value,
+        Err(_) => {
+            panic("expected basic success");
+        }
+    }
+}
+
+fn assert_invalid_basic_construction(username: &str, password: &str) {
+    match basic(username, password) {
+        Err(AuthError::InvalidBasicCredentials) => {}
+        Err(_) => {
+            panic("expected invalid basic credentials");
+        }
+        Ok(_) => {
+            panic("expected basic construction failure");
+        }
+    }
+}
+
+fn assert_invalid_format(value: &str) {
+    match parse(value) {
+        Err(AuthError::InvalidFormat) => {}
+        Err(_) => {
+            panic("expected invalid format");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn assert_unsupported(value: &str) {
+    match parse(value) {
+        Err(AuthError::UnsupportedScheme) => {}
+        Err(_) => {
+            panic("expected unsupported scheme");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn assert_invalid_basic(value: &str) {
+    match parse(value) {
+        Err(AuthError::InvalidBasicCredentials) => {}
+        Err(_) => {
+            panic("expected invalid basic credentials");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn assert_invalid_bearer_token(token: &str) {
+    match bearer(token) {
+        Err(AuthError::InvalidBearerToken) => {}
+        Err(_) => {
+            panic("expected invalid bearer token");
+        }
+        Ok(_) => {
+            panic("expected bearer failure");
+        }
+    }
+}
+
+fn assert_invalid_bearer_value(value: &str) {
+    match parse(value) {
+        Err(AuthError::InvalidBearerToken) => {}
+        Err(_) => {
+            panic("expected invalid bearer token");
+        }
+        Ok(_) => {
+            panic("expected parse failure");
+        }
+    }
+}
+
+fn test_basic_vectors() {
+    if basic_ok("Aladdin", "open sesame").as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("aladdin basic vector mismatch");
+    }
+    if basic_ok("user", "pass").as_str() != "Basic dXNlcjpwYXNz" {
+        panic("user pass basic vector mismatch");
+    }
+    if to_string(&parse_ok("Basic dXNlcjpwOmE6c3M=")).as_str() != "Basic dXNlcjpwOmE6c3M=" {
+        panic("password colon basic parse mismatch");
+    }
+    if basic_ok("user", "").as_str() != "Basic dXNlcjo=" {
+        panic("empty password basic vector mismatch");
+    }
+    if basic_ok("", "password").as_str() != "Basic OnBhc3N3b3Jk" {
+        panic("empty username basic vector mismatch");
+    }
+}
+
+fn test_basic_construction_rejects_what_parse_rejects() {
+    assert_invalid_basic_construction("user:name", "pass");
+    assert_invalid_basic_construction("user\r\nAuthorization: evil", "pass");
+    assert_invalid_basic_construction("user", "pass\r\nAuthorization: evil");
+    assert_invalid_basic_construction("user", "pa\tss");
+}
+
+fn test_bearer_vectors() {
+    if bearer_ok("abc").as_str() != "Bearer abc" {
+        panic("bearer abc mismatch");
+    }
+    if bearer_ok("abc123").as_str() != "Bearer abc123" {
+        panic("bearer abc123 mismatch");
+    }
+    if bearer_ok("abc.def.ghi").as_str() != "Bearer abc.def.ghi" {
+        panic("bearer dotted mismatch");
+    }
+    if bearer_ok("mF_9.B5f-4.1JqM").as_str() != "Bearer mF_9.B5f-4.1JqM" {
+        panic("bearer punctuation mismatch");
+    }
+    if bearer_ok("abc==").as_str() != "Bearer abc==" {
+        panic("bearer padding mismatch");
+    }
+    if bearer_ok("A+/Z").as_str() != "Bearer A+/Z" {
+        panic("bearer plus slash mismatch");
+    }
+}
+
+fn test_bearer_rejections() {
+    assert_invalid_bearer_token("");
+    assert_invalid_bearer_token(" abc");
+    assert_invalid_bearer_token("abc ");
+    assert_invalid_bearer_token("abc def");
+    assert_invalid_bearer_token("abc\tdef");
+    assert_invalid_bearer_token("abc\rdef");
+    assert_invalid_bearer_token("abc\ndef");
+    assert_invalid_bearer_token("abc=def");
+}
+
+fn test_parse_positive_and_canonical_scheme() {
+    if to_string(&parse_ok("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")).as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("basic parse mismatch");
+    }
+    if to_string(&parse_ok("basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")).as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("basic lowercase scheme mismatch");
+    }
+    if to_string(&parse_ok("BASIC QWxhZGRpbjpvcGVuIHNlc2FtZQ==")).as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+        panic("basic uppercase scheme mismatch");
+    }
+    if to_string(&parse_ok("Bearer abc.def")).as_str() != "Bearer abc.def" {
+        panic("bearer parse mismatch");
+    }
+    if to_string(&parse_ok("bearer abc.def")).as_str() != "Bearer abc.def" {
+        panic("bearer lowercase scheme mismatch");
+    }
+    if to_string(&parse_ok("BEARER abc.def")).as_str() != "Bearer abc.def" {
+        panic("bearer uppercase scheme mismatch");
+    }
+}
+
+fn test_parse_negatives() {
+    assert_invalid_format("");
+    assert_invalid_format("Basic");
+    assert_invalid_format("Bearer");
+    assert_invalid_format(" Basic abc");
+    assert_invalid_format("Bearer abc ");
+    assert_invalid_format("Basic ");
+    assert_invalid_format("Bearer ");
+    assert_invalid_basic("Basic !!!");
+    assert_invalid_basic("Basic dXNlcm5hbWU=");
+    assert_unsupported("Digest abc");
+    assert_unsupported("Foo abc");
+}
+
+fn test_header_injection_rejections() {
+    assert_invalid_bearer_value("Bearer abc\r\nX-Test: evil");
+    assert_invalid_bearer_value("Bearer abc\nX-Test: evil");
+    assert_invalid_basic("Basic abc\r\nAuthorization: evil");
+}
+
+fn test_round_trip_immutability_and_determinism() {
+    let user = String::from("user");
+    let pass = String::from("pass");
+    let b1 = basic_ok(user.as_str(), pass.as_str());
+    let b2 = basic_ok(user.as_str(), pass.as_str());
+    if b1.as_str() != "Basic dXNlcjpwYXNz" || b2.as_str() != "Basic dXNlcjpwYXNz" {
+        panic("basic output not deterministic");
+    }
+    if user.as_str() != "user" || pass.as_str() != "pass" {
+        panic("basic mutated input");
+    }
+
+    let token = String::from("abc.def");
+    let bearer_value = bearer_ok(token.as_str());
+    if token.as_str() != "abc.def" {
+        panic("bearer mutated input");
+    }
+    let parsed = parse_ok(bearer_value.as_str());
+    let rendered = to_string(&parsed);
+    let reparsed = parse_ok(rendered.as_str());
+    if rendered.as_str() != "Bearer abc.def" || to_string(&reparsed).as_str() != rendered.as_str() {
+        panic("bearer round trip mismatch");
+    }
+
+    let basic_parsed = parse_ok(b1.as_str());
+    if to_string(&basic_parsed).as_str() != b1.as_str() {
+        panic("basic round trip mismatch");
+    }
+}
