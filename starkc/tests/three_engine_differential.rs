@@ -3048,3 +3048,90 @@ fn main() {
 }
 "#
 );
+
+// DEV-168 — a fully qualified call to a compiler-known trait's method now lowers.
+//
+// TYPE-METHOD-001 names this form, and `dev_display_dispatch.rs` uses it as the documented way to
+// disambiguate when two bounds declare the same method. Before this repair it type-checked, ran
+// under the HIR oracle, and MIR lowering refused it "callee form (C4.5)" — so the specification's
+// own escape hatch ran in one engine of three.
+//
+// The repair adds no trait matcher: `check_qualified_core_trait_call` already publishes the
+// selected impl member through the same publisher `a == b` uses, and lowering now reads that
+// publication via `operator_callable_key`.
+three_engine_test!(
+    dev168_qualified_core_trait_call_on_a_concrete_nominal,
+    "dev168_concrete",
+    completes,
+    r#"
+struct P {
+    v: Int32,
+}
+
+impl Display for P {
+    fn fmt(&self) -> String {
+        return "P".to_string();
+    }
+}
+
+fn main() {
+    let p = P { v: 1 };
+    let s: String = Display::fmt(&p);
+    assert_eq(s.len(), 1u64);
+}
+"#
+);
+
+// A GENERIC impl — `impl<T: Display> Display for W<T>`. The published selection carries the impl's
+// substitution, so this is the case that fails if lowering re-derives the callable from the
+// nominal's name instead of reading what the checker bound.
+three_engine_test!(
+    dev168_qualified_core_trait_call_through_a_generic_impl,
+    "dev168_generic",
+    completes,
+    r#"
+struct W<T> {
+    v: T,
+}
+
+impl<T: Display> Display for W<T> {
+    fn fmt(&self) -> String {
+        return self.v.fmt();
+    }
+}
+
+fn main() {
+    let w = W { v: 7 };
+    let s: String = Display::fmt(&w);
+    assert_eq(s.len(), 1u64);
+}
+"#
+);
+
+// A DIFFERENT compiler-known trait, so the repair is not keyed to `Display`. `Eq::eq` is the
+// qualified spelling of `a == b`, and both must select the same user impl.
+three_engine_test!(
+    dev168_qualified_eq_matches_the_operator_it_spells,
+    "dev168_eq",
+    completes,
+    r#"
+struct P {
+    v: Int32,
+}
+
+impl Eq for P {
+    fn eq(&self, other: &P) -> Bool {
+        return self.v == other.v;
+    }
+}
+
+fn main() {
+    let a = P { v: 1 };
+    let b = P { v: 1 };
+    let c = P { v: 2 };
+    assert(Eq::eq(&a, &b));
+    assert(!Eq::eq(&a, &c));
+    assert(a == b);
+}
+"#
+);

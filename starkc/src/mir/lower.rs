@@ -5898,6 +5898,85 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
+                // DEV-168 — a fully qualified call to a COMPILER-KNOWN trait's method,
+                // `Display::fmt(&x)`. TYPE-METHOD-001 names this exact form, and it is the
+                // documented way to disambiguate when two bounds declare the same method, so a
+                // shape the specification offers as the escape hatch cannot be the one shape that
+                // fails to build.
+                //
+                // A compiler-known trait has no `hir::ItemKind::Trait` item, so `Res::TraitMember`
+                // above never matches it and the callee fell through to "callee form (C4.5)".
+                //
+                // **No second trait matcher is introduced here, per the repair constraint.** The
+                // checker already selected the impl member for this very expression —
+                // `check_qualified_core_trait_call` publishes it through `publish_operator_use`,
+                // the same publisher `a == b` uses, with `DispatchProvenance::CoreTrait`. This
+                // arm READS that answer through `operator_callable_key`, which is the existing
+                // consumer of exactly that provenance and already handles both binding times
+                // (`Static` for a concrete nominal, `Bound` for a bounded generic parameter).
+                Res::CoreTraitMember(core_trait, _) => {
+                    let core_trait = *core_trait;
+                    let Some((&recv_expr, _rest)) = args.split_first() else {
+                        return unsupported(
+                            "fully qualified core-trait call without a receiver argument",
+                            span,
+                        );
+                    };
+                    let (peeled, _) = Self::peel_refs(self.expr_mir_ty(recv_expr)?);
+                    let (nominal, nominal_args) = match &peeled {
+                        MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a) => {
+                            (*item, a.clone())
+                        }
+                        other => {
+                            return unsupported(
+                                format!(
+                                    "fully qualified core-trait call on non-nominal receiver \
+                                     {other:?}"
+                                ),
+                                span,
+                            )
+                        }
+                    };
+                    let Some((key, receiver)) =
+                        self.operator_callable_key(expr, core_trait, nominal, &nominal_args)
+                    else {
+                        return unsupported(
+                            "no published selection for a fully qualified core-trait call",
+                            span,
+                        );
+                    };
+                    let instance = self.instance_from_key(&key)?;
+                    self.discovered_callees.push(key);
+                    // As in the user-trait arm: the receiver is written explicitly, so
+                    // TYPE-METHOD-002's auto-borrow does not apply and every argument lowers as an
+                    // ordinary operand in source order. The receiver still weakens `&mut` to `&`
+                    // when the selected member takes `&self` (C6.1f-b2).
+                    let recv_expected = MirTy::Ref {
+                        mutable: matches!(receiver, Some(hir::Receiver::RefMut)),
+                        inner: Box::new(peeled.clone()),
+                    };
+                    let mut ops = Vec::with_capacity(args.len());
+                    for (i, &a) in args.iter().enumerate() {
+                        let op = self.lower_expr_to_operand(a)?;
+                        ops.push(if i == 0 {
+                            self.weaken_ref_to(op, &recv_expected, span)?
+                        } else {
+                            op
+                        });
+                    }
+                    let after = self.new_block();
+                    self.terminate(
+                        Terminator::Call {
+                            callee: Callee::Instance(instance),
+                            args: ops,
+                            dest,
+                            target: after,
+                        },
+                        self.info(span),
+                        after,
+                    );
+                    Ok(())
+                }
                 _ => unsupported("callee form (C4.5)", span),
             },
             _ => unsupported("indirect callee expression (C4.5)", span),

@@ -573,12 +573,16 @@ fn main() {{}}
 /// The ambiguity above is resolvable: a qualified trait call names the trait explicitly, and both
 /// spellings select the right impl on a type that implements both.
 ///
-/// **Checked through the front end and the HIR oracle only.** A qualified call to a
-/// compiler-known trait's method (`Display::fmt(&x)`) has no MIR lowering — it is refused with
-/// "callee form (C4.5)" — so this shape cannot be run natively today. That gap is PRE-EXISTING
-/// (DEV-052 introduced the qualified CoreTrait path in the front end and the oracle only) and is
-/// recorded as a follow-up rather than widened into this work package. What matters here is that
-/// the ambiguity above is resolvable at all; the resolution mechanism is not this WP's to build.
+/// **Now checked across all three engines (DEV-168, repaired 2026-08-10).** This test previously
+/// ran the front end and the HIR oracle only, and its comment recorded why: a qualified call to a
+/// compiler-known trait's method had no MIR lowering and was refused "callee form (C4.5)". That
+/// made the shape the specification offers as THE disambiguation mechanism (TYPE-METHOD-001) the
+/// one shape that could not be built. The gap is closed, so the test that documented it now
+/// proves it closed rather than describing it.
+///
+/// Both spellings are exercised deliberately: `Display::fmt` takes the compiler-known path
+/// repaired by DEV-168, `OtherFormat::fmt` the user-trait path that already lowered. If the two
+/// ever diverge, the interleaved output pins which one moved.
 #[test]
 fn qualified_calls_disambiguate_the_two_traits() {
     let source = "\
@@ -612,17 +616,7 @@ fn main() {
     println(OtherFormat::fmt(&b).as_str());
 }
 ";
-    let front = front_end("dd_qualified", source);
-    match support::differential::run_hir("dd_qualified", &front) {
-        support::differential::Observation::Completed(done) => {
-            assert_eq!(
-                String::from_utf8_lossy(&done.stdout_bytes),
-                "display\nother\n",
-                "dd_qualified: the qualified calls selected the wrong impls"
-            );
-        }
-        other => panic!("dd_qualified: expected normal completion, got {other:#?}"),
-    }
+    agree_completing_with_stdout("dd_qualified", source, "display\nother\n");
 }
 
 /// Arity is checked against the Core trait's own contract: `Display::fmt` takes no arguments.
@@ -810,5 +804,36 @@ fn main() {
 }
 ",
         "7\n",
+    );
+}
+
+// ------------------------------------------------- DEV-168, and the refusals that must survive --
+
+/// **NEGATIVE CONTROL for DEV-168.** Teaching MIR to lower `Display::fmt(&x)` must not make the
+/// call reachable for a type with no `Display` impl. The repair reads the checker's published
+/// selection, so a type that never produced one is still refused — at the front end, before any
+/// lowering question arises. A repair that scanned impls in the backend instead, or that
+/// fabricated a callable when no publication existed, reaches lowering here and fails this.
+#[test]
+fn a_qualified_core_trait_call_without_an_impl_is_still_refused() {
+    let messages = rejects_at_typecheck(
+        "dd_qualified_no_impl",
+        "\
+struct Q {
+    v: Int32,
+}
+
+fn main() {
+    let q = Q { v: 1 };
+    println(Display::fmt(&q).as_str());
+}
+",
+        "E0500",
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("Q") && m.contains("Display")),
+        "expected the refusal to name the type and the trait, got {messages:?}"
     );
 }

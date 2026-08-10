@@ -7773,3 +7773,92 @@ layer audit, adversarial accepted-surface audit. `cargo fmt --check` clean; clip
 
 **Residual:** `loop { }` with no `break` has type `!` per TYPE-LOOP-001; it builds, and was
 verified by building rather than running, because running it correctly never terminates.
+
+## DEV-168 — CLOSED, REPAIRED: the qualified core-trait call lowers (post-C10 P4, 2026-08-10)
+
+The entry above stands unedited.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced
+
+```stark
+impl Display for P { fn fmt(&self) -> String { return "P".to_string(); } }
+let s: String = Display::fmt(&p);
+```
+
+```text
+stark run   -> P                                       (front end and HIR oracle, both fine)
+stark build -> native build does not yet support this program: callee form (C4.5)
+```
+
+### Cause
+
+`lower_call` matched `Res::TraitMember(trait_item, member)` and reached into
+`hir::ItemKind::Trait` for the signature. **A compiler-known trait has no such item** — the same
+fact DEV-166 was about — so `Display::fmt` resolves to `Res::CoreTraitMember` instead, matched no
+arm, and fell through to the catch-all.
+
+### Repair, and what it deliberately does NOT add
+
+§10.2 forbade a second trait-dispatch authority. None was added:
+
+```text
+check_qualified_core_trait_call   ALREADY selects the impl member and publishes it, through
+                                  publish_operator_use -- the same publisher `a == b` uses,
+                                  with DispatchProvenance::CoreTrait
+operator_callable_key             ALREADY consumes exactly that provenance, and already handles
+                                  both binding times: Static for a concrete nominal, Bound for a
+                                  bounded generic parameter
+```
+
+The new `Res::CoreTraitMember` arm **reads that published answer** and emits the call. No impl
+scan, no unification, no trait name special-cased, no generic substitution rediscovered in the
+backend — the arm is routing, not selection. The receiver still weakens `&mut` to `&` when the
+selected member takes `&self` (C6.1f-b2), and, as in the user-trait arm, no auto-borrow applies
+because the receiver is written explicitly.
+
+### Evidence
+
+`three_engine_differential.rs`:
+
+```text
+dev168_qualified_core_trait_call_on_a_concrete_nominal
+dev168_qualified_core_trait_call_through_a_generic_impl   impl<T: Display> Display for W<T> --
+                                                          fails if lowering re-derives the
+                                                          callable instead of reading the
+                                                          checker's substitution
+dev168_qualified_eq_matches_the_operator_it_spells        a DIFFERENT core trait, so the repair is
+                                                          not keyed to `Display`; `Eq::eq(&a,&b)`
+                                                          and `a == b` select the same impl
+```
+
+**`dev_display_dispatch.rs::qualified_calls_disambiguate_the_two_traits` is upgraded from
+front-end-and-oracle to full three-engine agreement.** That test is the one this entry named as its
+evidence, and its doc comment recorded the gap; it now proves the gap closed rather than describing
+it. It exercises both spellings — `Display::fmt` (repaired here) and `OtherFormat::fmt` (the user
+trait path, which already lowered) — so a future divergence between them is pinned by the
+interleaved output.
+
+**Negative control:** `a_qualified_core_trait_call_without_an_impl_is_still_refused`. A type with no
+`Display` impl is still refused `E0500`, naming both the type and the trait. Because the repair
+reads a publication rather than scanning, a type that never produced one cannot reach lowering at
+all — a backend-side impl scan would, and would fail this.
+
+**Proved capable of failing:** with the arm removed, all three `dev168_*` cases fail.
+
+Green: 576 lib, 132 conformance, 129 three-engine, 24 dev_display_dispatch, 17 as3_display_plan,
+5 as3_invocation_authority, 8 mir_differential, layer audit, adversarial accepted-surface audit.
+
+### Residual — a SEPARATE front-end gap, not this one
+
+```stark
+fn show<T: Display>(x: &T) -> String { return Display::fmt(x); }
+```
+
+is refused `[E0500] type 'T' does not implement 'Display'`. `check_qualified_core_trait_call`
+selects by scanning impls for the receiver's nominal type and never consults the parameter's
+BOUNDS, so a bounded generic receiver finds nothing. This is a **front-end over-rejection**,
+pre-existing and independent of this repair — DEV-168 was explicitly "type-checks and runs under
+the oracle, MIR refuses", and this shape does not type-check at all. Registered here rather than
+absorbed, per §19.4. The ordinary method form (`x.fmt()`) works, so it has a working spelling.
