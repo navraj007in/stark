@@ -4193,11 +4193,23 @@ impl<'a> FnLowerer<'a> {
                     );
                 }
                 self.terminate(Terminator::Goto { target: join }, self.info(span), else_id);
-                let else_value = self.lower_expr_to_operand(*else_expr)?;
-                self.emit(
-                    Statement::Assign(Place::local(dest), Rvalue::Use(else_value)),
-                    self.info(span),
-                );
+                // DEV-157: the else arm must tolerate a DIVERGING block exactly as the then arm
+                // above does. `else { panic("p") }` and `else { return; }` yield no value, and
+                // routing them through `lower_expr_to_operand` demanded one — "block in value
+                // position yielded no value" — so a shape as ordinary as
+                // `if c { x } else { return; }` could not be built natively. Nothing is assigned
+                // on a path that never reaches the join, which is what the then arm already
+                // relied on; this is the same rule applied to the other side, not a new one.
+                let else_value = match self.hir.expr(*else_expr).kind {
+                    hir::ExprKind::Block(block) => self.lower_block_value(block)?,
+                    _ => Some(self.lower_expr_to_operand(*else_expr)?),
+                };
+                if let Some(else_value) = else_value {
+                    self.emit(
+                        Statement::Assign(Place::local(dest), Rvalue::Use(else_value)),
+                        self.info(span),
+                    );
+                }
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 let ty = self.locals[dest.0 as usize].ty.clone();
                 self.read_place(Place::local(dest), &ty, span)
@@ -5862,6 +5874,85 @@ impl<'a> FnLowerer<'a> {
                     // `&self` method reached through a `&mut` receiver weakens to `&Self`.
                     let recv_expected = MirTy::Ref {
                         mutable: matches!(receiver_kind, hir::Receiver::RefMut),
+                        inner: Box::new(peeled.clone()),
+                    };
+                    let mut ops = Vec::with_capacity(args.len());
+                    for (i, &a) in args.iter().enumerate() {
+                        let op = self.lower_expr_to_operand(a)?;
+                        ops.push(if i == 0 {
+                            self.weaken_ref_to(op, &recv_expected, span)?
+                        } else {
+                            op
+                        });
+                    }
+                    let after = self.new_block();
+                    self.terminate(
+                        Terminator::Call {
+                            callee: Callee::Instance(instance),
+                            args: ops,
+                            dest,
+                            target: after,
+                        },
+                        self.info(span),
+                        after,
+                    );
+                    Ok(())
+                }
+                // DEV-168 — a fully qualified call to a COMPILER-KNOWN trait's method,
+                // `Display::fmt(&x)`. TYPE-METHOD-001 names this exact form, and it is the
+                // documented way to disambiguate when two bounds declare the same method, so a
+                // shape the specification offers as the escape hatch cannot be the one shape that
+                // fails to build.
+                //
+                // A compiler-known trait has no `hir::ItemKind::Trait` item, so `Res::TraitMember`
+                // above never matches it and the callee fell through to "callee form (C4.5)".
+                //
+                // **No second trait matcher is introduced here, per the repair constraint.** The
+                // checker already selected the impl member for this very expression —
+                // `check_qualified_core_trait_call` publishes it through `publish_operator_use`,
+                // the same publisher `a == b` uses, with `DispatchProvenance::CoreTrait`. This
+                // arm READS that answer through `operator_callable_key`, which is the existing
+                // consumer of exactly that provenance and already handles both binding times
+                // (`Static` for a concrete nominal, `Bound` for a bounded generic parameter).
+                Res::CoreTraitMember(core_trait, _) => {
+                    let core_trait = *core_trait;
+                    let Some((&recv_expr, _rest)) = args.split_first() else {
+                        return unsupported(
+                            "fully qualified core-trait call without a receiver argument",
+                            span,
+                        );
+                    };
+                    let (peeled, _) = Self::peel_refs(self.expr_mir_ty(recv_expr)?);
+                    let (nominal, nominal_args) = match &peeled {
+                        MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a) => {
+                            (*item, a.clone())
+                        }
+                        other => {
+                            return unsupported(
+                                format!(
+                                    "fully qualified core-trait call on non-nominal receiver \
+                                     {other:?}"
+                                ),
+                                span,
+                            )
+                        }
+                    };
+                    let Some((key, receiver)) =
+                        self.operator_callable_key(expr, core_trait, nominal, &nominal_args)
+                    else {
+                        return unsupported(
+                            "no published selection for a fully qualified core-trait call",
+                            span,
+                        );
+                    };
+                    let instance = self.instance_from_key(&key)?;
+                    self.discovered_callees.push(key);
+                    // As in the user-trait arm: the receiver is written explicitly, so
+                    // TYPE-METHOD-002's auto-borrow does not apply and every argument lowers as an
+                    // ordinary operand in source order. The receiver still weakens `&mut` to `&`
+                    // when the selected member takes `&self` (C6.1f-b2).
+                    let recv_expected = MirTy::Ref {
+                        mutable: matches!(receiver, Some(hir::Receiver::RefMut)),
                         inner: Box::new(peeled.clone()),
                     };
                     let mut ops = Vec::with_capacity(args.len());

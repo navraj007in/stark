@@ -573,12 +573,16 @@ fn main() {{}}
 /// The ambiguity above is resolvable: a qualified trait call names the trait explicitly, and both
 /// spellings select the right impl on a type that implements both.
 ///
-/// **Checked through the front end and the HIR oracle only.** A qualified call to a
-/// compiler-known trait's method (`Display::fmt(&x)`) has no MIR lowering — it is refused with
-/// "callee form (C4.5)" — so this shape cannot be run natively today. That gap is PRE-EXISTING
-/// (DEV-052 introduced the qualified CoreTrait path in the front end and the oracle only) and is
-/// recorded as a follow-up rather than widened into this work package. What matters here is that
-/// the ambiguity above is resolvable at all; the resolution mechanism is not this WP's to build.
+/// **Now checked across all three engines (DEV-168, repaired 2026-08-10).** This test previously
+/// ran the front end and the HIR oracle only, and its comment recorded why: a qualified call to a
+/// compiler-known trait's method had no MIR lowering and was refused "callee form (C4.5)". That
+/// made the shape the specification offers as THE disambiguation mechanism (TYPE-METHOD-001) the
+/// one shape that could not be built. The gap is closed, so the test that documented it now
+/// proves it closed rather than describing it.
+///
+/// Both spellings are exercised deliberately: `Display::fmt` takes the compiler-known path
+/// repaired by DEV-168, `OtherFormat::fmt` the user-trait path that already lowered. If the two
+/// ever diverge, the interleaved output pins which one moved.
 #[test]
 fn qualified_calls_disambiguate_the_two_traits() {
     let source = "\
@@ -612,17 +616,7 @@ fn main() {
     println(OtherFormat::fmt(&b).as_str());
 }
 ";
-    let front = front_end("dd_qualified", source);
-    match support::differential::run_hir("dd_qualified", &front) {
-        support::differential::Observation::Completed(done) => {
-            assert_eq!(
-                String::from_utf8_lossy(&done.stdout_bytes),
-                "display\nother\n",
-                "dd_qualified: the qualified calls selected the wrong impls"
-            );
-        }
-        other => panic!("dd_qualified: expected normal completion, got {other:#?}"),
-    }
+    agree_completing_with_stdout("dd_qualified", source, "display\nother\n");
 }
 
 /// Arity is checked against the Core trait's own contract: `Display::fmt` takes no arguments.
@@ -743,5 +737,103 @@ fn main() {
         support::differential::canonical_form(&debug),
         support::differential::canonical_form(&release),
         "debug and release native builds disagreed"
+    );
+}
+
+// --------------------------------------------------------------- DEV-167, closed by CE1 decision --
+
+/// **DEV-167 — `to_string()` on a `Display` bound is refused, and that is the decided behaviour.**
+///
+/// This is not a defect pin; it is a *decision* pin. `06-Standard-Library.md` declares
+/// `trait ToString { fn to_string(&self) -> String; }` and gives `str::to_string`, but **never
+/// promises that every `Display` type carries the method form**. Making that promise is a
+/// normative Core change — CE1, Charter §2.3 — and the owner decided (2026-08-10) to keep the
+/// free-function form rather than take it.
+///
+/// The sanctioned spelling is `stark_fmt::to_string<T: Display>(value: &T) -> String`, exercised
+/// on a user-defined type by `packages/stark-fmt/src/tests.stark::test_to_string_free_function`.
+///
+/// **Why this test exists rather than only a ledger paragraph.** The cheap implementation of
+/// `to_string()` is a resolver branch keyed on the method *name*, and that is exactly the two-tier
+/// trait model DEV-166 removed — method visibility depending on whether a trait is compiler-known.
+/// Someone reaching for that branch for ergonomic reasons breaks this test and has to reopen the
+/// CE1 decision instead of quietly reversing it.
+#[test]
+fn to_string_on_a_display_bound_is_refused_by_decision() {
+    let messages = rejects_at_typecheck(
+        "dd_to_string_bound",
+        "\
+fn show<T: Display>(value: &T) -> String {
+    value.to_string()
+}
+
+fn main() {}
+",
+        "E0302",
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("to_string")),
+        "expected the refusal to name `to_string`, got {messages:?}"
+    );
+    // The negative control for THIS decision: the refusal must be the ordinary "no trait in scope
+    // declares it" wording, NOT the missing-bound diagnostic. `Display` is already bounded here —
+    // suggesting it would be advice the user has taken, and would mean resolution believed
+    // `to_string` was reachable from some bound.
+    assert!(
+        !messages.iter().any(|m| m.contains("requires the bound")),
+        "`to_string` is not obtainable by adding a bound; the missing-bound diagnostic would be \
+         wrong advice here, got {messages:?}"
+    );
+}
+
+/// The counterpart that must keep working: `fmt()` — the method Core DOES contribute through a
+/// `Display` bound — is unaffected by DEV-167's disposition. A "fix" that reached `to_string` by
+/// widening what a compiler-known bound contributes would change this file's positive cases; a
+/// fix that narrowed it would break this one.
+#[test]
+fn the_display_bound_still_contributes_fmt_after_the_to_string_decision() {
+    agree_completing_with_stdout(
+        "dd_fmt_after_167",
+        "\
+fn show<T: Display>(value: &T) -> String {
+    value.fmt()
+}
+
+fn main() {
+    println(show(&7).as_str());
+}
+",
+        "7\n",
+    );
+}
+
+// ------------------------------------------------- DEV-168, and the refusals that must survive --
+
+/// **NEGATIVE CONTROL for DEV-168.** Teaching MIR to lower `Display::fmt(&x)` must not make the
+/// call reachable for a type with no `Display` impl. The repair reads the checker's published
+/// selection, so a type that never produced one is still refused — at the front end, before any
+/// lowering question arises. A repair that scanned impls in the backend instead, or that
+/// fabricated a callable when no publication existed, reaches lowering here and fails this.
+#[test]
+fn a_qualified_core_trait_call_without_an_impl_is_still_refused() {
+    let messages = rejects_at_typecheck(
+        "dd_qualified_no_impl",
+        "\
+struct Q {
+    v: Int32,
+}
+
+fn main() {
+    let q = Q { v: 1 };
+    println(Display::fmt(&q).as_str());
+}
+",
+        "E0500",
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("Q") && m.contains("Display")),
+        "expected the refusal to name the type and the trait, got {messages:?}"
     );
 }

@@ -249,11 +249,48 @@ impl TypeChecker<'_> {
         }
     }
 
+    /// DEV-220 — settle variables that only ever met `Never`.
+    ///
+    /// Runs AFTER `default_unconstrained_int_literals`, and the order is load-bearing: an
+    /// unannotated `let x = if c { 1 } else { panic("p") };` has one variable that is both an
+    /// integer literal and never-coerced, and `Int32` is the right answer for it. Only a variable
+    /// that integer defaulting left open reaches `Never` here.
+    pub(super) fn default_never_coerced_vars(&mut self) {
+        let pending: Vec<TypeVarId> = self
+            .never_coerced_vars
+            .iter()
+            .filter_map(|&id| match self.resolve(&Ty::Infer(id)) {
+                Ty::Infer(open) => Some(open),
+                _ => None,
+            })
+            .collect();
+        for id in pending {
+            self.subst.insert(id, Ty::Never);
+        }
+    }
+
     pub(super) fn unify(&mut self, t1: Ty, t2: Ty, span: Span) -> Result<(), ()> {
         let t1 = self.resolve(&t1);
         let t2 = self.resolve(&t2);
 
         match (t1, t2) {
+            // **`!` COERCES TO EVERY TYPE, SO IT MUST NOT CAPTURE AN OPEN VARIABLE.** This arm is
+            // deliberately ABOVE the `Infer` arms. Below them, `unify(?T, Never)` took the
+            // variable branch and bound `?T := Never`, and the join of a diverging arm with an
+            // inhabited one then reported `Never` as the expression's type while the value
+            // produced at run time was the inhabited arm's. Leaving `?T` open is the correct
+            // reading of the coercion: `!` constrains nothing, so whatever else determines `?T`
+            // still does. DEV-220.
+            (Ty::Never, other) | (other, Ty::Never) => {
+                // Left open, but REMEMBERED: if nothing else ever constrains it, `Never` is the
+                // only type the program offered and `default_never_coerced_vars` binds it there.
+                // Without that, dropping the binding here merely moved the failure — an
+                // unresolved `Infer` reached MIR lowering instead.
+                if let Ty::Infer(id) = other {
+                    self.never_coerced_vars.insert(id);
+                }
+                Ok(())
+            }
             (Ty::Infer(id1), Ty::Infer(id2)) if id1 == id2 => Ok(()),
             (Ty::Infer(id), other) | (other, Ty::Infer(id)) => {
                 if self.occurs_in(id, &other) {
@@ -402,7 +439,6 @@ impl TypeChecker<'_> {
                     Err(())
                 }
             },
-            (Ty::Never, _) | (_, Ty::Never) => Ok(()),
             (Ty::Error, _) | (_, Ty::Error) => Ok(()),
             (t1_resolved, t2_resolved) => {
                 self.diags.push(

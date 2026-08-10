@@ -139,6 +139,14 @@ pub struct NativeArtifact {
     /// it to the stable package-named output before optionally deleting `build_dir`.
     pub binary_path: PathBuf,
     pub build_dir: PathBuf,
+    /// DEV-159 — the build-directory lock, held until this artifact is dropped.
+    ///
+    /// Not a field anyone reads. It is here because the binary is copied out of `build_dir` by the
+    /// CALLER, after `build_and_link` has returned: a lock released at that return would leave the
+    /// read racing a concurrent build of the same program, which is one of the two failure
+    /// signatures the stress test reproduces.
+    #[allow(dead_code)]
+    pub(crate) build_lock: crate::backend::generated_rust::build::BuildLock,
 }
 
 /// §5's entry point. The verified-program precondition is encoded in the parameter type --

@@ -2837,3 +2837,301 @@ fn main() {
 }
 "#
 );
+
+// DEV-220 — a diverging arm must not capture the join's inference variable.
+//
+// DEV-218 (CLOSED 2026-08-09) correctly made a block produce `!` when its reachable path diverges.
+// Nothing then stopped that `!` from being *bound to* the join's open type variable: `unify` tried
+// its `Infer` arm before its `Never` arm, so `unify(?T, Never)` set `?T := Never`. The expression
+// then claimed a type no value of it ever had, and DEV-121's representation guard — closed, and
+// working exactly as intended — reported `expected Never, found Int` as an internal compiler error
+// on a program a user could plausibly write.
+//
+// The three cases below are the ones that distinguish a real fix from a plausible wrong one:
+// whether the diverging arm comes second (`if`) or FIRST (`match`, where the join variable is
+// still fully open when `Never` arrives), and whether the divergence is `panic` or `return`. The
+// original defect was invisible when the inhabited arm resolved the variable first, which is why
+// the pre-existing match case passed while the same program with its arms swapped did not.
+three_engine_test!(
+    dev220_if_join_with_a_diverging_else,
+    "dev220_if_else",
+    completes,
+    r#"
+fn main() {
+    let x: Int32 = if true { 1 } else { panic("unreachable") };
+    assert_eq(x, 1);
+}
+"#
+);
+
+// The diverging arm is FIRST, so the join variable is open when `Never` reaches it. This is the
+// case that fails if `Never` is merely handled somewhere in `unify` rather than handled *before*
+// the variable arms.
+three_engine_test!(
+    dev220_match_join_with_the_diverging_arm_first,
+    "dev220_match_first",
+    completes,
+    r#"
+fn main() {
+    let r: Result<Int32, Int32> = Ok(1);
+    let v: Int32 = match r {
+        Err(_) => panic("unreachable"),
+        Ok(n) => n,
+    };
+    assert_eq(v, 1);
+}
+"#
+);
+
+// `return`, not `panic`. `if c { x } else { return; }` is ordinary control flow rather than an
+// error path, and it reached the same internal compiler error.
+three_engine_test!(
+    dev220_if_join_with_an_early_return,
+    "dev220_early_return",
+    completes,
+    r#"
+fn main() {
+    let x: Int32 = if true { 1 } else { return; };
+    assert_eq(x, 1);
+}
+"#
+);
+
+// NEGATIVE CONTROL 1 — the diverging path, when actually TAKEN, still diverges. A "fix" that made
+// the join type-check by treating the diverging arm as an ordinary value of the join type would
+// pass all three cases above and fail this one.
+three_engine_test!(
+    dev220_the_diverging_arm_still_traps_when_taken,
+    "dev220_still_traps",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = if false { 1 } else { panic("taken") };
+    assert_eq(x, 0);
+}
+"#
+);
+
+// NEGATIVE CONTROL 2 — integer-literal defaulting still WINS over the `!` fallback. Unannotated,
+// this variable is both an integer literal and never-coerced; `Int32` is the right answer, not
+// `Never`. A fallback that ran before literal defaulting, or that bound the variable eagerly at
+// the unify site, produces `Never` here and fails.
+three_engine_test!(
+    dev220_an_unannotated_join_still_defaults_to_int32,
+    "dev220_unannotated",
+    completes,
+    r#"
+fn main() {
+    let x = if true { 1 } else { panic("unreachable") };
+    let y: Int32 = x;
+    assert_eq(y, 1);
+}
+"#
+);
+
+// DEV-157 — `!` has a native representation, and it is an UNINHABITED one.
+//
+// The entry's original reproducer (`Err(_) => panic(..)` in match-arm value position) already
+// built; the defect was alive in the positions that put a `Never`-typed RESULT PLACE in front of
+// the backend — a local initialiser, an argument, a tuple/array/struct element. `emit_ty_at` had
+// no `MirTy::Never` case at all, so every one of them failed with "MirTy Never has no C5.3a
+// generated-Rust representation yet".
+//
+// The representation is `core::convert::Infallible`: an empty enum. §9.2's rule was that no
+// runtime storage may be invented for an uninhabited value, and this invents none — the local is
+// declared UNINITIALISED, because control never reaches its assignment. rustc's own
+// definite-assignment analysis is the standing check on that: a `Never` local that were genuinely
+// read would fail to compile rather than read fabricated storage.
+three_engine_test!(
+    dev157_never_in_a_local_initialiser,
+    "dev157_local",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = panic("boom");
+    assert_eq(x, 0);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_in_argument_position,
+    "dev157_arg",
+    traps(TrapCategory::Panic, 7),
+    r#"
+fn take(n: Int32) -> Int32 {
+    return n;
+}
+
+fn main() {
+    let x: Int32 = take(panic("boom"));
+    assert_eq(x, 0);
+}
+"#
+);
+
+// A composite with an uninhabited component is itself uninhabited. This is the case that
+// `mentions_never` exists for: representing bare `Never` alone left this failing in
+// `default_value_expr` instead, one layer further on.
+three_engine_test!(
+    dev157_never_inside_a_tuple,
+    "dev157_tuple",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let t: (Int32, Int32) = (1, panic("boom"));
+    assert_eq(t.0, 1);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_inside_an_array,
+    "dev157_array",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let a: [Int32; 2] = [1, panic("boom")];
+    assert_eq(a[0], 1);
+}
+"#
+);
+
+three_engine_test!(
+    dev157_never_in_a_struct_field,
+    "dev157_struct",
+    traps(TrapCategory::Panic, 8),
+    r#"
+struct P {
+    a: Int32,
+    b: Int32,
+}
+
+fn main() {
+    let p = P { a: 1, b: panic("boom") };
+    assert_eq(p.a, 1);
+}
+"#
+);
+
+// NEGATIVE CONTROL — §9.3: an ordinary diverging function still diverges, and the trap is the
+// observation. A backend that gave `Never` real storage and let control fall through would
+// complete here instead of trapping, and this is the case that says so.
+three_engine_test!(
+    dev157_a_diverging_call_still_diverges,
+    "dev157_diverges",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn always_panics() -> Int32 {
+    panic("boom")
+}
+
+fn main() {
+    let x: Int32 = always_panics();
+    assert_eq(x, 0);
+}
+"#
+);
+
+// NEGATIVE CONTROL — the statements AFTER an unreachable initialiser never run. If the panic did
+// not actually terminate the block, this completes with exit 0 and prints, and the trap
+// expectation fails.
+three_engine_test!(
+    dev157_code_after_a_diverging_initialiser_is_unreachable,
+    "dev157_unreachable",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = panic("boom");
+    assert_eq(x, 0);
+    assert_eq(1, 2);
+}
+"#
+);
+
+// DEV-168 — a fully qualified call to a compiler-known trait's method now lowers.
+//
+// TYPE-METHOD-001 names this form, and `dev_display_dispatch.rs` uses it as the documented way to
+// disambiguate when two bounds declare the same method. Before this repair it type-checked, ran
+// under the HIR oracle, and MIR lowering refused it "callee form (C4.5)" — so the specification's
+// own escape hatch ran in one engine of three.
+//
+// The repair adds no trait matcher: `check_qualified_core_trait_call` already publishes the
+// selected impl member through the same publisher `a == b` uses, and lowering now reads that
+// publication via `operator_callable_key`.
+three_engine_test!(
+    dev168_qualified_core_trait_call_on_a_concrete_nominal,
+    "dev168_concrete",
+    completes,
+    r#"
+struct P {
+    v: Int32,
+}
+
+impl Display for P {
+    fn fmt(&self) -> String {
+        return "P".to_string();
+    }
+}
+
+fn main() {
+    let p = P { v: 1 };
+    let s: String = Display::fmt(&p);
+    assert_eq(s.len(), 1u64);
+}
+"#
+);
+
+// A GENERIC impl — `impl<T: Display> Display for W<T>`. The published selection carries the impl's
+// substitution, so this is the case that fails if lowering re-derives the callable from the
+// nominal's name instead of reading what the checker bound.
+three_engine_test!(
+    dev168_qualified_core_trait_call_through_a_generic_impl,
+    "dev168_generic",
+    completes,
+    r#"
+struct W<T> {
+    v: T,
+}
+
+impl<T: Display> Display for W<T> {
+    fn fmt(&self) -> String {
+        return self.v.fmt();
+    }
+}
+
+fn main() {
+    let w = W { v: 7 };
+    let s: String = Display::fmt(&w);
+    assert_eq(s.len(), 1u64);
+}
+"#
+);
+
+// A DIFFERENT compiler-known trait, so the repair is not keyed to `Display`. `Eq::eq` is the
+// qualified spelling of `a == b`, and both must select the same user impl.
+three_engine_test!(
+    dev168_qualified_eq_matches_the_operator_it_spells,
+    "dev168_eq",
+    completes,
+    r#"
+struct P {
+    v: Int32,
+}
+
+impl Eq for P {
+    fn eq(&self, other: &P) -> Bool {
+        return self.v == other.v;
+    }
+}
+
+fn main() {
+    let a = P { v: 1 };
+    let b = P { v: 1 };
+    let c = P { v: 2 };
+    assert(Eq::eq(&a, &b));
+    assert(!Eq::eq(&a, &c));
+    assert(a == b);
+}
+"#
+);

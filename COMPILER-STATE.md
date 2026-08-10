@@ -153,9 +153,167 @@ consolidations (AS3 method resolution, AS1b span identity), so no commit names t
 a reproducer finds those. DEV-157 was one probe from a false closure in the other direction — the
 shape its entry named now builds, while the defect is alive in other `Never` positions.
 
-**Next:** DEV-180 as its own packet, per the owner's ruling that it follows C10-Q and not precede it.
+**Next:** the post-C10 deviation repair programme, running P0 (reproduction) then P1 (DEV-180),
+per the owner's ruling that DEV-180 follows C10-Q and does not precede it.
 
-**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
+**Post-C10 repair programme, P0 + P8 (2026-08-10, baseline `689d26d`).** Reproduction pass
+extended over the whole remaining population — `audits/POST-C10-DEVIATION-REPRODUCTION.md`.
+**No deviation failed to reproduce**; the ledger is accurate at this baseline. **DEV-120 CLOSED —
+RECLASSIFIED AS DOCUMENTED LIMIT** (population A 13 -> 12): the interpreters classify call-depth
+exhaustion cleanly (exit 2, 512 frames) and a native binary dies by SIGABRT (exit 134), which
+`LIMIT-RESOURCE-001` permits twice over — capacities are implementation-defined and the reporting
+duty is qualified by "when the host permits". Owner ruling D4 (WP-C7.9) had already decided the
+repair question; the entry was carrying a settled decision as an open defect. `MAX_CALL_DEPTH`
+unchanged. **DEV-167 RAISED AS CE1** rather than resolved: `06-Standard-Library.md` declares
+`ToString` but never promises every `Display` type has the method form, so there was no
+conformance gap — only a language question the packet must not answer by implementation
+convenience. **DECIDED (owner, CE1, 2026-08-10): keep the free function; CLOSED as a
+documented non-promise** (population A 12 -> 11). Neither alternative was taken — blanket
+impls are a language feature, and a name-keyed resolver branch would reintroduce the two-tier
+trait model DEV-166 removed. The decision is pinned by two tests in
+`tests/dev_display_dispatch.rs`, so reversing it fails CI rather than passing unnoticed.
+
+**Post-C10 repair programme, P3 + P4 + P6 (2026-08-10, baseline `689d26d`). Population A 11 -> 9.**
+
+- **DEV-220 NEW, REGISTERED AND REPAIRED.** Found while building §9.1's `Never` position matrix,
+  and registered separately per §19.4 because the root cause is inference, not representation. A
+  diverging arm CAPTURED the join's inference variable: `unify` tried its `Infer` arm before its
+  `Never` arm, so `unify(?T, Never)` bound `?T := Never` and the expression claimed a type no value
+  of it ever had. **DEV-121's representation guard — closed, and working exactly as designed —
+  caught it as an internal compiler error on `let x: Int32 = if c { 1 } else { panic("p") };` and
+  on the far more ordinary `else { return; }`.** DEV-218 (CLOSED 2026-08-09) created the
+  precondition correctly by making diverging blocks produce `!`; nothing then stopped `!` binding a
+  variable. Its three programs put the inhabited arm first, which is why reversing a match's arm
+  order reproduces. Repair: the `Never` arm moves ABOVE the `Infer` arms and records the open
+  variable; `default_never_coerced_vars` settles it AFTER integer-literal defaulting, so
+  `let x = if c { 1 } else { panic(..) };` still yields `Int32`. Five three-engine cases, two of
+  them negative controls; all five fail with the repair reverted in place.
+- **DEV-157 CLOSED, REPAIRED.** Four repairs across three phases, not one — DEV-220 in typecheck,
+  a diverging-else tolerance in MIR lowering, `MirTy::Never` as `core::convert::Infallible` (an
+  EMPTY enum, with the local declared uninitialised so no storage is invented for an uninhabited
+  value), and a STRUCTURAL never-coercion allowance in the verifier. That last was found by the
+  three-engine harness and by nothing else: `stark build` alone accepted the program the verifier
+  rejected. **One accepted-set change, toward the specification:** `1 + panic("p")` was refused
+  `E0500` as an artefact of DEV-220 and is now accepted, per `03-Type-System.md` line 67's
+  unqualified "an expression of type `!` coerces to any other type".
+- **DEV-168 CLOSED, REPAIRED, with no second trait-dispatch authority.**
+  `check_qualified_core_trait_call` already publishes the selection through the same publisher
+  `a == b` uses; `operator_callable_key` already consumes that provenance. The new
+  `Res::CoreTraitMember` lowering arm reads that answer. `qualified_calls_disambiguate_the_two_traits`
+  — the test this deviation named as its evidence, whose comment recorded the gap — is upgraded
+  from front-end-and-oracle to full three-engine agreement. **Residual registered separately:**
+  `Display::fmt(x)` on a BOUNDED generic parameter is refused `E0500` at the front end, because
+  selection scans impls and never consults bounds. Pre-existing and independent.
+- **DEV-140..145 ASSESSED INDIVIDUALLY, REPAIR DEFERRED (owner decision).** §12.1 step 3's question
+  answered for each: **not one of the six shapes is used by any first-party package.** They name
+  FOUR different missing authorities, so §12.2's grouping rule is satisfied by no pair. Each needs
+  a multi-layer feature addition, not a bounded repair; DEV-141 is a `std-full` PROFILE boundary
+  rather than a defect at all. §24's `application hits it -> reproduce -> repair boundedly` governs.
+  They continue to define the supported native subset, kept honest in both directions by the
+  enforcing layer audit.
+
+**Post-C10 repair programme, P1 + P5 + P2 (2026-08-10). Population A 9 -> 7.**
+
+- **DEV-180 RESOLVED**, repair commit `1db9760`, after C10-Q as the owner ruled.
+- **DEV-159 RESOLVED, and it was reproduced rather than argued.** Six concurrent `stark build`
+  invocations of ONE program from a cold artifact directory: **73 failures in 240 builds**, in two
+  signatures — a generated crate Cargo could not build, and an artifact that had vanished by the
+  time it was installed. The content-addressed build directory §11.2 lists as a remedy was already
+  there and is *why* they collide; what had no sequencing was everything this compiler does around
+  Cargo (the stale check's `remove_dir_all`, non-atomic writes, and the caller's read of the
+  binary). `BuildLock` excludes on `create_dir` — an atomic test-and-set, no `unsafe`, no new
+  dependency — scoped to one build key, held until the artifact is dropped so the caller's install
+  is covered. **0/240 debug, 0/200 at eight-way release.** The §11.3 control is a unit test that
+  fails deterministically when the exclusion is neutered, because a stress run's sensitivity is
+  only a probability.
+- **DEV-160 STAYS OPEN, and the record is corrected.** The C10-Q-era reading — carried into the
+  post-C10 reproduction pass — was that the boundary is refused by name and never delegated to
+  rustc. **It is not, for at least one shape.** `send(r.url.as_str(), r.body)` reaches the user as
+  `error[E0502]` inside the generated crate: `plan_for_call` returns `None` before the DEV-160b
+  refusal written for exactly that shape, because a borrow arriving from an earlier block is not
+  among the call block's own borrows. A repair was implemented (make `conflicts` consult
+  `borrow_provenance`) — it works on the reproducer, keeps every suite green, and **over-refuses
+  `stark_http_client::follow`, breaking the `stark-get` build**. Reverted; the measurement is kept
+  because the finding is that the cheap closure is not admissible. §23's exit criterion 3 for
+  DEV-160 is NOT met, and the entry now says so instead of asserting it is.
+- **DEV-160 UPDATE, same day: the rustc leak IS sealed.** The first attempt's over-refusal had one
+  cause, not a fatal one — `borrow_provenance` propagated across `Rvalue::Use(Operand::Move(p))`.
+  A move TRANSFERS OWNERSHIP: `follow` does `let mut url = builder.url;`, after which borrowing
+  `url` does not borrow `builder`. Severing provenance on moves fixes the false positive, and
+  `conflicts` can then consult provenance so a borrow arriving from an earlier block is visible
+  before the early return that was making the DEV-160b refusal unreachable for its own case.
+  Measured with the pre- and post-repair compilers over eight borrow/move shapes: **the two E0502
+  leaks became named refusals and nothing else moved** — nothing that built stops building, nothing
+  newly builds, so no subset claim widened. §23 criterion 3 is met for the demonstrated shape.
+  **DEV-160 stays OPEN for the capability half**: the programs are valid STARK and still do not
+  build, which is DEV-160b's cross-block absorption under the 2026-08-03 owner ruling. Residual
+  recorded: provenance answers "may derive from", not "a live borrow reaches here", and the precise
+  def-use walk that cross-block absorption needs anyway should replace this heuristic when it lands.
+
+**Bookkeeping reconciliation (2026-08-10). The "named here, owning no heading in the ledger"
+bucket is now EMPTY — it held sixteen.**
+
+Those sixteen were never open defects hiding from the tool: they were resolved in this file's prose
+and never given a heading `KNOWN-DEVIATIONS.md` could classify. The consequence was narrow and real
+— **"population A is N" was only ever true of the ledger-derived set**, and a reader of this file
+got a different number. Each now carries a closing heading with the evidence that settled it.
+
+**Probed, not taken on the prose's word**, because this project's own record is that 7 of 23
+deviations did not reproduce at the C10-Q anchor. DEV-091/096 (out-of-range 64-bit float→int cast:
+traps, and as a CAST failure rather than an arithmetic one), DEV-097 (bounds check), DEV-099
+(`size_of::<[Int32; 4]>()`) were probed in both engines; DEV-092, DEV-095 and DEV-101 were settled
+against their live test suites (mangle 9, build::tests 24, cross_package_generics 11).
+
+**DEV-099 is the one that justified probing rather than reading.** It was recorded as a live
+PRE-EXISTING defect — a layout query on an array type failing to lower — and it does not reproduce.
+Fixed at some point after 2026-07-23 and never recorded.
+
+Two are not simple closures:
+
+- **DEV-098 → ACCEPTED-INDEFINITELY.** Never a defect: a deliberate, verifier-accepted MIR shape
+  the `Copy` classification does not describe.
+- **DEV-165 → ADJUDICATE, deliberately.** It is OPEN, but in **Population B** (release/distribution
+  wording), is an HTTP-client defect rather than a compiler one — the audit that found it said so —
+  and is already deferred to the networking roadmap. Its heading carries no bare `OPEN` precisely
+  so it does not inflate Population A. Which population an ID belongs to is a human decision, which
+  is what ADJUDICATE is for.
+
+**DEV-221 REGISTERED.** The DEV-168 residual now has a number instead of being a paragraph inside
+another entry: `Display::fmt(x)` on a BOUNDED generic parameter is refused `[E0500] type 'T' does
+not implement 'Display'`, because selection scans impls and never consults bounds. A front-end
+over-rejection, distinct from DEV-168 (which type-checked and failed at lowering). Ergonomic — the
+ordinary method form `x.fmt()` works.
+
+**Population A is 8**: DEV-140..145, DEV-160's capability half, and DEV-221.
+
+**PROGRAMME CLOSED (2026-08-10). Final report:
+`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`.**
+
+```text
+baseline  689d26d      final  5967a42      population A  13 -> 8
+CI        run 31353396547 SUCCESS, 24/24 jobs, all three Tier-1 platforms
+          run 31353396543 SUCCESS (C7.8 Native Capabilities)
+```
+
+**DEV-165 REPAIRED** (population B, so it does not move the count). It went a layer deeper than its
+entry said: `stark_net::connect` refused every non-zero timeout, so the HTTP client's
+`connect_no_timeout` was correct and switching only the client would have failed every connection.
+A new provider operation, its native implementation, `stark_net::connect` and the client were
+changed together. A control written when the defect was recorded — requiring the connect to FAIL —
+fired against a live peer; its polarity is corrected and a zero-duration refusal control added.
+Measured: a 2-second deadline against RFC 5737 TEST-NET-3 returned in 2.479s.
+
+**CI failed twice before it passed, and both failures were this programme's own work.** The record
+keeps them rather than showing only the green run. (1) `windows-x64`: the DEV-159 build lock treated
+Windows' pending-delete `PermissionDenied` as fatal — a real portability defect no macOS run could
+reach. (2) all three platforms: `stark fmt --check`, STARK's own source formatter, which is separate
+from `cargo fmt` and had been clean throughout.
+
+**§23 criterion 3 is PARTIAL, and is recorded as partial.** DEV-160's `E0502` leak is sealed, so the
+boundary is enforced by STARK rather than delegated to rustc; the capability half — those programs
+are valid STARK and still do not build — remains DEV-160b's own deferred work package.
+
+**DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
 
