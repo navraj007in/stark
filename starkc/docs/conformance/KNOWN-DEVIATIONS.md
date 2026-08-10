@@ -7583,3 +7583,92 @@ the whole point of pinning a decision rather than documenting one.
 **Residual:** none as a defect. `value.to_string()` on a `T: Display` remains refused **by
 decision**. If Core v1 ever acquires blanket implementations for independent reasons, this becomes
 a natural consequence of that feature and should be revisited then — not before, and not on its own.
+
+## DEV-220 — a diverging arm captured the join's inference variable (RESOLVED, post-C10 P3, 2026-08-10)
+
+Found while building §9.1's `Never` position matrix for DEV-157, and registered separately under
+the repair programme's §19.4 rather than absorbed into it: the root cause is in **typecheck
+inference**, not in MIR or backend representation, which is what DEV-157 is about.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Normative expectation
+
+`!` coerces to every type. It therefore **constrains nothing** — joining a diverging arm with an
+inhabited one yields the inhabited arm's type.
+
+### Current behaviour at baseline: an internal compiler error
+
+```stark
+fn main() { let x: Int32 = if true { 1 } else { panic("p") }; println(x); }
+```
+
+```text
+Error: internal compiler error: DEV-121 representation mismatch at an expression result:
+       expected `Never`, found `Int`
+```
+
+`return` reaches it identically, and that shape is not an error path at all:
+
+```stark
+let x: Int32 = if true { 1 } else { return; };
+```
+
+### Cause, and its relationship to DEV-218
+
+**DEV-218 (CLOSED 2026-08-09) created the precondition, and correctly so.** It made a block produce
+`!` when its reachable path diverges. What no rule then covered is that `!` must not be *bound to*
+an open variable. `infer.rs::unify` matched its `(Ty::Infer(id), other)` arm before
+`(Ty::Never, _) | (_, Ty::Never)`, so `unify(?T, Never)` bound `?T := Never`. The expression's
+recorded type became `Never` while the value produced at run time was the inhabited arm's, and
+**DEV-121's representation guard — closed, and working exactly as designed — caught it.** The ICE
+is the invariant doing its job; the defect is upstream of it.
+
+**Why DEV-218's evidence did not catch this.** Its three programs put the inhabited arm where it
+resolved the variable *first*; `Never` then met an already-concrete type and the correct
+no-op arm applied. Reversing a match's arm order is sufficient to reproduce. The pre-existing
+match-arm probe in DEV-157's own entry passes for exactly this reason — it is `Ok(n) => n` first.
+
+### Repair
+
+```text
+typecheck/infer.rs   the `(Ty::Never, _) | (_, Ty::Never)` arm moves ABOVE the `Infer` arms, and
+                     records the open variable rather than binding it
+typecheck/state.rs   `never_coerced_vars`
+typecheck/infer.rs   `default_never_coerced_vars`, run from `items.rs` AFTER integer-literal
+                     defaulting
+```
+
+**The fallback pass is not optional, and its ordering is load-bearing.** Dropping the binding alone
+merely moved the failure: a variable constrained by nothing else stayed open and reached MIR as
+`type Infer(TypeVarId(0))` — the exact escape `default_unconstrained_int_literals` documents itself
+as preventing. It defaults to `Never` only after integer defaulting has had its turn, so
+`let x = if c { 1 } else { panic(..) };` still yields `Int32`.
+
+### Evidence, and it was proved capable of failing
+
+`three_engine_differential.rs`, five cases, all three engines:
+
+```text
+dev220_if_join_with_a_diverging_else                 diverging arm SECOND
+dev220_match_join_with_the_diverging_arm_first       diverging arm FIRST — the variable is fully
+                                                     open when `Never` arrives
+dev220_if_join_with_an_early_return                  `return`, not `panic`
+dev220_the_diverging_arm_still_traps_when_taken      NEGATIVE: taking the diverging path still
+                                                     traps `Panic`. A "fix" treating the arm as an
+                                                     ordinary value of the join type passes the
+                                                     first three and fails this
+dev220_an_unannotated_join_still_defaults_to_int32   NEGATIVE: literal defaulting still wins over
+                                                     the `!` fallback. A fallback that ran first,
+                                                     or bound eagerly at the unify site, yields
+                                                     `Never` here and fails
+```
+
+**With the arm moved back below `Infer`, all five fail; with the repair, all five pass.** Verified
+by reverting the repair in place rather than by assertion.
+
+Green alongside: 576 lib, 132 conformance, 114 three-engine (before these five), 23
+dev_display_dispatch, layer audit, mir_differential. `cargo fmt --check` clean.
+
+**Residual:** none for this defect. The `Never` positions that remain unbuildable natively are
+DEV-157's, not this one — see its entry.

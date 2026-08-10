@@ -2837,3 +2837,94 @@ fn main() {
 }
 "#
 );
+
+// DEV-220 — a diverging arm must not capture the join's inference variable.
+//
+// DEV-218 (CLOSED 2026-08-09) correctly made a block produce `!` when its reachable path diverges.
+// Nothing then stopped that `!` from being *bound to* the join's open type variable: `unify` tried
+// its `Infer` arm before its `Never` arm, so `unify(?T, Never)` set `?T := Never`. The expression
+// then claimed a type no value of it ever had, and DEV-121's representation guard — closed, and
+// working exactly as intended — reported `expected Never, found Int` as an internal compiler error
+// on a program a user could plausibly write.
+//
+// The three cases below are the ones that distinguish a real fix from a plausible wrong one:
+// whether the diverging arm comes second (`if`) or FIRST (`match`, where the join variable is
+// still fully open when `Never` arrives), and whether the divergence is `panic` or `return`. The
+// original defect was invisible when the inhabited arm resolved the variable first, which is why
+// the pre-existing match case passed while the same program with its arms swapped did not.
+three_engine_test!(
+    dev220_if_join_with_a_diverging_else,
+    "dev220_if_else",
+    completes,
+    r#"
+fn main() {
+    let x: Int32 = if true { 1 } else { panic("unreachable") };
+    assert_eq(x, 1);
+}
+"#
+);
+
+// The diverging arm is FIRST, so the join variable is open when `Never` reaches it. This is the
+// case that fails if `Never` is merely handled somewhere in `unify` rather than handled *before*
+// the variable arms.
+three_engine_test!(
+    dev220_match_join_with_the_diverging_arm_first,
+    "dev220_match_first",
+    completes,
+    r#"
+fn main() {
+    let r: Result<Int32, Int32> = Ok(1);
+    let v: Int32 = match r {
+        Err(_) => panic("unreachable"),
+        Ok(n) => n,
+    };
+    assert_eq(v, 1);
+}
+"#
+);
+
+// `return`, not `panic`. `if c { x } else { return; }` is ordinary control flow rather than an
+// error path, and it reached the same internal compiler error.
+three_engine_test!(
+    dev220_if_join_with_an_early_return,
+    "dev220_early_return",
+    completes,
+    r#"
+fn main() {
+    let x: Int32 = if true { 1 } else { return; };
+    assert_eq(x, 1);
+}
+"#
+);
+
+// NEGATIVE CONTROL 1 — the diverging path, when actually TAKEN, still diverges. A "fix" that made
+// the join type-check by treating the diverging arm as an ordinary value of the join type would
+// pass all three cases above and fail this one.
+three_engine_test!(
+    dev220_the_diverging_arm_still_traps_when_taken,
+    "dev220_still_traps",
+    traps(TrapCategory::Panic, 3),
+    r#"
+fn main() {
+    let x: Int32 = if false { 1 } else { panic("taken") };
+    assert_eq(x, 0);
+}
+"#
+);
+
+// NEGATIVE CONTROL 2 — integer-literal defaulting still WINS over the `!` fallback. Unannotated,
+// this variable is both an integer literal and never-coerced; `Int32` is the right answer, not
+// `Never`. A fallback that ran before literal defaulting, or that bound the variable eagerly at
+// the unify site, produces `Never` here and fails.
+three_engine_test!(
+    dev220_an_unannotated_join_still_defaults_to_int32,
+    "dev220_unannotated",
+    completes,
+    r#"
+fn main() {
+    let x = if true { 1 } else { panic("unreachable") };
+    let y: Int32 = x;
+    assert_eq(y, 1);
+}
+"#
+);
