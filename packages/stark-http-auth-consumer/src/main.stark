@@ -5,7 +5,12 @@ use stark_http_auth::to_string;
 use stark_http_auth::AuthError;
 
 fn main() {
-    let basic_value = basic("Aladdin", "open sesame");
+    let basic_value = match basic("Aladdin", "open sesame") {
+        Ok(value) => value,
+        Err(_) => {
+            panic("basic construction failed");
+        }
+    };
     if basic_value.as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
         panic("basic construction failed");
     }
@@ -42,6 +47,16 @@ fn main() {
         }
         Ok(_) => {
             panic("expected parse failure");
+        }
+    }
+
+    match basic("user:name", "pass") {
+        Err(AuthError::InvalidBasicCredentials) => {}
+        Err(_) => {
+            panic("expected invalid basic credentials");
+        }
+        Ok(_) => {
+            panic("expected basic construction failure");
         }
     }
 

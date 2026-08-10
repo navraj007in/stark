@@ -13,9 +13,12 @@ pub enum AuthError {
     InvalidBearerToken,
 }
 
-pub fn basic(username: &str, password: &str) -> String {
+pub fn basic(username: &str, password: &str) -> Result<String, AuthError> {
     if contains_byte(username, 58u8) {
-        panic("stark-http-auth basic username must not contain colon");
+        return Err(AuthError::InvalidBasicCredentials);
+    }
+    if has_control_byte(username) || has_control_byte(password) {
+        return Err(AuthError::InvalidBasicCredentials);
     }
     let username_bytes = username.bytes();
     let mut credentials: Vec<UInt8> = Vec::new();
@@ -35,7 +38,7 @@ pub fn basic(username: &str, password: &str) -> String {
     let encoded = encode(credentials.as_slice());
     let mut out = String::from("Basic ");
     out.push_str(encoded.as_str());
-    out
+    Ok(out)
 }
 
 pub fn bearer(token: &str) -> Result<String, AuthError> {
@@ -113,6 +116,19 @@ fn parse_bearer(token: &str) -> Result<Authorization, AuthError> {
     } else {
         Ok(Authorization::Bearer(String::from(token)))
     }
+}
+
+fn has_control_byte(text: &str) -> Bool {
+    let bytes = text.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte < 32u8 || byte == 127u8 {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
 }
 
 fn is_valid_basic_bytes(bytes: &[UInt8]) -> Bool {

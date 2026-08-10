@@ -23,6 +23,27 @@ fn bearer_ok(token: &str) -> String {
     }
 }
 
+fn basic_ok(username: &str, password: &str) -> String {
+    match basic(username, password) {
+        Ok(value) => value,
+        Err(_) => {
+            panic("expected basic success");
+        }
+    }
+}
+
+fn assert_invalid_basic_construction(username: &str, password: &str) {
+    match basic(username, password) {
+        Err(AuthError::InvalidBasicCredentials) => {}
+        Err(_) => {
+            panic("expected invalid basic credentials");
+        }
+        Ok(_) => {
+            panic("expected basic construction failure");
+        }
+    }
+}
+
 fn assert_invalid_format(value: &str) {
     match parse(value) {
         Err(AuthError::InvalidFormat) => {}
@@ -84,21 +105,28 @@ fn assert_invalid_bearer_value(value: &str) {
 }
 
 fn test_basic_vectors() {
-    if basic("Aladdin", "open sesame").as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
+    if basic_ok("Aladdin", "open sesame").as_str() != "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
         panic("aladdin basic vector mismatch");
     }
-    if basic("user", "pass").as_str() != "Basic dXNlcjpwYXNz" {
+    if basic_ok("user", "pass").as_str() != "Basic dXNlcjpwYXNz" {
         panic("user pass basic vector mismatch");
     }
     if to_string(&parse_ok("Basic dXNlcjpwOmE6c3M=")).as_str() != "Basic dXNlcjpwOmE6c3M=" {
         panic("password colon basic parse mismatch");
     }
-    if basic("user", "").as_str() != "Basic dXNlcjo=" {
+    if basic_ok("user", "").as_str() != "Basic dXNlcjo=" {
         panic("empty password basic vector mismatch");
     }
-    if basic("", "password").as_str() != "Basic OnBhc3N3b3Jk" {
+    if basic_ok("", "password").as_str() != "Basic OnBhc3N3b3Jk" {
         panic("empty username basic vector mismatch");
     }
+}
+
+fn test_basic_construction_rejects_what_parse_rejects() {
+    assert_invalid_basic_construction("user:name", "pass");
+    assert_invalid_basic_construction("user\r\nAuthorization: evil", "pass");
+    assert_invalid_basic_construction("user", "pass\r\nAuthorization: evil");
+    assert_invalid_basic_construction("user", "pa\tss");
 }
 
 fn test_bearer_vectors() {
@@ -177,8 +205,8 @@ fn test_header_injection_rejections() {
 fn test_round_trip_immutability_and_determinism() {
     let user = String::from("user");
     let pass = String::from("pass");
-    let b1 = basic(user.as_str(), pass.as_str());
-    let b2 = basic(user.as_str(), pass.as_str());
+    let b1 = basic_ok(user.as_str(), pass.as_str());
+    let b2 = basic_ok(user.as_str(), pass.as_str());
     if b1.as_str() != "Basic dXNlcjpwYXNz" || b2.as_str() != "Basic dXNlcjpwYXNz" {
         panic("basic output not deterministic");
     }

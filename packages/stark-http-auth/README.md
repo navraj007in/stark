@@ -11,7 +11,7 @@ provider.
 Public API:
 
 ```stark
-pub fn basic(username: &str, password: &str) -> String;
+pub fn basic(username: &str, password: &str) -> Result<String, AuthError>;
 pub fn bearer(token: &str) -> Result<String, AuthError>;
 pub fn parse(value: &str) -> Result<Authorization, AuthError>;
 pub fn to_string(auth: &Authorization) -> String;
@@ -20,7 +20,7 @@ pub fn to_string(auth: &Authorization) -> String;
 Basic example:
 
 ```text
-basic("Aladdin", "open sesame") -> Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==
+basic("Aladdin", "open sesame") -> Ok(Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==)
 ```
 
 Bearer example:

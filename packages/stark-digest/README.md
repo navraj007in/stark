@@ -28,5 +28,11 @@ pub fn to_hex(digest: &Digest) -> String;
 pub fn equals(left: &Digest, right: &Digest) -> Bool;
 ```
 
+`equals` compares byte by byte and returns as soon as two bytes differ. It is **not**
+constant-time, which is correct for content addressing — the digests it compares are public
+identifiers — but it must not be used to verify a secret such as a MAC or an API token, where the
+early return leaks the length of the matching prefix through timing.
+
+
 For `DigestAlgorithm::Sha256`, construction requires exactly 32 bytes, or 64 hexadecimal
 characters after syntax validation.

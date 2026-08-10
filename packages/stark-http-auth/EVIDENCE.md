@@ -53,5 +53,9 @@ Residuals:
 - The packet's requested `git switch develop`/`git pull --ff-only` preflight was not used because
   this checkout is currently carrying stacked package work and untracked files. The implementation
   uses the current branch baseline and records it above.
-- `basic(username, password)` keeps the frozen `String` return type and traps with a package-owned
-  precondition message when `username` contains `:`.
+- `basic(username, password)` originally kept a `String` return type and trapped when `username`
+  contained `:`. That was recorded here as a residual and has since been repaired: it returns
+  `Result<String, AuthError>` and rejects a colon in the username, and any control byte in either
+  argument, with `InvalidBasicCredentials`. A trap aborts under Core v1 semantics, so on
+  attacker-influenced credentials the old form was a denial of service; and construction now
+  rejects exactly what `parse` rejects, which it previously did not.
