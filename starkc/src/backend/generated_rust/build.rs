@@ -325,6 +325,15 @@ impl BuildLock {
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { path }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                // **WINDOWS: a removed directory is not immediately re-creatable.** `remove_dir`
+                // marks it for deletion and the name lingers until the last handle closes, during
+                // which `create_dir` returns ERROR_ACCESS_DENIED -- `PermissionDenied`, not
+                // `AlreadyExists`. Treating that as fatal made a tight acquire/release cycle fail
+                // on Windows and nowhere else; it is a contended lock, so it waits like one.
+                //
+                // A genuinely un-creatable path still terminates: it spins to `WAIT_LIMIT` and
+                // reports with the path named, rather than looping forever.
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
                 Err(e) => {
                     return Err(BackendDiagnostic::Io(format!(
                         "acquiring the build lock at {}: {e}",
