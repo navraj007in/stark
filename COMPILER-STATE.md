@@ -286,6 +286,33 @@ ordinary method form `x.fmt()` works.
 
 **Population A is 8**: DEV-140..145, DEV-160's capability half, and DEV-221.
 
+**PROGRAMME CLOSED (2026-08-10). Final report:
+`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`.**
+
+```text
+baseline  689d26d      final  5967a42      population A  13 -> 8
+CI        run 31353396547 SUCCESS, 24/24 jobs, all three Tier-1 platforms
+          run 31353396543 SUCCESS (C7.8 Native Capabilities)
+```
+
+**DEV-165 REPAIRED** (population B, so it does not move the count). It went a layer deeper than its
+entry said: `stark_net::connect` refused every non-zero timeout, so the HTTP client's
+`connect_no_timeout` was correct and switching only the client would have failed every connection.
+A new provider operation, its native implementation, `stark_net::connect` and the client were
+changed together. A control written when the defect was recorded — requiring the connect to FAIL —
+fired against a live peer; its polarity is corrected and a zero-duration refusal control added.
+Measured: a 2-second deadline against RFC 5737 TEST-NET-3 returned in 2.479s.
+
+**CI failed twice before it passed, and both failures were this programme's own work.** The record
+keeps them rather than showing only the green run. (1) `windows-x64`: the DEV-159 build lock treated
+Windows' pending-delete `PermissionDenied` as fatal — a real portability defect no macOS run could
+reach. (2) all three platforms: `stark fmt --check`, STARK's own source formatter, which is separate
+from `cargo fmt` and had been clean throughout.
+
+**§23 criterion 3 is PARTIAL, and is recorded as partial.** DEV-160's `E0502` leak is sealed, so the
+boundary is enforced by STARK rather than delegated to rustc; the capability half — those programs
+are valid STARK and still do not build — remains DEV-160b's own deferred work package.
+
 **DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
