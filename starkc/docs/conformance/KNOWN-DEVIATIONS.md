@@ -8002,3 +8002,196 @@ registration was for. The layer audit keeps them honest in both directions: it f
 unregistered finding AND on a registered one that stops reproducing.
 
 **Owner decision, 2026-08-10:** record the assessment and defer. Population unchanged at 9.
+
+## DEV-159 — RESOLVED: the generated-crate directory is now mutually excluded (post-C10 P5, 2026-08-10)
+
+Both earlier headings stand unedited, including the C10-Q pass's refusal to call it settled. That
+refusal was right: it was never confirmed OR falsified, only carried.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Reproduced, and not marginally
+
+§11.1's rule is that a single successful build settles nothing. So: six concurrent `stark build`
+invocations of ONE program, from a cold artifact directory, forty iterations.
+
+```text
+BEFORE   73 failures / 240 builds   (N=6 concurrent, debug)
+```
+
+Two distinct signatures, both from the same cause:
+
+```text
+"the STARK native backend generated a crate that Cargo could not build"
+"could not install native artifact ... No such file or directory (os error 2)"
+```
+
+### Cause — and the content-addressed directory is not the fix, it is the collision
+
+§11.2 lists "content-addressed build directory" as a candidate remedy. **It was already there**
+(`compute_build_key`, since CD-044/055/067 — long before this deviation was reported) and it is
+precisely why two builds of the same program land in the same directory. That reuse is deliberate
+and worth keeping.
+
+What had no sequencing was everything this compiler does *around* Cargo, all against that one
+directory:
+
+```text
+reject_stale_artifact_version    can remove_dir_all the directory
+write_file                       std::fs::write -- truncate-then-write, not atomic
+cargo build                      Cargo locks its OWN target dir, so this part was never the problem
+reading the produced binary      done by the CALLER, after build_and_link returns
+```
+
+### Repair
+
+`BuildLock`, held from before the stale check until the artifact is dropped — which is **after the
+caller installs the binary**, because that read is one of the two failure signatures. The guard
+travels out in `NativeArtifact` for exactly that reason.
+
+**The mutual exclusion is `create_dir`, not a sleep.** Creating a directory is an atomic
+test-and-set: two callers cannot both succeed. The backoff is only how a loser waits, and
+correctness does not depend on its duration — §11.2's "do not rely on sleeps" forbids sleeping
+*instead of* synchronising, which is the opposite of this. No `unsafe` (the crate forbids it) and
+**no new dependency**, which matters for a compiler whose dependency surface is `sha2` and its own
+crates.
+
+Scope is one build key. Two builds of different programs have different keys and never contend —
+§11.2 permits global serialisation only if narrower isolation is impossible, and it is not. An
+abandoned lock (a build killed by Ctrl-C, a CI timeout, an OOM) is broken by age, so the repair
+cannot trade a race for a hang.
+
+The lock lives BESIDE the crate directory, not inside it: `reject_stale_artifact_version` may
+remove that directory while the lock is held, and a lock deleted by that removal would release
+itself mid-build.
+
+### Measured result
+
+```text
+BEFORE   73 failures / 240 builds   (N=6, debug)
+AFTER     0 failures / 240 builds   (N=6, debug)
+AFTER     0 failures / 200 builds   (N=8, release)
+```
+
+### Negative control — §11.3
+
+A stress run is not a regression test: it is slow and its failure rate is a probability, so a
+broken lock could pass one. What is pinned instead is the property the stress run depends on.
+
+`build::dev159_build_lock::two_acquisitions_of_one_build_directory_cannot_overlap` — eight threads,
+25 acquisitions each, counting overlaps between the guard's fences. **With the exclusion neutered
+(`acquire` returning a guard without creating the directory) it fails immediately and
+deterministically**, which is what §11.3 asks for; the stress run's sensitivity is a probability,
+this one's is not. Two further controls pin that the guard releases on drop, and that different
+build keys do not contend — a lock keyed on anything coarser would serialise the whole compiler.
+
+Green: 579 lib, 132 conformance, 129 three-engine, 24 dev_display_dispatch, 8 dev160_call_site_thunk,
+15 c64_platform_matrix. `cargo fmt --check` clean; clippy `--workspace --all-features --all-targets
+-D warnings` clean.
+
+**Residual:** measured on macOS, one machine, with a small program. The mechanism is filesystem
+atomicity rather than anything program- or platform-specific, and CI covers the three Tier-1
+platforms, but the STRESS NUMBERS above are from this host and are not claimed for others.
+
+## DEV-180 — RESOLVED (post-C10 P1, repair commit `1db9760`, 2026-08-10)
+
+The owner's ruling that this follows C10-Q was observed: the repair landed after the gate closed.
+
+Receiver materialisation already bound `Value::Ref(caller_place)` for `&mut self`. What remained
+was the epilogue from when it did not — an error path that took the callee's receiver local and
+wrote it back into the caller's place, an algorithm whose only purpose was to simulate a mutable
+reference by taking the value and putting it back. With a genuine reference bound, the caller's
+place is never emptied, so there is nothing to restore, and the value it would have restored is
+itself a `Value::Ref`. `&mut self` also joins `&self` in leaving the frame before cleanup: a
+borrowed receiver must not be among the locals destroyed at method exit.
+
+`rebase_frame_refs` is untouched — a returned `&mut` still needs rebasing out of the method frame,
+and the entry's own list of forbidden repairs names removing it as the mistake to avoid.
+
+Evidence: `as3_receiver_materialization` 7/7, `interp::tests` 144/144, and the negative controls the
+entry named (`audit_10c_a_mut_self_receiver_must_keep_place_identity`, by-value self still consumes,
+shared receiver does not consume).
+
+## DEV-160 — the record corrected: `E0502` DOES reach the user (OPEN, post-C10 P2, 2026-08-10)
+
+§8.1 asked for the exact live shape and a classification before choosing a repair layer. Both are
+below, and the reproduction contradicts what this deviation was believed to be.
+
+**Baseline SHA:** `689d26d26990399d1de3026c13c271c403a45032`.
+
+### Correction to the record
+
+The C10-Q-era reading — carried into the post-C10 reproduction pass — was that DEV-160's remaining
+gap is *backend completeness with the boundary enforced by name*, never delegated to rustc. The
+`emit_call_thunk` module header says exactly that: b, c and d are "refused by name ... because the
+alternative is `E0502` inside this generated module".
+
+**That is not true for at least one shape.** Reproducer:
+
+```stark
+struct Req { url: String, body: String }
+fn send(u: &str, b: String) -> UInt64 { return u.len() + b.len(); }
+fn main() {
+    let r = Req { url: "http://x".to_string(), body: "hi".to_string() };
+    println(send(r.url.as_str(), r.body));
+}
+```
+
+```text
+stark run   -> 10
+stark build -> error: the STARK native backend generated a crate that Cargo could not build
+               generated crate: error[E0502]: cannot borrow `_1` as mutable because it is also
+               borrowed as immutable  --> src/main.rs:103:96
+```
+
+**This is the failure §8 names as the one the architecture must not have:** STARK accepts, generated
+Rust is emitted, rustc rejects it, and the user is shown a borrow error about a line they did not
+write.
+
+### Classification (§8.1): D, with a DETECTION gap
+
+Not A or B — the front end is right, the accesses are disjoint. Not C. It is D, and the specific
+mechanism is that the refusal written for this shape is **unreachable for it**:
+
+```text
+plan_for_call
+  absorbable_borrows(...)      derived from the call's OWN block
+  if !conflicts(...) -> None   <-- returns here for a cross-block borrow
+  ...
+  DEV-160b refusal             <-- written for `builder.url.as_str()`, never reached
+```
+
+`as_str()` runs in an earlier block, so its `&str` is not among this block's borrows; the argument
+list looks like a single access to `_1`; no thunk is planned; and the named refusal downstream never
+runs.
+
+### A repair was implemented, measured, and REVERTED
+
+Making `conflicts` consult `borrow_provenance` (which does trace across blocks) makes the refusal
+reachable, and the reproducer above then fails with the named DEV-160b message and its workaround
+instead of `E0502`. All compiler suites stayed green, including `dev160_call_site_thunk` 8/8.
+
+**It over-refuses shipping code.** `stark-get` — the HTTPS application — stopped building:
+`stark_http_client::follow@[]` was refused, and `follow` is a path that builds today and is already
+written in the workaround form this deviation recommends. Provenance over-approximates by design: it
+reports that a value derives from a slot, not that a borrow of that slot is still live where rustc
+looks. Narrowing it to exactly rustc's answer means modelling rustc's borrow checker over generated
+code, which is §19.3's "repair requires architectural expansion".
+
+Reverted. `stark-get` builds again. **The measurement is kept because it is the finding:** the cheap
+fix for the detection gap is not admissible, and that is worth more than an untested claim that it
+would work.
+
+### Disposition
+
+OPEN. §23's exit criterion 3 for this deviation — "its exact supported boundary is enforced by STARK
+rather than delegated accidentally to rustc" — is **NOT met**, and this entry now records why
+rather than asserting that it is.
+
+What is now known that was not before: the boundary has a hole; the hole is a reachability gap in
+`plan_for_call`, not a missing refusal; the obvious closure over-refuses real code; and the honest
+closure needs either cross-block absorption (DEV-160b's own deferred work package, owner ruling
+2026-08-03) or a liveness-accurate provenance that provenance is not.
+
+**Residual for users:** the shape has a working spelling — bind the fields to locals before the
+call — which is what `stark-http-client` already does and documents at `src/lib.stark`.

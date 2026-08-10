@@ -212,6 +212,31 @@ trait model DEV-166 removed. The decision is pinned by two tests in
   They continue to define the supported native subset, kept honest in both directions by the
   enforcing layer audit.
 
+**Post-C10 repair programme, P1 + P5 + P2 (2026-08-10). Population A 9 -> 7.**
+
+- **DEV-180 RESOLVED**, repair commit `1db9760`, after C10-Q as the owner ruled.
+- **DEV-159 RESOLVED, and it was reproduced rather than argued.** Six concurrent `stark build`
+  invocations of ONE program from a cold artifact directory: **73 failures in 240 builds**, in two
+  signatures — a generated crate Cargo could not build, and an artifact that had vanished by the
+  time it was installed. The content-addressed build directory §11.2 lists as a remedy was already
+  there and is *why* they collide; what had no sequencing was everything this compiler does around
+  Cargo (the stale check's `remove_dir_all`, non-atomic writes, and the caller's read of the
+  binary). `BuildLock` excludes on `create_dir` — an atomic test-and-set, no `unsafe`, no new
+  dependency — scoped to one build key, held until the artifact is dropped so the caller's install
+  is covered. **0/240 debug, 0/200 at eight-way release.** The §11.3 control is a unit test that
+  fails deterministically when the exclusion is neutered, because a stress run's sensitivity is
+  only a probability.
+- **DEV-160 STAYS OPEN, and the record is corrected.** The C10-Q-era reading — carried into the
+  post-C10 reproduction pass — was that the boundary is refused by name and never delegated to
+  rustc. **It is not, for at least one shape.** `send(r.url.as_str(), r.body)` reaches the user as
+  `error[E0502]` inside the generated crate: `plan_for_call` returns `None` before the DEV-160b
+  refusal written for exactly that shape, because a borrow arriving from an earlier block is not
+  among the call block's own borrows. A repair was implemented (make `conflicts` consult
+  `borrow_provenance`) — it works on the reproducer, keeps every suite green, and **over-refuses
+  `stark_http_client::follow`, breaking the `stark-get` build**. Reverted; the measurement is kept
+  because the finding is that the cheap closure is not admissible. §23's exit criterion 3 for
+  DEV-160 is NOT met, and the entry now says so instead of asserting it is.
+
 **DEV-156/172/186 REPAIRED after the decision (population A 16 -> 13; now 9 — see the post-C10 programme entries above).** The formatter no longer evicts field doc comments; every signed minimum is writable (folded in typecheck, the HIR interpreter AND MIR lowering — the MIR half was visible only with `--no-mir-opt`, because the optimiser const-folded the shape and a hand-run `stark build` therefore passed); the LSP transport bounds its allocation before reading, and still reports a truncated frame as `UnexpectedEof` rather than buying the bound with the failure signal.
 
 ## CD-396 — installed toolchains carry an explicit library set and resolve it locally (2026-08-09)
