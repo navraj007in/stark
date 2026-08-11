@@ -9303,3 +9303,90 @@ pass.
 still `stark check` clean and all 31 library test suites stay green. No first-party code moved a
 non-`Copy` field out of a borrow — unsurprising in hindsight, since every consumer builds natively
 and native already refused the shape.
+
+## DEV-232 — RE-OPENED (2026-08-11): the repair is correct and there is no way to write the code it forbids
+
+The repair landed at `ab8da4d` and is reverted at the commit carrying this heading. **Not because it
+was wrong** — it is consistent with a rule the compiler already enforced — but because it leaves a
+shape of generic code unwritable, and the escape hatch that should exist does not work.
+
+### What CI found that the local sweep did not
+
+`starkc/tests/mir_differential.rs::generic_user_iterator_for_loop_agrees` fails, one of 132:
+
+```stark
+struct Repeat<T> { item: T, left: Int32 }
+impl<T> Iterator for Repeat<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.left == 0 { None } else { self.left = self.left - 1; Some(self.item) }
+    }
+}
+```
+
+`Some(self.item)` moves `T` out of `&mut self`, and `T` is unbounded, so it is not known `Copy`.
+
+**The rejection is correct.** The pre-existing `*r` arm already refuses the identical shape —
+`fn take<T>(r: &T) -> T { *r }` is `E0100` today, and has been since WP-C1.4 — so the field case
+was a hole in a rule the compiler already enforced, and this test relied on the hole. With
+`T = String` the program would move a String out of a borrow and leave the referent invalid, which
+is exactly what DEV-232 was filed for.
+
+### Why it is reverted anyway
+
+The escape hatch does not work:
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+fn main() { let x = 5i64; println(take(&x)); }
+```
+
+```text
+Error: [E0500] type 'Int64' does not satisfy trait bound 'Copy'
+```
+
+`Copy` is a recognised core trait (`resolve_core_trait` maps it) and `03-Type-System.md`
+NUM-FLOAT-TRAIT-001 says the float primitives implement it — but a primitive does not satisfy the
+bound. So `impl<T: Copy> Iterator for Repeat<T>` cannot be instantiated at `Int32`, and there is
+**no spelling** that makes the rejected program legal.
+
+Closing the hole without the bound available removes a shape of generic code from the language and
+offers nothing in its place. That is a language-expressiveness decision, not a bug fix, and it is
+not a package-derived session's to take. The soundness hole is real and stays open, recorded here
+rather than silently traded away.
+
+### What unblocks it
+
+DEV-234 — a primitive does not satisfy a `Copy` bound. Repair that, and this repair can land with
+`impl<T: Copy> ...` as the working spelling for the code it forbids.
+
+### A correction to the original repair's claim
+
+That commit said "blast radius measured rather than assumed: none", citing all 65 packages and all
+31 library suites. Those measurements were real and they were not enough: **the compiler's own test
+corpus was never run.** One test in 132 fails, and it is the one that mattered. Measuring the
+packages and calling it the blast radius was the error.
+
+## DEV-234 — a primitive does not satisfy a `Copy` bound (OPEN, registered 2026-08-11)
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+fn main() { let x = 5i64; println(take(&x)); }
+```
+
+```text
+Error: [E0500] type 'Int64' does not satisfy trait bound 'Copy'
+```
+
+`Copy` is a core trait the resolver knows (`resolve_core_trait`), and `03-Type-System.md`
+NUM-FLOAT-TRAIT-001 states that `Float32` and `Float64` implement `Copy`. Integer primitives are
+`Copy` by every other measure in the compiler — `is_copy_type` says so, which is why `let a = b;`
+copies them. The bound checker does not agree with the copy classifier.
+
+**Severity: it blocks DEV-232.** On its own it is an expressiveness gap: no generic function or
+impl can require its parameter to be copyable, so no generic code can move a value out of a
+reference. That is tolerable in isolation. It stops being tolerable the moment the borrow rule is
+enforced correctly, because then there is a class of program that is forbidden and unspellable at
+the same time.
+
+Found while investigating why DEV-232's repair broke `generic_user_iterator_for_loop_agrees`.
