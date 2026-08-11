@@ -141,3 +141,66 @@ The five repaired defects are repaired, and the repairs did not break the preced
 One new defect of the same class was found in the next stage down. The method — execute whole
 programs and compare against an expectation, with a wildcard present — is what found it, and is
 worth keeping.
+
+---
+
+# Report — scopes C and D, run 2026-08-11
+
+Harness: `starkc/scripts/resolution-audit-scope-cd.py`, run against a `stark` built from `2532b72`.
+**29 probes, 5 disagreements — of which 4 are one defect and 1 was the audit being wrong.**
+
+## Scope C — pattern legality matrix: 25 probes, 5 disagreements
+
+Scope A probed the pattern kinds a program most often writes. This walks the matrix the other way:
+each path-bearing pattern kind against each resolution category the resolver can produce, plus the
+non-path kinds against mismatched types.
+
+**Clean:** struct patterns reject a function, module, primitive, trait or constant in the path
+position, and reject an unknown field (DEV-230's repair holding). Tuple and array patterns reject
+arity mismatches and type mismatches. Literal patterns reject a mismatched type. Path patterns
+reject a trait member.
+
+**DEV-231, filed and since REPAIRED:** tuple-variant patterns checked neither the shape of their constructor nor their
+arity. `Colour::Red(_v)` on a payload-less variant, `Shape::Line(_a, _b)` on a one-field variant,
+`Thing(_v)` on a named-field struct and `LIMIT(_v)` on a constant all compile and silently never
+match. Three mechanisms in one arm: a non-tuple variant yields `None` and the check is skipped,
+`zip` truncates on arity mismatch, and a resolution that is neither `Res::Variant` nor
+`Res::Builtin` reaches neither branch.
+
+**The audit was wrong once, and the specification said so.** `Rec::One` — a bare path pattern
+naming a struct variant — matches, and the probe expected a rejection. SYN-PATTERN-001:
+"Multi-segment `Path` patterns always match by value", and Core v1 has no rest patterns, so a bare
+path is the only way to match a struct variant without binding its fields. Rust intuition, not a
+defect. Recorded because an audit that only reports the compiler's errors and never its own is
+not measuring itself.
+
+## Scope D — resolution well-formedness: 4 probes, 0 disagreements
+
+The concern was whether a `Res::Variant(item, index)` can be consumed against the wrong enum or an
+index the enum does not have — `typecheck/patterns.rs` indexes `variants[*variant_idx as usize]`
+directly, so a malformed one would be an internal panic rather than a diagnostic.
+
+**Every producer derives the index from the enum's own variant list.** All three sites in
+`resolve.rs` build it from `enumerate()` or `position()` over that enum's variants, or propagate an
+already-valid one. There is no surface syntax that separates the index from the enum it came from.
+
+Probed anyway, from the language rather than from the code: two enums with same-named variants, an
+index valid in a wide enum and out of range for a narrow one, a re-exported variant competing with
+a same-named local variant, and a generic enum's variant surviving instantiation. All four behave.
+
+**Verdict: no defect, and the invariant holds by construction rather than by check.** The unchecked
+index remains a latent internal-panic surface if a future producer ever derives one differently.
+That is a hardening argument, not a finding, and is deliberately not filed as a deviation.
+
+## Where the audit now stands
+
+All four scopes have run. Two defects found across 62 probes: DEV-230 (scope A) and DEV-231
+(scope C), both in `typecheck/patterns.rs`, both the same failure mode — compiles, no diagnostic,
+silently never matches. Both are now repaired, and re-running C and D against the repairs gives
+**29 probes, 0 disagreements**.
+
+Both were one stage past where the audit was aimed, which is the most useful thing it established:
+**the resolution repairs held, and the defects of this class were in type checking.** A sweep of
+the same shape aimed at type checking, borrow checking and MIR lowering is the obvious next one —
+`typecheck/patterns.rs` alone yielded two defects and its own comments record a third (DEV-205) of
+the identical class, fixed one entry at a time before the general check existed.

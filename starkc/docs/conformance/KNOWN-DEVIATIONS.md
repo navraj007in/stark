@@ -9097,3 +9097,90 @@ interpreter always executed this correctly, so an interpreter-only regression wo
 nothing. Verified: with the lowering reverted, `the_borrowing_catch_all_lowers_to_mir` fails and
 the other five pass. Controls pin the consuming form still moving and dropping, and a `Copy`
 scrutinee still binding by value.
+
+## DEV-231 — a tuple-variant pattern checks neither its constructor's shape nor its arity (OPEN, registered 2026-08-11)
+
+Found by the resolution audit's scope C, which walks the pattern-kind matrix the other way from
+scope A. Four observable faces, three mechanisms, all in one arm of `typecheck/patterns.rs`. Every
+one of them compiles clean and then silently never matches — the DEV-222 failure mode, in type
+checking rather than resolution.
+
+```stark
+enum Colour { Red, Green }
+enum Shape { Dot, Line(Int64) }
+struct Thing { value: Int64 }
+const LIMIT: Int64 = 3i64;
+```
+
+| Pattern | Why it is wrong | Today |
+| --- | --- | --- |
+| `Colour::Red(_v)` | `Red` carries no payload | compiles, never matches |
+| `Shape::Line(_a, _b)` | `Line` carries one, not two | compiles, never matches |
+| `Thing(_v)` | `Thing` is a named-field struct, not a tuple constructor | compiles, never matches |
+| `LIMIT(_v)` | a constant is not a constructor at all | compiles, never matches |
+
+With a wildcard arm present each takes the wildcard; without one the match is reported
+non-exhaustive, which points at the `match` rather than the pattern — the same misleading
+diagnostic that made DEV-222 dangerous.
+
+### Root cause: three holes in `hir::PatKind::TupleVariant`
+
+```rust
+let tys_opt = self.enum_variants.get(enum_id).and_then(|variants| {
+    let variant = &variants[*variant_idx as usize];
+    if let VariantFields::Tuple(tys) = &variant.fields { Some(tys.clone()) } else { None }
+});
+if let Some(tys) = tys_opt {
+    for (p, expected_t) in pats.iter().zip(tys) { ... }
+}
+```
+
+1. **A non-tuple variant yields `None`** — unit and struct variants both — and the `if let Some`
+   is then simply skipped. No diagnostic. That is `Colour::Red(_v)`.
+2. **`zip` truncates.** A pattern with more sub-patterns than the variant has fields checks the
+   overlap and ignores the rest. That is `Shape::Line(_a, _b)`. It equally means too FEW
+   sub-patterns pass unremarked.
+3. **A resolution that is neither `Res::Variant` nor `Res::Builtin`** — `Res::Item` for a struct
+   or a constant — reaches neither branch and falls out without a diagnostic. That is `Thing(_v)`
+   and `LIMIT(_v)`.
+
+### This arm has form
+
+Its own comment records DEV-205: `IOError::Other(msg)` was missing from the builtin table, "so its
+sub-pattern was never checked … The program ran and printed correctly, which is why nothing found
+it for as long as nothing read the tables". Same arm, same shape, previously fixed one entry at a
+time. The general check was never added.
+
+### Not repaired here
+
+The audit's scope is to report. The repair is an arity and shape check with a diagnostic, in the
+manner of DEV-230's missing `else`, and belongs to whatever packet schedules it.
+
+### Scope C also cleared a suspicion
+
+`Rec::One` — a bare path pattern naming a STRUCT variant — matches, and that is **correct**, not a
+fifth face. `02-Syntax-Grammar.md` SYN-PATTERN-001: "Multi-segment `Path` patterns always match by
+value", and Core v1 has no rest patterns, so a bare path is the only way to match a struct variant
+without binding its fields. The audit expected a rejection out of Rust intuition and the
+specification disagreed.
+
+## DEV-231 — RESOLVED (2026-08-11): the tuple-variant arm checks shape and arity
+
+All three mechanisms closed in `hir::PatKind::TupleVariant`:
+
+- a variant with no tuple fields now reports `E0001 variant carries no tuple fields, so it takes no
+  pattern arguments` instead of yielding `None` and skipping the check;
+- the arity is compared before `zip`, so too many **and too few** sub-patterns are both named:
+  `E0001 this variant has N field(s), but the pattern binds M`;
+- a resolution that is neither `Res::Variant` nor `Res::Builtin` reports `E0202 this is not a tuple
+  constructor, so it takes no pattern arguments` rather than falling out silently. `Res::Err` is
+  excluded, so an already-reported resolution failure is not diagnosed twice.
+
+Regression: `starkc/tests/dev231_tuple_variant_pattern_shape.rs`, nine tests. Five are rejections
+and four are controls; verified by reverting `patterns.rs` — the five fail, the four pass. The
+controls pin correct arity, generic variants, the builtin constructors (which take the other
+branch), and `Rec::One`, the bare path naming a struct variant that SYN-PATTERN-001 makes legal and
+that an over-eager repair would plausibly have caught.
+
+Re-running the audit's scope C against the repair: **29 probes, 0 disagreements**, with the
+mistaken `Rec::One` expectation corrected in the harness rather than in the compiler.
