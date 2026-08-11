@@ -1170,20 +1170,27 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
-            } else if let Some(assoc_res) = if current_is_module {
-                None
-            } else {
-                self.qualified_associated_name(current_res, name_str, segment.span)
-            } {
-                // DEV-223/225. NAME-RESOLVE-001 searches a qualifier's associated names after
-                // resolving the qualifier and before anything else; this loop used to consult the
-                // enclosing module first. A module qualifier still falls through to the module
-                // lookup below, because `qualified_associated_name` declines for it.
+            } else if !current_is_module && matches!(current_res, Some(Res::Item(_))) {
+                // DEV-228 phase 3. A qualifier that is a TYPE or TRAIT owns an associated-item
+                // namespace, and NAME-RESOLVE-001 searches associated names "after resolving their
+                // qualifying type or trait" — in THAT qualifier's namespace, not in whichever
+                // module happens to enclose the path.
+                //
+                // DEV-223 and DEV-225 were repaired by ordering this lookup ahead of the module
+                // maps. That ordering is now gone, and with it the precedence question: the module
+                // maps are not consulted at all here, because they were never the right place to
+                // look. `Attr::Policy` cannot find an enclosing module's `Policy` for the same
+                // reason `Attr::Policy` cannot find a local variable — a different namespace is
+                // not a lower-priority candidate, it is not a candidate.
+                let Some(assoc_res) =
+                    self.qualified_associated_name(current_res, name_str, segment.span)
+                else {
+                    return Res::Err;
+                };
                 if assoc_res == Res::Err {
                     return Res::Err;
                 }
                 current_res = Some(assoc_res);
-                current_is_module = false;
             } else if let Some(res) = self.lookup_ns(
                 current_mod,
                 name_str,

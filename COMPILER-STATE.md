@@ -12,9 +12,10 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 10 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-229 (UNCONFIRMED), DEV-233
-              (the interpreter loses output written before a trap). DEV-228 RESOLVED 2026-08-11: the
+Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-229 (CONFIRMED 2026-08-11: `expected 'Ordering', found 'Ordering'`), DEV-233 (the interpreter loses output written before a
+              trap), DEV-235 (a promotion-gating check that fails on loopback socket timing, so a
+              red check there can carry no information about the tree it gates). DEV-228 RESOLVED 2026-08-11: the
               resolver now carries the module/type/value namespaces NAME-RESOLVE-001 specifies,
               so the precedence exceptions have nothing left to order. DEV-232 and DEV-234 both RESOLVED
               2026-08-11: the `Copy` bound was repaired in both halves, which gave DEV-232's
@@ -7513,6 +7514,19 @@ because whichever convention produced 97 may be the intended one. Path:
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
+
+> **STALE — do not read this list as current (noted 2026-08-11).** It is dated 2026-08-02 and has
+> not tracked the ledger since. It lists DEV-005, DEV-011, DEV-012 and DEV-017 as open; the ledger
+> has DEV-005 and DEV-012 CLOSED, DEV-011 ACCEPTED-INDEFINITELY, and DEV-017 PARTIALLY CLOSED. It
+> also predates everything from DEV-140 onward.
+>
+> **The position block at the top of this file is the current open set**, and the ledger's own
+> "last heading wins" rule is the authority behind it: derive the set by taking each `DEV-NNN`'s
+> LAST heading in `KNOWN-DEVIATIONS.md` and keeping the ones that are not a closure.
+>
+> Kept rather than deleted because the narrative below is a record of what was believed on
+> 2026-08-02, and rewriting it would erase that. It is annotated instead — the same treatment the
+> "97 numbered deviations" discrepancy above got, and for the same reason.
 
 Open as of 2026-08-02. Entries DEV-005…DEV-017 are long-standing and unscheduled, and no open
 deviation belongs to the C4 track. **DEV-134…DEV-139 were opened 2026-08-02 by CD-334 and are new,
