@@ -24,34 +24,19 @@ pub enum SameSite {
     None,
 }
 
-pub enum CookieAttributeKind {
-    Expires,
-    MaxAge,
-    Domain,
-    Path,
+/// A `Set-Cookie` attribute. Recognised attributes carry their typed value; anything else is kept
+/// as an extension so that formatting can return it unchanged. An unknown attribute is a legal
+/// extension point and never fails the whole value.
+pub enum CookieAttribute {
+    Expires(String),
+    MaxAge(Int64),
+    Domain(String),
+    Path(String),
     Secure,
     HttpOnly,
-    SameSitePolicy,
-    Extension,
-    ExtensionFlag,
-}
-
-/// A `Set-Cookie` attribute: a kind, plus the typed payload that kind selects.
-///
-/// This is a tagged struct rather than a sum type with payloads because the native backend cannot
-/// yet match an enum carrying a `String` through a shared reference, and every reader here holds
-/// one by reference. `EVIDENCE.md` records the reproducer.
-///
-/// Only the field the kind selects is meaningful: `value` for `Expires`, `Domain`, `Path` and
-/// `Extension`; `max_age` for `MaxAge`; `same_site` for `SameSite`; `name` for the extension kinds.
-/// The constructors fix the others so that two attributes of the same kind and payload always
-/// format identically.
-pub struct CookieAttribute {
-    pub kind: CookieAttributeKind,
-    pub name: String,
-    pub value: String,
-    pub max_age: Int64,
-    pub same_site: SameSite,
+    SameSite(SameSite),
+    Extension(String, String),
+    ExtensionFlag(String),
 }
 
 pub struct SetCookie { pub name: String, pub value: String, pub attributes: Vec<CookieAttribute> }
@@ -100,98 +85,6 @@ const HTAB: UInt8 = 9u8;
 /// integer overflow in every build mode, so the check has to happen BEFORE the multiply, not after.
 const MAX_AGE_ACC_CEILING: Int64 = 922337203685477580i64;
 const MAX_AGE_MAX: Int64 = 9223372036854775807i64;
-
-/// Constructors. They exist so that a caller never has to know which of the payload fields its
-/// kind selects, and so two equal attributes always format to the same bytes.
-pub fn attribute_expires(value: String) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::Expires,
-        name: String::from("Expires"),
-        value: value,
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_max_age(seconds: Int64) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::MaxAge,
-        name: String::from("Max-Age"),
-        value: String::new(),
-        max_age: seconds,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_domain(value: String) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::Domain,
-        name: String::from("Domain"),
-        value: value,
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_path(value: String) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::Path,
-        name: String::from("Path"),
-        value: value,
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_secure() -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::Secure,
-        name: String::from("Secure"),
-        value: String::new(),
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_http_only() -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::HttpOnly,
-        name: String::from("HttpOnly"),
-        value: String::new(),
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_same_site(policy: SameSite) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::SameSitePolicy,
-        name: String::from("SameSite"),
-        value: String::new(),
-        max_age: 0i64,
-        same_site: policy,
-    }
-}
-
-pub fn attribute_extension(name: String, value: String) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::Extension,
-        name: name,
-        value: value,
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
-
-pub fn attribute_extension_flag(name: String) -> CookieAttribute {
-    CookieAttribute {
-        kind: CookieAttributeKind::ExtensionFlag,
-        name: name,
-        value: String::new(),
-        max_age: 0i64,
-        same_site: SameSite::Lax,
-    }
-}
 
 pub fn default_limits() -> CookieLimits {
     CookieLimits {
@@ -469,13 +362,13 @@ fn classify_attribute(
         if has_value {
             return Err(CookieError::MalformedAttribute(name_offset));
         }
-        return Ok(attribute_secure());
+        return Ok(CookieAttribute::Secure);
     }
     if string_eq_ignore_ascii_case(name, &String::from("HttpOnly")) {
         if has_value {
             return Err(CookieError::MalformedAttribute(name_offset));
         }
-        return Ok(attribute_http_only());
+        return Ok(CookieAttribute::HttpOnly);
     }
     if string_eq_ignore_ascii_case(name, &String::from("Max-Age")) {
         if !has_value {
@@ -483,7 +376,7 @@ fn classify_attribute(
         }
         match parse_max_age(value, value_offset) {
             Ok(seconds) => {
-                return Ok(attribute_max_age(seconds));
+                return Ok(CookieAttribute::MaxAge(seconds));
             }
             Err(error) => {
                 return Err(error);
@@ -495,13 +388,13 @@ fn classify_attribute(
             return Err(CookieError::MalformedAttribute(name_offset));
         }
         if string_eq_ignore_ascii_case(value, &String::from("Strict")) {
-            return Ok(attribute_same_site(SameSite::Strict));
+            return Ok(CookieAttribute::SameSite(SameSite::Strict));
         }
         if string_eq_ignore_ascii_case(value, &String::from("Lax")) {
-            return Ok(attribute_same_site(SameSite::Lax));
+            return Ok(CookieAttribute::SameSite(SameSite::Lax));
         }
         if string_eq_ignore_ascii_case(value, &String::from("None")) {
-            return Ok(attribute_same_site(SameSite::None));
+            return Ok(CookieAttribute::SameSite(SameSite::None));
         }
         // Never quietly folded onto a recognised value: a caller told `Lax` when the server said
         // something else would be making a security decision on invented data.
@@ -511,13 +404,13 @@ fn classify_attribute(
         if !has_value {
             return Err(CookieError::MalformedAttribute(name_offset));
         }
-        return Ok(attribute_domain(String::from(value.as_str())));
+        return Ok(CookieAttribute::Domain(String::from(value.as_str())));
     }
     if string_eq_ignore_ascii_case(name, &String::from("Path")) {
         if !has_value {
             return Err(CookieError::MalformedAttribute(name_offset));
         }
-        return Ok(attribute_path(String::from(value.as_str())));
+        return Ok(CookieAttribute::Path(String::from(value.as_str())));
     }
     if string_eq_ignore_ascii_case(name, &String::from("Expires")) {
         if !has_value {
@@ -526,13 +419,13 @@ fn classify_attribute(
         if value.bytes().len() == 0u64 {
             return Err(CookieError::MalformedAttribute(value_offset));
         }
-        return Ok(attribute_expires(String::from(value.as_str())));
+        return Ok(CookieAttribute::Expires(String::from(value.as_str())));
     }
 
     if has_value {
-        Ok(attribute_extension(String::from(name.as_str()), String::from(value.as_str())))
+        Ok(CookieAttribute::Extension(String::from(name.as_str()), String::from(value.as_str())))
     } else {
-        Ok(attribute_extension_flag(String::from(name.as_str())))
+        Ok(CookieAttribute::ExtensionFlag(String::from(name.as_str())))
     }
 }
 
@@ -656,40 +549,40 @@ fn value_needs_quotes(value: &String) -> Bool {
 }
 
 fn push_attribute(out: &mut String, attribute: &CookieAttribute) {
-    match attribute.kind {
-        CookieAttributeKind::Expires => {
+    match *attribute {
+        CookieAttribute::Expires(value) => {
             out.push_str("Expires=");
-            out.push_str(attribute.value.as_str());
+            out.push_str(value.as_str());
         }
-        CookieAttributeKind::MaxAge => {
+        CookieAttribute::MaxAge(seconds) => {
             out.push_str("Max-Age=");
-            out.push_str(int64_to_string(attribute.max_age).as_str());
+            out.push_str(int64_to_string(seconds).as_str());
         }
-        CookieAttributeKind::Domain => {
+        CookieAttribute::Domain(value) => {
             out.push_str("Domain=");
-            out.push_str(attribute.value.as_str());
+            out.push_str(value.as_str());
         }
-        CookieAttributeKind::Path => {
+        CookieAttribute::Path(value) => {
             out.push_str("Path=");
-            out.push_str(attribute.value.as_str());
+            out.push_str(value.as_str());
         }
-        CookieAttributeKind::Secure => {
+        CookieAttribute::Secure => {
             out.push_str("Secure");
         }
-        CookieAttributeKind::HttpOnly => {
+        CookieAttribute::HttpOnly => {
             out.push_str("HttpOnly");
         }
-        CookieAttributeKind::SameSitePolicy => {
+        CookieAttribute::SameSite(policy) => {
             out.push_str("SameSite=");
-            out.push_str(same_site_text(attribute.same_site).as_str());
+            out.push_str(same_site_text(policy).as_str());
         }
-        CookieAttributeKind::Extension => {
-            out.push_str(attribute.name.as_str());
+        CookieAttribute::Extension(name, value) => {
+            out.push_str(name.as_str());
             out.push('=');
-            out.push_str(attribute.value.as_str());
+            out.push_str(value.as_str());
         }
-        CookieAttributeKind::ExtensionFlag => {
-            out.push_str(attribute.name.as_str());
+        CookieAttribute::ExtensionFlag(name) => {
+            out.push_str(name.as_str());
         }
     }
 }

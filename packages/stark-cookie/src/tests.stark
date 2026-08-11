@@ -6,17 +6,7 @@ use super::parse_cookie;
 use super::parse_set_cookie;
 use super::same_site_text;
 use super::Cookie;
-use super::attribute_domain;
-use super::attribute_expires;
-use super::attribute_extension;
-use super::attribute_extension_flag;
-use super::attribute_http_only;
-use super::attribute_max_age;
-use super::attribute_path;
-use super::attribute_same_site;
-use super::attribute_secure;
 use super::CookieAttribute;
-use super::CookieAttributeKind;
 use super::CookieError;
 use super::CookieLimits;
 use super::CookiePair;
@@ -130,33 +120,57 @@ fn test_set_cookie_recognised_attributes() {
     assert_eq(set_cookie.name.as_str(), "session");
     assert_eq(set_cookie.attributes.len(), 7u64);
 
-    assert_kind(&set_cookie.attributes[0u64], CookieAttributeKind::Expires);
-    assert_eq(set_cookie.attributes[0u64].value.as_str(), "Wed, 09 Jun 2021 10:18:14 GMT");
-
-    assert_kind(&set_cookie.attributes[1u64], CookieAttributeKind::MaxAge);
-    assert_eq(set_cookie.attributes[1u64].max_age, 3600i64);
-
-    assert_kind(&set_cookie.attributes[2u64], CookieAttributeKind::Domain);
-    assert_eq(set_cookie.attributes[2u64].value.as_str(), "example.com");
-
-    assert_kind(&set_cookie.attributes[3u64], CookieAttributeKind::Path);
-    assert_eq(set_cookie.attributes[3u64].value.as_str(), "/account");
-
-    assert_kind(&set_cookie.attributes[4u64], CookieAttributeKind::Secure);
-    assert_kind(&set_cookie.attributes[5u64], CookieAttributeKind::HttpOnly);
-
-    assert_kind(&set_cookie.attributes[6u64], CookieAttributeKind::SameSitePolicy);
-    assert_eq(same_site_text(set_cookie.attributes[6u64].same_site).as_str(), "Lax");
+    let attr1 = &set_cookie.attributes[0u64];
+    match *attr1 {
+        CookieAttribute::Expires(text) => assert_eq(text.as_str(), "Wed, 09 Jun 2021 10:18:14 GMT"),
+        _other => panic("expected Expires"),
+    }
+    let attr2 = &set_cookie.attributes[1u64];
+    match *attr2 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 3600i64),
+        _other => panic("expected MaxAge"),
+    }
+    let attr3 = &set_cookie.attributes[2u64];
+    match *attr3 {
+        CookieAttribute::Domain(text) => assert_eq(text.as_str(), "example.com"),
+        _other => panic("expected Domain"),
+    }
+    let attr4 = &set_cookie.attributes[3u64];
+    match *attr4 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/account"),
+        _other => panic("expected Path"),
+    }
+    let attr5 = &set_cookie.attributes[4u64];
+    match *attr5 {
+        CookieAttribute::Secure => {}
+        _other => panic("expected Secure"),
+    }
+    let attr6 = &set_cookie.attributes[5u64];
+    match *attr6 {
+        CookieAttribute::HttpOnly => {}
+        _other => panic("expected HttpOnly"),
+    }
+    let attr7 = &set_cookie.attributes[6u64];
+    match *attr7 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "Lax"),
+        _other => panic("expected SameSite"),
+    }
 }
 
 fn test_set_cookie_max_age_signs() {
     let zero = expect_set_cookie("a=b; Max-Age=0");
-    assert_kind(&zero.attributes[0u64], CookieAttributeKind::MaxAge);
-    assert_eq(zero.attributes[0u64].max_age, 0i64);
+    let attr8 = &zero.attributes[0u64];
+    match *attr8 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 0i64),
+        _other => panic("expected MaxAge"),
+    }
 
     let negative = expect_set_cookie("a=b; Max-Age=-1");
-    assert_kind(&negative.attributes[0u64], CookieAttributeKind::MaxAge);
-    assert_eq(negative.attributes[0u64].max_age, 0i64 - 1i64);
+    let attr9 = &negative.attributes[0u64];
+    match *attr9 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 0i64 - 1i64),
+        _other => panic("expected MaxAge"),
+    }
 }
 
 // SET-009 / unknown attributes are an extension point, never a whole-value failure.
@@ -164,22 +178,36 @@ fn test_set_cookie_max_age_signs() {
 fn test_set_cookie_unknown_attributes_are_preserved() {
     let valued = expect_set_cookie("session=abc; Priority=High");
     assert_eq(valued.attributes.len(), 1u64);
-    assert_kind(&valued.attributes[0u64], CookieAttributeKind::Extension);
-    assert_eq(valued.attributes[0u64].name.as_str(), "Priority");
-    assert_eq(valued.attributes[0u64].value.as_str(), "High");
+    let attr10 = &valued.attributes[0u64];
+    match *attr10 {
+        CookieAttribute::Extension(name, value) => {
+            assert_eq(name.as_str(), "Priority");
+            assert_eq(value.as_str(), "High");
+        }
+        _other => panic("expected Extension"),
+    }
 
     let flag = expect_set_cookie("session=abc; Foo");
-    assert_kind(&flag.attributes[0u64], CookieAttributeKind::ExtensionFlag);
-    assert_eq(flag.attributes[0u64].name.as_str(), "Foo");
+    let attr11 = &flag.attributes[0u64];
+    match *attr11 {
+        CookieAttribute::ExtensionFlag(name) => assert_eq(name.as_str(), "Foo"),
+        _other => panic("expected ExtensionFlag"),
+    }
 }
 
 fn test_set_cookie_duplicate_attributes_are_preserved() {
     let set_cookie = expect_set_cookie("a=b; Path=/one; Path=/two");
     assert_eq(set_cookie.attributes.len(), 2u64);
-    assert_kind(&set_cookie.attributes[0u64], CookieAttributeKind::Path);
-    assert_eq(set_cookie.attributes[0u64].value.as_str(), "/one");
-    assert_kind(&set_cookie.attributes[1u64], CookieAttributeKind::Path);
-    assert_eq(set_cookie.attributes[1u64].value.as_str(), "/two");
+    let attr12 = &set_cookie.attributes[0u64];
+    match *attr12 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/one"),
+        _other => panic("expected Path"),
+    }
+    let attr13 = &set_cookie.attributes[1u64];
+    match *attr13 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/two"),
+        _other => panic("expected Path"),
+    }
 }
 
 // CASE-001 / CASE-002 -- attribute and SameSite names compare ASCII case-insensitively.
@@ -187,20 +215,34 @@ fn test_set_cookie_duplicate_attributes_are_preserved() {
 fn test_attribute_names_are_case_insensitive() {
     let lower = expect_set_cookie("a=b; secure; httponly; path=/x; max-age=5; domain=e.com");
     assert_eq(lower.attributes.len(), 5u64);
-    assert_kind(&lower.attributes[0u64], CookieAttributeKind::Secure);
+    let attr14 = &lower.attributes[0u64];
+    match *attr14 {
+        CookieAttribute::Secure => {}
+        _other => panic("expected Secure"),
+    }
 
     let upper = expect_set_cookie("a=b; SECURE; HTTPONLY");
-    assert_kind(&upper.attributes[1u64], CookieAttributeKind::HttpOnly);
+    let attr15 = &upper.attributes[1u64];
+    match *attr15 {
+        CookieAttribute::HttpOnly => {}
+        _other => panic("expected HttpOnly"),
+    }
 }
 
 fn test_same_site_values_are_case_insensitive() {
     let strict = expect_set_cookie("a=b; samesite=strict");
-    assert_kind(&strict.attributes[0u64], CookieAttributeKind::SameSitePolicy);
-    assert_eq(same_site_text(strict.attributes[0u64].same_site).as_str(), "Strict");
+    let attr16 = &strict.attributes[0u64];
+    match *attr16 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "Strict"),
+        _other => panic("expected SameSite"),
+    }
 
     let none = expect_set_cookie("a=b; SAMESITE=NONE");
-    assert_kind(&none.attributes[0u64], CookieAttributeKind::SameSitePolicy);
-    assert_eq(same_site_text(none.attributes[0u64].same_site).as_str(), "None");
+    let attr17 = &none.attributes[0u64];
+    match *attr17 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "None"),
+        _other => panic("expected SameSite"),
+    }
 }
 
 // FORMAT-001 / FORMAT-002 -- deterministic output, quoting only where required.
@@ -221,12 +263,12 @@ fn test_format_cookie_is_deterministic() {
 
 fn test_format_set_cookie_uses_canonical_attribute_casing() {
     let mut attributes: Vec<CookieAttribute> = Vec::new();
-    attributes.push(attribute_path(String::from("/")));
-    attributes.push(attribute_max_age(0i64 - 42i64));
-    attributes.push(attribute_secure());
-    attributes.push(attribute_http_only());
-    attributes.push(attribute_same_site(SameSite::Strict));
-    attributes.push(attribute_extension_flag(String::from("Foo")));
+    attributes.push(CookieAttribute::Path(String::from("/")));
+    attributes.push(CookieAttribute::MaxAge(0i64 - 42i64));
+    attributes.push(CookieAttribute::Secure);
+    attributes.push(CookieAttribute::HttpOnly);
+    attributes.push(CookieAttribute::SameSite(SameSite::Strict));
+    attributes.push(CookieAttribute::ExtensionFlag(String::from("Foo")));
     let set_cookie = SetCookie {
         name: String::from("session"),
         value: String::from("abc"),
@@ -404,8 +446,11 @@ fn test_invalid_number_and_overflow() {
 
     // The largest representable value is accepted, and the next one is not.
     let max = expect_set_cookie("a=b; Max-Age=9223372036854775807");
-    assert_kind(&max.attributes[0u64], CookieAttributeKind::MaxAge);
-    assert_eq(max.attributes[0u64].max_age, 9223372036854775807i64);
+    let attr18 = &max.attributes[0u64];
+    match *attr18 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 9223372036854775807i64),
+        _other => panic("expected MaxAge"),
+    }
 
     match parse_set_cookie(&String::from("a=b; Max-Age=9223372036854775808"), default_limits()) {
         Ok(_set_cookie) => panic("one past Int64 max must be rejected"),
@@ -638,36 +683,11 @@ fn test_control_characters_are_rejected() {
     }
 }
 
-/// `CookieAttributeKind` is a fieldless enum, so it reads by value through a shared reference.
-fn assert_kind(attribute: &CookieAttribute, expected: CookieAttributeKind) {
-    if !kind_eq(attribute.kind, expected) {
-        panic("attribute kind mismatch");
-    }
-}
-
-fn kind_eq(left: CookieAttributeKind, right: CookieAttributeKind) -> Bool {
-    kind_index(left) == kind_index(right)
-}
-
-fn kind_index(kind: CookieAttributeKind) -> UInt64 {
-    match kind {
-        CookieAttributeKind::Expires => 0u64,
-        CookieAttributeKind::MaxAge => 1u64,
-        CookieAttributeKind::Domain => 2u64,
-        CookieAttributeKind::Path => 3u64,
-        CookieAttributeKind::Secure => 4u64,
-        CookieAttributeKind::HttpOnly => 5u64,
-        CookieAttributeKind::SameSitePolicy => 6u64,
-        CookieAttributeKind::Extension => 7u64,
-        CookieAttributeKind::ExtensionFlag => 8u64,
-    }
-}
-
-fn test_constructors_build_formattable_attributes() {
+fn test_every_attribute_variant_formats() {
     let mut attributes: Vec<CookieAttribute> = Vec::new();
-    attributes.push(attribute_expires(String::from("Wed, 09 Jun 2021 10:18:14 GMT")));
-    attributes.push(attribute_domain(String::from("example.com")));
-    attributes.push(attribute_extension(String::from("Priority"), String::from("High")));
+    attributes.push(CookieAttribute::Expires(String::from("Wed, 09 Jun 2021 10:18:14 GMT")));
+    attributes.push(CookieAttribute::Domain(String::from("example.com")));
+    attributes.push(CookieAttribute::Extension(String::from("Priority"), String::from("High")));
     let set_cookie = SetCookie {
         name: String::from("id"),
         value: String::from("v"),

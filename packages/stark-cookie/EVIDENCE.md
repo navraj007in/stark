@@ -23,8 +23,8 @@ Every code-derived claim below names the commit it was read from.
 - check: PASS
 - run: `../../starkc/target/debug/stark run` from `packages/stark-cookie-consumer`
 - result: PASS, stdout `COOKIE_CONSUMER_OK`
-- surface: all 16 public callables are executed by the consumer or the package tests, not merely
-  imported.
+- surface: all 7 public callables are executed by the consumer or the package tests, not merely
+  imported. It was 16 while the attribute model was a tagged struct needing nine constructors.
 
 ## Engine evidence
 
@@ -153,16 +153,15 @@ began failing at runtime instead of at the type error that should have caught it
 
 ## Residuals
 
-- **The attribute model is a tagged struct, not a sum type with payloads** (filed as **DEV-224**). The natural shape —
-  `enum CookieAttribute { Expires(String), MaxAge(Int64), ... }` — cannot be compiled natively at
-  this baseline: `stark build` reports `native build does not yet support this program: binding a
-  non-Copy scrutinee through a shared reference`, and every reader of an attribute holds one by
-  reference out of a `Vec`. A minimal reproducer is an enum with one `String` variant matched
-  through `&`; even a `_` pattern fails, because the rejection is about the scrutinee rather than
-  the binding. The equivalent tagged struct — a `Copy` kind field plus typed payload fields —
-  compiles and runs natively, so that is what v0.1 uses. `CookieAttributeKind` selects which payload
-  field is meaningful, and the constructors fix the others so equal attributes always format
-  identically.
+- **The attribute model is the sum type it should always have been.** v0.1 briefly shipped a tagged
+  struct — a `Copy` kind field plus typed payload fields — because DEV-224 was read as "an enum
+  carrying a non-`Copy` payload cannot be matched through a shared reference". That reading was
+  wrong: full coverage and `_` wildcards always compiled, and only a NAMED catch-all was refused.
+  DEV-224 was repaired at `4ea750a` by implementing the borrow PAT-BIND-001 already specified, and
+  this package reverted to the enum. The tagged struct made an invalid combination — a `Secure`
+  carrying a value — merely unconstructible by convention; the sum type makes it unrepresentable.
+  Nine constructors existed only to protect that convention and are gone with it, taking the public
+  surface from 16 callables to 7.
 - **`Expires` is an opaque validated string.** Cookie-date parsing is deliberately out of scope for
   v0.1; see Dependencies above for why `stark-time` is not the answer.
 - **`stark fmt` needed two passes to reach a fixed point** on `packages/stark-cookie/src/tests.stark`

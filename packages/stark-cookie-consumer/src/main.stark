@@ -10,10 +10,7 @@ use stark_cookie::parse_cookie;
 use stark_cookie::parse_set_cookie;
 use stark_cookie::same_site_text;
 use stark_cookie::Cookie;
-use stark_cookie::attribute_max_age;
-use stark_cookie::attribute_same_site;
 use stark_cookie::CookieAttribute;
-use stark_cookie::CookieAttributeKind;
 use stark_cookie::CookieLimits;
 use stark_cookie::CookiePair;
 use stark_cookie::SameSite;
@@ -97,25 +94,25 @@ fn main() {
     let mut i: UInt64 = 0u64;
     while i < set_cookie.attributes.len() {
         let attribute = &set_cookie.attributes[i];
-        match attribute.kind {
-            CookieAttributeKind::Path => {
-                if attribute.value.as_str() == "/" {
+        match *attribute {
+            CookieAttribute::Path(value) => {
+                if value.as_str() == "/" {
                     saw_path = true;
                 }
             }
-            CookieAttributeKind::Secure => {
+            CookieAttribute::Secure => {
                 saw_secure = true;
             }
-            CookieAttributeKind::HttpOnly => {
+            CookieAttribute::HttpOnly => {
                 saw_http_only = true;
             }
-            CookieAttributeKind::SameSitePolicy => {
-                if same_site_text(attribute.same_site).as_str() == "Lax" {
+            CookieAttribute::SameSite(policy) => {
+                if same_site_text(policy).as_str() == "Lax" {
                     saw_same_site = true;
                 }
             }
-            CookieAttributeKind::Extension => {
-                if attribute.name.as_str() == "Priority" && attribute.value.as_str() == "High" {
+            CookieAttribute::Extension(name, value) => {
+                if name.as_str() == "Priority" && value.as_str() == "High" {
                     saw_extension = true;
                 }
             }
@@ -129,8 +126,8 @@ fn main() {
 
     // A response cookie built by hand, formatted with canonical attribute casing.
     let mut attributes: Vec<CookieAttribute> = Vec::new();
-    attributes.push(attribute_max_age(3600i64));
-    attributes.push(attribute_same_site(SameSite::Strict));
+    attributes.push(CookieAttribute::MaxAge(3600i64));
+    attributes.push(CookieAttribute::SameSite(SameSite::Strict));
     let built_set_cookie = SetCookie {
         name: String::from("id"),
         value: String::from("xyz"),

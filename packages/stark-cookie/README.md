@@ -27,20 +27,15 @@ pub fn format_set_cookie(set_cookie: &SetCookie) -> String;
 
 pub fn cookie_value(cookie: &Cookie, name: &String) -> Option<String>;
 pub fn same_site_text(value: SameSite) -> String;
-
-pub fn attribute_expires(value: String) -> CookieAttribute;
-pub fn attribute_max_age(seconds: Int64) -> CookieAttribute;
-pub fn attribute_domain(value: String) -> CookieAttribute;
-pub fn attribute_path(value: String) -> CookieAttribute;
-pub fn attribute_secure() -> CookieAttribute;
-pub fn attribute_http_only() -> CookieAttribute;
-pub fn attribute_same_site(policy: SameSite) -> CookieAttribute;
-pub fn attribute_extension(name: String, value: String) -> CookieAttribute;
-pub fn attribute_extension_flag(name: String) -> CookieAttribute;
 ```
 
-Types: `Cookie`, `CookiePair`, `SetCookie`, `CookieAttribute`, `CookieAttributeKind`, `SameSite`,
-`CookieLimits`, `CookieError`.
+Types: `Cookie`, `CookiePair`, `SetCookie`, `CookieAttribute`, `SameSite`, `CookieLimits`,
+`CookieError`.
+
+`CookieAttribute` is a sum type — `Expires(String)`, `MaxAge(Int64)`, `Domain(String)`,
+`Path(String)`, `Secure`, `HttpOnly`, `SameSite(SameSite)`, `Extension(String, String)`,
+`ExtensionFlag(String)` — so a combination that cannot occur, such as a `Secure` carrying a value,
+is unrepresentable rather than merely discouraged.
 
 ## Examples
 
