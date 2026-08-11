@@ -1,0 +1,70 @@
+// Qualification consumer for `stark-random`.
+//
+// The package declares the `randomness` capability, so this cannot run under `stark run` — the
+// interpreters have no provider layer. It is a NATIVE consumer: `stark build` links the provider
+// and the binary below proves the capability family is actually invoked, not merely declared.
+
+use stark_random::deterministic;
+use stark_random::secure_bytes;
+
+fn main() {
+    // The capability family: bytes that come from the host's secure source.
+    let bytes = match secure_bytes(32u64) {
+        Ok(values) => values,
+        Err(_error) => panic("secure_bytes failed"),
+    };
+    if bytes.len() != 32u64 {
+        panic("secure_bytes returned the wrong length");
+    }
+
+    // Two draws must differ. A provider stubbed to return zeroes would satisfy a length check and
+    // fail this one, which is the point of asking.
+    let second = match secure_bytes(32u64) {
+        Ok(values) => values,
+        Err(_error) => panic("secure_bytes failed on the second draw"),
+    };
+    let mut differs = false;
+    let mut i: UInt64 = 0u64;
+    while i < 32u64 {
+        if bytes[i] != second[i] {
+            differs = true;
+        }
+        i = i + 1u64;
+    }
+    if !differs {
+        panic("two secure draws produced identical bytes");
+    }
+
+    // The deterministic generator is pure and needs no capability: same seed, same sequence.
+    let mut a = deterministic(0x2545F4914F6CDD1Du64);
+    let mut b = deterministic(0x2545F4914F6CDD1Du64);
+    if a.next_u64() != b.next_u64() {
+        panic("deterministic streams diverged for one seed");
+    }
+
+    let mut buffer: Vec<UInt8> = Vec::new();
+    let mut j: UInt64 = 0u64;
+    while j < 8u64 {
+        buffer.push(0u8);
+        j = j + 1u64;
+    }
+    // A `let` borrow lives to end-of-block in Core v1, so the fill is scoped to release it
+    // before the buffer is read back.
+    {
+        let window = &mut buffer[0u64..8u64];
+        a.fill_bytes(window);
+    }
+    let mut filled = false;
+    let mut k: UInt64 = 0u64;
+    while k < buffer.len() {
+        if buffer[k] != 0u8 {
+            filled = true;
+        }
+        k = k + 1u64;
+    }
+    if !filled {
+        panic("fill_bytes left the buffer untouched");
+    }
+
+    println("STARK_RANDOM_NATIVE_OK");
+}

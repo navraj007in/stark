@@ -211,6 +211,61 @@ CASES = [
         consumer="stark-cookie-consumer",
         expected_stdout="COOKIE_CONSUMER_OK\n",
     ),
+    # The six packages that had no case at all until 2026-08-11. `stark-csv` carried the largest
+    # test suite in the repository -- 107 tests -- and had never been built natively, because
+    # native compilation happens through a qualification consumer and it had none. Nothing was
+    # wrong with any of them; nothing would have caught it if there had been.
+    PackageCase(
+        package="stark-checksum",
+        consumer="stark-checksum-consumer",
+        expected_stdout="cbf43926\n091e01de\n",
+    ),
+    PackageCase(
+        package="stark-glob",
+        consumer="stark-glob-consumer",
+        expected_stdout="match\n",
+    ),
+    PackageCase(
+        package="stark-csv",
+        consumer="stark-csv-consumer",
+        expected_stdout="STARK_CSV_CONSUMER_OK\n",
+    ),
+    # `environment-read`: function-shaped, so the bar is a native consumer that SUCCESSFULLY
+    # invokes each capability family. An absent variable answering `Ok(None)` is a successful
+    # call, not a failure path. The consumer takes `--require-probe` for CI's stronger check --
+    # this gate cannot set environment variables, and the weaker run must not erode the stronger.
+    PackageCase(
+        package="stark-env",
+        consumer="stark-env-consumer",
+        expected_stdout=None,
+        interpreter_exempt=True,
+        provider_functions=("args_len_raw", "args_fill_raw", "var_len_raw", "var_fill_raw"),
+        resource_consumer="stark-env-consumer",
+        resource_expected_stdout="STARK_ENV_NATIVE_OK\n",
+    ),
+    # `randomness`: function-shaped. The consumer takes two draws and requires them to differ, so
+    # a provider stubbed to return zeroes fails rather than passing a length check.
+    PackageCase(
+        package="stark-random",
+        consumer="stark-random-consumer",
+        expected_stdout=None,
+        interpreter_exempt=True,
+        provider_functions=("secure_fill_raw",),
+        resource_consumer="stark-random-consumer",
+        resource_expected_stdout="STARK_RANDOM_NATIVE_OK\n",
+    ),
+    # `filesystem-read`/`filesystem-write`: RESOURCE-shaped. `NativeFile` is acquired, used and
+    # released by BOTH paths -- explicitly with `file_close`, and by drop at scope end, the latter
+    # checked by reading the file back rather than assumed.
+    PackageCase(
+        package="stark-io",
+        consumer="stark-io-consumer",
+        expected_stdout=None,
+        interpreter_exempt=True,
+        resources=("NativeFile",),
+        resource_consumer="stark-io-consumer",
+        resource_expected_stdout="STARK_IO_NATIVE_OK\n",
+    ),
     # HC5/HC6 — pure packages, so the ordinary consumer bar applies: each principal public
     # behaviour executed, no resources to acquire or release.
     PackageCase(

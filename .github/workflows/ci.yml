@@ -454,12 +454,14 @@ jobs:
           # an offline provider test into a network test.
           #
           # The probe variable is what the consumer asserts on, so running it proves the provider
-          # READ THE ENVIRONMENT rather than merely linking: the program panics on a missing or
-          # mismatched value.
+          # READ THE ENVIRONMENT rather than merely linking: with `--require-probe` the program
+          # panics on a missing or mismatched value. The flag exists because the qualification gate
+          # runs the same consumer and cannot set environment variables; without it an absent
+          # variable is a legitimate `Ok(None)`, which is a weaker claim than this lane makes.
           (
             cd ../packages/stark-env-consumer
             "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
-            STARK_ENV_CONSUMER_PROBE=Codex ./target/stark/debug/stark-env-consumer
+            STARK_ENV_CONSUMER_PROBE=Codex ./target/stark/debug/stark-env-consumer --require-probe
           )
       # The negative half, and the one that makes the positive half mean something: with the
       # installed runtime REMOVED and the checkout still present, the same command must FAIL.
@@ -588,14 +590,15 @@ jobs:
           # The fixture above declares no capabilities and so links no provider. Build a
           # capability-declaring program too, or the provider payload is never exercised.
           # The probe variable is what the consumer asserts on, so running it proves the provider
-          # READ THE ENVIRONMENT rather than merely linking.
+          # READ THE ENVIRONMENT rather than merely linking. `--require-probe` is what makes the
+          # absence of the variable a failure here but not in the qualification gate.
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
           $env:STARK_ENV_CONSUMER_PROBE = "Codex"
           Push-Location ../packages/stark-env-consumer
           try {
             & (Join-Path $prefix "bin/stark.exe") build --locked --offline
             if ($LASTEXITCODE -ne 0) { throw "installed stark failed to build a capability program" }
-            & ".\target\stark\debug\stark-env-consumer.exe"
+            & ".\target\stark\debug\stark-env-consumer.exe" --require-probe
             if ($LASTEXITCODE -ne 0) { throw "provider-backed artifact failed" }
           } finally {
             Pop-Location

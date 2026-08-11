@@ -1,38 +1,97 @@
+// Qualification consumer for `stark-env`.
+//
+// The package declares `environment-read`, so this cannot run under `stark run` — the interpreters
+// have no provider layer. It is a NATIVE consumer, and every capability family is invoked
+// SUCCESSFULLY: a variable that is absent returns `Ok(None)`, which is a provider call that worked
+// and answered "not present", not a failure path.
+//
+// Two modes, because two callers need different things and the weaker one must not erode the
+// stronger. Run with `--require-probe`, as CI does, the consumer DEMANDS
+// `STARK_ENV_CONSUMER_PROBE=Codex` and panics without it -- that is what proves the provider read
+// the environment rather than merely linking. Run with no arguments, as the qualification gate
+// does (it cannot set environment variables), an absent variable is an acceptable `Ok(None)`.
+// stdout is identical either way, so the gate can compare it.
+
 use stark_env::args;
+use stark_env::args_with_limits;
+use stark_env::default_limits;
+use stark_env::get;
 use stark_env::get_required;
+use stark_env::get_with_limit;
+use stark_env::name_is_valid;
 use stark_env::EnvError;
 
 fn main() {
-    match args() {
+    // argv is always readable and always carries argv0.
+    let argv = match args() {
+        Ok(values) => values,
+        Err(_error) => panic("args failed"),
+    };
+    if argv.len() < 1u64 {
+        panic("argv0 must be included");
+    }
+    let mut require_probe = false;
+    let mut i: UInt64 = 1u64;
+    while i < argv.len() {
+        if argv[i].as_str() == "--require-probe" {
+            require_probe = true;
+        }
+        i = i + 1u64;
+    }
+
+    let bounds = default_limits();
+    match args_with_limits(&bounds) {
         Ok(values) => {
             if values.len() < 1u64 {
-                panic("argv0 must be included");
+                panic("argv0 must be included under limits");
             }
-            println("args-present");
         }
-        Err(_) => {
-            panic("args failed");
-        }
+        Err(_error) => panic("args_with_limits failed"),
     }
 
-    match get_required("STARK_ENV_CONSUMER_PROBE") {
-        Ok(value) => {
-            if value.as_str() != "Codex" {
-                panic("required env value mismatch");
-            }
-            println(value.as_str());
-        }
-        Err(_) => {
-            panic("required env failed");
-        }
+    // Name validation is pure and needs no provider.
+    if !name_is_valid("PATH") {
+        panic("PATH must be a valid name");
+    }
+    if name_is_valid("") {
+        panic("the empty name must be rejected");
     }
 
+    // A successful read: present or absent, the provider answered. CI supplies the value; the
+    // gate does not, and both are correct outcomes.
+    match get("STARK_ENV_CONSUMER_PROBE") {
+        Ok(found) => match found {
+            Some(value) => {
+                if value.as_str() != "Codex" {
+                    panic("probe variable set to an unexpected value");
+                }
+            }
+            None => {
+                if require_probe {
+                    panic("--require-probe: the provider did not read STARK_ENV_CONSUMER_PROBE");
+                }
+            }
+        }
+        Err(_error) => panic("get failed"),
+    }
+
+    match get_with_limit("STARK_ENV_CONSUMER_ABSENT", 64u64) {
+        Ok(found) => match found {
+            Some(_value) => panic("a name this package never sets must not be present"),
+            None => {}
+        }
+        Err(_error) => panic("get_with_limit failed"),
+    }
+
+    // The two negative paths, both deterministic and neither environment-dependent.
+    match get_required("STARK_ENV_CONSUMER_ABSENT") {
+        Err(EnvError::NotPresent) => {}
+        _other => panic("an absent required variable must report NotPresent"),
+    }
     match get_required("") {
-        Err(EnvError::InvalidName) => {
-            println("invalid-name");
-        }
-        _ => {
-            panic("invalid name should fail");
-        }
+        Err(EnvError::InvalidName) => {}
+        _other => panic("an invalid name must report InvalidName"),
     }
+
+    println("STARK_ENV_NATIVE_OK");
 }

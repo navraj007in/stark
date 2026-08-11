@@ -1,0 +1,10 @@
+{
+  "name": "stark-random-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capability_vocabulary": 1,
+  "capabilities": ["randomness"],
+  "dependencies": {
+    "stark_random": { "package": "stark-random", "path": "../stark-random", "version": "0.1.0" }
+  }
+}

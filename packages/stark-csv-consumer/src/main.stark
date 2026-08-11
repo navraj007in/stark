@@ -1,0 +1,62 @@
+// Qualification consumer for `stark-csv`. The package carries the largest test suite in the
+// repository and, until this consumer existed, had never been built natively at all: native
+// compilation happens through a qualification consumer, and it had none.
+
+use stark_csv::default_limits;
+use stark_csv::limits;
+use stark_csv::parse;
+use stark_csv::parse_with_limits;
+use stark_csv::write;
+use stark_csv::write_with_limits;
+use stark_csv::CsvError;
+
+fn main() {
+    // Parse: records, fields, and a quoted field carrying the delimiter.
+    let records = match parse("name,city\nada,\"London, UK\"\n") {
+        Ok(rows) => rows,
+        Err(_error) => panic("csv parse failed"),
+    };
+    if records.len() != 2u64 {
+        panic("expected two records");
+    }
+    if records[1u64][1u64].as_str() != "London, UK" {
+        panic("a quoted field must keep its delimiter");
+    }
+
+    // The same input under explicit limits.
+    let bounds = default_limits();
+    match parse_with_limits("a,b\n1,2\n", &bounds) {
+        Ok(rows) => {
+            if rows.len() != 2u64 {
+                panic("expected two records under limits");
+            }
+        }
+        Err(_error) => panic("csv parse_with_limits failed"),
+    }
+
+    // Write, and read back what was written.
+    let text = match write(&records) {
+        Ok(out) => out,
+        Err(_error) => panic("csv write failed"),
+    };
+    match parse(text.as_str()) {
+        Ok(round) => {
+            if round[1u64][1u64].as_str() != "London, UK" {
+                panic("csv round trip lost a field");
+            }
+        }
+        Err(_error) => panic("csv round trip failed to parse"),
+    }
+
+    // A caller-supplied bound, and the error it produces when exceeded.
+    let tight = limits(16u64, 4u64, 4u64, 8u64, 4u64, 8u64);
+    match write_with_limits(&records, &tight) {
+        Ok(_out) => panic("output over the limit must be rejected"),
+        Err(error) => match error {
+            CsvError::OutputTooLarge => {}
+            _other => panic("expected OutputTooLarge"),
+        }
+    }
+
+    println("STARK_CSV_CONSUMER_OK");
+}
