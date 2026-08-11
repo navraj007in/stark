@@ -40,14 +40,15 @@ fn test_encode_sets() {
 
 fn test_decode_valid() {
     let input = String::from("foo%2Fbar%3Fa%3DB+123%20test");
-    match decode(&input) {
+    match decode(input.as_str()) {
         Ok(bytes) => {
             // 20 bytes: f o o / b a r ? a = B + 1 2 3 ␠ t e s t
             //
             // This expected 21, with a second `32` between `43` (`+`) and `49` (`1`) — it wanted
             // `+` to yield BOTH a plus and a space. Percent-decoding leaves `+` alone; mapping it
-            // to a space is `application/x-www-form-urlencoded` decoding, which is `stark-form`'s
-            // job. The single `32` here is the `%20` near the end, decoded correctly.
+            // to a space is `application/x-www-form-urlencoded` decoding, which is
+            // `stark-urlencoded`'s form mode. The single `32` here is the `%20` near the end,
+            // decoded correctly.
             let expected: &[UInt8] = &[
                 102u8,
                 111u8,
@@ -80,22 +81,22 @@ fn test_decode_valid() {
 
 fn test_decode_errors() {
     let incomplete1 = String::from("foo%");
-    if !is_incomplete_escape(&decode(&incomplete1), 3u64) {
+    if !is_incomplete_escape(&decode(incomplete1.as_str()), 3u64) {
         panic("incomplete escape offset mismatch");
     }
 
     let incomplete2 = String::from("foo%2");
-    if !is_incomplete_escape(&decode(&incomplete2), 3u64) {
+    if !is_incomplete_escape(&decode(incomplete2.as_str()), 3u64) {
         panic("incomplete escape offset 2 mismatch");
     }
 
     let invalid_hex1 = String::from("foo%G1");
-    if !is_invalid_hex(&decode(&invalid_hex1), 4u64, 71u8) {
+    if !is_invalid_hex(&decode(invalid_hex1.as_str()), 4u64, 71u8) {
         panic("invalid hex digit 1 mismatch");
     }
 
     let invalid_hex2 = String::from("foo%1G");
-    if !is_invalid_hex(&decode(&invalid_hex2), 5u64, 71u8) {
+    if !is_invalid_hex(&decode(invalid_hex2.as_str()), 5u64, 71u8) {
         panic("invalid hex digit 2 mismatch");
     }
 }

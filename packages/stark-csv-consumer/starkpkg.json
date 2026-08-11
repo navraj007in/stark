@@ -1,0 +1,8 @@
+{
+  "name": "stark-csv-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_csv": { "package": "stark-csv", "path": "../stark-csv", "version": "0.1.0" }
+  }
+}

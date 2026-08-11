@@ -1,0 +1,329 @@
+// Qualification consumer for `stark-io`.
+//
+// `stark-io` is a RESOURCE-shaped provider: `NativeFile` is acquired, used and released. The gate's
+// bar for that category is a native consumer that successfully acquires, uses and releases every
+// resource type by **both** release paths — explicitly with `file_close`, and by drop at scope end.
+// Both are exercised below, and the second is checked rather than assumed: a file dropped without
+// `file_close` must still have reached the disk, which is only observable by reading it back.
+//
+// The package declares `filesystem-read` and `filesystem-write`, so this cannot run under
+// `stark run` — the interpreters have no provider layer.
+//
+// Everything happens inside a directory this program creates and removes, under the current
+// working directory, so the run leaves nothing behind and depends on nothing being present.
+
+use stark_io::copy_file;
+use stark_io::create_dir;
+use stark_io::create_file;
+use stark_io::default_open_options;
+use stark_io::file_close;
+use stark_io::file_flush;
+use stark_io::file_metadata;
+use stark_io::file_read;
+use stark_io::file_read_to_end;
+use stark_io::file_read_to_string;
+use stark_io::file_seek;
+use stark_io::file_set_length;
+use stark_io::file_sync;
+use stark_io::file_write;
+use stark_io::file_write_all;
+use stark_io::file_write_str;
+use stark_io::open_file;
+use stark_io::open_options_are_valid;
+use stark_io::open_with_options;
+use stark_io::path_exists;
+use stark_io::path_is_absolute;
+use stark_io::path_is_valid;
+use stark_io::path_join;
+use stark_io::path_metadata;
+use stark_io::read;
+use stark_io::read_dir;
+use stark_io::read_text;
+use stark_io::remove_dir;
+use stark_io::remove_file;
+use stark_io::rename;
+use stark_io::write;
+use stark_io::write_text;
+use stark_io::FileError;
+use stark_io::SeekFrom;
+
+fn expect_path(base: &str, child: &str) -> String {
+    match path_join(base, child) {
+        Ok(joined) => joined,
+        Err(_error) => panic("path_join failed"),
+    }
+}
+
+fn main() {
+    // -- pure helpers, no provider involved ----------------------------------------------------
+    if !path_is_valid("scratch/file.txt") {
+        panic("an ordinary relative path must be valid");
+    }
+    if path_is_absolute("scratch/file.txt") {
+        panic("a relative path is not absolute");
+    }
+    // The default grants no access at all, and is deliberately INVALID until the caller states
+    // what it wants. Pinning it this way round is the rule, not a workaround for one.
+    let options = default_open_options();
+    if open_options_are_valid(&options) {
+        panic("options granting neither read, write nor append must be rejected");
+    }
+    if !open_options_are_valid(&writable_options()) {
+        panic("read+write+create+truncate must be accepted");
+    }
+
+    let root = String::from("stark_io_consumer_scratch");
+    match create_dir(root.as_str()) {
+        Ok(_unit) => {}
+        Err(_error) => panic("create_dir failed"),
+    }
+
+    let written = expect_path(root.as_str(), "written.txt");
+    let appended = expect_path(root.as_str(), "appended.txt");
+    let dropped = expect_path(root.as_str(), "dropped.txt");
+    let copied = expect_path(root.as_str(), "copied.txt");
+    let renamed = expect_path(root.as_str(), "renamed.txt");
+
+    // -- whole-file helpers --------------------------------------------------------------------
+    match write_text(written.as_str(), "hello stark") {
+        Ok(_unit) => {}
+        Err(_error) => panic("write_text failed"),
+    }
+    match read_text(written.as_str(), 4096u64) {
+        Ok(text) => {
+            if text.as_str() != "hello stark" {
+                panic("read_text returned the wrong contents");
+            }
+        }
+        Err(_error) => panic("read_text failed"),
+    }
+
+    let mut bytes: Vec<UInt8> = Vec::new();
+    bytes.push(1u8);
+    bytes.push(2u8);
+    bytes.push(3u8);
+    match write(appended.as_str(), bytes.as_slice()) {
+        Ok(_unit) => {}
+        Err(_error) => panic("write failed"),
+    }
+    match read(appended.as_str(), 4096u64) {
+        Ok(values) => {
+            if values.len() != 3u64 || values[2u64] != 3u8 {
+                panic("read returned the wrong bytes");
+            }
+        }
+        Err(_error) => panic("read failed"),
+    }
+
+    // -- resource lifecycle: acquire, use, release EXPLICITLY ----------------------------------
+    let handle = match create_file(dropped.as_str()) {
+        Ok(file) => file,
+        Err(_error) => panic("create_file failed"),
+    };
+    match file_write_str(&handle, "abcdefgh") {
+        Ok(count) => {
+            if count != 8u64 {
+                panic("file_write_str wrote the wrong count");
+            }
+        }
+        Err(_error) => panic("file_write_str failed"),
+    }
+    match file_flush(&handle) {
+        Ok(_unit) => {}
+        Err(_error) => panic("file_flush failed"),
+    }
+    match file_sync(&handle) {
+        Ok(_unit) => {}
+        Err(_error) => panic("file_sync failed"),
+    }
+    match file_metadata(&handle) {
+        Ok(meta) => {
+            if meta.length != 8u64 {
+                panic("file_metadata reported the wrong length");
+            }
+        }
+        Err(_error) => panic("file_metadata failed"),
+    }
+    match file_set_length(&handle, 4u64) {
+        Ok(_unit) => {}
+        Err(_error) => panic("file_set_length failed"),
+    }
+    match file_close(handle) {
+        Ok(_unit) => {}
+        Err(_error) => panic("file_close failed"),
+    }
+
+    // -- resource lifecycle: acquire, use, release BY DROP -------------------------------------
+    // The handle below is never closed explicitly. It goes out of scope at the end of this block,
+    // and the write must still have reached the disk -- which the read after the block proves.
+    {
+        let by_drop = match open_with_options(renamed.as_str(), &writable_options()) {
+            Ok(file) => file,
+            Err(_error) => panic("open_with_options failed"),
+        };
+        let mut payload: Vec<UInt8> = Vec::new();
+        payload.push(88u8);
+        payload.push(89u8);
+        match file_write(&by_drop, payload.as_slice()) {
+            Ok(count) => {
+                if count != 2u64 {
+                    panic("file_write wrote the wrong count");
+                }
+            }
+            Err(_error) => panic("file_write failed"),
+        }
+        match file_write_all(&by_drop, payload.as_slice()) {
+            Ok(_unit) => {}
+            Err(_error) => panic("file_write_all failed"),
+        }
+    }
+    match read(renamed.as_str(), 4096u64) {
+        Ok(values) => {
+            if values.len() != 4u64 {
+                panic("a handle released by drop must still have flushed its writes");
+            }
+        }
+        Err(_error) => panic("reading back the dropped handle's file failed"),
+    }
+
+    // -- reading through a handle, with seek ----------------------------------------------------
+    let reader = match open_file(dropped.as_str()) {
+        Ok(file) => file,
+        Err(_error) => panic("open_file failed"),
+    };
+    let mut buffer: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < 4u64 {
+        buffer.push(0u8);
+        i = i + 1u64;
+    }
+    {
+        let window = &mut buffer[0u64..2u64];
+        match file_read(&reader, window) {
+            Ok(count) => {
+                if count != 2u64 {
+                    panic("file_read returned the wrong count");
+                }
+            }
+            Err(_error) => panic("file_read failed"),
+        }
+    }
+    if buffer[0u64] != 97u8 {
+        panic("file_read did not return the file's first byte");
+    }
+    match file_seek(&reader, SeekFrom::Start(0u64)) {
+        Ok(position) => {
+            if position != 0u64 {
+                panic("file_seek reported the wrong position");
+            }
+        }
+        Err(_error) => panic("file_seek failed"),
+    }
+    match file_read_to_end(&reader, 4096u64) {
+        Ok(values) => {
+            if values.len() != 4u64 {
+                panic("file_read_to_end saw the wrong length after set_length");
+            }
+        }
+        Err(_error) => panic("file_read_to_end failed"),
+    }
+    match file_seek(&reader, SeekFrom::Start(0u64)) {
+        Ok(_position) => {}
+        Err(_error) => panic("file_seek failed on rewind"),
+    }
+    match file_read_to_string(&reader, 4096u64) {
+        Ok(text) => {
+            if text.as_str() != "abcd" {
+                panic("file_read_to_string returned the wrong text");
+            }
+        }
+        Err(_error) => panic("file_read_to_string failed"),
+    }
+    match file_close(reader) {
+        Ok(_unit) => {}
+        Err(_error) => panic("file_close failed on the reader"),
+    }
+
+    // -- path-level operations ------------------------------------------------------------------
+    match copy_file(written.as_str(), copied.as_str()) {
+        Ok(count) => {
+            if count != 11u64 {
+                panic("copy_file copied the wrong number of bytes");
+            }
+        }
+        Err(_error) => panic("copy_file failed"),
+    }
+    match path_exists(copied.as_str()) {
+        Ok(found) => {
+            if !found {
+                panic("the copy must exist");
+            }
+        }
+        Err(_error) => panic("path_exists failed"),
+    }
+    match path_metadata(copied.as_str()) {
+        Ok(meta) => {
+            if meta.length != 11u64 {
+                panic("path_metadata reported the wrong length");
+            }
+        }
+        Err(_error) => panic("path_metadata failed"),
+    }
+    let moved = expect_path(root.as_str(), "moved.txt");
+    match rename(copied.as_str(), moved.as_str()) {
+        Ok(_unit) => {}
+        Err(_error) => panic("rename failed"),
+    }
+    match read_dir(root.as_str(), 64u64) {
+        Ok(entries) => {
+            if entries.len() < 4u64 {
+                panic("read_dir did not see every file this program created");
+            }
+        }
+        Err(_error) => panic("read_dir failed"),
+    }
+
+    // -- a deterministic negative path, LABELLED as such ----------------------------------------
+    // Not lifecycle evidence: it proves a diagnosis, not a capability. Every claim above is a
+    // success path.
+    let absent = expect_path(root.as_str(), "does_not_exist.txt");
+    match open_file(absent.as_str()) {
+        Ok(_file) => panic("opening a file that does not exist must fail"),
+        Err(error) => match error {
+            FileError::NotFound => {}
+            _other => panic("expected NotFound"),
+        }
+    }
+
+    // -- clean up, which also exercises removal --------------------------------------------------
+    match remove_file(written.as_str()) {
+        Ok(_unit) => {}
+        Err(_error) => panic("remove_file failed"),
+    }
+    remove_or_panic(appended.as_str());
+    remove_or_panic(dropped.as_str());
+    remove_or_panic(renamed.as_str());
+    remove_or_panic(moved.as_str());
+    match remove_dir(root.as_str()) {
+        Ok(_unit) => {}
+        Err(_error) => panic("remove_dir failed"),
+    }
+
+    println("STARK_IO_NATIVE_OK");
+}
+
+fn writable_options() -> stark_io::OpenOptions {
+    let mut options = default_open_options();
+    options.read = true;
+    options.write = true;
+    options.create = true;
+    options.truncate = true;
+    options
+}
+
+fn remove_or_panic(path: &str) {
+    match remove_file(path) {
+        Ok(_unit) => {}
+        Err(_error) => panic("remove_file failed during cleanup"),
+    }
+}

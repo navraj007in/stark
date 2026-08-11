@@ -131,6 +131,12 @@ fn test_percent_decode_strict_escapes() {
     assert_decode_error_kind("%0G", UrlErrorKind::InvalidPercentEscape, 0u64);
     assert_decode_error_kind("abc%", UrlErrorKind::InvalidPercentEscape, 3u64);
     assert_decode_error_kind("abc%A", UrlErrorKind::InvalidPercentEscape, 3u64);
+
+    // The offending hex digit is itself a `%`. The offset must name the escape that opened, not
+    // the `%` that happens to sit closest behind the digit.
+    assert_decode_error_kind("%%41", UrlErrorKind::InvalidPercentEscape, 0u64);
+    assert_decode_error_kind("%4%41", UrlErrorKind::InvalidPercentEscape, 0u64);
+    assert_decode_error_kind("abc%%41", UrlErrorKind::InvalidPercentEscape, 3u64);
 }
 
 fn test_percent_decode_utf8() {

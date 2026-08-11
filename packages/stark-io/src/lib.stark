@@ -45,11 +45,7 @@ pub struct FileMetadata {
     pub created_seconds: Option<Int64>,
 }
 
-pub struct DirectoryEntry {
-    pub name: String,
-    pub path: String,
-    pub file_type: FileType,
-}
+pub struct DirectoryEntry { pub name: String, pub path: String, pub file_type: FileType }
 
 pub struct OpenOptions {
     pub read: Bool,
@@ -162,56 +158,70 @@ fn decode_valid_utf8(bytes: &Vec<UInt8>) -> Result<String, FileError> {
             if i + 1u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x1Fu32) << 6u32) | (bytes[i + 1u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x1Fu32) << 6u32 | bytes[i + 1u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 2u64;
         } else if b0 == 0xE0u8 {
-            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 3u64;
         } else if b0 >= 0xE1u8 && b0 <= 0xECu8 {
-            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 3u64;
         } else if b0 == 0xEDu8 {
-            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 3u64;
         } else if b0 >= 0xEEu8 && b0 <= 0xEFu8 {
-            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x0Fu32) << 12u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 2u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x0Fu32) << 12u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 2u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 3u64;
         } else if b0 == 0xF0u8 {
-            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 4u64;
         } else if b0 >= 0xF1u8 && b0 <= 0xF3u8 {
-            if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 4u64;
         } else if b0 == 0xF4u8 {
-            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(FileError::InvalidData);
             }
-            let code = ((b0 as UInt32 & 0x07u32) << 18u32) | ((bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32) | ((bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32) | (bytes[i + 3u64] as UInt32 & 0x3Fu32);
+            let code = (b0 as UInt32 & 0x07u32) << 18u32 | (bytes[i + 1u64] as UInt32 & 0x3Fu32) << 12u32 | (bytes[i + 2u64] as UInt32 & 0x3Fu32) << 6u32 | bytes[i + 3u64] as UInt32 & 0x3Fu32;
             out.push(codepoint_char(code)?);
             i = i + 4u64;
         } else {
@@ -501,14 +511,16 @@ fn optional_seconds(seconds: Int64, valid: Bool) -> Option<Int64> {
 
 pub fn file_metadata(file: &NativeFile) -> Result<FileMetadata, FileError> {
     match file_metadata_raw(file) {
-        Ok(m) => Ok(FileMetadata {
-            file_type: file_type_of(m.0),
-            length: m.1,
-            readonly: m.2,
-            modified_seconds: optional_seconds(m.3, m.4),
-            accessed_seconds: optional_seconds(m.5, m.6),
-            created_seconds: optional_seconds(m.7, m.8),
-        }),
+        Ok(m) => Ok(
+            FileMetadata {
+                file_type: file_type_of(m.0),
+                length: m.1,
+                readonly: m.2,
+                modified_seconds: optional_seconds(m.3, m.4),
+                accessed_seconds: optional_seconds(m.5, m.6),
+                created_seconds: optional_seconds(m.7, m.8),
+            },
+        ),
         Err(error) => Err(map_io_error(error)),
     }
 }
@@ -519,14 +531,16 @@ pub fn file_metadata(file: &NativeFile) -> Result<FileMetadata, FileError> {
 /// To ask about the target instead, open the path and call `file_metadata`.
 pub fn path_metadata(path: &str) -> Result<FileMetadata, FileError> {
     match path_metadata_raw(path.bytes()) {
-        Ok(m) => Ok(FileMetadata {
-            file_type: file_type_of(m.0),
-            length: m.1,
-            readonly: m.2,
-            modified_seconds: optional_seconds(m.3, m.4),
-            accessed_seconds: optional_seconds(m.5, m.6),
-            created_seconds: optional_seconds(m.7, m.8),
-        }),
+        Ok(m) => Ok(
+            FileMetadata {
+                file_type: file_type_of(m.0),
+                length: m.1,
+                readonly: m.2,
+                modified_seconds: optional_seconds(m.3, m.4),
+                accessed_seconds: optional_seconds(m.5, m.6),
+                created_seconds: optional_seconds(m.7, m.8),
+            },
+        ),
         Err(error) => Err(map_io_error(error)),
     }
 }
@@ -701,11 +715,7 @@ pub fn read_dir(path: &str, max_entries: UInt64) -> Result<Vec<DirectoryEntry>, 
                     return Err(map_io_error(error));
                 }
             }
-            out.push(DirectoryEntry {
-                name: name,
-                path: child_path,
-                file_type: kind,
-            });
+            out.push(DirectoryEntry { name: name, path: child_path, file_type: kind });
             start = i + 1u64;
         }
         i = i + 1u64;

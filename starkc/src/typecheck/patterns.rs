@@ -275,15 +275,49 @@ impl TypeChecker<'_> {
                             None
                         }
                     });
-                    if let Some(tys) = tys_opt {
-                        for (p, expected_t) in pats.iter().zip(tys) {
-                            let expected_t = self.instantiate_ty(&expected_t, &map);
-                            let p_ty = self.check_pat_with_mode(
-                                *p,
-                                expected_t.clone(),
-                                bind_non_copy_by_ref,
+                    // DEV-231. Both checks below were absent, and each let a pattern type-check
+                    // and then silently never match -- taking a wildcard arm, or reporting the
+                    // MATCH as non-exhaustive when the fault was in one pattern.
+                    match tys_opt {
+                        // A variant that carries no tuple fields at all: `Colour::Red(_v)` on a
+                        // unit variant, or a struct-variant path written with parentheses. The
+                        // old code produced `None` here and skipped the loop without a word.
+                        None => {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    "variant carries no tuple fields, so it takes no pattern arguments"
+                                        .to_string(),
+                                    pat.span,
+                                )
+                                .with_code("E0001"),
                             );
-                            let _ = self.unify(expected_t, p_ty, p.span(self.hir));
+                        }
+                        Some(tys) => {
+                            // `zip` truncated, so a pattern with too many OR too few sub-patterns
+                            // checked only the overlap: `Shape::Line(_a, _b)` on a one-field
+                            // variant passed, binding `_b` to nothing.
+                            if pats.len() != tys.len() {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        format!(
+                                            "this variant has {} field(s), but the pattern binds {}",
+                                            tys.len(),
+                                            pats.len()
+                                        ),
+                                        pat.span,
+                                    )
+                                    .with_code("E0001"),
+                                );
+                            }
+                            for (p, expected_t) in pats.iter().zip(tys) {
+                                let expected_t = self.instantiate_ty(&expected_t, &map);
+                                let p_ty = self.check_pat_with_mode(
+                                    *p,
+                                    expected_t.clone(),
+                                    bind_non_copy_by_ref,
+                                );
+                                let _ = self.unify(expected_t, p_ty, p.span(self.hir));
+                            }
                         }
                     }
                     Ty::Enum(*enum_id, args)
@@ -314,6 +348,20 @@ impl TypeChecker<'_> {
                     }
                     resolved
                 } else {
+                    // DEV-231. `Thing(_v)` for a named-field struct, or `LIMIT(_v)` for a
+                    // constant: a call-shaped pattern whose path names something that is not a
+                    // constructor. Neither branch above claimed it, and it used to fall out here
+                    // as `Ty::Error` with nothing reported -- so it compiled and never matched.
+                    if !matches!(res, Res::Err) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                "this is not a tuple constructor, so it takes no pattern arguments"
+                                    .to_string(),
+                                pat.span,
+                            )
+                            .with_code("E0202"),
+                        );
+                    }
                     Ty::Error
                 }
             }
@@ -327,7 +375,23 @@ impl TypeChecker<'_> {
                         .cloned()
                         .unwrap_or_default();
                     for field in fields {
-                        let f_name = self.text(field.name);
+                        let f_name = self.text(field.name).to_string();
+                        let f_name = f_name.as_str();
+                        // DEV-230. Without this, a name that is not a field of the struct was
+                        // silently skipped: the pattern type-checked, bound nothing, and stopped
+                        // matching. A struct pattern over its own type is irrefutable, so a typo
+                        // quietly made it refutable -- taking a wildcard arm, or trapping at run
+                        // time with "non-exhaustive match reached" when there was none. Struct
+                        // LITERALS have always rejected this; patterns now agree with them.
+                        if !expected_fields.contains_key(f_name) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("field '{f_name}' does not exist"),
+                                    field.name,
+                                )
+                                .with_code("E0001"),
+                            );
+                        }
                         if let Some(expected_f_ty) = expected_fields.get(f_name) {
                             if let Some(sub_pat) = field.pat {
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
@@ -370,7 +434,19 @@ impl TypeChecker<'_> {
                         })
                         .unwrap_or_default();
                     for field in fields {
-                        let name = self.text(field.name);
+                        let name = self.text(field.name).to_string();
+                        let name = name.as_str();
+                        // DEV-230, the enum struct-variant face. `Rec::One { nope: v }` behaved
+                        // exactly as the struct form did.
+                        if !expected_fields.contains_key(name) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("field '{name}' does not exist"),
+                                    field.name,
+                                )
+                                .with_code("E0001"),
+                            );
+                        }
                         if let Some(field_ty) = expected_fields.get(name) {
                             let field_ty = self.instantiate_ty(field_ty, &map);
                             if let Some(subpat) = field.pat {

@@ -61,7 +61,8 @@ fn build(src: &str, tag: &str) -> Result<String, String> {
 
 // ------------------------------------------------------------------ must pass --
 
-/// The reproducer from `stark-form`'s `form_encode_string`: one byte wrapped as a slice.
+/// The reproducer from `form_encode_string`, then in `stark-form` and now in
+/// `stark-urlencoded`: one byte wrapped as a slice.
 #[test]
 fn a_declared_slice_binding_accepts_an_array_reference() {
     let src = "fn takes(s: &[UInt8]) -> UInt64 { s.len() }\n\

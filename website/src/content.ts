@@ -173,11 +173,12 @@ export const packages = {
   lede:
     'Thirty-two first-party packages live in the repository, each with its own manifest, lock file and tests, and each exercised by a consumer package that has to actually call the surface it declares. The deepest is an HTTP/1.1 and HTTPS client — written in the language, not bound to a C library.',
   groups: [
-    { area: 'Encoding and text', items: 'ascii · base64 · hex · percent · checksum · uuid' },
-    { area: 'Data formats', items: 'json · csv · form · mime · query' },
+    { area: 'Foundation utilities', items: 'ascii · base64 · hex · percent · fmt · args · semver' },
+    { area: 'Data/text formats', items: 'json · csv · mime · urlencoded' },
     { area: 'Paths and URLs', items: 'path · glob · url' },
-    { area: 'Host access', items: 'time · env · io · random' },
-    { area: 'Networking', items: 'net (TCP + DNS) · tls · http-core · http-parser · http-serialize · http-client' },
+    { area: 'Host-capability packages', items: 'time · env · io · random · net (TCP + DNS) · tls' },
+    { area: 'Network/protocol', items: 'http-core · http-parser · http-serialize · http-auth · cookie · http-client' },
+    { area: 'Security/content identity', items: 'checksum · digest · sha256 · content-id · uuid' },
   ],
   capabilities:
     'Reaching outside the process is derived, envelope-checked, and provider-backed. Capability vocabulary v1 distinguishes filesystem read/write, environment read, network client/listen, clock, randomness, process execution, and native code. The root manifest approves the transitive derived set. The interpreters have no host access, so host-backed code runs through stark build, never stark run.',

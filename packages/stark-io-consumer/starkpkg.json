@@ -1,0 +1,10 @@
+{
+  "name": "stark-io-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capability_vocabulary": 1,
+  "capabilities": ["filesystem-read", "filesystem-write"],
+  "dependencies": {
+    "stark_io": { "package": "stark-io", "path": "../stark-io", "version": "0.1.0" }
+  }
+}

@@ -630,8 +630,11 @@ fn operator_dispatch_runs_the_selected_body() {
 #[test]
 fn a_generic_user_iterator_publishes_its_impl_environment() {
     let program = analyse(
+        // DEV-232/DEV-234: `Some(self.value)` moves `T` out of `&mut self`, which the move rule
+        // forbids unless `T` is `Copy`. The bound is what makes this program legal, and DEV-234 is
+        // what made the bound usable -- before it, a primitive did not satisfy `Copy`.
         "struct Repeat<T> { value: T, left: Int32 }\n\
-         impl<T> Iterator for Repeat<T> {\n\
+         impl<T: Copy> Iterator for Repeat<T> {\n\
          \x20   type Item = T;\n\
          \x20   fn next(&mut self) -> Option<T> {\n\
          \x20       if self.left <= 0 {\n            return None;\n        }\n\

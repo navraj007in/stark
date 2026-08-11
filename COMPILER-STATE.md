@@ -6,12 +6,24 @@
 
 ```text
 Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second artifact
-Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
-                `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
-Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
-Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221
+Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
+                `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
+                CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
+                behind; CD-399 is the new decision that tree change required
+Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
+                at 860e33a
+Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-228/229 (resolution namespaces), DEV-233
+              (the interpreter loses output written before a trap). DEV-232 and DEV-234 both RESOLVED
+              2026-08-11: the `Copy` bound was repaired in both halves, which gave DEV-232's
+              rejection a legal spelling and let it re-land. DEV-231, found by the audit's scope C
+              and RESOLVED the same day. DEV-224 was mis-scoped on filing, REVISED,
+              and RESOLVED 2026-08-11 as a capability increase; DEV-230 found by the resolution
+              audit and RESOLVED the same day.
+              DEV-222/223 RESOLVED 2026-08-11, plus DEV-225/226/227 found by the same audit and
+              resolved on arrival
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
-                 capability half OPEN). It is the only one of the eight any written code reaches
+                 capability half OPEN). Of the ten, it is now the only one any written code reaches
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -22,7 +34,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 | | |
 | --- | --- |
 | **Active packet** | **NONE — the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
-| **Promotion** | **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
+| **Promotion** | **`develop -> main` AUTHORISED — CD-399 (owner, CE8, 2026-08-11)** for compiler tree `860e33a`, CI `31468998989` 24/24 green. It states the fact the decision turns on: population A is 8 on `main` and 11 here, and the three added were DISCOVERED, not introduced — `main` has DEV-228/229/233 too and has never recorded them, while carrying ten defects this tree closed. Below is the SPENT authorisation it replaces. **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
 | **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
 | **Gates C0–C8** | CLOSED. C8 closed short on one requirement by owner ruling (CD-385) and DEV-012 stays open for seven features |
@@ -125,6 +137,80 @@ Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
 
 **This block is a summary and is not authoritative over the records below it.** Where they
 disagree, the dated record wins and this block is stale — fix it in the same change.
+
+---
+
+## CD-399 — `develop -> main` PROMOTION AUTHORISED for compiler tree `860e33a`, on a count that went UP (2026-08-11)
+
+**Owner decision under CE8: the `develop -> main` promotion is AUTHORISED** (2026-08-11), taken
+against the facts below after they were drafted by the session that produced the tree. CD-398 does
+**not** cover this tree: it was over compiler tree `5967a42`, 18 commits behind, and it says in
+terms that a commit changing a compiler input requires a new decision. This is that decision.
+
+```text
+promotion          AUTHORISED (owner, CE8, 2026-08-11)
+candidate          develop @ 860e33a -> main
+merge shape        MERGE COMMIT, history preserved -- as PR #12, #19 and #21 were
+condition          main requires `CI complete`. This authorisation is for THIS tree on GREEN;
+                   a red required check withdraws it rather than inviting an override
+release wording    UNCHANGED. CD-397's PASS-WITH-DEVIATIONS still governs. This promotes a
+                   branch and upgrades no claim
+```
+
+**The tree is the one CI verified.** `git diff --name-only 860e33a HEAD` is empty — HEAD *is* the
+tree the run covered. CI `31468998989`: **24 of 24 jobs success**, including `fmt, clippy, test`,
+`first-party package qualification` and `C6.4 tier-1 qualification` on all three platforms, plus
+`C7.8 Native Capabilities` (`31468998772`) green separately.
+
+### The count went UP, and that is the fact this decision turns on
+
+`main` records population A as **8**. This tree records **11**. A promotion that raises the number
+of known deviations deserves an explicit argument rather than a summary, so:
+
+- **The 8 are unchanged and still present**: DEV-140..145, DEV-160, DEV-221. Not one degraded.
+- **The 3 added — DEV-228, DEV-229, DEV-233 — were discovered, not introduced.** `main`'s compiler
+  has all three; it has never recorded them. DEV-228 (one namespace map where NAME-RESOLVE-001
+  specifies four) is as true of `main` as of this tree.
+- **Ten defects were closed that `main` still carries, live and unlabelled**: DEV-222, 223, 224,
+  225, 226, 227, 230, 231, 232, 234. Four of them are wrong-code — programs that compile, emit no
+  diagnostic, and take the wrong branch. `main` has every one of them today.
+
+So on defects *present*, this tree is strictly better. On defects *known*, it is three worse, and
+the three are shared. **The number rose because knowledge rose.** Refusing the promotion does not
+remove DEV-228 from `main`; it only removes the record of it.
+
+### What the promotion would carry, named rather than implied
+
+- **DEV-228 open and architectural.** The resolver has one namespace map where the specification
+  names four, so `struct Pair` alongside `fn Pair()` is refused though NAME-RESOLVE-001 permits it.
+  This tree adds the second precedence exception to that map. A third would be the wrong direction,
+  and the model is an owner decision that this promotion neither takes nor forecloses.
+- **DEV-229 UNCONFIRMED**, deliberately. The code path is certain; no probe yet separates "the
+  user's declaration won" from "the builtin won and agreed".
+- **DEV-233**, the interpreter losing output written before a trap. A debugging tax, not a
+  correctness one.
+- **DEV-140..145** unchanged: accepted-but-unbuildable, owner-deferred, no first-party consumer.
+- **Distribution remains integrity-verified, NOT authenticated.** Archives unsigned. Unchanged by
+  this promotion and not improved by it.
+
+### What else is in the delta, beyond the compiler
+
+Two package changes and one gate change, none of which alter a claim:
+
+- `stark-cookie` added and then revised to a sum type; `stark-urlencoded` replacing `stark-query`
+  and `stark-form`. 31 libraries plus `stark-get`.
+- **Qualification coverage 25 -> 31 of 31 libraries.** Six had no case at all; `stark-csv` carried
+  the largest test suite in the repository and had never been built natively. All six now build and
+  run natively on all three platforms, verified by this CI run.
+
+### The honest caveat about this session's evidence
+
+CI failed once on this work, at `ab8da4d`, on a real defect: a borrow-check repair that broke a
+compiler test the local sweep never ran. The repair was reverted, the blocking gap (DEV-234) was
+found and fixed, and the repair re-landed verified against the full corpus with `--no-fail-fast`
+— 231 binaries, 2,903 tests, 0 failures. As with CD-398, that CI caught something first is part of
+why the final candidate is trusted rather than an argument against it. It is recorded here because
+a decision should see the failed attempt, not only the passing one.
 
 ---
 
@@ -7686,3 +7772,81 @@ Records for WP-C0.0 through Gate C8 are archived verbatim at
 `STARKLANG/docs/compiler/state-archive/session-records-C0-C8.md` (C0–C2 were archived earlier
 under CD-020). **Sprint 4's records stay in this file** — a compression target is not a reason
 to archive a record still being worked against.
+
+---
+
+### 2026-08-11 — three deviations registered from package work (`stark-cookie`)
+
+Not a compiler packet. `stark-cookie` v0.1 was implemented on `develop` at `2cd4a08` under a
+package brief that forbids compiler changes, and hit three compiler-track findings. All three are
+recorded in `starkc/docs/conformance/KNOWN-DEVIATIONS.md` with minimal reproducers. **No compiler
+source was modified.** Population A 8 -> 11.
+
+- **DEV-222 — WRONG-CODE, and the one that matters.** A pattern naming a variant that does not
+  exist type-checks clean and silently never matches, falling to the wildcard. `stark check`
+  reports OK. Without a wildcard the program is rejected by `E0303 non-exhaustive`, which points
+  at the match rather than the typo — so the natural fix (add a wildcard) converts a caught bug
+  into a silent one. `resolve.rs`'s three pattern branches already guard for this correctly
+  (`E0200`/`E0202` on `res == Res::Err`); the fault is that `resolve_path` does not return
+  `Res::Err` for `Type::NonexistentName`. **Same class as DEV-053/054**, which C2's exit report
+  calls "the most severe finding to date": DEV-053 closed it for a bare identifier resolving to a
+  builtin, and the qualified-path case was never closed.
+- **DEV-223 — REVISED the same day; it is NOT fail-safe.** A variant whose name matches an
+  in-scope type makes an exhaustive match report `E0303 non-exhaustive` — and, in expression
+  position, makes an ordinary constructor `Attr::Policy(Policy::A)` pass `stark check` and then
+  **fail at runtime** with `item is not callable`. Root cause read out of
+  `resolve_path_relative`: the subsequent-segment loop consults `current_mod`'s module items
+  BEFORE the qualifying item's own variants, so a module-level name shadows the variant. **Not
+  the same defect as DEV-222** — two distinct faults in the same loop; see the REVISED heading in
+  the ledger.
+- **DEV-224 — native gap.** An enum carrying a non-`Copy` payload cannot be matched through a
+  shared reference; even `_` arms are refused, because the rejection is about the scrutinee. This
+  blocks the ordinary tagged-value shape (`enum { A(String), B(Int64) }` in a `Vec`, read by
+  reference) on the native path, which is the shipping path for capability-backed programs.
+  `stark-cookie` uses a tagged struct instead, which costs it the unrepresentability a sum type
+  would have given.
+
+None of the three was worked around by changing the compiler; DEV-222 has no package-level
+workaround because it is a missing rejection rather than a shape to avoid.
+
+---
+
+### 2026-08-11 (later) — DEV-222/223 repaired, and an audit outward from them found three more
+
+Not a chartered packet: a repair taken directly from the `stark-cookie` findings, plus an external
+audit of the resolver that widened the scope. **Uncommitted at the time of writing.** Population A
+stays at 11 — two resolved, two registered.
+
+**Repaired.** DEV-222 in pattern lowering (`resolution_is_pattern_legal`, exhaustive over `Res`,
+reached through one `reject_non_pattern_resolution` helper from all three pattern branches) and
+DEV-223 in `resolve_path_relative` (`qualified_associated_name` ahead of the module lookup, with
+`current_is_module` so `crate`/`super`'s placeholder `Res::Item` is not misread as a type). The
+expression resolver is untouched: `Res::AssociatedFn` keeps its meaning, which sixty-odd
+associated-function call sites across `packages/` depend on.
+
+**Found by the audit, and resolved in the same change:** DEV-225 (associated-name precedence for
+structs, traits and models, not just enum variants — a NAME-RESOLVE-001 conformance deviation),
+DEV-226 (every `Res::Builtin` accepted as a pattern, so `Vec::new(x)` matched nothing silently),
+DEV-227 (every `Res::Item` accepted as a by-value pattern, so a bare function name matched nothing;
+repaired by BINDING per SYN-PATTERN-001 rather than by rejecting, which an audit suggestion would
+have got backwards).
+
+**Registered OPEN, not repaired:** DEV-228 — `ModuleData::items` is one `HashMap<String, Res>` where
+NAME-RESOLVE-001 specifies four namespaces, so a type and a value sharing a spelling is rejected
+with `E0204`. This is the common cause behind how easily 222/223/225 were reached, and it cannot be
+recovered downstream: the distinction is gone once both declarations collapse into one entry. Two
+precedence exceptions have now been added to that single map; a third would be the wrong direction.
+**Recommend a compiler-track decision on the resolver's namespace model before more precedence work
+lands.** DEV-229 — thirty hard-coded builtin path spellings are matched before name resolution runs;
+filed UNCONFIRMED because no probe yet distinguishes "the user's declaration won" from "the builtin
+won and agreed".
+
+Considered and NOT filed: an audit suggestion to add a central `Res::Variant` well-formedness
+invariant. It is reasonable hardening, but no reproducer was produced and nothing observed depends
+on it; filing it as a deviation would put a design preference in the defect ledger.
+
+Validation: `cargo fmt --check` clean; `cargo clippy --workspace --all-features --all-targets --
+-D warnings` exit 0; starkc lib 579; adversarial_patterns, conformance, module/import/provenance,
+DEV-148 and native enum suites green; 20 new regression tests across three files, each verified to
+fail against the unfixed compiler; every first-party library package suite green; native debug and
+release consumers correct. Not run: full `cargo test --workspace` (shared checkout).

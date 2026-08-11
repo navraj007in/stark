@@ -2,6 +2,13 @@
   "capability_vocabulary": 1,
   "packages": [
     {
+      "name": "stark_ascii",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    },
+    {
       "name": "stark_base64",
       "version": "0.1.0",
       "sha256": "",
@@ -13,6 +20,7 @@
       "version": "0.1.0",
       "sha256": "",
       "dependencies": {
+        "stark_ascii": "0.1.0",
         "stark_base64": "0.1.0"
       }
     }

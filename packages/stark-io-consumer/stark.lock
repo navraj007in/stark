@@ -1,0 +1,12 @@
+{
+  "capability_vocabulary": 1,
+  "packages": [
+    {
+      "name": "stark_io",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    }
+  ]
+}

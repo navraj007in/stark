@@ -25,6 +25,8 @@
 | `DEV-196` | 2 | L5595 | **L5620** |  DEV-196 — ANSWERED by measurement (2026-08-07) |
 | `DEV-206` | 2 | L6186 | **L6201** | DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLO |
 | `DEV-213` | 2 | L46 | **L6566** | DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI |
+| `DEV-222` | 2 | L8532 | **L8800** | DEV-222 — RESOLVED (2026-08-11): pattern lowering asks what a pattern may name |
+| `DEV-223` | 3 | L8618 | **L8818** | DEV-223 — RESOLVED (2026-08-11): the qualifier's associated namespace is searched first |
 
 *Derived by `as8-reconcile-deviations.py`; no status is asserted here that the file does not
 already state in its own last heading for that deviation.*
@@ -8524,3 +8526,941 @@ resource; `stark-net-resource-consumer` prints `STARK_NET_RESOURCE_OK` against a
 `connect_no_timeout` remains, and is still the honest spelling for an unbounded connect. The HTTP
 client no longer uses it; `stark-net-resource-consumer` does, so the declared-surface gate is
 still satisfied.
+
+---
+
+## DEV-222 — a pattern naming a variant that does not exist compiles, and silently never matches (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`. **This is a wrong-code defect, not an over-rejection.**
+
+```stark
+enum Colour { Red, Green }
+
+fn describe(c: &Colour) -> String {
+    match *c {
+        Colour::Blu => String::from("blue"),   // TYPO. `Colour` has no variant `Blu`.
+        Colour::Red => String::from("red"),
+        _other => String::from("wildcard"),
+    }
+}
+
+fn main() {
+    println(describe(&Colour::Green).as_str());
+}
+```
+
+```text
+probe: OK
+wildcard
+```
+
+`stark check` reports OK. The misspelled arm is treated as a pattern that never matches, and the
+value falls to the wildcard. The same holds for a variant path on a **struct**, which can have no
+variants at all:
+
+```stark
+struct Thing { value: Int64 }
+// ...
+match *r {
+    Thing::Missing(n) => println(n),          // `Thing` is a struct
+    _other => println("fell through to the wildcard"),
+}
+```
+
+### The diagnostic pathology makes it worse
+
+Remove the wildcard and the program *is* rejected — but by the wrong diagnostic:
+
+```text
+Error: [E0303] non-exhaustive pattern match
+```
+
+E0303 points at the `match`, not at the typo. The obvious response to "non-exhaustive" is to add a
+wildcard arm — which converts a caught bug into a silent one. **The diagnostic leads the developer
+into the failure mode.**
+
+### Where it is not
+
+`resolve.rs`'s three pattern branches are correct and already guard for this:
+
+- `ast::PatKind::Path` (L1388) emits `E0200 undefined pattern path` when `res == Res::Err`
+- `ast::PatKind::TupleVariant` (L1404) emits `E0202 undefined enum variant` when `res == Res::Err`
+- `ast::PatKind::Struct` (L1421) emits `E0202 undefined struct/variant` when `res == Res::Err`
+
+None of them fires, so **`resolve_path` is returning something other than `Res::Err` for
+`Type::NonexistentName`.** The guards are right; their input is wrong. That is the single site to
+repair, and repairing it should light up all three branches at once.
+
+### Blast radius
+
+Any misspelled variant in a `match` with a wildcard arm. It found `stark-cookie` exactly that way:
+after `CookieAttribute` changed from an enum to a struct, a test still carrying the old
+`CookieAttribute::MaxAge(seconds)` pattern kept compiling and began failing at runtime instead of
+at the type error that should have caught it. A refactor that renames or restructures an enum gets
+no help from the compiler — the arms silently stop matching.
+
+No package workaround exists and none is needed: this is a missing rejection, not a shape to code
+around.
+
+### Precedent: this is the same class as DEV-053/054
+
+`DEV-053` — *"a bare `None` pattern never matched by value; it silently acted as an unconditional
+wildcard"* — is the same failure: a pattern path that does not resolve to a variant becomes
+something that silently does not match, with wrong runtime output and no diagnostic. C2's exit
+report calls DEV-053/054 **"the most severe finding to date"** in the compiler track.
+
+DEV-053 was fixed for the specific case of a *bare identifier* resolving to a builtin
+(`lower_pattern`'s `ast::PatKind::Binding` arm). **The general case was never closed**: a
+QUALIFIED path naming a variant that does not exist still resolves to something that is not
+`Res::Err`, and the three pattern branches' guards therefore never fire. DEV-222 is the same
+defect class recurring one resolution path over.
+
+## DEV-223 — a variant sharing a name with an in-scope type is reported non-exhaustive (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`.
+
+```stark
+enum Policy { A, B }
+
+enum Attr {
+    Flag,
+    Policy(Policy),     // variant name == type name
+}
+
+fn render(attr: &Attr) -> String {
+    match *attr {       // [E0303] non-exhaustive pattern match
+        Attr::Flag => String::from("flag"),
+        Attr::Policy(p) => match p {
+            Policy::A => String::from("a"),
+            Policy::B => String::from("b"),
+        },
+    }
+}
+```
+
+Renaming the variant — changing nothing else — compiles and runs correctly. The match is
+exhaustive as written; the rejection is spurious.
+
+**Probably the same root cause as DEV-222**, and filed separately only because the observable
+symptom and the developer's experience differ. The hypothesis, stated as a hypothesis because it
+was inferred from behaviour rather than read out of `resolve_path`: the path `Attr::Policy`
+resolves its final segment to the *type* `Policy` rather than to the variant, the arm therefore
+carries a non-`Res::Variant` resolution, exhaustiveness does not count it, and the remaining arms
+do not cover the enum. If that is right, one fix in `resolve_path` closes both.
+
+**DEV-053's history is a direct precedent and a warning.** That entry *originally* recorded a
+"spurious `E0303` non-exhaustive" — DEV-223's exact symptom — and investigation found the cause was
+not the exhaustiveness algorithm at all but pattern resolution in `lower_pattern`, with a silent
+wildcard as its other face. The same reading should be applied here before assuming this one is
+merely cosmetic.
+
+**Severity as observed: over-rejection, fail-safe.** It fails loudly at compile time and can never
+produce wrong output. Its cost is that `Enum::Variant(SameNamedType)` — an ordinary and idiomatic shape —
+is unavailable, forcing a name that exists only to dodge a compiler bug. `stark-cookie` carries
+`CookieAttributeKind::SameSitePolicy` for this reason; `SameSite` is the name that belongs there.
+
+## DEV-224 — native: an enum carrying a non-Copy payload cannot be matched through a shared reference (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`. A **native backend gap**, not a front-end defect: the
+front end and both interpreters accept the program, and `stark build` refuses it.
+
+```stark
+enum Attr {
+    Flag,
+    Text(String),
+    Num(Int64),
+}
+
+fn kind_only(a: &Attr) -> Int64 {
+    match *a {
+        Attr::Flag => 0i64,
+        Attr::Text(_) => 1i64,      // `_`, binding nothing
+        Attr::Num(_) => 2i64,
+    }
+}
+```
+
+```text
+error: native build does not yet support this program:
+       binding a non-Copy scrutinee through a shared reference
+```
+
+**Even `_` patterns fail.** The rejection is about the scrutinee — a non-`Copy` enum read through
+`&` — not about what the arms bind, so there is no arm spelling that avoids it. An enum is
+non-`Copy` as soon as one variant carries a `String`.
+
+### Why it matters more than its wording suggests
+
+`enum { A(String), B(Int64), C }` held in a `Vec` and read by reference is the ordinary shape for
+an AST node, a JSON value, a config entry, a protocol attribute — anything tagged. Under this gap
+none of them is natively compilable, and native compilation is the shipping path for
+capability-backed programs. Interpreter-only verification will not surface it.
+
+### Package-level alternative, and its cost
+
+A tagged struct compiles and runs natively:
+
+```stark
+struct Attr { kind: Kind, text: String, num: Int64 }   // `Kind` fieldless, therefore Copy
+```
+
+`match a.kind` reads a `Copy` field through the shared reference and is accepted. `stark-cookie`'s
+`CookieAttribute` is built this way for exactly this reason.
+
+The cost is real and is in a shipped public API: a sum type makes an invalid combination
+*unrepresentable*, while a tagged struct makes it merely unconstructible-by-convention. A
+`Secure` attribute carrying a value cannot exist in the enum formulation; in the struct
+formulation it is prevented only because every caller goes through a constructor.
+
+## DEV-223 — REVISED: it is not fail-safe. The constructor face type-checks and fails at RUNTIME (2026-08-11)
+
+The original entry, registered earlier the same day, called this "over-rejection, fail-safe … can
+never produce wrong output". **That is wrong, and this heading corrects it.** The name collision has
+a second face in EXPRESSION position that the pattern reproducer hid:
+
+```stark
+enum Policy { A, B }
+enum Attr { Flag, Policy(Policy) }
+
+fn build() -> Attr { Attr::Policy(Policy::A) }   // an ordinary enum constructor
+```
+
+```text
+probe: OK
+Error: runtime error: item is not callable
+  --> probe/src/main.stark:5:22
+```
+
+`stark check` passes. The failure is deferred to **runtime**. A valid enum constructor is
+unusable, and nothing in the front end says so.
+
+Severity is therefore **not** ergonomic. Pattern position over-rejects loudly (spurious `E0303`);
+expression position accepts and traps.
+
+### Root cause, read out of the source rather than inferred
+
+`resolve_path_relative` (`starkc/src/resolve.rs`), subsequent-segment loop. For `Attr::Policy`,
+segment 0 resolves `Attr` to `Res::Item`, and because `Attr` is not a submodule `current_mod` stays
+the *enclosing* module. Segment 1 then hits this branch first:
+
+```rust
+} else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
+```
+
+`Policy` IS an item of that module — the enum type — so it wins, and `current_res` becomes
+`Res::Item(policy_enum)`. The enum-variant branch below it is never reached:
+
+```rust
+} else if let Some(Res::Item(item_id)) = current_res {
+    match self.item_details.get(&item_id) {
+        Some(ItemDefDetail::Enum { variants }) => { /* the variant lookup, never reached */ }
+```
+
+**The module-item lookup is consulted before the qualifying item's own variants**, so any
+module-level name shadows a same-named variant of the enum being qualified. This supersedes the
+earlier entry's hypothesis that the final segment resolved to the type "somehow"; it is an
+ordering bug, and the ordering is visible in the source.
+
+### Relationship to DEV-222 — they are NOT the same defect
+
+The earlier entry guessed one shared root cause. Reading the function shows two distinct ones in
+the same loop:
+
+- **DEV-223** is the branch ORDER above: module items before the qualifier's variants.
+- **DEV-222** is the enum/struct fallback below it: a name that is not a variant becomes
+  `Res::AssociatedFn(item_id, span)`, not `Res::Err`.
+
+```rust
+Some(ItemDefDetail::Enum { variants }) => {
+    if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
+        current_res = Some(Res::Variant(item_id, variant_idx as u32));
+    } else {
+        current_res = Some(Res::AssociatedFn(item_id, segment.span));   // DEV-222
+    }
+}
+Some(ItemDefDetail::Struct { .. }) => {
+    current_res = Some(Res::AssociatedFn(item_id, segment.span));       // DEV-222, struct face
+}
+```
+
+**That fallback is correct for expressions and must stay.** `Duration::from_seconds`,
+`Instant::now`, `Line::new` and `UnixTimestamp::from_unix_seconds` are user-declared associated
+functions reached exactly this way — over sixty call sites across `packages/`. Making these arms
+return `Res::Err` would break every one of them.
+
+DEV-222 is therefore **not** a defect in `resolve_path`. `resolve_path` is answering the question it
+was asked. The defect is that *pattern* lowering accepts a resolution that cannot be a pattern:
+`Res::AssociatedFn` is never a valid pattern, and `lower_pattern`'s three branches test only
+`res == Res::Err` before emitting `E0200`/`E0202`. The repair belongs in that guard — widening it
+from "is it `Res::Err`" to "is it a resolution a pattern may name" — or in a pattern-aware
+resolution entry point. It does not belong in the shared expression path.
+
+---
+
+## DEV-222 — RESOLVED (2026-08-11): pattern lowering asks what a pattern may name
+
+Repaired where the defect was, which was **not** `resolve_path`. That function answers for
+EXPRESSION position, and `Res::AssociatedFn` for a name that is not a variant is the correct answer
+there — `Duration::from_seconds`, `Instant::now` and `Line::new` reach their definitions through it,
+sixty-odd call sites across `packages/`. Returning `Res::Err` from those arms would have broken
+every one.
+
+`resolve.rs` gains `resolution_is_pattern_legal`, exhaustive over `Res`, consulted by all three
+pattern branches through one `reject_non_pattern_resolution` helper. The branches previously asked
+only `res == Res::Err`. The diagnostic now names the path — `'Colour::Blu' is not a pattern; no such
+variant exists` — instead of `E0303 non-exhaustive` pointing at the `match`, which was the wording
+that invited a wildcard and made the bug silent.
+
+Regression: `starkc/tests/dev222_pattern_only_resolutions.rs`, six tests. Verified to fail against
+the unfixed compiler and to pass against the repair, with the accepting side (valid unit and tuple
+variants, associated functions in expression position, `Some`/`None`) pinned as controls.
+
+## DEV-223 — RESOLVED (2026-08-11): the qualifier's associated namespace is searched first
+
+`resolve_path_relative`'s subsequent-segment loop consulted the enclosing module's items before the
+variants of the item being qualified. Now a qualifier that owns associated names answers first, via
+`qualified_associated_name`, and a module qualifier still falls through to the module namespace —
+tracked explicitly with `current_is_module`, because `crate`/`super` stash a placeholder `Res::Item`
+that the first version of this repair misread as a real type (caught by DEV-148's suite).
+
+Both faces close: the exhaustive match compiles, and `Attr::Policy(Policy::A)` constructs instead of
+trapping at runtime with `item is not callable`.
+
+Regression: `starkc/tests/dev223_variant_shadowed_by_a_type.rs`, six tests. The constructor face is
+EXECUTED through the interpreter rather than stopping at `typecheck`, because that face passed both
+front-end stages and failed at runtime — a test that stopped earlier passed against the defect.
+
+## DEV-225 — RESOLVED on arrival (2026-08-11): associated-name precedence, beyond enum variants
+
+Found by auditing outward from DEV-223 rather than by hitting it. NAME-RESOLVE-001 in
+`04-Semantic-Analysis.md` says: *"Associated names are searched only after resolving their
+qualifying type or trait."* DEV-223 was the enum-variant face; the rule covers structs, traits and
+models, and all of them lost to the enclosing module.
+
+```stark
+struct Foo { a: Int64 }
+impl Foo { pub fn new() -> Foo { Foo { a: 1i64 } } }
+fn new() -> Int64 { 99i64 }
+fn main() { let f = Foo::new(); println(f.a); }
+```
+
+Before: `E0001 cannot access field 'a' on non-struct type 'Int64'` — `Foo::new` had resolved to the
+module-level `new`. After: prints `1`.
+
+**This is a conformance deviation against a numbered normative rule**, not a preference. The repair
+is the same `qualified_associated_name` helper DEV-223 introduced, generalised from enum variants to
+every qualifier that owns associated names.
+
+## DEV-226 — RESOLVED on arrival (2026-08-11): only builtin CONSTRUCTORS are patterns
+
+Every `Res::Builtin` was accepted as a pattern. Most builtins are functions.
+
+```stark
+match v { Vec::new(x) => println(x), _other => println("fell through") }
+```
+
+`stark check` reported OK and the program printed `fell through` — DEV-222's failure mode one
+namespace over. `hir::builtin_is_pattern_constructor` is now exhaustive over `Builtin`: `Some`,
+`None`, `Ok`, `Err`, the three `Ordering` variants and the five `IOError` variants are constructors;
+everything else is a function or a constant expression and is refused in pattern position.
+
+## DEV-227 — RESOLVED on arrival (2026-08-11): a bare identifier is a value pattern only for a variant or a constant
+
+Every `Res::Item` was taken by value in the bare-identifier pattern branch, so a name binding a
+FUNCTION became a value pattern that could never equal anything:
+
+```stark
+fn helper() -> Int64 { 1i64 }
+fn main() { let n = 3i64; match n { helper => println("x"), _other => println("fell") } }
+```
+
+compiled and printed `fell`.
+
+`02-Syntax-Grammar.md` SYN-PATTERN-001 states the rule: a single identifier pattern "that resolves
+to a unit enum variant or a constant in scope matches by value; otherwise it introduces a new
+binding." **The repair is therefore to BIND, not to reject** — an audit suggestion to make this an
+error would have contradicted the grammar. `ItemDefDetail` gains a `Const` variant so a constant
+stays distinguishable from a function, which it was not before.
+
+Same-session regressions for DEV-225/226/227:
+`starkc/tests/dev225_227_resolution_namespaces.rs`, eight tests including the module-path and
+`super::` controls the precedence reorder could most plausibly have broken.
+
+## DEV-228 — the resolver has ONE namespace map where NAME-RESOLVE-001 specifies four (OPEN, registered 2026-08-11)
+
+**Architectural, and the reason DEV-222/223/225 were all easy to reach.**
+
+NAME-RESOLVE-001: *"Core has distinct module, type, value, and associated-item namespaces… The same
+spelling may coexist in different namespaces, but two declarations in one namespace and scope are
+duplicates."*
+
+`Resolver::ModuleData` carries `items: HashMap<String, Res>`, and `declare_items` puts functions,
+structs, enums, traits, constants, aliases, modules and models into that one map. So the coexistence
+the rule permits is rejected:
+
+```stark
+struct Pair { a: Int64 }
+fn Pair() -> Int64 { 5i64 }
+```
+
+```text
+Error: [E0204] duplicate definition of 'Pair' in the same scope
+```
+
+A type and a value sharing a spelling is legal per the rule and is refused.
+
+**No downstream validator can recover this.** Once both declarations collapse into one map entry,
+the namespace distinction is gone before any later pass can consult it — which is why this is filed
+as architecture rather than as another precedence exception. DEV-223 and DEV-225 were both repaired
+by moving one lookup ahead of another; a third and fourth exception on the same single map is the
+wrong direction. The resolver should carry the namespaces the rule names.
+
+Not repaired here. It is a resolver-model change, not a bug fix, and it wants a compiler-track
+decision rather than a package-derived session.
+
+## DEV-229 — qualified builtin paths are matched by SPELLING before name resolution runs (OPEN, UNCONFIRMED, registered 2026-08-11)
+
+`resolve_path_relative` opens with a `match self.path_to_string(path).as_str()` over roughly thirty
+hard-coded spellings — `"String::from"`, `"Vec::new"`, `"HashMap::new"`, `"Ordering::Less"`,
+`"IOError::Other"` and the rest — returning `Res::Builtin` before any module, import or item lookup
+happens.
+
+NAME-RESOLVE-001 gives no precedence to builtin spellings over declared names, so a user declaration
+occupying one of those spellings can never win. Whether these names are *reserved* is not stated in
+the specification; the implementation currently assumes a reservation the language does not express.
+
+**Filed UNCONFIRMED, deliberately.** A probe declaring `enum Ordering { Less, Equal, Greater }` and
+matching `Ordering::Less` behaved correctly, but that test cannot separate "the user's enum won"
+from "the builtin won and happened to agree", so it establishes nothing either way. What is certain
+is the code path; what is not is whether any reachable program observes a wrong answer. Closing this
+needs either a specification statement that the spellings are reserved, or a probe that distinguishes
+the two resolutions.
+
+## DEV-230 — a struct pattern naming a field that does not exist compiles, and makes an irrefutable pattern refutable (OPEN, registered 2026-08-11)
+
+Found by the resolution audit's scope A, the first probe run after DEV-222/223/225/226/227 were
+repaired. **Same class, one layer down** — this one is in type checking, not resolution.
+
+```stark
+struct Thing { value: Int64 }
+fn main() {
+    let t = Thing { value: 7i64 };
+    match t { Thing { valu: v } => println(v), _other => println("MISS") }
+}
+```
+
+`valu` is a typo for `value`. `stark check` reports **OK** and the program prints `MISS`.
+
+Both of DEV-223's faces are present:
+
+- **With a wildcard:** compiles, no diagnostic, silently takes the wrong branch.
+- **Without a wildcard:** `stark check` still reports OK, and the program traps at RUNTIME with
+  `non-exhaustive match reached`.
+
+The second is the sharper statement of the defect. **A struct pattern over its own struct type is
+irrefutable** — `Thing { value: v }` always matches a `Thing`. A field-name typo silently makes it
+refutable, and nothing in the front end says so.
+
+### Root cause
+
+`starkc/src/typecheck/patterns.rs`, the `hir::PatKind::Struct` / `Res::Item` arm:
+
+```rust
+for field in fields {
+    let f_name = self.text(field.name);
+    if let Some(expected_f_ty) = expected_fields.get(f_name) {
+        ...
+    }
+    // no `else`: a name that is not a field of this struct is silently skipped
+}
+```
+
+An unknown field name is neither bound nor reported. Exhaustiveness then sees a struct pattern it
+cannot prove covers the type.
+
+The `Res::Variant` arm immediately below it reads `expected_fields` the same way, and **the enum
+struct-variant form is confirmed to share the defect**:
+
+```stark
+enum Rec { One { n: Int64 }, Two }
+// `Rec::One { nope: v }` -- `stark check` reports OK and the program prints MISS.
+```
+
+So both struct patterns and enum struct-variant patterns accept field names that do not exist.
+
+### Not repaired here
+
+The audit's scope is to report. The repair is a diagnostic in that loop — the missing `else` —
+and belongs to whatever packet schedules it.
+
+### Relationship to DEV-222
+
+Same failure mode, different stage. DEV-222 was resolution accepting a name that could not be a
+pattern; this is type checking accepting a *field* that does not exist. The repair for DEV-222
+cannot catch it: the path `Thing` resolves correctly, and the bad name is inside the pattern's
+field list, which the resolver never validates against the struct's declaration.
+
+## DEV-230 — RESOLVED (2026-08-11): a struct-shaped pattern rejects a field the type does not have
+
+Both arms of `PatKind::Struct` in `typecheck/patterns.rs` — `Res::Item` for structs and
+`Res::Variant` for enum struct-variants — looked each field name up and silently skipped a miss.
+Each now reports `E0001 field '<name>' does not exist`, which is the message and code struct
+LITERALS have always used for the same mistake; patterns simply did not agree with them.
+
+Regression: `starkc/tests/dev230_struct_pattern_field_names.rs`, four tests — the wildcard face,
+the no-wildcard face (which used to trap at run time after `stark check` reported OK), the enum
+struct-variant face, and a control pinning valid struct and variant patterns including the
+shorthand binding form. Three fail against the unfixed checker.
+
+No first-party package contained a struct-shaped pattern at the time of the repair, so nothing
+existing had to change. That is also why it was worth doing now rather than later.
+
+## DEV-224 — REVISED (2026-08-11): mis-scoped. It is a front-end soundness hole, and native is the engine that is RIGHT
+
+The original entry, filed earlier the same day, said an enum carrying a non-`Copy` payload "cannot
+be matched through a shared reference" and that "even `_` patterns fail". **Both claims are wrong.**
+They came from a probe containing two functions, where the failure was attributed to the wrong one.
+
+Measured at `5c3cd84`:
+
+| Shape | Native build |
+| --- | --- |
+| All variants covered, `String` payloads, matched through `&` | **builds** |
+| Same, with a `_` wildcard arm | **builds** |
+| Same, with a NAMED catch-all (`_other => ..`) | refused |
+
+The nine-variant `CookieAttribute` sum type that `stark-cookie` abandoned — four variants carrying
+`String`, read by reference out of a `Vec` — **compiles and runs natively**. Reconstructed and
+verified. The tagged-struct redesign was unnecessary.
+
+### What the defect actually is
+
+The refusal sits in `mir/lower.rs`'s catch-all handling, and it fires only for a **binding** catch-all
+that would bind the whole non-Copy scrutinee by value out of a shared reference. That is a move out
+of a borrow, and refusing it is **correct**.
+
+The defect is upstream: the front end accepts it.
+
+```stark
+enum Attr { Flag, Text(String) }
+fn peek(a: &Attr) -> Int64 {
+    match *a { Attr::Flag => 0i64, _other => 1i64 }   // binds *a by value, out of `&`
+}
+```
+
+`stark check` reports OK. The interpreter runs it, twice, and the original value survives — so the
+interpreter is **copying a non-`Copy` value**, which is not a legal execution of this program under
+Core v1 ownership. Native refuses. Three engines, three behaviours, and the one that refuses is the
+one that is right.
+
+### Consequences of the mis-scoping
+
+- **Severity is far lower than filed.** It does not block sum types, ASTs, JSON values, config
+  entries or protocol messages. The workaround is to write `_` instead of a named catch-all.
+- **It is a different KIND of defect than filed** — a front-end acceptance of a move out of a shared
+  borrow, plus an interpreter that silently copies, not a backend capability gap.
+- `stark-cookie`'s attribute model can return to the sum type it should have had.
+
+### The repair, restated
+
+Not "teach native to bind it". The front end should reject binding a non-`Copy` scrutinee by value
+through a shared reference, which is what the native lowering already knows, and the interpreter
+should stop copying non-`Copy` values. That aligns three engines on the semantics the ownership
+rules already state. Scope: borrow/flow checking, plus an interpreter correction — larger than a
+diagnostic, and it may reject code that compiles today.
+
+## DEV-224 — RESOLVED (2026-08-11): the borrow PAT-BIND-001 already specified, implemented in lowering
+
+Repaired as a **capability increase**, not a rejection. An earlier note in this session proposed
+making the front end reject the program, reasoning that binding the whole non-`Copy` value out of a
+shared reference is a move out of a borrow. Reading `04-Semantic-Analysis.md` PAT-BIND-001 refuted
+that: when the scrutinee is read through a reference, "a binding to a non-`Copy` component receives
+type `&C` for component type `C`, borrowing the component in place; **the referent is never
+moved**." It is not a move. The whole value is a component like any other.
+
+Verified before repairing: the type checker had **always** applied PAT-BIND-001 here — the binding
+really does have type `&Attr`, demonstrated by passing it to a `fn(a: &Attr)` — and the interpreter
+had always executed it. Only `mir/lower.rs`'s catch-all path had not implemented the borrow, and
+bailed out with `unsupported` instead. Three engines, one disagreement, and the two that agreed
+were right.
+
+The repair mirrors the payload-binding lowering a few hundred lines below it in the same file:
+declare the local at `MirTy::Ref`, assign `Rvalue::RefOf` over the scrutinee place, and leave the
+consuming path moving and dropping exactly as before.
+
+Nothing that compiled before stops compiling. Programs that type-checked and ran but could not be
+built now build.
+
+Regression: `starkc/tests/dev224_byref_whole_scrutinee_binding.rs`, six tests. **Two of them lower
+to MIR**, because the four interpreter-level tests pass against the unfixed compiler — the
+interpreter always executed this correctly, so an interpreter-only regression would have proved
+nothing. Verified: with the lowering reverted, `the_borrowing_catch_all_lowers_to_mir` fails and
+the other five pass. Controls pin the consuming form still moving and dropping, and a `Copy`
+scrutinee still binding by value.
+
+## DEV-231 — a tuple-variant pattern checks neither its constructor's shape nor its arity (OPEN, registered 2026-08-11)
+
+Found by the resolution audit's scope C, which walks the pattern-kind matrix the other way from
+scope A. Four observable faces, three mechanisms, all in one arm of `typecheck/patterns.rs`. Every
+one of them compiles clean and then silently never matches — the DEV-222 failure mode, in type
+checking rather than resolution.
+
+```stark
+enum Colour { Red, Green }
+enum Shape { Dot, Line(Int64) }
+struct Thing { value: Int64 }
+const LIMIT: Int64 = 3i64;
+```
+
+| Pattern | Why it is wrong | Today |
+| --- | --- | --- |
+| `Colour::Red(_v)` | `Red` carries no payload | compiles, never matches |
+| `Shape::Line(_a, _b)` | `Line` carries one, not two | compiles, never matches |
+| `Thing(_v)` | `Thing` is a named-field struct, not a tuple constructor | compiles, never matches |
+| `LIMIT(_v)` | a constant is not a constructor at all | compiles, never matches |
+
+With a wildcard arm present each takes the wildcard; without one the match is reported
+non-exhaustive, which points at the `match` rather than the pattern — the same misleading
+diagnostic that made DEV-222 dangerous.
+
+### Root cause: three holes in `hir::PatKind::TupleVariant`
+
+```rust
+let tys_opt = self.enum_variants.get(enum_id).and_then(|variants| {
+    let variant = &variants[*variant_idx as usize];
+    if let VariantFields::Tuple(tys) = &variant.fields { Some(tys.clone()) } else { None }
+});
+if let Some(tys) = tys_opt {
+    for (p, expected_t) in pats.iter().zip(tys) { ... }
+}
+```
+
+1. **A non-tuple variant yields `None`** — unit and struct variants both — and the `if let Some`
+   is then simply skipped. No diagnostic. That is `Colour::Red(_v)`.
+2. **`zip` truncates.** A pattern with more sub-patterns than the variant has fields checks the
+   overlap and ignores the rest. That is `Shape::Line(_a, _b)`. It equally means too FEW
+   sub-patterns pass unremarked.
+3. **A resolution that is neither `Res::Variant` nor `Res::Builtin`** — `Res::Item` for a struct
+   or a constant — reaches neither branch and falls out without a diagnostic. That is `Thing(_v)`
+   and `LIMIT(_v)`.
+
+### This arm has form
+
+Its own comment records DEV-205: `IOError::Other(msg)` was missing from the builtin table, "so its
+sub-pattern was never checked … The program ran and printed correctly, which is why nothing found
+it for as long as nothing read the tables". Same arm, same shape, previously fixed one entry at a
+time. The general check was never added.
+
+### Not repaired here
+
+The audit's scope is to report. The repair is an arity and shape check with a diagnostic, in the
+manner of DEV-230's missing `else`, and belongs to whatever packet schedules it.
+
+### Scope C also cleared a suspicion
+
+`Rec::One` — a bare path pattern naming a STRUCT variant — matches, and that is **correct**, not a
+fifth face. `02-Syntax-Grammar.md` SYN-PATTERN-001: "Multi-segment `Path` patterns always match by
+value", and Core v1 has no rest patterns, so a bare path is the only way to match a struct variant
+without binding its fields. The audit expected a rejection out of Rust intuition and the
+specification disagreed.
+
+## DEV-231 — RESOLVED (2026-08-11): the tuple-variant arm checks shape and arity
+
+All three mechanisms closed in `hir::PatKind::TupleVariant`:
+
+- a variant with no tuple fields now reports `E0001 variant carries no tuple fields, so it takes no
+  pattern arguments` instead of yielding `None` and skipping the check;
+- the arity is compared before `zip`, so too many **and too few** sub-patterns are both named:
+  `E0001 this variant has N field(s), but the pattern binds M`;
+- a resolution that is neither `Res::Variant` nor `Res::Builtin` reports `E0202 this is not a tuple
+  constructor, so it takes no pattern arguments` rather than falling out silently. `Res::Err` is
+  excluded, so an already-reported resolution failure is not diagnosed twice.
+
+Regression: `starkc/tests/dev231_tuple_variant_pattern_shape.rs`, nine tests. Five are rejections
+and four are controls; verified by reverting `patterns.rs` — the five fail, the four pass. The
+controls pin correct arity, generic variants, the builtin constructors (which take the other
+branch), and `Rec::One`, the bare path naming a struct variant that SYN-PATTERN-001 makes legal and
+that an over-eager repair would plausibly have caught.
+
+Re-running the audit's scope C against the repair: **29 probes, 0 disagreements**, with the
+mistaken `Rec::One` expectation corrected in the harness rather than in the compiler.
+
+## DEV-232 — a non-`Copy` FIELD can be moved out of a shared reference (OPEN, registered 2026-08-11)
+
+Found by the audit's scope F, the rejection matrix. **The most serious finding of the audit**: a
+function that only borrows its argument destroys the caller's value, no diagnostic is issued, and
+the failure surfaces as an internal compiler error.
+
+```stark
+struct T { v: String }
+
+fn steal(t: &T) -> String { t.v }   // moves the String out of a SHARED reference
+
+fn main() {
+    let t = T { v: String::from("payload") };
+    let a = steal(&t);
+    println(a.as_str());
+    println(t.v.as_str());          // `t` was only borrowed, so this must still work
+}
+```
+
+| Engine | Result |
+| --- | --- |
+| `stark check` | **OK** |
+| interpreter | `internal compiler error: use of moved or invalid field` |
+| `stark build` | `native build does not yet support this program: move out of the non-slot place Place { local: LocalId(1), projection: [Deref, Field(0)] }` |
+
+Three engines, three behaviours, and **none of them a correct user-facing diagnostic.** The
+interpreter ICEs; native leaks an internal `Place` description at the user.
+
+### The check exists — it just does not traverse a field projection
+
+The whole-referent case is already handled correctly:
+
+```stark
+fn steal(t: &T) -> T { *t }
+// Error: [E0100] cannot move a non-Copy value out of a reference
+```
+
+And a `Copy` field is correctly accepted, because a `Copy` read moves nothing:
+
+```stark
+struct T { v: Int64 }
+fn peek(t: &T) -> Int64 { t.v }   // accepted, and right
+```
+
+So the rule is known and implemented for `Deref`; it is not applied to `Deref` followed by
+`Field`. That is a narrow and precise gap, not a missing concept.
+
+### Expected
+
+`E0100 cannot move a non-Copy value out of a reference`, at `stark check`, naming `t.v`. The
+interpreter's ICE and native's `unsupported` both become unreachable once the front end rejects it,
+exactly as DEV-224's repair made native's refusal unreachable from the other direction.
+
+### Relationship to DEV-224
+
+The same shape of question, opposite answer. DEV-224 looked like an illegal move and turned out to
+be a legitimate borrow that lowering had not implemented — the fix was to implement the borrow.
+This one **is** an illegal move, and the fix is to reject it. The distinguishing test is
+PAT-BIND-001's: a *pattern binding* through a reference borrows, while a *field read* in expression
+position moves.
+
+## DEV-233 — the interpreter discards output already written when a trap follows (OPEN, registered 2026-08-11)
+
+Found by the audit's scope E, the engine differential.
+
+```stark
+fn main() {
+    let x: UInt32 = 0xF0F0F0F0u32;
+    println(x >> 4u32);   // 252645135 -- succeeds
+    println(x << 4u32);   // traps: integer overflow
+}
+```
+
+| Engine | stdout |
+| --- | --- |
+| native | `252645135`, then the trap |
+| interpreter | **nothing**, then the trap |
+
+The first `println` succeeds under both engines. Native emits it; the interpreter loses it.
+
+Both engines are right about the trap — overflow traps in every build mode, and that is the
+specified behaviour. The divergence is only in what was already written before it.
+
+**Severity: moderate, and it is a debugging tax rather than a correctness one.** Any program that
+traps loses its entire output under `stark run`, which is the engine a developer uses while
+iterating — precisely when the printed trail matters most. It also means an engine-differential
+test comparing stdout cannot use a trapping program without accounting for this.
+
+Not a wrong answer, so not a soundness issue. Filed because two engines observably disagree and
+nothing recorded it.
+
+## DEV-232 — RESOLVED (2026-08-11): the rule already implemented for patterns now covers expressions
+
+`check_owned_value` handled a bare `*r`; a FIELD read through the same reference produced an owned
+non-`Copy` value just as surely and was not covered. It now reports `E0100 cannot move a non-Copy
+value out of a reference`, labelled *"borrow this field instead of moving it out of the
+reference"*, at `stark check` — so the interpreter's ICE and native's leaked `Place` description are
+both unreachable.
+
+**The repair reuses DEV-072's own classifier**, `scrutinee_reads_through_ref`, rather than writing a
+second one. That function is already documented as deliberately identical to MIR lowering's
+`scrutinee_reads_through_ref`, so pattern position, expression position and lowering now classify
+by-reference reads by construction rather than by coincidence. A third copy of this rule was the
+thing most likely to drift.
+
+The check is on the VALUE's type, not the shape, which is what keeps `Copy` reads legal:
+`fn peek(t: &T) -> Int64 { t.v }` moves nothing and still compiles.
+
+Regression: `starkc/tests/dev232_field_move_out_of_reference.rs`, six tests. Three rejections —
+shared reference, mutable reference, and a nested field chain — and three controls: a `Copy` field
+read, a method call on a non-`Copy` field (a receiver auto-borrow, not a move), and moving a field
+out of a struct one OWNS. Verified by reverting `borrowck.rs`: the three fail, the three controls
+pass.
+
+**Blast radius, measured rather than assumed: none.** All 65 first-party packages and consumers
+still `stark check` clean and all 31 library test suites stay green. No first-party code moved a
+non-`Copy` field out of a borrow — unsurprising in hindsight, since every consumer builds natively
+and native already refused the shape.
+
+## DEV-232 — RE-OPENED (2026-08-11): the repair is correct and there is no way to write the code it forbids
+
+The repair landed at `ab8da4d` and is reverted at the commit carrying this heading. **Not because it
+was wrong** — it is consistent with a rule the compiler already enforced — but because it leaves a
+shape of generic code unwritable, and the escape hatch that should exist does not work.
+
+### What CI found that the local sweep did not
+
+`starkc/tests/mir_differential.rs::generic_user_iterator_for_loop_agrees` fails, one of 132:
+
+```stark
+struct Repeat<T> { item: T, left: Int32 }
+impl<T> Iterator for Repeat<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.left == 0 { None } else { self.left = self.left - 1; Some(self.item) }
+    }
+}
+```
+
+`Some(self.item)` moves `T` out of `&mut self`, and `T` is unbounded, so it is not known `Copy`.
+
+**The rejection is correct.** The pre-existing `*r` arm already refuses the identical shape —
+`fn take<T>(r: &T) -> T { *r }` is `E0100` today, and has been since WP-C1.4 — so the field case
+was a hole in a rule the compiler already enforced, and this test relied on the hole. With
+`T = String` the program would move a String out of a borrow and leave the referent invalid, which
+is exactly what DEV-232 was filed for.
+
+### Why it is reverted anyway
+
+The escape hatch does not work:
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+fn main() { let x = 5i64; println(take(&x)); }
+```
+
+```text
+Error: [E0500] type 'Int64' does not satisfy trait bound 'Copy'
+```
+
+`Copy` is a recognised core trait (`resolve_core_trait` maps it) and `03-Type-System.md`
+NUM-FLOAT-TRAIT-001 says the float primitives implement it — but a primitive does not satisfy the
+bound. So `impl<T: Copy> Iterator for Repeat<T>` cannot be instantiated at `Int32`, and there is
+**no spelling** that makes the rejected program legal.
+
+Closing the hole without the bound available removes a shape of generic code from the language and
+offers nothing in its place. That is a language-expressiveness decision, not a bug fix, and it is
+not a package-derived session's to take. The soundness hole is real and stays open, recorded here
+rather than silently traded away.
+
+### What unblocks it
+
+DEV-234 — a primitive does not satisfy a `Copy` bound. Repair that, and this repair can land with
+`impl<T: Copy> ...` as the working spelling for the code it forbids.
+
+### A correction to the original repair's claim
+
+That commit said "blast radius measured rather than assumed: none", citing all 65 packages and all
+31 library suites. Those measurements were real and they were not enough: **the compiler's own test
+corpus was never run.** One test in 132 fails, and it is the one that mattered. Measuring the
+packages and calling it the blast radius was the error.
+
+## DEV-234 — a primitive does not satisfy a `Copy` bound (OPEN, registered 2026-08-11)
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+fn main() { let x = 5i64; println(take(&x)); }
+```
+
+```text
+Error: [E0500] type 'Int64' does not satisfy trait bound 'Copy'
+```
+
+`Copy` is a core trait the resolver knows (`resolve_core_trait`), and `03-Type-System.md`
+NUM-FLOAT-TRAIT-001 states that `Float32` and `Float64` implement `Copy`. Integer primitives are
+`Copy` by every other measure in the compiler — `is_copy_type` says so, which is why `let a = b;`
+copies them. The bound checker does not agree with the copy classifier.
+
+**Severity: it blocks DEV-232.** On its own it is an expressiveness gap: no generic function or
+impl can require its parameter to be copyable, so no generic code can move a value out of a
+reference. That is tolerable in isolation. It stops being tolerable the moment the borrow rule is
+enforced correctly, because then there is a class of program that is forbidden and unspellable at
+the same time.
+
+Found while investigating why DEV-232's repair broke `generic_user_iterator_for_loop_agrees`.
+
+## DEV-234 — RESOLVED (2026-08-11): the `Copy` bound is answered by the copy classifier, in both halves
+
+It was two gaps, and repairing only the first would have left the bound as useless as before.
+
+### Half one — bound satisfaction, `typecheck/traits.rs`
+
+`satisfies_bound_identity` had cases for `Num`, `Eq`, `Ord`, `Display`, `Clone`, `Default` and
+`Hash` and **none for `Copy`**, so every concrete type fell through to `false`. `Int64` did not
+satisfy `Copy` although `is_copy_type` says it is copyable — which is why `let a = b;` copies it —
+and although `03-Type-System.md` NUM-FLOAT-TRAIT-001 states the float primitives implement `Copy`.
+
+`Copy` is now answered by `is_copy_ty`, not by a fourth hand-written table. `is_copy_with_impls` is
+already documented as shared by the type checker and the move checker *"so the two cannot disagree
+— a divergence there is the DEV-072 class"*; the bound checker is the third consumer of the same
+question and now shares the same answer. A `Ty::Param` is deliberately excluded so it still reaches
+the arm that discharges a declared bound (DEV-067(a)), and `Ty::Error` so its arm keeps answering
+`true`.
+
+### Half two — the bound was unusable inside its own definition, `borrowck.rs`
+
+With half one alone, `fn take<T: Copy>(r: &T) -> T { *r }` was **satisfiable at the call site and
+rejected in its own body**: `is_copy_type_with` answers `false` for every `Ty::Param`, correctly in
+isolation and wrongly for a parameter that declares the bound. So `T: Copy` still was not an escape
+hatch from the move rule — the thing it exists to be.
+
+`borrowck::is_copy_type` now consults the declared bounds first, reading `current_generics` and
+`enclosing_generics` with the same walk `bound_method_receiver` already uses. TYPE-GENERIC-001, the
+principle DEV-067(a) applied to bound discharge: what a parameter declares is what the body may
+rely on.
+
+### Measured
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+struct P { x: Int64 }
+impl Copy for P {}
+// take(&5i64), take(&true), take(&2.5f64), take(&p).x  -- all work
+```
+
+Both guards still hold: an **unbounded** `T` is still refused in the body with `E0100`, and a
+**non-`Copy`** argument is still refused at the call site with `E0500 type 'String' does not satisfy
+trait bound 'Copy'`.
+
+### What this unblocks
+
+DEV-232. Its repair is correct and was reverted only because the code it forbids had no legal
+spelling. `impl<T: Copy> Iterator for Repeat<T>` is now that spelling, so the borrow rule can be
+enforced without deleting a shape of generic code from the language.
+
+## DEV-232 — RESOLVED (2026-08-11, second attempt): re-landed once DEV-234 gave the forbidden code a spelling
+
+The repair is unchanged from the one reverted earlier today. What changed is that it no longer
+removes anything from the language.
+
+The revert's reason was precise: the rejection was correct, and `impl<T: Copy> Iterator for
+Repeat<T>` — the spelling that makes the rejected program legal — could not be instantiated at a
+primitive, because a primitive did not satisfy a `Copy` bound. Closing a soundness hole by deleting
+a shape of generic code was not a trade worth making silently.
+
+DEV-234 repaired that in both halves: the bound is satisfiable at the call site, and a declared
+`T: Copy` is now usable inside the body it is declared on. So the borrow rule can be enforced and
+the code that needs it has somewhere to stand.
+
+`mir_differential::generic_user_iterator_for_loop_agrees` carries the bound now, with a comment
+saying why. That is the whole of the fallout: **132 of 132 pass**, where the first attempt failed
+that one.
+
+### What the first attempt got wrong, and it was not the repair
+
+`ab8da4d` claimed "blast radius measured rather than assumed: none", citing all 65 packages and all
+31 library suites. Those runs were real and they were the wrong population: **the compiler's own
+test corpus was never run.** One test in 132 failed and it was the one that mattered. This attempt
+was validated against the full `cargo test` corpus, not a scoped subset.

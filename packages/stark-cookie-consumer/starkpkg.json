@@ -1,0 +1,8 @@
+{
+  "name": "stark-cookie-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_cookie": { "package": "stark-cookie", "path": "../stark-cookie", "version": "0.1.0" }
+  }
+}

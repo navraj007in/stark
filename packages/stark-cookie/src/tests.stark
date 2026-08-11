@@ -1,0 +1,700 @@
+use super::cookie_value;
+use super::default_limits;
+use super::format_cookie;
+use super::format_set_cookie;
+use super::parse_cookie;
+use super::parse_set_cookie;
+use super::same_site_text;
+use super::Cookie;
+use super::CookieAttribute;
+use super::CookieError;
+use super::CookieLimits;
+use super::CookiePair;
+use super::SameSite;
+use super::SetCookie;
+
+fn permissive_limits() -> CookieLimits {
+    CookieLimits {
+        max_total_bytes: 65536u64,
+        max_cookie_pairs: 256u64,
+        max_name_bytes: 1024u64,
+        max_value_bytes: 8192u64,
+        max_attribute_count: 64u64,
+        max_attribute_name_bytes: 256u64,
+        max_attribute_value_bytes: 4096u64,
+    }
+}
+
+fn expect_cookie(input: &str) -> Cookie {
+    match parse_cookie(&String::from(input), default_limits()) {
+        Ok(cookie) => cookie,
+        Err(_error) => panic("expected cookie parse success"),
+    }
+}
+
+fn expect_set_cookie(input: &str) -> SetCookie {
+    match parse_set_cookie(&String::from(input), default_limits()) {
+        Ok(set_cookie) => set_cookie,
+        Err(_error) => panic("expected set-cookie parse success"),
+    }
+}
+
+// COOKIE-001 / COOKIE-002 / COOKIE-003 -- pairs, order, duplicates.
+
+fn test_cookie_pairs_and_order() {
+    let single = expect_cookie("session=abc123");
+    assert_eq(single.pairs.len(), 1u64);
+    assert_eq(single.pairs[0u64].name.as_str(), "session");
+    assert_eq(single.pairs[0u64].value.as_str(), "abc123");
+
+    let many = expect_cookie("session=abc123; theme=dark; lang=en");
+    assert_eq(many.pairs.len(), 3u64);
+    assert_eq(many.pairs[0u64].name.as_str(), "session");
+    assert_eq(many.pairs[1u64].name.as_str(), "theme");
+    assert_eq(many.pairs[1u64].value.as_str(), "dark");
+    assert_eq(many.pairs[2u64].name.as_str(), "lang");
+    assert_eq(many.pairs[2u64].value.as_str(), "en");
+}
+
+fn test_cookie_duplicates_are_preserved_in_order() {
+    let cookie = expect_cookie("a=one; a=two; a=three");
+    assert_eq(cookie.pairs.len(), 3u64);
+    assert_eq(cookie.pairs[0u64].value.as_str(), "one");
+    assert_eq(cookie.pairs[1u64].value.as_str(), "two");
+    assert_eq(cookie.pairs[2u64].value.as_str(), "three");
+
+    // The accessor picks the FIRST occurrence, deterministically. A caller that needs every
+    // occurrence reads `pairs` -- the header is not a map and this package never pretends it is.
+    match cookie_value(&cookie, &String::from("a")) {
+        Some(value) => assert_eq(value.as_str(), "one"),
+        None => panic("duplicate lookup must find the first pair"),
+    }
+}
+
+// COOKIE-004 -- optional whitespace around separators, but nothing more permissive.
+
+fn test_cookie_optional_whitespace() {
+    let spaced = expect_cookie("a=1;  b=2;\tc=3");
+    assert_eq(spaced.pairs.len(), 3u64);
+    assert_eq(spaced.pairs[1u64].name.as_str(), "b");
+    assert_eq(spaced.pairs[2u64].value.as_str(), "3");
+
+    let leading = expect_cookie("  a=1");
+    assert_eq(leading.pairs.len(), 1u64);
+
+    let empty = expect_cookie("");
+    assert_eq(empty.pairs.len(), 0u64);
+
+    let empty_value = expect_cookie("a=");
+    assert_eq(empty_value.pairs[0u64].value.as_str(), "");
+}
+
+// COOKIE-005 / QUOTE -- quoted values, including the documented SP extension.
+
+fn test_cookie_quoted_values() {
+    let simple = expect_cookie("session=\"abc123\"");
+    assert_eq(simple.pairs[0u64].value.as_str(), "abc123");
+
+    let spaced = expect_cookie("session=\"hello world\"");
+    assert_eq(spaced.pairs[0u64].value.as_str(), "hello world");
+
+    let mixed = expect_cookie("a=\"one two\"; b=three");
+    assert_eq(mixed.pairs.len(), 2u64);
+    assert_eq(mixed.pairs[0u64].value.as_str(), "one two");
+    assert_eq(mixed.pairs[1u64].value.as_str(), "three");
+}
+
+// SET-001 .. SET-009 -- the cookie pair, then each recognised attribute, then extensions.
+
+fn test_set_cookie_name_value_only() {
+    let set_cookie = expect_set_cookie("session=abc123");
+    assert_eq(set_cookie.name.as_str(), "session");
+    assert_eq(set_cookie.value.as_str(), "abc123");
+    assert_eq(set_cookie.attributes.len(), 0u64);
+}
+
+fn test_set_cookie_recognised_attributes() {
+    let set_cookie = expect_set_cookie(
+        "session=abc123; Expires=Wed, 09 Jun 2021 10:18:14 GMT; Max-Age=3600; Domain=example.com; Path=/account; Secure; HttpOnly; SameSite=Lax",
+    );
+    assert_eq(set_cookie.name.as_str(), "session");
+    assert_eq(set_cookie.attributes.len(), 7u64);
+
+    let attr1 = &set_cookie.attributes[0u64];
+    match *attr1 {
+        CookieAttribute::Expires(text) => assert_eq(text.as_str(), "Wed, 09 Jun 2021 10:18:14 GMT"),
+        _other => panic("expected Expires"),
+    }
+    let attr2 = &set_cookie.attributes[1u64];
+    match *attr2 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 3600i64),
+        _other => panic("expected MaxAge"),
+    }
+    let attr3 = &set_cookie.attributes[2u64];
+    match *attr3 {
+        CookieAttribute::Domain(text) => assert_eq(text.as_str(), "example.com"),
+        _other => panic("expected Domain"),
+    }
+    let attr4 = &set_cookie.attributes[3u64];
+    match *attr4 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/account"),
+        _other => panic("expected Path"),
+    }
+    let attr5 = &set_cookie.attributes[4u64];
+    match *attr5 {
+        CookieAttribute::Secure => {}
+        _other => panic("expected Secure"),
+    }
+    let attr6 = &set_cookie.attributes[5u64];
+    match *attr6 {
+        CookieAttribute::HttpOnly => {}
+        _other => panic("expected HttpOnly"),
+    }
+    let attr7 = &set_cookie.attributes[6u64];
+    match *attr7 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "Lax"),
+        _other => panic("expected SameSite"),
+    }
+}
+
+fn test_set_cookie_max_age_signs() {
+    let zero = expect_set_cookie("a=b; Max-Age=0");
+    let attr8 = &zero.attributes[0u64];
+    match *attr8 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 0i64),
+        _other => panic("expected MaxAge"),
+    }
+
+    let negative = expect_set_cookie("a=b; Max-Age=-1");
+    let attr9 = &negative.attributes[0u64];
+    match *attr9 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 0i64 - 1i64),
+        _other => panic("expected MaxAge"),
+    }
+}
+
+// SET-009 / unknown attributes are an extension point, never a whole-value failure.
+
+fn test_set_cookie_unknown_attributes_are_preserved() {
+    let valued = expect_set_cookie("session=abc; Priority=High");
+    assert_eq(valued.attributes.len(), 1u64);
+    let attr10 = &valued.attributes[0u64];
+    match *attr10 {
+        CookieAttribute::Extension(name, value) => {
+            assert_eq(name.as_str(), "Priority");
+            assert_eq(value.as_str(), "High");
+        }
+        _other => panic("expected Extension"),
+    }
+
+    let flag = expect_set_cookie("session=abc; Foo");
+    let attr11 = &flag.attributes[0u64];
+    match *attr11 {
+        CookieAttribute::ExtensionFlag(name) => assert_eq(name.as_str(), "Foo"),
+        _other => panic("expected ExtensionFlag"),
+    }
+}
+
+fn test_set_cookie_duplicate_attributes_are_preserved() {
+    let set_cookie = expect_set_cookie("a=b; Path=/one; Path=/two");
+    assert_eq(set_cookie.attributes.len(), 2u64);
+    let attr12 = &set_cookie.attributes[0u64];
+    match *attr12 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/one"),
+        _other => panic("expected Path"),
+    }
+    let attr13 = &set_cookie.attributes[1u64];
+    match *attr13 {
+        CookieAttribute::Path(text) => assert_eq(text.as_str(), "/two"),
+        _other => panic("expected Path"),
+    }
+}
+
+// CASE-001 / CASE-002 -- attribute and SameSite names compare ASCII case-insensitively.
+
+fn test_attribute_names_are_case_insensitive() {
+    let lower = expect_set_cookie("a=b; secure; httponly; path=/x; max-age=5; domain=e.com");
+    assert_eq(lower.attributes.len(), 5u64);
+    let attr14 = &lower.attributes[0u64];
+    match *attr14 {
+        CookieAttribute::Secure => {}
+        _other => panic("expected Secure"),
+    }
+
+    let upper = expect_set_cookie("a=b; SECURE; HTTPONLY");
+    let attr15 = &upper.attributes[1u64];
+    match *attr15 {
+        CookieAttribute::HttpOnly => {}
+        _other => panic("expected HttpOnly"),
+    }
+}
+
+fn test_same_site_values_are_case_insensitive() {
+    let strict = expect_set_cookie("a=b; samesite=strict");
+    let attr16 = &strict.attributes[0u64];
+    match *attr16 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "Strict"),
+        _other => panic("expected SameSite"),
+    }
+
+    let none = expect_set_cookie("a=b; SAMESITE=NONE");
+    let attr17 = &none.attributes[0u64];
+    match *attr17 {
+        CookieAttribute::SameSite(policy) => assert_eq(same_site_text(policy).as_str(), "None"),
+        _other => panic("expected SameSite"),
+    }
+}
+
+// FORMAT-001 / FORMAT-002 -- deterministic output, quoting only where required.
+
+fn test_format_cookie_is_deterministic() {
+    let mut pairs: Vec<CookiePair> = Vec::new();
+    pairs.push(CookiePair { name: String::from("session"), value: String::from("abc123") });
+    pairs.push(CookiePair { name: String::from("greeting"), value: String::from("hello world") });
+    let cookie = Cookie { pairs: pairs };
+
+    let once = format_cookie(&cookie);
+    assert_eq(once.as_str(), "session=abc123; greeting=\"hello world\"");
+
+    // Repeated formatting of the same value is byte-identical.
+    let twice = format_cookie(&cookie);
+    assert_eq(twice.as_str(), once.as_str());
+}
+
+fn test_format_set_cookie_uses_canonical_attribute_casing() {
+    let mut attributes: Vec<CookieAttribute> = Vec::new();
+    attributes.push(CookieAttribute::Path(String::from("/")));
+    attributes.push(CookieAttribute::MaxAge(0i64 - 42i64));
+    attributes.push(CookieAttribute::Secure);
+    attributes.push(CookieAttribute::HttpOnly);
+    attributes.push(CookieAttribute::SameSite(SameSite::Strict));
+    attributes.push(CookieAttribute::ExtensionFlag(String::from("Foo")));
+    let set_cookie = SetCookie {
+        name: String::from("session"),
+        value: String::from("abc"),
+        attributes: attributes,
+    };
+
+    assert_eq(
+        format_set_cookie(&set_cookie).as_str(),
+        "session=abc; Path=/; Max-Age=-42; Secure; HttpOnly; SameSite=Strict; Foo",
+    );
+}
+
+fn test_formatter_canonicalises_unnecessary_quotes() {
+    // Quotes are syntax, not value: a quoted value with no quote-requiring byte comes back bare.
+    let cookie = expect_cookie("a=\"plain\"");
+    assert_eq(format_cookie(&cookie).as_str(), "a=plain");
+}
+
+// ROUND-001 / ROUND-002 -- parse(format(value)) is equivalent for every representable value.
+
+fn test_cookie_round_trip() {
+    let original = expect_cookie("session=abc123; greeting=\"hello world\"; a=1; a=2");
+    let text = format_cookie(&original);
+    let reparsed = expect_cookie(text.as_str());
+
+    assert_eq(reparsed.pairs.len(), original.pairs.len());
+    let mut i: UInt64 = 0u64;
+    while i < original.pairs.len() {
+        assert_eq(reparsed.pairs[i].name.as_str(), original.pairs[i].name.as_str());
+        assert_eq(reparsed.pairs[i].value.as_str(), original.pairs[i].value.as_str());
+        i = i + 1u64;
+    }
+    assert_eq(format_cookie(&reparsed).as_str(), text.as_str());
+}
+
+fn test_set_cookie_round_trip() {
+    let original = expect_set_cookie(
+        "session=\"a b\"; Expires=Wed, 09 Jun 2021 10:18:14 GMT; Max-Age=-1; Domain=example.com; Path=/one; Path=/two; Secure; HttpOnly; SameSite=none; Priority=High; Foo",
+    );
+    let text = format_set_cookie(&original);
+    let reparsed = expect_set_cookie(text.as_str());
+
+    assert_eq(reparsed.name.as_str(), original.name.as_str());
+    assert_eq(reparsed.value.as_str(), original.value.as_str());
+    assert_eq(reparsed.attributes.len(), original.attributes.len());
+    // Duplicates and extensions survive, so formatting is stable across the round trip.
+    assert_eq(format_set_cookie(&reparsed).as_str(), text.as_str());
+}
+
+// ERR-001 .. ERR-006 -- each error category is distinguished, not collapsed into "parse failed".
+
+fn test_invalid_names_are_rejected() {
+    match parse_cookie(&String::from("=value"), default_limits()) {
+        Ok(_cookie) => panic("empty name must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidName(offset, byte) => {
+                assert_eq(offset, 0u64);
+                assert_eq(byte, 61u8);
+            }
+            _other => panic("expected InvalidName"),
+        }
+    }
+
+    // The name scan stops at the space, so the byte that is not '=' is the space itself.
+    match parse_cookie(&String::from("a b=1"), default_limits()) {
+        Ok(_cookie) => panic("space in a cookie name must be rejected"),
+        Err(error) => match error {
+            CookieError::UnexpectedCharacter(offset, byte) => {
+                assert_eq(offset, 1u64);
+                assert_eq(byte, 32u8);
+            }
+            _other => panic("expected UnexpectedCharacter"),
+        }
+    }
+
+    match parse_cookie(&String::from("a"), default_limits()) {
+        Ok(_cookie) => panic("a pair without '=' must be rejected"),
+        Err(error) => match error {
+            CookieError::UnexpectedCharacter(offset, _byte) => assert_eq(offset, 1u64),
+            _other => panic("expected UnexpectedCharacter"),
+        }
+    }
+}
+
+fn test_invalid_values_are_rejected() {
+    // A bare comma is not a cookie-octet, and browsers tolerating it is not a reason to.
+    match parse_cookie(&String::from("a=one,two"), default_limits()) {
+        Ok(_cookie) => panic("comma in a bare value must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidValue(offset, byte) => {
+                assert_eq(offset, 5u64);
+                assert_eq(byte, 44u8);
+            }
+            _other => panic("expected InvalidValue"),
+        }
+    }
+}
+
+fn test_unterminated_quote_is_rejected() {
+    match parse_cookie(&String::from("a=\"unterminated"), default_limits()) {
+        Ok(_cookie) => panic("unterminated quote must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidQuote(offset) => assert_eq(offset, 2u64),
+            _other => panic("expected InvalidQuote"),
+        }
+    }
+}
+
+fn test_malformed_attributes_are_rejected() {
+    // A boolean attribute carrying a value is malformed. It is never quietly read as `Secure`.
+    match parse_set_cookie(&String::from("a=b; Secure=yes"), default_limits()) {
+        Ok(_set_cookie) => panic("Secure with a value must be rejected"),
+        Err(error) => match error {
+            CookieError::MalformedAttribute(offset) => assert_eq(offset, 5u64),
+            _other => panic("expected MalformedAttribute"),
+        }
+    }
+
+    match parse_set_cookie(&String::from("a=b; HttpOnly=1"), default_limits()) {
+        Ok(_set_cookie) => panic("HttpOnly with a value must be rejected"),
+        Err(error) => match error {
+            CookieError::MalformedAttribute(_offset) => {}
+            _other => panic("expected MalformedAttribute"),
+        }
+    }
+
+    match parse_set_cookie(&String::from("a=b; Path"), default_limits()) {
+        Ok(_set_cookie) => panic("a valued attribute without a value must be rejected"),
+        Err(error) => match error {
+            CookieError::MalformedAttribute(_offset) => {}
+            _other => panic("expected MalformedAttribute"),
+        }
+    }
+
+    match parse_set_cookie(&String::from("a=b; ; Path=/"), default_limits()) {
+        Ok(_set_cookie) => panic("an empty attribute must be rejected"),
+        Err(error) => match error {
+            CookieError::MalformedAttribute(_offset) => {}
+            _other => panic("expected MalformedAttribute"),
+        }
+    }
+}
+
+fn test_invalid_number_and_overflow() {
+    match parse_set_cookie(&String::from("a=b; Max-Age=abc"), default_limits()) {
+        Ok(_set_cookie) => panic("a non-numeric Max-Age must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidNumber(_offset) => {}
+            _other => panic("expected InvalidNumber"),
+        }
+    }
+
+    match parse_set_cookie(&String::from("a=b; Max-Age=-"), default_limits()) {
+        Ok(_set_cookie) => panic("a lone minus must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidNumber(_offset) => {}
+            _other => panic("expected InvalidNumber"),
+        }
+    }
+
+    // Twenty-eight digits. STARK traps on integer overflow, so the accumulator has to be bounded
+    // BEFORE it multiplies -- if it were not, this case would abort the test runner rather than
+    // return an error.
+    match parse_set_cookie(
+        &String::from("a=b; Max-Age=9999999999999999999999999999"),
+        default_limits(),
+    ) {
+
+        Ok(_set_cookie) => panic("an overflowing Max-Age must be rejected"),
+        Err(error) => match error {
+            CookieError::NumberOverflow(_offset) => {}
+            _other => panic("expected NumberOverflow"),
+        }
+    }
+
+    // The largest representable value is accepted, and the next one is not.
+    let max = expect_set_cookie("a=b; Max-Age=9223372036854775807");
+    let attr18 = &max.attributes[0u64];
+    match *attr18 {
+        CookieAttribute::MaxAge(seconds) => assert_eq(seconds, 9223372036854775807i64),
+        _other => panic("expected MaxAge"),
+    }
+
+    match parse_set_cookie(&String::from("a=b; Max-Age=9223372036854775808"), default_limits()) {
+        Ok(_set_cookie) => panic("one past Int64 max must be rejected"),
+        Err(error) => match error {
+            CookieError::NumberOverflow(_offset) => {}
+            _other => panic("expected NumberOverflow"),
+        }
+    }
+}
+
+fn test_unknown_same_site_is_an_error() {
+    // Never folded onto a recognised policy: a caller told `Lax` when the server said something
+    // else would be making a security decision on invented data.
+    match parse_set_cookie(&String::from("a=b; SameSite=Bogus"), default_limits()) {
+        Ok(_set_cookie) => panic("an unrecognised SameSite must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidSameSite(_offset) => {}
+            _other => panic("expected InvalidSameSite"),
+        }
+    }
+}
+
+// LIMIT-001 .. LIMIT-007 -- every limit, one at a time, plus boundaries.
+
+fn test_total_bytes_limit() {
+    let mut limits = permissive_limits();
+    limits.max_total_bytes = 5u64;
+
+    match parse_cookie(&String::from("abc=1"), limits) {
+        Ok(cookie) => assert_eq(cookie.pairs.len(), 1u64),
+        Err(_error) => panic("input exactly at the limit must be accepted"),
+    }
+
+    match parse_cookie(&String::from("abcd=1"), limits) {
+        Ok(_cookie) => panic("input over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededTotalBytesLimit => {}
+            _other => panic("expected ExceededTotalBytesLimit"),
+        }
+    }
+}
+
+fn test_pair_count_limit() {
+    let mut limits = permissive_limits();
+    limits.max_cookie_pairs = 2u64;
+
+    match parse_cookie(&String::from("a=1; b=2"), limits) {
+        Ok(cookie) => assert_eq(cookie.pairs.len(), 2u64),
+        Err(_error) => panic("pair count exactly at the limit must be accepted"),
+    }
+
+    match parse_cookie(&String::from("a=1; b=2; c=3"), limits) {
+        Ok(_cookie) => panic("pair count over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededPairCountLimit => {}
+            _other => panic("expected ExceededPairCountLimit"),
+        }
+    }
+}
+
+fn test_name_and_value_limits() {
+    let mut name_limits = permissive_limits();
+    name_limits.max_name_bytes = 3u64;
+
+    match parse_cookie(&String::from("abc=1"), name_limits) {
+        Ok(cookie) => assert_eq(cookie.pairs[0u64].name.as_str(), "abc"),
+        Err(_error) => panic("a name exactly at the limit must be accepted"),
+    }
+
+    match parse_cookie(&String::from("abcd=1"), name_limits) {
+        Ok(_cookie) => panic("a name over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededNameLimit => {}
+            _other => panic("expected ExceededNameLimit"),
+        }
+    }
+
+    let mut value_limits = permissive_limits();
+    value_limits.max_value_bytes = 3u64;
+
+    match parse_cookie(&String::from("a=abc"), value_limits) {
+        Ok(cookie) => assert_eq(cookie.pairs[0u64].value.as_str(), "abc"),
+        Err(_error) => panic("a value exactly at the limit must be accepted"),
+    }
+
+    match parse_cookie(&String::from("a=abcd"), value_limits) {
+        Ok(_cookie) => panic("a value over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+
+    // A quoted value is measured by its content, not by the quotes that carry it.
+    match parse_cookie(&String::from("a=\"abcd\""), value_limits) {
+        Ok(_cookie) => panic("a quoted value over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededValueLimit => {}
+            _other => panic("expected ExceededValueLimit"),
+        }
+    }
+}
+
+fn test_attribute_limits() {
+    let mut count_limits = permissive_limits();
+    count_limits.max_attribute_count = 1u64;
+
+    match parse_set_cookie(&String::from("a=b; Secure"), count_limits) {
+        Ok(set_cookie) => assert_eq(set_cookie.attributes.len(), 1u64),
+        Err(_error) => panic("attribute count exactly at the limit must be accepted"),
+    }
+
+    match parse_set_cookie(&String::from("a=b; Secure; HttpOnly"), count_limits) {
+        Ok(_set_cookie) => panic("attribute count over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededAttributeCountLimit => {}
+            _other => panic("expected ExceededAttributeCountLimit"),
+        }
+    }
+
+    let mut name_limits = permissive_limits();
+    name_limits.max_attribute_name_bytes = 4u64;
+    match parse_set_cookie(&String::from("a=b; Priority=High"), name_limits) {
+        Ok(_set_cookie) => panic("an attribute name over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededAttributeNameLimit => {}
+            _other => panic("expected ExceededAttributeNameLimit"),
+        }
+    }
+
+    let mut value_limits = permissive_limits();
+    value_limits.max_attribute_value_bytes = 2u64;
+    match parse_set_cookie(&String::from("a=b; Path=/one"), value_limits) {
+        Ok(_set_cookie) => panic("an attribute value over the limit must be rejected"),
+        Err(error) => match error {
+            CookieError::ExceededAttributeValueLimit => {}
+            _other => panic("expected ExceededAttributeValueLimit"),
+        }
+    }
+}
+
+// SEC-001 .. SEC-004 -- hostile input is bounded by the limits, not by luck.
+
+fn test_hostile_input_is_bounded() {
+    let mut limits = permissive_limits();
+    limits.max_total_bytes = 64u64;
+
+    let mut long_name = String::new();
+    let mut i: UInt64 = 0u64;
+    while i < 200u64 {
+        long_name.push('a');
+        i = i + 1u64;
+    }
+    long_name.push('=');
+    long_name.push('1');
+
+    match parse_cookie(&long_name, limits) {
+        Ok(_cookie) => panic("a hostile long name must be bounded"),
+        Err(error) => match error {
+            CookieError::ExceededTotalBytesLimit => {}
+            _other => panic("expected ExceededTotalBytesLimit"),
+        }
+    }
+
+    let mut many = String::new();
+    let mut j: UInt64 = 0u64;
+    while j < 100u64 {
+        if j > 0u64 {
+            many.push_str("; ");
+        }
+        many.push_str("a=1");
+        j = j + 1u64;
+    }
+    let mut pair_limits = permissive_limits();
+    pair_limits.max_cookie_pairs = 10u64;
+    match parse_cookie(&many, pair_limits) {
+        Ok(_cookie) => panic("a hostile pair count must be bounded"),
+        Err(error) => match error {
+            CookieError::ExceededPairCountLimit => {}
+            _other => panic("expected ExceededPairCountLimit"),
+        }
+    }
+}
+
+fn test_control_characters_are_rejected() {
+    // Whitespace terminates a bare value, and trailing whitespace alone is fine...
+    match parse_cookie(&String::from("a=one\t"), default_limits()) {
+        Ok(cookie) => assert_eq(cookie.pairs[0u64].value.as_str(), "one"),
+        Err(_error) => panic("a trailing tab is optional whitespace, not a parse failure"),
+    }
+
+    // ...but what follows it must be a separator. Trailing junk is never silently dropped.
+    match parse_cookie(&String::from("a=one\ttwo"), default_limits()) {
+        Ok(_cookie) => panic("trailing junk after a value must be rejected"),
+        Err(error) => match error {
+            CookieError::UnexpectedCharacter(offset, byte) => {
+                assert_eq(offset, 6u64);
+                assert_eq(byte, 116u8);
+            }
+            _other => panic("expected UnexpectedCharacter"),
+        }
+    }
+
+    // A control byte in a bare value is rejected outright, not treated as a terminator.
+    match parse_cookie(&String::from("a=one\ntwo"), default_limits()) {
+        Ok(_cookie) => panic("a newline in a bare value must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidValue(offset, byte) => {
+                assert_eq(offset, 5u64);
+                assert_eq(byte, 10u8);
+            }
+            _other => panic("expected InvalidValue"),
+        }
+    }
+
+    match parse_cookie(&String::from("a=\"one\ntwo\""), default_limits()) {
+        Ok(_cookie) => panic("a newline inside a quoted value must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidValue(_offset, _byte) => {}
+            _other => panic("expected InvalidValue"),
+        }
+    }
+
+    match parse_set_cookie(&String::from("a=b; Path=/one\u{1}"), default_limits()) {
+        Ok(_set_cookie) => panic("a control byte in an attribute value must be rejected"),
+        Err(error) => match error {
+            CookieError::InvalidAttribute(_offset, _byte) => {}
+            _other => panic("expected InvalidAttribute"),
+        }
+    }
+}
+
+fn test_every_attribute_variant_formats() {
+    let mut attributes: Vec<CookieAttribute> = Vec::new();
+    attributes.push(CookieAttribute::Expires(String::from("Wed, 09 Jun 2021 10:18:14 GMT")));
+    attributes.push(CookieAttribute::Domain(String::from("example.com")));
+    attributes.push(CookieAttribute::Extension(String::from("Priority"), String::from("High")));
+    let set_cookie = SetCookie {
+        name: String::from("id"),
+        value: String::from("v"),
+        attributes: attributes,
+    };
+    assert_eq(
+        format_set_cookie(&set_cookie).as_str(),
+        "id=v; Expires=Wed, 09 Jun 2021 10:18:14 GMT; Domain=example.com; Priority=High",
+    );
+}

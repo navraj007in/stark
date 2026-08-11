@@ -9,6 +9,13 @@
       }
     },
     {
+      "name": "stark_ascii",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    },
+    {
       "name": "stark_env",
       "version": "0.1.0",
       "sha256": "",
@@ -35,6 +42,7 @@
       "version": "0.1.0",
       "sha256": "",
       "dependencies": {
+        "stark_ascii": "0.1.0"
       }
     },
     {
@@ -76,6 +84,14 @@
       }
     },
     {
+      "name": "stark_percent",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_ascii": "0.1.0"
+      }
+    },
+    {
       "name": "stark_time",
       "version": "0.1.0",
       "sha256": "",
@@ -96,6 +112,8 @@
       "version": "0.1.0",
       "sha256": "",
       "dependencies": {
+        "stark_ascii": "0.1.0",
+        "stark_percent": "0.1.0"
       }
     }
   ]

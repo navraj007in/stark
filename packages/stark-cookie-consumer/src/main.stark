@@ -1,0 +1,150 @@
+// Qualification consumer for `stark-cookie`. Every public callable the package declares is
+// executed here, not merely imported: the gate exists because a consumer that only names a
+// surface proves nothing about it.
+
+use stark_cookie::cookie_value;
+use stark_cookie::default_limits;
+use stark_cookie::format_cookie;
+use stark_cookie::format_set_cookie;
+use stark_cookie::parse_cookie;
+use stark_cookie::parse_set_cookie;
+use stark_cookie::same_site_text;
+use stark_cookie::Cookie;
+use stark_cookie::CookieAttribute;
+use stark_cookie::CookieLimits;
+use stark_cookie::CookiePair;
+use stark_cookie::SameSite;
+use stark_cookie::SetCookie;
+
+fn main() {
+    // A single request cookie, then several, with order preserved.
+    let single = match parse_cookie(&String::from("session=abc123"), default_limits()) {
+        Ok(cookie) => cookie,
+        Err(_error) => panic("single cookie parse failed"),
+    };
+    if single.pairs.len() != 1u64 {
+        panic("expected one cookie pair");
+    }
+
+    let limits = CookieLimits {
+        max_total_bytes: 512u64,
+        max_cookie_pairs: 8u64,
+        max_name_bytes: 64u64,
+        max_value_bytes: 256u64,
+        max_attribute_count: 8u64,
+        max_attribute_name_bytes: 32u64,
+        max_attribute_value_bytes: 128u64,
+    };
+    let many = match parse_cookie(
+        &String::from("session=abc123; theme=dark; greeting=\"hello world\""),
+        limits,
+    ) {
+
+        Ok(cookie) => cookie,
+        Err(_error) => panic("multi-pair cookie parse failed"),
+    };
+    if many.pairs.len() != 3u64 {
+        panic("expected three cookie pairs");
+    }
+    match cookie_value(&many, &String::from("THEME")) {
+        Some(value) => {
+            if value.as_str() != "dark" {
+                panic("case-insensitive cookie lookup returned the wrong value");
+            }
+        }
+        None => panic("case-insensitive cookie lookup found nothing"),
+    }
+
+    // A cookie built by hand, formatted, and read back unchanged.
+    let mut pairs: Vec<CookiePair> = Vec::new();
+    pairs.push(CookiePair { name: String::from("a"), value: String::from("1") });
+    pairs.push(CookiePair { name: String::from("b"), value: String::from("two words") });
+    let built = Cookie { pairs: pairs };
+    let cookie_text = format_cookie(&built);
+    if cookie_text.as_str() != "a=1; b=\"two words\"" {
+        panic("cookie formatting is not canonical");
+    }
+    match parse_cookie(&cookie_text, default_limits()) {
+        Ok(reparsed) => {
+            if reparsed.pairs[1u64].value.as_str() != "two words" {
+                panic("cookie round trip lost a value");
+            }
+        }
+        Err(_error) => panic("cookie round trip failed to parse"),
+    }
+
+    // A response cookie carrying every recognised attribute plus an unknown one.
+    let set_cookie = match parse_set_cookie(
+        &String::from("session=abc; Path=/; Secure; HttpOnly; SameSite=Lax; Priority=High"),
+        default_limits(),
+    ) {
+
+        Ok(value) => value,
+        Err(_error) => panic("set-cookie parse failed"),
+    };
+    if set_cookie.attributes.len() != 5u64 {
+        panic("expected five attributes");
+    }
+
+    let mut saw_path = false;
+    let mut saw_secure = false;
+    let mut saw_http_only = false;
+    let mut saw_same_site = false;
+    let mut saw_extension = false;
+    let mut i: UInt64 = 0u64;
+    while i < set_cookie.attributes.len() {
+        let attribute = &set_cookie.attributes[i];
+        match *attribute {
+            CookieAttribute::Path(value) => {
+                if value.as_str() == "/" {
+                    saw_path = true;
+                }
+            }
+            CookieAttribute::Secure => {
+                saw_secure = true;
+            }
+            CookieAttribute::HttpOnly => {
+                saw_http_only = true;
+            }
+            CookieAttribute::SameSite(policy) => {
+                if same_site_text(policy).as_str() == "Lax" {
+                    saw_same_site = true;
+                }
+            }
+            CookieAttribute::Extension(name, value) => {
+                if name.as_str() == "Priority" && value.as_str() == "High" {
+                    saw_extension = true;
+                }
+            }
+            _other => {}
+        }
+        i = i + 1u64;
+    }
+    if !saw_path || !saw_secure || !saw_http_only || !saw_same_site || !saw_extension {
+        panic("set-cookie attributes did not survive parsing");
+    }
+
+    // A response cookie built by hand, formatted with canonical attribute casing.
+    let mut attributes: Vec<CookieAttribute> = Vec::new();
+    attributes.push(CookieAttribute::MaxAge(3600i64));
+    attributes.push(CookieAttribute::SameSite(SameSite::Strict));
+    let built_set_cookie = SetCookie {
+        name: String::from("id"),
+        value: String::from("xyz"),
+        attributes: attributes,
+    };
+    let set_cookie_text = format_set_cookie(&built_set_cookie);
+    if set_cookie_text.as_str() != "id=xyz; Max-Age=3600; SameSite=Strict" {
+        panic("set-cookie formatting is not canonical");
+    }
+    match parse_set_cookie(&set_cookie_text, default_limits()) {
+        Ok(reparsed) => {
+            if format_set_cookie(&reparsed).as_str() != set_cookie_text.as_str() {
+                panic("set-cookie round trip is not stable");
+            }
+        }
+        Err(_error) => panic("set-cookie round trip failed to parse"),
+    }
+
+    println("COOKIE_CONSUMER_OK");
+}

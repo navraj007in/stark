@@ -43,6 +43,9 @@ enum ItemDefDetail {
         items: Vec<String>,
     },
     Model,
+    /// DEV-227. A constant is the one non-constructor item a pattern may name, so it has to be
+    /// distinguishable from a function -- both were `Other`.
+    Const,
     Other,
 }
 
@@ -332,6 +335,9 @@ impl<'a> Resolver<'a> {
                         .collect();
                     self.item_details
                         .insert(hir_id, ItemDefDetail::Trait { items: item_names });
+                }
+                ast::ItemKind::Const { .. } => {
+                    self.item_details.insert(hir_id, ItemDefDetail::Const);
                 }
                 ast::ItemKind::Model(_) => {
                     self.item_details.insert(hir_id, ItemDefDetail::Model);
@@ -762,6 +768,122 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The name `name` as the qualifier in `current_res` owns it, or `None` when the qualifier is
+    /// not a type, trait or model and the module namespace should answer instead.
+    ///
+    /// DEV-223/225. `04-Semantic-Analysis.md` NAME-RESOLVE-001: *"Associated names are searched
+    /// only after resolving their qualifying type or trait."* The subsequent-segment loop did the
+    /// opposite -- it consulted the enclosing module's items first, so a module-level name won
+    /// over the qualifier's own. `Attr::Policy` resolved to a same-named TYPE rather than to
+    /// `Attr`'s variant, and `Foo::new()` resolved to a module-level `new` rather than to `Foo`'s
+    /// associated function.
+    ///
+    /// `None` is returned for a module qualifier (`ItemDefDetail::Other`), which is what keeps
+    /// `mymod::Thing` resolving through the module namespace exactly as before.
+    fn qualified_associated_name(
+        &self,
+        current_res: Option<Res>,
+        name: &str,
+        span: crate::source::Span,
+    ) -> Option<Res> {
+        let Some(Res::Item(item_id)) = current_res else {
+            return None;
+        };
+        match self.item_details.get(&item_id)? {
+            ItemDefDetail::Enum { variants } => Some(
+                variants
+                    .iter()
+                    .position(|v| v == name)
+                    .map(|idx| Res::Variant(item_id, idx as u32))
+                    .unwrap_or(Res::AssociatedFn(item_id, span)),
+            ),
+            ItemDefDetail::Struct { .. } => Some(Res::AssociatedFn(item_id, span)),
+            ItemDefDetail::Trait { items } => Some(
+                items
+                    .iter()
+                    .position(|item| item == name)
+                    .map(|member| Res::TraitMember(item_id, member as u32))
+                    .unwrap_or(Res::Err),
+            ),
+            ItemDefDetail::Model => Some(if name == "load" {
+                Res::ModelLoad(item_id)
+            } else {
+                Res::Err
+            }),
+            // Not a qualifier that owns associated names: let the module namespace answer.
+            ItemDefDetail::Const | ItemDefDetail::Other => None,
+        }
+    }
+
+    /// Whether a PATTERN may name `res`.
+    ///
+    /// DEV-222/226/227. `resolve_path` answers for expression position, where far more is legal:
+    /// `Duration::from_seconds` is an associated function, `Vec::new` is a builtin function, and a
+    /// bare item name is whatever item it names. A pattern may name only a constructor or a
+    /// constant. Every resolution this rejects used to be accepted as a pattern that simply never
+    /// matched, which a wildcard arm then hid completely.
+    ///
+    /// Exhaustive over `Res` so a new variant cannot be added without deciding this.
+    fn resolution_is_pattern_legal(&self, res: &Res) -> bool {
+        match res {
+            // An enum variant is the pattern constructor.
+            Res::Variant(_, _) => true,
+            // `Res::Err` is an already-reported failure; the caller diagnoses it before consulting
+            // this, and reporting again would double up on one mistake.
+            Res::Err => true,
+            // Only the prelude's CONSTRUCTORS, never its functions.
+            Res::Builtin(builtin) => hir::builtin_is_pattern_constructor(builtin),
+            // DEV-227. A bare item name is a pattern only when the item is a constant or a struct
+            // whose shape a pattern can name. A function, a trait, a module or a model is not a
+            // pattern, and accepting one let `match n { helper => .. , _ => .. }` compile with
+            // `helper` silently matching nothing.
+            Res::Item(item_id) => matches!(
+                self.item_details.get(item_id),
+                Some(ItemDefDetail::Struct { .. }) | Some(ItemDefDetail::Const)
+            ),
+            // Everything else names something that exists but cannot appear in pattern position.
+            Res::AssociatedFn(_, _)
+            | Res::TraitMember(_, _)
+            | Res::CoreTraitMember(_, _)
+            | Res::CoreTrait(_)
+            | Res::CoreType(_)
+            | Res::ModelLoad(_)
+            | Res::Local(_)
+            | Res::SelfValue(_)
+            | Res::SelfType
+            | Res::SelfAssoc(_)
+            | Res::TypeParam
+            | Res::ParamAssoc(_, _)
+            | Res::Primitive(_) => false,
+        }
+    }
+
+    /// `res` unless a pattern may not name it, in which case `Res::Err` after reporting.
+    ///
+    /// DEV-222. `resolve_path` answers for EXPRESSION position, where a qualified name that is
+    /// not a variant of the enum or struct is an inherent associated function -- which is how
+    /// `Duration::from_seconds` and `Instant::now` reach their definitions, and must not change.
+    /// A pattern may name far less. The three pattern branches previously asked only "is it
+    /// `Res::Err`", so an associated-function resolution was accepted as a pattern that simply
+    /// never matched: `Colour::Blu` type-checked and fell through to the wildcard with nothing
+    /// reported.
+    fn reject_non_pattern_resolution(&mut self, path: &ast::Path, res: Res, code: &str) -> Res {
+        if self.resolution_is_pattern_legal(&res) {
+            return res;
+        }
+        self.push_diag(
+            Diagnostic::error(
+                format!(
+                    "'{}' is not a pattern; no such variant exists",
+                    self.path_to_string(path)
+                ),
+                path.span,
+            )
+            .with_code(code),
+        );
+        Res::Err
+    }
+
     fn resolve_path(&mut self, start_mod: ModuleId, path: &ast::Path) -> Res {
         self.resolve_path_relative(start_mod, path)
     }
@@ -805,6 +927,10 @@ impl<'a> Resolver<'a> {
 
         let mut current_res = None;
         let mut current_mod = start_mod;
+        // NAME-RESOLVE-001 distinguishes the MODULE namespace from a type's associated names, and
+        // `crate`/`super` stash a placeholder `Res::Item` while steering `current_mod`. Without
+        // this flag the associated-name lookup below would read that placeholder as a real type.
+        let mut current_is_module = false;
 
         for (i, segment) in path.segments.iter().enumerate() {
             let name_str = self.text(segment.span);
@@ -815,12 +941,14 @@ impl<'a> Resolver<'a> {
                         let pkg_root = self.modules[start_mod.0 as usize].package_root;
                         current_res = Some(Res::Item(hir::ItemId(pkg_root.0)));
                         current_mod = pkg_root;
+                        current_is_module = true;
                         continue;
                     }
                     ast::SegmentKind::Super => {
                         if let Some(parent) = self.modules[start_mod.0 as usize].parent {
                             current_res = Some(Res::Item(hir::ItemId(0)));
                             current_mod = parent;
+                            current_is_module = true;
                         } else {
                             self.push_diag(
                                 Diagnostic::error("no parent module for 'super'", segment.span)
@@ -871,11 +999,13 @@ impl<'a> Resolver<'a> {
 
                         if let Some(res) = resolved {
                             current_res = Some(res);
+                            current_is_module = false;
                             if let Res::Item(item_id) = res {
                                 if let Some(&sub_mod_id) =
                                     self.submodule_map.get(&ast::ItemId(item_id.0))
                                 {
                                     current_mod = sub_mod_id;
+                                    current_is_module = true;
                                 }
                             }
                         } else {
@@ -883,6 +1013,20 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
+            } else if let Some(assoc_res) = if current_is_module {
+                None
+            } else {
+                self.qualified_associated_name(current_res, name_str, segment.span)
+            } {
+                // DEV-223/225. NAME-RESOLVE-001 searches a qualifier's associated names after
+                // resolving the qualifier and before anything else; this loop used to consult the
+                // enclosing module first. A module qualifier still falls through to the module
+                // lookup below, because `qualified_associated_name` declines for it.
+                if assoc_res == Res::Err {
+                    return Res::Err;
+                }
+                current_res = Some(assoc_res);
+                current_is_module = false;
             } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
                 if !self.name_is_visible_from(current_mod, name_str, start_mod) {
                     self.push_diag(
@@ -892,35 +1036,18 @@ impl<'a> Resolver<'a> {
                     return Res::Err;
                 }
                 current_res = Some(res);
+                current_is_module = false;
                 if let Res::Item(item_id) = res {
                     if let Some(&sub_mod_id) = self.submodule_map.get(&ast::ItemId(item_id.0)) {
                         current_mod = sub_mod_id;
+                        current_is_module = true;
                     }
                 }
-            } else if let Some(Res::Item(item_id)) = current_res {
-                match self.item_details.get(&item_id) {
-                    Some(ItemDefDetail::Enum { variants }) => {
-                        if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
-                            current_res = Some(Res::Variant(item_id, variant_idx as u32));
-                        } else {
-                            current_res = Some(Res::AssociatedFn(item_id, segment.span));
-                        }
-                    }
-                    Some(ItemDefDetail::Struct { .. }) => {
-                        current_res = Some(Res::AssociatedFn(item_id, segment.span));
-                    }
-                    Some(ItemDefDetail::Trait { items }) => {
-                        if let Some(member) = items.iter().position(|item| item == name_str) {
-                            current_res = Some(Res::TraitMember(item_id, member as u32));
-                        } else {
-                            return Res::Err;
-                        }
-                    }
-                    Some(ItemDefDetail::Model) if name_str == "load" => {
-                        current_res = Some(Res::ModelLoad(item_id));
-                    }
-                    _ => return Res::Err,
-                }
+            } else if let Some(Res::Item(_)) = current_res {
+                // A qualifier that owns associated names was answered by
+                // `qualified_associated_name` above; reaching here means the qualifier was a
+                // module or a constant and the module lookup already declined.
+                return Res::Err;
             } else if let Some(Res::CoreTrait(core_trait)) = current_res {
                 // DEV-052: a `CoreTrait` (`Eq`, `Ord`, `Hash`, ...) has no `hir::ItemKind::Trait`
                 // declaration item to look a member up against the way the `Res::Item` arm above
@@ -1340,9 +1467,24 @@ impl<'a> Resolver<'a> {
                 let value_res = if let Some(Res::Variant(enum_id, variant_idx)) = module_res {
                     Some(Res::Variant(enum_id, variant_idx))
                 } else if let Some(Res::Item(item_id)) = module_res {
-                    Some(Res::Item(item_id))
+                    // DEV-227. SYN-PATTERN-001 matches by value only for "a unit enum variant or a
+                    // constant in scope"; anything else "introduces a new binding". Every item was
+                    // taken by value here, so a bare `helper` naming a FUNCTION became a value
+                    // pattern that could never equal anything -- it silently matched nothing, and
+                    // a wildcard arm absorbed the mistake. A function, struct, trait, alias or
+                    // module name is a binding, which is what the rule says and what a reader
+                    // expects.
+                    if matches!(self.item_details.get(&item_id), Some(ItemDefDetail::Const)) {
+                        Some(Res::Item(item_id))
+                    } else {
+                        None
+                    }
                 } else if let Some(builtin) = resolve_builtin(name_str) {
-                    if !is_tensor_builtin(builtin) || self.options.tensor() {
+                    // DEV-226. Only a constructor matches by value; `Vec::new` and friends are
+                    // functions and must fall through to a binding exactly as any other name does.
+                    if (!is_tensor_builtin(builtin) || self.options.tensor())
+                        && hir::builtin_is_pattern_constructor(&builtin)
+                    {
                         Some(Res::Builtin(builtin))
                     } else {
                         None
@@ -1386,7 +1528,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ast::PatKind::Path(path) => {
-                let res = self.resolve_path(self.current_module, path);
+                let mut res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
                     self.push_diag(
                         Diagnostic::error(
@@ -1395,6 +1537,8 @@ impl<'a> Resolver<'a> {
                         )
                         .with_code("E0200"),
                     );
+                } else {
+                    res = self.reject_non_pattern_resolution(path, res, "E0200");
                 }
                 hir::PatKind::Path {
                     path: path.clone(),
@@ -1402,7 +1546,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ast::PatKind::TupleVariant { path, pats } => {
-                let res = self.resolve_path(self.current_module, path);
+                let mut res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
                     self.push_diag(
                         Diagnostic::error(
@@ -1411,6 +1555,8 @@ impl<'a> Resolver<'a> {
                         )
                         .with_code("E0202"),
                     );
+                } else {
+                    res = self.reject_non_pattern_resolution(path, res, "E0202");
                 }
                 let pats = pats.iter().map(|&p| self.lower_pattern(p)).collect();
                 hir::PatKind::TupleVariant {
@@ -1420,7 +1566,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ast::PatKind::Struct { path, fields } => {
-                let res = self.resolve_path(self.current_module, path);
+                let mut res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
                     self.push_diag(
                         Diagnostic::error(
@@ -1429,6 +1575,8 @@ impl<'a> Resolver<'a> {
                         )
                         .with_code("E0202"),
                     );
+                } else {
+                    res = self.reject_non_pattern_resolution(path, res, "E0202");
                 }
                 let fields = fields.iter().map(|f| {
                     let pat = f.pat.map(|p| self.lower_pattern(p));

@@ -1,0 +1,8 @@
+{
+  "name": "stark-urlencoded-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_urlencoded": { "package": "stark-urlencoded", "path": "../stark-urlencoded", "version": "0.1.0" }
+  }
+}

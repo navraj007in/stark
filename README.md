@@ -199,15 +199,12 @@ actually *call* every covered public surface.
 
 | Area | Packages |
 | --- | --- |
-| Encoding and text | `stark-ascii`, `stark-base64`, `stark-hex`, `stark-percent`, `stark-checksum`, `stark-uuid` |
-| Formatting | `stark-fmt` |
-| Data formats | `stark-json`, `stark-csv`, `stark-form`, `stark-mime`, `stark-query` |
+| Foundation utilities | `stark-ascii`, `stark-base64`, `stark-hex`, `stark-percent`, `stark-fmt`, `stark-args`, `stark-semver` |
+| Data/text formats | `stark-json`, `stark-csv`, `stark-mime`, `stark-urlencoded` |
 | Paths and URLs | `stark-path`, `stark-glob`, `stark-url` |
-| Host access | `stark-time`, `stark-env`, `stark-io`, `stark-random` |
-| Command line | `stark-args` |
-| Versioning | `stark-semver` |
-| Networking | `stark-net` (TCP + DNS), `stark-tls` |
-| HTTP | `stark-http-core`, `stark-http-parser`, `stark-http-serialize`, `stark-http-client` |
+| Host-capability packages | `stark-time`, `stark-env`, `stark-io`, `stark-random`, `stark-net`, `stark-tls` |
+| Network/protocol | `stark-http-core`, `stark-http-parser`, `stark-http-serialize`, `stark-http-auth`, `stark-cookie`, `stark-http-client` |
+| Security/content identity | `stark-checksum`, `stark-digest`, `stark-sha256`, `stark-content-id`, `stark-uuid` |
 
 **Host access is derived, envelope-checked, and provider-backed.** The compiler derives authority
 from every host-interface reference in the resolved graph (conservatively, without dead-code

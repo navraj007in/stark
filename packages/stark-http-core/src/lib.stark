@@ -9,6 +9,9 @@
 // is a header that is already valid, so the serializer never has to ask — and a caller cannot
 // smuggle a CRLF into a value and have it become two headers on the wire.
 
+use stark_ascii::eq_ignore_ascii_case;
+use stark_ascii::is_tchar;
+
 pub enum HttpMethod {
     Get,
     Post,
@@ -79,25 +82,6 @@ pub fn default_limits() -> HttpLimits {
 }
 
 // -- byte classification -------------------------------------------------------------------
-//
-// RFC 9110 token characters. Written out rather than derived from ranges because the punctuation
-// set is not contiguous and a range expression would be a second, wrong description of it.
-
-fn is_digit(byte: UInt8) -> Bool {
-    byte >= 48u8 && byte <= 57u8
-}
-
-fn is_alpha(byte: UInt8) -> Bool {
-    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
-}
-
-fn is_token_byte(byte: UInt8) -> Bool {
-    if is_alpha(byte) || is_digit(byte) {
-        return true;
-    }
-    // ! # $ % & ' * + - . ^ _ ` | ~
-    byte == 33u8 || byte == 35u8 || byte == 36u8 || byte == 37u8 || byte == 38u8 || byte == 39u8 || byte == 42u8 || byte == 43u8 || byte == 45u8 || byte == 46u8 || byte == 94u8 || byte == 95u8 || byte == 96u8 || byte == 124u8 || byte == 126u8
-}
 
 /// A header value may hold visible ASCII, space and horizontal tab. It may NOT hold CR or LF —
 /// that is the injection this rejects — and it may not hold other control bytes.
@@ -105,31 +89,11 @@ fn is_value_byte(byte: UInt8) -> Bool {
     byte == 9u8 || byte >= 32u8 && byte <= 126u8
 }
 
-fn to_lower_byte(byte: UInt8) -> UInt8 {
-    if byte >= 65u8 && byte <= 90u8 {
-        return byte + 32u8;
-    }
-    byte
-}
-
 /// ASCII case-insensitive comparison, which is what header names use. Deliberately NOT a
 /// lowercase-and-compare on `String`: `to_uppercase` is Unicode-aware, and a Unicode fold on a
 /// header name would make two distinct names compare equal.
 pub fn ascii_equal_ignore_case(left: &str, right: &str) -> Bool {
-    let a = left.bytes();
-    let b = right.bytes();
-    let n = a.len();
-    if n != b.len() {
-        return false;
-    }
-    let mut i = 0u64;
-    while i < n {
-        if to_lower_byte(a[i]) != to_lower_byte(b[i]) {
-            return false;
-        }
-        i = i + 1u64;
-    }
-    true
+    eq_ignore_ascii_case(left.bytes(), right.bytes())
 }
 
 pub fn is_valid_header_name(name: &str) -> Bool {
@@ -140,7 +104,7 @@ pub fn is_valid_header_name(name: &str) -> Bool {
     }
     let mut i = 0u64;
     while i < n {
-        if !is_token_byte(bytes[i]) {
+        if !is_tchar(bytes[i]) {
             return false;
         }
         i = i + 1u64;

@@ -2189,8 +2189,12 @@ fn generic_impl_eq_dispatch_agrees() {
 fn generic_user_iterator_for_loop_agrees() {
     differential(
         "generic_iter.stark",
+        // DEV-232/DEV-234: `Some(self.item)` moves `T` out of `&mut self`, which the move rule
+        // forbids unless `T` is `Copy`. The bound is what makes this program legal, and it became
+        // usable only when DEV-234 made a primitive satisfy `Copy` -- before that there was no
+        // spelling for this shape at all, which is why DEV-232's repair was reverted once.
         "struct Repeat<T> { item: T, left: Int32 } \
-         impl<T> Iterator for Repeat<T> { \
+         impl<T: Copy> Iterator for Repeat<T> { \
              type Item = T; \
              fn next(&mut self) -> Option<T> { \
                  if self.left == 0 { None } else { self.left = self.left - 1; Some(self.item) } \

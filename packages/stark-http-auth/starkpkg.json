@@ -4,6 +4,7 @@
   "entry": "src/lib.stark",
   "distribution": { "toolchain": true },
   "dependencies": {
+    "stark_ascii": { "package": "stark-ascii", "path": "../stark-ascii", "version": "0.1.0" },
     "stark_base64": { "package": "stark-base64", "path": "../stark-base64", "version": "0.1.0" }
   }
 }
