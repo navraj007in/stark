@@ -236,36 +236,6 @@ impl<'a> BorrowChecker<'a> {
             }
             return;
         }
-        // DEV-232. The arm above covers a bare `*r`. A FIELD read through the same reference --
-        // `t.v` for `t: &T` -- produces an owned non-`Copy` value just as surely, and was not
-        // covered: `stark check` accepted it, the interpreter raised `internal compiler error:
-        // use of moved or invalid field`, and native leaked an internal `Place` description. A
-        // function that only borrows its argument destroyed the caller's value and nothing said
-        // so.
-        //
-        // The rule was already implemented for the PATTERN case by DEV-072
-        // (`reject_moves_out_of_borrow`); this is the same prohibition in expression position, and
-        // it reuses DEV-072's own classifier so the two cannot drift apart.
-        //
-        // A `Copy` field is untouched, because a `Copy` read moves nothing -- `fn peek(t: &T) ->
-        // Int64 { t.v }` stays legal, which is why the check is on the VALUE's type rather than on
-        // the shape alone.
-        if matches!(
-            &self.hir.expr(expr_id).kind,
-            hir::ExprKind::Field { .. } | hir::ExprKind::TupleField { .. }
-        ) {
-            let value_ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Ty::Error);
-            if !self.is_copy_type(&value_ty) && self.scrutinee_reads_through_ref(expr_id) {
-                self.push_diag(
-                    Diagnostic::error(
-                        "cannot move a non-Copy value out of a reference",
-                        self.hir.expr(expr_id).span,
-                    )
-                    .with_code("E0100")
-                    .with_label("borrow this field instead of moving it out of the reference"),
-                );
-            }
-        }
         // WP-C6.1f-b2: an argument of type `&mut T` **re-borrows** rather than moving.
         //
         // A parameter is an expected-type boundary, and 03-Type-System's reference coercions make
