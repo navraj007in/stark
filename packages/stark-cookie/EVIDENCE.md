@@ -6,7 +6,7 @@ Baseline branch: `develop`
 
 Worktree clean at baseline: true
 
-Final SHA: recorded by the commit that lands this file; see `git log -1 -- packages/stark-cookie`
+Final SHA: `d6b3c79` (the commit that landed the package); this file is amended by the commit that follows it
 
 Every code-derived claim below names the commit it was read from.
 
@@ -51,8 +51,11 @@ Every code-derived claim below names the commit it was read from.
 
 ## CI
 
-- run ID: not run at the time of writing
-- conclusion: not run
+- run ID `31454342408` — workflow `CI`, branch `develop`, commit `d6b3c79`
+- run ID `31454342423` — workflow `C7.8 Native Capabilities`, branch `develop`, commit `d6b3c79`
+- conclusion: not yet available. Both runs were queued/in progress when this was written, and a
+  conclusion is not claimed until one exists. The previous run of both workflows on `develop`
+  (`31452583578` / `31452583512`) concluded `success`.
 
 ## Compiler changes
 
