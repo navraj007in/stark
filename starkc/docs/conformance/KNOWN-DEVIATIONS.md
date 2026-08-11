@@ -9464,3 +9464,222 @@ that one.
 31 library suites. Those runs were real and they were the wrong population: **the compiler's own
 test corpus was never run.** One test in 132 failed and it was the one that mattered. This attempt
 was validated against the full `cargo test` corpus, not a scoped subset.
+
+## DEV-228 — RESOLVED (2026-08-11): the resolver carries the namespaces the specification names
+
+`ModuleData` now holds three module-level maps — `modules`, `types`, `values` — where it held one.
+The fourth namespace NAME-RESOLVE-001 names, associated items, was already separate: it hangs off a
+type or trait and `qualified_associated_name` answers it from `item_details`.
+
+### The declaration site was the whole collapse
+
+Four namespaces met at one `items.entry(name)`, which is why `struct Pair` alongside `fn Pair()`
+was `E0204`. Declarations now route by kind — struct/enum/trait/alias/model to types, fn/const to
+values, mod to modules — and imports route by what the leaf resolves to, per MOD-USE-001's
+"selected namespaces". A duplicate is a duplicate **within one namespace**, which is what the rule
+actually says and what the controls in the regression pin.
+
+### Reads are directed by the position that asks
+
+`resolve_path_in` takes an `NsHint`. A type annotation, bound or impl target searches types; an
+expression searches values; a bare-identifier pattern searches values (SYN-PATTERN-001 matches by
+value only for a unit variant or a constant, both values). `NsHint::Any` is not a precedence rule
+smuggled back in — it is for the two positions that legitimately admit any namespace: a path
+QUALIFIER, where `Foo::bar`'s `Foo` may be a module or a type, and an import.
+
+### What this was really about
+
+The `E0204` was the visible symptom. The corrosive part was that one map forced a PRECEDENCE
+between names that were never meant to compete, and DEV-223 and DEV-225 were both repaired by
+ordering one lookup ahead of another. A third exception was the trajectory. With namespaces there
+is nothing to order: the position asks the map it is entitled to.
+
+### Not yet done, deliberately
+
+The two precedence exceptions those deviations added still stand. With namespaces in place they
+may now be redundant, but "may" is not evidence, and deleting them is a separate commit so that a
+regression bisects to the deletion rather than to a change this size.
+
+### Verified
+
+Both audit harnesses re-run against the split: **33 + 29 probes, 0 disagreements** — including
+every precedence cell DEV-223 and DEV-225 came from, which is the specific thing a namespace
+reorder could have broken.
+
+## DEV-228 — phase 3 (2026-08-11): the precedence exceptions are gone, because the question is
+
+The namespace split landed at `9541a5d` and left DEV-223's and DEV-225's repair in place: an
+associated-name lookup ordered ahead of the module maps. This removes it — but **not by deleting the
+ordering**, which was the obvious move and the wrong one.
+
+### Why deleting the ordering would have reintroduced DEV-223
+
+For `Attr::Policy`, the module lookup searches `current_mod` — the module ENCLOSING the path, since
+`Attr` is not a submodule. A same-named type declared there sits in the type namespace, and
+`NsHint::Value` falls back to types after values decline. So a bare deletion finds the enclosing
+module's `Policy` again, which is precisely the defect.
+
+### What was actually wrong
+
+Not the order. The module maps were consulted **at all** for a qualifier that is a type or trait.
+NAME-RESOLVE-001 searches associated names "after resolving their qualifying type or trait" — in
+*that* qualifier's namespace, and nowhere else. The enclosing module was never a legitimate place
+to look; the ordering was compensating for asking a question that should not have been asked.
+
+The module lookup is now reached only when the qualifier IS a module. There is no precedence to
+state, because there is one candidate namespace rather than two competing ones:
+
+> `Attr::Policy` cannot find an enclosing module's `Policy` for the same reason it cannot find a
+> local variable — a different namespace is not a lower-priority candidate, it is not a candidate.
+
+### The shape of the three phases, in retrospect
+
+Splitting the maps (phase 1) was not the fix; it was what made the fix expressible. Directing reads
+by position (phase 2) is what let a type annotation and an expression disagree about a spelling.
+Only then could this phase remove a search path rather than reorder two. A phase-1-only landing
+would have been strictly worse than either endpoint, which is why they went in as one packet.
+
+### Verified
+
+Both audit harnesses re-run: **33 + 29 probes, 0 disagreements**, including every precedence cell
+DEV-223 and DEV-225 came from. `dev148_associated_fn_across_modules` passes — the suite that caught
+the FIRST attempt at DEV-223's reorder, when `crate`/`super`'s placeholder `Res::Item` was misread
+as a real type, and therefore the sharpest control available for a change to this loop.
+
+## DEV-235 — a promotion-blocking check fails intermittently on loopback socket timing (OPEN, registered 2026-08-11)
+
+`stark-net`'s `a_detached_socket_is_live_and_this_provider_has_forgotten_it` failed the
+`C7.8 Native Capabilities` lane on **PR #25, the develop→main promotion**, and passed on re-run of
+the same commit with no change to any input.
+
+```text
+run 31473452567  macos-arm64   FAILED   panicked at packages/stark-net/native/src/lib.rs:1257
+                 linux-x64     success
+                 windows-x64   success
+re-run           macos-arm64   success
+```
+
+The test starts a loopback server, adopts a detached socket, writes, then `read_exact`s under a
+five-second read timeout and asserts an echo. Timing-dependent on a shared runner. `C7.8
+qualification record comparison` failed downstream of it, because it compares records from all
+three platform jobs and one produced none.
+
+**No change in the PR touched provider crates** — `git diff --name-only origin/main..HEAD --
+'packages/*/native'` was empty — and the identical workflow had passed on the identical tree twenty
+minutes earlier. So the failure carried no information about the change it was gating.
+
+### Why this is filed rather than shrugged at
+
+A required check that fails on network timing teaches everyone to re-run it, and a gate that is
+re-run reflexively has stopped being a gate. The re-run here was justified — it tested a specific
+hypothesis, environmental rather than code, and the hypothesis was confirmed — but that reasoning
+does not survive repetition. The next person sees a red check on a green tree and clicks re-run
+without the hypothesis.
+
+CD-399's own condition says a red required check "withdraws the authorisation rather than inviting
+an override". A check that goes red for reasons unrelated to the tree makes that sentence
+unenforceable.
+
+### What would fix it
+
+The lifecycle claim needs a live peer — CD-347/CD-348 are explicit that a resource-shaped provider
+must SUCCESSFULLY acquire, use and release, and that a failure-only path is the weaker claim. So
+removing the socket is not the answer. The candidates are a generous or absent read deadline for
+the assertion (the timeout is not what the test is about), a retry around the connect/echo rather
+than the assertion, or moving the timing-sensitive exchange out of the promotion-gating lane into
+one whose failure does not block a merge.
+
+Not repaired here: it is provider-test work, and the tree it would land on is mid-packet.
+
+## DEV-229 — CONFIRMED (2026-08-11): a user declaration loses to a hardcoded builtin spelling
+
+Filed UNCONFIRMED because the first probe could not separate "the user's declaration won" from
+"the builtin won and happened to agree". This probe separates them, by declaring a type whose
+meaning DISAGREES with the builtin of the same spelling:
+
+```stark
+enum Ordering { Less, Equal, Greater }
+fn tag(o: Ordering) -> Int64 {
+    match o { Ordering::Less => 111i64, Ordering::Equal => 222i64, Ordering::Greater => 333i64 }
+}
+fn main() { println(tag(Ordering::Less)); }
+```
+
+```text
+Error: [E0303] non-exhaustive pattern match
+Error: [E0001] type mismatch: expected 'Ordering', found 'Ordering'
+```
+
+**`expected 'Ordering', found 'Ordering'` is the whole finding.** Two different types with one
+spelling, in one program. The scrutinee's type resolved to the user's enum through the type
+namespace; the match arms resolved to `Res::Builtin(OrderingLess)` and friends through
+`resolve_path_relative`'s opening `match self.path_to_string(path).as_str()`, which runs before any
+namespace is consulted. The arms therefore cover a different type than the scrutinee has, and
+exhaustiveness reports the enum as uncovered.
+
+The defect is confined to the ~30 hardcoded spellings. An ordinary user associated function of the
+same shape is unaffected — `impl Buf { pub fn from(_s: &str) -> Buf }` called as `Buf::from("x")`
+returns the user's value, because `Buf::from` is not in that table.
+
+### What makes it fixable now
+
+NAME-RESOLVE-001 gives builtin spellings no precedence over declared names, and the resolver now
+has namespaces to resolve declared names IN — which it did not when the table was written. The
+repair is to invert the order: attempt ordinary resolution first, and consult the builtin table
+only when nothing was found. A program that declares none of the thirty names resolves exactly as
+today; a program that declares one stops being told its own type is not its own type.
+
+### Severity, now that it is confirmed
+
+Wrong-code in the same family as DEV-222 and DEV-231: two names that should be one thing are two,
+and the diagnostic points somewhere other than the cause. `expected 'Ordering', found 'Ordering'`
+is unactionable on its face — nothing in it suggests the fix is "do not name your enum Ordering".
+
+## DEV-229 — RESOLVED (2026-08-11): the prelude spellings are a fallback, not a pre-emption
+
+`resolve_path_relative` opened with a `match self.path_to_string(path).as_str()` over twenty-six
+spellings — `String::from`, `Vec::new`, `Ordering::Less`, `IOError::Other` and the rest — returning
+`Res::Builtin` **before any namespace was consulted**. A declared name could therefore never win,
+which is how a user `enum Ordering` produced `type mismatch: expected 'Ordering', found 'Ordering'`:
+the scrutinee resolved to the user's enum through the type namespace, the match arms to the builtin
+through the table.
+
+That table is now `builtin_path()`, consulted only when ordinary resolution finds nothing.
+NAME-RESOLVE-001 gives a builtin SPELLING no precedence over a declared name. A program declaring
+none of the twenty-six resolves exactly as before, because nothing is found and the table answers
+unchanged.
+
+### Why the namespaces had to come first
+
+The table was not an arbitrary shortcut. Before DEV-228 there was one map and no way to ask "is
+this name declared as a type, or as a value" — so there was nowhere for a declared name to be
+resolved TO, and pre-empting was the only behaviour available. The split is what made the inversion
+expressible, which is the same relationship phase 3 had to phases 1 and 2.
+
+### The fallback had to move twice, and the control is what said so
+
+Placed at the END of the segment walk it did nothing useful: that walk returns `Res::Err` early the
+moment a segment names nothing declared, and that is **exactly** the state a builtin spelling is in.
+`String::from` never reached it. The walk is now `resolve_declared_path` and the fallback sits in
+the wrapper above it.
+
+The reproducer passed at that intermediate stage while `Ordering::Less` with nothing shadowing it
+broke. Had only the reproducer been run, this would have shipped a compiler in which `String::from`
+does not resolve.
+
+### Measured
+
+```text
+user `enum Ordering` declared        111          the user's enum wins
+nothing shadowing                    hi, 1, less  String::from, Vec::new, Ordering::Less
+HashMap/HashSet/Box/Char/String      1, 1, 7, A, 0
+```
+
+Audit harnesses: **33 + 29 probes, 0 disagreements.**
+
+### Residual
+
+The twenty-six spellings remain a string-matched table rather than entries in the value and type
+namespaces. Making them ordinary namespace entries a user declaration shadows by the normal rule
+would delete the special case entirely; the fallback keeps it, in a position where it can no longer
+pre-empt. That is a smaller, later cleanup and is not required for conformance.
