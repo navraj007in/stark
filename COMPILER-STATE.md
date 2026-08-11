@@ -10,11 +10,12 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
                 `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
 Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-222/223/224 (registered 2026-08-11 by `stark-cookie`; 222 is WRONG-CODE)
+              DEV-224 (native gap), DEV-228/229 (resolution namespaces, registered 2026-08-11).
+              DEV-222/223 RESOLVED 2026-08-11, plus DEV-225/226/227 found by the same audit and
+              resolved on arrival
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
-                 capability half OPEN). Of the eleven, three are reached by written code:
-                 DEV-160, and DEV-222/224 which `stark-cookie` hit while being written.
-                 DEV-222 and DEV-223 are BOTH wrong-code (223 revised 2026-08-11)
+                 capability half OPEN). Of the eleven, two are reached by written code:
+                 DEV-160, and DEV-224 which `stark-cookie` hit while being written
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -7725,3 +7726,45 @@ source was modified.** Population A 8 -> 11.
 
 None of the three was worked around by changing the compiler; DEV-222 has no package-level
 workaround because it is a missing rejection rather than a shape to avoid.
+
+---
+
+### 2026-08-11 (later) — DEV-222/223 repaired, and an audit outward from them found three more
+
+Not a chartered packet: a repair taken directly from the `stark-cookie` findings, plus an external
+audit of the resolver that widened the scope. **Uncommitted at the time of writing.** Population A
+stays at 11 — two resolved, two registered.
+
+**Repaired.** DEV-222 in pattern lowering (`resolution_is_pattern_legal`, exhaustive over `Res`,
+reached through one `reject_non_pattern_resolution` helper from all three pattern branches) and
+DEV-223 in `resolve_path_relative` (`qualified_associated_name` ahead of the module lookup, with
+`current_is_module` so `crate`/`super`'s placeholder `Res::Item` is not misread as a type). The
+expression resolver is untouched: `Res::AssociatedFn` keeps its meaning, which sixty-odd
+associated-function call sites across `packages/` depend on.
+
+**Found by the audit, and resolved in the same change:** DEV-225 (associated-name precedence for
+structs, traits and models, not just enum variants — a NAME-RESOLVE-001 conformance deviation),
+DEV-226 (every `Res::Builtin` accepted as a pattern, so `Vec::new(x)` matched nothing silently),
+DEV-227 (every `Res::Item` accepted as a by-value pattern, so a bare function name matched nothing;
+repaired by BINDING per SYN-PATTERN-001 rather than by rejecting, which an audit suggestion would
+have got backwards).
+
+**Registered OPEN, not repaired:** DEV-228 — `ModuleData::items` is one `HashMap<String, Res>` where
+NAME-RESOLVE-001 specifies four namespaces, so a type and a value sharing a spelling is rejected
+with `E0204`. This is the common cause behind how easily 222/223/225 were reached, and it cannot be
+recovered downstream: the distinction is gone once both declarations collapse into one entry. Two
+precedence exceptions have now been added to that single map; a third would be the wrong direction.
+**Recommend a compiler-track decision on the resolver's namespace model before more precedence work
+lands.** DEV-229 — thirty hard-coded builtin path spellings are matched before name resolution runs;
+filed UNCONFIRMED because no probe yet distinguishes "the user's declaration won" from "the builtin
+won and agreed".
+
+Considered and NOT filed: an audit suggestion to add a central `Res::Variant` well-formedness
+invariant. It is reasonable hardening, but no reproducer was produced and nothing observed depends
+on it; filing it as a deviation would put a design preference in the defect ledger.
+
+Validation: `cargo fmt --check` clean; `cargo clippy --workspace --all-features --all-targets --
+-D warnings` exit 0; starkc lib 579; adversarial_patterns, conformance, module/import/provenance,
+DEV-148 and native enum suites green; 20 new regression tests across three files, each verified to
+fail against the unfixed compiler; every first-party library package suite green; native debug and
+release consumers correct. Not run: full `cargo test --workspace` (shared checkout).

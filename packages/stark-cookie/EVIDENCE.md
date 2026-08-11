@@ -80,9 +80,15 @@ unable to run under `stark run` — in exchange for nothing.
 ## New deviations
 
 Two compiler defects were found while implementing this package, plus the native gap recorded
-under Residuals. All three are now filed on the compiler track as **DEV-222, DEV-223 and DEV-224**
-in `starkc/docs/conformance/KNOWN-DEVIATIONS.md`, with a session record in `COMPILER-STATE.md`
-taking population A from 8 to 11. None was worked around by changing the compiler.
+under Residuals. All three are filed on the compiler track as **DEV-222, DEV-223 and DEV-224** in
+`starkc/docs/conformance/KNOWN-DEVIATIONS.md`, with session records in `COMPILER-STATE.md`. None
+was worked around by changing the compiler while this package was written.
+
+**DEV-222 and DEV-223 have since been REPAIRED** (2026-08-11), and an audit outward from them found
+three more — DEV-225/226/227, all resolved — plus DEV-228/229 registered open. DEV-224, the native
+backend gap, is still open, so the tagged-struct attribute model below stands. `SameSitePolicy` can
+revert to `SameSite` once the repair lands, and is deliberately left alone here so that this
+package's history stays readable.
 
 ### DEV-223 (filed 2026-08-11; was COOKIE-DEV-A here) — a variant sharing a name with an in-scope type is reported non-exhaustive
 

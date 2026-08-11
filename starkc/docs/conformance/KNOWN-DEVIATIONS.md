@@ -25,6 +25,8 @@
 | `DEV-196` | 2 | L5595 | **L5620** |  DEV-196 — ANSWERED by measurement (2026-08-07) |
 | `DEV-206` | 2 | L6186 | **L6201** | DEV-206 — REVISED: `Display` accepted an unsized slice place and rejected its borrowed view [CLO |
 | `DEV-213` | 2 | L46 | **L6566** | DEV-213 — CLOSED (C10-P, 2026-08-09). The cache is invalidated per PACKAGE, not per URI |
+| `DEV-222` | 2 | L8532 | **L8800** | DEV-222 — RESOLVED (2026-08-11): pattern lowering asks what a pattern may name |
+| `DEV-223` | 3 | L8618 | **L8818** | DEV-223 — RESOLVED (2026-08-11): the qualifier's associated namespace is searched first |
 
 *Derived by `as8-reconcile-deviations.py`; no status is asserted here that the file does not
 already state in its own last heading for that deviation.*
@@ -8792,3 +8794,144 @@ was asked. The defect is that *pattern* lowering accepts a resolution that canno
 `res == Res::Err` before emitting `E0200`/`E0202`. The repair belongs in that guard — widening it
 from "is it `Res::Err`" to "is it a resolution a pattern may name" — or in a pattern-aware
 resolution entry point. It does not belong in the shared expression path.
+
+---
+
+## DEV-222 — RESOLVED (2026-08-11): pattern lowering asks what a pattern may name
+
+Repaired where the defect was, which was **not** `resolve_path`. That function answers for
+EXPRESSION position, and `Res::AssociatedFn` for a name that is not a variant is the correct answer
+there — `Duration::from_seconds`, `Instant::now` and `Line::new` reach their definitions through it,
+sixty-odd call sites across `packages/`. Returning `Res::Err` from those arms would have broken
+every one.
+
+`resolve.rs` gains `resolution_is_pattern_legal`, exhaustive over `Res`, consulted by all three
+pattern branches through one `reject_non_pattern_resolution` helper. The branches previously asked
+only `res == Res::Err`. The diagnostic now names the path — `'Colour::Blu' is not a pattern; no such
+variant exists` — instead of `E0303 non-exhaustive` pointing at the `match`, which was the wording
+that invited a wildcard and made the bug silent.
+
+Regression: `starkc/tests/dev222_pattern_only_resolutions.rs`, six tests. Verified to fail against
+the unfixed compiler and to pass against the repair, with the accepting side (valid unit and tuple
+variants, associated functions in expression position, `Some`/`None`) pinned as controls.
+
+## DEV-223 — RESOLVED (2026-08-11): the qualifier's associated namespace is searched first
+
+`resolve_path_relative`'s subsequent-segment loop consulted the enclosing module's items before the
+variants of the item being qualified. Now a qualifier that owns associated names answers first, via
+`qualified_associated_name`, and a module qualifier still falls through to the module namespace —
+tracked explicitly with `current_is_module`, because `crate`/`super` stash a placeholder `Res::Item`
+that the first version of this repair misread as a real type (caught by DEV-148's suite).
+
+Both faces close: the exhaustive match compiles, and `Attr::Policy(Policy::A)` constructs instead of
+trapping at runtime with `item is not callable`.
+
+Regression: `starkc/tests/dev223_variant_shadowed_by_a_type.rs`, six tests. The constructor face is
+EXECUTED through the interpreter rather than stopping at `typecheck`, because that face passed both
+front-end stages and failed at runtime — a test that stopped earlier passed against the defect.
+
+## DEV-225 — RESOLVED on arrival (2026-08-11): associated-name precedence, beyond enum variants
+
+Found by auditing outward from DEV-223 rather than by hitting it. NAME-RESOLVE-001 in
+`04-Semantic-Analysis.md` says: *"Associated names are searched only after resolving their
+qualifying type or trait."* DEV-223 was the enum-variant face; the rule covers structs, traits and
+models, and all of them lost to the enclosing module.
+
+```stark
+struct Foo { a: Int64 }
+impl Foo { pub fn new() -> Foo { Foo { a: 1i64 } } }
+fn new() -> Int64 { 99i64 }
+fn main() { let f = Foo::new(); println(f.a); }
+```
+
+Before: `E0001 cannot access field 'a' on non-struct type 'Int64'` — `Foo::new` had resolved to the
+module-level `new`. After: prints `1`.
+
+**This is a conformance deviation against a numbered normative rule**, not a preference. The repair
+is the same `qualified_associated_name` helper DEV-223 introduced, generalised from enum variants to
+every qualifier that owns associated names.
+
+## DEV-226 — RESOLVED on arrival (2026-08-11): only builtin CONSTRUCTORS are patterns
+
+Every `Res::Builtin` was accepted as a pattern. Most builtins are functions.
+
+```stark
+match v { Vec::new(x) => println(x), _other => println("fell through") }
+```
+
+`stark check` reported OK and the program printed `fell through` — DEV-222's failure mode one
+namespace over. `hir::builtin_is_pattern_constructor` is now exhaustive over `Builtin`: `Some`,
+`None`, `Ok`, `Err`, the three `Ordering` variants and the five `IOError` variants are constructors;
+everything else is a function or a constant expression and is refused in pattern position.
+
+## DEV-227 — RESOLVED on arrival (2026-08-11): a bare identifier is a value pattern only for a variant or a constant
+
+Every `Res::Item` was taken by value in the bare-identifier pattern branch, so a name binding a
+FUNCTION became a value pattern that could never equal anything:
+
+```stark
+fn helper() -> Int64 { 1i64 }
+fn main() { let n = 3i64; match n { helper => println("x"), _other => println("fell") } }
+```
+
+compiled and printed `fell`.
+
+`02-Syntax-Grammar.md` SYN-PATTERN-001 states the rule: a single identifier pattern "that resolves
+to a unit enum variant or a constant in scope matches by value; otherwise it introduces a new
+binding." **The repair is therefore to BIND, not to reject** — an audit suggestion to make this an
+error would have contradicted the grammar. `ItemDefDetail` gains a `Const` variant so a constant
+stays distinguishable from a function, which it was not before.
+
+Same-session regressions for DEV-225/226/227:
+`starkc/tests/dev225_227_resolution_namespaces.rs`, eight tests including the module-path and
+`super::` controls the precedence reorder could most plausibly have broken.
+
+## DEV-228 — the resolver has ONE namespace map where NAME-RESOLVE-001 specifies four (OPEN, registered 2026-08-11)
+
+**Architectural, and the reason DEV-222/223/225 were all easy to reach.**
+
+NAME-RESOLVE-001: *"Core has distinct module, type, value, and associated-item namespaces… The same
+spelling may coexist in different namespaces, but two declarations in one namespace and scope are
+duplicates."*
+
+`Resolver::ModuleData` carries `items: HashMap<String, Res>`, and `declare_items` puts functions,
+structs, enums, traits, constants, aliases, modules and models into that one map. So the coexistence
+the rule permits is rejected:
+
+```stark
+struct Pair { a: Int64 }
+fn Pair() -> Int64 { 5i64 }
+```
+
+```text
+Error: [E0204] duplicate definition of 'Pair' in the same scope
+```
+
+A type and a value sharing a spelling is legal per the rule and is refused.
+
+**No downstream validator can recover this.** Once both declarations collapse into one map entry,
+the namespace distinction is gone before any later pass can consult it — which is why this is filed
+as architecture rather than as another precedence exception. DEV-223 and DEV-225 were both repaired
+by moving one lookup ahead of another; a third and fourth exception on the same single map is the
+wrong direction. The resolver should carry the namespaces the rule names.
+
+Not repaired here. It is a resolver-model change, not a bug fix, and it wants a compiler-track
+decision rather than a package-derived session.
+
+## DEV-229 — qualified builtin paths are matched by SPELLING before name resolution runs (OPEN, UNCONFIRMED, registered 2026-08-11)
+
+`resolve_path_relative` opens with a `match self.path_to_string(path).as_str()` over roughly thirty
+hard-coded spellings — `"String::from"`, `"Vec::new"`, `"HashMap::new"`, `"Ordering::Less"`,
+`"IOError::Other"` and the rest — returning `Res::Builtin` before any module, import or item lookup
+happens.
+
+NAME-RESOLVE-001 gives no precedence to builtin spellings over declared names, so a user declaration
+occupying one of those spellings can never win. Whether these names are *reserved* is not stated in
+the specification; the implementation currently assumes a reservation the language does not express.
+
+**Filed UNCONFIRMED, deliberately.** A probe declaring `enum Ordering { Less, Equal, Greater }` and
+matching `Ordering::Less` behaved correctly, but that test cannot separate "the user's enum won"
+from "the builtin won and happened to agree", so it establishes nothing either way. What is certain
+is the code path; what is not is whether any reachable program observes a wrong answer. Closing this
+needs either a specification statement that the spellings are reserved, or a probe that distinguishes
+the two resolutions.

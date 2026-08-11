@@ -672,6 +672,82 @@ pub fn bound_trait_of_res(hir: &Hir, res: Res) -> Option<BoundTrait> {
     }
 }
 
+/// Whether `builtin` is a pattern CONSTRUCTOR rather than a function.
+///
+/// DEV-226. The resolver hands back `Res::Builtin` for everything the prelude provides, and most
+/// of them are functions: `Vec::new`, `println`, `panic`. Only the constructors may appear in a
+/// pattern. Accepting the rest let `match v { Vec::new(x) => .., _ => .. }` compile and silently
+/// never match -- DEV-222's failure mode one namespace over.
+///
+/// Exhaustive so that a new builtin cannot be added without deciding whether it is matchable.
+pub fn builtin_is_pattern_constructor(builtin: &Builtin) -> bool {
+    match builtin {
+        // `Option` and `Result`.
+        Builtin::Some | Builtin::None | Builtin::Ok | Builtin::Err => true,
+        // Compiler-known unit enums, wired the same way a user enum's variants are.
+        Builtin::OrderingLess | Builtin::OrderingEqual | Builtin::OrderingGreater => true,
+        Builtin::IOErrorNotFound
+        | Builtin::IOErrorPermissionDenied
+        | Builtin::IOErrorAlreadyExists
+        | Builtin::IOErrorInvalidInput
+        | Builtin::IOErrorOther => true,
+        // Everything else is a function or a constant expression, not a constructor.
+        Builtin::Print
+        | Builtin::Println
+        | Builtin::Panic
+        | Builtin::Assert
+        | Builtin::AssertEq
+        | Builtin::AssertNe
+        | Builtin::Sqrt
+        | Builtin::Drop
+        | Builtin::StringFrom
+        | Builtin::StringNew
+        | Builtin::StringWithCapacity
+        | Builtin::CharFromU32
+        | Builtin::VecNew
+        | Builtin::VecWithCapacity
+        | Builtin::BoxNew
+        | Builtin::BoxIntoInner
+        | Builtin::ReadFile
+        | Builtin::WriteFile
+        | Builtin::FileOpen
+        | Builtin::FileCreate
+        | Builtin::Tensor(_)
+        | Builtin::SizeOf
+        | Builtin::AlignOf
+        | Builtin::Swap
+        | Builtin::Replace
+        | Builtin::Take
+        | Builtin::HashMapNew
+        | Builtin::HashMapWithCapacity
+        | Builtin::HashSetNew
+        | Builtin::MathPi
+        | Builtin::MathE
+        | Builtin::MathAbs
+        | Builtin::MathMin
+        | Builtin::MathMax
+        | Builtin::MathClamp
+        | Builtin::Pow
+        | Builtin::Log
+        | Builtin::Log10
+        | Builtin::Exp
+        | Builtin::Sin
+        | Builtin::Cos
+        | Builtin::Tan
+        | Builtin::Asin
+        | Builtin::Acos
+        | Builtin::Atan
+        | Builtin::Atan2
+        | Builtin::Floor
+        | Builtin::Ceil
+        | Builtin::Round
+        | Builtin::Trunc
+        | Builtin::Eprint
+        | Builtin::Eprintln
+        | Builtin::RandomNew => false,
+    }
+}
+
 /// The receiver form trait `trait_id` declares for `method`, or `None` if it declares no such
 /// method. `name_of` reads a span against the TRAIT's declaring file (DEV-069 provenance), which
 /// only the caller can do.
