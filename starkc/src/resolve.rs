@@ -1017,6 +1017,56 @@ impl<'a> Resolver<'a> {
     ///
     /// DEV-228. Before the namespaces were split this took no hint, because there was only one map
     /// to search and the question could not be asked.
+    /// The prelude spellings the compiler provides directly.
+    ///
+    /// DEV-229. This ran BEFORE any namespace was consulted, so a user declaration could
+    /// never win: `enum Ordering { Less, Equal, Greater }` produced
+    /// "type mismatch: expected 'Ordering', found 'Ordering'" -- the scrutinee resolved to the
+    /// user's enum through the type namespace while the match arms resolved to
+    /// `Res::Builtin(OrderingLess)` through this table. NAME-RESOLVE-001 gives builtin
+    /// SPELLINGS no precedence over declared names, and before the namespaces existed there was
+    /// nowhere to resolve a declared name TO, which is why the table was written this way.
+    ///
+    /// It is now a fallback: consulted only when ordinary resolution finds nothing. A program
+    /// that declares none of these names resolves exactly as before.
+    fn builtin_path(&mut self, path: &ast::Path) -> Option<Res> {
+        match self.path_to_string(path).as_str() {
+            "String::from" => return Some(Res::Builtin(Builtin::StringFrom)),
+            "String::new" => return Some(Res::Builtin(Builtin::StringNew)),
+            "String::with_capacity" => return Some(Res::Builtin(Builtin::StringWithCapacity)),
+            "Char::from_u32" => return Some(Res::Builtin(Builtin::CharFromU32)),
+            "Vec::new" => return Some(Res::Builtin(Builtin::VecNew)),
+            "Vec::with_capacity" => return Some(Res::Builtin(Builtin::VecWithCapacity)),
+            "Box::new" => return Some(Res::Builtin(Builtin::BoxNew)),
+            "Box::into_inner" => return Some(Res::Builtin(Builtin::BoxIntoInner)),
+            "std::fs::read_file" => return Some(Res::Builtin(Builtin::ReadFile)),
+            "std::fs::write_file" => return Some(Res::Builtin(Builtin::WriteFile)),
+            "File::open" => return Some(Res::Builtin(Builtin::FileOpen)),
+            "File::create" => return Some(Res::Builtin(Builtin::FileCreate)),
+            "HashMap::new" => return Some(Res::Builtin(Builtin::HashMapNew)),
+            "HashMap::with_capacity" => return Some(Res::Builtin(Builtin::HashMapWithCapacity)),
+            "HashSet::new" => return Some(Res::Builtin(Builtin::HashSetNew)),
+            // Phase 4E: `math::min`/`math::max` are qualified-only — bare
+            // `min`/`max` are already claimed by the `tensor` extension.
+            "math::min" | "std::math::min" => return Some(Res::Builtin(Builtin::MathMin)),
+            "math::max" | "std::math::max" => return Some(Res::Builtin(Builtin::MathMax)),
+            "Random::new" => return Some(Res::Builtin(Builtin::RandomNew)),
+            // WP-C2.2 (DEV-027): Ordering's unit variants, mirroring IOError's wiring.
+            "Ordering::Less" => return Some(Res::Builtin(Builtin::OrderingLess)),
+            "Ordering::Equal" => return Some(Res::Builtin(Builtin::OrderingEqual)),
+            "Ordering::Greater" => return Some(Res::Builtin(Builtin::OrderingGreater)),
+            "IOError::NotFound" => return Some(Res::Builtin(Builtin::IOErrorNotFound)),
+            "IOError::PermissionDenied" => {
+                return Some(Res::Builtin(Builtin::IOErrorPermissionDenied))
+            }
+            "IOError::AlreadyExists" => return Some(Res::Builtin(Builtin::IOErrorAlreadyExists)),
+            "IOError::InvalidInput" => return Some(Res::Builtin(Builtin::IOErrorInvalidInput)),
+            "IOError::Other" => return Some(Res::Builtin(Builtin::IOErrorOther)),
+            _ => {}
+        }
+        None
+    }
+
     fn resolve_path_in(&mut self, start_mod: ModuleId, path: &ast::Path, hint: NsHint) -> Res {
         self.resolve_path_relative_in(start_mod, path, hint)
     }
@@ -1031,7 +1081,25 @@ impl<'a> Resolver<'a> {
         self.resolve_path_relative_in(start_mod, path, NsHint::Any)
     }
 
+    /// Ordinary resolution first, the prelude spelling table only if it finds nothing.
+    ///
+    /// DEV-229. The table used to run BEFORE any namespace was consulted, so a user declaration
+    /// could never win. The fallback has to live out here rather than at the end of the segment
+    /// walk, because that walk returns `Res::Err` early the moment a segment names nothing
+    /// declared -- which is exactly the case a builtin spelling is in.
     fn resolve_path_relative_in(
+        &mut self,
+        start_mod: ModuleId,
+        path: &ast::Path,
+        hint: NsHint,
+    ) -> Res {
+        match self.resolve_declared_path(start_mod, path, hint) {
+            Res::Err => self.builtin_path(path).unwrap_or(Res::Err),
+            res => res,
+        }
+    }
+
+    fn resolve_declared_path(
         &mut self,
         start_mod: ModuleId,
         path: &ast::Path,
@@ -1039,38 +1107,6 @@ impl<'a> Resolver<'a> {
     ) -> Res {
         if path.segments.is_empty() {
             return Res::Err;
-        }
-        match self.path_to_string(path).as_str() {
-            "String::from" => return Res::Builtin(Builtin::StringFrom),
-            "String::new" => return Res::Builtin(Builtin::StringNew),
-            "String::with_capacity" => return Res::Builtin(Builtin::StringWithCapacity),
-            "Char::from_u32" => return Res::Builtin(Builtin::CharFromU32),
-            "Vec::new" => return Res::Builtin(Builtin::VecNew),
-            "Vec::with_capacity" => return Res::Builtin(Builtin::VecWithCapacity),
-            "Box::new" => return Res::Builtin(Builtin::BoxNew),
-            "Box::into_inner" => return Res::Builtin(Builtin::BoxIntoInner),
-            "std::fs::read_file" => return Res::Builtin(Builtin::ReadFile),
-            "std::fs::write_file" => return Res::Builtin(Builtin::WriteFile),
-            "File::open" => return Res::Builtin(Builtin::FileOpen),
-            "File::create" => return Res::Builtin(Builtin::FileCreate),
-            "HashMap::new" => return Res::Builtin(Builtin::HashMapNew),
-            "HashMap::with_capacity" => return Res::Builtin(Builtin::HashMapWithCapacity),
-            "HashSet::new" => return Res::Builtin(Builtin::HashSetNew),
-            // Phase 4E: `math::min`/`math::max` are qualified-only — bare
-            // `min`/`max` are already claimed by the `tensor` extension.
-            "math::min" | "std::math::min" => return Res::Builtin(Builtin::MathMin),
-            "math::max" | "std::math::max" => return Res::Builtin(Builtin::MathMax),
-            "Random::new" => return Res::Builtin(Builtin::RandomNew),
-            // WP-C2.2 (DEV-027): Ordering's unit variants, mirroring IOError's wiring.
-            "Ordering::Less" => return Res::Builtin(Builtin::OrderingLess),
-            "Ordering::Equal" => return Res::Builtin(Builtin::OrderingEqual),
-            "Ordering::Greater" => return Res::Builtin(Builtin::OrderingGreater),
-            "IOError::NotFound" => return Res::Builtin(Builtin::IOErrorNotFound),
-            "IOError::PermissionDenied" => return Res::Builtin(Builtin::IOErrorPermissionDenied),
-            "IOError::AlreadyExists" => return Res::Builtin(Builtin::IOErrorAlreadyExists),
-            "IOError::InvalidInput" => return Res::Builtin(Builtin::IOErrorInvalidInput),
-            "IOError::Other" => return Res::Builtin(Builtin::IOErrorOther),
-            _ => {}
         }
 
         let mut current_res = None;

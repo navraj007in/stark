@@ -9634,3 +9634,52 @@ today; a program that declares one stops being told its own type is not its own 
 Wrong-code in the same family as DEV-222 and DEV-231: two names that should be one thing are two,
 and the diagnostic points somewhere other than the cause. `expected 'Ordering', found 'Ordering'`
 is unactionable on its face — nothing in it suggests the fix is "do not name your enum Ordering".
+
+## DEV-229 — RESOLVED (2026-08-11): the prelude spellings are a fallback, not a pre-emption
+
+`resolve_path_relative` opened with a `match self.path_to_string(path).as_str()` over twenty-six
+spellings — `String::from`, `Vec::new`, `Ordering::Less`, `IOError::Other` and the rest — returning
+`Res::Builtin` **before any namespace was consulted**. A declared name could therefore never win,
+which is how a user `enum Ordering` produced `type mismatch: expected 'Ordering', found 'Ordering'`:
+the scrutinee resolved to the user's enum through the type namespace, the match arms to the builtin
+through the table.
+
+That table is now `builtin_path()`, consulted only when ordinary resolution finds nothing.
+NAME-RESOLVE-001 gives a builtin SPELLING no precedence over a declared name. A program declaring
+none of the twenty-six resolves exactly as before, because nothing is found and the table answers
+unchanged.
+
+### Why the namespaces had to come first
+
+The table was not an arbitrary shortcut. Before DEV-228 there was one map and no way to ask "is
+this name declared as a type, or as a value" — so there was nowhere for a declared name to be
+resolved TO, and pre-empting was the only behaviour available. The split is what made the inversion
+expressible, which is the same relationship phase 3 had to phases 1 and 2.
+
+### The fallback had to move twice, and the control is what said so
+
+Placed at the END of the segment walk it did nothing useful: that walk returns `Res::Err` early the
+moment a segment names nothing declared, and that is **exactly** the state a builtin spelling is in.
+`String::from` never reached it. The walk is now `resolve_declared_path` and the fallback sits in
+the wrapper above it.
+
+The reproducer passed at that intermediate stage while `Ordering::Less` with nothing shadowing it
+broke. Had only the reproducer been run, this would have shipped a compiler in which `String::from`
+does not resolve.
+
+### Measured
+
+```text
+user `enum Ordering` declared        111          the user's enum wins
+nothing shadowing                    hi, 1, less  String::from, Vec::new, Ordering::Less
+HashMap/HashSet/Box/Char/String      1, 1, 7, A, 0
+```
+
+Audit harnesses: **33 + 29 probes, 0 disagreements.**
+
+### Residual
+
+The twenty-six spellings remain a string-matched table rather than entries in the value and type
+namespaces. Making them ordinary namespace entries a user declaration shadows by the normal rule
+would delete the special case entirely; the fallback keeps it, in a position where it can no longer
+pre-empt. That is a smaller, later cleanup and is not required for conformance.
