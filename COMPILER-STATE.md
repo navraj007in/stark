@@ -12,9 +12,11 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-228/229 (resolution namespaces), DEV-233
-              (the interpreter loses output written before a trap). DEV-232 and DEV-234 both RESOLVED
+Population A: 10 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-229 (UNCONFIRMED), DEV-233
+              (the interpreter loses output written before a trap). DEV-228 RESOLVED 2026-08-11: the
+              resolver now carries the module/type/value namespaces NAME-RESOLVE-001 specifies,
+              so the precedence exceptions have nothing left to order. DEV-232 and DEV-234 both RESOLVED
               2026-08-11: the `Copy` bound was repaired in both halves, which gave DEV-232's
               rejection a legal spelling and let it re-land. DEV-231, found by the audit's scope C
               and RESOLVED the same day. DEV-224 was mis-scoped on filing, REVISED,

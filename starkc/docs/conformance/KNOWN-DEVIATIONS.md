@@ -9464,3 +9464,44 @@ that one.
 31 library suites. Those runs were real and they were the wrong population: **the compiler's own
 test corpus was never run.** One test in 132 failed and it was the one that mattered. This attempt
 was validated against the full `cargo test` corpus, not a scoped subset.
+
+## DEV-228 — RESOLVED (2026-08-11): the resolver carries the namespaces the specification names
+
+`ModuleData` now holds three module-level maps — `modules`, `types`, `values` — where it held one.
+The fourth namespace NAME-RESOLVE-001 names, associated items, was already separate: it hangs off a
+type or trait and `qualified_associated_name` answers it from `item_details`.
+
+### The declaration site was the whole collapse
+
+Four namespaces met at one `items.entry(name)`, which is why `struct Pair` alongside `fn Pair()`
+was `E0204`. Declarations now route by kind — struct/enum/trait/alias/model to types, fn/const to
+values, mod to modules — and imports route by what the leaf resolves to, per MOD-USE-001's
+"selected namespaces". A duplicate is a duplicate **within one namespace**, which is what the rule
+actually says and what the controls in the regression pin.
+
+### Reads are directed by the position that asks
+
+`resolve_path_in` takes an `NsHint`. A type annotation, bound or impl target searches types; an
+expression searches values; a bare-identifier pattern searches values (SYN-PATTERN-001 matches by
+value only for a unit variant or a constant, both values). `NsHint::Any` is not a precedence rule
+smuggled back in — it is for the two positions that legitimately admit any namespace: a path
+QUALIFIER, where `Foo::bar`'s `Foo` may be a module or a type, and an import.
+
+### What this was really about
+
+The `E0204` was the visible symptom. The corrosive part was that one map forced a PRECEDENCE
+between names that were never meant to compete, and DEV-223 and DEV-225 were both repaired by
+ordering one lookup ahead of another. A third exception was the trajectory. With namespaces there
+is nothing to order: the position asks the map it is entitled to.
+
+### Not yet done, deliberately
+
+The two precedence exceptions those deviations added still stand. With namespaces in place they
+may now be redundant, but "may" is not evidence, and deleting them is a separate commit so that a
+regression bisects to the deletion rather than to a change this size.
+
+### Verified
+
+Both audit harnesses re-run against the split: **33 + 29 probes, 0 disagreements** — including
+every precedence cell DEV-223 and DEV-225 came from, which is the specific thing a namespace
+reorder could have broken.

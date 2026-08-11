@@ -20,12 +20,45 @@ fn extension_reserved_name(name: &str) -> Option<&'static str> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub u32);
 
+/// DEV-228. `04-Semantic-Analysis.md` NAME-RESOLVE-001: *"Core has distinct module, type, value,
+/// and associated-item namespaces … The same spelling may coexist in different namespaces, but two
+/// declarations in one namespace and scope are duplicates."*
+///
+/// The resolver held one `HashMap<String, Res>` for all of them, so `struct Pair` alongside
+/// `fn Pair()` was rejected as a duplicate although the rule permits it — and, more corrosively,
+/// every lookup had to be given a PRECEDENCE over names that were never meant to compete.
+/// DEV-223 and DEV-225 were both repaired by ordering one lookup ahead of another; a third such
+/// exception was the trajectory this replaces.
+///
+/// The associated-item namespace is not here: it hangs off a type or trait, and
+/// `qualified_associated_name` already answers it from `item_details`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Namespace {
+    Module,
+    Type,
+    Value,
+}
+
+/// Which namespace a lookup is entitled to search, decided by the syntactic position that asked.
+///
+/// `Any` is for a position that genuinely cannot know — a path QUALIFIER (`Foo::bar`, where `Foo`
+/// may be a module or a type) and an import, which per MOD-USE-001 selects by what it finds.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum NsHint {
+    Type,
+    Value,
+    Any,
+}
+
 struct ModuleData {
     #[allow(dead_code)]
     name: String,
     parent: Option<ModuleId>,
     file: Arc<SourceFile>,
-    items: HashMap<String, Res>,
+    /// The three module-level namespaces, replacing the single `items` map.
+    modules: HashMap<String, Res>,
+    types: HashMap<String, Res>,
+    values: HashMap<String, Res>,
     submodules: HashMap<String, ModuleId>,
     package_root: ModuleId,
 }
@@ -112,7 +145,9 @@ pub fn resolve_with_options(
         name: "crate".to_string(),
         parent: None,
         file: file.clone(),
-        items: HashMap::new(),
+        modules: HashMap::new(),
+        types: HashMap::new(),
+        values: HashMap::new(),
         submodules: HashMap::new(),
         package_root: ModuleId(0),
     });
@@ -141,7 +176,7 @@ pub fn resolve_with_options(
         let total_items = resolver
             .modules
             .iter()
-            .map(|m| m.items.len())
+            .map(|m| m.modules.len() + m.types.len() + m.values.len())
             .sum::<usize>();
         if total_items == last_total_items {
             break;
@@ -153,8 +188,8 @@ pub fn resolve_with_options(
     resolver.check_imports_resolved(&root_items);
     for ((module, name), visibility) in &resolver.reexport_vis {
         if matches!(visibility, Some(ast::Vis::Pub)) {
-            if let Some(Res::Item(item)) = resolver.modules[module.0 as usize].items.get(name) {
-                resolver.hir.publicly_nameable_items.insert(*item);
+            if let Some(Res::Item(item)) = resolver.lookup_ns(*module, name, NsHint::Any) {
+                resolver.hir.publicly_nameable_items.insert(item);
             }
         }
     }
@@ -277,10 +312,17 @@ impl<'a> Resolver<'a> {
 
             if let Some(span) = name_span {
                 let name_str = self.item_name(ast_id, span);
-                match self.modules[current_mod_id.0 as usize]
-                    .items
-                    .entry(name_str.clone())
-                {
+                // DEV-228. This entry is where every declaration used to land in one map, so a
+                // type and a value sharing a spelling collided although NAME-RESOLVE-001 permits
+                // it. Each now lands in its own namespace, and a duplicate is a duplicate WITHIN
+                // one namespace -- which is exactly what the rule says.
+                let ns = Self::namespace_of_item(&item.kind);
+                let map = match ns {
+                    Namespace::Module => &mut self.modules[current_mod_id.0 as usize].modules,
+                    Namespace::Type => &mut self.modules[current_mod_id.0 as usize].types,
+                    Namespace::Value => &mut self.modules[current_mod_id.0 as usize].values,
+                };
+                match map.entry(name_str.clone()) {
                     Entry::Occupied(_) => self.push_diag(
                         Diagnostic::error(
                             format!("duplicate definition of '{}' in the same scope", name_str),
@@ -395,7 +437,9 @@ impl<'a> Resolver<'a> {
                     name: name_str.clone(),
                     parent: Some(current_mod_id),
                     file,
-                    items: HashMap::new(),
+                    modules: HashMap::new(),
+                    types: HashMap::new(),
+                    values: HashMap::new(),
                     submodules: HashMap::new(),
                     package_root,
                 };
@@ -567,12 +611,8 @@ impl<'a> Resolver<'a> {
                         // glob-colliding names wins (vs. gets flagged E0204 by
                         // insert_module_item) nondeterministic across runs of the identical
                         // program. See COMPILER-STATE.md DEV-007.
-                        let mut items_to_copy: Vec<(String, Res)> = self.modules
-                            [sub_mod_id.0 as usize]
-                            .items
-                            .iter()
-                            .map(|(k, v)| (k.clone(), *v))
-                            .collect();
+                        let mut items_to_copy: Vec<(String, Res)> =
+                            self.all_module_names(sub_mod_id);
                         items_to_copy.sort_by(|a, b| a.0.cmp(&b.0));
                         for (k, v) in items_to_copy {
                             self.insert_module_item(current_mod, k, v, prefix.span);
@@ -676,12 +716,8 @@ impl<'a> Resolver<'a> {
                         // glob-colliding names wins (vs. gets flagged E0204 by
                         // insert_module_item) nondeterministic across runs of the identical
                         // program. See COMPILER-STATE.md DEV-007.
-                        let mut items_to_copy: Vec<(String, Res)> = self.modules
-                            [sub_mod_id.0 as usize]
-                            .items
-                            .iter()
-                            .map(|(k, v)| (k.clone(), *v))
-                            .collect();
+                        let mut items_to_copy: Vec<(String, Res)> =
+                            self.all_module_names(sub_mod_id);
                         items_to_copy.sort_by(|a, b| a.0.cmp(&b.0));
                         for (k, v) in items_to_copy {
                             self.insert_module_item(import_mod, k, v, prefix.span);
@@ -742,12 +778,105 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The namespace a declaration belongs to. NAME-RESOLVE-001's own division: types, aliases and
+    /// traits are the type namespace; constants and functions are the value namespace; a `mod` is
+    /// the module namespace. Enum VARIANTS are deliberately absent — they are associated names on
+    /// their enum, not module-level ones, and `qualified_associated_name` answers for them.
+    fn namespace_of_item(kind: &ast::ItemKind) -> Namespace {
+        match kind {
+            ast::ItemKind::Mod { .. } => Namespace::Module,
+            ast::ItemKind::Struct { .. }
+            | ast::ItemKind::Enum { .. }
+            | ast::ItemKind::Trait { .. }
+            | ast::ItemKind::TypeAlias { .. }
+            | ast::ItemKind::Model(_) => Namespace::Type,
+            ast::ItemKind::Fn(_) | ast::ItemKind::Const { .. } => Namespace::Value,
+            // No declared name of their own.
+            ast::ItemKind::Use(_) | ast::ItemKind::Impl { .. } => Namespace::Value,
+        }
+    }
+
+    /// The namespace an already-resolved name belongs to, for imports: MOD-USE-001 selects by what
+    /// the leaf resolves to rather than by how it was spelled.
+    fn namespace_of_res(&self, res: Res) -> Namespace {
+        match res {
+            Res::Item(item_id) => {
+                if self.submodule_map.contains_key(&ast::ItemId(item_id.0)) {
+                    Namespace::Module
+                } else {
+                    match self.item_details.get(&item_id) {
+                        Some(ItemDefDetail::Enum { .. })
+                        | Some(ItemDefDetail::Struct { .. })
+                        | Some(ItemDefDetail::Trait { .. })
+                        | Some(ItemDefDetail::Model) => Namespace::Type,
+                        _ => Namespace::Value,
+                    }
+                }
+            }
+            // A variant is a constructor: a value.
+            Res::Variant(_, _) | Res::Builtin(_) => Namespace::Value,
+            Res::Primitive(_) | Res::CoreType(_) | Res::CoreTrait(_) => Namespace::Type,
+            _ => Namespace::Value,
+        }
+    }
+
+    fn ns_map(&self, module: ModuleId, ns: Namespace) -> &HashMap<String, Res> {
+        let m = &self.modules[module.0 as usize];
+        match ns {
+            Namespace::Module => &m.modules,
+            Namespace::Type => &m.types,
+            Namespace::Value => &m.values,
+        }
+    }
+
+    /// Look `name` up in exactly the namespace the asking position is entitled to.
+    ///
+    /// `NsHint::Any` searches modules, then types, then values — which is not a precedence rule
+    /// smuggled back in: it is for positions that legitimately admit any of the three, a path
+    /// qualifier and an import. A position that KNOWS its namespace never reaches the fallback.
+    fn lookup_ns(&self, module: ModuleId, name: &str, hint: NsHint) -> Option<Res> {
+        match hint {
+            NsHint::Type => self.ns_map(module, Namespace::Type).get(name).copied(),
+            NsHint::Value => self
+                .ns_map(module, Namespace::Value)
+                .get(name)
+                .copied()
+                // A unit-like nominal used as a value pattern still resolves; the type namespace is
+                // consulted only after the value namespace has declined.
+                .or_else(|| self.ns_map(module, Namespace::Type).get(name).copied()),
+            NsHint::Any => self
+                .ns_map(module, Namespace::Module)
+                .get(name)
+                .copied()
+                .or_else(|| self.ns_map(module, Namespace::Type).get(name).copied())
+                .or_else(|| self.ns_map(module, Namespace::Value).get(name).copied()),
+        }
+    }
+
+    /// Every name declared in `module`, across all three namespaces. For diagnostics and for the
+    /// glob import, which MOD-USE-001 defines over "all public names in the selected namespaces".
+    fn all_module_names(&self, module: ModuleId) -> Vec<(String, Res)> {
+        let m = &self.modules[module.0 as usize];
+        m.modules
+            .iter()
+            .chain(m.types.iter())
+            .chain(m.values.iter())
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
+    }
+
     fn insert_module_item(&mut self, module_id: ModuleId, name: String, res: Res, span: Span) {
         if let Some(vis) = self.current_use_item_vis {
             self.reexport_vis
                 .insert((module_id, name.clone()), Some(vis));
         }
-        match self.modules[module_id.0 as usize].items.entry(name.clone()) {
+        let ns = self.namespace_of_res(res);
+        let map = match ns {
+            Namespace::Module => &mut self.modules[module_id.0 as usize].modules,
+            Namespace::Type => &mut self.modules[module_id.0 as usize].types,
+            Namespace::Value => &mut self.modules[module_id.0 as usize].values,
+        };
+        match map.entry(name.clone()) {
             Entry::Occupied(occ) => {
                 if occ.get() != &res {
                     self.push_diag(
@@ -884,11 +1013,30 @@ impl<'a> Resolver<'a> {
         Res::Err
     }
 
+    /// Resolve `path` for a position entitled to `hint`'s namespace.
+    ///
+    /// DEV-228. Before the namespaces were split this took no hint, because there was only one map
+    /// to search and the question could not be asked.
+    fn resolve_path_in(&mut self, start_mod: ModuleId, path: &ast::Path, hint: NsHint) -> Res {
+        self.resolve_path_relative_in(start_mod, path, hint)
+    }
+
+    /// The `NsHint::Any` entry point, for imports and for callers whose position admits any
+    /// namespace. MOD-USE-001 defines an import over what the leaf resolves to.
     fn resolve_path(&mut self, start_mod: ModuleId, path: &ast::Path) -> Res {
-        self.resolve_path_relative(start_mod, path)
+        self.resolve_path_relative_in(start_mod, path, NsHint::Any)
     }
 
     fn resolve_path_relative(&mut self, start_mod: ModuleId, path: &ast::Path) -> Res {
+        self.resolve_path_relative_in(start_mod, path, NsHint::Any)
+    }
+
+    fn resolve_path_relative_in(
+        &mut self,
+        start_mod: ModuleId,
+        path: &ast::Path,
+        hint: NsHint,
+    ) -> Res {
         if path.segments.is_empty() {
             return Res::Err;
         }
@@ -976,9 +1124,18 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         if resolved.is_none() {
-                            if let Some(&res) =
-                                self.modules[start_mod.0 as usize].items.get(name_str)
-                            {
+                            // A first segment is a QUALIFIER when more segments follow, and it
+                            // may legitimately be a module, a type or a value; when it is the
+                            // whole path, the asking position's hint decides.
+                            if let Some(res) = self.lookup_ns(
+                                start_mod,
+                                name_str,
+                                if path.segments.len() == 1 {
+                                    hint
+                                } else {
+                                    NsHint::Any
+                                },
+                            ) {
                                 resolved = Some(res);
                             } else if let Some(res) = self.dependency_alias(start_mod, name_str) {
                                 // DEV-175. Deliberately AFTER the current module's own items, so a
@@ -1027,7 +1184,15 @@ impl<'a> Resolver<'a> {
                 }
                 current_res = Some(assoc_res);
                 current_is_module = false;
-            } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
+            } else if let Some(res) = self.lookup_ns(
+                current_mod,
+                name_str,
+                if i + 1 == path.segments.len() {
+                    hint
+                } else {
+                    NsHint::Any
+                },
+            ) {
                 if !self.name_is_visible_from(current_mod, name_str, start_mod) {
                     self.push_diag(
                         Diagnostic::error(format!("item '{name_str}' is private"), segment.span)
@@ -1104,7 +1269,7 @@ impl<'a> Resolver<'a> {
         if let Some(vis) = self.reexport_vis.get(&(module_id, name.to_string())) {
             return matches!(vis, Some(ast::Vis::Pub));
         }
-        if let Some(&Res::Item(item_id)) = self.modules[module_id.0 as usize].items.get(name) {
+        if let Some(Res::Item(item_id)) = self.lookup_ns(module_id, name, NsHint::Any) {
             return self.item_is_visible_from(item_id, from);
         }
         true
@@ -1129,7 +1294,8 @@ impl<'a> Resolver<'a> {
                 {
                     Res::ParamAssoc(path.segments[0].span, path.segments[1].span)
                 } else {
-                    self.resolve_path(self.current_module, path)
+                    // A type annotation, bound or impl target searches the TYPE namespace.
+                    self.resolve_path_in(self.current_module, path, NsHint::Type)
                 };
                 if matches!(res, Res::Err | Res::Builtin(_) | Res::CoreTrait(_)) {
                     // A reserved `tensor` extension type name (`Tensor`,
@@ -1228,7 +1394,8 @@ impl<'a> Resolver<'a> {
                 hir::ExprKind::FormatString { segments }
             }
             ast::ExprKind::Path { path, turbofish } => {
-                let res = self.resolve_path(self.current_module, path);
+                // An expression searches the VALUE namespace.
+                let res = self.resolve_path_in(self.current_module, path, NsHint::Value);
                 if res == Res::Err {
                     self.push_diag(
                         Diagnostic::error(
@@ -1447,10 +1614,7 @@ impl<'a> Resolver<'a> {
             ast::PatKind::Wild => hir::PatKind::Wild,
             ast::PatKind::Binding(name_span) => {
                 let name_str = self.text(*name_span);
-                let module_res = self.modules[self.current_module.0 as usize]
-                    .items
-                    .get(name_str)
-                    .copied();
+                let module_res = self.lookup_ns(self.current_module, name_str, NsHint::Value);
                 // A bare identifier that names a known value -- a module item/enum variant, or
                 // a compiler builtin -- must match by value (03-Type-System.md's pattern-name-
                 // resolution note; 02-Syntax-Grammar.md SYN-PATTERN-001 states the same rule).
@@ -2236,7 +2400,7 @@ impl<'a> Resolver<'a> {
                 return res;
             }
         }
-        if let Some(&res) = self.modules[self.current_module.0 as usize].items.get(name) {
+        if let Some(res) = self.lookup_ns(self.current_module, name, NsHint::Value) {
             return res;
         }
         if let Some(primitive) = resolve_primitive(name) {
