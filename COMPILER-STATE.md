@@ -10,7 +10,8 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
                 `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
 Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-224 (native gap), DEV-228/229 (resolution namespaces, registered 2026-08-11).
+              DEV-224 (native gap), DEV-228/229 (resolution namespaces). DEV-230, found by the
+              resolution audit and RESOLVED the same day.
               DEV-222/223 RESOLVED 2026-08-11, plus DEV-225/226/227 found by the same audit and
               resolved on arrival
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,

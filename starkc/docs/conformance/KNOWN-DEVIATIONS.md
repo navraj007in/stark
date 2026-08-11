@@ -8935,3 +8935,82 @@ from "the builtin won and happened to agree", so it establishes nothing either w
 is the code path; what is not is whether any reachable program observes a wrong answer. Closing this
 needs either a specification statement that the spellings are reserved, or a probe that distinguishes
 the two resolutions.
+
+## DEV-230 — a struct pattern naming a field that does not exist compiles, and makes an irrefutable pattern refutable (OPEN, registered 2026-08-11)
+
+Found by the resolution audit's scope A, the first probe run after DEV-222/223/225/226/227 were
+repaired. **Same class, one layer down** — this one is in type checking, not resolution.
+
+```stark
+struct Thing { value: Int64 }
+fn main() {
+    let t = Thing { value: 7i64 };
+    match t { Thing { valu: v } => println(v), _other => println("MISS") }
+}
+```
+
+`valu` is a typo for `value`. `stark check` reports **OK** and the program prints `MISS`.
+
+Both of DEV-223's faces are present:
+
+- **With a wildcard:** compiles, no diagnostic, silently takes the wrong branch.
+- **Without a wildcard:** `stark check` still reports OK, and the program traps at RUNTIME with
+  `non-exhaustive match reached`.
+
+The second is the sharper statement of the defect. **A struct pattern over its own struct type is
+irrefutable** — `Thing { value: v }` always matches a `Thing`. A field-name typo silently makes it
+refutable, and nothing in the front end says so.
+
+### Root cause
+
+`starkc/src/typecheck/patterns.rs`, the `hir::PatKind::Struct` / `Res::Item` arm:
+
+```rust
+for field in fields {
+    let f_name = self.text(field.name);
+    if let Some(expected_f_ty) = expected_fields.get(f_name) {
+        ...
+    }
+    // no `else`: a name that is not a field of this struct is silently skipped
+}
+```
+
+An unknown field name is neither bound nor reported. Exhaustiveness then sees a struct pattern it
+cannot prove covers the type.
+
+The `Res::Variant` arm immediately below it reads `expected_fields` the same way, and **the enum
+struct-variant form is confirmed to share the defect**:
+
+```stark
+enum Rec { One { n: Int64 }, Two }
+// `Rec::One { nope: v }` -- `stark check` reports OK and the program prints MISS.
+```
+
+So both struct patterns and enum struct-variant patterns accept field names that do not exist.
+
+### Not repaired here
+
+The audit's scope is to report. The repair is a diagnostic in that loop — the missing `else` —
+and belongs to whatever packet schedules it.
+
+### Relationship to DEV-222
+
+Same failure mode, different stage. DEV-222 was resolution accepting a name that could not be a
+pattern; this is type checking accepting a *field* that does not exist. The repair for DEV-222
+cannot catch it: the path `Thing` resolves correctly, and the bad name is inside the pattern's
+field list, which the resolver never validates against the struct's declaration.
+
+## DEV-230 — RESOLVED (2026-08-11): a struct-shaped pattern rejects a field the type does not have
+
+Both arms of `PatKind::Struct` in `typecheck/patterns.rs` — `Res::Item` for structs and
+`Res::Variant` for enum struct-variants — looked each field name up and silently skipped a miss.
+Each now reports `E0001 field '<name>' does not exist`, which is the message and code struct
+LITERALS have always used for the same mistake; patterns simply did not agree with them.
+
+Regression: `starkc/tests/dev230_struct_pattern_field_names.rs`, four tests — the wildcard face,
+the no-wildcard face (which used to trap at run time after `stark check` reported OK), the enum
+struct-variant face, and a control pinning valid struct and variant patterns including the
+shorthand binding form. Three fail against the unfixed checker.
+
+No first-party package contained a struct-shaped pattern at the time of the repair, so nothing
+existing had to change. That is also why it was worth doing now rather than later.

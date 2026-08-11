@@ -327,7 +327,23 @@ impl TypeChecker<'_> {
                         .cloned()
                         .unwrap_or_default();
                     for field in fields {
-                        let f_name = self.text(field.name);
+                        let f_name = self.text(field.name).to_string();
+                        let f_name = f_name.as_str();
+                        // DEV-230. Without this, a name that is not a field of the struct was
+                        // silently skipped: the pattern type-checked, bound nothing, and stopped
+                        // matching. A struct pattern over its own type is irrefutable, so a typo
+                        // quietly made it refutable -- taking a wildcard arm, or trapping at run
+                        // time with "non-exhaustive match reached" when there was none. Struct
+                        // LITERALS have always rejected this; patterns now agree with them.
+                        if !expected_fields.contains_key(f_name) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("field '{f_name}' does not exist"),
+                                    field.name,
+                                )
+                                .with_code("E0001"),
+                            );
+                        }
                         if let Some(expected_f_ty) = expected_fields.get(f_name) {
                             if let Some(sub_pat) = field.pat {
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
@@ -370,7 +386,19 @@ impl TypeChecker<'_> {
                         })
                         .unwrap_or_default();
                     for field in fields {
-                        let name = self.text(field.name);
+                        let name = self.text(field.name).to_string();
+                        let name = name.as_str();
+                        // DEV-230, the enum struct-variant face. `Rec::One { nope: v }` behaved
+                        // exactly as the struct form did.
+                        if !expected_fields.contains_key(name) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("field '{name}' does not exist"),
+                                    field.name,
+                                )
+                                .with_code("E0001"),
+                            );
+                        }
                         if let Some(field_ty) = expected_fields.get(name) {
                             let field_ty = self.instantiate_ty(field_ty, &map);
                             if let Some(subpat) = field.pat {
