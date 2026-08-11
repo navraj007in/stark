@@ -79,11 +79,12 @@ unable to run under `stark run` — in exchange for nothing.
 
 ## New deviations
 
-Two compiler defects were found while implementing this package. Both were reduced to minimal
-reproducers, both have a legal package-level alternative, and neither was worked around by changing
-the compiler.
+Two compiler defects were found while implementing this package, plus the native gap recorded
+under Residuals. All three are now filed on the compiler track as **DEV-222, DEV-223 and DEV-224**
+in `starkc/docs/conformance/KNOWN-DEVIATIONS.md`, with a session record in `COMPILER-STATE.md`
+taking population A from 8 to 11. None was worked around by changing the compiler.
 
-### COOKIE-DEV-A — a variant sharing a name with an in-scope type is reported non-exhaustive
+### DEV-223 (filed 2026-08-11; was COOKIE-DEV-A here) — a variant sharing a name with an in-scope type is reported non-exhaustive
 
 At `2cd4a08`, an exhaustive match over an enum is rejected with `[E0303] non-exhaustive pattern
 match` when one variant's name is also the name of a type in scope.
@@ -111,10 +112,18 @@ Renaming the variant and changing nothing else compiles and runs. Stage: name re
 exhaustiveness checking. Alternative taken: `CookieAttributeKind::SameSitePolicy` rather than
 `SameSite`, since the type `SameSite` is in scope.
 
-### COOKIE-DEV-B — a nonexistent `Struct::Variant` pattern type-checks and silently never matches
+### DEV-222 (filed 2026-08-11; was COOKIE-DEV-B here) — a pattern naming a variant that does not exist type-checks and silently never matches
 
-At `2cd4a08`, a pattern naming a variant of a **struct** type — which cannot exist — is accepted by
-the checker and falls through to the wildcard at runtime instead of being rejected.
+At `2cd4a08`, a pattern naming a variant that does not exist is accepted by the checker and falls
+through to the wildcard at runtime instead of being rejected. It is **not** limited to structs: a
+misspelled variant on a real enum behaves the same way, which is the far more common shape.
+
+```stark
+enum Colour { Red, Green }
+// `Colour::Blu` is a typo. `stark check` reports OK; describe(&Colour::Green) prints "wildcard".
+```
+
+The struct form found here is the same defect:
 
 ```stark
 struct Thing { value: Int64 }
@@ -138,7 +147,7 @@ began failing at runtime instead of at the type error that should have caught it
 
 ## Residuals
 
-- **The attribute model is a tagged struct, not a sum type with payloads.** The natural shape —
+- **The attribute model is a tagged struct, not a sum type with payloads** (filed as **DEV-224**). The natural shape —
   `enum CookieAttribute { Expires(String), MaxAge(Int64), ... }` — cannot be compiled natively at
   this baseline: `stark build` reports `native build does not yet support this program: binding a
   non-Copy scrutinee through a shared reference`, and every reader of an attribute holds one by

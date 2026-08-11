@@ -9,9 +9,11 @@ Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second a
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
                 `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
-Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221
+Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-222/223/224 (registered 2026-08-11 by `stark-cookie`; 222 is WRONG-CODE)
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
-                 capability half OPEN). It is the only one of the eight any written code reaches
+                 capability half OPEN). Of the eleven, three are reached by written code:
+                 DEV-160, and DEV-222/224 which `stark-cookie` hit while being written
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -7686,3 +7688,35 @@ Records for WP-C0.0 through Gate C8 are archived verbatim at
 `STARKLANG/docs/compiler/state-archive/session-records-C0-C8.md` (C0–C2 were archived earlier
 under CD-020). **Sprint 4's records stay in this file** — a compression target is not a reason
 to archive a record still being worked against.
+
+---
+
+### 2026-08-11 — three deviations registered from package work (`stark-cookie`)
+
+Not a compiler packet. `stark-cookie` v0.1 was implemented on `develop` at `2cd4a08` under a
+package brief that forbids compiler changes, and hit three compiler-track findings. All three are
+recorded in `starkc/docs/conformance/KNOWN-DEVIATIONS.md` with minimal reproducers. **No compiler
+source was modified.** Population A 8 -> 11.
+
+- **DEV-222 — WRONG-CODE, and the one that matters.** A pattern naming a variant that does not
+  exist type-checks clean and silently never matches, falling to the wildcard. `stark check`
+  reports OK. Without a wildcard the program is rejected by `E0303 non-exhaustive`, which points
+  at the match rather than the typo — so the natural fix (add a wildcard) converts a caught bug
+  into a silent one. `resolve.rs`'s three pattern branches already guard for this correctly
+  (`E0200`/`E0202` on `res == Res::Err`); the fault is that `resolve_path` does not return
+  `Res::Err` for `Type::NonexistentName`. **Same class as DEV-053/054**, which C2's exit report
+  calls "the most severe finding to date": DEV-053 closed it for a bare identifier resolving to a
+  builtin, and the qualified-path case was never closed.
+- **DEV-223 — over-rejection, fail-safe.** A variant whose name matches an in-scope type makes an
+  exhaustive match report `E0303 non-exhaustive`. Probably the same root cause as DEV-222; filed
+  separately because the symptom differs. Note that DEV-053 *also* first presented as a spurious
+  `E0303` and turned out to be pattern resolution.
+- **DEV-224 — native gap.** An enum carrying a non-`Copy` payload cannot be matched through a
+  shared reference; even `_` arms are refused, because the rejection is about the scrutinee. This
+  blocks the ordinary tagged-value shape (`enum { A(String), B(Int64) }` in a `Vec`, read by
+  reference) on the native path, which is the shipping path for capability-backed programs.
+  `stark-cookie` uses a tagged struct instead, which costs it the unrepresentability a sum type
+  would have given.
+
+None of the three was worked around by changing the compiler; DEV-222 has no package-level
+workaround because it is a missing rejection rather than a shape to avoid.

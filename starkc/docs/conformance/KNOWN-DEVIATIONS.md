@@ -8524,3 +8524,188 @@ resource; `stark-net-resource-consumer` prints `STARK_NET_RESOURCE_OK` against a
 `connect_no_timeout` remains, and is still the honest spelling for an unbounded connect. The HTTP
 client no longer uses it; `stark-net-resource-consumer` does, so the declared-surface gate is
 still satisfied.
+
+---
+
+## DEV-222 — a pattern naming a variant that does not exist compiles, and silently never matches (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`. **This is a wrong-code defect, not an over-rejection.**
+
+```stark
+enum Colour { Red, Green }
+
+fn describe(c: &Colour) -> String {
+    match *c {
+        Colour::Blu => String::from("blue"),   // TYPO. `Colour` has no variant `Blu`.
+        Colour::Red => String::from("red"),
+        _other => String::from("wildcard"),
+    }
+}
+
+fn main() {
+    println(describe(&Colour::Green).as_str());
+}
+```
+
+```text
+probe: OK
+wildcard
+```
+
+`stark check` reports OK. The misspelled arm is treated as a pattern that never matches, and the
+value falls to the wildcard. The same holds for a variant path on a **struct**, which can have no
+variants at all:
+
+```stark
+struct Thing { value: Int64 }
+// ...
+match *r {
+    Thing::Missing(n) => println(n),          // `Thing` is a struct
+    _other => println("fell through to the wildcard"),
+}
+```
+
+### The diagnostic pathology makes it worse
+
+Remove the wildcard and the program *is* rejected — but by the wrong diagnostic:
+
+```text
+Error: [E0303] non-exhaustive pattern match
+```
+
+E0303 points at the `match`, not at the typo. The obvious response to "non-exhaustive" is to add a
+wildcard arm — which converts a caught bug into a silent one. **The diagnostic leads the developer
+into the failure mode.**
+
+### Where it is not
+
+`resolve.rs`'s three pattern branches are correct and already guard for this:
+
+- `ast::PatKind::Path` (L1388) emits `E0200 undefined pattern path` when `res == Res::Err`
+- `ast::PatKind::TupleVariant` (L1404) emits `E0202 undefined enum variant` when `res == Res::Err`
+- `ast::PatKind::Struct` (L1421) emits `E0202 undefined struct/variant` when `res == Res::Err`
+
+None of them fires, so **`resolve_path` is returning something other than `Res::Err` for
+`Type::NonexistentName`.** The guards are right; their input is wrong. That is the single site to
+repair, and repairing it should light up all three branches at once.
+
+### Blast radius
+
+Any misspelled variant in a `match` with a wildcard arm. It found `stark-cookie` exactly that way:
+after `CookieAttribute` changed from an enum to a struct, a test still carrying the old
+`CookieAttribute::MaxAge(seconds)` pattern kept compiling and began failing at runtime instead of
+at the type error that should have caught it. A refactor that renames or restructures an enum gets
+no help from the compiler — the arms silently stop matching.
+
+No package workaround exists and none is needed: this is a missing rejection, not a shape to code
+around.
+
+### Precedent: this is the same class as DEV-053/054
+
+`DEV-053` — *"a bare `None` pattern never matched by value; it silently acted as an unconditional
+wildcard"* — is the same failure: a pattern path that does not resolve to a variant becomes
+something that silently does not match, with wrong runtime output and no diagnostic. C2's exit
+report calls DEV-053/054 **"the most severe finding to date"** in the compiler track.
+
+DEV-053 was fixed for the specific case of a *bare identifier* resolving to a builtin
+(`lower_pattern`'s `ast::PatKind::Binding` arm). **The general case was never closed**: a
+QUALIFIED path naming a variant that does not exist still resolves to something that is not
+`Res::Err`, and the three pattern branches' guards therefore never fire. DEV-222 is the same
+defect class recurring one resolution path over.
+
+## DEV-223 — a variant sharing a name with an in-scope type is reported non-exhaustive (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`.
+
+```stark
+enum Policy { A, B }
+
+enum Attr {
+    Flag,
+    Policy(Policy),     // variant name == type name
+}
+
+fn render(attr: &Attr) -> String {
+    match *attr {       // [E0303] non-exhaustive pattern match
+        Attr::Flag => String::from("flag"),
+        Attr::Policy(p) => match p {
+            Policy::A => String::from("a"),
+            Policy::B => String::from("b"),
+        },
+    }
+}
+```
+
+Renaming the variant — changing nothing else — compiles and runs correctly. The match is
+exhaustive as written; the rejection is spurious.
+
+**Probably the same root cause as DEV-222**, and filed separately only because the observable
+symptom and the developer's experience differ. The hypothesis, stated as a hypothesis because it
+was inferred from behaviour rather than read out of `resolve_path`: the path `Attr::Policy`
+resolves its final segment to the *type* `Policy` rather than to the variant, the arm therefore
+carries a non-`Res::Variant` resolution, exhaustiveness does not count it, and the remaining arms
+do not cover the enum. If that is right, one fix in `resolve_path` closes both.
+
+**DEV-053's history is a direct precedent and a warning.** That entry *originally* recorded a
+"spurious `E0303` non-exhaustive" — DEV-223's exact symptom — and investigation found the cause was
+not the exhaustiveness algorithm at all but pattern resolution in `lower_pattern`, with a silent
+wildcard as its other face. The same reading should be applied here before assuming this one is
+merely cosmetic.
+
+**Severity as observed: over-rejection, fail-safe.** It fails loudly at compile time and can never
+produce wrong output. Its cost is that `Enum::Variant(SameNamedType)` — an ordinary and idiomatic shape —
+is unavailable, forcing a name that exists only to dodge a compiler bug. `stark-cookie` carries
+`CookieAttributeKind::SameSitePolicy` for this reason; `SameSite` is the name that belongs there.
+
+## DEV-224 — native: an enum carrying a non-Copy payload cannot be matched through a shared reference (OPEN, registered 2026-08-11)
+
+Found by `stark-cookie` at `2cd4a08`. A **native backend gap**, not a front-end defect: the
+front end and both interpreters accept the program, and `stark build` refuses it.
+
+```stark
+enum Attr {
+    Flag,
+    Text(String),
+    Num(Int64),
+}
+
+fn kind_only(a: &Attr) -> Int64 {
+    match *a {
+        Attr::Flag => 0i64,
+        Attr::Text(_) => 1i64,      // `_`, binding nothing
+        Attr::Num(_) => 2i64,
+    }
+}
+```
+
+```text
+error: native build does not yet support this program:
+       binding a non-Copy scrutinee through a shared reference
+```
+
+**Even `_` patterns fail.** The rejection is about the scrutinee — a non-`Copy` enum read through
+`&` — not about what the arms bind, so there is no arm spelling that avoids it. An enum is
+non-`Copy` as soon as one variant carries a `String`.
+
+### Why it matters more than its wording suggests
+
+`enum { A(String), B(Int64), C }` held in a `Vec` and read by reference is the ordinary shape for
+an AST node, a JSON value, a config entry, a protocol attribute — anything tagged. Under this gap
+none of them is natively compilable, and native compilation is the shipping path for
+capability-backed programs. Interpreter-only verification will not surface it.
+
+### Package-level alternative, and its cost
+
+A tagged struct compiles and runs natively:
+
+```stark
+struct Attr { kind: Kind, text: String, num: Int64 }   // `Kind` fieldless, therefore Copy
+```
+
+`match a.kind` reads a `Copy` field through the shared reference and is accepted. `stark-cookie`'s
+`CookieAttribute` is built this way for exactly this reason.
+
+The cost is real and is in a shipped public API: a sum type makes an invalid combination
+*unrepresentable*, while a tagged struct makes it merely unconstructible-by-convention. A
+`Secure` attribute carrying a value cannot exist in the enum formulation; in the struct
+formulation it is prevented only because every caller goes through a constructor.
