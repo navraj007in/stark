@@ -9390,3 +9390,77 @@ enforced correctly, because then there is a class of program that is forbidden a
 the same time.
 
 Found while investigating why DEV-232's repair broke `generic_user_iterator_for_loop_agrees`.
+
+## DEV-234 — RESOLVED (2026-08-11): the `Copy` bound is answered by the copy classifier, in both halves
+
+It was two gaps, and repairing only the first would have left the bound as useless as before.
+
+### Half one — bound satisfaction, `typecheck/traits.rs`
+
+`satisfies_bound_identity` had cases for `Num`, `Eq`, `Ord`, `Display`, `Clone`, `Default` and
+`Hash` and **none for `Copy`**, so every concrete type fell through to `false`. `Int64` did not
+satisfy `Copy` although `is_copy_type` says it is copyable — which is why `let a = b;` copies it —
+and although `03-Type-System.md` NUM-FLOAT-TRAIT-001 states the float primitives implement `Copy`.
+
+`Copy` is now answered by `is_copy_ty`, not by a fourth hand-written table. `is_copy_with_impls` is
+already documented as shared by the type checker and the move checker *"so the two cannot disagree
+— a divergence there is the DEV-072 class"*; the bound checker is the third consumer of the same
+question and now shares the same answer. A `Ty::Param` is deliberately excluded so it still reaches
+the arm that discharges a declared bound (DEV-067(a)), and `Ty::Error` so its arm keeps answering
+`true`.
+
+### Half two — the bound was unusable inside its own definition, `borrowck.rs`
+
+With half one alone, `fn take<T: Copy>(r: &T) -> T { *r }` was **satisfiable at the call site and
+rejected in its own body**: `is_copy_type_with` answers `false` for every `Ty::Param`, correctly in
+isolation and wrongly for a parameter that declares the bound. So `T: Copy` still was not an escape
+hatch from the move rule — the thing it exists to be.
+
+`borrowck::is_copy_type` now consults the declared bounds first, reading `current_generics` and
+`enclosing_generics` with the same walk `bound_method_receiver` already uses. TYPE-GENERIC-001, the
+principle DEV-067(a) applied to bound discharge: what a parameter declares is what the body may
+rely on.
+
+### Measured
+
+```stark
+fn take<T: Copy>(r: &T) -> T { *r }
+struct P { x: Int64 }
+impl Copy for P {}
+// take(&5i64), take(&true), take(&2.5f64), take(&p).x  -- all work
+```
+
+Both guards still hold: an **unbounded** `T` is still refused in the body with `E0100`, and a
+**non-`Copy`** argument is still refused at the call site with `E0500 type 'String' does not satisfy
+trait bound 'Copy'`.
+
+### What this unblocks
+
+DEV-232. Its repair is correct and was reverted only because the code it forbids had no legal
+spelling. `impl<T: Copy> Iterator for Repeat<T>` is now that spelling, so the borrow rule can be
+enforced without deleting a shape of generic code from the language.
+
+## DEV-232 — RESOLVED (2026-08-11, second attempt): re-landed once DEV-234 gave the forbidden code a spelling
+
+The repair is unchanged from the one reverted earlier today. What changed is that it no longer
+removes anything from the language.
+
+The revert's reason was precise: the rejection was correct, and `impl<T: Copy> Iterator for
+Repeat<T>` — the spelling that makes the rejected program legal — could not be instantiated at a
+primitive, because a primitive did not satisfy a `Copy` bound. Closing a soundness hole by deleting
+a shape of generic code was not a trade worth making silently.
+
+DEV-234 repaired that in both halves: the bound is satisfiable at the call site, and a declared
+`T: Copy` is now usable inside the body it is declared on. So the borrow rule can be enforced and
+the code that needs it has somewhere to stand.
+
+`mir_differential::generic_user_iterator_for_loop_agrees` carries the bound now, with a comment
+saying why. That is the whole of the fallout: **132 of 132 pass**, where the first attempt failed
+that one.
+
+### What the first attempt got wrong, and it was not the repair
+
+`ab8da4d` claimed "blast radius measured rather than assumed: none", citing all 65 packages and all
+31 library suites. Those runs were real and they were the wrong population: **the compiler's own
+test corpus was never run.** One test in 132 failed and it was the one that mattered. This attempt
+was validated against the full `cargo test` corpus, not a scoped subset.

@@ -113,6 +113,25 @@ impl TypeChecker<'_> {
         let ty = self.resolve(ty);
         let bound_name = bound_name.to_string();
 
+        // DEV-234. `Copy` had no case in any arm below, so every concrete type fell through to
+        // `false` and `fn take<T: Copy>(r: &T) -> T { *r }` could not be called with an `Int64` --
+        // although `is_copy_type` says `Int64` is copyable, which is why `let a = b;` copies it,
+        // and 03-Type-System NUM-FLOAT-TRAIT-001 says the float primitives implement `Copy`. The
+        // bound checker disagreed with the copy classifier.
+        //
+        // It is answered here by that classifier rather than by a fourth hand-written table.
+        // `is_copy_with_impls` is already documented as shared by the type checker and the move
+        // checker "so the two cannot disagree -- a divergence there is the DEV-072 class"; the
+        // bound checker is the third consumer of the same question and now shares the same answer.
+        //
+        // `Ty::Param` is deliberately excluded so it still reaches the arm below: a generic `T`
+        // is not structurally `Copy`, but `T: Copy` declared on the enclosing function discharges
+        // the obligation (DEV-067(a), TYPE-GENERIC-001). `Ty::Error` is excluded for the same
+        // reason -- its arm already answers `true` and must keep doing so.
+        if bound_name == "Copy" && !matches!(ty, Ty::Param(_) | Ty::Error) {
+            return self.is_copy_ty(&ty);
+        }
+
         match &ty {
             Ty::Ref { mutable: _, inner } => {
                 if bound_name == "Eq"
