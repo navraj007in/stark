@@ -177,7 +177,9 @@ CASES = [
     # The HTTP substrate (CD-304), added CD-326. Nothing in CI had ever run these five — not
     # their tests, not `fmt --check`, not a native build — which is how three of them stayed
     # unformatted from the day they landed until CD-325, and how `stark-mime`, `stark-query`
-    # and `stark-form` shipped with ZERO tests until CD-320.
+    # and `stark-form` shipped with ZERO tests until CD-320. `stark-query` and `stark-form`
+    # were later consolidated into `stark-urlencoded`; the historical note remains because it
+    # explains why this gate is strict about package tests.
     #
     # Their `expected_stdout` is a marker line rather than a computed result, because these
     # consumers are smoke tests for the package graph: what they prove is that the package
@@ -195,19 +197,14 @@ CASES = [
         expected_stdout="PERCENT_CONSUMER_OK\n",
     ),
     PackageCase(
+        package="stark-urlencoded",
+        consumer="stark-urlencoded-consumer",
+        expected_stdout="stark-urlencoded consumer ok\n",
+    ),
+    PackageCase(
         package="stark-mime",
         consumer="stark-mime-consumer",
         expected_stdout="MIME_CONSUMER_OK\n",
-    ),
-    PackageCase(
-        package="stark-query",
-        consumer="stark-query-consumer",
-        expected_stdout="QUERY_CONSUMER_OK\n",
-    ),
-    PackageCase(
-        package="stark-form",
-        consumer="stark-form-consumer",
-        expected_stdout="FORM_CONSUMER_OK\n",
     ),
     # HC5/HC6 — pure packages, so the ordinary consumer bar applies: each principal public
     # behaviour executed, no resources to acquire or release.

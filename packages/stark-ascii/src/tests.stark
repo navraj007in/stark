@@ -1,4 +1,5 @@
 use super::eq_ignore_ascii_case;
+use super::char_from_ascii;
 use super::is_ascii;
 use super::is_ascii_alpha;
 use super::is_ascii_control;
@@ -126,5 +127,28 @@ fn test_eq_ignore_ascii_case() {
     }
     if string_eq_ignore_ascii_case(&s1, &s3) {
         panic("string eq ignore case mismatch failed");
+    }
+}
+
+fn test_char_from_ascii_boundaries() {
+    match char_from_ascii(0u8) {
+        Some(ch) => assert_eq(ch, '\0'),
+        None => panic("NUL must convert"),
+    }
+    match char_from_ascii(65u8) {
+        Some(ch) => assert_eq(ch, 'A'),
+        None => panic("A must convert"),
+    }
+    match char_from_ascii(127u8) {
+        Some(ch) => assert_eq(ch, '\u{7f}'),
+        None => panic("DEL must convert"),
+    }
+    match char_from_ascii(128u8) {
+        Some(_ch) => panic("0x80 must not convert"),
+        None => {}
+    }
+    match char_from_ascii(255u8) {
+        Some(_ch) => panic("0xff must not convert"),
+        None => {}
     }
 }

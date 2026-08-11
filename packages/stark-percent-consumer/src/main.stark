@@ -5,7 +5,7 @@ use stark_percent::PercentEncodeSet;
 fn main() {
     let text = String::from("hello world/123");
     let enc = encode(text.as_str().bytes(), PercentEncodeSet::PathSegment);
-    match decode(&enc) {
+    match decode(enc.as_str()) {
         Ok(dec) => {
             if dec.len() == 15u64 {
                 println("PERCENT_CONSUMER_OK");

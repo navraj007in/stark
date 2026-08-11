@@ -22,4 +22,5 @@ pub fn to_ascii_uppercase(byte: UInt8) -> UInt8;
 
 pub fn eq_ignore_ascii_case(left: &[UInt8], right: &[UInt8]) -> Bool;
 pub fn string_eq_ignore_ascii_case(left: &String, right: &String) -> Bool;
+pub fn char_from_ascii(byte: UInt8) -> Option<Char>;
 ```

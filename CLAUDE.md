@@ -8,7 +8,7 @@ optional tensor/model extension for AI/ML deployment. The `starkc/` implementati
 Core v1 front end (lexer, parser, name resolution, type/borrow checking), a reference interpreter,
 a MIR interpreter, native compilation on Linux/macOS/Windows, a tensor extension with bounded ONNX
 import/verify/deploy, a formatter, test runner, documentation generator, and an LSP server. Beyond
-the compiler there are 32 first-party packages under `packages/`, capability-declared host access
+the compiler there are 31 first-party packages under `packages/`, capability-declared host access
 backed by native provider crates, and an installable toolchain — see "Implementation Status" below
 for exactly what is closed vs. still open. It is not "specification-stage"; do not describe it
 that way.
@@ -131,7 +131,7 @@ conflict table.
   source formatter, a naming-convention test runner, a documentation generator, and an LSP server
   with a VS Code extension. The Python code in `STARKLANG/compiler/` and `Practice/Interpreter/`
   are pre-pivot prototypes and must not be extended for Core v1 work.
-- Packages and host access: **31 libraries plus the `stark-get` application live under
+- Packages and host access: **30 libraries plus the `stark-get` application live under
   `packages/`** (moved there 2026-08-04). Their qualification consumers must actually *call* the
   declared surfaces they cover.
   Host authority uses capability vocabulary v1 — `filesystem-read`, `filesystem-write`,
@@ -143,7 +143,7 @@ conflict table.
   all. An HTTP/1.1 and HTTPS client written in STARK closed 2026-08-03 (HC0–HC13).
 - Distribution: Installer Phase I is implemented — release archives, platform installers, a
   versioned install tree (`lib/stark/versions/<v>` with `current`), uninstall, and `stark doctor`
-  manifest verification. The payload carries 31 explicitly marked first-party libraries and all
+  manifest verification. The payload carries 30 explicitly marked first-party libraries and all
   six native provider crates; version-only dependencies resolve from the executable-relative
   toolchain root offline. `stark doctor` names package and provider-crate inventory checks. It
   proves **integrity, not authenticity**: archives remain unsigned.
@@ -226,7 +226,7 @@ re-deriving the rules:
 **Status**: STARK is a **pre-alpha general-purpose language with a working implementation**,
 developed against the application-platform roadmap in `ROADMAP.md`. Core v1 specification
 complete; front end, semantic analysis, execution, native compilation (Gate C7, three Tier-1
-platforms) and compiler-backed language services done, over a qualified subset. 32 first-party
+platforms) and compiler-backed language services done, over a qualified subset. 31 first-party
 packages under `packages/`, capability-declared host access with native providers, an HTTP/1.1 and
 HTTPS client written in STARK (HC0–HC13, closed 2026-08-03), and an installable toolchain
 (Installer Phase I). The **tensor/ONNX extension is a deferred research track** on Gate 7's terms.

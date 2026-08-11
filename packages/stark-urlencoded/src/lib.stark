@@ -1,0 +1,233 @@
+use stark_ascii::char_from_ascii;
+use stark_percent::decode as percent_decode;
+use stark_percent::encode as percent_encode;
+use stark_percent::PercentEncodeSet;
+use stark_percent::PercentError;
+
+pub struct Pair { pub name: String, pub value: String }
+
+pub struct Limits {
+    pub max_total_bytes: UInt64,
+    pub max_pair_count: UInt64,
+    pub max_name_bytes: UInt64,
+    pub max_value_bytes: UInt64,
+}
+
+pub enum UrlEncodedError {
+    ExceededTotalBytesLimit,
+    ExceededPairCountLimit,
+    ExceededNameLimit,
+    ExceededValueLimit,
+    PercentDecodeError(PercentError),
+}
+
+enum PlusPolicy {
+    Literal,
+    Space,
+}
+
+pub fn default_limits() -> Limits {
+    Limits {
+        max_total_bytes: 8192u64,
+        max_pair_count: 64u64,
+        max_name_bytes: 256u64,
+        max_value_bytes: 4096u64,
+    }
+}
+
+pub fn parse_query(input: &String, limits: Limits) -> Result<Vec<Pair>, UrlEncodedError> {
+    parse_pairs(input, limits, PlusPolicy::Literal)
+}
+
+pub fn parse_form(input: &String, limits: Limits) -> Result<Vec<Pair>, UrlEncodedError> {
+    parse_pairs(input, limits, PlusPolicy::Space)
+}
+
+pub fn serialize_query(pairs: &[Pair], limits: Limits) -> Result<String, UrlEncodedError> {
+    serialize_pairs(pairs, limits, PlusPolicy::Literal)
+}
+
+pub fn serialize_form(pairs: &[Pair], limits: Limits) -> Result<String, UrlEncodedError> {
+    serialize_pairs(pairs, limits, PlusPolicy::Space)
+}
+
+fn parse_pairs(input: &String, limits: Limits, plus_policy: PlusPolicy) -> Result<Vec<Pair>, UrlEncodedError> {
+    let bytes = input.bytes();
+    let len = bytes.len();
+    if len > limits.max_total_bytes {
+        return Err(UrlEncodedError::ExceededTotalBytesLimit);
+    }
+
+    let mut pairs = Vec::new();
+    if len == 0u64 {
+        return Ok(Vec::new());
+    }
+
+    let mut start: UInt64 = 0u64;
+    let mut i: UInt64 = 0u64;
+
+    while i <= len {
+        if i == len || bytes[i] == 38u8 {
+            if pairs.len() >= limits.max_pair_count {
+                return Err(UrlEncodedError::ExceededPairCountLimit);
+            }
+
+            let mut eq_idx: UInt64 = i;
+            let mut j = start;
+            while j < i {
+                if bytes[j] == 61u8 {
+                    eq_idx = j;
+                    break;
+                }
+                j = j + 1u64;
+            }
+
+            let raw_name: String;
+            let raw_val: String;
+
+            if eq_idx < i {
+                raw_name = slice_component(bytes, start, eq_idx, &plus_policy);
+                raw_val = slice_component(bytes, eq_idx + 1u64, i, &plus_policy);
+            } else {
+                raw_name = slice_component(bytes, start, i, &plus_policy);
+                raw_val = String::new();
+            }
+
+            match percent_decode(raw_name.as_str()) {
+                Ok(name_bytes) => {
+                    if name_bytes.len() > limits.max_name_bytes {
+                        return Err(UrlEncodedError::ExceededNameLimit);
+                    }
+                    match percent_decode(raw_val.as_str()) {
+                        Ok(val_bytes) => {
+                            if val_bytes.len() > limits.max_value_bytes {
+                                return Err(UrlEncodedError::ExceededValueLimit);
+                            }
+                            pairs.push(
+                                Pair {
+                                    name: bytes_to_string(name_bytes.as_slice()),
+                                    value: bytes_to_string(val_bytes.as_slice()),
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            return Err(UrlEncodedError::PercentDecodeError(e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(UrlEncodedError::PercentDecodeError(e));
+                }
+            }
+
+            start = i + 1u64;
+        }
+        i = i + 1u64;
+    }
+
+    Ok(pairs)
+}
+
+fn serialize_pairs(pairs: &[Pair], limits: Limits, plus_policy: PlusPolicy) -> Result<String, UrlEncodedError> {
+    if pairs.len() > limits.max_pair_count {
+        return Err(UrlEncodedError::ExceededPairCountLimit);
+    }
+
+    let mut out = String::new();
+    let mut i: UInt64 = 0u64;
+
+    while i < pairs.len() {
+        let pair = &pairs[i];
+        let enc_name = encode_component(&pair.name, &plus_policy);
+        if enc_name.bytes().len() > limits.max_name_bytes {
+            return Err(UrlEncodedError::ExceededNameLimit);
+        }
+
+        let enc_val = encode_component(&pair.value, &plus_policy);
+        if enc_val.bytes().len() > limits.max_value_bytes {
+            return Err(UrlEncodedError::ExceededValueLimit);
+        }
+
+        if i > 0u64 {
+            out.push('&');
+        }
+        out.push_str(enc_name.as_str());
+        out.push('=');
+        out.push_str(enc_val.as_str());
+
+        if out.bytes().len() > limits.max_total_bytes {
+            return Err(UrlEncodedError::ExceededTotalBytesLimit);
+        }
+
+        i = i + 1u64;
+    }
+
+    Ok(out)
+}
+
+fn encode_component(input: &String, plus_policy: &PlusPolicy) -> String {
+    match *plus_policy {
+        PlusPolicy::Literal => percent_encode(input.bytes(), PercentEncodeSet::QueryComponent),
+        PlusPolicy::Space => form_encode_string(input),
+    }
+}
+
+fn form_encode_string(input: &String) -> String {
+    let mut out = String::new();
+    let bytes = input.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 32u8 {
+            out.push('+');
+        } else if b == 43u8 {
+            out.push_str("%2B");
+        } else {
+            let slice: &[UInt8] = &[b];
+            out.push_str(percent_encode(slice, PercentEncodeSet::QueryComponent).as_str());
+        }
+        i = i + 1u64;
+    }
+    out
+}
+
+fn slice_component(bytes: &[UInt8], start: UInt64, end: UInt64, plus_policy: &PlusPolicy) -> String {
+    let mut s = String::new();
+    let mut i = start;
+    while i < end {
+        let b = bytes[i];
+        match *plus_policy {
+            PlusPolicy::Space => {
+                if b == 43u8 {
+                    s.push(' ');
+                } else {
+                    s.push(ascii_char_or_replacement(b));
+                }
+            }
+            PlusPolicy::Literal => {
+                s.push(ascii_char_or_replacement(b));
+            }
+        }
+        i = i + 1u64;
+    }
+    s
+}
+
+fn bytes_to_string(bytes: &[UInt8]) -> String {
+    let mut s = String::new();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        s.push(ascii_char_or_replacement(bytes[i]));
+        i = i + 1u64;
+    }
+    s
+}
+
+fn ascii_char_or_replacement(byte: UInt8) -> Char {
+    match char_from_ascii(byte) {
+        Some(ch) => ch,
+        None => '?',
+    }
+}
+
+mod tests;

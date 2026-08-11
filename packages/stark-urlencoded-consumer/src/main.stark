@@ -1,0 +1,44 @@
+use stark_urlencoded::default_limits;
+use stark_urlencoded::parse_form;
+use stark_urlencoded::parse_query;
+use stark_urlencoded::serialize_form;
+use stark_urlencoded::serialize_query;
+use stark_urlencoded::Pair;
+
+fn main() {
+    let query = match parse_query(&String::from("a=b+c&space=%20&plus=%2B"), default_limits()) {
+        Ok(pairs) => pairs,
+        Err(_error) => panic("query parse failed"),
+    };
+    assert_eq(query.len(), 3u64);
+    assert_eq(query[0u64].value.as_str(), "b+c");
+    assert_eq(query[1u64].value.as_str(), " ");
+    assert_eq(query[2u64].value.as_str(), "+");
+
+    let form = match parse_form(&String::from("a+b=c+d&plus=%2B"), default_limits()) {
+        Ok(pairs) => pairs,
+        Err(_error) => panic("form parse failed"),
+    };
+    assert_eq(form.len(), 2u64);
+    assert_eq(form[0u64].name.as_str(), "a b");
+    assert_eq(form[0u64].value.as_str(), "c d");
+    assert_eq(form[1u64].value.as_str(), "+");
+
+    let mut query_pairs = Vec::new();
+    query_pairs.push(Pair { name: String::from("x y"), value: String::from("+") });
+    let query_text = match serialize_query(query_pairs.as_slice(), default_limits()) {
+        Ok(text) => text,
+        Err(_error) => panic("query serialize failed"),
+    };
+    assert_eq(query_text.as_str(), "x%20y=+");
+
+    let mut form_pairs = Vec::new();
+    form_pairs.push(Pair { name: String::from("x y"), value: String::from("+") });
+    let form_text = match serialize_form(form_pairs.as_slice(), default_limits()) {
+        Ok(text) => text,
+        Err(_error) => panic("form serialize failed"),
+    };
+    assert_eq(form_text.as_str(), "x+y=%2B");
+
+    println("stark-urlencoded consumer ok");
+}

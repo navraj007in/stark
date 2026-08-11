@@ -2,5 +2,8 @@
   "name": "stark-http-core",
   "version": "0.1.0",
   "entry": "src/lib.stark",
-  "distribution": { "toolchain": true }
+  "distribution": { "toolchain": true },
+  "dependencies": {
+    "stark_ascii": { "package": "stark-ascii", "path": "../stark-ascii", "version": "0.1.0" }
+  }
 }

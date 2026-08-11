@@ -1,3 +1,8 @@
+use stark_ascii::eq_ignore_ascii_case;
+use stark_ascii::is_ascii_alpha;
+use stark_ascii::is_ascii_control;
+use stark_ascii::is_ascii_digit;
+use stark_ascii::is_ascii_whitespace;
 use stark_base64::decode;
 use stark_base64::encode;
 
@@ -123,7 +128,7 @@ fn has_control_byte(text: &str) -> Bool {
     let mut i: UInt64 = 0u64;
     while i < bytes.len() {
         let byte = bytes[i];
-        if byte < 32u8 || byte == 127u8 {
+        if is_ascii_control(byte) {
             return true;
         }
         i = i + 1u64;
@@ -138,7 +143,7 @@ fn is_valid_basic_bytes(bytes: &[UInt8]) -> Bool {
         let byte = bytes[i];
         if byte == 58u8 {
             found_colon = true;
-        } else if byte < 32u8 || byte == 127u8 {
+        } else if is_ascii_control(byte) {
             return false;
         }
         i = i + 1u64;
@@ -172,7 +177,7 @@ fn is_valid_bearer_token(token: &str) -> Bool {
 }
 
 fn is_bearer_token_byte(byte: UInt8) -> Bool {
-    is_alpha(byte) || is_digit(byte) || byte == 45u8 || byte == 46u8 || byte == 95u8 || byte == 126u8 || byte == 43u8 || byte == 47u8
+    is_ascii_alpha(byte) || is_ascii_digit(byte) || byte == 45u8 || byte == 46u8 || byte == 95u8 || byte == 126u8 || byte == 43u8 || byte == 47u8
 }
 
 fn contains_byte(text: &str, target: UInt8) -> Bool {
@@ -209,39 +214,7 @@ fn first_non_space(text: &str, space: UInt64) -> UInt64 {
 }
 
 fn ascii_equal_ignore_case(left: &str, right: &str) -> Bool {
-    let a = left.bytes();
-    let b = right.bytes();
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i: UInt64 = 0u64;
-    while i < a.len() {
-        if to_lower_byte(a[i]) != to_lower_byte(b[i]) {
-            return false;
-        }
-        i = i + 1u64;
-    }
-    true
-}
-
-fn to_lower_byte(byte: UInt8) -> UInt8 {
-    if byte >= 65u8 && byte <= 90u8 {
-        byte + 32u8
-    } else {
-        byte
-    }
-}
-
-fn is_alpha(byte: UInt8) -> Bool {
-    byte >= 65u8 && byte <= 90u8 || byte >= 97u8 && byte <= 122u8
-}
-
-fn is_digit(byte: UInt8) -> Bool {
-    byte >= 48u8 && byte <= 57u8
-}
-
-fn is_ascii_whitespace(byte: UInt8) -> Bool {
-    byte == 9u8 || byte == 10u8 || byte == 11u8 || byte == 12u8 || byte == 13u8 || byte == 32u8
+    eq_ignore_ascii_case(left.bytes(), right.bytes())
 }
 
 mod tests;

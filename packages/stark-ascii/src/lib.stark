@@ -84,4 +84,12 @@ pub fn string_eq_ignore_ascii_case(left: &String, right: &String) -> Bool {
     eq_ignore_ascii_case(left.as_str().bytes(), right.as_str().bytes())
 }
 
+pub fn char_from_ascii(byte: UInt8) -> Option<Char> {
+    if byte <= 127u8 {
+        Char::from_u32(byte as UInt32)
+    } else {
+        None
+    }
+}
+
 mod tests;

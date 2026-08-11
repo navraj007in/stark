@@ -15,6 +15,15 @@
       "dependencies": {
         "stark_ascii": "0.1.0"
       }
+    },
+    {
+      "name": "stark_urlencoded",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "stark_ascii": "0.1.0",
+        "stark_percent": "0.1.0"
+      }
     }
   ]
 }
