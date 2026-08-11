@@ -1,0 +1,768 @@
+// Bounded parsing and deterministic formatting of HTTP cookie header values.
+//
+// This package is syntax and value semantics only. It holds no cookie jar, performs no domain or
+// path matching, schedules no expiry, and enforces no SameSite or transport policy. Those are
+// decisions a client or server makes with a parsed value, not properties of the value itself.
+//
+// Every parse entry point takes an explicit `CookieLimits`. The limits are the security boundary:
+// a cookie header is attacker-controlled input, and a parser without a bound on it is a denial of
+// service waiting for a long enough header.
+
+use stark_ascii::is_ascii_control;
+use stark_ascii::is_ascii_digit;
+use stark_ascii::is_tchar;
+use stark_ascii::string_eq_ignore_ascii_case;
+use stark_ascii::char_from_ascii;
+
+pub struct CookiePair { pub name: String, pub value: String }
+
+pub struct Cookie { pub pairs: Vec<CookiePair> }
+
+pub enum SameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+pub enum CookieAttributeKind {
+    Expires,
+    MaxAge,
+    Domain,
+    Path,
+    Secure,
+    HttpOnly,
+    SameSitePolicy,
+    Extension,
+    ExtensionFlag,
+}
+
+/// A `Set-Cookie` attribute: a kind, plus the typed payload that kind selects.
+///
+/// This is a tagged struct rather than a sum type with payloads because the native backend cannot
+/// yet match an enum carrying a `String` through a shared reference, and every reader here holds
+/// one by reference. `EVIDENCE.md` records the reproducer.
+///
+/// Only the field the kind selects is meaningful: `value` for `Expires`, `Domain`, `Path` and
+/// `Extension`; `max_age` for `MaxAge`; `same_site` for `SameSite`; `name` for the extension kinds.
+/// The constructors fix the others so that two attributes of the same kind and payload always
+/// format identically.
+pub struct CookieAttribute {
+    pub kind: CookieAttributeKind,
+    pub name: String,
+    pub value: String,
+    pub max_age: Int64,
+    pub same_site: SameSite,
+}
+
+pub struct SetCookie { pub name: String, pub value: String, pub attributes: Vec<CookieAttribute> }
+
+pub struct CookieLimits {
+    pub max_total_bytes: UInt64,
+    pub max_cookie_pairs: UInt64,
+    pub max_name_bytes: UInt64,
+    pub max_value_bytes: UInt64,
+    pub max_attribute_count: UInt64,
+    pub max_attribute_name_bytes: UInt64,
+    pub max_attribute_value_bytes: UInt64,
+}
+
+/// Positions are byte offsets into the input that was handed to the parser, counted from zero.
+/// They never carry a copy of the input: an error names one offending byte at most, so no error
+/// value can be used to echo an attacker's header back into a log.
+pub enum CookieError {
+    EmptyName,
+    InvalidName(UInt64, UInt8),
+    InvalidValue(UInt64, UInt8),
+    InvalidAttribute(UInt64, UInt8),
+    MalformedAttribute(UInt64),
+    InvalidNumber(UInt64),
+    NumberOverflow(UInt64),
+    InvalidSameSite(UInt64),
+    InvalidQuote(UInt64),
+    UnexpectedCharacter(UInt64, UInt8),
+    ExceededTotalBytesLimit,
+    ExceededPairCountLimit,
+    ExceededNameLimit,
+    ExceededValueLimit,
+    ExceededAttributeCountLimit,
+    ExceededAttributeNameLimit,
+    ExceededAttributeValueLimit,
+}
+
+const SEMICOLON: UInt8 = 59u8;
+const EQUALS: UInt8 = 61u8;
+const DQUOTE: UInt8 = 34u8;
+const HYPHEN: UInt8 = 45u8;
+const SPACE: UInt8 = 32u8;
+const HTAB: UInt8 = 9u8;
+
+/// The largest magnitude a `Max-Age` may reach before the accumulator would trap. STARK traps on
+/// integer overflow in every build mode, so the check has to happen BEFORE the multiply, not after.
+const MAX_AGE_ACC_CEILING: Int64 = 922337203685477580i64;
+const MAX_AGE_MAX: Int64 = 9223372036854775807i64;
+
+/// Constructors. They exist so that a caller never has to know which of the payload fields its
+/// kind selects, and so two equal attributes always format to the same bytes.
+pub fn attribute_expires(value: String) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::Expires,
+        name: String::from("Expires"),
+        value: value,
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_max_age(seconds: Int64) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::MaxAge,
+        name: String::from("Max-Age"),
+        value: String::new(),
+        max_age: seconds,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_domain(value: String) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::Domain,
+        name: String::from("Domain"),
+        value: value,
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_path(value: String) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::Path,
+        name: String::from("Path"),
+        value: value,
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_secure() -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::Secure,
+        name: String::from("Secure"),
+        value: String::new(),
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_http_only() -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::HttpOnly,
+        name: String::from("HttpOnly"),
+        value: String::new(),
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_same_site(policy: SameSite) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::SameSitePolicy,
+        name: String::from("SameSite"),
+        value: String::new(),
+        max_age: 0i64,
+        same_site: policy,
+    }
+}
+
+pub fn attribute_extension(name: String, value: String) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::Extension,
+        name: name,
+        value: value,
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn attribute_extension_flag(name: String) -> CookieAttribute {
+    CookieAttribute {
+        kind: CookieAttributeKind::ExtensionFlag,
+        name: name,
+        value: String::new(),
+        max_age: 0i64,
+        same_site: SameSite::Lax,
+    }
+}
+
+pub fn default_limits() -> CookieLimits {
+    CookieLimits {
+        max_total_bytes: 8192u64,
+        max_cookie_pairs: 64u64,
+        max_name_bytes: 256u64,
+        max_value_bytes: 4096u64,
+        max_attribute_count: 16u64,
+        max_attribute_name_bytes: 64u64,
+        max_attribute_value_bytes: 1024u64,
+    }
+}
+
+/// Parse a `Cookie` request header value: one or more `name=value` pairs separated by `;`.
+///
+/// Duplicate names are preserved in appearance order. Order is significant and is never sorted.
+pub fn parse_cookie(input: &String, limits: CookieLimits) -> Result<Cookie, CookieError> {
+    let bytes = input.bytes();
+    let len = bytes.len();
+    if len > limits.max_total_bytes {
+        return Err(CookieError::ExceededTotalBytesLimit);
+    }
+
+    let mut pairs: Vec<CookiePair> = Vec::new();
+    let mut idx: UInt64 = 0u64;
+
+    idx = skip_ows(bytes, idx, len);
+    if idx >= len {
+        return Ok(Cookie { pairs: pairs });
+    }
+
+    while idx < len {
+        if pairs.len() >= limits.max_cookie_pairs {
+            return Err(CookieError::ExceededPairCountLimit);
+        }
+
+        let name_start = idx;
+        while idx < len && is_tchar(bytes[idx]) {
+            idx = idx + 1u64;
+        }
+        if idx == name_start {
+            if idx < len {
+                return Err(CookieError::InvalidName(idx, bytes[idx]));
+            }
+            return Err(CookieError::EmptyName);
+        }
+        if idx - name_start > limits.max_name_bytes {
+            return Err(CookieError::ExceededNameLimit);
+        }
+        let name = slice_to_string(bytes, name_start, idx);
+
+        if idx >= len || bytes[idx] != EQUALS {
+            if idx >= len {
+                return Err(CookieError::UnexpectedCharacter(idx, 0u8));
+            }
+            return Err(CookieError::UnexpectedCharacter(idx, bytes[idx]));
+        }
+        idx = idx + 1u64;
+
+        let value = match scan_cookie_value(bytes, idx, len, limits.max_value_bytes) {
+            Ok(scanned) => {
+                idx = scanned.next;
+                scanned.text
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
+
+        pairs.push(CookiePair { name: name, value: value });
+
+        idx = skip_ows(bytes, idx, len);
+        if idx >= len {
+            break;
+        }
+        if bytes[idx] != SEMICOLON {
+            return Err(CookieError::UnexpectedCharacter(idx, bytes[idx]));
+        }
+        idx = idx + 1u64;
+        idx = skip_ows(bytes, idx, len);
+        if idx >= len {
+            return Err(CookieError::EmptyName);
+        }
+    }
+
+    Ok(Cookie { pairs: pairs })
+}
+
+/// Parse one `Set-Cookie` response header value: a cookie pair followed by zero or more attributes.
+///
+/// The first segment is always the cookie itself and is never read as an attribute.
+pub fn parse_set_cookie(input: &String, limits: CookieLimits) -> Result<SetCookie, CookieError> {
+    let bytes = input.bytes();
+    let len = bytes.len();
+    if len > limits.max_total_bytes {
+        return Err(CookieError::ExceededTotalBytesLimit);
+    }
+
+    let mut idx = skip_ows(bytes, 0u64, len);
+
+    let name_start = idx;
+    while idx < len && is_tchar(bytes[idx]) {
+        idx = idx + 1u64;
+    }
+    if idx == name_start {
+        if idx < len {
+            return Err(CookieError::InvalidName(idx, bytes[idx]));
+        }
+        return Err(CookieError::EmptyName);
+    }
+    if idx - name_start > limits.max_name_bytes {
+        return Err(CookieError::ExceededNameLimit);
+    }
+    let name = slice_to_string(bytes, name_start, idx);
+
+    if idx >= len || bytes[idx] != EQUALS {
+        if idx >= len {
+            return Err(CookieError::UnexpectedCharacter(idx, 0u8));
+        }
+        return Err(CookieError::UnexpectedCharacter(idx, bytes[idx]));
+    }
+    idx = idx + 1u64;
+
+    let value = match scan_cookie_value(bytes, idx, len, limits.max_value_bytes) {
+        Ok(scanned) => {
+            idx = scanned.next;
+            scanned.text
+        }
+        Err(error) => {
+            return Err(error);
+        }
+    };
+
+    let mut attributes: Vec<CookieAttribute> = Vec::new();
+    idx = skip_ows(bytes, idx, len);
+
+    while idx < len {
+        if bytes[idx] != SEMICOLON {
+            return Err(CookieError::UnexpectedCharacter(idx, bytes[idx]));
+        }
+        idx = idx + 1u64;
+        idx = skip_ows(bytes, idx, len);
+
+        if attributes.len() >= limits.max_attribute_count {
+            return Err(CookieError::ExceededAttributeCountLimit);
+        }
+
+        let attr_name_start = idx;
+        while idx < len && is_tchar(bytes[idx]) {
+            idx = idx + 1u64;
+        }
+        if idx == attr_name_start {
+            return Err(CookieError::MalformedAttribute(idx));
+        }
+        if idx - attr_name_start > limits.max_attribute_name_bytes {
+            return Err(CookieError::ExceededAttributeNameLimit);
+        }
+        let attr_name = slice_to_string(bytes, attr_name_start, idx);
+
+        let mut has_value = false;
+        let mut attr_value = String::new();
+        let value_start = idx + 1u64;
+        if idx < len && bytes[idx] == EQUALS {
+            has_value = true;
+            idx = idx + 1u64;
+            let av_start = idx;
+            while idx < len && bytes[idx] != SEMICOLON {
+                if is_ascii_control(bytes[idx]) {
+                    return Err(CookieError::InvalidAttribute(idx, bytes[idx]));
+                }
+                idx = idx + 1u64;
+            }
+            let mut av_end = idx;
+            while av_end > av_start && is_ows(bytes[av_end - 1u64]) {
+                av_end = av_end - 1u64;
+            }
+            if av_end - av_start > limits.max_attribute_value_bytes {
+                return Err(CookieError::ExceededAttributeValueLimit);
+            }
+            attr_value = slice_to_string(bytes, av_start, av_end);
+        } else if idx < len && !is_ows(bytes[idx]) && bytes[idx] != SEMICOLON {
+            return Err(CookieError::InvalidAttribute(idx, bytes[idx]));
+        }
+
+        let attribute = match classify_attribute(
+            &attr_name,
+            &attr_value,
+            has_value,
+            attr_name_start,
+            value_start,
+        ) {
+
+            Ok(built) => built,
+            Err(error) => {
+                return Err(error);
+            }
+        };
+        attributes.push(attribute);
+
+        idx = skip_ows(bytes, idx, len);
+    }
+
+    Ok(SetCookie { name: name, value: value, attributes: attributes })
+}
+
+/// Render a `Cookie` request header value. Pairs are emitted in stored order, never reordered,
+/// and repeated formatting of the same value is byte-identical.
+pub fn format_cookie(cookie: &Cookie) -> String {
+    let mut out = String::new();
+    let mut i: UInt64 = 0u64;
+    while i < cookie.pairs.len() {
+        if i > 0u64 {
+            out.push_str("; ");
+        }
+        out.push_str(cookie.pairs[i].name.as_str());
+        out.push('=');
+        push_cookie_value(&mut out, &cookie.pairs[i].value);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// Render a `Set-Cookie` response header value. Recognised attributes are emitted with canonical
+/// casing; extensions keep the casing they arrived with. Attribute order is preserved exactly, so
+/// duplicates survive a round trip rather than being collapsed by a formatter.
+pub fn format_set_cookie(set_cookie: &SetCookie) -> String {
+    let mut out = String::new();
+    out.push_str(set_cookie.name.as_str());
+    out.push('=');
+    push_cookie_value(&mut out, &set_cookie.value);
+
+    let mut i: UInt64 = 0u64;
+    while i < set_cookie.attributes.len() {
+        out.push_str("; ");
+        push_attribute(&mut out, &set_cookie.attributes[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+/// The value of the FIRST pair whose name matches ASCII case-insensitively.
+///
+/// Duplicate names are kept in `Cookie.pairs`; this accessor picks one deterministically rather
+/// than pretending the header is a map. A caller that needs every occurrence reads `pairs`.
+pub fn cookie_value(cookie: &Cookie, name: &String) -> Option<String> {
+    let mut i: UInt64 = 0u64;
+    while i < cookie.pairs.len() {
+        if string_eq_ignore_ascii_case(&cookie.pairs[i].name, name) {
+            return Some(String::from(cookie.pairs[i].value.as_str()));
+        }
+        i = i + 1u64;
+    }
+    None
+}
+
+/// The canonical spelling of a `SameSite` value, as it is written on the wire.
+pub fn same_site_text(value: SameSite) -> String {
+    match value {
+        SameSite::Strict => String::from("Strict"),
+        SameSite::Lax => String::from("Lax"),
+        SameSite::None => String::from("None"),
+    }
+}
+
+// -- attribute classification ------------------------------------------------------------------
+
+fn classify_attribute(
+    name: &String,
+    value: &String,
+    has_value: Bool,
+    name_offset: UInt64,
+    value_offset: UInt64,
+) -> Result<CookieAttribute, CookieError> {
+    if string_eq_ignore_ascii_case(name, &String::from("Secure")) {
+        if has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        return Ok(attribute_secure());
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("HttpOnly")) {
+        if has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        return Ok(attribute_http_only());
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("Max-Age")) {
+        if !has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        match parse_max_age(value, value_offset) {
+            Ok(seconds) => {
+                return Ok(attribute_max_age(seconds));
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        }
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("SameSite")) {
+        if !has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        if string_eq_ignore_ascii_case(value, &String::from("Strict")) {
+            return Ok(attribute_same_site(SameSite::Strict));
+        }
+        if string_eq_ignore_ascii_case(value, &String::from("Lax")) {
+            return Ok(attribute_same_site(SameSite::Lax));
+        }
+        if string_eq_ignore_ascii_case(value, &String::from("None")) {
+            return Ok(attribute_same_site(SameSite::None));
+        }
+        // Never quietly folded onto a recognised value: a caller told `Lax` when the server said
+        // something else would be making a security decision on invented data.
+        return Err(CookieError::InvalidSameSite(value_offset));
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("Domain")) {
+        if !has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        return Ok(attribute_domain(String::from(value.as_str())));
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("Path")) {
+        if !has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        return Ok(attribute_path(String::from(value.as_str())));
+    }
+    if string_eq_ignore_ascii_case(name, &String::from("Expires")) {
+        if !has_value {
+            return Err(CookieError::MalformedAttribute(name_offset));
+        }
+        if value.bytes().len() == 0u64 {
+            return Err(CookieError::MalformedAttribute(value_offset));
+        }
+        return Ok(attribute_expires(String::from(value.as_str())));
+    }
+
+    if has_value {
+        Ok(attribute_extension(String::from(name.as_str()), String::from(value.as_str())))
+    } else {
+        Ok(attribute_extension_flag(String::from(name.as_str())))
+    }
+}
+
+/// `Max-Age` per RFC 6265: an optional `-` and one or more digits.
+///
+/// The accumulator is bounded BEFORE each step. STARK traps on integer overflow in every build
+/// mode, so a hostile thirty-digit `Max-Age` would abort the process rather than return an error
+/// if the check came after the arithmetic.
+fn parse_max_age(value: &String, offset: UInt64) -> Result<Int64, CookieError> {
+    let bytes = value.bytes();
+    let len = bytes.len();
+    if len == 0u64 {
+        return Err(CookieError::InvalidNumber(offset));
+    }
+
+    let mut i: UInt64 = 0u64;
+    let mut negative = false;
+    if bytes[0u64] == HYPHEN {
+        negative = true;
+        i = 1u64;
+        if len == 1u64 {
+            return Err(CookieError::InvalidNumber(offset));
+        }
+    }
+
+    let mut magnitude: Int64 = 0i64;
+    while i < len {
+        let byte = bytes[i];
+        if !is_ascii_digit(byte) {
+            return Err(CookieError::InvalidNumber(offset + i));
+        }
+        let digit = (byte - 48u8) as Int64;
+        if magnitude > MAX_AGE_ACC_CEILING {
+            return Err(CookieError::NumberOverflow(offset));
+        }
+        magnitude = magnitude * 10i64;
+        if magnitude > MAX_AGE_MAX - digit {
+            return Err(CookieError::NumberOverflow(offset));
+        }
+        magnitude = magnitude + digit;
+        i = i + 1u64;
+    }
+
+    if negative {
+        Ok(0i64 - magnitude)
+    } else {
+        Ok(magnitude)
+    }
+}
+
+// -- value scanning ----------------------------------------------------------------------------
+
+struct ScannedValue { text: String, next: UInt64 }
+
+/// A cookie value is either bare `cookie-octet`s or the same wrapped in DQUOTEs.
+///
+/// Inside quotes a space is also accepted. RFC 6265's `cookie-octet` excludes SP, so this is a
+/// deliberate documented extension: `session="hello world"` is the case it exists for. The quotes
+/// are syntax, not value — they are stripped here and re-added by the formatter only when needed.
+fn scan_cookie_value(bytes: &[UInt8], start: UInt64, len: UInt64, max_value_bytes: UInt64) -> Result<ScannedValue, CookieError> {
+    let mut idx = start;
+
+    if idx < len && bytes[idx] == DQUOTE {
+        idx = idx + 1u64;
+        let inner_start = idx;
+        while idx < len && bytes[idx] != DQUOTE {
+            let byte = bytes[idx];
+            if !is_cookie_octet(byte) && byte != SPACE {
+                return Err(CookieError::InvalidValue(idx, byte));
+            }
+            idx = idx + 1u64;
+        }
+        if idx >= len {
+            return Err(CookieError::InvalidQuote(start));
+        }
+        if idx - inner_start > max_value_bytes {
+            return Err(CookieError::ExceededValueLimit);
+        }
+        let text = slice_to_string(bytes, inner_start, idx);
+        return Ok(ScannedValue { text: text, next: idx + 1u64 });
+    }
+
+    let value_start = idx;
+    while idx < len && is_cookie_octet(bytes[idx]) {
+        idx = idx + 1u64;
+    }
+    if idx < len && bytes[idx] != SEMICOLON && !is_ows(bytes[idx]) {
+        return Err(CookieError::InvalidValue(idx, bytes[idx]));
+    }
+    if idx - value_start > max_value_bytes {
+        return Err(CookieError::ExceededValueLimit);
+    }
+    let text = slice_to_string(bytes, value_start, idx);
+    Ok(ScannedValue { text: text, next: idx })
+}
+
+// -- formatting helpers ------------------------------------------------------------------------
+
+fn push_cookie_value(out: &mut String, value: &String) {
+    if value_needs_quotes(value) {
+        out.push('"');
+        out.push_str(value.as_str());
+        out.push('"');
+    } else {
+        out.push_str(value.as_str());
+    }
+}
+
+/// Quote only when the bare form would not parse back. An empty value is legal bare (`name=`), so
+/// it is not quoted; a value carrying a space is.
+fn value_needs_quotes(value: &String) -> Bool {
+    let bytes = value.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        if !is_cookie_octet(bytes[i]) {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+fn push_attribute(out: &mut String, attribute: &CookieAttribute) {
+    match attribute.kind {
+        CookieAttributeKind::Expires => {
+            out.push_str("Expires=");
+            out.push_str(attribute.value.as_str());
+        }
+        CookieAttributeKind::MaxAge => {
+            out.push_str("Max-Age=");
+            out.push_str(int64_to_string(attribute.max_age).as_str());
+        }
+        CookieAttributeKind::Domain => {
+            out.push_str("Domain=");
+            out.push_str(attribute.value.as_str());
+        }
+        CookieAttributeKind::Path => {
+            out.push_str("Path=");
+            out.push_str(attribute.value.as_str());
+        }
+        CookieAttributeKind::Secure => {
+            out.push_str("Secure");
+        }
+        CookieAttributeKind::HttpOnly => {
+            out.push_str("HttpOnly");
+        }
+        CookieAttributeKind::SameSitePolicy => {
+            out.push_str("SameSite=");
+            out.push_str(same_site_text(attribute.same_site).as_str());
+        }
+        CookieAttributeKind::Extension => {
+            out.push_str(attribute.name.as_str());
+            out.push('=');
+            out.push_str(attribute.value.as_str());
+        }
+        CookieAttributeKind::ExtensionFlag => {
+            out.push_str(attribute.name.as_str());
+        }
+    }
+}
+
+/// `Int64` to decimal. The magnitude is accumulated as a positive `Int64`, which is safe because
+/// `parse_max_age` refuses any magnitude above `Int64`'s maximum — so negating never traps.
+fn int64_to_string(value: Int64) -> String {
+    if value == 0i64 {
+        return String::from("0");
+    }
+
+    let mut negative = false;
+    let mut remaining = value;
+    if remaining < 0i64 {
+        negative = true;
+        remaining = 0i64 - remaining;
+    }
+
+    let mut digits: Vec<UInt8> = Vec::new();
+    while remaining > 0i64 {
+        let digit = (remaining - remaining / 10i64 * 10i64) as UInt8;
+        digits.push(digit + 48u8);
+        remaining = remaining / 10i64;
+    }
+
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    let mut i = digits.len();
+    while i > 0u64 {
+        out.push(direct_ascii_char(digits[i - 1u64]));
+        i = i - 1u64;
+    }
+    out
+}
+
+// -- byte classification -----------------------------------------------------------------------
+
+/// RFC 6265 `cookie-octet`: US-ASCII excluding CTLs, whitespace, DQUOTE, comma, semicolon and
+/// backslash. This is NOT `tchar` — a cookie value admits bytes a token never would, so it needs
+/// its own classifier rather than borrowing `stark-ascii`'s token rule.
+fn is_cookie_octet(byte: UInt8) -> Bool {
+    byte == 33u8 || byte >= 35u8 && byte <= 43u8 || byte >= 45u8 && byte <= 58u8 || byte >= 60u8 && byte <= 91u8 || byte >= 93u8 && byte <= 126u8
+}
+
+fn is_ows(byte: UInt8) -> Bool {
+    byte == SPACE || byte == HTAB
+}
+
+fn skip_ows(bytes: &[UInt8], start: UInt64, len: UInt64) -> UInt64 {
+    let mut i = start;
+    while i < len && is_ows(bytes[i]) {
+        i = i + 1u64;
+    }
+    i
+}
+
+fn slice_to_string(bytes: &[UInt8], start: UInt64, end: UInt64) -> String {
+    let mut out = String::new();
+    let mut i = start;
+    while i < end {
+        out.push(direct_ascii_char(bytes[i]));
+        i = i + 1u64;
+    }
+    out
+}
+
+fn direct_ascii_char(byte: UInt8) -> Char {
+    match char_from_ascii(byte) {
+        Some(ch) => ch,
+        None => '?',
+    }
+}
+
+mod tests;

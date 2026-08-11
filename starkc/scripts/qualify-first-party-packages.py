@@ -206,6 +206,11 @@ CASES = [
         consumer="stark-mime-consumer",
         expected_stdout="MIME_CONSUMER_OK\n",
     ),
+    PackageCase(
+        package="stark-cookie",
+        consumer="stark-cookie-consumer",
+        expected_stdout="COOKIE_CONSUMER_OK\n",
+    ),
     # HC5/HC6 — pure packages, so the ordinary consumer bar applies: each principal public
     # behaviour executed, no resources to acquire or release.
     PackageCase(
