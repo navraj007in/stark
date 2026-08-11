@@ -9,10 +9,10 @@ Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second a
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
                 `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
-Population A: 12 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-228/229 (resolution namespaces), DEV-232 (a non-Copy field moved out of a
-              shared reference -- check says OK, interpreter ICEs, native refuses), DEV-233
-              (the interpreter loses output written before a trap). DEV-231, found by the audit's scope C
+Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-228/229 (resolution namespaces), DEV-233
+              (the interpreter loses output written before a trap). DEV-232, the audit's most
+              serious finding, RESOLVED the same day it was filed. DEV-231, found by the audit's scope C
               and RESOLVED the same day. DEV-224 was mis-scoped on filing, REVISED,
               and RESOLVED 2026-08-11 as a capability increase; DEV-230 found by the resolution
               audit and RESOLVED the same day.

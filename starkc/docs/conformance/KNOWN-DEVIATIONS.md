@@ -9275,3 +9275,31 @@ test comparing stdout cannot use a trapping program without accounting for this.
 
 Not a wrong answer, so not a soundness issue. Filed because two engines observably disagree and
 nothing recorded it.
+
+## DEV-232 — RESOLVED (2026-08-11): the rule already implemented for patterns now covers expressions
+
+`check_owned_value` handled a bare `*r`; a FIELD read through the same reference produced an owned
+non-`Copy` value just as surely and was not covered. It now reports `E0100 cannot move a non-Copy
+value out of a reference`, labelled *"borrow this field instead of moving it out of the
+reference"*, at `stark check` — so the interpreter's ICE and native's leaked `Place` description are
+both unreachable.
+
+**The repair reuses DEV-072's own classifier**, `scrutinee_reads_through_ref`, rather than writing a
+second one. That function is already documented as deliberately identical to MIR lowering's
+`scrutinee_reads_through_ref`, so pattern position, expression position and lowering now classify
+by-reference reads by construction rather than by coincidence. A third copy of this rule was the
+thing most likely to drift.
+
+The check is on the VALUE's type, not the shape, which is what keeps `Copy` reads legal:
+`fn peek(t: &T) -> Int64 { t.v }` moves nothing and still compiles.
+
+Regression: `starkc/tests/dev232_field_move_out_of_reference.rs`, six tests. Three rejections —
+shared reference, mutable reference, and a nested field chain — and three controls: a `Copy` field
+read, a method call on a non-`Copy` field (a receiver auto-borrow, not a move), and moving a field
+out of a struct one OWNS. Verified by reverting `borrowck.rs`: the three fail, the three controls
+pass.
+
+**Blast radius, measured rather than assumed: none.** All 65 first-party packages and consumers
+still `stark check` clean and all 31 library test suites stay green. No first-party code moved a
+non-`Copy` field out of a borrow — unsurprising in hindsight, since every consumer builds natively
+and native already refused the shape.

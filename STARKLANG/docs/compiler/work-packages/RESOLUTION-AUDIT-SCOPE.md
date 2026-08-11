@@ -243,7 +243,7 @@ out of an indexed place, wrong assignment/return types, wrong arity, unknown fie
 unsatisfied trait bound, mixed integer widths, `Copy` with `Drop`, and use of an uninitialised
 binding. The ownership and type rules hold across the board.
 
-**DEV-232, filed — the most serious finding of the whole audit:** a non-`Copy` FIELD can be moved
+**DEV-232, filed and since REPAIRED — the most serious finding of the whole audit:** a non-`Copy` FIELD can be moved
 out of a shared reference. `fn steal(t: &T) -> String { t.v }` passes `stark check`, ICEs the
 interpreter, and makes native leak an internal `Place` description. The check already exists for
 the whole referent (`*t` is correctly rejected) and correctly permits a `Copy` field; it simply
