@@ -8709,3 +8709,86 @@ The cost is real and is in a shipped public API: a sum type makes an invalid com
 *unrepresentable*, while a tagged struct makes it merely unconstructible-by-convention. A
 `Secure` attribute carrying a value cannot exist in the enum formulation; in the struct
 formulation it is prevented only because every caller goes through a constructor.
+
+## DEV-223 — REVISED: it is not fail-safe. The constructor face type-checks and fails at RUNTIME (2026-08-11)
+
+The original entry, registered earlier the same day, called this "over-rejection, fail-safe … can
+never produce wrong output". **That is wrong, and this heading corrects it.** The name collision has
+a second face in EXPRESSION position that the pattern reproducer hid:
+
+```stark
+enum Policy { A, B }
+enum Attr { Flag, Policy(Policy) }
+
+fn build() -> Attr { Attr::Policy(Policy::A) }   // an ordinary enum constructor
+```
+
+```text
+probe: OK
+Error: runtime error: item is not callable
+  --> probe/src/main.stark:5:22
+```
+
+`stark check` passes. The failure is deferred to **runtime**. A valid enum constructor is
+unusable, and nothing in the front end says so.
+
+Severity is therefore **not** ergonomic. Pattern position over-rejects loudly (spurious `E0303`);
+expression position accepts and traps.
+
+### Root cause, read out of the source rather than inferred
+
+`resolve_path_relative` (`starkc/src/resolve.rs`), subsequent-segment loop. For `Attr::Policy`,
+segment 0 resolves `Attr` to `Res::Item`, and because `Attr` is not a submodule `current_mod` stays
+the *enclosing* module. Segment 1 then hits this branch first:
+
+```rust
+} else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
+```
+
+`Policy` IS an item of that module — the enum type — so it wins, and `current_res` becomes
+`Res::Item(policy_enum)`. The enum-variant branch below it is never reached:
+
+```rust
+} else if let Some(Res::Item(item_id)) = current_res {
+    match self.item_details.get(&item_id) {
+        Some(ItemDefDetail::Enum { variants }) => { /* the variant lookup, never reached */ }
+```
+
+**The module-item lookup is consulted before the qualifying item's own variants**, so any
+module-level name shadows a same-named variant of the enum being qualified. This supersedes the
+earlier entry's hypothesis that the final segment resolved to the type "somehow"; it is an
+ordering bug, and the ordering is visible in the source.
+
+### Relationship to DEV-222 — they are NOT the same defect
+
+The earlier entry guessed one shared root cause. Reading the function shows two distinct ones in
+the same loop:
+
+- **DEV-223** is the branch ORDER above: module items before the qualifier's variants.
+- **DEV-222** is the enum/struct fallback below it: a name that is not a variant becomes
+  `Res::AssociatedFn(item_id, span)`, not `Res::Err`.
+
+```rust
+Some(ItemDefDetail::Enum { variants }) => {
+    if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
+        current_res = Some(Res::Variant(item_id, variant_idx as u32));
+    } else {
+        current_res = Some(Res::AssociatedFn(item_id, segment.span));   // DEV-222
+    }
+}
+Some(ItemDefDetail::Struct { .. }) => {
+    current_res = Some(Res::AssociatedFn(item_id, segment.span));       // DEV-222, struct face
+}
+```
+
+**That fallback is correct for expressions and must stay.** `Duration::from_seconds`,
+`Instant::now`, `Line::new` and `UnixTimestamp::from_unix_seconds` are user-declared associated
+functions reached exactly this way — over sixty call sites across `packages/`. Making these arms
+return `Res::Err` would break every one of them.
+
+DEV-222 is therefore **not** a defect in `resolve_path`. `resolve_path` is answering the question it
+was asked. The defect is that *pattern* lowering accepts a resolution that cannot be a pattern:
+`Res::AssociatedFn` is never a valid pattern, and `lower_pattern`'s three branches test only
+`res == Res::Err` before emitting `E0200`/`E0202`. The repair belongs in that guard — widening it
+from "is it `Res::Err`" to "is it a resolution a pattern may name" — or in a pattern-aware
+resolution entry point. It does not belong in the shared expression path.

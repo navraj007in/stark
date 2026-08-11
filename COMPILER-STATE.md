@@ -13,7 +13,8 @@ Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160,
               DEV-222/223/224 (registered 2026-08-11 by `stark-cookie`; 222 is WRONG-CODE)
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
                  capability half OPEN). Of the eleven, three are reached by written code:
-                 DEV-160, and DEV-222/224 which `stark-cookie` hit while being written
+                 DEV-160, and DEV-222/224 which `stark-cookie` hit while being written.
+                 DEV-222 and DEV-223 are BOTH wrong-code (223 revised 2026-08-11)
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -7707,10 +7708,14 @@ source was modified.** Population A 8 -> 11.
   `Res::Err` for `Type::NonexistentName`. **Same class as DEV-053/054**, which C2's exit report
   calls "the most severe finding to date": DEV-053 closed it for a bare identifier resolving to a
   builtin, and the qualified-path case was never closed.
-- **DEV-223 — over-rejection, fail-safe.** A variant whose name matches an in-scope type makes an
-  exhaustive match report `E0303 non-exhaustive`. Probably the same root cause as DEV-222; filed
-  separately because the symptom differs. Note that DEV-053 *also* first presented as a spurious
-  `E0303` and turned out to be pattern resolution.
+- **DEV-223 — REVISED the same day; it is NOT fail-safe.** A variant whose name matches an
+  in-scope type makes an exhaustive match report `E0303 non-exhaustive` — and, in expression
+  position, makes an ordinary constructor `Attr::Policy(Policy::A)` pass `stark check` and then
+  **fail at runtime** with `item is not callable`. Root cause read out of
+  `resolve_path_relative`: the subsequent-segment loop consults `current_mod`'s module items
+  BEFORE the qualifying item's own variants, so a module-level name shadows the variant. **Not
+  the same defect as DEV-222** — two distinct faults in the same loop; see the REVISED heading in
+  the ledger.
 - **DEV-224 — native gap.** An enum carrying a non-`Copy` payload cannot be matched through a
   shared reference; even `_` arms are refused, because the rejection is about the scrutinee. This
   blocks the ordinary tagged-value shape (`enum { A(String), B(Int64) }` in a `Vec`, read by
