@@ -9184,3 +9184,94 @@ that an over-eager repair would plausibly have caught.
 
 Re-running the audit's scope C against the repair: **29 probes, 0 disagreements**, with the
 mistaken `Rec::One` expectation corrected in the harness rather than in the compiler.
+
+## DEV-232 — a non-`Copy` FIELD can be moved out of a shared reference (OPEN, registered 2026-08-11)
+
+Found by the audit's scope F, the rejection matrix. **The most serious finding of the audit**: a
+function that only borrows its argument destroys the caller's value, no diagnostic is issued, and
+the failure surfaces as an internal compiler error.
+
+```stark
+struct T { v: String }
+
+fn steal(t: &T) -> String { t.v }   // moves the String out of a SHARED reference
+
+fn main() {
+    let t = T { v: String::from("payload") };
+    let a = steal(&t);
+    println(a.as_str());
+    println(t.v.as_str());          // `t` was only borrowed, so this must still work
+}
+```
+
+| Engine | Result |
+| --- | --- |
+| `stark check` | **OK** |
+| interpreter | `internal compiler error: use of moved or invalid field` |
+| `stark build` | `native build does not yet support this program: move out of the non-slot place Place { local: LocalId(1), projection: [Deref, Field(0)] }` |
+
+Three engines, three behaviours, and **none of them a correct user-facing diagnostic.** The
+interpreter ICEs; native leaks an internal `Place` description at the user.
+
+### The check exists — it just does not traverse a field projection
+
+The whole-referent case is already handled correctly:
+
+```stark
+fn steal(t: &T) -> T { *t }
+// Error: [E0100] cannot move a non-Copy value out of a reference
+```
+
+And a `Copy` field is correctly accepted, because a `Copy` read moves nothing:
+
+```stark
+struct T { v: Int64 }
+fn peek(t: &T) -> Int64 { t.v }   // accepted, and right
+```
+
+So the rule is known and implemented for `Deref`; it is not applied to `Deref` followed by
+`Field`. That is a narrow and precise gap, not a missing concept.
+
+### Expected
+
+`E0100 cannot move a non-Copy value out of a reference`, at `stark check`, naming `t.v`. The
+interpreter's ICE and native's `unsupported` both become unreachable once the front end rejects it,
+exactly as DEV-224's repair made native's refusal unreachable from the other direction.
+
+### Relationship to DEV-224
+
+The same shape of question, opposite answer. DEV-224 looked like an illegal move and turned out to
+be a legitimate borrow that lowering had not implemented — the fix was to implement the borrow.
+This one **is** an illegal move, and the fix is to reject it. The distinguishing test is
+PAT-BIND-001's: a *pattern binding* through a reference borrows, while a *field read* in expression
+position moves.
+
+## DEV-233 — the interpreter discards output already written when a trap follows (OPEN, registered 2026-08-11)
+
+Found by the audit's scope E, the engine differential.
+
+```stark
+fn main() {
+    let x: UInt32 = 0xF0F0F0F0u32;
+    println(x >> 4u32);   // 252645135 -- succeeds
+    println(x << 4u32);   // traps: integer overflow
+}
+```
+
+| Engine | stdout |
+| --- | --- |
+| native | `252645135`, then the trap |
+| interpreter | **nothing**, then the trap |
+
+The first `println` succeeds under both engines. Native emits it; the interpreter loses it.
+
+Both engines are right about the trap — overflow traps in every build mode, and that is the
+specified behaviour. The divergence is only in what was already written before it.
+
+**Severity: moderate, and it is a debugging tax rather than a correctness one.** Any program that
+traps loses its entire output under `stark run`, which is the engine a developer uses while
+iterating — precisely when the printed trail matters most. It also means an engine-differential
+test comparing stdout cannot use a trapping program without accounting for this.
+
+Not a wrong answer, so not a soundness issue. Filed because two engines observably disagree and
+nothing recorded it.

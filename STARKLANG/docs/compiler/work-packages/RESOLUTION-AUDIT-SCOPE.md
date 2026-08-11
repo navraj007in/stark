@@ -204,3 +204,64 @@ Both were one stage past where the audit was aimed, which is the most useful thi
 the same shape aimed at type checking, borrow checking and MIR lowering is the obvious next one —
 `typecheck/patterns.rs` alone yielded two defects and its own comments record a third (DEV-205) of
 the identical class, fixed one entry at a time before the general check existed.
+
+---
+
+# Report — scopes E and F, aimed at type checking, borrow checking and lowering (2026-08-11)
+
+The previous report ended by saying the next sweep should be aimed one stage on, because both
+defects the resolution audit found were in type checking. This is that sweep.
+
+Harness: `starkc/scripts/audit-scope-ef-typecheck-borrowck.py`, run against a `stark` built from
+`0fd9642`. **34 programs, 4 disagreements — two new defects, one already filed, one my own probe.**
+
+## Scope E — engine differential: 20 programs, 2 divergences
+
+Each program runs under the interpreter and as a native binary and the outputs are compared. This
+needs no oracle: a divergence is wrong whichever engine is right. It is the class DEV-224 belonged
+to, and it is the only method here that catches "builds, but behaves differently".
+
+**Agreeing, 18 of 20:** integer edges and division, float formatting, vectors, nested structs and
+enums, generics, trait dispatch through a bound, `Drop` ordering and drop-on-move, `Option`/
+`Result`, the `?` operator, by-reference matching on a non-`Copy` enum (DEV-224's own shape),
+mutable borrows through a function, shadowing, loops, char/byte round trips, arrays and slices,
+and recursion.
+
+**DEV-233, filed:** the interpreter discards output already written when a later statement traps.
+Native prints the first line then traps; the interpreter prints nothing. A debugging tax rather
+than a correctness one, but two engines observably disagree.
+
+**Already filed:** `s.substring(..).as_str()` type-checks and runs but does not build —
+`native build does not yet support this program: method as_str on Str (a later C4.5e sub-slice)`.
+That is **DEV-145**, one of the six supported-subset boundary entries. The audit finding the
+boundary exactly where the ledger says it is, is a result worth recording.
+
+## Scope F — rejection matrix: 14 programs, 2 wrongly accepted
+
+**Correctly rejected, 12 of 14:** two mutable borrows at once, mutable and shared at once, moving
+out of an indexed place, wrong assignment/return types, wrong arity, unknown field, unknown method,
+unsatisfied trait bound, mixed integer widths, `Copy` with `Drop`, and use of an uninitialised
+binding. The ownership and type rules hold across the board.
+
+**DEV-232, filed — the most serious finding of the whole audit:** a non-`Copy` FIELD can be moved
+out of a shared reference. `fn steal(t: &T) -> String { t.v }` passes `stark check`, ICEs the
+interpreter, and makes native leak an internal `Place` description. The check already exists for
+the whole referent (`*t` is correctly rejected) and correctly permits a `Copy` field; it simply
+does not traverse `Deref` followed by `Field`.
+
+**One probe was mine, not the compiler's.** "Use after move" was written with an all-`Copy`-field
+struct, where nothing is invalidated. Rewritten with a `String` field it is correctly rejected with
+`E0100 use of moved value`. Recorded for the same reason scope C's mistake was: an audit that never
+reports its own errors is not measuring itself.
+
+## Where the audit stands after six scopes
+
+96 probes across six scopes. Four defects found and three fixed — DEV-230, DEV-231 (both repaired)
+and DEV-232, DEV-233 (filed, open). The two open ones are the first from this audit that are **not**
+in `typecheck/patterns.rs`: DEV-232 is borrow checking, DEV-233 is the interpreter.
+
+The pattern across all six scopes is worth stating plainly. Every defect found has the same shape:
+**something is accepted that should not be, and the consequence appears somewhere other than where
+the mistake is** — a wildcard arm, a runtime trap, an ICE, or an `unsupported` at build time. Not
+one was a wrong answer computed from correct input. That is a specific and encouraging profile:
+the engines compute correctly, and the gaps are in what they refuse.
