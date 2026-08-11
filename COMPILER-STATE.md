@@ -9,14 +9,14 @@ Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second a
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397);
                 `develop -> main` AUTHORISED (CD-398, PR #21, compiler tree 5967a42)
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI+C7.8 green at 5967a42
-Population A: 11 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-224 (native gap), DEV-228/229 (resolution namespaces). DEV-230, found by the
-              resolution audit and RESOLVED the same day.
+Population A: 10 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-228/229 (resolution namespaces). DEV-224 was mis-scoped on filing, REVISED,
+              and RESOLVED 2026-08-11 as a capability increase; DEV-230 found by the resolution
+              audit and RESOLVED the same day.
               DEV-222/223 RESOLVED 2026-08-11, plus DEV-225/226/227 found by the same audit and
               resolved on arrival
 Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
-                 capability half OPEN). Of the eleven, two are reached by written code:
-                 DEV-160, and DEV-224 which `stark-cookie` hit while being written
+                 capability half OPEN). Of the ten, it is now the only one any written code reaches
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)

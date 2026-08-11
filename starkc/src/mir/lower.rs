@@ -10895,25 +10895,50 @@ impl<'a> FnLowerer<'a> {
             let scrut_ty = MirTy::Enum(enum_ref, scrut_args.clone());
             if let hir::PatKind::Binding { name, local } = &self.hir.pat(default_pat).kind {
                 // Catch-all binding: bind the whole scrutinee. Consuming: move it in and
-                // register it to drop at arm end. ByRef: the whole value must be Copy to bind
-                // (a non-Copy whole-value binding would move out of the borrow).
-                if mode == MatchMode::ByRef && !self.is_copy(&scrut_ty) {
-                    return unsupported(
-                        "binding a non-Copy scrutinee through a shared reference",
-                        span,
-                    );
-                }
+                // register it to drop at arm end.
+                //
+                // DEV-224. ByRef used to refuse a non-Copy scrutinee here, on the reasoning that
+                // binding the whole value would move out of the borrow. It would -- but the
+                // binding is not by value. `04-Semantic-Analysis.md` PAT-BIND-001: when the
+                // scrutinee is read through a reference, "a binding to a non-`Copy` component
+                // receives type `&C` ... the referent is never moved". The type checker has
+                // always applied that rule here, and the interpreter has always executed it; only
+                // this lowering was missing, so `match *a { _other => .. }` type-checked, ran, and
+                // then failed to build. The whole value is a component like any other, and it
+                // borrows exactly as a payload binding does a few hundred lines below.
+                let bind_by_ref = mode == MatchMode::ByRef && !self.is_copy(&scrut_ty);
+                let local_ty = if bind_by_ref {
+                    MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(scrut_ty.clone()),
+                    }
+                } else {
+                    scrut_ty.clone()
+                };
                 self.locals.push(LocalDecl {
-                    ty: scrut_ty.clone(),
+                    ty: local_ty,
                     kind: LocalKind::User(self.text(*name).to_string()),
                 });
                 let bound = LocalId((self.locals.len() - 1) as u32);
                 self.local_map.insert(local.0, bound);
-                let value = self.read_place(scrut.clone(), &scrut_ty, span)?;
-                self.emit(
-                    Statement::Assign(Place::local(bound), Rvalue::Use(value)),
-                    self.synthetic(span, SyntheticKind::MatchDesugar),
-                );
+                if bind_by_ref {
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(bound),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: scrut.clone(),
+                            },
+                        ),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                } else {
+                    let value = self.read_place(scrut.clone(), &scrut_ty, span)?;
+                    self.emit(
+                        Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                }
                 if mode == MatchMode::Consuming {
                     self.register_droppable_local(bound, &scrut_ty, true, span)?;
                 }

@@ -9014,3 +9014,86 @@ shorthand binding form. Three fail against the unfixed checker.
 
 No first-party package contained a struct-shaped pattern at the time of the repair, so nothing
 existing had to change. That is also why it was worth doing now rather than later.
+
+## DEV-224 — REVISED (2026-08-11): mis-scoped. It is a front-end soundness hole, and native is the engine that is RIGHT
+
+The original entry, filed earlier the same day, said an enum carrying a non-`Copy` payload "cannot
+be matched through a shared reference" and that "even `_` patterns fail". **Both claims are wrong.**
+They came from a probe containing two functions, where the failure was attributed to the wrong one.
+
+Measured at `5c3cd84`:
+
+| Shape | Native build |
+| --- | --- |
+| All variants covered, `String` payloads, matched through `&` | **builds** |
+| Same, with a `_` wildcard arm | **builds** |
+| Same, with a NAMED catch-all (`_other => ..`) | refused |
+
+The nine-variant `CookieAttribute` sum type that `stark-cookie` abandoned — four variants carrying
+`String`, read by reference out of a `Vec` — **compiles and runs natively**. Reconstructed and
+verified. The tagged-struct redesign was unnecessary.
+
+### What the defect actually is
+
+The refusal sits in `mir/lower.rs`'s catch-all handling, and it fires only for a **binding** catch-all
+that would bind the whole non-Copy scrutinee by value out of a shared reference. That is a move out
+of a borrow, and refusing it is **correct**.
+
+The defect is upstream: the front end accepts it.
+
+```stark
+enum Attr { Flag, Text(String) }
+fn peek(a: &Attr) -> Int64 {
+    match *a { Attr::Flag => 0i64, _other => 1i64 }   // binds *a by value, out of `&`
+}
+```
+
+`stark check` reports OK. The interpreter runs it, twice, and the original value survives — so the
+interpreter is **copying a non-`Copy` value**, which is not a legal execution of this program under
+Core v1 ownership. Native refuses. Three engines, three behaviours, and the one that refuses is the
+one that is right.
+
+### Consequences of the mis-scoping
+
+- **Severity is far lower than filed.** It does not block sum types, ASTs, JSON values, config
+  entries or protocol messages. The workaround is to write `_` instead of a named catch-all.
+- **It is a different KIND of defect than filed** — a front-end acceptance of a move out of a shared
+  borrow, plus an interpreter that silently copies, not a backend capability gap.
+- `stark-cookie`'s attribute model can return to the sum type it should have had.
+
+### The repair, restated
+
+Not "teach native to bind it". The front end should reject binding a non-`Copy` scrutinee by value
+through a shared reference, which is what the native lowering already knows, and the interpreter
+should stop copying non-`Copy` values. That aligns three engines on the semantics the ownership
+rules already state. Scope: borrow/flow checking, plus an interpreter correction — larger than a
+diagnostic, and it may reject code that compiles today.
+
+## DEV-224 — RESOLVED (2026-08-11): the borrow PAT-BIND-001 already specified, implemented in lowering
+
+Repaired as a **capability increase**, not a rejection. An earlier note in this session proposed
+making the front end reject the program, reasoning that binding the whole non-`Copy` value out of a
+shared reference is a move out of a borrow. Reading `04-Semantic-Analysis.md` PAT-BIND-001 refuted
+that: when the scrutinee is read through a reference, "a binding to a non-`Copy` component receives
+type `&C` for component type `C`, borrowing the component in place; **the referent is never
+moved**." It is not a move. The whole value is a component like any other.
+
+Verified before repairing: the type checker had **always** applied PAT-BIND-001 here — the binding
+really does have type `&Attr`, demonstrated by passing it to a `fn(a: &Attr)` — and the interpreter
+had always executed it. Only `mir/lower.rs`'s catch-all path had not implemented the borrow, and
+bailed out with `unsupported` instead. Three engines, one disagreement, and the two that agreed
+were right.
+
+The repair mirrors the payload-binding lowering a few hundred lines below it in the same file:
+declare the local at `MirTy::Ref`, assign `Rvalue::RefOf` over the scrutinee place, and leave the
+consuming path moving and dropping exactly as before.
+
+Nothing that compiled before stops compiling. Programs that type-checked and ran but could not be
+built now build.
+
+Regression: `starkc/tests/dev224_byref_whole_scrutinee_binding.rs`, six tests. **Two of them lower
+to MIR**, because the four interpreter-level tests pass against the unfixed compiler — the
+interpreter always executed this correctly, so an interpreter-only regression would have proved
+nothing. Verified: with the lowering reverted, `the_borrowing_catch_all_lowers_to_mir` fails and
+the other five pass. Controls pin the consuming form still moving and dropping, and a `Copy`
+scrutinee still binding by value.
