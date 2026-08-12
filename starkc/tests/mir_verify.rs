@@ -1820,3 +1820,92 @@ fn accepts_const_index_within_bounds() {
         "an in-bounds ConstIndex on a fixed-length array must verify cleanly"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// **WP-ARCH-CLOSE AC4-F5: the three verifier rules no test exercised.**
+//
+// A census of `mir/verify.rs` found 36 `MIR-nnnn` rules, of which 33 are named by at least one
+// test. `MIR-0029`, `MIR-0035` and `MIR-0037` were named by none, and a mutation disabling
+// `MIR-0035` entirely SURVIVED `--lib`, `mir_verify`, `mir_differential` and
+// `a12_storage_end_shapes`.
+//
+// **A verifier rule's positive path is always green** — correct MIR passes whether the rule exists
+// or not — so only a malformed-MIR case can show a rule is enforced. That is what these three are.
+// Each is written to fail if its rule is removed, and each was confirmed to do so.
+
+/// **MIR-0035 (A12).** Storage liveness belongs to a WHOLE local. A projected `storage_dead` names
+/// part of a storage cell, not a cell of its own — *"ending 'part of' a local's storage is not a
+/// thing MIR can mean"* — so it is a lowering defect rather than a shape to support.
+#[test]
+fn rejects_storage_dead_on_a_projected_place() {
+    let b = body(
+        vec![
+            ret_local(),
+            local(MirTy::Tuple(vec![MirTy::Int32, MirTy::Int32])),
+        ],
+        vec![block(
+            vec![Statement::StorageDead(
+                Place {
+                    local: LocalId(1),
+                    projection: vec![mir::Projection::Field(0)],
+                },
+                mir::StorageEnd::Accounted,
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0035");
+}
+
+/// **MIR-0029.** A close binding must name a provider call that is actually in the arena. A binding
+/// pointing outside it is a dangling release: the resource has a close recorded that cannot run.
+#[test]
+fn rejects_a_close_binding_naming_a_call_outside_the_arena() {
+    let mut program = program_with(vec![body(
+        vec![ret_local()],
+        vec![block(Vec::new(), Terminator::Return)],
+    )]);
+    // The arena is empty, so call #0 does not exist.
+    program.provider_closes = vec![mir::ValidatedProviderClose {
+        resource: MirTy::HostResource(Box::new(mir::HostResourceTy {
+            nominal: mir::HostResourceNominal::Item(starkc::hir::ItemId(0)),
+            provider: "test-provider".to_string(),
+            resource: "test-resource".to_string(),
+        })),
+        close: mir::ProviderCallId(0),
+    }];
+    expect_code(&program, "MIR-0029");
+}
+
+/// **MIR-0037 (WP-FMT-001).** A format specification word carries defined fields in its low 58
+/// bits. *"An unknown bit is an unknown specification, not one to be ignored"* — so a word with
+/// bits set above the highest defined field is rejected rather than masked.
+///
+/// Uses the out-of-range-word arm rather than the operand-shape arms, because a wrong CONSTANT is
+/// the shape a miscompiling lowering would actually emit; a wrong operand *type* would already have
+/// failed the runtime-callee signature check upstream.
+#[test]
+fn rejects_a_format_spec_word_with_undefined_bits() {
+    let call = Terminator::Call {
+        callee: mir::Callee::Runtime(RuntimeFn::FmtPad),
+        args: vec![
+            Operand::Const(Constant::Str("x".to_string())),
+            // Bit 59 is above HIGHEST_DEFINED_BIT (58).
+            Operand::Const(Constant::Int(1i128 << 59, MirTy::UInt64)),
+            Operand::Const(Constant::Int(u32::from(' ') as i128, MirTy::Char)),
+        ],
+        dest: Place {
+            local: LocalId(1),
+            projection: Vec::new(),
+        },
+        target: BlockId(1),
+    };
+    let b = body(
+        vec![ret_local(), local(MirTy::String)],
+        vec![
+            block(Vec::new(), call),
+            block(Vec::new(), Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0037");
+}

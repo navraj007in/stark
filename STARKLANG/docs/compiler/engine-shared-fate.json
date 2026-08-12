@@ -251,11 +251,11 @@
       "rustc": "none",
       "visibility": "N/A \u2014 this entry inventories ASSURANCE, not shared semantic fate",
       "evidence": "HAND_AUTHORED (mir_verify's malformed-body cases)",
-      "independent_evidence": "33 of 36 rule ids are named by at least one test",
-      "residual": "AC4-F5: a verifier rule's POSITIVE path is always green \u2014 correct MIR passes whether the rule exists or not \u2014 so only a malformed-MIR negative case can show a rule is enforced. MIR-0035 was mutated and SURVIVED (demonstrated untested); MIR-0029 and MIR-0037 are census-only, named by no test and not mutated. NOT a shared semantic defect: the verifier is deliberately an independent checker and this is an evidence gap in its negative cases",
-      "risk": "medium",
+      "independent_evidence": "36 of 36 rule ids are now named by at least one test, and the three that were census-only have MALFORMED-MIR negative cases in mir_verify: MIR-0029 (dangling close binding), MIR-0035 (projected storage_dead), MIR-0037 (undefined spec-word bits). Each was mutation-verified to die",
+      "residual": "AC4-F5 REPAIRED 2026-08-12. Was: MIR-0035 demonstrated untested, MIR-0029/0037 census-only. Remaining residual is narrower and structural: a verifier rule's POSITIVE path is always green, so every NEW rule needs a malformed-body case at introduction or the gap reopens silently. The review_trigger encodes that",
+      "risk": "low",
       "review_trigger": "any new MIR-nnnn rule, which needs a malformed-body case at introduction",
-      "amended": "2026-08-12 AC4 \u2014 new entry, ENGINE_LOCAL. Recorded as a row rather than a loose residual because AC6 must later justify the public phrase 'independently verified MIR', and this gives that claim a machine-readable sensor"
+      "amended": "2026-08-12 AC4 \u2014 new entry, ENGINE_LOCAL. Recorded as a row rather than a loose residual because AC6 must later justify the public phrase 'independently verified MIR', and this gives that claim a machine-readable sensor | 2026-08-12 AC4-F5 repaired: all 36 rules named by a test, 3 new negative cases; risk medium -> low"
     },
     {
       "id": "ESF-RES-002",

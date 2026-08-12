@@ -148,7 +148,10 @@ BATCHES = {
     "ac4-verify": [
         dict(id="AC4-MUT-VER-001", target="MIR verification", tag="MIR",
              authority="mir::verify MIR-0035 — storage_dead on a PROJECTED place is accepted",
-             expect="SURVIVED",
+             # AC4-F5 REPAIRED: `mir_verify::rejects_storage_dead_on_a_projected_place` constructs
+             # the malformed body. Was SURVIVED because no test built the bad shape -- a verifier
+             # rule's POSITIVE path is always green.
+             expect="KILLED",
              file="src/mir/verify.rs",
              find="                Statement::StorageDead(place, _) => {\n                    if !place.projection.is_empty() {",
              repl="                Statement::StorageDead(place, _) => {\n                    if false {",
@@ -158,6 +161,29 @@ BATCHES = {
                   "a lowering defect. Declared SURVIVED on the census -- no test names MIR-0035 -- "
                   "and a KILLED result is good news requiring re-declaration. A verifier rule no "
                   "test exercises is a rule nothing proves is enforced."),
+        dict(id="AC4-MUT-VER-003", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0029 — a close binding naming a call outside the arena",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             # The first mutation here was a NO-OP for the test's shape: falling back to
+             # `provider_calls.first()` on an EMPTY arena still yields None, so the check fired
+             # anyway and the trial "survived" without ever being disabled. This one removes the
+             # diagnostic while keeping the control flow, which is what disabling a rule means.
+             find="            push(\n                \"MIR-0029\",\n                format!(\n                    \"close binding for {} names provider call {}, which is not in the arena\",\n                    crate::mir::dump_ty(&binding.resource),\n                    binding.close.0\n                ),\n            );\n            continue;",
+             repl="            continue;",
+             tests=["--lib", "--test", "mir_verify", "--test", "a10_provider_verify"],
+             note="A dangling close binding is accepted by falling back to any call in the arena. "
+                  "The resource then has a close recorded that releases the wrong thing, or "
+                  "nothing. Census-only before AC4-F5's repair; now built."),
+        dict(id="AC4-MUT-VER-004", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0037 — a format spec word with UNDEFINED bits is accepted",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             find="        if word >> HIGHEST_DEFINED_BIT != 0 {",
+             repl="        if false {",
+             tests=["--lib", "--test", "mir_verify"],
+             note="WP-FMT-001: an unknown bit is an unknown specification, not one to be ignored. "
+                  "Census-only before AC4-F5's repair; now built."),
         dict(id="AC4-MUT-VER-002", target="MIR verification", tag="MIR",
              authority="mir::verify::paths_prefix_related — move-path overlap, AS8's own target",
              expect="KILLED",

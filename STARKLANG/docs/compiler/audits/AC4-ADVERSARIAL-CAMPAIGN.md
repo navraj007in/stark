@@ -37,9 +37,9 @@ Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. A
 MIR lowering                      6,7,ac4-lower  COVERED   language semantics it uniquely
                                                  owns. AC4-F7 (§2.10) -- CD-007's assignment
                                                  order had NO control; written, mutation dies
-MIR verification                    9,ac4-verify PROBED    36 rules; 3 named by no test.
-                                                 AC4-F5 (§2.8) -- MIR-0035 falsified as
-                                                 unenforced
+MIR verification                    9,ac4-verify COVERED   36 rules; AC4-F5 REPAIRED (§2.8) --
+                                                 MIR-0029/0035/0037 now have malformed-MIR
+                                                 cases; 4 of 4 trials die
 provider/resource ownership       4,4b,ac4-prov  COVERED   signature + lifecycle. AC4-F6:
                                                  release is controlled by the PACKAGE lane, not
                                                  by starkc's own suite (§2.9)
@@ -391,7 +391,29 @@ survival there would have meant the method stopped working on this authority rat
 was unguarded. It was killed, first by
 `dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not`.
 
-**AC4-F5, Class C.** MIR-0035 enforces A12's rule that storage liveness belongs to a **whole local**
+**AC4-F5 REPAIRED, 2026-08-12.** All three census-only rules now have malformed-MIR cases in
+`mir_verify`, and all four trials in the batch are CONFIRMED KILLED:
+
+```text
+MIR-0035  projected storage_dead      -> rejects_storage_dead_on_a_projected_place
+MIR-0029  dangling close binding      -> rejects_a_close_binding_naming_a_call_outside_the_arena
+MIR-0037  undefined spec-word bits    -> rejects_a_format_spec_word_with_undefined_bits
+paths_prefix_related (control)        -> dev117_drop_elaboration_moves_are_exempt_...
+```
+
+**The first MIR-0029 mutation was a NO-OP, and it read exactly like a missing control.** Falling
+back to `provider_calls.first()` on an **empty** arena still yields `None`, so the check fired
+anyway and the trial "survived" without the rule ever being disabled. Same class as the unreachable
+mutations earlier, in a new disguise: **a mutation that does not change behaviour is
+indistinguishable from an unguarded rule unless the mutation itself is checked.** The replacement
+removes the diagnostic and keeps the control flow, which is what disabling a rule means.
+
+For MIR-0037 the out-of-range **word** arm was chosen over the operand-shape arms deliberately: a
+wrong constant is what a miscompiling lowering would emit, whereas a wrong operand *type* would
+already have failed the runtime-callee signature check upstream.
+
+**Original finding, retained.** MIR-0035 enforces A12's rule that storage liveness belongs to a
+**whole local**
 — *"ending 'part of' a local's storage is not a thing MIR can mean, so a projection here is a
 lowering defect"*. Disabling the check entirely is not detected by `--lib`, `mir_verify`,
 `mir_differential`, or `a12_storage_end_shapes`. **No test constructs a projected `storage_dead`**,
@@ -549,16 +571,14 @@ property of an authority's arms, not of it having a trial.**
 ## 4. Remaining work, in priority order
 
 ```text
-1  AC4-F5   MIR-0029 and MIR-0037 censused but NOT mutated; MIR-0035 falsified as unenforced.
-            One hand-built malformed body per rule is the repair, in mir_verify's own shape
-2  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
+1  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
             type. Alternative control NAMED (the Miri lane, or a leak harness); not built
-3  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
+2  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
             The claim is covered; a contributor running `cargo test -p starkc` sees green
 
    all eleven authorities are ADDRESSED; none remains PARTIAL
 
-4  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
+3  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
                           ESF-TRAIT-002 (F3), ESF-DROP-003 (F4), ESF-VERIFY-001 (F5,
                           ENGINE_LOCAL), ESF-RES-002 (F6), ESF-LOWER-001 (F7). One binding
                           rule added. EI0's vocabulary UNCHANGED; no existing row's
