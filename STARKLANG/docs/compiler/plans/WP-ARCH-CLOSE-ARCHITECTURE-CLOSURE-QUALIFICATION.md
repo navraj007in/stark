@@ -202,12 +202,16 @@ heuristic provenance detection  valid program builds natively
 The current `borrow_provenance` *"may derive from"* heuristic **MUST NOT** become the permanent
 implementation. It must either disappear or be reduced to a non-semantic diagnostic/helper role.
 
-> **Where it currently lives is itself part of the probe.** `borrow_provenance` is defined in
-> `starkc/src/backend/generated_rust/emit_call_thunk.rs` — in the native emitter, downstream of the
-> borrow authority. A backend deciding a reference's origin is, on §4's list, *"semantic information
-> reconstructed downstream because the authoritative phase discarded it"*. AC1 therefore reads
-> partly as a test of whether the analysis can be moved to its owner; if the answer is that it
-> cannot, that is a finding under §4 and not an implementation inconvenience.
+> **Where it lived was itself part of the probe, and that half is now ANSWERED.** `borrow_provenance`
+> was defined in `starkc/src/backend/generated_rust/emit_call_thunk.rs` — in the native emitter,
+> downstream of the borrow authority — which looks like §4's *"semantic information reconstructed
+> downstream because the authoritative phase discarded it"*.
+>
+> **It was not that shape.** The HIR borrow checker asks *is this program legal*; this analysis asks
+> *what does this value borrow in the lowered form*. Different questions, and the second has an
+> owner: MIR. The analysis moved to `starkc/src/mir/borrows.rs` on 2026-08-12 by owner decision
+> under CE3, with **no exception required** — positive evidence for §5's hypothesis. The
+> capability half of DEV-160 remains open; see §18.6.
 
 Expected implementation direction, already identified by the deviation investigation:
 
@@ -409,10 +413,18 @@ A failure followed by a successful rerun is evidence to investigate, not qualifi
 **AC3 exit:** `DEV-235 RESOLVED`, and required CI failures once again carry information about the
 candidate tree.
 
-> **Status, 2026-08-12: the repair has landed and the exit has NOT been met.** DEV-235 is resolved
-> — the cause was an accepted socket inheriting `O_NONBLOCK` on macOS/BSD, not timing, and no
-> timeout would have fixed it (CD-400, and the ledger's resolution entry). **The two clean CI runs
-> have not been performed**, so AC3 is not complete and the §8 cohort gate is not open.
+> **Status, 2026-08-12: the repair has landed; the exit has NOT been met.** DEV-235 is resolved —
+> the cause was an accepted socket inheriting `O_NONBLOCK` on macOS/BSD, not timing, and no timeout
+> would have fixed it (CD-400, and the ledger's resolution entry). **Run 1 of the two clean CI runs
+> is recorded** at `cd6732f`: CI 24/24 and C7.8 4/4, attempt 1 on both, no failed job rerun, all
+> three Tier-1 platforms. **One clean run remains**, so AC3 is not complete and the §8 cohort gate
+> is not open.
+>
+> Two cautions, both recorded in CD-400 rather than left to be rediscovered. A green C7.8 run is not
+> itself evidence the flake is gone — it was intermittent, and runs looked like this before it was
+> found; the falsification is the evidence. And under §13 these runs count toward AC3's exit but are
+> **not** final closure evidence: `FINAL_REPAIR_SHA` is unset, and §17 step 9 reruns everything at
+> the end regardless.
 
 ---
 
@@ -871,5 +883,9 @@ packet" row both name the packet as of that entry.
 | 2026-08-12 | Package consolidated and authorised | CD-400 |
 | 2026-08-12 | **AC3 repair** — DEV-235 | **RESOLVED.** Cause was `O_NONBLOCK` inherited by the accepted socket on macOS/BSD, not timing. Falsified by removing the repair (deterministic failure); 12/12 green restored, three consecutive runs. Population A 10 -> 9 |
 | 2026-08-12 | **AC2** — executable native conformance contract | **MET.** Generated matrix, drift-gated in both directions and falsified both ways. 20 constructs: 6 SUPPORTED / 8 REFUSED-BY-DESIGN / 6 KNOWN-DEVIATION. DEV-140..145 all present as executable boundary probes. Probe inventory shared with `layer_audit`, so no second classifier |
-| — | AC3 **exit** | **NOT MET** — two complete clean CI runs with no rerun-to-green, all Tier-1 platforms, still to run. The §8 cohort gate stays shut until it is |
-| — | AC1, AC4, AC5, AC6, AC7 | **NOT STARTED** |
+| 2026-08-12 | AC3 **exit**, run 1 of 2 | **RECORDED.** `cd6732f` — CI `31563159250` 24/24, C7.8 `31563159221` 4/4, **attempt 1 on both, no rerun-to-green**, all three Tier-1 platforms. First off-machine test of the matrix's platform-independence claim and of the DEV-235 repair on Linux/Windows |
+| — | AC3 **exit** | **NOT MET** — one clean run remains. It must come from the next commit that lands work here; re-pushing the same tree to harvest a second green defeats the rule. The §8 cohort gate stays shut until it is |
+| 2026-08-12 | **AC1 step 1** — borrow-origin analysis | **DONE, POSITIVE.** Moved from the native emitter to `starkc/src/mir/borrows.rs` (owner, CE3). Not a §4 finding — the HIR checker answers a different question, so nothing was reconstructed, only misplaced. Two consumer type checks and a `by_value_tys` map deleted because the authority became correct; a fourth copy of AS4's `stores_a_reference` deleted with them. Controls: 5 unit + 4 AC1 probe + 8 DEV-160 + 132 MIR-diff + 129 three-engine + 584 lib, and **33 first-party applications built natively** |
+| 2026-08-12 | AC1 mutation trials | **4 rules mutated; 2 controlled, 2 not.** First trial reported 1 of 3 killed and was wrong — the program did not reach the rules, which masked one another. Adding a `(String, &str)` shape made the move rule falsifiable. The statement dest guard and aggregate filter survived verified-applied mutations and are labelled precautionary in the module rather than counted as verified |
+| — | AC1 **exit** | **NOT MET.** DEV-160's capability half is untouched: the cross-block programs are valid STARK and still do not build. Step 2 (cross-block absorption) is the owner's "reassess with the precise analysis in hand" |
+| — | AC4, AC5, AC6, AC7 | **NOT STARTED** |

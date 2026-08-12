@@ -6,8 +6,10 @@
 
 ```text
 Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400) — AC2 MET, AC3 repair
-                                 landed but AC3 exit NOT met (two clean CI runs outstanding)
-                                 Next in order: AC1, the DEV-160 architecture probe
+                                 landed, AC3 exit NOT met — RUN 1 of 2 clean CI runs recorded
+                                 at cd6732f (24/24 + 4/4, attempt 1, no reruns).
+                                 AC1 step 1 done (borrow-origin analysis moved to MIR, CE3) —
+                                 POSITIVE architecture evidence, DEV-160 still OPEN
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -41,7 +43,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **WP-ARCH-CLOSE — AUTHORISED AND ACTIVE (CD-400, 2026-08-12)**, `plans/WP-ARCH-CLOSE-ARCHITECTURE-CLOSURE-QUALIFICATION.md`. Three outcomes: PASS / INCOMPLETE / FAIL-ARCHITECTURE. **AC2 MET** — `starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` is generated from a live compiler run and drift-gated in both directions (falsified both ways before being trusted); DEV-140..145 all present as executable boundary probes. **AC3's repair has landed — DEV-235 RESOLVED, population A 10 -> 9 — and AC3's exit is NOT met**: it also requires two complete clean CI runs with no rerun-to-green. Next in execution order is AC1, the DEV-160 architecture probe. The AC7 triage field and the `FINAL_REPAIR_SHA` freshness rule bind from CD-400 onward. *Previously:* **the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
+| **Active packet** | **WP-ARCH-CLOSE — AUTHORISED AND ACTIVE (CD-400, 2026-08-12)**, `plans/WP-ARCH-CLOSE-ARCHITECTURE-CLOSURE-QUALIFICATION.md`. Three outcomes: PASS / INCOMPLETE / FAIL-ARCHITECTURE. **AC2 MET** — `starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` is generated from a live compiler run and drift-gated in both directions (falsified both ways before being trusted); DEV-140..145 all present as executable boundary probes. **AC3's repair has landed — DEV-235 RESOLVED, population A 10 -> 9 — and AC3's exit is NOT met**: it also requires two complete clean CI runs with no rerun-to-green. **AC1 step 1 DONE and POSITIVE** — the borrow-origin analysis moved from the native emitter to `starkc/src/mir/borrows.rs` (owner, CE3), which is a repair at an owning authority with no exception required; DEV-160's capability half is untouched and population A stays 9. Next is AC1 step 2 (cross-block absorption), then AC4. The AC7 triage field and the `FINAL_REPAIR_SHA` freshness rule bind from CD-400 onward. *Previously:* **the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
 | **Promotion** | **`develop -> main` AUTHORISED — CD-399 (owner, CE8, 2026-08-11)** for compiler tree `860e33a`, CI `31468998989` 24/24 green. It states the fact the decision turns on: population A is 8 on `main` and 11 here, and the three added were DISCOVERED, not introduced — `main` has DEV-228/229/233 too and has never recorded them, while carrying ten defects this tree closed. Below is the SPENT authorisation it replaces. **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
 | **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
@@ -269,6 +271,92 @@ AC2 exit           MET for the boundary inventory. An external developer can det
 open              the inventory covers the edges; extending it as new boundaries appear is
                    ordinary maintenance of the generator, not a new packet
 ```
+
+### AC3's two-run requirement: RUN 1 of 2 recorded
+
+```text
+tree               cd6732f (this packet's AC2+AC3 landing)
+CI                 31563159250   24/24 jobs   ATTEMPT 1
+C7.8 Native Cap.   31563159221    4/4  jobs   ATTEMPT 1
+reruns             NONE. No failed job was rerun to obtain either result, and no required
+                   check was waived. `attempt: 1` on both, read from the API rather than
+                   asserted
+Tier-1             `fmt, clippy, test` green on linux-x64, macos-arm64 AND windows-x64
+```
+
+Two claims this run is the first evidence for, both of which could only be tested off this machine:
+
+- **The conformance matrix is platform-independent, as its own Tier-1 section says.** It was
+  generated on macOS; Linux and Windows regenerated it and matched. A construct behaving differently
+  on one of them would have failed the job there, naming the differing line.
+- **The DEV-235 repair holds on Linux and Windows.** Linux never inherited `O_NONBLOCK`, so the new
+  call is a no-op there — but the regression test forces the adverse interleaving on every platform,
+  which had never been exercised deliberately before.
+
+**One green C7.8 run is NOT evidence the flake is gone.** DEV-235 was intermittent and runs looked
+exactly like this before it was found. The evidence that the mechanism was removed is the
+falsification — deterministic failure with the repair backed out — not the colour of this run.
+
+**A second clean run is still required, and it must not be manufactured.** Re-pushing this tree to
+harvest a second green would defeat the rule's purpose, which is to catch intermittency; the second
+run should come from the next commit that lands work here.
+
+### AC1 — the architecture probe's FIRST result is POSITIVE, and DEV-160 stays OPEN
+
+The borrow-origin analysis moved out of the native emitter into `starkc/src/mir/borrows.rs`, by
+**owner decision under CE3 (2026-08-12)**. The placement was put to the owner rather than taken:
+MIR-level module (chosen), keep it in the backend, or publish from `borrowck.rs` (rejected for now —
+it answers a different question, returns only diagnostics, and works on HIR places whose mapping to
+MIR locals is unconfirmed).
+
+**This is NOT an architecture finding, and the reasoning matters more than the verdict.** A backend
+computing borrow provenance looks like §4's *"semantic information reconstructed downstream because
+the authoritative phase discarded it"*, which is why AC1 flagged it. On inspection it is not: the
+HIR borrow checker asks *is this program legal*; this asks *what does this value borrow in the
+lowered form*. Different questions, and the second has an owner. **Repaired at an owning authority,
+no exception required** — which is the positive evidence AC1's hypothesis predicted.
+
+**The concrete architecture evidence: a consumer patch disappeared because the authority became
+correct.** The heuristic propagated a call's arguments into its result unconditionally, so
+`send(u: &str, b: String) -> UInt64` recorded a scalar as borrowing the aggregate — and every
+consumer carried a type check to undo it. Two such checks and a `by_value_tys` map built solely to
+feed one of them are deleted. A fourth copy of AS4's `stores_a_reference` (the backend's private
+`may_carry_borrow`, complete with the property-bearing wildcard that authority refuses) is deleted
+with them.
+
+**The mutation trials corrected themselves, and both readings are recorded:**
+
+```text
+FIRST TRIAL, simple shape       call-result KILLED by 2; move SURVIVED; dest guard SURVIVED
+AFTER a (String, &str) shape    call-result KILLED by 3; move KILLED by 1
+                                dest guard SURVIVED; aggregate filter SURVIVED
+```
+
+The first trial's survivors were an unreaching program, not weak rules — they masked one another.
+**Three tests written as controls were not controls**, and would have been reported as coverage.
+Two rules remain uncontrolled and are labelled precautionary in the module; both survived a mutation
+verified to have applied.
+
+```text
+DEV-160            STILL OPEN. The capability half is untouched: the cross-block programs are
+                   valid STARK and still do not build. Population A remains 9
+AC1                NOT MET. This is step 1 of the owner's two-step: precise analysis first, then
+                   reassess cross-block absorption with it in hand
+```
+
+**One control was withdrawn rather than counted.** `stark check --target-native` over the packages
+does not reach `plan_for_call` at all — it scans runtime functions — so the 67-package sweep it
+produced is not evidence about this change. The 33 first-party APPLICATIONS built natively are, and
+they include `stark-get`, whose dependency `stark_http_client::follow` is what the first repair
+attempt broke.
+
+### The freshness rule already applies to this evidence, and says so
+
+Under §13, these runs count toward **AC3's exit** — which gates cohort entry — and are **not** final
+closure evidence. `FINAL_REPAIR_SHA` is not yet established, and any later compiler-affecting repair
+(AC1's DEV-160 work is the obvious candidate) makes `cd6732f` historical. §17 step 9 therefore stands
+unchanged: **all** final qualification evidence is rerun at the end, including these two runs. Recording
+run 1 here is not a claim that it will survive to closure.
 
 ## CD-399 — `develop -> main` PROMOTION AUTHORISED for compiler tree `860e33a`, on a count that went UP (2026-08-11)
 

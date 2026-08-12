@@ -9803,3 +9803,116 @@ documented unsupported native boundary       the matrix row
 **The probes are the same ones `layer_audit` enforces.** The inventory moved to
 `starkc/tests/support/layer_probes.rs` and both suites read it, so a matrix row and an audit
 disposition cannot disagree about what a probe does.
+
+## The borrow-origin analysis moves to MIR (2026-08-12, WP-ARCH-CLOSE AC1, CE3)
+
+```text
+Architecture trigger:  NONE — see "why this is not a finding" below
+Counts toward AC7's twenty:  NO — no compiler behaviour changed
+```
+
+**DEV-160 stays OPEN.** Its capability half is untouched: the cross-block programs are still valid
+STARK and still do not build. What changed is where the analysis they depend on lives, and how
+precise it is.
+
+### What moved, and the owner decision that placed it
+
+`borrow_provenance` — the *"this value may derive from that slot"* heuristic the DEV-160 entry
+recorded as an interim — lived in `backend/generated_rust/emit_call_thunk.rs`, in the native
+emitter, downstream of every phase with authority over ownership. It is now
+`starkc/src/mir/borrows.rs`, by **owner decision under CE3 (2026-08-12)**.
+
+The placement question was put to the owner rather than taken, because three answers were defensible:
+
+```text
+MIR-level module      CHOSEN. The question is about MIR places and MIR dataflow, and MIR owns
+                      lowered form
+keep it in the        rejected: leaves a semantic analysis in the emitter, which AC5 would then
+backend               have to classify
+publish from          rejected for now: borrowck.rs answers a different question (is the program
+borrowck.rs           legal), returns only diagnostics, and works on HIR places that are not MIR
+                      locals. The mapping is unconfirmed
+```
+
+### Why this is NOT an architecture finding
+
+§4 lists *"semantic information must be reconstructed downstream because the authoritative phase
+discarded it"*. The backend computing borrow provenance looks like that shape, and it was the
+reason AC1 flagged it. It is **not** that shape, on inspection: the HIR borrow checker's question is
+*is this program legal*, and the backend's is *what does this value borrow in the lowered form*.
+Those are different questions, and the second has an owner — MIR. Nothing had to be reconstructed;
+something was merely in the wrong module. **Repaired at an owning authority, no exception required.**
+
+### The precision that was bought, and the consumer patches it retired
+
+Two rules the heuristic did not have:
+
+```text
+a result that cannot STORE a reference borrows nothing, whatever its arguments were
+only REFERENCE arguments can pass a borrow into a result (03 rule 3, shortest input)
+```
+
+The heuristic propagated a call's arguments into its result unconditionally, so in
+`send(u: &str, b: String) -> UInt64` the `UInt64` was recorded as borrowing the aggregate. **Every
+consumer carried its own type check to undo that** — `emit_call_thunk` had two, plus a
+`by_value_tys` map built solely to feed one of them. All three are deleted: the analysis states the
+invariant itself, so there is nothing left to compensate for.
+
+That is the concrete architecture evidence AC1 was looking for: *a consumer patch disappeared
+because the authority became correct.*
+
+### A fourth copy of an AS4 rule, deleted
+
+`may_carry_borrow` in the backend was a private re-implementation of
+`mir::reference_rule::stores_a_reference` — AS4's consolidated authority for *"does this type STORE
+a reference?"*. It agreed on every arm, but re-asserted the property behind a `_ => false` wildcard
+that the authority deliberately refuses, for the reason `reference_rule` states: a wildcard makes
+every future `MirTy` variant silently claim the property is absent. Deleted; the authority is called.
+
+### Mutation trials, including the two that failed to prove anything
+
+Four rules were mutated. **The first trial's results were misleading and are recorded rather than
+discarded**, because the correction is the useful part:
+
+```text
+FIRST TRIAL, against the simple reported shape
+  call-result guard      KILLED by 2
+  move severs            SURVIVED
+  statement dest guard   SURVIVED
+
+AFTER adding a (String, &str) shape — non-Copy AND borrow-carrying — and pinning its relation
+  call-result guard      KILLED by 3      CONTROLLED
+  move severs            KILLED by 1      CONTROLLED
+  statement dest guard   SURVIVED         uncontrolled, precautionary
+  aggregate filter       SURVIVED         uncontrolled, precautionary
+```
+
+The first trial's survivors were not weak rules but an **unreaching program**: in the simple shape a
+`String` moved out of an aggregate is not borrow-carrying, so the move rule and the dest guard
+decline for the same value and removing either changes nothing. The rules masked one another. Three
+tests written as controls were not controls, and would have been reported as coverage.
+
+**Two rules remain uncontrolled and are labelled so in the module.** Both survived a mutation
+verified to have applied — checked explicitly, because a mutation that silently fails to apply
+reads exactly like a survivor.
+
+### Evidence
+
+```text
+mir::borrows unit tests           5 pass, incl. two whole-relation characterizations
+ac1_dev160_probe                  4 pass — the AC1 baseline, incl. the over-refusal control
+dev160_call_site_thunk            8 pass, incl. the DEV-160d under-refusal guard
+mir_differential                132 pass
+three_engine_differential       129 pass
+starkc --lib                    584 pass
+33 first-party APPLICATIONS      built natively, 0 failures — every one goes through
+                                 emit_program::emit and therefore plan_for_call
+```
+
+**`stark check --target-native` over the packages is NOT evidence here and was not counted.** It
+scans for unsupported runtime functions (`exclusions_in_program`) and never reaches `plan_for_call`,
+so it cannot see this change at all. Only the 33 real builds exercise it.
+
+The over-refusal control is the one that matters most: the first attempt at touching this relation
+broke `stark_http_client::follow` and was caught by a package build rather than a test. `stark-get`,
+the application that consumes that client, builds.

@@ -180,23 +180,11 @@ pub fn plan_for_call(
         return Ok(None);
     };
     let (borrows, escaping) = absorbable_borrows(body, block_index, args, env)?;
-    let call_provenance = borrow_provenance(body, env)?;
-    let mut by_value_tys: BTreeMap<u32, MirTy> = BTreeMap::new();
-    for arg in args.iter() {
-        if let Operand::Move(place) | Operand::Copy(place) = arg {
-            if !emit_places::is_slot_local(place.local.0, env)? {
-                by_value_tys.insert(place.local.0, env.place_ty(place)?);
-            }
-        }
-    }
-    if !conflicts(
-        args,
-        &borrows,
-        &escaping,
-        &call_provenance,
-        &by_value_tys,
-        env,
-    )? {
+    // **The borrow-origin relation comes from MIR, not from here** (CE3, 2026-08-12). This module
+    // used to compute a `may derive from` over-approximation of its own; the analysis now lives at
+    // `crate::mir::borrows`, which owns lowered form and can state the relation exactly.
+    let call_provenance = crate::mir::borrows::origins(body);
+    if !conflicts(args, &borrows, &escaping, &call_provenance, env)? {
         return Ok(None);
     }
 
@@ -254,7 +242,7 @@ pub fn plan_for_call(
     let mut absorbed: Vec<usize> = Vec::new();
     // Every by-value argument's source local, so provenance can be checked against the
     // participating slots once they are all known.
-    let mut by_value_provenance: Vec<(u32, usize)> = Vec::new();
+    let mut by_value_provenance: Vec<u32> = Vec::new();
 
     for arg in args {
         let (Operand::Move(place) | Operand::Copy(place)) = arg else {
@@ -293,7 +281,7 @@ pub fn plan_for_call(
             // order, so evaluating it at the call site is inert. Non-slot locals are NOT turned
             // into slots to make them thunk parameters.
             let ty = env.place_ty(place)?;
-            by_value_provenance.push((place.local.0, by_value.len()));
+            by_value_provenance.push(place.local.0);
             by_value.push(ThunkByValue {
                 ty,
                 expr: super::emit_bodies::emit_operand(arg, env)?,
@@ -344,16 +332,14 @@ pub fn plan_for_call(
     // That is a larger mechanism than this increment carries, so the case is refused by name.
     let provenance = &call_provenance;
     let participating: std::collections::BTreeSet<u32> = slots.iter().map(|s| s.local).collect();
-    for (local, index) in &by_value_provenance {
-        // A value that CANNOT carry a borrow is not a conflict however it was computed. Without
-        // this, `consume(p.taken, p.kept.len())` would be refused: `len` takes `&p.kept`, so the
-        // provenance relation propagates `_1` into its result -- but that result is a `UInt64` and
-        // borrows nothing. Provenance over-approximates by design; the type is what makes it
-        // actionable.
-        if !may_carry_borrow(&by_value[*index].ty) {
-            continue;
-        }
-        let Some(borrowed) = provenance.get(local) else {
+    for local in &by_value_provenance {
+        // **No type check here any more, and its absence is the point.** This used to read
+        // `if !may_carry_borrow(&by_value[index].ty) { continue; }` — a consumer compensating for
+        // an authority that over-approximated, because the heuristic recorded
+        // `consume(p.taken, p.kept.len())`'s `UInt64` result as borrowing `_1`.
+        // `crate::mir::borrows` now states that invariant itself: a value that cannot store a
+        // reference has no origins at all, so there is nothing left to filter.
+        let Some(borrowed) = provenance.of(*local) else {
             continue;
         };
         if let Some(slot) = borrowed.intersection(&participating).next() {
@@ -498,133 +484,6 @@ fn absorbable_borrows(
     Ok((absorbable, escaping))
 }
 
-/// Whether a value of this type could carry a borrow at all.
-///
-/// A declared struct or enum FIELD may not be a reference (03 rule 1), so nothing needs to be looked
-/// up: a borrow reaches a composite only through a generic ARGUMENT (`Option<&T>`, `(&T, U)`) or a
-/// structural component, and both are present in the `MirTy` itself. `FnPtr` is a code address and
-/// borrows nothing.
-fn may_carry_borrow(ty: &MirTy) -> bool {
-    match ty {
-        MirTy::Ref { .. } => true,
-        MirTy::Tuple(parts)
-        | MirTy::Struct(_, parts)
-        | MirTy::Enum(_, parts)
-        | MirTy::Core(_, parts) => parts.iter().any(may_carry_borrow),
-        MirTy::Array(element, _) | MirTy::Slice(element) => may_carry_borrow(element),
-        _ => false,
-    }
-}
-
-/// Which slot-backed locals each local's value may BORROW, over-approximated.
-///
-/// A reference does not have to arrive at a call as a `RefOf` in the same block. The idiom this
-/// defect was reported as sends it through an intermediate call:
-///
-/// ```text
-/// _7 = &_2.0                       // &builder.url
-/// _8 = call String::as_str(_7)     // a &str borrowing _2, produced in an EARLIER block
-/// _9 = call send_once(_8, move _2.2, move _2.3)
-/// ```
-///
-/// `_8` is an ordinary non-slot local, so nothing about it says it borrows `_2` — but it does, and
-/// a thunk taking `&mut _2` beside it is `E0502` again. This traces where a reference could have
-/// come from: `RefOf` seeds it, copies and borrow-carrying aggregates propagate it (OWN-CARRY-001
-/// makes provenance structural), and a call's result inherits the provenance of its arguments,
-/// which is exactly STARK's own shortest-input rule read as a may-alias relation.
-///
-/// Over-approximate on purpose. Being wrong in this direction refuses a program that might have
-/// compiled; being wrong in the other emits code rustc rejects for reasons the user cannot act on.
-fn borrow_provenance(
-    body: &crate::mir::MirBody,
-    env: &emit_places::TyEnv,
-) -> Result<BTreeMap<u32, std::collections::BTreeSet<u32>>, BackendDiagnostic> {
-    use crate::mir::{Rvalue, Statement, Terminator};
-    use std::collections::BTreeSet;
-
-    let mut prov: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    let mut slot_seed: Vec<(u32, u32)> = Vec::new();
-    for block in &body.blocks {
-        for (statement, _) in &block.statements {
-            if let Statement::Assign(dest, Rvalue::RefOf { place, .. }) = statement {
-                if dest.projection.is_empty() && emit_places::is_slot_local(place.local.0, env)? {
-                    slot_seed.push((dest.local.0, place.local.0));
-                }
-            }
-        }
-    }
-    for (dest, slot) in slot_seed {
-        prov.entry(dest).or_default().insert(slot);
-    }
-
-    // A tiny fixpoint. Bodies are small and the relation only grows, so this terminates in a couple
-    // of rounds; iterating to a fixpoint rather than once matters because MIR block order is not
-    // definition order.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let mut merge = |into: u32, from: &[u32], prov: &mut BTreeMap<u32, BTreeSet<u32>>| {
-            let mut union: BTreeSet<u32> = BTreeSet::new();
-            for local in from {
-                if let Some(set) = prov.get(local) {
-                    union.extend(set.iter().copied());
-                }
-            }
-            if union.is_empty() {
-                return;
-            }
-            let target = prov.entry(into).or_default();
-            let before = target.len();
-            target.extend(union);
-            if target.len() != before {
-                changed = true;
-            }
-        };
-        for block in &body.blocks {
-            for (statement, _) in &block.statements {
-                let Statement::Assign(dest, rvalue) = statement else {
-                    continue;
-                };
-                if !dest.projection.is_empty() {
-                    continue;
-                }
-                let sources: Vec<u32> = match rvalue {
-                    Rvalue::RefOf { place, .. } => vec![place.local.0],
-                    // EXPERIMENT: a MOVE transfers ownership -- after `let url = builder.url;`
-                    // borrowing `url` does not borrow `builder`.
-                    Rvalue::Use(Operand::Copy(p)) => vec![p.local.0],
-                    Rvalue::Use(Operand::Move(_)) => Vec::new(),
-                    // A borrow-carrying aggregate: `Option<&T>`, a tuple of references. The value
-                    // carries every borrow its components carried.
-                    Rvalue::Aggregate(_, operands) => operands
-                        .iter()
-                        .filter_map(|o| match o {
-                            Operand::Copy(p) | Operand::Move(p) => Some(p.local.0),
-                            Operand::Const(_) => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                merge(dest.local.0, &sources, &mut prov);
-            }
-            // A call's result may borrow anything its arguments borrowed -- STARK's shortest-input
-            // rule (03 rule 3) read as a may-alias relation. `Checked` is arithmetic and returns a
-            // scalar, so it carries nothing.
-            if let Terminator::Call { args, dest, .. } = &block.terminator.0 {
-                let sources: Vec<u32> = args
-                    .iter()
-                    .filter_map(|o| match o {
-                        Operand::Copy(p) | Operand::Move(p) => Some(p.local.0),
-                        Operand::Const(_) => None,
-                    })
-                    .collect();
-                merge(dest.local.0, &sources, &mut prov);
-            }
-        }
-    }
-    Ok(prov)
-}
-
 /// A borrow of a slot-backed field on its way to a call argument, and the statements that build it.
 #[derive(Clone, Debug)]
 pub struct Borrow {
@@ -690,8 +549,7 @@ fn conflicts(
     args: &[Operand],
     borrows: &BTreeMap<u32, Borrow>,
     escaping: &BTreeMap<u32, Borrow>,
-    provenance: &BTreeMap<u32, std::collections::BTreeSet<u32>>,
-    by_value_tys: &BTreeMap<u32, MirTy>,
+    provenance: &crate::mir::borrows::BorrowOrigins,
     env: &emit_places::TyEnv,
 ) -> Result<bool, BackendDiagnostic> {
     let mut seen: BTreeMap<u32, (u32, bool)> = BTreeMap::new();
@@ -711,14 +569,10 @@ fn conflicts(
             continue;
         }
         if !emit_places::is_slot_local(place.local.0, env)? {
-            if let Some(sources) = provenance.get(&place.local.0) {
-                if by_value_tys
-                    .get(&place.local.0)
-                    .is_some_and(may_carry_borrow)
-                {
-                    for source in sources {
-                        seen.entry(*source).or_insert((0, false)).0 += 1;
-                    }
+            // As above: the type filter this used to carry is now the analysis's own invariant.
+            if let Some(sources) = provenance.of(place.local.0) {
+                for source in sources {
+                    seen.entry(*source).or_insert((0, false)).0 += 1;
                 }
             }
             continue;
