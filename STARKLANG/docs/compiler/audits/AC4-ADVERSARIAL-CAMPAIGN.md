@@ -32,7 +32,9 @@ MIR lowering                        6,7          PARTIAL   trap-category assignm
 MIR verification                    9,ac4-verify PROBED    36 rules; 3 named by no test.
                                                  AC4-F5 (§2.8) -- MIR-0035 falsified as
                                                  unenforced
-provider/resource ownership         4,4b         PARTIAL   provider_sig::signature only
+provider/resource ownership       4,4b,ac4-prov  COVERED   signature + lifecycle. AC4-F6:
+                                                 release is controlled by the PACKAGE lane, not
+                                                 by starkc's own suite (§2.9)
 borrow / move ownership             9,ac4-borrow COVERED   mir::borrows, 3 arms (§2.2)
 pattern legality                    NONE         -> COVERED, see §2.1. FOUND A GAP
 generic specialization env.         NONE         -> COVERED, see §2.3. TWO FINDINGS
@@ -378,6 +380,52 @@ MIR-0029 / MIR-0037     named by no test either, and NOT mutated here. The censu
 **Disposition.** A verifier rule is worth a negative test precisely because its positive path is
 always green: correct MIR passes whether or not the rule exists. The repair is one hand-built
 malformed body per unexercised rule, which is `mir_verify`'s existing shape.
+
+### 2.9 Provider / resource ownership — `batch ac4-provider`. **AC4-F6, with the control named**
+
+AS8's trials here are `provider_sig::signature` (batches 4, 4b) — the ABI **signature**, not the
+**lifecycle**. CD-347/348 are explicit that a resource-shaped provider must successfully acquire,
+use *and release*, and that a failure-only path is the weaker claim. These two attack release.
+
+```text
+AC4-MUT-PRV-002  the registry stops recognising any resource type   KILLED by 15   CONFIRMED
+AC4-MUT-PRV-001  select_closes iterates the map that is EMPTY at
+                 that point -- the defect its own comment records   SURVIVED       <-- AC4-F6
+```
+
+**PRV-002 is the positive control and it matters here.** It rules out the easy explanation: the
+provider suites *do* reach this area, 15 tests deep. So PRV-001's survival is not "these tests
+ignore providers".
+
+**But the measuring path was challenged anyway, and that is the finding.** A probe shows
+`select_closes` reached **zero times** by all four controls:
+
+```text
+--lib                     0        a10_provider_resource   0
+a11_host_resource         0        a10_provider_verify     0
+```
+
+So the survival means **never run**, not **not detected** — the same shape as the bound-dispatch
+arms, and the reason a survival is never interpreted before reachability is established.
+
+**The alternative control exists, was run today, and is named rather than assumed.** Close selection
+is exercised by the package qualification lane, not by `cargo test -p starkc`:
+
+```text
+qualify-first-party-packages.py     EXIT 0
+    tls: TLS 1.3 session verified, used and closed explicitly
+    tls: TLS 1.2 session verified, used and closed explicitly
+    tls: drop released the session and the socket under it
+```
+
+That last line is the release half, observed against a live peer — which is precisely what CD-347/348
+required and why they refused a failure-only path.
+
+**Classification: shared-fate, with an identified alternative control** — the branch AC4's exit
+permits. The residual risk is stated plainly: the control lives in a **different workspace and a
+different CI lane**, so a change to `select_closes` will not be caught by the compiler's own suite,
+and a contributor running `cargo test -p starkc` will see green. That is a real gap in feedback
+speed even though the claim itself is covered.
 
 ---
 

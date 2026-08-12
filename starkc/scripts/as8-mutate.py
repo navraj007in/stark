@@ -58,6 +58,42 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # Provider / resource ownership. AS8's trials are `provider_sig::signature` (batches 4, 4b) --
+    # the ABI signature, not the LIFECYCLE. CD-347/348 are explicit that a resource-shaped provider
+    # must successfully acquire, use AND release, and that a failure-only path is the weaker claim;
+    # the release half is what these two attack.
+    "ac4-provider": [
+        dict(id="AC4-MUT-PRV-001", target="provider/resource ownership", tag="MIR",
+             authority="provider_lower::select_closes — iterate the map that is empty at this point",
+             expect="SURVIVED",
+             file="src/mir/provider_lower.rs",
+             find="        let resources: Vec<String> = self.resource_nominal_names.keys().cloned().collect();",
+             repl="        let resources: Vec<String> = self.resource_items.keys().cloned().collect();",
+             # DECLARED SURVIVED on measurement -- AC4-F6, not a pass. A probe shows `select_closes`
+             # reached ZERO times by all four controls, so this survival means "never run" rather
+             # than "not detected". The release half of the lifecycle IS controlled, but by a
+             # different lane: `qualify-first-party-packages.py` ends with a live TLS session
+             # verified, used and closed, and "drop released the session and the socket under it".
+             # That is the identified alternative control AC4's exit asks for when in-suite
+             # falsification is unavailable.
+             tests=["--lib", "--test", "a11_host_resource", "--test", "a10_provider_resource",
+                    "--test", "a10_provider_verify", "--test", "a12_storage_end_shapes"],
+             note="Re-injects the defect this function's own comment records: `resource_items` is "
+                  "EMPTY until lowering resolves ids, so selecting from it silently selects NO "
+                  "closes and every host resource leaks. A11 §5 makes a resource's drop its "
+                  "provider close, so this is the release half of CD-347/348's lifecycle claim."),
+        dict(id="AC4-MUT-PRV-002", target="provider/resource ownership", tag="MIR",
+             authority="provider_bind::ResourceRegistry::lookup — every resource type is unknown",
+             expect="KILLED",
+             file="src/provider_bind.rs",
+             find="    pub fn lookup(&self, resource_type: &str) -> Option<&ResourceBinding> {",
+             repl="    pub fn lookup(&self, resource_type: &str) -> Option<&ResourceBinding> {\n        if resource_type.len() < 1000 { return None; }",
+             tests=["--lib", "--test", "a11_host_resource", "--test", "a10_provider_resource",
+                    "--test", "a10_provider_bind", "--test", "a10_provider_verify"],
+             note="The registry stops recognising any resource type. Coarser than PRV-001 and "
+                  "included as its positive control: if THIS survives, the provider suites are not "
+                  "reaching the registry at all and PRV-001's result would say nothing either."),
+    ],
     # MIR verification. AS8's only trial is `paths_prefix_related` (batch 9, KILLED) -- one
     # predicate out of a verifier carrying 36 distinct MIR-nnnn rules across 60 functions.
     #
