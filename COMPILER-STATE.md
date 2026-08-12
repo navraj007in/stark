@@ -15,7 +15,9 @@ Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — *
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
                                  (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
                                  probe verdict POSITIVE. **AC5 COMPLETE — zero Class-D**; F4/F5/F7
-                                 open and owned. AC4/AC6/reopen-rule remain. Population A 8
+                                 open and owned. **AC4 OPENED** — pattern legality had an
+                                 unguarded arm, now controlled; 7 authorities PARTIAL, 1 with no
+                                 trial. AC6/reopen-rule remain. Population A 8
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -347,6 +349,42 @@ Unswept categories:        explicitly listed (AC5-PATCHWORK-AUDIT.md §5)
 Acceptable for a controlled pre-alpha cohort, because the cohort is itself discovery evidence.
 **Not** acceptable for declaring WP-ARCH-CLOSE PASS, or for any unconditional public
 architecture-stability claim.
+
+## AC4 OPENED — pattern legality had an unguarded arm (2026-08-12)
+
+`STARKLANG/docs/compiler/audits/AC4-ADVERSARIAL-CAMPAIGN.md`. Trials run through AS8's harness,
+extended rather than replaced, because it enforces the evidence invariant structurally: **a trial
+declares KILLED or SURVIVED before it runs**, and the harness reports CONFIRMED / UNEXPECTED.
+
+**Mapping AS8's 26 trials onto AC4's eleven authorities: 2 covered, 7 partial, 2 with NO trial.**
+
+**The finding.** Pattern legality — chosen first because DEV-222/223/225/226/227 all landed in one
+day, every one a pattern that compiled, reported nothing and silently never matched. Its authority
+`resolution_is_pattern_legal` has three arms; two were guarded and **the `Res::Item` arm had no
+control at all**. Replacing it with `Res::Item(_) => true` left the whole suite green.
+
+```text
+mod m { pub fn f() -> Int32 { 1 } }
+match n { m::f => .. , _ => .. }
+
+unmutated   E0200             rejected
+mutated     no diagnostic     ACCEPTED as a pattern that never matches -- DEV-227 restored
+```
+
+A control was added and the mutation now dies. **`mir::borrows`'s three trials all CONFIRMED**,
+including one declared SURVIVED — the aggregate filter is precautionary with no control reaching it,
+which is now an explicit classification in the harness rather than a doc-comment residual.
+
+**Three invalid probes preceded the valid one**, and the campaign record says so: a bare identifier
+in pattern position BINDS a fresh variable and never reaches the authority, so the probe reported no
+diagnostics both mutated and unmutated and was briefly misread as a live defect. **The tell is the
+unmutated run agreeing with the mutated one** — the same signal that caught an unreaching program in
+the `mir::borrows` trials.
+
+**AC4 is NOT met.** Seven authorities are PARTIAL, one (generic specialization environment) still has
+no trial, and the shared-fate register has not been reconciled. **Do not read "2 covered, 7 partial"
+as 82% done** — pattern legality would have counted as nearly covered, and its unguarded arm is the
+argument against counting.
 
 ## AC5 COMPLETE — every category swept, zero Class-D (2026-08-12)
 

@@ -23,6 +23,75 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BATCHES = {
+    # ---------------------------------------------------------------------------------------
+    # WP-ARCH-CLOSE AC4. AS8 selected its targets under EI5; AC4 requires at least one trial per
+    # CRITICAL AUTHORITY, and the map of AS8's 26 trials against AC4's 11 authorities left two with
+    # NO trial at all -- pattern legality and the generic specialization environment -- plus
+    # `mir::borrows`, which did not exist when AS8 ran.
+    #
+    # Pattern legality is first because it has the worst defect history in the tree: DEV-222, 223,
+    # 225, 226 and 227 all landed in a single day, and every one was a pattern that compiled,
+    # reported nothing, and silently never matched. An authority with that record and zero
+    # adversarial coverage is exactly what AC4 exists to find.
+    "ac4-pat": [
+        dict(id="AC4-MUT-PAT-001", target="pattern legality", tag="FRONT_END",
+             authority="resolve::resolution_is_pattern_legal — associated fn admitted as a pattern",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            Res::AssociatedFn(_, _)\n            | Res::TraitMember(_, _)",
+             repl="            Res::AssociatedFn(_, _) => true,\n            Res::TraitMember(_, _)",
+             tests=["--test", "dev222_pattern_only_resolutions",
+                    "--test", "dev225_227_resolution_namespaces",
+                    "--test", "adversarial_patterns"],
+             note="This is DEV-222's exact defect re-injected: `Colour::Blu` resolves to an "
+                  "associated function and is accepted as a pattern that never matches. If the "
+                  "controls do not kill this, the repair is unguarded."),
+        dict(id="AC4-MUT-PAT-002", target="pattern legality", tag="FRONT_END",
+             authority="resolve::resolution_is_pattern_legal — any ITEM admitted as a pattern",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            Res::Item(item_id) => matches!(\n                self.item_details.get(item_id),\n                Some(ItemDefDetail::Struct { .. }) | Some(ItemDefDetail::Const)\n            ),",
+             repl="            Res::Item(_item_id) => true,",
+             tests=["--test", "dev222_pattern_only_resolutions",
+                    "--test", "dev225_227_resolution_namespaces",
+                    "--test", "adversarial_patterns"],
+             note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
+                  "compiles and matches nothing."),
+    ],
+    # `mir::borrows` is the authority AC1 step 1 created (CE3, 2026-08-12). Its own module-level
+    # trials found two of four rules UNCONTROLLED; these promote that finding into the harness so it
+    # is tracked mechanically rather than in a doc comment.
+    "ac4-borrow": [
+        dict(id="AC4-MUT-BOR-001", target="borrow origin", tag="MIR",
+             authority="mir::borrows — a call result inherits its arguments' origins unconditionally",
+             expect="KILLED",
+             file="src/mir/borrows.rs",
+             find="                if returns_borrow {",
+             repl="                if true {",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="Removes the precision rule that motivated the module: a scalar result stops "
+                  "being excluded and is recorded as borrowing its arguments' storage."),
+        dict(id="AC4-MUT-BOR-002", target="borrow origin", tag="MIR",
+             authority="mir::borrows — a MOVE stops severing provenance",
+             expect="KILLED",
+             file="src/mir/borrows.rs",
+             find="                    Rvalue::Use(Operand::Move(_)) => Vec::new(),",
+             repl="                    Rvalue::Use(Operand::Move(p)) => vec![p.local.0],",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="The rule whose absence over-refused `stark_http_client::follow` on the first "
+                  "DEV-160 repair attempt. Declared KILLED because the module's own pinned "
+                  "relation covers it -- if it SURVIVES here the pin is weaker than believed."),
+        dict(id="AC4-MUT-BOR-003", target="borrow origin", tag="MIR",
+             authority="mir::borrows — the aggregate component filter",
+             expect="SURVIVED",
+             file="src/mir/borrows.rs",
+             find="                        .filter_map(|o| operand_carries(body, o))",
+             repl="                        .filter_map(|o| match o { Operand::Copy(p) | Operand::Move(p) => Some(p.local.0), Operand::Const(_) => None })",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="Declared SURVIVED on the module's own measurement: this rule is precautionary "
+                  "and no control reaches it. A trial declared SURVIVED that comes back KILLED is "
+                  "GOOD NEWS -- it means a control was found -- and must be re-declared."),
+    ],
     "0": [
         dict(id="MUT-SELFTEST-LIVE", target="harness self-test", tag="ENGINE_LOCAL",
              authority="n/a — harness calibration", expect="KILLED",
