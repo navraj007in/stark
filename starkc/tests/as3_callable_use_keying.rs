@@ -977,15 +977,20 @@ fn the_specialiser_resolves_impl_overrides_and_trait_defaults() {
         "the two members must resolve to different bodies"
     );
 
-    // The signature comes from callable_types[body], substituted — not from a second derivation.
-    let body_sig = tables
-        .callable_types
-        .get(&text.body)
-        .expect("A3b gives every executable body a signature");
-    assert_eq!(
-        text.signature.params.len(),
-        body_sig.params.len(),
-        "the resolved signature is the body's, substituted"
+    // **AC4-F2: this asserted the specialiser's returned SIGNATURE against the body's, by arity.**
+    //
+    // Two things were wrong with it. The field was dead — no execution path read it, and AC4 proved
+    // corrupting its substitutions observationally irrelevant — and the assertion could not have
+    // failed anyway: substitution never changes a parameter COUNT, so `params.len()` was compared
+    // against itself in all but name.
+    //
+    // Rewritten around a fact the specialiser actually owns: it returns only bodies the callable
+    // registry knows. That is the invariant the `callable_types` lookup now exists solely to
+    // enforce, and unlike the old assertion it can fail.
+    assert!(
+        tables.callable_types.contains_key(&text.body),
+        "the specialiser must return an executable body the registry knows (A3b's exact-set rule); \
+         a body absent from `callable_types` is skipped, never returned"
     );
 
     // A member the trait does not declare resolves to nothing rather than to something plausible.
@@ -1098,16 +1103,15 @@ fn both_engines_resolve_a_bound_call_identically() {
                 "one authority gave two answers for {member} on {self_ty:?}"
             );
             if let Some(resolved) = a {
-                // The resolved signature must agree with the body's, substituted — §3.4 extended
-                // to the late-bound case.
-                let body_sig = tables
-                    .callable_types
-                    .get(&resolved.body)
-                    .expect("A3b: every executable body has a signature");
-                assert_eq!(
-                    resolved.signature.params.len(),
-                    body_sig.params.len(),
-                    "the specialised signature is the body's, substituted"
+                // AC4-F2: was an arity comparison against the returned signature, a field no
+                // execution path consumed and which substitution could not have changed the arity
+                // of. The agreement that matters for "one authority gave two answers" is the pair
+                // the engines actually execute — the body and the environment — and both are
+                // already compared by the `assert_eq!(a, b)` above, which now compares a struct
+                // with no dead field in it.
+                assert!(
+                    tables.callable_types.contains_key(&resolved.body),
+                    "every returned body is one the registry knows"
                 );
                 compared += 1;
             }

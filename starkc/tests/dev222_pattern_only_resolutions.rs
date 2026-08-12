@@ -182,3 +182,32 @@ fn main() { println(unwrap_or(Some(7i64), 0i64)); }
         "`Some`/`None` resolve to builtins and must remain legal patterns"
     );
 }
+
+/// **WP-ARCH-CLOSE AC4 — the control this file was missing.**
+///
+/// `resolution_is_pattern_legal`'s `Res::Item` arm admits a struct or a constant and rejects
+/// everything else — a function, a trait, a module item. **Nothing tested that arm.** AC4's
+/// mutation `AC4-MUT-PAT-002` replaced it with `Res::Item(_) => true` and the whole suite stayed
+/// green, so the arm was unguarded: a regression there would restore DEV-227's defect, where a
+/// pattern naming a non-constructor compiles, reports nothing, and silently never matches.
+///
+/// The shape has to be a QUALIFIED path. A bare identifier — even a capitalised one — binds a fresh
+/// variable in pattern position and never reaches the authority at all, which is why the first
+/// three probes AC4 tried proved nothing and had to be discarded.
+#[test]
+fn a_qualified_path_naming_a_module_function_is_not_a_pattern() {
+    let source = r#"
+mod m { pub fn f() -> Int32 { 1 } }
+fn main() {
+    let n: Int32 = 1;
+    match n { m::f => { println(1); } _ => { println(2); } }
+}
+"#;
+    let errors = resolve_errors(source, "dev222_module_fn_pattern");
+    assert!(
+        !errors.is_empty(),
+        "`m::f` is a function, not a constructor or a constant, so it may not appear in pattern \
+         position. Accepting it produces a pattern that never matches and reports nothing — \
+         DEV-227's defect. Got no diagnostics at all."
+    );
+}

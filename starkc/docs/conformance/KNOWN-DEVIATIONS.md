@@ -9683,3 +9683,526 @@ The twenty-six spellings remain a string-matched table rather than entries in th
 namespaces. Making them ordinary namespace entries a user declaration shadows by the normal rule
 would delete the special case entirely; the fallback keeps it, in a position where it can no longer
 pre-empt. That is a smaller, later cleanup and is not required for conformance.
+
+## DEV-235 — RESOLVED (2026-08-12): the accepted socket inherited the listener's non-blocking flag
+
+```text
+Architecture trigger:  NONE
+Counts toward AC7's twenty:  NO — test infrastructure, no compiler semantic consequence
+```
+
+The registration said the check "fails on loopback socket timing". That was the symptom. The cause
+is a socket flag, and no timeout would ever have fixed it.
+
+`EchoServer::spawn` puts its listener in non-blocking mode so the accept loop can poll its stop
+channel. **On Linux an accepted socket does not inherit `O_NONBLOCK`; on macOS and the BSDs it
+does.** Inherited, the echo thread's first `read_exact` returns `WouldBlock` the instant it is
+called. `echo_connection` had no arm for `WouldBlock`, so it returned `Err`, the spawned thread ran
+`let _ = echo_connection(...)` and discarded it, the stream dropped, and the connection closed —
+which reaches the client as **EOF in place of its echo**.
+
+That is why the failure was macOS-only, why it was intermittent, and why it passed on re-run: it
+needs the accept and the first read to win the race against the client's first byte. It is also why
+the accusation landed in the wrong place. The panic was at the provider test's `read_exact`, so the
+evidence said *"the detached socket is dead"* when the truth was *"the harness hung up"*.
+
+### Measured, on macOS arm64
+
+A standalone probe, outside the crate, reproducing only the flag question:
+
+```text
+listener.set_nonblocking(true) -> accept() -> set_read_timeout(5s) -> read()
+
+READ Err(WouldBlock) after 3.667µs
+VERDICT: accepted socket INHERITED O_NONBLOCK
+```
+
+The 5-second deadline is not consulted at all. The read fails in microseconds.
+
+### The repair
+
+```text
+packages/stark-net/native/src/lib.rs
+
+1  stream.set_nonblocking(false)? on every accepted socket, before anything reads it
+2  echo_connection classifies: is_peer_gone() ends the connection normally;
+   anything else -- WouldBlock above all -- is a harness DEFECT
+3  EchoServer records those defects and shutdown() reports them as HarnessError::Echo
+4  the client-side deadline is now the named HANG_GUARD constant, documented as a hang
+   guard rather than a synchronisation device
+```
+
+Item 3 is the part that makes red mean red. Under the unrepaired harness the failure arrives as an
+unexplained EOF at an assertion about the provider; under the repaired one it arrives as
+`Echo("Io(Os { code: 35, kind: WouldBlock })")` from the harness, naming itself.
+
+### This was already known one crate away
+
+`packages/stark-tls/native/src/lib.rs` carries `socket.set_nonblocking(false)` with a comment
+stating the same Linux/BSD divergence, and records what it cost there: *"ten failures, all status
+28, the whole suite finishing in 0.33s because nothing ever waited for anything."* The two
+harnesses were written from one shape and **only one of them was repaired**. The net harness kept
+the defect for as long as it took a race to expose it on a promotion-gating lane.
+
+### Falsification
+
+`a_client_that_pauses_before_speaking_still_gets_its_echo` forces the adverse ordering rather than
+waiting for it: the client connects, pauses 250 ms so the harness reaches its first read with
+nothing to read, and only then sends its frame. With the repair removed:
+
+```text
+a_client_that_pauses_before_speaking_still_gets_its_echo
+    panicked: UnexpectedEof "failed to fill whole buffer"
+
+a_detached_socket_is_live_and_this_provider_has_forgotten_it
+    panicked: Echo("Io(Os { code: 35, kind: WouldBlock ... })")     <- named, not mysterious
+```
+
+Both are deterministic on macOS with the repair removed. With it restored, the crate's 12 tests
+pass, run three times consecutively. The lane that registered this deviation — `C7.8 Native
+Capabilities`, step `provider-loopback` — runs the whole crate suite on all three Tier-1 platforms,
+so the new test travels with it.
+
+### What is deliberately not claimed
+
+This removes one mechanism from one harness. It does not establish that the qualification lanes are
+free of timing dependence generally; `send_frame`'s two-second call-site deadlines and the TLS
+peer's ten-second ones remain, unexercised by this repair and unchanged by it. AC3's exit also
+requires two complete clean CI runs with no rerun-to-green, which this entry does not assert.
+
+## The six native-subset boundaries: the external-facing limitation now exists (2026-08-12, WP-ARCH-CLOSE AC2)
+
+*Covers DEV-140, DEV-141, DEV-142, DEV-143, DEV-144 and DEV-145. **Deliberately not titled with a
+`DEV-nnn` heading**: this file is append-only and `c10-deviation-populations.py` reads the LAST
+heading for an id as its status. A `## DEV-140 …` title here would have silently re-dispositioned
+DEV-140 and dropped population A from 9 to 8. It did exactly that on the first attempt.*
+
+```text
+Architecture trigger:  NONE
+Counts toward AC7's twenty:  NO — this changes no compiler behaviour
+```
+
+No status change: all six remain OPEN, and the owner's deferral of their repair stands. What changed
+is that they are now **externally legible without reading this file**.
+
+`starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` carries a row for each of the six, generated
+from a live compiler run by `starkc/tests/native_conformance_matrix.rs` and validated on all three
+Tier-1 platforms in CI. Each row states the construct in a STARK author's terms rather than by
+lowering line number, names the owning DEV, and — where the deviation has one — names the working
+alternative spelling: `a == b` for DEV-143, `x.fmt()`-style ordinary method calls for the String and
+Vec method sets, printing the parts separately for DEV-142's composite.
+
+That satisfies AC2 §6.4's second form for an unsupported native boundary:
+
+```text
+documented unsupported native boundary       the matrix row
++ deterministic STARK-owned refusal          MIR lowering, before any code is emitted
++ external-facing limitation                 the matrix is the published contract
+```
+
+**The probes are the same ones `layer_audit` enforces.** The inventory moved to
+`starkc/tests/support/layer_probes.rs` and both suites read it, so a matrix row and an audit
+disposition cannot disagree about what a probe does.
+
+## The borrow-origin analysis moves to MIR (2026-08-12, WP-ARCH-CLOSE AC1, CE3)
+
+```text
+Architecture trigger:  NONE — see "why this is not a finding" below
+Counts toward AC7's twenty:  NO — no compiler behaviour changed
+```
+
+**DEV-160 stays OPEN.** Its capability half is untouched: the cross-block programs are still valid
+STARK and still do not build. What changed is where the analysis they depend on lives, and how
+precise it is.
+
+### What moved, and the owner decision that placed it
+
+`borrow_provenance` — the *"this value may derive from that slot"* heuristic the DEV-160 entry
+recorded as an interim — lived in `backend/generated_rust/emit_call_thunk.rs`, in the native
+emitter, downstream of every phase with authority over ownership. It is now
+`starkc/src/mir/borrows.rs`, by **owner decision under CE3 (2026-08-12)**.
+
+The placement question was put to the owner rather than taken, because three answers were defensible:
+
+```text
+MIR-level module      CHOSEN. The question is about MIR places and MIR dataflow, and MIR owns
+                      lowered form
+keep it in the        rejected: leaves a semantic analysis in the emitter, which AC5 would then
+backend               have to classify
+publish from          rejected for now: borrowck.rs answers a different question (is the program
+borrowck.rs           legal), returns only diagnostics, and works on HIR places that are not MIR
+                      locals. The mapping is unconfirmed
+```
+
+### Why this is NOT an architecture finding
+
+§4 lists *"semantic information must be reconstructed downstream because the authoritative phase
+discarded it"*. The backend computing borrow provenance looks like that shape, and it was the
+reason AC1 flagged it. It is **not** that shape, on inspection: the HIR borrow checker's question is
+*is this program legal*, and the backend's is *what does this value borrow in the lowered form*.
+Those are different questions, and the second has an owner — MIR. Nothing had to be reconstructed;
+something was merely in the wrong module. **Repaired at an owning authority, no exception required.**
+
+### The precision that was bought, and the consumer patches it retired
+
+Two rules the heuristic did not have:
+
+```text
+a result that cannot STORE a reference borrows nothing, whatever its arguments were
+only REFERENCE arguments can pass a borrow into a result (03 rule 3, shortest input)
+```
+
+The heuristic propagated a call's arguments into its result unconditionally, so in
+`send(u: &str, b: String) -> UInt64` the `UInt64` was recorded as borrowing the aggregate. **Every
+consumer carried its own type check to undo that** — `emit_call_thunk` had two, plus a
+`by_value_tys` map built solely to feed one of them. All three are deleted: the analysis states the
+invariant itself, so there is nothing left to compensate for.
+
+That is the concrete architecture evidence AC1 was looking for: *a consumer patch disappeared
+because the authority became correct.*
+
+### A fourth copy of an AS4 rule, deleted
+
+`may_carry_borrow` in the backend was a private re-implementation of
+`mir::reference_rule::stores_a_reference` — AS4's consolidated authority for *"does this type STORE
+a reference?"*. It agreed on every arm, but re-asserted the property behind a `_ => false` wildcard
+that the authority deliberately refuses, for the reason `reference_rule` states: a wildcard makes
+every future `MirTy` variant silently claim the property is absent. Deleted; the authority is called.
+
+### Mutation trials, including the two that failed to prove anything
+
+Four rules were mutated. **The first trial's results were misleading and are recorded rather than
+discarded**, because the correction is the useful part:
+
+```text
+FIRST TRIAL, against the simple reported shape
+  call-result guard      KILLED by 2
+  move severs            SURVIVED
+  statement dest guard   SURVIVED
+
+AFTER adding a (String, &str) shape — non-Copy AND borrow-carrying — and pinning its relation
+  call-result guard      KILLED by 3      CONTROLLED
+  move severs            KILLED by 1      CONTROLLED
+  statement dest guard   SURVIVED         uncontrolled, precautionary
+  aggregate filter       SURVIVED         uncontrolled, precautionary
+```
+
+The first trial's survivors were not weak rules but an **unreaching program**: in the simple shape a
+`String` moved out of an aggregate is not borrow-carrying, so the move rule and the dest guard
+decline for the same value and removing either changes nothing. The rules masked one another. Three
+tests written as controls were not controls, and would have been reported as coverage.
+
+**Two rules remain uncontrolled and are labelled so in the module.** Both survived a mutation
+verified to have applied — checked explicitly, because a mutation that silently fails to apply
+reads exactly like a survivor.
+
+### Evidence
+
+```text
+mir::borrows unit tests           5 pass, incl. two whole-relation characterizations
+ac1_dev160_probe                  4 pass — the AC1 baseline, incl. the over-refusal control
+dev160_call_site_thunk            8 pass, incl. the DEV-160d under-refusal guard
+mir_differential                132 pass
+three_engine_differential       129 pass
+starkc --lib                    584 pass
+33 first-party APPLICATIONS      built natively, 0 failures — every one goes through
+                                 emit_program::emit and therefore plan_for_call
+```
+
+**`stark check --target-native` over the packages is NOT evidence here and was not counted.** It
+scans for unsupported runtime functions (`exclusions_in_program`) and never reaches `plan_for_call`,
+so it cannot see this change at all. Only the 33 real builds exercise it.
+
+The over-refusal control is the one that matters most: the first attempt at touching this relation
+broke `stark_http_client::follow` and was caught by a package build rather than a test. `stark-get`,
+the application that consumes that client, builds.
+
+## DEV-160 — RESOLVED (2026-08-12): the thunk absorbs the call that produced the borrow
+
+```text
+Architecture trigger:  NONE — the capability landed inside the existing borrow architecture
+Counts toward AC7's twenty:  YES — a demonstrated backend correctness defect, now repaired
+```
+
+The capability half, open since the deviation was filed and deferred by owner ruling on 2026-08-03,
+is closed. `send(r.url.as_str(), r.body)` builds, runs, and agrees across all four engine
+configurations. So does the originally reported three-argument shape,
+`send_once(r.url.as_str(), r.headers, r.body)`.
+
+### The design was decided by a soundness argument, and it ruled out the cheap option
+
+The obvious repair is much smaller: leave the producing call where it is and launder its `&str`
+result through a raw pointer at the call site, reconstituting it inside the thunk under `'a`. It
+would have needed no new plan structure, no terminator rewriting, and no detector.
+
+**It is unsound, and the runtime's own comment says why.** `slot.rs` records that the thunk takes
+the slot once through a real `&'a mut ValueSlot<T>`, *"which is what anchors every reference it
+hands on"*. Under Stacked Borrows, taking that `&mut` invalidates tags derived from any earlier
+borrow of the same slot — so a reference created BEFORE the thunk was entered is dead inside it,
+whatever pointer it travelled through. The reference has to be created inside, which means the call
+that produces it comes in too.
+
+### The admission test, all-or-nothing
+
+```text
+1  the value is defined by a Call TERMINATOR in another block
+2  that block's call targets THIS block -- one edge, no intervening blocks
+3  this block has exactly ONE predecessor
+4  the value is read exactly once: by the consuming call
+5  every producer argument is inert, or an absorbable borrow of a PARTICIPATING slot
+6  the producer's callee is Runtime or a direct Instance
+```
+
+Condition 3 is what makes "straight-line" a fact rather than an assumption: with one predecessor
+there is no path reaching the consumer without the producer, and none reaching the producer twice
+per consumer. Every condition is a way the absorbed call could observe something different from
+where it was; a partial absorption that got any of them wrong would move a side effect rather than a
+borrow.
+
+### Two defects found in this repair, by its own controls
+
+**The first attempt built and then panicked at run time.** The call site still passed `_9.unwrap()`
+for a local nothing assigned any more: the `plan_args` entry had been replaced by `Produced`, but
+its `by_value` entry stayed, and the thunk's parameter list and call site are both built from that
+vector. Removing it requires renumbering every later `ByValue` index, which is now done explicitly.
+
+**The Miri fixture for the new shape was initially unguarded**, which is the exact failure the
+existing guard was built to prevent — a green Miri run proving something about code the compiler no
+longer emits. Worse, the guard's extraction took the FIRST token of each `let aN = …` line, so for
+`as_str(stark_refraw_…(p0))` it would have resolved the producer, found no generated wrapper, and
+contributed nothing — hiding the `field_ref_raw` underneath it. The extraction now scans nested
+calls in order, and a second guard covers the new fixture.
+
+### Evidence
+
+```text
+Miri, CI's exact flags (-Zmiri-strict-provenance -Zmiri-ignore-leaks)
+    the_absorbed_producer_shape_is_sound_under_stacked_borrows      PASS
+    27 slot tests total                                             PASS
+
+fixture guards, both falsified
+    shortening ABSORBED_PRODUCER_SHAPE fails with
+    left ["field_ref_raw","move_field_raw"]  right ["move_field_raw"]
+
+dev160_call_site_thunk    9 pass, incl. the DEV-160d boundary UNCHANGED and
+                          `ordinary_calls_plan_nothing` — the detector did not widen
+ac1_dev160_probe          4 pass, incl. BOTH over-refusal controls
+mir_differential        132   three_engine_differential  129
+native_c6_1_ownership    24   native_c5_4_linkage         12
+33 first-party APPLICATIONS built natively, 0 failures
+```
+
+### What is NOT closed
+
+**DEV-160c and DEV-160d are unchanged and still refused by name.** A provider call's argument
+sequence (c) and a borrow outliving the call (d) are separate shapes with separate reasons, and
+their guards still pass — deliberately, because a repair that quietly widened them would have been
+invisible.
+
+**Only ONE producer may be absorbed per thunk.** Two would each need their own edge from their own
+predecessor, and condition 3 admits one. A call with two cross-block borrows is still refused.
+
+## DEV-236 — `println` on a generic parameter does not enforce its own `T: Display` bound (OPEN, registered 2026-08-12)
+
+```text
+Architecture trigger:  NONE — one authority, not consulted. See "why not AC7-D" below
+Counts toward AC7's twenty:  YES — a demonstrated compiler semantic defect
+```
+
+Found by WP-ARCH-CLOSE AC5 as finding **AC5-F1**, where it was first filed as a *policy divergence*
+between two entry points. **That classification was wrong and is corrected here**: the normative text
+already settles the policy, so this is a conformance defect, not architecture debt.
+
+### What the specification requires
+
+**`PRINT-DISPLAY-001`** (`06-Standard-Library.md`):
+
+> `print`, `println`, `eprint`, and `eprintln` are implementation-provided generic functions with the
+> signatures `fn print<T: Display>(value: T)` … They are **not** syntax hooks: printing dispatches
+> through the argument's `Display` implementation by ordinary trait resolution.
+
+**`TYPE-METHOD-003`** (`03-Type-System.md`):
+
+> When the receiver's type, after auto-dereference, is a generic parameter `T`, the candidate set is
+> collected from the traits named by `T`'s declared bounds and from nowhere else … Each bound
+> resolves to exactly one trait identity … which is a `TYPE-NOMINAL-001` item identity **and not a
+> spelling**. Two traits with the same local name in different modules are two identities.
+
+If `println` is an ordinary generic function constrained `T: Display`, then a call to it inside a
+generic body is an ordinary generic call whose obligation the enclosing function's bounds must
+discharge — at the definition, where it is written.
+
+### Measured
+
+```text
+fn show<T>(x: T)          { println(x); }    front end ACCEPTS      spec: must reject
+fn show<T: Clone>(x: T)   { println(x); }    front end ACCEPTS      spec: must reject
+fn show<T: Display>(x: T) { println(x); }    front end ACCEPTS      correct
+fn show<T>(x: T)          { println(f"{x}"); }  REFUSED E0306       correct, and it is the
+                                                                    SAME obligation
+```
+
+Interpolation — the second `Display` entry point, named as such by `typecheck/body.rs` (AS3
+Boundary 4) — enforces the rule. `println` does not. One obligation, two implementations, and only
+one of them consults the bounds.
+
+### The consequence: an accepted program MIR cannot build
+
+```stark
+trait Display { fn unrelated(&self) -> Int32; }     // a USER trait, correctly resolved
+struct P { a: Int32 }
+impl Display for P { fn unrelated(&self) -> Int32 { 7 } }
+fn show<T: Display>(x: T) { println(x); }
+fn main() { show(P { a: 1 }); }
+```
+
+```text
+front end   ACCEPTS -- the written bound is satisfied by the user's trait, which is correct
+MIR         REFUSES -- "Display::fmt not found for printed type"
+```
+
+That is a **`TYPE-METHOD-003` violation too**: the bound admitted a trait by spelling where the rule
+says identity. And it is the accepted-but-unbuildable E0105 class — a correct compiler error about
+the wrong layer, which is precisely what this programme exists to remove.
+
+### Owner ruling (CE1, CD-401, 2026-08-12)
+
+**Enforce the obligation at the generic definition. Do not weaken interpolation.**
+
+```text
+fn show<T>(x: T)          { println(x); }   REJECT at the definition
+fn show<T: Clone>(x: T)   { println(x); }   REJECT at the definition
+fn show<T: Display>(x: T) { println(x); }   ACCEPT -- Core Display IDENTITY
+trait Display { ... }                       REJECT unless the bound resolves to the
+fn show<T: Display>(x: T) { println(x); }          Core Display identity
+```
+
+**The repair must NOT be a `println` special case.** It belongs in the authority that checks generic
+callee obligations. If `println` bypasses ordinary bound checking because it is represented as a
+builtin, it is routed through the existing mechanism rather than gaining another
+`if callee == println`.
+
+> **The repair is an architecture test, deliberately.** If this obligation cannot be expressed
+> through the existing generic-call/bound authority, that is a **more serious finding than this
+> deviation** — §4's *"consumer patched because the owning authority cannot express the rule"* — and
+> is recorded as such rather than worked around.
+
+### Why not an AC7-D trigger
+
+AC7-D is *"an authoritative compiler phase discarded semantic information that downstream phases must
+reconstruct."* Nothing was discarded here: the bounds are present, resolved, and carry their
+identities. The obligation checker simply is not consulted for this callee. **One authority, not
+consulted — not a missing authority.** Recorded as NONE at triage rather than left ambiguous.
+
+If a repair attempt shows the authority *cannot* express the obligation, this classification is
+revisited on that evidence.
+
+### Blast radius, measured
+
+**Zero.** No first-party generic function prints — every `println` in `packages/` is on a concrete
+type. The repair rejects programs that build today, but none of them are in this tree.
+
+It will, however, reject `fn show<T>(x: T) { println(x); }`, which a newcomer writes early. The
+existing `E0306` diagnostic already carries the right remedy (*"add the bound 'T: Display'"*), and
+the repair should reuse it rather than mint a new code.
+
+### Not repaired at registration
+
+`915e565` is AC3's frozen qualification tree under CD-401 and takes no compiler change until its two
+runs complete. Characterised meanwhile by `starkc/tests/ac5_display_entry_points.rs`, whose three
+cases assert the CURRENT behaviour so the defect cannot drift silently before it is fixed.
+
+## DEV-236 — RESOLVED (2026-08-12): the obligation is answered by the bound authority
+
+```text
+Architecture trigger:  NONE — confirmed by the repair, not merely asserted at triage
+Counts toward AC7's twenty:  YES
+```
+
+`println` now enforces its own `T: Display` bound where the generic is written, per CD-401's CE1
+ruling. Population A 9 -> 8.
+
+### The defect was one line asserting a discharge that never happened
+
+```rust
+Ty::Param(_) => true, // discharged by the caller's own bound
+```
+
+There was no bound to discharge. `builtin_type` types the print family's parameter as a **bare
+inference variable**, so no obligation was ever attached to the callee and nothing downstream could
+discharge one. The comment described a mechanism that did not exist, which is why the line read as
+correct for as long as it did.
+
+### The repair, at the authority
+
+```rust
+Ty::Param(name) => self.param_declares_bound(
+    name,
+    "Display",
+    Some(Res::CoreTrait(hir::CoreTrait::Display)),
+),
+```
+
+`param_declares_bound` already existed and already compares **resolved identities**, falling back to
+spelling only when no identity is supplied. Supplying `Res::CoreTrait(CoreTrait::Display)` is what
+makes `TYPE-METHOD-003`'s *"an item identity and not a spelling"* hold here.
+
+**There is no `if callee == println` anywhere in the repair.** CD-401 required that, and named the
+alternative outcome: had the obligation been inexpressible through the existing generic-call/bound
+authority, that would have been a **more serious finding than the deviation** — §4's *"consumer
+patched because the owning authority cannot express the rule"*. It was expressible. **The
+architecture test passes**, and `Architecture trigger: NONE` is now confirmed rather than predicted.
+
+### The repair exposed a second defect, and the codebase had already written the rule
+
+The first version **rejected `fn show<T: Display>(x: T) { println(x); }`** — a bound plainly written.
+
+`display_checks` is drained in Pass 3. Answering `Ty::Param` from declared bounds made that
+obligation **scope-sensitive** while it still carried no scope, so the query ran with no generics
+visible. `DeferredDisplayPlan`'s own doc comment states the rule that was broken:
+
+> *"a deferred obligation may read resolved types freely, but any **scope-sensitive** question it
+> asks is a question about a scope that no longer exists. Capture the scope with the obligation."*
+
+So `display_checks` became `Vec<DeferredDisplayCheck>`, carrying `generic_scope` exactly as the plan
+queue already did, and the drain restores it around the query. **The general rule applied, not a
+`Display`-shaped patch** — the two queues stay separate (one reports, one publishes, as the file
+requires) and now both obey it.
+
+### Measured — the full ruling table
+
+```text
+fn show<T>(x: T)          { println(x); }    REJECT E0500   was ACCEPT
+fn show<T: Clone>(x: T)   { println(x); }    REJECT E0500   was ACCEPT
+fn show<T: Display>(x: T) { println(x); }    ACCEPT         unchanged
+user trait spelled Display                   REJECT E0500   was ACCEPT-then-MIR-refusal
+println(1i32) / println(String)              ACCEPT         unchanged
+interpolation, T: Display                    ACCEPT         unweakened
+```
+
+### Falsification
+
+```text
+revert the repair (Ty::Param(_) => true)          killed by 4 tests
+keep the bound check, drop the IDENTITY           killed by exactly 1 -- the identity test
+```
+
+Each control catches what it exists for, rather than four tests all failing on any change.
+
+### Evidence
+
+```text
+ac5_display_entry_points     6 conformance assertions (converted from characterization)
+three_engine_differential  129    mir_differential 132    conformance suite green
+layer_audit                       native_conformance_matrix green -- the drift gate matters most
+                                  here, since a changed acceptance boundary alters a generated cell
+```
+
+### What changed for users
+
+`fn show<T>(x: T) { println(x); }` no longer compiles. It previously compiled and then failed at MIR
+with `Display::fmt not found for printed type` — a correct error about the wrong layer. The remedy
+is to write the bound, `T: Display`, and `E0500` names the type that cannot be printed.
+
+**Blast radius was measured before the repair: zero.** No first-party generic function prints; every
+`println` under `packages/` is on a concrete type.

@@ -21,9 +21,9 @@
 
 use super::types::{
     BoundsCheck, CallableDeclId, CallableInstantiation, CallableSigTy, CallableUse, CallableUseId,
-    CalleeSelection, DeferredDisplayPlan, DispatchProvenance, DisplayPath, FnSigTy, GenericBinder,
-    GenericEnvironment, GenericKind, LoopContext, ReceiverAdjustment, ReceiverBinding, Ty,
-    TypeVarId, VariantTy,
+    CalleeSelection, DeferredDisplayCheck, DeferredDisplayPlan, DispatchProvenance, DisplayPath,
+    FnSigTy, GenericBinder, GenericEnvironment, GenericKind, LoopContext, ReceiverAdjustment,
+    ReceiverBinding, Ty, TypeVarId, VariantTy,
 };
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::DimVar;
@@ -90,7 +90,7 @@ pub struct TypeChecker<'a> {
     pub(super) negated_int_literal: Option<ExprId>,
     /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
     /// inference settles (the argument may still be a variable while the body is being checked).
-    pub(super) display_checks: Vec<(Ty, Span)>,
+    pub(super) display_checks: Vec<DeferredDisplayCheck>,
     /// **AS3 Boundary 4: the queue the `Display` dispatch plan is built from.**
     ///
     /// Separate from `display_checks`, which exists to emit E0500. One queue per job: a queue that
@@ -567,6 +567,20 @@ impl TypeChecker<'_> {
     /// false.
     /// Queue one expression that renders through `Display`, with the generic scope it was
     /// written in. Called by `println`-family arguments and by interpolation fields alike.
+    /// Queue the `Display` OBLIGATION for one printed expression, with the generic scope it was
+    /// written in. DEV-236: the obligation reads the parameter's declared bounds, so it is
+    /// scope-sensitive and must carry its scope exactly as the plan does.
+    pub(super) fn record_display_check(&mut self, ty: Ty, span: Span) {
+        self.display_checks.push(DeferredDisplayCheck {
+            ty,
+            span,
+            generic_scope: (
+                self.current_fn_generics.clone(),
+                self.current_impl_generics.clone(),
+            ),
+        });
+    }
+
     pub(super) fn record_display_plan(&mut self, root: ExprId, ty: Ty) {
         self.display_plans.push(DeferredDisplayPlan {
             root,

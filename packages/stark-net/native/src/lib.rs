@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use stark_provider_abi::{
     BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawOsHandle, RawResourceHandle,
@@ -625,6 +626,11 @@ pub enum HarnessError {
     Timeout(&'static str),
     Protocol(&'static str),
     ThreadPanic,
+    /// An echo connection failed inside the harness. **This variant exists because DEV-235 did
+    /// not have it**: the harness swallowed its own error, the connection closed, and the client
+    /// saw an unexplained EOF — which reads as "the provider's socket is dead" and accuses the
+    /// code under test of the harness's defect.
+    Echo(String),
 }
 
 impl From<std::io::Error> for HarnessError {
@@ -633,10 +639,23 @@ impl From<std::io::Error> for HarnessError {
     }
 }
 
+/// How long a harness read or write may block before it is treated as a hang.
+///
+/// **This is a hang guard, not a synchronisation device.** Nothing in these tests is supposed to
+/// take a measurable time: the peer is on loopback and answers a frame as soon as it has one. The
+/// value is deliberately far larger than any legitimate exchange so that a red test means the
+/// exchange did not happen, never that a shared runner was briefly slow. Tuning it is never the
+/// repair for a flake — DEV-235's cause was a socket flag, and no timeout would have fixed it.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 pub struct EchoServer {
     pub address: SocketAddr,
     stop_tx: mpsc::Sender<()>,
     join: JoinHandle<Result<(), HarnessError>>,
+    /// Failures recorded by the per-connection echo threads, reported by `shutdown`.
+    errors: Arc<Mutex<Vec<String>>>,
+    /// Echo threads still running, so `shutdown` can wait briefly for their verdicts.
+    live: Arc<AtomicUsize>,
 }
 
 impl EchoServer {
@@ -646,6 +665,10 @@ impl EchoServer {
         let address = listener.local_addr()?;
         let (ready_tx, ready_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let live = Arc::new(AtomicUsize::new(0));
+        let thread_errors = Arc::clone(&errors);
+        let thread_live = Arc::clone(&live);
         let join = thread::spawn(move || {
             ready_tx
                 .send(())
@@ -656,10 +679,34 @@ impl EchoServer {
                 }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // **The accepted socket must be put back into blocking mode explicitly —
+                        // this is DEV-235.**
+                        //
+                        // The listener is non-blocking so this loop can poll its stop channel. On
+                        // Linux an accepted socket does not inherit that flag; on macOS and the
+                        // BSDs it DOES. Inherited, the first `read_exact` below returns
+                        // `WouldBlock` the instant it is called, `echo_connection` treats that as
+                        // an I/O error, the thread ends, and the connection closes — which reaches
+                        // the client as EOF in place of its echo. It fails only when the accept
+                        // wins the race against the client's first byte, which is why it was
+                        // intermittent, macOS-only, and green on re-run.
+                        //
+                        // `stark-tls`'s peer already carries this line and says the same thing.
+                        // The two harnesses were written from one shape and only one was repaired.
+                        stream.set_nonblocking(false)?;
+                        let errors = Arc::clone(&thread_errors);
+                        let live = Arc::clone(&thread_live);
+                        live.fetch_add(1, Ordering::SeqCst);
                         thread::spawn(move || {
-                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                            let _ = echo_connection(&mut stream);
+                            let _ = stream.set_read_timeout(Some(HANG_GUARD));
+                            let _ = stream.set_write_timeout(Some(HANG_GUARD));
+                            if let Err(error) = echo_connection(&mut stream) {
+                                errors
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                    .push(format!("{error:?}"));
+                            }
+                            live.fetch_sub(1, Ordering::SeqCst);
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -676,14 +723,53 @@ impl EchoServer {
             address,
             stop_tx,
             join,
+            errors,
+            live,
         })
     }
 
+    /// Stops the accept loop and **reports what the echo threads saw**.
+    ///
+    /// The wait for outstanding echo threads is bounded: a client that is still holding its
+    /// connection open at shutdown is a legitimate test shape, and blocking here would convert
+    /// that into a hung suite. A verdict that has not arrived within the window is not reported —
+    /// this strengthens a failing run's diagnosis and never weakens a passing one.
     pub fn shutdown(self) -> Result<(), HarnessError> {
         let _ = self.stop_tx.send(());
         TcpStream::connect_timeout(&self.address, Duration::from_millis(200)).ok();
-        self.join.join().map_err(|_| HarnessError::ThreadPanic)?
+        self.join.join().map_err(|_| HarnessError::ThreadPanic)??;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while self.live.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let recorded = self
+            .errors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .join("; ");
+        if recorded.is_empty() {
+            Ok(())
+        } else {
+            Err(HarnessError::Echo(recorded))
+        }
     }
+}
+
+/// Whether an I/O error means the client has gone, which is how every one of these exchanges
+/// legitimately ends.
+///
+/// The list is deliberately closed. Anything outside it — `WouldBlock` above all — is a harness
+/// defect, and since DEV-235 it is recorded and reported rather than silently ending the
+/// connection. `WouldBlock` reaching here at all would mean the accepted socket is non-blocking
+/// again.
+fn is_peer_gone(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 fn echo_connection(stream: &mut TcpStream) -> Result<(), HarnessError> {
@@ -691,16 +777,21 @@ fn echo_connection(stream: &mut TcpStream) -> Result<(), HarnessError> {
         let mut len_bytes = [0u8; 8];
         match stream.read_exact(&mut len_bytes) {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => return Ok(()),
+            Err(error) if is_peer_gone(&error) => return Ok(()),
             Err(error) => return Err(HarnessError::Io(error)),
         }
         let len = u64::from_be_bytes(len_bytes);
         let len = usize::try_from(len).map_err(|_| HarnessError::Protocol("frame too large"))?;
         let mut payload = vec![0; len];
-        stream.read_exact(&mut payload)?;
-        stream.write_all(&len_bytes)?;
-        stream.write_all(&payload)?;
+        match stream
+            .read_exact(&mut payload)
+            .and_then(|()| stream.write_all(&len_bytes))
+            .and_then(|()| stream.write_all(&payload))
+        {
+            Ok(()) => {}
+            Err(error) if is_peer_gone(&error) => return Ok(()),
+            Err(error) => return Err(HarnessError::Io(error)),
+        }
     }
 }
 
@@ -1248,9 +1339,7 @@ mod tests {
         // The load-bearing part: adopt the raw socket and use it. `into_raw_fd` ran, so no
         // destructor closed it, and this is the only owner.
         let mut adopted = adopt(detached);
-        adopted
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        adopted.set_read_timeout(Some(HANG_GUARD)).unwrap();
         adopted.write_all(&5u64.to_be_bytes()).unwrap();
         adopted.write_all(b"hello").unwrap();
         let mut len_bytes = [0u8; 8];
@@ -1261,6 +1350,41 @@ mod tests {
         assert_eq!(&echoed, b"hello");
 
         drop(adopted);
+        server.shutdown().unwrap();
+    }
+
+    /// **DEV-235's mechanism, made deterministic.**
+    ///
+    /// The flake needed one ordering: the harness accepts the connection and reaches its first
+    /// read BEFORE the client has sent anything. On a shared runner that ordering arrived by
+    /// chance, roughly once in a promotion; here the pause forces it every time.
+    ///
+    /// The sleep is therefore not a wait for readiness — the connection is already established,
+    /// and `EchoServer::spawn` does not return until its accept loop is running. It exists to
+    /// PRODUCE the adverse interleaving rather than to tolerate one. Against the unrepaired
+    /// harness on macOS this test fails outright: the accepted socket inherited `O_NONBLOCK`, the
+    /// first read returns `WouldBlock`, and the echo never comes.
+    #[test]
+    fn a_client_that_pauses_before_speaking_still_gets_its_echo() {
+        let _exclusive = exclusive();
+        let server = EchoServer::spawn().unwrap();
+        let mut client = TcpStream::connect(server.address).unwrap();
+        client.set_read_timeout(Some(HANG_GUARD)).unwrap();
+
+        thread::sleep(Duration::from_millis(250));
+
+        client.write_all(&5u64.to_be_bytes()).unwrap();
+        client.write_all(b"hello").unwrap();
+        let mut len_bytes = [0u8; 8];
+        client.read_exact(&mut len_bytes).unwrap();
+        assert_eq!(u64::from_be_bytes(len_bytes), 5);
+        let mut echoed = [0u8; 5];
+        client.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"hello");
+
+        drop(client);
+        // The echo thread's own verdict, not just the client's: a harness failure now names
+        // itself here instead of arriving as an unexplained EOF at the assertion above.
         server.shutdown().unwrap();
     }
 

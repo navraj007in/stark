@@ -23,6 +23,417 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BATCHES = {
+    # ---------------------------------------------------------------------------------------
+    # WP-ARCH-CLOSE AC4. AS8 selected its targets under EI5; AC4 requires at least one trial per
+    # CRITICAL AUTHORITY, and the map of AS8's 26 trials against AC4's 11 authorities left two with
+    # NO trial at all -- pattern legality and the generic specialization environment -- plus
+    # `mir::borrows`, which did not exist when AS8 ran.
+    #
+    # Pattern legality is first because it has the worst defect history in the tree: DEV-222, 223,
+    # 225, 226 and 227 all landed in a single day, and every one was a pattern that compiled,
+    # reported nothing, and silently never matched. An authority with that record and zero
+    # adversarial coverage is exactly what AC4 exists to find.
+    "ac4-pat": [
+        dict(id="AC4-MUT-PAT-001", target="pattern legality", tag="FRONT_END",
+             authority="resolve::resolution_is_pattern_legal — associated fn admitted as a pattern",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            Res::AssociatedFn(_, _)\n            | Res::TraitMember(_, _)",
+             repl="            Res::AssociatedFn(_, _) => true,\n            Res::TraitMember(_, _)",
+             tests=["--test", "dev222_pattern_only_resolutions",
+                    "--test", "dev225_227_resolution_namespaces",
+                    "--test", "adversarial_patterns"],
+             note="This is DEV-222's exact defect re-injected: `Colour::Blu` resolves to an "
+                  "associated function and is accepted as a pattern that never matches. If the "
+                  "controls do not kill this, the repair is unguarded."),
+        dict(id="AC4-MUT-PAT-002", target="pattern legality", tag="FRONT_END",
+             authority="resolve::resolution_is_pattern_legal — any ITEM admitted as a pattern",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            Res::Item(item_id) => matches!(\n                self.item_details.get(item_id),\n                Some(ItemDefDetail::Struct { .. }) | Some(ItemDefDetail::Const)\n            ),",
+             repl="            Res::Item(_item_id) => true,",
+             tests=["--test", "dev222_pattern_only_resolutions",
+                    "--test", "dev225_227_resolution_namespaces",
+                    "--test", "adversarial_patterns"],
+             note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
+                  "compiles and matches nothing."),
+    ],
+    # MIR lowering. AS8's trials are trap-category ASSIGNMENT (batch 6, one-sided, SURVIVED) and
+    # `drop_plan::array_order` (batch 7, KILLED). At 13,008 lines this authority cannot be
+    # enumerated arm by arm, so the selection is by a different rule: the LANGUAGE SEMANTICS
+    # lowering uniquely owns — the ones no other phase can restate — rather than a sample of its
+    # code.
+    #
+    # CD-007 freezes strict left-to-right evaluation, and the module header says it is "preserved
+    # STRUCTURALLY" — by the order operands are lowered into temporaries. A structural guarantee is
+    # exactly the kind that no type or verifier check restates, so if it is wrong only observation
+    # can tell.
+    "ac4-lower": [
+        dict(id="AC4-MUT-LOW-001", target="MIR lowering", tag="MIR",
+             authority="lower::lower_short_circuit — `&&` and `||` evaluate BOTH sides",
+             expect="KILLED",
+             file="src/mir/lower.rs",
+             find="            BinOp::And => (rhs_block, short_block, false),\n            BinOp::Or => (short_block, rhs_block, true),",
+             repl="            BinOp::And => (rhs_block, rhs_block, false),\n            BinOp::Or => (rhs_block, rhs_block, true),",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "conformance", "--test", "cd007_evaluation_order"],
+             note="Both arms jump to the RHS block, so `a && b` evaluates `b` even when `a` is "
+                  "false. Short-circuiting is observable only through effects and traps -- "
+                  "`i < v.len() && v[i] == x` stops being safe -- so nothing but execution can "
+                  "catch it."),
+        dict(id="AC4-MUT-LOW-002", target="MIR lowering", tag="MIR",
+             authority="lower — assignment evaluates the LHS place before the RHS (CD-007 inverted)",
+             expect="KILLED",
+             file="src/mir/lower.rs",
+             find="                let rhs_op = self.lower_expr_to_operand(*rhs)?;\n                let place = self.lower_place(*lhs)?;",
+             repl="                let place = self.lower_place(*lhs)?;\n                let rhs_op = self.lower_expr_to_operand(*rhs)?;",
+             # SURVIVED on first run: every assignment in the suite had an inert left-hand side,
+             # so no case could observe an ordering. `cd007_evaluation_order` was written as the
+             # falsifier -- `a[idx()] = val()`, both sides printing -- and the mutation now dies
+             # with HIR/MIR DISAGREEMENT on stdout_bytes.
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "conformance", "--test", "cd007_evaluation_order"],
+             note="CD-007 fixes RHS before LHS place. Inverting it changes which side effect "
+                  "happens first, and the comment on that very line is the only thing enforcing "
+                  "it -- a structural guarantee with no checker behind it."),
+    ],
+    # Provider / resource ownership. AS8's trials are `provider_sig::signature` (batches 4, 4b) --
+    # the ABI signature, not the LIFECYCLE. CD-347/348 are explicit that a resource-shaped provider
+    # must successfully acquire, use AND release, and that a failure-only path is the weaker claim;
+    # the release half is what these two attack.
+    "ac4-provider": [
+        dict(id="AC4-MUT-PRV-001", target="provider/resource ownership", tag="MIR",
+             authority="provider_lower::select_closes — iterate the map that is empty at this point",
+             expect="SURVIVED",
+             file="src/mir/provider_lower.rs",
+             find="        let resources: Vec<String> = self.resource_nominal_names.keys().cloned().collect();",
+             repl="        let resources: Vec<String> = self.resource_items.keys().cloned().collect();",
+             # DECLARED SURVIVED on measurement -- AC4-F6, not a pass. A probe shows `select_closes`
+             # reached ZERO times by all four controls, so this survival means "never run" rather
+             # than "not detected". The release half of the lifecycle IS controlled, but by a
+             # different lane: `qualify-first-party-packages.py` ends with a live TLS session
+             # verified, used and closed, and "drop released the session and the socket under it".
+             # That is the identified alternative control AC4's exit asks for when in-suite
+             # falsification is unavailable.
+             tests=["--lib", "--test", "a11_host_resource", "--test", "a10_provider_resource",
+                    "--test", "a10_provider_verify", "--test", "a12_storage_end_shapes"],
+             note="Re-injects the defect this function's own comment records: `resource_items` is "
+                  "EMPTY until lowering resolves ids, so selecting from it silently selects NO "
+                  "closes and every host resource leaks. A11 §5 makes a resource's drop its "
+                  "provider close, so this is the release half of CD-347/348's lifecycle claim."),
+        dict(id="AC4-MUT-PRV-002", target="provider/resource ownership", tag="MIR",
+             authority="provider_bind::ResourceRegistry::lookup — every resource type is unknown",
+             expect="KILLED",
+             file="src/provider_bind.rs",
+             find="    pub fn lookup(&self, resource_type: &str) -> Option<&ResourceBinding> {",
+             repl="    pub fn lookup(&self, resource_type: &str) -> Option<&ResourceBinding> {\n        if resource_type.len() < 1000 { return None; }",
+             tests=["--lib", "--test", "a11_host_resource", "--test", "a10_provider_resource",
+                    "--test", "a10_provider_bind", "--test", "a10_provider_verify"],
+             note="The registry stops recognising any resource type. Coarser than PRV-001 and "
+                  "included as its positive control: if THIS survives, the provider suites are not "
+                  "reaching the registry at all and PRV-001's result would say nothing either."),
+    ],
+    # MIR verification. AS8's only trial is `paths_prefix_related` (batch 9, KILLED) -- one
+    # predicate out of a verifier carrying 36 distinct MIR-nnnn rules across 60 functions.
+    #
+    # This authority needs a different mutation strategy from the others, and the difference is the
+    # point. Removing a CHECK does not break correct programs: it only matters if something feeds
+    # the verifier bad MIR. So a surviving mutation here means "no test constructs the malformed
+    # shape", which is a coverage statement about the verifier's NEGATIVE cases -- exactly what a
+    # verifier is for.
+    #
+    # Selected by measurement: 33 of the 36 rule ids are named by at least one test; MIR-0029,
+    # MIR-0035 and MIR-0037 are named by NONE. VER-001 takes one of those, VER-002 a well-named
+    # rule as the positive control that the method works at all on this authority.
+    "ac4-verify": [
+        dict(id="AC4-MUT-VER-001", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0035 — storage_dead on a PROJECTED place is accepted",
+             # AC4-F5 REPAIRED: `mir_verify::rejects_storage_dead_on_a_projected_place` constructs
+             # the malformed body. Was SURVIVED because no test built the bad shape -- a verifier
+             # rule's POSITIVE path is always green.
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             find="                Statement::StorageDead(place, _) => {\n                    if !place.projection.is_empty() {",
+             repl="                Statement::StorageDead(place, _) => {\n                    if false {",
+             tests=["--lib", "--test", "mir_verify", "--test", "mir_differential",
+                    "--test", "a12_storage_end_shapes"],
+             note="A12: storage liveness belongs to a WHOLE local, so a projected `storage_dead` is "
+                  "a lowering defect. Declared SURVIVED on the census -- no test names MIR-0035 -- "
+                  "and a KILLED result is good news requiring re-declaration. A verifier rule no "
+                  "test exercises is a rule nothing proves is enforced."),
+        dict(id="AC4-MUT-VER-003", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0029 — a close binding naming a call outside the arena",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             # The first mutation here was a NO-OP for the test's shape: falling back to
+             # `provider_calls.first()` on an EMPTY arena still yields None, so the check fired
+             # anyway and the trial "survived" without ever being disabled. This one removes the
+             # diagnostic while keeping the control flow, which is what disabling a rule means.
+             find="            push(\n                \"MIR-0029\",\n                format!(\n                    \"close binding for {} names provider call {}, which is not in the arena\",\n                    crate::mir::dump_ty(&binding.resource),\n                    binding.close.0\n                ),\n            );\n            continue;",
+             repl="            continue;",
+             tests=["--lib", "--test", "mir_verify", "--test", "a10_provider_verify"],
+             note="A dangling close binding is accepted by falling back to any call in the arena. "
+                  "The resource then has a close recorded that releases the wrong thing, or "
+                  "nothing. Census-only before AC4-F5's repair; now built."),
+        dict(id="AC4-MUT-VER-004", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0037 — a format spec word with UNDEFINED bits is accepted",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             find="        if word >> HIGHEST_DEFINED_BIT != 0 {",
+             repl="        if false {",
+             tests=["--lib", "--test", "mir_verify"],
+             note="WP-FMT-001: an unknown bit is an unknown specification, not one to be ignored. "
+                  "Census-only before AC4-F5's repair; now built."),
+        dict(id="AC4-MUT-VER-002", target="MIR verification", tag="MIR",
+             authority="mir::verify::paths_prefix_related — move-path overlap, AS8's own target",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             # The anchor first named `&Place` parameters and came back NOT_APPLIED -- the harness
+             # refusing to report a verdict on a mutation that never landed, which is the outcome
+             # that stops a stale anchor being read as a SURVIVED. The real signature takes
+             # `&[MovePathStep]`.
+             find="fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {\n    let n = a.len().min(b.len());\n    a[..n] == b[..n]",
+             repl="fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {\n    let _ = (a, b);\n    false",
+             tests=["--lib", "--test", "mir_verify", "--test", "mir_differential"],
+             note="The positive control: AS8 already killed this one, so a SURVIVED here would "
+                  "mean the method has stopped working on this authority rather than that the "
+                  "rule is unguarded."),
+    ],
+    # Drop determination. AS8's only trial is `nominals_with_destructor` (batch 1, SURVIVED) —
+    # which answers "does this nominal declare a destructor", one input to the real authority.
+    # `requires_drop_glue_with` is the authority, a match over NINE arms, and it is the one the
+    # module header calls exhaustive on purpose so "a new MirTy variant must be classified at this
+    # one authority". One trial per arm, on four of the nine.
+    "ac4-drop": [
+        dict(id="AC4-MUT-DRP-001", target="Drop determination", tag="MIR",
+             authority="mir::drop_rule::requires_drop_glue_with — String stops owning anything",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::String => true,",
+             repl="        MirTy::String => false,",
+             # AC4-F4: `ac4_builtin_destruction` is the purpose-built control. Before it, this was
+             # killed only INCIDENTALLY, by two borrow-origin tests that pin local numbering.
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority",
+                    "--test", "ac4_builtin_destruction"],
+             note="The most-owned type in the language stops being destroyed. If the drop logs the "
+                  "differential compares do not notice this, they are not comparing destruction."),
+        dict(id="AC4-MUT-DRP-002", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — the STRUCT arm stops recursing into fields",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="            facts.has_user_destructor(*item, args)\n                || facts\n                    .struct_fields(*item, args)\n                    .is_some_and(|fields| fields.iter().any(|f| requires_drop_glue_with(f, facts)))",
+             repl="            facts.has_user_destructor(*item, args)",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority",
+                    "--test", "ac4_builtin_destruction"],
+             note="ARM-LEVEL and the realistic defect: a struct with no `Drop` impl but a `String` "
+                  "field stops dropping the field. `nominals_with_destructor` -- AS8's only trial "
+                  "here -- would still answer correctly, which is why it is not coverage of this."),
+        dict(id="AC4-MUT-DRP-003", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — a HOST RESOURCE stops needing its close",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::HostResource(_) => true,",
+             repl="        MirTy::HostResource(_) => false,",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "a11_host_resource"],
+             note="A11 §5: a host resource's drop IS its provider close. This leaks the socket, "
+                  "the file handle and the TLS session -- the class CD-347/348 built live-peer "
+                  "lifecycle evidence for."),
+        dict(id="AC4-MUT-DRP-004", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — the TUPLE arm stops recursing",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::Tuple(elems) => elems.iter().any(|e| requires_drop_glue_with(e, facts)),",
+             repl="        MirTy::Tuple(_elems) => false,",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+             note="`(String, Int32)` stops dropping its String. A composite arm, distinct from the "
+                  "struct arm above, and the shape DEV-142 already shows is delicate."),
+    ],
+    # Trait / bound dispatch. AS8's only trial here is batch 3 (`core_trait_contract` receiver),
+    # which is one function and SURVIVED. `satisfies_bound_identity` is the authority, and it is a
+    # match over FIVE semantic arms — reference forwarding, the primitive matrix, the Core-type
+    # rules, nominal impl witness, and the generic-parameter discharge. One trial on one function
+    # says nothing about the other four, which is the lesson pattern legality and substitute_ty
+    # both taught. One trial per arm.
+    "ac4-bound": [
+        # AC4-F3 REPAIRED: `ac4_bound_arms` now executes this arm. Was declared SURVIVED on an
+        # arm census showing it executed ZERO times -- unreachable, not undetected.
+        dict(id="AC4-MUT-BND-001", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Ty::Ref FORWARDING arm drops Display",
+             expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="                    || bound_name == \"Hash\"\n                    || bound_name == \"Display\"\n                {",
+             repl="                    || bound_name == \"Hash\"\n                {",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits", "--test", "ac4_bound_arms"],
+             note="`&T` stops forwarding Display to `T`, so `fn show<T: Display>(v: &T)` -- the "
+                  "shape the file's own comment cites as routine -- loses its bound."),
+        # AC4-F3 REPAIRED: the Primitive/Ord arm was reached once and not with `Bool`.
+        dict(id="AC4-MUT-BND-002", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the PRIMITIVE matrix admits Bool as Ord",
+             expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="                    !matches!(p, Primitive::Unit | Primitive::Bool) && !is_float_primitive(*p)",
+             repl="                    !matches!(p, Primitive::Unit) && !is_float_primitive(*p)",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits", "--test", "ac4_bound_arms"],
+             note="DEV-075's matrix says Ord is Eq's set MINUS Bool -- `Char` is ordered, `Bool` is "
+                  "not. This makes `Bool` orderable, which is one token's difference from the "
+                  "Eq arm directly above it."),
+        # AC4-F3 REPAIRED: `ac4_bound_arms` now executes this arm. Was declared SURVIVED on an
+        # arm census showing it executed ZERO times -- unreachable, not undetected.
+        dict(id="AC4-MUT-BND-003", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Core ITERATOR list drops VecIter",
+             expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="                        || *core_type == CoreType::VecIter\n                        || *core_type == CoreType::KeysIter",
+             repl="                        || *core_type == CoreType::KeysIter",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits", "--test", "ac4_bound_arms"],
+             note="A closed membership list, and the most-used member removed. `for x in v.iter()` "
+                  "should stop satisfying Iterator."),
+        # AC4-F3 REPAIRED: `ac4_bound_arms` now executes this arm. Was declared SURVIVED on an
+        # arm census showing it executed ZERO times -- unreachable, not undetected.
+        dict(id="AC4-MUT-BND-004", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Ty::Param arm stops discharging DEV-067(a)",
+             expect="KILLED",
+             file="src/typecheck/traits.rs",
+             find="            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name, bound_res),",
+             repl="            Ty::Param(_param_name) => false,",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits", "--test", "ac4_bound_arms"],
+             note="DEV-067(a) re-injected: a generic fn calling another with a bounded parameter -- "
+                  "including simple recursion -- fails E0500 although the bound is declared right "
+                  "there. This arm did not exist once, and its absence was a real defect."),
+    ],
+    # Resolution / NAMESPACES. AS8 predates DEV-228 entirely: its only resolver trials are
+    # `item_is_visible_from` (batches 9, 9b), which is visibility, not namespacing. DEV-228 rebuilt
+    # this surface — the resolver now carries the module/type/value namespaces NAME-RESOLVE-001
+    # specifies — and the namespaces themselves have never been mutated.
+    #
+    # All three are ARM-LEVEL, per what pattern legality and substitute_ty both showed: an authority
+    # is covered when its arms are, not when it has a trial.
+    "ac4-ns": [
+        dict(id="AC4-MUT-NS-001", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::namespace_of_item — a TRAIT filed under Value instead of Type",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            | ast::ItemKind::TypeAlias { .. }\n            | ast::ItemKind::Model(_) => Namespace::Type,",
+             repl="            | ast::ItemKind::TypeAlias { .. }\n            | ast::ItemKind::Model(_) => Namespace::Value,",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="Struct, enum, trait, alias and model all move to the VALUE namespace. A type "
+                  "annotation should stop finding them, which is the coarsest possible break of "
+                  "the distinction DEV-228 built."),
+        dict(id="AC4-MUT-NS-002", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::namespace_of_item — a FUNCTION filed under Type instead of Value",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            ast::ItemKind::Fn(_) | ast::ItemKind::Const { .. } => Namespace::Value,",
+             repl="            ast::ItemKind::Fn(_) | ast::ItemKind::Const { .. } => Namespace::Type,",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="DEV-228's motivating case inverted: `struct Pair` alongside `fn Pair()` is legal "
+                  "precisely because they occupy different namespaces. Filing functions under Type "
+                  "makes them collide."),
+        dict(id="AC4-MUT-NS-003", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::lookup_ns — NsHint::Type reads the VALUE map",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            NsHint::Type => self.ns_map(module, Namespace::Type).get(name).copied(),",
+             repl="            NsHint::Type => self.ns_map(module, Namespace::Value).get(name).copied(),",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="The READ side rather than the FILE side: a position that knows it wants a type "
+                  "consults the value map. NS-001/002 break where names are put; this breaks where "
+                  "they are looked for, and a control that kills one but not the other tells us "
+                  "which half is watched."),
+    ],
+    # The generic specialization environment — the LAST AC4 authority with no trial at all.
+    #
+    # GEN-003 exists because of what pattern legality taught: an authority is not covered because
+    # one of its functions has a trial. `substitute_ty` is a match over ~12 type shapes, and a
+    # regression in ONE arm is the realistic defect. GEN-001/002 break the whole authority loudly;
+    # GEN-003 breaks a single arm, which is the shape that hides.
+    "ac4-gen": [
+        # RESOLVED BY DELETION (owner, 2026-08-12). This trial has no target any more, and that is
+        # the OUTCOME rather than a gap in the campaign.
+        #
+        # GEN-001 first mutated `GenericEnvironment::substitutions()` and SURVIVED -- because that
+        # method has ZERO callers, not because a control was missing. Retargeted at the copy that IS
+        # reached (`bound_dispatch`'s inline map) it STILL survived, across ~850 tests including the
+        # three-engine differential, while a probe showed the map built with real bindings six times
+        # in two suites. Reached, corrupted, unobserved.
+        #
+        # That is not "a live semantic fact with no falsifier". It is a CONSTRUCTED fact with no
+        # production consumer: the engines read `body` (six sites) and `environment` (one), never
+        # `signature`. The owner ruled deletion rather than a manufactured consumer -- architecture
+        # documentation should describe what execution needs, not make execution consume something
+        # because the documentation promised it. `ResolvedCallable.signature` is gone.
+        #
+        # `declaration` was censused at the same time and KEPT on different grounds: it is a field
+        # copy of an already-made selection, costs nothing, and witnesses the impl-override versus
+        # trait-default distinction `as3_callable_use_keying` asserts.
+        #
+        # A replacement trial belongs here only if the specialiser acquires a new derived fact.
+        dict(id="AC4-MUT-GEN-002", target="generic specialization env", tag="FRONT_END",
+             authority="typecheck::substitute_ty — the Ty::Param arm never substitutes",
+             expect="KILLED",
+             file="src/typecheck/types.rs",
+             find="        Ty::Param(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),",
+             repl="        Ty::Param(_name) => ty.clone(),",
+             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics"],
+             note="`T` stays `T` at every instantiation. Same effect as GEN-001 one layer down, "
+                  "and a control that kills one but not the other tells us which layer is watched."),
+        dict(id="AC4-MUT-GEN-003", target="generic specialization env", tag="FRONT_END",
+             authority="typecheck::substitute_ty — ONE arm: Ty::Fn substitutes params, not ret",
+             expect="KILLED",
+             file="src/typecheck/types.rs",
+             find="        Ty::Fn { params, ret } => Ty::Fn {\n            params: params.iter().map(|p| substitute_ty(p, map)).collect(),\n            ret: Box::new(substitute_ty(ret, map)),\n        },",
+             repl="        Ty::Fn { params, ret } => Ty::Fn {\n            params: params.iter().map(|p| substitute_ty(p, map)).collect(),\n            ret: ret.clone(),\n        },",
+             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics",
+                    "--test", "native_c5_4_function_values"],
+             note="ARM-LEVEL. A function-typed value's RETURN type stops being specialised while "
+                  "its parameters still are. This is the shape pattern legality's unguarded arm "
+                  "had: the authority looks covered because its other arms are exercised."),
+    ],
+    # `mir::borrows` is the authority AC1 step 1 created (CE3, 2026-08-12). Its own module-level
+    # trials found two of four rules UNCONTROLLED; these promote that finding into the harness so it
+    # is tracked mechanically rather than in a doc comment.
+    "ac4-borrow": [
+        dict(id="AC4-MUT-BOR-001", target="borrow origin", tag="MIR",
+             authority="mir::borrows — a call result inherits its arguments' origins unconditionally",
+             expect="KILLED",
+             file="src/mir/borrows.rs",
+             find="                if returns_borrow {",
+             repl="                if true {",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="Removes the precision rule that motivated the module: a scalar result stops "
+                  "being excluded and is recorded as borrowing its arguments' storage."),
+        dict(id="AC4-MUT-BOR-002", target="borrow origin", tag="MIR",
+             authority="mir::borrows — a MOVE stops severing provenance",
+             expect="KILLED",
+             file="src/mir/borrows.rs",
+             find="                    Rvalue::Use(Operand::Move(_)) => Vec::new(),",
+             repl="                    Rvalue::Use(Operand::Move(p)) => vec![p.local.0],",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="The rule whose absence over-refused `stark_http_client::follow` on the first "
+                  "DEV-160 repair attempt. Declared KILLED because the module's own pinned "
+                  "relation covers it -- if it SURVIVES here the pin is weaker than believed."),
+        dict(id="AC4-MUT-BOR-003", target="borrow origin", tag="MIR",
+             authority="mir::borrows — the aggregate component filter",
+             expect="SURVIVED",
+             file="src/mir/borrows.rs",
+             find="                        .filter_map(|o| operand_carries(body, o))",
+             repl="                        .filter_map(|o| match o { Operand::Copy(p) | Operand::Move(p) => Some(p.local.0), Operand::Const(_) => None })",
+             tests=["--lib", "--test", "dev160_call_site_thunk", "--test", "ac1_dev160_probe"],
+             note="Declared SURVIVED on the module's own measurement: this rule is precautionary "
+                  "and no control reaches it. A trial declared SURVIVED that comes back KILLED is "
+                  "GOOD NEWS -- it means a control was found -- and must be re-declared."),
+    ],
     "0": [
         dict(id="MUT-SELFTEST-LIVE", target="harness self-test", tag="ENGINE_LOCAL",
              authority="n/a — harness calibration", expect="KILLED",
@@ -637,7 +1048,16 @@ def trial(spec, verbose):
             return dict(spec_id=spec["id"], result="BUILD_FAILED",
                         detail="the mutant does not compile; it is not a semantic mutation",
                         stderr=build.stderr[-800:])
-        cmd = ["cargo", "test", "--quiet", "-p", "starkc"] + spec["tests"]
+        # `--no-fail-fast` is load-bearing for `killer_count`, not tidiness. Without it cargo stops
+        # at the FIRST failing target, so a trial listing `--lib` first reported only the lib's
+        # failures and never ran the dedicated suites. AC4-MUT-NS-002 read as "killed by 1 test",
+        # which was nearly recorded as thin coverage for DEV-228 — while `dev228_namespaces` in
+        # fact kills it with two failures, including its own `struct Pair` / `fn Pair()` case.
+        #
+        # KILLED/SURVIVED verdicts were never affected: a kill is a kill, and a SURVIVED trial ran
+        # every target by definition. Only the COUNT was a lower bound, and a count that understates
+        # coverage invites exactly the wrong conclusion about which authorities are watched.
+        cmd = ["cargo", "test", "--quiet", "--no-fail-fast", "-p", "starkc"] + spec["tests"]
         out = run(cmd)
         killed = out.returncode != 0
         failed, divergence = extract_killers(out.stdout + out.stderr)

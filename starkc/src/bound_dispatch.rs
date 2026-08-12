@@ -159,11 +159,30 @@ impl TraitImplIndex {
 
 /// What specialisation produces — the four facts, together.
 #[derive(Debug, Clone, PartialEq)]
+/// What the specialiser owns, and nothing more.
+///
+/// **`signature` was removed by AC4-F2 (owner decision, 2026-08-12).** The specialiser used to
+/// return a fourth fact — the parametric signature with the environment substituted in — and no
+/// execution path consumed it: production reads `body` (six sites across the HIR interpreter and
+/// the MIR lowerer) and `environment` (one), and nothing read `signature`. AC4 proved the
+/// construction observationally irrelevant by corrupting it, and the repair is deletion rather than
+/// a manufactured consumer: **architecture documentation should describe what execution needs, not
+/// make execution consume something because the documentation promised it.**
+///
+/// `declaration` is retained on different grounds, verified rather than assumed by association. It
+/// is a field COPY of an already-made selection — no computation — and it is the witness that
+/// distinguishes an impl override from a trait default, which `as3_callable_use_keying` asserts and
+/// which is a real semantic distinction (G1's case).
+///
+/// The contract this leaves is DEV-176's reason for existing, exactly:
+///
+/// ```text
+/// bound obligation -> selected executable body + the environment required to execute it
+/// ```
 pub struct ResolvedCallable {
     pub declaration: CallableDeclId,
     pub body: BlockId,
     pub environment: Vec<(GenericBinder, Ty)>,
-    pub signature: CallableSigTy,
 }
 
 /// Resolve a `Bound` obligation against a concrete `Self` (AS3 Boundary 4b).
@@ -247,31 +266,25 @@ pub fn specialize_bound_callable(
         // A3b's exact-set test guarantees every executable body has a signature, trait defaults
         // included. A missing one is an internal inconsistency, not a case to tolerate — the same
         // rule `publish_named_use` learned.
-        let Some(parametric) = callable_types.get(&target.body) else {
+        //
+        // **This lookup is a VALIDITY CHECK, and that is now its whole job** (AC4-F2). It used to
+        // also supply the parametric signature that this function specialised and returned. That
+        // specialised signature was dead: AC4 emptied its substitution map — so every
+        // bound-specialised callable kept `T` instead of its instantiated type — and ~850 tests
+        // passed, including the three-engine differential, while a probe showed the map being
+        // built with real bindings six times in two suites. Constructed, never consumed.
+        //
+        // The `continue` is kept deliberately. Removing the lookup with the signature would have
+        // let a candidate whose body has NO registered signature be returned instead of skipped,
+        // which is a behaviour change wearing a deletion's clothes.
+        if callable_types.get(&target.body).is_none() {
             continue;
-        };
-        let substitutions: HashMap<String, Ty> = environment
-            .iter()
-            .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))
-            .collect();
-        let signature = CallableSigTy {
-            receiver: parametric
-                .receiver
-                .as_ref()
-                .map(|ty| crate::typecheck::substitute_ty(ty, &substitutions)),
-            params: parametric
-                .params
-                .iter()
-                .map(|ty| crate::typecheck::substitute_ty(ty, &substitutions))
-                .collect(),
-            ret: crate::typecheck::substitute_ty(&parametric.ret, &substitutions),
-        };
+        }
 
         return Some(ResolvedCallable {
             declaration: target.declaration,
             body: target.body,
             environment,
-            signature,
         });
     }
     None

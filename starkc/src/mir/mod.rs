@@ -16,6 +16,7 @@
 //!   file-identity namespace — see `SourceInfo`.
 //! - The textual dump is deterministic and versioned (`MIR_VERSION`).
 
+pub(crate) mod borrows;
 pub mod drop_plan;
 pub(crate) mod drop_rule;
 pub mod interp;

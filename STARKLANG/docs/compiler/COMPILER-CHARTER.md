@@ -563,6 +563,100 @@ Do not start any of the following without a separate approved proposal:
 
 ---
 
+## 7. Architecture reopen rule — standing, from WP-ARCH-CLOSE AC7
+
+**Standing rule, committed 2026-08-12 under CD-400/401.** Architecture Stabilization is CLOSED. It
+**reopens** only under the conditions below, and nothing else reopens it — not difficulty, not a
+run of defects, not a reviewer's impression that the compiler feels fragile.
+
+This section is the rule itself, moved out of the packet that wrote it. **A rule that lives only in
+its own work package expires with the package**, which is the failure this section exists to
+prevent.
+
+### 7.1 The triggers
+
+For the next **20 substantive compiler defects**, reopen Architecture Stabilization if any of:
+
+```text
+A. Two defects require changing the same language-level semantic rule independently in
+   multiple execution engines.
+B. Two defects require new precedence/order exceptions rather than representation of the
+   namespace/semantic distinction involved.
+C. Any defect requires introducing a new engine-local language dispatch authority.
+D. Any defect shows that an authoritative compiler phase discarded semantic information that
+   downstream phases must reconstruct.
+E. An adversarial test proves a claimed independent checker actually shares the mutated
+   authority and no independent control exists.
+F. Two defects attributed to one authority demonstrate that the authority boundary itself is
+   insufficient rather than merely containing implementation bugs.
+```
+
+Ordinary local defects do not reopen the programme:
+
+```text
+pattern arity validation missing                 -> ordinary compiler defect
+borrow checker forgot one projection case        -> ordinary defect, IF the repair belongs
+                                                    cleanly there
+HIR and MIR require unrelated trait-selection
+    implementations                              -> architecture finding
+resolver requires another hand-written
+    precedence exception                         -> architecture finding
+```
+
+### 7.2 The sensor — mandatory at triage
+
+**Every new substantive compiler DEV entry carries an architecture-trigger field, decided when it is
+filed:**
+
+```text
+Architecture trigger:  NONE | AC7-A | AC7-B | AC7-C | AC7-D | AC7-E | AC7-F | PENDING-CLASSIFICATION
+```
+
+**A DEV entry may not leave triage with `PENDING-CLASSIFICATION`.** The twenty-defect count is then
+derived **mechanically from the ledger** rather than reconstructed from memory later.
+
+Counts toward the twenty:
+
+```text
+a demonstrated compiler semantic, lowering, execution, ownership, resolution,
+verification, or backend correctness defect
+```
+
+Does not count:
+
+```text
+documentation · formatting · test infrastructure · CI infrastructure ·
+developer ergonomics with no semantic consequence · release packaging
+```
+
+**Ambiguous cases are decided at triage and recorded there**, never retrospectively when the rule is
+being evaluated. Deciding at the moment of evaluation is how a rule becomes whatever the evaluator
+needs it to be.
+
+### 7.3 After twenty
+
+After twenty qualifying substantive defects with no trigger fired:
+
+```text
+Architecture closure = NORMAL STANDING ASSUMPTION
+```
+
+rather than provisional. Until then it is **PROVISIONAL**, and no unconditional public claim of
+architectural stability may be made.
+
+### 7.4 Two rules AC4 earned, which apply beyond it
+
+**Evidence interpretation.** A SURVIVED mutation is not evidence of shared fate or of a missing
+control **until target reachability has been demonstrated**. If mutated and unmutated behaviour
+agree unexpectedly, challenge the measuring path before classifying the authority. AC4's F2, F3, F5
+and F6 each depended on this, and three separate instrumentation defects were found by applying it.
+
+**Resource-lifecycle changes.** First-party package/provider qualification is a **required** closure
+and release qualification input for any change affecting resource lifecycle (AC4-F6). The compiler's
+own suite does not reach close selection, and that is accepted rather than duplicated.
+
+---
+
 ## 8. Strategic outcome — keep this in view
 
 The compiler track is not successful merely because it accumulates features or lines of Rust.

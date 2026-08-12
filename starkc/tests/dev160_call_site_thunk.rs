@@ -370,10 +370,15 @@ fn main() {
 /// generated code; a stated limit is not a fix, but it is the difference between a compiler that
 /// knows what it cannot do and one that hands the user a stack trace from a file they cannot see.
 ///
-/// This test is the marker for the follow-up. When cross-block absorption lands, it flips from
-/// asserting a refusal to asserting a run.
+/// **It flipped.** Cross-block absorption landed under WP-ARCH-CLOSE AC1 step 2, and this test now
+/// asserts the run it was written to wait for.
+///
+/// Three arguments, all touching one aggregate: a `&str` produced by `as_str` in an EARLIER block,
+/// and two sibling moves. The thunk performs `as_str` itself, so the reference it passes is
+/// anchored by the thunk's own `&'a mut` rather than by a borrow that predated it — which is what
+/// Stacked Borrows requires and what ruled out laundering the reference through a raw pointer.
 #[test]
-fn a_borrow_reaching_the_call_through_an_earlier_call_is_refused_by_name() {
+fn a_borrow_reaching_the_call_through_an_earlier_call_now_builds_and_runs() {
     let source = r#"
 struct Req { url: String, headers: String, body: String }
 
@@ -387,46 +392,12 @@ fn main() {
     if n != 6u64 {
         panic("bad");
     }
-    println("unreachable in the native engine");
+    println("OK");
 }
 "#;
-    let front = support::differential::front_end("dev160_through_call.stark", source);
-    let program = starkc::mir::lower::lower_program(&front.hir, &front.tables, front.file.clone())
-        .unwrap_or_else(|e| panic!("the program must LOWER: {} @ {:?}", e.what, e.span));
-
-    let versions = starkc::backend::version::build_versions(
-        "0.0.0-test".to_string(),
-        "x86_64-unknown-linux-gnu".to_string(),
-        starkc::backend::generated_rust::Profile::Debug,
-    );
-    let refusal = match starkc::backend::generated_rust::emit_program::emit(
-        &program,
-        &versions,
-        &starkc::layout::TargetLayout::stark64_v1(),
-    ) {
-        Err(refusal) => format!("{refusal:?}"),
-        Ok(_) => panic!(
-            "this shape must be refused until cross-block absorption exists. Emitting it produces \
-             `E0502` in `mod stark_proj`, which is the outcome DEV-160 is about"
-        ),
-    };
-
-    assert!(
-        refusal.contains("through an earlier block"),
-        "the refusal must name the reason -- the borrow arrives from another block: {refusal}"
-    );
-    assert!(
-        refusal.contains("as_str"),
-        "the refusal must name the idiom, since that is what the user typed: {refusal}"
-    );
-    assert!(
-        refusal.contains("Bind the fields to locals before the call"),
-        "the refusal must state the workaround; a limit with no way round it is a wall: {refusal}"
-    );
-    assert!(
-        refusal.contains("DEV-160b"),
-        "the refusal must carry the SUB-id from the owner's 2026-08-03 taxonomy: {refusal}"
-    );
+    // All four engine configurations, compared on the full normative observation. A native-only
+    // assertion would not notice the absorbed call being performed at a different point.
+    support::differential::agree_completing_with_stdout("dev160_through_call", source, "OK\n");
 }
 
 /// **The Miri fixture is only evidence while it is still a copy of what the generator emits.**
@@ -440,47 +411,34 @@ fn main() {
 /// sequence from a freshly generated thunk — resolving each `stark_proj` wrapper the thunk calls to
 /// the `ValueSlot` primitive inside it. The two must agree. A generator change that alters the
 /// shape fails HERE, naming the fixture, rather than leaving a green Miri run to reassure nobody.
-#[test]
-fn the_miri_fixture_matches_what_the_generator_emits() {
-    // The shape the fixture claims, read from its own source so there is one authority for it.
-    let slot_rs = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("stark-runtime/src/slot.rs"),
-    )
-    .expect("stark-runtime/src/slot.rs must be readable");
-    let declared: Vec<String> = {
-        let start = slot_rs
-            .find("pub const GENERATED_THUNK_SHAPE")
-            .expect("the fixture must publish GENERATED_THUNK_SHAPE");
-        // From the `=`, not from the declaration: the TYPE is spelled `&[&str]`, so the first
-        // bracket in the item belongs to it rather than to the literal.
-        let body = &slot_rs[start..];
-        let body = &body[body.find('=').expect("an initialiser") + 1..];
-        let open = body.find('[').expect("a slice literal");
-        let close = body.find(']').expect("a slice literal");
-        body[open + 1..close]
-            .split(',')
-            .map(|piece| piece.trim().trim_matches('"').to_string())
-            .filter(|piece| !piece.is_empty())
-            .collect()
-    };
-    assert!(
-        !declared.is_empty(),
-        "GENERATED_THUNK_SHAPE must list the primitives the fixture exercises"
-    );
+/// The primitive sequence a fixture constant declares, read from the fixture's own source so there
+/// is one authority for it.
+fn declared_shape(slot_rs: &str, constant: &str) -> Vec<String> {
+    let start = slot_rs
+        .find(&format!("pub const {constant}"))
+        .unwrap_or_else(|| panic!("the fixture must publish {constant}"));
+    // From the `=`, not from the declaration: the TYPE is spelled `&[&str]`, so the first bracket
+    // in the item belongs to it rather than to the literal.
+    let body = &slot_rs[start..];
+    let body = &body[body.find('=').expect("an initialiser") + 1..];
+    let open = body.find('[').expect("a slice literal");
+    let close = body.find(']').expect("a slice literal");
+    body[open + 1..close]
+        .split(',')
+        .map(|piece| piece.trim().trim_matches('"').to_string())
+        .filter(|piece| !piece.is_empty())
+        .collect()
+}
 
-    // The same program the fixture mirrors: a field borrow, a sibling move, a Copy sibling read.
-    let source = r#"
-struct Parts { name: String, body: String, n: UInt32 }
-fn consume(a: &String, b: String, c: UInt32) -> UInt32 {
-    (a.len() + b.len()) as UInt32 + c
-}
-fn main() {
-    let p = Parts { name: String::from("abc"), body: String::from("de"), n: 1u32 };
-    if consume(&p.name, p.body, p.n) != 6u32 { panic("no"); }
-    println("OK");
-}
-"#;
-    let front = support::differential::front_end("dev160_shape.stark", source);
+/// The primitive sequence a freshly generated thunk actually calls, for one program.
+///
+/// **Nested calls are scanned, not just the outermost one.** DEV-160b's absorbed producer emits
+/// `let a0 = <producer>(stark_refraw_…::<'a>(p0));`, so a reader that took the first token of the
+/// line would resolve `<producer>` — which is not a generated wrapper — and silently contribute
+/// NOTHING, hiding the `field_ref_raw` underneath it. That would have left the new fixture
+/// unguarded in exactly the way this whole mechanism exists to prevent.
+fn emitted_shape(source: &str, name: &str) -> Vec<String> {
+    let front = support::differential::front_end(name, source);
     let program = starkc::mir::lower::lower_program(&front.hir, &front.tables, front.file.clone())
         .unwrap_or_else(|e| panic!("lowering: {} @ {:?}", e.what, e.span));
     let versions = starkc::backend::version::build_versions(
@@ -497,7 +455,6 @@ fn main() {
         Err(e) => panic!("emission: {e:?}"),
     };
 
-    // The thunk's body: every `let aN = <wrapper>(pM);` in order.
     let thunk_start = generated
         .find("pub fn stark_thunk_")
         .expect("the program must contain a thunk; if it no longer does, the detector regressed");
@@ -505,33 +462,80 @@ fn main() {
     let thunk_end = thunk.find("\n    }\n").expect("the thunk must be closed");
     let thunk = &thunk[..thunk_end];
 
-    let emitted: Vec<String> = thunk
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let rest = line.strip_prefix("let a")?;
-            let call = rest.split_once(" = ")?.1;
-            let wrapper = call.split(['(', ':']).next()?.trim();
-            // Resolve the wrapper to the runtime primitive it wraps -- that is the thing the Miri
-            // fixture actually exercises, and the thing a shape change would alter.
-            // The `Ref` twin is generic (`pub unsafe fn NAME<'a>(...)`), so the name is not
-            // followed by `(`. Match the name alone and take what follows.
-            let definition = generated.find(&format!("pub unsafe fn {wrapper}"))?;
+    const PRIMITIVES: [&str; 4] = [
+        "field_ref_raw",
+        "move_field_raw",
+        "copy_field_raw",
+        "take_raw",
+    ];
+
+    let mut emitted: Vec<String> = Vec::new();
+    for line in thunk.lines() {
+        let line = line.trim();
+        if line.strip_prefix("let a").is_none() {
+            continue;
+        }
+        // Every generated wrapper named on this line, in order of appearance, plus a direct
+        // `ValueSlot::take_raw`. Resolving each to the runtime primitive inside it is what the Miri
+        // fixture actually stands for.
+        let mut hits: Vec<(usize, String)> = Vec::new();
+        for (offset, _) in line.match_indices("stark_") {
+            let rest = &line[offset..];
+            let ident: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let Some(definition) = generated.find(&format!("pub unsafe fn {ident}")) else {
+                continue;
+            };
             let body = &generated[definition..];
-            let end = body.find("\n    }")?;
-            for primitive in [
-                "field_ref_raw",
-                "move_field_raw",
-                "copy_field_raw",
-                "take_raw",
-            ] {
+            let Some(end) = body.find("\n    }") else {
+                continue;
+            };
+            for primitive in PRIMITIVES {
                 if body[..end].contains(primitive) {
-                    return Some(primitive.to_string());
+                    hits.push((offset, primitive.to_string()));
+                    break;
                 }
             }
-            None
-        })
-        .collect();
+        }
+        for (offset, _) in line.match_indices("ValueSlot::take_raw") {
+            hits.push((offset, "take_raw".to_string()));
+        }
+        hits.sort_by_key(|(offset, _)| *offset);
+        emitted.extend(hits.into_iter().map(|(_, primitive)| primitive));
+    }
+    emitted
+}
+
+#[test]
+fn the_miri_fixture_matches_what_the_generator_emits() {
+    let slot_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("stark-runtime/src/slot.rs"),
+    )
+    .expect("stark-runtime/src/slot.rs must be readable");
+
+    let declared = declared_shape(&slot_rs, "GENERATED_THUNK_SHAPE");
+    assert!(
+        !declared.is_empty(),
+        "GENERATED_THUNK_SHAPE must list the primitives the fixture exercises"
+    );
+
+    // The same program the fixture mirrors: a field borrow, a sibling move, a Copy sibling read.
+    let emitted = emitted_shape(
+        r#"
+struct Parts { name: String, body: String, n: UInt32 }
+fn consume(a: &String, b: String, c: UInt32) -> UInt32 {
+    (a.len() + b.len()) as UInt32 + c
+}
+fn main() {
+    let p = Parts { name: String::from("abc"), body: String::from("de"), n: 1u32 };
+    if consume(&p.name, p.body, p.n) != 6u32 { panic("no"); }
+    println("OK");
+}
+"#,
+        "dev160_shape.stark",
+    );
 
     assert_eq!(
         emitted, declared,
@@ -539,5 +543,44 @@ fn main() {
          stark-runtime/src/slot.rs stands for. Update `slot::tests::thunk` AND \
          `GENERATED_THUNK_SHAPE` together -- otherwise the Miri job proves something about code \
          this compiler no longer emits"
+    );
+}
+
+/// **The same guard, for DEV-160b's absorbed-producer fixture.**
+///
+/// Added with that fixture rather than after it. A Miri fixture nothing compares against the
+/// generator is the precise failure the guard above exists to prevent, and adding an unguarded
+/// second one would have reintroduced it while looking like extra coverage.
+#[test]
+fn the_absorbed_producer_fixture_matches_what_the_generator_emits() {
+    let slot_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("stark-runtime/src/slot.rs"),
+    )
+    .expect("stark-runtime/src/slot.rs must be readable");
+
+    let declared = declared_shape(&slot_rs, "ABSORBED_PRODUCER_SHAPE");
+    assert!(
+        !declared.is_empty(),
+        "ABSORBED_PRODUCER_SHAPE must list the primitives the fixture exercises"
+    );
+
+    let emitted = emitted_shape(
+        r#"
+struct Req { url: String, body: String }
+fn send(u: &str, b: String) -> UInt64 { u.len() + b.len() }
+fn main() {
+    let r = Req { url: String::from("abc"), body: String::from("de") };
+    if send(r.url.as_str(), r.body) != 5u64 { panic("no"); }
+    println("OK");
+}
+"#,
+        "dev160b_shape.stark",
+    );
+
+    assert_eq!(
+        emitted, declared,
+        "the generated thunk for a CROSS-BLOCK absorption calls a different sequence of raw \
+         primitives than `slot::tests::absorbing_thunk` stands for. Update the fixture AND \
+         `ABSORBED_PRODUCER_SHAPE` together"
     );
 }

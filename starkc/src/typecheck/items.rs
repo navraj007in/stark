@@ -16,8 +16,8 @@
 use super::state::SelfScope;
 use super::state::TypeChecker;
 use super::types::{
-    ty_contains_infer, type_is_sized, CallableSigTy, DeferredDisplayPlan, DisplayPath, FnSigTy,
-    LayoutTables, Ty, VariantFields, VariantTy,
+    ty_contains_infer, type_is_sized, CallableSigTy, DeferredDisplayCheck, DeferredDisplayPlan,
+    DisplayPath, FnSigTy, LayoutTables, Ty, VariantFields, VariantTy,
 };
 use crate::ast::Primitive;
 use crate::diag::Diagnostic;
@@ -313,12 +313,27 @@ impl TypeChecker<'_> {
 
         // WP-C4.7-9 audit: `print`/`println` require a `Display`-able argument.
         let display = std::mem::take(&mut self.display_checks);
-        for (ty, span) in display {
+        for check in display {
+            let DeferredDisplayCheck {
+                ty,
+                span,
+                generic_scope: (fn_generics, impl_generics),
+            } = check;
             let resolved = self.resolve(&ty);
             if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
                 continue; // already failed, or undetermined — no cascade
             }
-            if !self.type_is_displayable(&resolved) {
+            // **DEV-236: restore the scope this print was WRITTEN in**, exactly as the plan loop
+            // below does and for the same reason. The obligation now answers `Ty::Param` from the
+            // parameter's declared bounds, which is a question about a scope Pass 3 has torn down;
+            // asking it here without restoring saw no generics and refused
+            // `fn show<T: Display>(x: T) { println(x); }`, a bound plainly written.
+            let saved_fn = std::mem::replace(&mut self.current_fn_generics, fn_generics);
+            let saved_impl = std::mem::replace(&mut self.current_impl_generics, impl_generics);
+            let displayable = self.type_is_displayable(&resolved);
+            self.current_fn_generics = saved_fn;
+            self.current_impl_generics = saved_impl;
+            if !displayable {
                 self.diags.push(
                     Diagnostic::error(
                         format!(
