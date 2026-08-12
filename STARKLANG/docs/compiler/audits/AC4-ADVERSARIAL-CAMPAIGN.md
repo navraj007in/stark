@@ -1,7 +1,7 @@
 # AC4 — adversarial architecture validation
 
-**Packet:** WP-ARCH-CLOSE AC4, under CD-400. **Status: IN PROGRESS — all eleven authorities
-ADDRESSED, exit NOT met.** Seven findings, F1–F7; three resolved (F1, F2 by deletion, F7 by a written
+**Packet:** WP-ARCH-CLOSE AC4, under CD-400. **Status: MET — 2026-08-12, on owner dispositions of
+F4 and F6.** All eleven authorities addressed; F1–F7 all closed; shared-fate register reconciled. Seven findings, F1–F7; three resolved (F1, F2 by deletion, F7 by a written
 falsifier), four open. The shared-fate register is reconciled (§2.11). §4 states exactly what remains.
 
 **The campaign's own headline result is methodological.** Four of the seven findings — F2, F3, F5,
@@ -570,54 +570,81 @@ The distinction that got the campaign here: pattern legality would have read as 
 shallow count, and two of its three arms were guarded while the third was not. **Coverage is a
 property of an authority's arms, not of it having a trial.**
 
-## 4. Remaining work, in priority order
+## 4. Dispositions — AC4 is MET
+
+Seven findings, all closed. Five by repair, two by owner disposition (2026-08-12).
 
 ```text
-1  AC4-F4   PARTIAL. ac4_builtin_destruction controls the DECISION -- no Drop emitted means
-            the test fails. The CONSEQUENCE, an actual leak, is still unobservable: the Miri
-            lane runs with -Zmiri-ignore-leaks, and a leak harness around generated binaries
-            is a work packet. OWNER CALL: accept the decision-level control, or schedule it
-2  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
-            The claim is covered; a contributor running `cargo test -p starkc` sees green
+F1  CLOSED   dead convenience view; deleted with F2
+F2  CLOSED   dead specialised signature; deleted rather than given a manufactured consumer
+F3  CLOSED   ac4_bound_arms -- all five bound-dispatch arms execute; 4 of 4 mutations die
+F4  CLOSED   DISPOSITION ACCEPTED -- decision-level falsifier sufficient
+F5  CLOSED   three malformed-MIR cases; 36 of 36 verifier rules named by a test
+F6  CLOSED   DISPOSITION ACCEPTED -- external package-qualification control accepted
+F7  CLOSED   cd007_evaluation_order -- CD-007 was enforced only by a comment
 
-   all eleven authorities are ADDRESSED; none remains PARTIAL
-
-3  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
-                          ESF-TRAIT-002 (F3), ESF-DROP-003 (F4), ESF-VERIFY-001 (F5,
-                          ENGINE_LOCAL), ESF-RES-002 (F6), ESF-LOWER-001 (F7). One binding
-                          rule added. EI0's vocabulary UNCHANGED; no existing row's
-                          visibility changed. F1/F2 get no entry -- dead constructions
+shared-fate register   RECONCILED, 11 entries -> 16
 ```
 
-**Do not read "2 covered, 7 partial" as 82% done.** The pattern-legality result is the argument
-against that reading: a covered-looking authority had an entirely unguarded arm, and only enumerating
-the arms found it.
-
-**This is a shared-fate finding, not a missing test.** Adding another differential case would not
-help: the observation channel cannot see built-in destruction at all.
-
-**PARTIALLY REPAIRED 2026-08-12 — and the limit of the repair is the point.**
-`starkc/tests/ac4_builtin_destruction.rs` asserts the **decision** rather than its consequence: if
-`requires_drop_glue_with` says a `String` owns nothing, lowering emits no `Drop` for it, and that
-absence is visible in the MIR. DRP-001's first killer is now `a_string_inside_a_struct_is_destroyed`
-rather than two day-old borrow tests.
-
-**It is a lowering-structure control, not a leak observation, and must not be cited as one.** It
-falsifies the mutation; it does not prove no leak exists. The distinction matters because the
-finding was precisely that *the consequence* is unobservable, and asserting the decision does not
-make the consequence observable.
-
-Both candidate leak controls were examined and neither fits today:
+### AC4-F4 — disposition accepted, with the caveat preserved
 
 ```text
-the Miri lane   runs with `-Zmiri-ignore-leaks`, so it is NOT a leak detector. The flag is
-                needed because three `should_panic` tests hold heap values when the panic
-                aborts -- removing it would fail them for the reason they exist
-a native run    observing an allocation leak in a GENERATED binary needs a leak-checking
-                harness around `stark build` output. That is a work packet, not a test
+AC4-F4 = DISPOSITION ACCEPTED / CLOSED
+
+Decision-level falsifier sufficient for the authority claim.
+Native built-in deallocation consequence remains an explicit assurance residual and
+must not be described as directly observed.
+Leak harness = future assurance work, not WP-ARCH-CLOSE work.
 ```
 
-**The runtime already knew this shape.** `slot.rs`, on its own structural-drop step: *"Without this
-step every owning value in a slot leaked its allocation (**unobservable in the differential**, but a
-real leak)."* The gap was documented before AC4 named it; what AC4 added is that **no test would
-notice**.
+`ac4_builtin_destruction` falsifies the authority being audited: a wrong decision in
+`requires_drop_glue_with` changes the MIR, and a purpose-built control detects it. **That is
+architecture qualification.** The boundary stays explicit:
+
+```text
+WHAT AC4 PROVES          the destruction DECISION is exercised and falsifiable
+                         wrong decision -> MIR changes -> purpose-built control fails
+
+WHAT AC4 DOES NOT PROVE  that every native allocation is eventually freed
+                         that no generated program can leak memory
+```
+
+The second is a **runtime/memory-assurance** question, not evidence that the destruction authority
+lacks a falsifier. Treating it as an architecture-closure blocker would expand AC4 after the fact.
+
+### AC4-F6 — disposition accepted, with a standing requirement
+
+```text
+AC4-F6 = DISPOSITION ACCEPTED / CLOSED
+
+Authoritative control:  first-party package/provider qualification lane
+Residual:               `cargo test -p starkc` alone cannot detect this regression
+Requirement:            package/provider qualification remains a REQUIRED closure and
+                        release qualification input for changes affecting resource lifecycle
+```
+
+The external control is **semantically stronger** than a synthetic compiler-unit test would be: it
+exercises acquire → use → explicit-and-drop release against a live TLS peer. Its deficiency is a
+slow, separate feedback lane — **not absent evidence**.
+
+**No second local lifecycle test is added**, deliberately. Duplicating the package lane inside
+`starkc` for directory symmetry would recreate exactly the duplicate-evidence problem this campaign
+has spent its time removing.
+
+## 5. What AC4 established, beyond the findings
+
+**The campaign repeatedly caught errors in the interpretation of its own evidence.** Four of the
+seven findings — F2, F3, F5, F6 — were visible only because a **survival was challenged rather than
+recorded**, and three separate instrumentation defects were found on the way:
+
+```text
+--no-fail-fast absent          killer_count was a lower bound; NS-002 read as "killed by 1"
+                               when its dedicated suite killed it with 2
+a no-op mutation               MIR-0029's first mutation could not fire on an empty arena, and
+                               "survived" without the rule ever being disabled
+unreachable mutations          three bound arms and select_closes were never executed by the
+                               chosen controls, so their survivals said nothing
+```
+
+That is the argument for the verdict rather than a caveat on it: a campaign that can falsify its own
+measuring assumptions is a campaign whose remaining green results mean something.

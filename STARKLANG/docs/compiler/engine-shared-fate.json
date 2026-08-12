@@ -235,10 +235,10 @@
       "visibility": "INVISIBLE mir<->native; potentially visible against hir by observable destruction",
       "evidence": "SPEC_DERIVED+HAND_AUTHORED",
       "independent_evidence": "struct-field recursion, HostResource and tuple arms all mutation-killed. ac4_builtin_destruction (3 cases) now controls the BUILT-IN arm by asserting the lowering DECISION -- a String local and a String-owning struct must each produce a Drop terminator, and a scalar must not",
-      "residual": "AC4-F4 PARTIALLY repaired 2026-08-12. The DECISION is controlled; the CONSEQUENCE is not. A drop-observing case emits a frame from its own Drop impl and a built-in has none, so an actual leak remains unobservable by every engine. The two candidate leak controls do not fit today: the Miri lane runs with -Zmiri-ignore-leaks (needed by three should_panic tests that hold heap values when the panic aborts), and a leak harness around generated binaries is a work packet. slot.rs already documented the shape: 'unobservable in the differential, but a real leak'",
+      "residual": "AC4-F4 DISPOSITION ACCEPTED / CLOSED 2026-08-12. The decision-level falsifier is sufficient for the authority claim: ac4_builtin_destruction fails if requires_drop_glue_with wrongly decides a String owns nothing. NATIVE BUILT-IN DEALLOCATION remains an explicit assurance residual and MUST NOT be described as directly observed -- the drop log cannot see it, the Miri lane runs with -Zmiri-ignore-leaks, and a leak harness is future assurance work, not WP-ARCH-CLOSE work",
       "risk": "medium",
       "review_trigger": "any change to requires_drop_glue_with's arms or to core_requires_drop_glue",
-      "amended": "2026-08-12 AC4 \u2014 new entry. Neither ESF-DROP-001 (nominal destructor eligibility) nor ESF-DROP-002 (drop ORDER) owns this question | 2026-08-12 AC4-F4 partially repaired: decision controlled, consequence still unobservable; risk high -> medium"
+      "amended": "2026-08-12 AC4 \u2014 new entry. Neither ESF-DROP-001 (nominal destructor eligibility) nor ESF-DROP-002 (drop ORDER) owns this question | 2026-08-12 AC4-F4 partially repaired: decision controlled, consequence still unobservable; risk high -> medium | 2026-08-12 owner disposition: decision-level control accepted; leak observation is assurance work, not architecture closure"
     },
     {
       "id": "ESF-VERIFY-001",
@@ -269,10 +269,10 @@
       "visibility": "INVISIBLE mir<->native",
       "evidence": "EXTERNALLY_DERIVED",
       "independent_evidence": "first-party package qualification \u2014 a live TLS 1.3/1.2 session verified, used and closed, ending 'drop released the session and the socket under it'. This is a REAL control and it is required CI",
-      "residual": "AC4-F6: starkc's own suite reaches select_closes ZERO times (--lib, a11_host_resource, a10_provider_resource, a10_provider_verify all 0), so re-injecting the defect this function's own comment records survives the compiler's test suite. The claim is covered; it is not covered WHERE A CONTRIBUTOR WOULD LOOK. Residual is feedback latency, not absence of evidence",
+      "residual": "AC4-F6 DISPOSITION ACCEPTED / CLOSED 2026-08-12. Authoritative control: the first-party package/provider qualification lane, which exercises acquire -> use -> explicit-and-drop release against a live TLS peer and is SEMANTICALLY STRONGER than a synthetic compiler-unit test. Residual: `cargo test -p starkc` alone cannot detect this regression. STANDING REQUIREMENT: package/provider qualification remains a REQUIRED closure and release qualification input for any change affecting resource lifecycle. No duplicate local test is added -- that would recreate the duplicate-evidence problem this campaign removed",
       "risk": "medium",
       "review_trigger": "any change to select_closes or to the close-binding arena",
-      "amended": "2026-08-12 AC4 \u2014 new entry. ESF-RES-001 covers resource TYPING and identity; ESF-PROV-001 covers provider SIGNATURES; neither owns release selection"
+      "amended": "2026-08-12 AC4 \u2014 new entry. ESF-RES-001 covers resource TYPING and identity; ESF-PROV-001 covers provider SIGNATURES; neither owns release selection | 2026-08-12 owner disposition: external package-lane control accepted permanently; deficiency is feedback latency, not absent evidence"
     },
     {
       "id": "ESF-LOWER-001",

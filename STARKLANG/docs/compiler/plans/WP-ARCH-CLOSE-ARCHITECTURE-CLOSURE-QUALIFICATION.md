@@ -1,9 +1,14 @@
 # WP-ARCH-CLOSE — Final Compiler Architecture Closure Qualification
 
-**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12).** **AC1, AC2, AC3 and AC5 are
-MET, and the §8 pre-alpha cohort gate is OPEN.** AC5 found **zero Class-D**; three Class-C findings
-(F4, F5, F7) are open and owned. **AC4, AC6 and AC7 are not started.** Architecture closure remains
-**PROVISIONAL**. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
+**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12). ALL SEVEN ACCEPTANCE CRITERIA
+ARE MET.** AC1, AC2, AC3, AC4, AC5, AC6 complete; AC7's reopen rule is committed as a standing rule
+in `COMPILER-CHARTER.md` §7. The §8 pre-alpha cohort gate is OPEN.
+
+**What remains is not criteria work.** §13 requires final evidence to postdate the last repair, so
+the sequence is: establish `FINAL_REPAIR_SHA`, rerun **all** final qualification evidence from it,
+then take the PASS / INCOMPLETE / FAIL-ARCHITECTURE decision (§14, §17 steps 8–10). Architecture
+closure remains **PROVISIONAL** until then, and thereafter until AC7's twenty-defect observation
+period completes. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
 additionally requires two complete clean CI runs with no rerun-to-green, and neither has been run —
 so the §8 cohort gate is **not** open. AC1, AC4, AC5, AC6 and AC7 are untouched.
 **Authored:** 2026-08-12, against `develop` at `2462b80`.
@@ -897,4 +902,5 @@ packet" row both name the packet as of that entry.
 | 2026-08-12 | **AC5** — patchwork/special-case audit | **COMPLETE. Zero Class-D.** Every category on the §10 search list swept with a stated denominator: 109k lines for markers, all 3,716 fns for duplicate classifiers, 109 backend refusal sites, 102 `.stark` files in `packages/`, 357 builtin-dispatch sites. Findings: DEV-236 (left the scheme — the spec settles it, RESOLVED same day), F2/F4/F5/F6/F7 Class C with F3 and F6 repaired in the audit, AS8-DA-* and `has_user_destructor` Class B, `is_copy`/precedence/builtin-dispatch Class A. **Zero Class-D is the condition for AC5 not to force FAIL-ARCHITECTURE — not a PASS**, which §14 gates on AC4 as well |
 | 2026-08-12 | **AC4** — adversarial campaign | **ALL ELEVEN AUTHORITIES ADDRESSED, exit not yet met.** Seven findings F1–F7. Resolved: F1/F2 by deletion, F3 (`ac4_bound_arms`), F5 (three malformed-MIR cases), F7 (`cd007_evaluation_order`). F4 partially repaired — the lowering DECISION is controlled, the leak itself is not. F6 covered by the package lane, not by starkc's suite. **Both remaining items are owner dispositions, not work.** Shared-fate register reconciled: 11 entries → 16 |
 | 2026-08-12 | **AC6** — public architecture claim | **COMPLETE. One overstatement found and corrected.** The prohibited claim is still absent from all six surfaces. But EI6's approved wording ended *"…and by recorded residuals where no control yet exists"* and the shipped copy **truncated that clause** — turning a qualified claim into an unqualified one over three named rules, two of which have no independent control and one of which cannot have one (`ESF-TRAP-001a`). Corrected to restore EI6's meaning. Residual: nothing mechanically prevents the next truncation; a drift gate is the durable fix and is not built |
-| — | AC7 | **triage field operational since CD-400; the reopen rule is not yet committed as a rule** |
+| 2026-08-12 | **AC4** — dispositions | **MET.** F4 CLOSED (decision-level falsifier accepted; native deallocation stays an explicit assurance residual, not architecture work). F6 CLOSED (package/provider qualification accepted as the authoritative control; standing requirement that it remains a required closure input for resource-lifecycle changes; no duplicate local test). All seven findings closed |
+| 2026-08-12 | **AC7** — reopen rule | **COMMITTED as a standing rule**, `COMPILER-CHARTER.md` §7 — triggers, the mandatory triage sensor, the counts/does-not-count list, and the twenty-defect threshold. Moved out of this packet deliberately: **a rule that lives only in its own work package expires with the package.** §7.4 also commits two rules AC4 earned — the reachability-before-classification rule, and package qualification as a required input for resource-lifecycle changes |

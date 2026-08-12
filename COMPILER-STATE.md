@@ -15,10 +15,10 @@ Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — *
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
                                  (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
                                  probe verdict POSITIVE. **AC5 COMPLETE — zero Class-D**; F4/F5/F7
-                                 open and owned. **AC4: all 11 authorities addressed**, F1/F2/F3/
-                                 F5/F7 resolved, F4/F6 awaiting owner disposition. **AC6 COMPLETE**
-                                 — one overstatement corrected. Reopen rule not yet committed.
-                                 Population A 8
+                                 open and owned. **ALL SEVEN AC CRITERIA MET (CD-402)** — AC4 met
+                                 on F4/F6 dispositions, AC7's reopen rule committed as a STANDING
+                                 rule in COMPILER-CHARTER.md §7. Next: FINAL_REPAIR_SHA, rerun all
+                                 evidence, then the PASS decision. Population A 8
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -382,10 +382,76 @@ diagnostics both mutated and unmutated and was briefly misread as a live defect.
 unmutated run agreeing with the mutated one** — the same signal that caught an unreaching program in
 the `mir::borrows` trials.
 
-**AC4 is NOT met.** Seven authorities are PARTIAL, one (generic specialization environment) still has
-no trial, and the shared-fate register has not been reconciled. **Do not read "2 covered, 7 partial"
-as 82% done** — pattern legality would have counted as nearly covered, and its unguarded arm is the
-argument against counting.
+> **SUPERSEDED BY CD-402 (2026-08-12), below. AC4 is MET.** The paragraph is kept because it is the
+> state when the campaign opened, and because its warning proved right — the count did not predict
+> the findings.
+
+**AC4 is NOT met [as at the campaign's opening].** Seven authorities are PARTIAL, one (generic
+specialization environment) still has no trial, and the shared-fate register has not been
+reconciled. **Do not read "2 covered, 7 partial" as 82% done** — pattern legality would have counted
+as nearly covered, and its unguarded arm is the argument against counting.
+
+## CD-402 — AC4 MET on two dispositions; the reopen rule is now a STANDING rule (2026-08-12)
+
+**Owner decisions, 2026-08-12.** Both AC4 residuals are dispositioned rather than repaired, and the
+reasoning is recorded because each declines work that would have looked like diligence.
+
+### AC4-F4 — ACCEPTED. Decision-level falsifier is sufficient
+
+```text
+WHAT AC4 PROVES          the destruction DECISION is exercised and falsifiable:
+                         a wrong answer in requires_drop_glue_with changes the MIR, and
+                         ac4_builtin_destruction detects it
+WHAT AC4 DOES NOT PROVE  that every native allocation is eventually freed
+                         that no generated program can leak memory
+```
+
+The second is a **runtime/memory-assurance** question, not evidence that the destruction authority
+lacks a falsifier. **Native built-in deallocation remains an explicit assurance residual and must
+not be described as directly observed.** The leak harness is future assurance work; making it an
+architecture-closure blocker would have expanded AC4 after the fact.
+
+### AC4-F6 — ACCEPTED. The external control is the authoritative one
+
+The first-party package/provider qualification lane exercises acquire → use → explicit-and-drop
+release against a live TLS peer. That is **semantically stronger** than a synthetic compiler-unit
+test for this claim. Its deficiency is a slow, separate feedback lane — **not absent evidence**.
+
+**Standing requirement:** package/provider qualification remains a **required** closure and release
+qualification input for any change affecting resource lifecycle. **No duplicate local test is
+added** — that would recreate the duplicate-evidence problem this campaign spent its time removing.
+
+### AC4 = MET
+
+```text
+F1 CLOSED  F2 CLOSED  F3 CLOSED  F4 CLOSED  F5 CLOSED  F6 CLOSED  F7 CLOSED
+shared-fate register RECONCILED (11 -> 16 entries)
+all eleven authorities addressed
+```
+
+### AC7 — the reopen rule is committed as a STANDING rule
+
+`COMPILER-CHARTER.md` **§7**, not a packet section. Triggers A–F, the mandatory
+`Architecture trigger:` triage field, the counts/does-not-count list, and the twenty-defect
+threshold. **Moved out of WP-ARCH-CLOSE deliberately: a rule that lives only in its own work package
+expires with the package.**
+
+§7.4 also commits two rules AC4 earned that outlive it — a SURVIVED mutation is not evidence until
+reachability is demonstrated, and package qualification is required for resource-lifecycle changes.
+
+### All seven acceptance criteria are MET. What remains is evidence, not criteria
+
+```text
+1  establish FINAL_REPAIR_SHA -- the latest commit carrying any repair this packet produced
+2  rerun ALL final qualification evidence from it (§17 step 9), because §13 disqualifies
+   evidence predating the repairs it covers
+3  two complete clean CI runs, no rerun-to-green
+4  PASS / INCOMPLETE / FAIL-ARCHITECTURE decision (§14)
+```
+
+**Stop changing the compiler from here** unless recording these dispositions exposes a contradiction.
+Architecture closure stays PROVISIONAL until the decision, and thereafter until AC7's twenty-defect
+observation period completes.
 
 ## AC6 COMPLETE — a public claim overstated by a dropped clause (2026-08-12)
 
