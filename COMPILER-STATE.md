@@ -6,10 +6,10 @@
 
 ```text
 Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400) — AC2 MET, AC3 repair
-                                 landed, AC3 exit NOT met — RUN 1 of 2 clean CI runs recorded
-                                 at cd6732f (24/24 + 4/4, attempt 1, no reruns).
-                                 AC1 step 1 done (borrow-origin analysis moved to MIR, CE3) —
-                                 POSITIVE architecture evidence, DEV-160 still OPEN
+                                 landed, AC3 exit NOT met — the two-run count is RESET: run 1
+                                 at cd6732f is historical under §13, and CI at d300d3d FAILED
+                                 (AS2 guard, mine, repaired). AC1 step 1 done (borrow-origin
+                                 analysis moved to MIR, CE3) — POSITIVE, DEV-160 still OPEN
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -349,6 +349,57 @@ does not reach `plan_for_call` at all — it scans runtime functions — so the 
 produced is not evidence about this change. The 33 first-party APPLICATIONS built natively are, and
 they include `stark-get`, whose dependency `stark_http_client::follow` is what the first repair
 attempt broke.
+
+### CI run at `d300d3d` FAILED, and the failure was mine
+
+7 of 24 jobs red, attempt 1, all tracing to **one** root cause:
+`as2_one_pipeline::phase_calls_below_a_test_marker_are_a_known_set`.
+
+`mir::borrows`'s inline `#[cfg(test)]` module assembles the front end by hand — parse, resolve,
+typecheck, lower — to observe one body's lowered form. AS2's guard pins the exact set of files
+allowed to do that below a test marker, and a new one appeared unregistered.
+
+```text
+fmt, clippy, test        linux-x64, macos-arm64, windows-x64     all three
+C6.4 tier-1 qualification linux-x64, macos-arm64                 `-p starkc --test as2_one_pipeline`
+C6.4 tier-1 agreement / CI complete                              downstream of the above
+```
+
+**Repaired the way the guard itself directs** — its failure message reads *"A new test that builds a
+pipeline by hand is fine — add it to TEST_ONLY"*. It is a visibility registry, not a prohibition:
+the point is that the scan's blind spot stays small, named and reviewed. `src/mir/borrows.rs` is now
+in `TEST_ONLY` with the reason it needs to be there.
+
+**Why local verification missed it.** Targeted suites were run — `--lib`, the DEV-160 suites, the
+differentials — but not the source-scanning architecture guards, which live in test files that no
+targeted invocation touches. There are eleven of them and **every one runs in under a second**:
+
+```text
+as1b_source_registry   as2_one_pipeline    as3_invocation_authority
+as6_core_module_vocabulary   as6_core_session_isolation   as7_module_dependencies
+dev121_boundary_inventory    dev121_view_producer_audit   dev135_field_move_paths
+operand_move_inventory       c10c_security
+```
+
+All green after the repair. **Any change that adds a module, a test module, or a phase call should
+run that batch before pushing** — it is seconds of local work against a full CI cycle.
+
+**Not counted as a DEV.** No compiler behaviour changed and no program's meaning moved; an
+architecture guard correctly refused an unregistered addition. Under CD-400's §12.3 list this is
+test infrastructure and does not count toward AC7's twenty.
+
+### AC3's run 1 no longer counts toward closure, by the rule this packet wrote
+
+The `d300d3d` failure is not the only consequence. §13's freshness rule says closure evidence may not
+predate the last repair affecting the claim it supports, and the AC1 landing plus this repair are
+both later than `cd6732f`. **Run 1 at `cd6732f` is now historical evidence.** It was recorded above
+with that caveat already stated — *"not a claim that it will survive to closure"* — and it has not.
+
+```text
+AC3 two-run requirement    reset. Both clean runs must come from the qualifying tree
+§17 step 9                 unchanged: ALL final evidence is rerun at the end anyway
+cohort gate                still shut
+```
 
 ### The freshness rule already applies to this evidence, and says so
 

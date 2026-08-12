@@ -38,6 +38,11 @@ const ALLOWED: &[&str] = &["src/analysis.rs", "src/resolve.rs", "src/onnx/verifi
 const TEST_ONLY: &[&str] = &[
     "src/backend/generated_rust/build.rs",
     "src/interp.rs",
+    // WP-ARCH-CLOSE AC1. `mir::borrows`'s unit tests lower small programs to assert the
+    // borrow-origin relation on real MIR, which needs the front end assembled by hand. Registered
+    // here rather than routed through `CompilerSession`: the tests must observe a single body's
+    // lowered form, and the session's job is to hide exactly that.
+    "src/mir/borrows.rs",
     "src/resolve.rs",
     "src/typecheck/mod.rs",
 ];
