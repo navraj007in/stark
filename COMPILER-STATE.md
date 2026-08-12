@@ -15,9 +15,10 @@ Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — *
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
                                  (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
                                  probe verdict POSITIVE. **AC5 COMPLETE — zero Class-D**; F4/F5/F7
-                                 open and owned. **AC4 OPENED** — pattern legality had an
-                                 unguarded arm, now controlled; 7 authorities PARTIAL, 1 with no
-                                 trial. AC6/reopen-rule remain. Population A 8
+                                 open and owned. **AC4: all 11 authorities addressed**, F1/F2/F3/
+                                 F5/F7 resolved, F4/F6 awaiting owner disposition. **AC6 COMPLETE**
+                                 — one overstatement corrected. Reopen rule not yet committed.
+                                 Population A 8
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -385,6 +386,41 @@ the `mir::borrows` trials.
 no trial, and the shared-fate register has not been reconciled. **Do not read "2 covered, 7 partial"
 as 82% done** — pattern legality would have counted as nearly covered, and its unguarded arm is the
 argument against counting.
+
+## AC6 COMPLETE — a public claim overstated by a dropped clause (2026-08-12)
+
+`STARKLANG/docs/compiler/audits/AC6-PUBLIC-CLAIM-SWEEP.md`. Six public surfaces swept; the
+prohibited *"three independent implementations"* claim remains absent everywhere.
+
+**The finding is a truncation, not an invention.** EI6 approved wording ending *"…and by recorded
+residuals where no control yet exists"*. The website shipped it without that clause:
+
+```text
+shipped   "Those rules are listed in a public register and checked separately."
+```
+
+The dropped clause is what made the sentence true. Without it the claim is that ALL such rules are
+checked — and the paragraph names three. AC4 measured them:
+
+```text
+Copy eligibility          c61f_structural_copy, 13 tests            CHECKED
+destructor eligibility    independent_evidence: "none"              risk CRITICAL
+trap category vocabulary  "none, and none is constructible"
+```
+
+**Two of the three named examples had no independent control; one cannot have one.** Corrected to
+restore EI6's meaning, including saying out loud that one rule admits no constructible check —
+`ESF-TRAP-001a`, where a wrong `TrapCategory` enum makes every engine and the corpus manifest wrong
+together.
+
+**No claim about MIR verification needed correcting, because none is published.** `ESF-VERIFY-001`
+was created during the AC4 reconciliation so that a future *"independently verified MIR"* claim
+would have a sensor. The sensor exists **before** the claim, which is the right order.
+
+**Residual, owned rather than rediscovered:** nothing mechanically prevents the next consuming
+change from truncating an approved sentence the same way. A drift gate shaped like
+`cohort_limitations_are_current.rs` — assert the register's verdict for each named rule against what
+the public copy says — is the durable fix and is not built.
 
 ## AC5 COMPLETE — every category swept, zero Class-D (2026-08-12)
 

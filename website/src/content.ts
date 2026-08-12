@@ -72,7 +72,7 @@ export const conformance = {
   body:
     'A STARK program can run four ways: a reference interpreter that defines the semantics, a mid-level IR interpreter, and a native binary compiled through generated Rust in debug and release. Every maintained conformance case runs through all four, and they must agree — on output, on exit status, on which destructor ran when, and on the exact category and source location of any trap.',
   emphasis:
-    'Agreement alone is not the standard. Conformance cases are pinned against the specification, not against each other, so engines agreeing on the wrong answer fails. And where a rule is decided once and shared by every engine — Copy eligibility, destructor eligibility, the trap category vocabulary — agreement cannot corroborate it. Those rules are listed in a public register and checked separately.',
+    'Agreement alone is not the standard. Conformance cases are pinned against the specification, not against each other, so engines agreeing on the wrong answer fails. And where a rule is decided once and shared by every engine — Copy eligibility, destructor eligibility, the trap category vocabulary — agreement cannot corroborate it. Those rules are listed in a public register, and checked separately where a separate check is possible: against the specification, by mutation testing, by executable gates. Where no independent check exists the register records that instead, including one rule for which none can be constructed.',
   note:
     'That distinction is not theoretical. It is how a bound that every engine ignored equally, and an operation that completed where the specification required a trap, were both found and fixed.',
   toolchain:
