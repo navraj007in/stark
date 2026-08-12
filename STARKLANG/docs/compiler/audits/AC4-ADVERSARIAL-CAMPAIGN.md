@@ -1,8 +1,14 @@
 # AC4 — adversarial architecture validation
 
-**Packet:** WP-ARCH-CLOSE AC4, under CD-400. **Status: IN PROGRESS.** Two of the eleven required
-authorities had no trial at all; one of those is now covered and found a real gap. §4 states exactly
-what remains.
+**Packet:** WP-ARCH-CLOSE AC4, under CD-400. **Status: IN PROGRESS — all eleven authorities
+ADDRESSED, exit NOT met.** Seven findings, F1–F7; three resolved (F1, F2 by deletion, F7 by a written
+falsifier), four open. The shared-fate register is reconciled (§2.11). §4 states exactly what remains.
+
+**The campaign's own headline result is methodological.** Four of the seven findings — F2, F3, F5,
+F6 — were visible only because a **survival was challenged rather than recorded**. Each would have
+entered the record as a pass, or as a false gap, had the first result been trusted. A mutation
+result is not interpreted until the measuring path itself has been challenged, whenever the result
+is unexpectedly clean, unexpectedly sparse, or inconsistent with a dedicated regression suite.
 
 **Method:** trials run through `starkc/scripts/as8-mutate.py`, AS8's harness, extended rather than
 replaced. Its structural guarantee is the reason: **a trial declares `expect` = KILLED or SURVIVED
@@ -466,6 +472,35 @@ kind of evidence this architecture can generate.
 LOW-001 was killed before the new cases, but by a **single** test. A language rule that basic
 deserves a case that states it directly rather than catching it incidentally; it now has three.
 
+### 2.11 Shared-fate register — reconciled
+
+AC4's exit feeds `ENGINE-SHARED-FATE-REGISTER.md`; the reconciliation lives there. Three things are
+worth stating at the campaign's own level.
+
+**No visibility classification changed.** Eight of eleven entries remain INVISIBLE to some engine
+pair. What AC4 changed is the *reason* behind two and the *confidence* in a third — a more useful
+result than a moved number, because a row whose reason is wrong is a row that will be defended on
+the wrong grounds.
+
+**Five findings became real entries, not residuals** — a correction to this campaign's first
+instinct. EI0 froze the **vocabulary**, not the inventory, so adding entries that use the existing
+terms is legitimate; declining to add them would have left the register describing a compiler that
+no longer matches it. `ESF-VERIFY-001` is `ENGINE_LOCAL` rather than a shared-fate row, because MIR
+verification is deliberately an independent checker and F5 is an **evidence** gap in its negative
+cases — **not "engines inherit one answer" but "no engine is ever asked the question"**.
+
+**One pre-existing prose/JSON divergence was found and deliberately NOT resolved.**
+`ESF-PROV-001`'s visibility is `UNKNOWN` in the prose and `INVISIBLE_MIR_NATIVE` in the JSON — one
+cell, and the whole difference between the register's *"eight of eleven"* and the JSON's nine. AC4's
+pass is *reconcile, not improve*, and EI0's binding rule says `UNKNOWN` never resolves silently,
+including in the direction that flatters the register. Settling it needs the hir cell **measured**,
+which is EI2's open work and not AC4's to close.
+
+**F1 and F2 produced no register change, and that is correct.** The bound-specialisation signature
+was deleted rather than controlled, so the authority no longer produces the fact. An authority that
+stops existing needs no shared-fate row, and manufacturing a consumer so the register had something
+to classify is the reversal CD-401 refused.
+
 ---
 
 ## 3. What AC4's exit requires, and what is not yet true
@@ -474,26 +509,40 @@ deserves a case that states it directly rather than catching it incidentally; it
 > classification with an identified alternative control. **No authority may be described as
 > independently verified solely because HIR, MIR and native inherit the same answer.***
 
-**Not yet met.** Seven authorities are PARTIAL — each has at least one trial, but a single trial on
-one function is not the same as the authority having a falsifier. The distinction matters: pattern
-legality would have read as PARTIAL-to-covered on a shallow count, and two of its three arms were
-guarded while the third was not.
+**Not yet met, and the reason has changed.** No authority is PARTIAL any more — all eleven have
+arm-level or semantics-level trials. What blocks the exit is four specific gaps (§4), each of which
+is a *named* deficiency rather than an unexamined surface:
+
+```text
+F3  an authority whose arms are not EXECUTED cannot be said to have a falsifier
+F5  two censused verifier rules were never mutated; one was, and is unenforced
+F4  a control is NAMED for built-in destruction but not built
+F6  a control EXISTS for resource release but lives outside the compiler's suite
+```
+
+The distinction that got the campaign here: pattern legality would have read as nearly covered on a
+shallow count, and two of its three arms were guarded while the third was not. **Coverage is a
+property of an authority's arms, not of it having a trial.**
 
 ## 4. Remaining work, in priority order
 
 ```text
-1  AC4-F3   trait/bound dispatch: three of five arms are never EXECUTED. Not a missing
-            mutation -- live rules with no test that runs them
-2  AC4-F5   MIR-0029 and MIR-0037 censused but not mutated; MIR-0035 falsified as
-            unenforced. One malformed body per rule is the repair
-3  AC4-F4   built-in destruction is unobservable by the drop log. Alternative control
-            named (Miri / a leak harness); not yet built
-4  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's suite.
-            Covered, but a contributor running `cargo test -p starkc` sees green
-5  the remaining PARTIAL authorities     each needs its arms enumerated, as pattern legality's
-                                         and substitute_ty's were, rather than counted
-4  shared-fate register reconciliation   AC4's exit feeds ENGINE-SHARED-FATE-REGISTER.md; the
-                                         register has not yet been updated with these results
+1  AC4-F3   trait/bound dispatch: three of five arms are never EXECUTED by any test. Not a
+            missing mutation -- live semantic rules with no test that runs them
+2  AC4-F5   MIR-0029 and MIR-0037 censused but NOT mutated; MIR-0035 falsified as unenforced.
+            One hand-built malformed body per rule is the repair, in mir_verify's own shape
+3  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
+            type. Alternative control NAMED (the Miri lane, or a leak harness); not built
+4  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
+            The claim is covered; a contributor running `cargo test -p starkc` sees green
+
+   all eleven authorities are ADDRESSED; none remains PARTIAL
+
+5  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
+                          ESF-TRAIT-002 (F3), ESF-DROP-003 (F4), ESF-VERIFY-001 (F5,
+                          ENGINE_LOCAL), ESF-RES-002 (F6), ESF-LOWER-001 (F7). One binding
+                          rule added. EI0's vocabulary UNCHANGED; no existing row's
+                          visibility changed. F1/F2 get no entry -- dead constructions
 ```
 
 **Do not read "2 covered, 7 partial" as 82% done.** The pattern-legality result is the argument

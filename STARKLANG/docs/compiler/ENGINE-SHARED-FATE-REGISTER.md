@@ -3,6 +3,10 @@
 **Packet:** `WP-ENGINE-INDEPENDENCE.md`, approved 2026-08-09 (CD-392), executed as an AS8
 prerequisite. **AS0 remains closed.**
 
+**RECONCILED WITH AC4, 2026-08-12** — see the AC4 reconciliation section before the method note.
+**Eleven entries became sixteen**; one binding rule added; EI0's frozen vocabulary unchanged. No
+existing row's visibility classification changed.
+
 **Status: EI0 COMPLETE — vocabulary frozen. EI1 COMPLETE — **11 entries** after the `ESF-TRAP-001`
 split. EI2 COMPLETE — see `ENGINE-EVIDENCE-INDEPENDENCE.md`; `ESF-PROV-001`'s `UNKNOWN` is closed
 there and this file's row is superseded by the JSON register's updated entry.**
@@ -187,10 +191,119 @@ ESF-DROP-002   independent control for these two, and for ESF-DROP-002 it walks 
                structure — so its agreement is weaker than a matching implementation would be.
 ```
 
+> **Counts in this paragraph are EI1's, over its own eleven entries, and are left as written.** AC4
+> added five: three are INVISIBLE to some engine pair, one is PARTIALLY_VISIBLE
+> (`ESF-LOWER-001` — hir is an independent oracle) and one is `ENGINE_LOCAL` and outside this count
+> entirely (`ESF-VERIFY-001`). **Computed from the JSON, 12 of 16 entries are now INVISIBLE to some
+> engine pair.**
+>
+> **A PRE-EXISTING DIVERGENCE, found while computing that and NOT resolved here.** The JSON gives
+> `ESF-PROV-001` visibility `INVISIBLE_MIR_NATIVE`; the prose row below gives it `UNKNOWN`. That one
+> cell is the whole difference between this paragraph's *"eight of eleven"* and the JSON's nine.
+>
+> It is left alone deliberately. AC4's reconciliation pass is **reconcile, not improve**, and this
+> is not AC4's finding to settle: EI2 recorded `ESF-PROV-001`'s hir dependency as UNMEASURED, and
+> EI0's binding rule says `UNKNOWN` never resolves silently — including in the direction that would
+> make the register look more complete. **Whoever settles it should measure the hir cell, not pick
+> the more convenient of two existing answers.**
+
 **Eight of eleven entries are INVISIBLE to some engine pair, and six of those to all three.** That is
 the shared-fate result EI1 exists to produce, and it is the input EI4 ranks and EI5
 turns into mutation targets — a mutation in an INVISIBLE authority is exactly the mutation a
 three-engine differential cannot catch.
+
+## AC4 reconciliation (WP-ARCH-CLOSE, 2026-08-12)
+
+**`engine-shared-fate.json` was updated first and is authoritative; this section reflects it.** The
+prose register already states that the JSON wins where they disagree, and allowing a fresh
+divergence here would repeat the problem the packet exists to eliminate.
+
+**EI0's frozen vocabulary is UNCHANGED.** AC4 did not show the vocabulary was wrong — it showed the
+**inventory** and the **evidence attached to it** were incomplete. Five entries are added using the
+existing terms; nothing is widened, narrowed or renamed.
+
+**Reconcile, not improve.** No test or semantic repair was made in this pass. The four open gaps
+(F3–F6) are recorded in the state AC4 found them, deliberately, so the register describes the
+evidence that exists rather than waiting for it to be made green.
+
+### Entries added — 11 to 16
+
+| id | fact | category | visibility | residual |
+| --- | --- | --- | --- | --- |
+| `ESF-TRAIT-002` | Whether a type **satisfies a bound at all** — distinct from `ESF-TRAIT-001`, which is the Core trait *signature* contract (receiver/params/return) | `SHARED_PREDICATE` | INVISIBLE | **AC4-F3.** Three of five live semantic arms — `Ty::Ref` forwarding, `Ty::Core` (incl. the eight-member `Iterator` list), `Ty::Param` discharge — **have no executing test**. Stated as *arms not executed*, never as *three mutations survived*: the mutations were unreachable, and an authority whose arms are not executed cannot be said to have a falsifier. **high** |
+| `ESF-DROP-003` | Whether destroying a value of a given `MirTy` **runs anything** | `SHARED_PREDICATE` | INVISIBLE mir↔native; potentially visible against hir | **AC4-F4.** Struct-recursion, `HostResource` and tuple arms all mutation-killed; a **built-in owning type** killed only incidentally. The comparator observes drops by a frame a case emits from its own `Drop` impl, and a built-in has none — the event is **structurally unobservable**, not merely inherited. Alternative control identified, not built. **high** |
+| `ESF-VERIFY-001` | MIR verification rules — **negative** enforcement | `ENGINE_LOCAL` | N/A — inventories assurance, not shared fate | **AC4-F5.** A verifier rule's positive path is always green, so only malformed-MIR cases show enforcement. MIR-0035 mutated and **survived**; MIR-0029/0037 census-only. **medium** |
+| `ESF-RES-002` | Resource **close/release selection** | `SHARED_LOWERING` | INVISIBLE mir↔native | **AC4-F6.** Real control exists and is required CI — live TLS acquire/use/release. starkc's own suite reaches `select_closes` **zero** times. Residual is **feedback latency, not absence of evidence**. **medium** |
+| `ESF-LOWER-001` | Observable **evaluation order** introduced by lowering (CD-007) | `SHARED_LOWERING` | **PARTIALLY_VISIBLE** | **AC4-F7, RESOLVED.** Control `cd007_evaluation_order`; falsifier inverts RHS-before-LHS; observed **HIR/MIR DISAGREEMENT on stdout_bytes**. **low** |
+
+### `ESF-VERIFY-001` is `ENGINE_LOCAL`, and that matters
+
+MIR verification is **deliberately an independent checker**, so classifying MIR-0035 as a shared
+semantic defect would be wrong. The finding is narrower and sharper:
+
+```text
+the verifier exists independently          -- unchanged
+its NEGATIVE enforcement evidence is incomplete
+    MIR-0035   demonstrated untested (mutated, survived)
+    MIR-0029   census-only
+    MIR-0037   census-only
+```
+
+It is a row rather than a loose residual because **AC6 must later justify the public phrase
+"independently verified MIR"**, and a row gives that claim a machine-readable sensor.
+
+### `ESF-LOWER-001` is the campaign's strongest positive result
+
+```text
+HIR semantic execution
+        ≠
+MIR lowering implementation
+        ↓
+observable DISAGREEMENT when lowering is wrong
+```
+
+Inverting CD-007 fails as `HIR/MIR DISAGREEMENT on stdout_bytes`. **A shared-fate defect cannot
+produce that shape** — engines that inherit one answer agree while being wrong together. This is
+materially stronger evidence than four configurations producing the same output, and it is what the
+differential architecture actually buys.
+
+### F1 and F2 get NO entry, deliberately
+
+```text
+F1/F2   no ESF entry
+        reason: no live semantic authority remained after deletion
+        disposition: dead construction, not shared fate
+```
+
+The bound-specialisation signature was deleted rather than controlled. **A shared-fate register is
+for live semantic authorities**, and keeping ghosts in it because AC4 found them would make the
+register a history of the campaign rather than a description of the compiler. Their history is in
+`AC4-ADVERSARIAL-CAMPAIGN.md` §2.3.
+
+### Rows AC4 did NOT change
+
+```text
+ESF-COPY-001/002, ESF-DROP-001/002, ESF-TRAP-001a/b, ESF-TYPE-001,
+ESF-NUM-001, ESF-TRAIT-001, ESF-RES-001, ESF-PROV-001
+
+unexamined by AC4 and unchanged. ESF-PROV-001's hir cell remains UNKNOWN: AC4 measured the
+resource LIFECYCLE (F6), not the signature dependency EI2 left open, and UNKNOWN never resolves
+silently to NONE.
+```
+
+### New binding rule
+
+```text
+a SURVIVED mutation is not evidence of shared fate or of a missing control until target
+reachability has been demonstrated; if mutated and unmutated behaviour agree unexpectedly,
+challenge the measuring path before classifying the authority
+```
+
+Justified by repeated findings rather than by principle: **F2, F3, F5 and F6 each depended on
+challenging a survival**, and the namespace campaign additionally exposed a `--no-fail-fast`
+instrumentation defect that made `killer_count` a lower bound.
+
+---
 
 ## Method note
 
