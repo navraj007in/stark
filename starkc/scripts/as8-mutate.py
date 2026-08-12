@@ -58,6 +58,55 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # Drop determination. AS8's only trial is `nominals_with_destructor` (batch 1, SURVIVED) —
+    # which answers "does this nominal declare a destructor", one input to the real authority.
+    # `requires_drop_glue_with` is the authority, a match over NINE arms, and it is the one the
+    # module header calls exhaustive on purpose so "a new MirTy variant must be classified at this
+    # one authority". One trial per arm, on four of the nine.
+    "ac4-drop": [
+        dict(id="AC4-MUT-DRP-001", target="Drop determination", tag="MIR",
+             authority="mir::drop_rule::requires_drop_glue_with — String stops owning anything",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::String => true,",
+             repl="        MirTy::String => false,",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+             note="The most-owned type in the language stops being destroyed. If the drop logs the "
+                  "differential compares do not notice this, they are not comparing destruction."),
+        dict(id="AC4-MUT-DRP-002", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — the STRUCT arm stops recursing into fields",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="            facts.has_user_destructor(*item, args)\n                || facts\n                    .struct_fields(*item, args)\n                    .is_some_and(|fields| fields.iter().any(|f| requires_drop_glue_with(f, facts)))",
+             repl="            facts.has_user_destructor(*item, args)",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+             note="ARM-LEVEL and the realistic defect: a struct with no `Drop` impl but a `String` "
+                  "field stops dropping the field. `nominals_with_destructor` -- AS8's only trial "
+                  "here -- would still answer correctly, which is why it is not coverage of this."),
+        dict(id="AC4-MUT-DRP-003", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — a HOST RESOURCE stops needing its close",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::HostResource(_) => true,",
+             repl="        MirTy::HostResource(_) => false,",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "a11_host_resource"],
+             note="A11 §5: a host resource's drop IS its provider close. This leaks the socket, "
+                  "the file handle and the TLS session -- the class CD-347/348 built live-peer "
+                  "lifecycle evidence for."),
+        dict(id="AC4-MUT-DRP-004", target="Drop determination", tag="MIR",
+             authority="requires_drop_glue_with — the TUPLE arm stops recursing",
+             expect="KILLED",
+             file="src/mir/drop_rule.rs",
+             find="        MirTy::Tuple(elems) => elems.iter().any(|e| requires_drop_glue_with(e, facts)),",
+             repl="        MirTy::Tuple(_elems) => false,",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+             note="`(String, Int32)` stops dropping its String. A composite arm, distinct from the "
+                  "struct arm above, and the shape DEV-142 already shows is delicate."),
+    ],
     # Trait / bound dispatch. AS8's only trial here is batch 3 (`core_trait_contract` receiver),
     # which is one function and SURVIVED. `satisfies_bound_identity` is the authority, and it is a
     # match over FIVE semantic arms — reference forwarding, the primitive matrix, the Core-type

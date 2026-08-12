@@ -25,7 +25,9 @@ resolution / namespaces             9,9b,ac4-ns  COVERED   both halves: where na
 trait / bound dispatch              3,ac4-bound  PROBED    5 arms; 2 executed by any test.
                                                  AC4-F3 (§2.6) -- Ref, Core and Param arms are
                                                  never run
-Drop determination                  1            PARTIAL   nominals_with_destructor only
+Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. AC4-F4:
+                                                 built-in destruction is observable only
+                                                 incidentally (§2.7)
 MIR lowering                        6,7          PARTIAL   trap-category assignment, array_order
 MIR verification                    9            PARTIAL   paths_prefix_related only
 provider/resource ownership         4,4b         PARTIAL   provider_sig::signature only
@@ -262,6 +264,70 @@ run that comes back KILLED is good news and must be re-declared.
 repair was deletion. This is the opposite: live semantic rules, each one decided on real programs,
 with **no test that runs them**. The difference matters for disposition, and neither is fixed by
 adding a mutation.
+
+### 2.7 Drop determination — `batch ac4-drop`. Controlled at arm level, **and AC4-F4**
+
+AS8's only trial here is `nominals_with_destructor` (batch 1, SURVIVED) — which answers *"does this
+nominal declare a destructor"*, one input to the real authority. `requires_drop_glue_with` is the
+authority: nine arms, and the module header calls it exhaustive on purpose so *"a new MirTy variant
+must be classified at this one authority"*.
+
+```text
+AC4-MUT-DRP-001  MirTy::String stops owning anything      KILLED by 2   <-- see AC4-F4
+AC4-MUT-DRP-002  the STRUCT arm stops recursing into
+                 fields                                    KILLED by 7
+AC4-MUT-DRP-003  a HOST RESOURCE stops needing its close   KILLED by 2
+AC4-MUT-DRP-004  the TUPLE arm stops recursing             KILLED by 4
+```
+
+DRP-002 is the realistic defect and is well controlled: a struct with no `Drop` impl but a `String`
+field stops dropping the field, caught first by
+`a_partially_moved_value_destroys_only_the_surviving_field`. Note that AS8's
+`nominals_with_destructor` trial would still answer correctly under DRP-002 — which is why one
+trial on one input is not coverage of the authority.
+
+#### AC4-F4 — a built-in type's destruction has no observable control
+
+**Class C.** DRP-001 was killed, so it counts as covered — and the *killers* are the finding.
+
+```text
+killers of "MirTy::String requires no drop glue":
+    mir::borrows::tests::census_which_rules_a_program_reaches
+    mir::borrows::tests::the_whole_relation_is_pinned_for_the_reported_shape
+```
+
+**Both are borrow-origin characterization tests written on 2026-08-12**, one day old, which pin
+exact local numbering — numbering that shifts when drop elaboration changes. Neither is a drop test.
+Detection was incidental.
+
+Verified independently, with the mutation applied and the drop suites run directly:
+
+```text
+three_engine_differential   129 passed
+native_c6_1_ownership        24 passed
+as4_destructor_authority      6 passed
+```
+
+**The suites that exist to compare destruction do not notice that `String` stopped being
+destroyed.** Had those two tests not been written the previous day, DRP-001 would have SURVIVED.
+
+**The mechanism is stated in the comparator's own documentation.** `support/differential.rs`: *"A
+drop-observing case emits a reserved frame from its own `Drop` impl; the harness extracts those
+frames from stdout."* A `String` has no user `Drop` impl, so **its destruction cannot emit a frame,
+and the drop log is structurally incapable of observing it**. The same holds for every built-in
+owning type.
+
+```text
+user destructors     observable -- the case emits its own frame. Well controlled (DRP-002/004)
+built-in ownership   NOT observable by this mechanism. A leak is not a wrong answer, and
+                     nothing in the suite observes memory
+```
+
+**This is a shared-fate finding, not a missing test.** Adding another differential case would not
+help: the observation channel cannot see built-in destruction at all. An alternative control is
+needed — the Miri lane already runs the slot primitives under Stacked Borrows and is the natural
+place, or a leak-observing harness. **Naming the alternative control is what AC4's exit requires
+when independent falsification is unavailable**, and this one is named rather than assumed.
 
 ---
 
