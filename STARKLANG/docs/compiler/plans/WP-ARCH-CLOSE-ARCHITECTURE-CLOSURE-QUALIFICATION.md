@@ -1,7 +1,11 @@
 # WP-ARCH-CLOSE — Final Compiler Architecture Closure Qualification
 
-**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12). ALL SEVEN ACCEPTANCE CRITERIA
-ARE MET.** AC1, AC2, AC3, AC4, AC5, AC6 complete; AC7's reopen rule is committed as a standing rule
+**Status: CLOSED — PASS (CD-403, owner, CE8, 2026-08-12).** Compiler architecture STABILIZED;
+Architecture Stabilization CLOSED, provisional only under AC7's twenty-defect observation period.
+Evidence: `FINAL_REPAIR_SHA` 64ec728, two clean CI runs from 641d4d0 at attempts 1 and 2, 24/24 each,
+no rerun-to-green. **This packet is complete and is now a historical record.**
+
+*Prior status:* **AUTHORISED AND ACTIVE — CD-400/401. ALL SEVEN ACCEPTANCE CRITERIA ARE MET.** AC1, AC2, AC3, AC4, AC5, AC6 complete; AC7's reopen rule is committed as a standing rule
 in `COMPILER-CHARTER.md` §7. The §8 pre-alpha cohort gate is OPEN.
 
 **What remains is not criteria work.** §13 requires final evidence to postdate the last repair, so
