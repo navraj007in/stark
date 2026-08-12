@@ -10111,3 +10111,98 @@ the repair should reuse it rather than mint a new code.
 `915e565` is AC3's frozen qualification tree under CD-401 and takes no compiler change until its two
 runs complete. Characterised meanwhile by `starkc/tests/ac5_display_entry_points.rs`, whose three
 cases assert the CURRENT behaviour so the defect cannot drift silently before it is fixed.
+
+## DEV-236 — RESOLVED (2026-08-12): the obligation is answered by the bound authority
+
+```text
+Architecture trigger:  NONE — confirmed by the repair, not merely asserted at triage
+Counts toward AC7's twenty:  YES
+```
+
+`println` now enforces its own `T: Display` bound where the generic is written, per CD-401's CE1
+ruling. Population A 9 -> 8.
+
+### The defect was one line asserting a discharge that never happened
+
+```rust
+Ty::Param(_) => true, // discharged by the caller's own bound
+```
+
+There was no bound to discharge. `builtin_type` types the print family's parameter as a **bare
+inference variable**, so no obligation was ever attached to the callee and nothing downstream could
+discharge one. The comment described a mechanism that did not exist, which is why the line read as
+correct for as long as it did.
+
+### The repair, at the authority
+
+```rust
+Ty::Param(name) => self.param_declares_bound(
+    name,
+    "Display",
+    Some(Res::CoreTrait(hir::CoreTrait::Display)),
+),
+```
+
+`param_declares_bound` already existed and already compares **resolved identities**, falling back to
+spelling only when no identity is supplied. Supplying `Res::CoreTrait(CoreTrait::Display)` is what
+makes `TYPE-METHOD-003`'s *"an item identity and not a spelling"* hold here.
+
+**There is no `if callee == println` anywhere in the repair.** CD-401 required that, and named the
+alternative outcome: had the obligation been inexpressible through the existing generic-call/bound
+authority, that would have been a **more serious finding than the deviation** — §4's *"consumer
+patched because the owning authority cannot express the rule"*. It was expressible. **The
+architecture test passes**, and `Architecture trigger: NONE` is now confirmed rather than predicted.
+
+### The repair exposed a second defect, and the codebase had already written the rule
+
+The first version **rejected `fn show<T: Display>(x: T) { println(x); }`** — a bound plainly written.
+
+`display_checks` is drained in Pass 3. Answering `Ty::Param` from declared bounds made that
+obligation **scope-sensitive** while it still carried no scope, so the query ran with no generics
+visible. `DeferredDisplayPlan`'s own doc comment states the rule that was broken:
+
+> *"a deferred obligation may read resolved types freely, but any **scope-sensitive** question it
+> asks is a question about a scope that no longer exists. Capture the scope with the obligation."*
+
+So `display_checks` became `Vec<DeferredDisplayCheck>`, carrying `generic_scope` exactly as the plan
+queue already did, and the drain restores it around the query. **The general rule applied, not a
+`Display`-shaped patch** — the two queues stay separate (one reports, one publishes, as the file
+requires) and now both obey it.
+
+### Measured — the full ruling table
+
+```text
+fn show<T>(x: T)          { println(x); }    REJECT E0500   was ACCEPT
+fn show<T: Clone>(x: T)   { println(x); }    REJECT E0500   was ACCEPT
+fn show<T: Display>(x: T) { println(x); }    ACCEPT         unchanged
+user trait spelled Display                   REJECT E0500   was ACCEPT-then-MIR-refusal
+println(1i32) / println(String)              ACCEPT         unchanged
+interpolation, T: Display                    ACCEPT         unweakened
+```
+
+### Falsification
+
+```text
+revert the repair (Ty::Param(_) => true)          killed by 4 tests
+keep the bound check, drop the IDENTITY           killed by exactly 1 -- the identity test
+```
+
+Each control catches what it exists for, rather than four tests all failing on any change.
+
+### Evidence
+
+```text
+ac5_display_entry_points     6 conformance assertions (converted from characterization)
+three_engine_differential  129    mir_differential 132    conformance suite green
+layer_audit                       native_conformance_matrix green -- the drift gate matters most
+                                  here, since a changed acceptance boundary alters a generated cell
+```
+
+### What changed for users
+
+`fn show<T>(x: T) { println(x); }` no longer compiles. It previously compiled and then failed at MIR
+with `Display::fmt not found for printed type` — a correct error about the wrong layer. The remedy
+is to write the bound, `T: Display`, and `E0500` names the type that cannot be printed.
+
+**Blast radius was measured before the repair: zero.** No first-party generic function prints; every
+`println` under `packages/` is on a concrete type.

@@ -21,11 +21,11 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 9 open — DEV-140..145 (the supported-subset boundary), DEV-221,
-              DEV-233 (the interpreter loses output written before a trap), DEV-236 (`println`
-              does not enforce its own `T: Display` bound on a generic — a PRINT-DISPLAY-001 and
-              TYPE-METHOD-003 violation found by AC5, RULED under CE1, repair deferred behind
-              AC3's freeze). DEV-160 RESOLVED
+Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-221,
+              DEV-233 (the interpreter loses output written before a trap). DEV-236 RESOLVED
+              2026-08-12: `println` now enforces its own `T: Display` bound at the generic
+              definition, answered by the bound authority — CD-401's architecture test PASSES.
+              DEV-160 RESOLVED
               2026-08-12 under WP-ARCH-CLOSE AC1 step 2 — the thunk absorbs the call that produced
               the borrow, so the cross-block programs build and run. DEV-235 RESOLVED
               2026-08-12 under WP-ARCH-CLOSE AC3: the promotion-gating check failed because an
@@ -346,6 +346,46 @@ Unswept categories:        explicitly listed (AC5-PATCHWORK-AUDIT.md §5)
 Acceptable for a controlled pre-alpha cohort, because the cohort is itself discovery evidence.
 **Not** acceptable for declaring WP-ARCH-CLOSE PASS, or for any unconditional public
 architecture-stability claim.
+
+## DEV-236 RESOLVED — the architecture test in CD-401's Decision 2 PASSES (2026-08-12)
+
+`println` enforces its own `T: Display` bound at the generic definition, per the CE1 ruling.
+**Population A 9 -> 8.**
+
+**The architecture test is the result worth recording, not the fix.** CD-401 required the repair to
+land at the authority that checks generic callee obligations, and named the alternative: had the
+obligation been inexpressible there, that would have been a **more serious finding than the
+deviation** — §4's *"consumer patched because the owning authority cannot express the rule"*.
+
+It was expressible. The defect was one line —
+
+```rust
+Ty::Param(_) => true, // discharged by the caller's own bound
+```
+
+— asserting a discharge that never happened, since `builtin_type` types the print family's parameter
+as a bare inference variable and no obligation was ever attached. It now calls
+`param_declares_bound(name, "Display", Some(Res::CoreTrait(CoreTrait::Display)))`, an authority that
+already existed and already compares resolved identities. **No `if callee == println` anywhere.**
+`Architecture trigger: NONE` is therefore CONFIRMED by the repair rather than predicted at triage.
+
+**The repair exposed a second defect, and the codebase had already written down the rule it broke.**
+The first version rejected `fn show<T: Display>(x: T) { println(x); }` — a bound plainly written —
+because answering `Ty::Param` from declared bounds made a Pass-3 obligation **scope-sensitive** while
+it still carried no scope. `DeferredDisplayPlan`'s doc comment states the general rule: *"a deferred
+obligation may read resolved types freely, but any scope-sensitive question it asks is a question
+about a scope that no longer exists. Capture the scope with the obligation."* `display_checks` now
+carries `generic_scope` as the plan queue always did.
+
+```text
+revert the repair                     killed by 4 tests
+keep the check, drop the IDENTITY     killed by exactly 1 -- the identity test
+```
+
+**Consequence for AC3, stated rather than left to be discovered.** This is a compiler-affecting
+repair, so under §13 the two green runs on `915e565` are now historical **for closure purposes**.
+They remain valid for **cohort entry**, exactly as CD-401 anticipated. Final closure still reruns
+from the eventual `FINAL_REPAIR_SHA`.
 
 ## CD-400 — WP-ARCH-CLOSE AUTHORISED as the active packet; AC3's first repair has landed (2026-08-12)
 

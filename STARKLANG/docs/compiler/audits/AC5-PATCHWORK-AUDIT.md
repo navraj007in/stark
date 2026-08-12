@@ -160,8 +160,15 @@ routed through the existing mechanism rather than gaining another `if callee == 
 are in this tree. It will reject `fn show<T>(x: T) { println(x); }`, which a newcomer writes early;
 `E0306` already carries the right remedy and should be reused rather than a new code minted.
 
-Not implemented here: `915e565` is AC3's frozen qualification tree (CD-401) and takes no further
-compiler change until its two runs complete.
+**REPAIRED 2026-08-12, after AC3's two runs completed and released the freeze.** DEV-236 is
+RESOLVED: `type_is_displayable`'s `Ty::Param` arm now asks `param_declares_bound` with
+`Res::CoreTrait(CoreTrait::Display)` as the required identity. **The architecture test in CD-401's
+Decision 2 passes** — the obligation was expressible at the existing bound authority, with no
+`println` special case. Had it not been, that would have been a finding more serious than F1 itself.
+
+The repair also exposed a second defect: making a Pass-3 obligation scope-sensitive without carrying
+its scope, which refused a bound plainly written. `DeferredDisplayPlan`'s own doc comment had
+already stated the general rule, and `display_checks` now obeys it.
 
 ### 3.2 AC5-F2 — the ~26 hardcoded builtin spellings
 

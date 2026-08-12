@@ -1341,8 +1341,7 @@ impl TypeChecker<'_> {
                             Builtin::Print | Builtin::Println | Builtin::Eprint | Builtin::Eprintln
                         ) {
                             if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
-                                self.display_checks
-                                    .push((ty.clone(), self.hir.expr(*arg).span));
+                                self.record_display_check(ty.clone(), self.hir.expr(*arg).span);
                                 self.record_display_plan(*arg, ty.clone());
                             }
                         }
@@ -4299,7 +4298,29 @@ impl TypeChecker<'_> {
                 _ => false,
             },
             Ty::Struct(..) | Ty::Enum(..) => self.ty_satisfies_operator_bound(ty, "Display"),
-            Ty::Param(_) => true, // discharged by the caller's own bound
+
+            // **DEV-236.** This read `Ty::Param(_) => true, // discharged by the caller's own
+            // bound`. There was no such bound to discharge: `builtin_type` types `println`'s
+            // parameter as a bare inference variable, so no obligation was ever attached and the
+            // comment described a mechanism that did not exist. A generic body could print a `T`
+            // with no bound at all, or with `T: Clone`, and the front end accepted it — the
+            // failure then surfaced at MIR as `Display::fmt not found`, a correct error about the
+            // wrong layer.
+            //
+            // `PRINT-DISPLAY-001` says the print family are ordinary generic functions constrained
+            // `T: Display` and **not** syntax hooks, so the obligation belongs where the generic is
+            // written. `TYPE-METHOD-003` says a parameter's capabilities come from its declared
+            // bounds, each of which resolves to one trait IDENTITY and *"not a spelling"*.
+            //
+            // Answered by the bound authority rather than by a check of its own:
+            // `param_declares_bound` compares resolved identities and falls back to spelling only
+            // when no identity is supplied. `Res::CoreTrait(CoreTrait::Display)` supplies one, so a
+            // user trait merely NAMED `Display` does not satisfy this.
+            Ty::Param(name) => self.param_declares_bound(
+                name,
+                "Display",
+                Some(Res::CoreTrait(hir::CoreTrait::Display)),
+            ),
             _ => false,
         }
     }

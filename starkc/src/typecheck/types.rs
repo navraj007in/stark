@@ -674,6 +674,26 @@ pub enum ReceiverBinding {
 /// The general rule, which is not about `Display`: a deferred obligation may read resolved types
 /// freely, but any **scope-sensitive** question it asks is a question about a scope that no longer
 /// exists. Capture the scope with the obligation.
+/// **A `Display` OBLIGATION queued for Pass 3** — the E0500/E0306 check, not the dispatch plan.
+///
+/// Separate from [`DeferredDisplayPlan`] because the two do different jobs (one reports, one
+/// publishes), and the file deliberately keeps one queue per job. It carries `generic_scope` for
+/// the same reason the plan does, and the reason is the general rule stated below: **DEV-236** made
+/// this obligation scope-sensitive by answering `Ty::Param` from the parameter's declared bounds,
+/// and a bound is a question about a scope Pass 3 has already torn down.
+///
+/// Without it, `fn show<T: Display>(x: T) { println(x); }` — a bound plainly written — was refused,
+/// because the query ran with no generics in scope at all.
+pub(super) struct DeferredDisplayCheck {
+    pub(super) ty: Ty,
+    pub(super) span: Span,
+    /// `(current_fn_generics, current_impl_generics)` at the point of writing.
+    pub(super) generic_scope: (
+        Option<Vec<hir::GenericParam>>,
+        Option<Vec<hir::GenericParam>>,
+    ),
+}
+
 pub(super) struct DeferredDisplayPlan {
     /// The expression that renders — a `println`-family argument or an interpolation field. Both
     /// are roots in their own right; an interpolation field has its own `ExprId`.
