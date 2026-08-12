@@ -391,6 +391,66 @@ specialization environment) still has no trial, and the shared-fate register has
 reconciled. **Do not read "2 covered, 7 partial" as 82% done** — pattern legality would have counted
 as nearly covered, and its unguarded arm is the argument against counting.
 
+## FINAL QUALIFICATION COMPLETE — both runs green from the qualifying tree (2026-08-12)
+
+```text
+FINAL_REPAIR_SHA     64ec728
+qualification tree   641d4d0    `git diff 64ec728..HEAD` -> COMPILER-STATE.md ONLY
+
+RUN 1   CI   31608458880   conclusion=success   ATTEMPT 1   24/24   0 failed
+        C7.8 31608458905   conclusion=success   ATTEMPT 1    4/4    0 failed
+RUN 2   CI   31608458880   conclusion=success   ATTEMPT 2   24/24   0 failed
+        full rerun of every job, same SHA, initiated only after run 1 succeeded
+
+no failed job rerun to obtain either result
+no selective rerun
+no third run
+```
+
+CI's 24 jobs are not merely a reliability sample — they **carry most of §14's evidence lines
+directly**: full compiler corpus, HIR/MIR/native differential, first-party package/provider
+qualification, C6.4 Tier-1 on linux-x64/macos-arm64/windows-x64, and the DEV-160 Miri lane.
+
+Supplementary, not one of the two: a local full-corpus run at the qualification tree —
+`cargo exit 0`, **249 suites, 0 failures**, verified against the log rather than read from a summary
+line.
+
+### What two greens license, stated at the strength the evidence supports
+
+**"No intermittency was observed in two samples of this tree."** Not "there is no intermittency."
+At the flake rate this repository has actually seen, two greens pass with roughly 64% probability
+*despite* a live flake. Both run ids and both attempt numbers are recorded above so a later reader
+can check rather than trust this summary.
+
+### §14 checklist
+
+```text
+[x] AC1 architecture probe complete and DEV-160 resolved
+[x] AC2 generated executable conformance contract complete
+[x] DEV-140..145 represented by executable boundary probes
+[x] AC3 / DEV-235 resolved
+[x] AC4 adversarial architecture campaign complete
+[x] AC5 patchwork audit complete
+[x] no Class-D finding remains
+[x] every Class-C architecture debt explicitly owned
+[x] shared-fate register reconciled
+[x] public architecture wording corrected
+[x] AC7 triage tagging operational
+[x] reopen rule committed
+[x] FINAL_REPAIR_SHA established
+[x] all closure evidence postdates FINAL_REPAIR_SHA
+[x] two complete clean CI runs from the qualifying tree
+[x] no rerun-to-green used for those runs
+[x] full compiler corpus green
+[x] HIR/MIR/native differential qualification green
+[x] first-party package/provider qualification green
+[x] Tier-1 native debug/release qualification green
+```
+
+**Every line is met. The PASS decision itself is an owner decision under CE8 and is not taken here** —
+§14 lists the conditions for PASS; it does not make the finding. What this entry records is that the
+conditions are satisfied and the evidence is assembled.
+
 ## FINAL_REPAIR_SHA established — 64ec728 (2026-08-12)
 
 **Owner instruction, 2026-08-12.** §13's freshness rule requires every piece of final closure
@@ -421,6 +481,33 @@ auditing the closure should run it rather than compare hashes.
 **Everything before `64ec728` is now historical for closure purposes**, including AC3's two clean
 runs on `915e565`. Those remain valid for **cohort entry**, exactly as CD-401 anticipated. The
 final two runs must come from this tree.
+
+### The qualification tree, and four cancelled runs — recorded because they should draw scrutiny
+
+```text
+FINAL_REPAIR_SHA     64ec728
+qualification tree   641d4d0   -- a descendant whose ONLY delta is this decision record
+                                  `git diff 64ec728..HEAD` => COMPILER-STATE.md, nothing else
+```
+
+**Four runs at `64ec728` were cancelled and none produced a result.** Two were cancelled by GitHub
+as superseded duplicates; **two I cancelled deliberately**, and the reason is the one thing a later
+reader must be able to check:
+
+```text
+64ec728 runs were PENDING -- never started, no result to discard
+641d4d0 runs were QUEUED  -- the tree carrying the closure record
+
+different SHAs => different concurrency groups => they run IN PARALLEL
+both bind the fixed qualification ports 39187-39191
+=> a collision would redden a green tree, and under CD-401 a red run makes AC3
+   INCOMPLETE with no third run permitted
+```
+
+So the cancellation protects the evidence rather than selecting it. **A cancelled run in the history
+of a closure decision is exactly what should be treated as suspicious**, which is why the state of
+each one — pending, never started, no result — is written down rather than left to be inferred from
+timestamps.
 
 ### A duplicate trigger, recorded so the run history is not misread
 
