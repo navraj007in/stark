@@ -31,9 +31,9 @@ resolution / namespaces             9,9b,ac4-ns  COVERED   both halves: where na
 trait / bound dispatch              3,ac4-bound  COVERED   5 arms; AC4-F3 REPAIRED (§2.6) --
                                                  ac4_bound_arms executes all three that were
                                                  never run; 4 of 4 mutations now die
-Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. AC4-F4:
-                                                 built-in destruction is observable only
-                                                 incidentally (§2.7)
+Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. AC4-F4 PARTIALLY
+                                                 repaired (§2.7): the DECISION is controlled;
+                                                 the leak itself stays unobservable
 MIR lowering                      6,7,ac4-lower  COVERED   language semantics it uniquely
                                                  owns. AC4-F7 (§2.10) -- CD-007's assignment
                                                  order had NO control; written, mutation dies
@@ -322,6 +322,8 @@ trial on one input is not coverage of the authority.
 
 #### AC4-F4 — a built-in type's destruction has no observable control
 
+> **PARTIALLY REPAIRED 2026-08-12.** See the note at the end of this subsection.
+
 **Class C.** DRP-001 was killed, so it counts as covered — and the *killers* are the finding.
 
 ```text
@@ -571,8 +573,10 @@ property of an authority's arms, not of it having a trial.**
 ## 4. Remaining work, in priority order
 
 ```text
-1  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
-            type. Alternative control NAMED (the Miri lane, or a leak harness); not built
+1  AC4-F4   PARTIAL. ac4_builtin_destruction controls the DECISION -- no Drop emitted means
+            the test fails. The CONSEQUENCE, an actual leak, is still unobservable: the Miri
+            lane runs with -Zmiri-ignore-leaks, and a leak harness around generated binaries
+            is a work packet. OWNER CALL: accept the decision-level control, or schedule it
 2  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
             The claim is covered; a contributor running `cargo test -p starkc` sees green
 
@@ -588,3 +592,32 @@ property of an authority's arms, not of it having a trial.**
 **Do not read "2 covered, 7 partial" as 82% done.** The pattern-legality result is the argument
 against that reading: a covered-looking authority had an entirely unguarded arm, and only enumerating
 the arms found it.
+
+**This is a shared-fate finding, not a missing test.** Adding another differential case would not
+help: the observation channel cannot see built-in destruction at all.
+
+**PARTIALLY REPAIRED 2026-08-12 — and the limit of the repair is the point.**
+`starkc/tests/ac4_builtin_destruction.rs` asserts the **decision** rather than its consequence: if
+`requires_drop_glue_with` says a `String` owns nothing, lowering emits no `Drop` for it, and that
+absence is visible in the MIR. DRP-001's first killer is now `a_string_inside_a_struct_is_destroyed`
+rather than two day-old borrow tests.
+
+**It is a lowering-structure control, not a leak observation, and must not be cited as one.** It
+falsifies the mutation; it does not prove no leak exists. The distinction matters because the
+finding was precisely that *the consequence* is unobservable, and asserting the decision does not
+make the consequence observable.
+
+Both candidate leak controls were examined and neither fits today:
+
+```text
+the Miri lane   runs with `-Zmiri-ignore-leaks`, so it is NOT a leak detector. The flag is
+                needed because three `should_panic` tests hold heap values when the panic
+                aborts -- removing it would fail them for the reason they exist
+a native run    observing an allocation leak in a GENERATED binary needs a leak-checking
+                harness around `stark build` output. That is a work packet, not a test
+```
+
+**The runtime already knew this shape.** `slot.rs`, on its own structural-drop step: *"Without this
+step every owning value in a slot leaked its allocation (**unobservable in the differential**, but a
+real leak)."* The gap was documented before AC4 named it; what AC4 added is that **no test would
+notice**.

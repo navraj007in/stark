@@ -211,8 +211,11 @@ BATCHES = {
              file="src/mir/drop_rule.rs",
              find="        MirTy::String => true,",
              repl="        MirTy::String => false,",
+             # AC4-F4: `ac4_builtin_destruction` is the purpose-built control. Before it, this was
+             # killed only INCIDENTALLY, by two borrow-origin tests that pin local numbering.
              tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
-                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority",
+                    "--test", "ac4_builtin_destruction"],
              note="The most-owned type in the language stops being destroyed. If the drop logs the "
                   "differential compares do not notice this, they are not comparing destruction."),
         dict(id="AC4-MUT-DRP-002", target="Drop determination", tag="MIR",
@@ -222,7 +225,8 @@ BATCHES = {
              find="            facts.has_user_destructor(*item, args)\n                || facts\n                    .struct_fields(*item, args)\n                    .is_some_and(|fields| fields.iter().any(|f| requires_drop_glue_with(f, facts)))",
              repl="            facts.has_user_destructor(*item, args)",
              tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
-                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority"],
+                    "--test", "native_c6_1_ownership", "--test", "as4_destructor_authority",
+                    "--test", "ac4_builtin_destruction"],
              note="ARM-LEVEL and the realistic defect: a struct with no `Drop` impl but a `String` "
                   "field stops dropping the field. `nominals_with_destructor` -- AS8's only trial "
                   "here -- would still answer correctly, which is why it is not coverage of this."),

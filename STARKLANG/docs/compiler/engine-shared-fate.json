@@ -234,11 +234,11 @@
       "rustc": "none",
       "visibility": "INVISIBLE mir<->native; potentially visible against hir by observable destruction",
       "evidence": "SPEC_DERIVED+HAND_AUTHORED",
-      "independent_evidence": "struct-field recursion KILLED (7 tests); HostResource KILLED (2); tuple recursion KILLED (4). A BUILT-IN owning type was killed only INCIDENTALLY \u2014 by two borrow-origin tests written the previous day that pin local numbering",
-      "residual": "AC4-F4: built-in destruction has no purpose-built observable control. The comparator observes drops by a reserved frame emitted from a case's own Drop impl, and a built-in type has no user Drop impl \u2014 so the event is structurally unobservable by every engine's drop log, not merely inherited. Alternative control IDENTIFIED (the Miri lane, or a leak harness) and NOT YET BUILT",
-      "risk": "high",
+      "independent_evidence": "struct-field recursion, HostResource and tuple arms all mutation-killed. ac4_builtin_destruction (3 cases) now controls the BUILT-IN arm by asserting the lowering DECISION -- a String local and a String-owning struct must each produce a Drop terminator, and a scalar must not",
+      "residual": "AC4-F4 PARTIALLY repaired 2026-08-12. The DECISION is controlled; the CONSEQUENCE is not. A drop-observing case emits a frame from its own Drop impl and a built-in has none, so an actual leak remains unobservable by every engine. The two candidate leak controls do not fit today: the Miri lane runs with -Zmiri-ignore-leaks (needed by three should_panic tests that hold heap values when the panic aborts), and a leak harness around generated binaries is a work packet. slot.rs already documented the shape: 'unobservable in the differential, but a real leak'",
+      "risk": "medium",
       "review_trigger": "any change to requires_drop_glue_with's arms or to core_requires_drop_glue",
-      "amended": "2026-08-12 AC4 \u2014 new entry. Neither ESF-DROP-001 (nominal destructor eligibility) nor ESF-DROP-002 (drop ORDER) owns this question"
+      "amended": "2026-08-12 AC4 \u2014 new entry. Neither ESF-DROP-001 (nominal destructor eligibility) nor ESF-DROP-002 (drop ORDER) owns this question | 2026-08-12 AC4-F4 partially repaired: decision controlled, consequence still unobservable; risk high -> medium"
     },
     {
       "id": "ESF-VERIFY-001",
