@@ -5,20 +5,20 @@
 *Charter §2.4 position line. Updated 2026-08-10. **Read this block, not the chronology below.***
 
 ```text
-Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — **AC1, AC2 and AC3
-                                 MET**. AC3's two runs are GREEN on frozen SHA 915e565 (attempts 1
-                                 and 2, 24/24 each, no rerun-to-green), so the §8 PRE-ALPHA COHORT
-                                 GATE IS OPEN. AC5 IN PROGRESS, zero Class-D in the swept
-                                 categories. AC4/AC6/AC7 open. AC5-F1 is now DEV-236, RULED under
-                                 CE1. Architecture closure remains PROVISIONAL. Prior: AC2 MET, AC3 repair
-                                 landed, AC3 exit NOT met — the two-run count is RESET: run 1
-                                 at cd6732f is historical under §13, and CI at d300d3d FAILED
-                                 (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
-                                 probe verdict POSITIVE. **AC5 COMPLETE — zero Class-D**; F4/F5/F7
-                                 open and owned. **ALL SEVEN AC CRITERIA MET (CD-402)** — AC4 met
-                                 on F4/F6 dispositions, AC7's reopen rule committed as a STANDING
-                                 rule in COMPILER-CHARTER.md §7. Next: FINAL_REPAIR_SHA, rerun all
-                                 evidence, then the PASS decision. Population A 8
+Status: **WP-ARCH-CLOSE = PASS (CD-403, owner, CE8, 2026-08-12)**
+        Compiler architecture STABILIZED. Architecture Stabilization CLOSED.
+        PROVISIONAL only under AC7's twenty-defect observation period (CHARTER §7)
+Gate: POST-C10 (no gate active)   Active packet: NONE
+Evidence: FINAL_REPAIR_SHA 64ec728; two clean CI runs from 641d4d0, attempts 1 and 2,
+        24/24 each, no rerun-to-green. Every §14 line met
+Population A: 8 — DEV-140..145 (supported-subset boundaries), DEV-221, DEV-233.
+        DEV-160, DEV-235 and DEV-236 all RESOLVED 2026-08-12
+Cohort: §8 pre-alpha gate OPEN (AC2 + AC3). Limitations page and its drift gate are live
+Promotion: PR #27 proposes `develop -> main`. **NOT authorised here** — that is a separate
+        CE8 decision, as CD-398 and CD-399 were
+Next: standalone toolchain / C9 Part B second artifact
+Optional tracks: ArtifactInfra=blocked (C9 Part B)   TensorExpansion=blocked (Gate 7 DEFER)
+
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -390,6 +390,84 @@ the `mir::borrows` trials.
 specialization environment) still has no trial, and the shared-fate register has not been
 reconciled. **Do not read "2 covered, 7 partial" as 82% done** — pattern legality would have counted
 as nearly covered, and its unguarded arm is the argument against counting.
+
+## CD-403 — WP-ARCH-CLOSE = PASS. Compiler architecture STABILIZED (2026-08-12)
+
+**Owner decision under CE8, 2026-08-12.** Every §14 criterion is met and all closure evidence
+postdates `FINAL_REPAIR_SHA`. The finding is **PASS**.
+
+```text
+WP-ARCH-CLOSE              = PASS
+Compiler architecture      = STABILIZED
+Architecture Stabilization = CLOSED
+
+provisional ONLY under AC7's twenty-defect observation period (COMPILER-CHARTER.md §7)
+```
+
+### The state this licenses
+
+```text
+Known reachable compiler capability gaps    NONE
+Native language coverage                    a generated, drift-gated conformance matrix
+Qualification infrastructure                reliable -- red required checks are actionable
+Semantic authority policy                   every demonstrated defect repaired at its owner
+Architecture reopen policy                  ACTIVE, CHARTER §7, next 20 substantive defects
+Next work                                   standalone toolchain / C9 Part B / platform
+```
+
+**Continuous compiler-architecture work ends here.** Future compiler defects are ordinary
+maintenance unless §7's reopen rule fires.
+
+### What PASS does NOT license — the load-bearing half
+
+A closure verdict is the moment a project is most likely to over-read its own evidence, so the
+limits are restated at the decision rather than left behind in the packet:
+
+```text
+NOT "the architecture is proven correct"
+    PASS means every criterion was met and no Class-D finding survived. AC5 swept every
+    CATEGORY on its list; it did not enumerate every instance in each
+
+NOT "closure is final"
+    PROVISIONAL until twenty qualifying substantive defects pass with no AC7 trigger
+
+NOT "there is no intermittency"
+    two greens on ONE tree. At this repository's observed flake rate, two samples pass with
+    ~64% probability despite a live flake
+
+NOT "no generated program can leak"
+    AC4-F4's control falsifies the destruction DECISION. Native built-in deallocation stays an
+    explicit assurance residual and must never be described as directly observed
+
+NOT "every authority has an independent falsifier"
+    12 of 16 shared-fate entries remain INVISIBLE to some engine pair; two named rules have no
+    independent control and ESF-TRAP-001a admits none that can be constructed
+
+NOT "the compiler's own suite covers resource lifecycle"
+    release is controlled by the package/provider lane (AC4-F6), which is therefore a REQUIRED
+    closure and release input for lifecycle changes
+
+NOT an authorisation to promote `develop -> main`
+    a separate CE8 decision, as CD-398 and CD-399 were. PR #27 proposes it
+```
+
+### Why the verdict is credible
+
+**The campaign repeatedly falsified its own measuring assumptions.** Four of AC4's seven findings
+existed only because a survival was challenged rather than recorded, and three instrumentation
+defects were found on the way — a missing `--no-fail-fast`, a mutation that could not fire, and
+mutations aimed at code no test reached. A qualification that catches errors in its own evidence is
+one whose remaining green results carry weight. That is the argument for PASS, not a caveat on it.
+
+### A recording error in the commit that preceded this one
+
+`e43a79a` carries a message describing CD-403 and **contains only the packet plan file**: the
+state-file edit in that step failed an assertion and never wrote, while the commit proceeded. The
+decision record you are reading is added here, one commit later.
+
+Recorded rather than quietly corrected, because the failure mode matters for a decision record: **a
+commit message is not evidence that its content landed.** Anyone auditing this closure should read
+the file, not the log.
 
 ## FINAL QUALIFICATION COMPLETE — both runs green from the qualifying tree (2026-08-12)
 
