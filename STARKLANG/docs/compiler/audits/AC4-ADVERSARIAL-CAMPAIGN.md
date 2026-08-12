@@ -28,9 +28,9 @@ type identity and Copy              1,1b,1c,2    COVERED
 runtime-function classification     da           COVERED   both copies killed
 resolution / namespaces             9,9b,ac4-ns  COVERED   both halves: where names are filed
                                                  and where they are looked for (§2.4)
-trait / bound dispatch              3,ac4-bound  PROBED    5 arms; 2 executed by any test.
-                                                 AC4-F3 (§2.6) -- Ref, Core and Param arms are
-                                                 never run
+trait / bound dispatch              3,ac4-bound  COVERED   5 arms; AC4-F3 REPAIRED (§2.6) --
+                                                 ac4_bound_arms executes all three that were
+                                                 never run; 4 of 4 mutations now die
 Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. AC4-F4:
                                                  built-in destruction is observable only
                                                  incidentally (§2.7)
@@ -269,8 +269,30 @@ reach is not coverage of a matrix over eight primitives.
 `three_engine_differential`, `adversarial_trait_impls`, `c46_class_a`, `dev075_operator_bounds`.
 Only `--lib` reaches it at all. Not every suite was swept, and the claim is limited to those six.
 
-**All four trials are now declared SURVIVED on measurement**, so the gap is tracked mechanically. A
-run that comes back KILLED is good news and must be re-declared.
+**AC4-F3 REPAIRED, 2026-08-12.** `starkc/tests/ac4_bound_arms.rs` — eight controls that make the
+three unexecuted arms execute. All four mutations now die, each to a purpose-built case:
+
+```text
+BND-001  Ref forwarding drops Display   -> a_reference_forwards_display_to_its_referent
+BND-002  Primitive matrix admits Bool   -> bool_satisfies_eq_but_not_ord
+BND-003  Iterator list drops VecIter    -> a_vec_cursor_satisfies_iterator
+BND-004  Param discharge disabled       -> an_enclosing_bound_discharges_a_callees_obligation
+```
+
+**Three of the eight exist to stop a lazy arm passing.** `a_parameter_without_the_bound_does_not_
+discharge_it` catches an arm that answers `true` unconditionally, which would satisfy every positive
+case; `char_is_ordered` paired with the `Bool` rejection catches an arm excluding both, which would
+satisfy the `Bool` test while being wrong.
+
+**Every case was probe-confirmed to reach its arm before being written.**
+`fn show<T: Display>(v: &T)` looks like it exercises reference forwarding and does not — the body
+dereferences and the check sees `T`. The shape that works is `show(&n)`, with `T` INSTANTIATED to a
+reference. Writing the plausible-looking version is how the gap arose in the first place.
+
+**A language limitation was found while writing the Iterator case and recorded rather than filed.**
+`for _x in it` where `it: I` with `I: Iterator` is refused — `E0001 "for-loop requires an iterable
+value, found 'I'"`. A `for` loop needs a concrete iterable; the bound alone is not enough. Adjacent
+to DEV-144, not the same thing. The test uses `.next()` because the bound check is what it is for.
 
 **Why this is worse than "no falsifier".** AC4-F2 was a constructed fact nothing consumed — the
 repair was deletion. This is the opposite: live semantic rules, each one decided on real programs,
@@ -527,18 +549,16 @@ property of an authority's arms, not of it having a trial.**
 ## 4. Remaining work, in priority order
 
 ```text
-1  AC4-F3   trait/bound dispatch: three of five arms are never EXECUTED by any test. Not a
-            missing mutation -- live semantic rules with no test that runs them
-2  AC4-F5   MIR-0029 and MIR-0037 censused but NOT mutated; MIR-0035 falsified as unenforced.
+1  AC4-F5   MIR-0029 and MIR-0037 censused but NOT mutated; MIR-0035 falsified as unenforced.
             One hand-built malformed body per rule is the repair, in mir_verify's own shape
-3  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
+2  AC4-F4   built-in destruction is unobservable by the drop log, for every built-in owning
             type. Alternative control NAMED (the Miri lane, or a leak harness); not built
-4  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
+3  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's own suite.
             The claim is covered; a contributor running `cargo test -p starkc` sees green
 
    all eleven authorities are ADDRESSED; none remains PARTIAL
 
-5  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
+4  shared-fate register   RECONCILED 2026-08-12, JSON first. ELEVEN ENTRIES BECAME SIXTEEN:
                           ESF-TRAIT-002 (F3), ESF-DROP-003 (F4), ESF-VERIFY-001 (F5,
                           ENGINE_LOCAL), ESF-RES-002 (F6), ESF-LOWER-001 (F7). One binding
                           rule added. EI0's vocabulary UNCHANGED; no existing row's

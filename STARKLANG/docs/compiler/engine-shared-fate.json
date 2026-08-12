@@ -216,12 +216,12 @@
       "native": "INDIRECT",
       "rustc": "none",
       "visibility": "INVISIBLE",
-      "evidence": "SPEC_DERIVED",
-      "independent_evidence": "PARTIAL \u2014 the Primitive and Nominal arms execute (26 reaches across the lib suite, for Eq/Hash/Ord). The Ref forwarding, Core (incl. the eight-member Iterator list) and Param discharge arms execute ZERO times",
-      "residual": "AC4-F3: three of five live semantic arms have NO EXECUTING TEST. This is not 'three mutations survived' \u2014 the mutations were unreachable. An authority whose arms are not executed cannot be said to have a falsifier, so the independence question is premature",
-      "risk": "high",
+      "evidence": "SPEC_DERIVED+HAND_AUTHORED",
+      "independent_evidence": "ac4_bound_arms (8 cases) \u2014 all five arms now execute. The Ref forwarding, Core (incl. the Iterator membership list) and Param discharge arms were added 2026-08-12; each of the four arm-level mutations is killed by a purpose-built case",
+      "residual": "AC4-F3 REPAIRED 2026-08-12. Was: three of five live semantic arms had no executing test, so arm-level mutations survived as UNREACHABLE rather than undetected. Remaining residual is narrower \u2014 the arms execute and are falsified, but the evidence is HAND_AUTHORED and the bound matrix (nine bound names x five arms) is not exhaustively enumerated",
+      "risk": "medium",
       "review_trigger": "any change to satisfies_bound_identity's arms, or to the bound names it decides",
-      "amended": "2026-08-12 AC4 \u2014 new entry. ESF-TRAIT-001 covers the Core trait SIGNATURE contract (receiver/params/return); bound SATISFACTION is a different fact and was unregistered"
+      "amended": "2026-08-12 AC4 \u2014 new entry. ESF-TRAIT-001 covers the Core trait SIGNATURE contract (receiver/params/return); bound SATISFACTION is a different fact and was unregistered | 2026-08-12 AC4-F3 repaired: ac4_bound_arms makes all five arms execute; risk high -> medium"
     },
     {
       "id": "ESF-DROP-003",
