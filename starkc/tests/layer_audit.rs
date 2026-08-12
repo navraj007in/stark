@@ -39,201 +39,20 @@
 //!
 //! Reading the output:
 //!
+//! **The probe table itself lives in `support/layer_probes.rs` since WP-ARCH-CLOSE AC2**, because
+//! the published native conformance matrix is generated from the same measurements. Two suites
+//! reading one table cannot disagree about what a probe does; two tables would be a second
+//! classifier for one question.
+//!
 //! ```text
 //! LAYER-DEFECT  front end ACCEPTED, lowering refused  -> an E0105-class defect
 //! ok-frontend   front end refused                     -> correct: refused where it should be
 //! ok-lowers     both accepted                         -> the probe does not reach its site
 //! ```
 
-use starkc::mir::lower::lower_program;
-use starkc::parser::{parse, ParseMode};
-use starkc::resolve::resolve;
-use starkc::source::SourceFile;
-use starkc::typecheck;
-use std::sync::Arc;
+mod support;
 
-/// The disposition a probe is REGISTERED as having. Every probe declares one; the test compares
-/// it against what actually happens.
-#[derive(Debug, PartialEq, Eq)]
-enum Expect {
-    /// The front end refuses it. The program never reaches lowering — correct layering.
-    FrontEnd,
-    /// Both layers accept. The probe does not reach the site it was aimed at, which is recorded
-    /// rather than deleted so the site keeps a name.
-    Lowers,
-    /// A KNOWN reachable lowering refusal, owned by this deviation. Not repaired by
-    /// WP-DEV-134-139; registered so it is tracked rather than merely observed.
-    KnownDev(&'static str),
-}
-
-enum Outcome {
-    /// The front end accepted and lowering refused: the defect this audit looks for.
-    LayerDefect(String),
-    /// The front end refused. Correct — the program never reaches lowering.
-    FrontEnd(String),
-    /// Both accepted: this probe does not reach the site it was aimed at.
-    Lowers,
-}
-
-fn probe(src: &str) -> Outcome {
-    let file = Arc::new(SourceFile::new("probe.stark", src.to_string()));
-    // A PARSE or RESOLVE refusal is the front end refusing, which is the outcome this audit is
-    // asking about — it is not a broken probe. These used to assert, so the `L3483 nested item`
-    // probe (rejected by the parser, since Core v1 has no nested items) took the whole audit down
-    // and no result was reported at all. Classifying instead of asserting is what lets a probe aimed
-    // at a lowering site legitimately land in the front end.
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    if let Some(first) = pd.first() {
-        return Outcome::FrontEnd(format!(
-            "parse: {} {}",
-            first.code.as_deref().unwrap_or("-"),
-            first.message
-        ));
-    }
-    let (hir, rd) = resolve(&ast, file.clone());
-    if let Some(first) = rd.first() {
-        return Outcome::FrontEnd(format!(
-            "resolve: {} {}",
-            first.code.as_deref().unwrap_or("-"),
-            first.message
-        ));
-    }
-    let checked = typecheck::analyze(&hir);
-    let errors: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == starkc::diag::Severity::Error)
-        .collect();
-    if let Some(first) = errors.first() {
-        return Outcome::FrontEnd(format!(
-            "{} {}",
-            first.code.as_deref().unwrap_or("-"),
-            first.message
-        ));
-    }
-    match lower_program(
-        &hir,
-        &checked.tables,
-        hir.source_named(&file.name).expect("registered"),
-    ) {
-        Ok(_) => Outcome::Lowers,
-        Err(e) => Outcome::LayerDefect(e.what),
-    }
-}
-
-/// Each entry is `(label, source)`. The label names the lowering refusal the probe aims at.
-fn probes() -> Vec<(&'static str, &'static str, Expect)> {
-    vec![
-        (
-            "L10807 nested pattern in match arm",
-            "fn main() { let o: Option<Result<Int32, Bool>> = None; \
-             match o { Some(Ok(n)) => { println(n); } Some(Err(_b)) => { } None => { } } }",
-            Expect::Lowers,
-        ),
-        (
-            "L9516 integer match without a default arm",
-            "fn main() { let n: Int32 = 1; match n { 1 => { println(1); } 2 => { println(2); } } }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L6979 Option combinator on a droppable payload",
-            "fn main() { let o: Option<String> = None; \
-             let s = o.unwrap_or(String::from(\"x\")); println(s.len()); }",
-            Expect::Lowers,
-        ),
-        (
-            "L7153 Vec:: method outside the implemented set",
-            "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.insert(0u64, 2); }",
-            Expect::KnownDev("DEV-140"),
-        ),
-        (
-            "L8109 HashMap:: reserved for std-full",
-            "fn main() { let mut m: HashMap<Int32, Int32> = HashMap::new(); m.insert(1, 2); \
-             let _e = m.entry(1); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L8093 HashMap over user-Drop value types",
-            "struct D { v: Int32 } impl Drop for D { fn drop(&mut self) { } } \
-             fn main() { let mut m: HashMap<Int32, D> = HashMap::new(); m.insert(1, D { v: 1 }); }",
-            Expect::KnownDev("DEV-141"),
-        ),
-        (
-            "L9346 print/println of this type",
-            "struct P { a: Int32 } fn main() { let p = P { a: 1 }; println(p); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L9096 Display of a type inside a composite",
-            "fn main() { let t: (Int32, Bool) = (1, true); println(t); }",
-            Expect::Lowers,
-        ),
-        (
-            "L9130 droppable composite carrying a borrowed element",
-            "fn main() { let s = String::from(\"a\"); let t: (String, &str) = (s, \"b\"); println(t); }",
-            Expect::KnownDev("DEV-142"),
-        ),
-        (
-            "L5346 assert_eq on a user-defined type",
-            "struct P { a: Int32 } impl Eq for P { fn eq(&self, other: &P) -> Bool { self.a == other.a } } \
-             fn main() { let x = P { a: 1 }; let y = P { a: 1 }; assert_eq(x, y); }",
-            Expect::KnownDev("DEV-143"),
-        ),
-        (
-            "L3698 for over a non-range, non-Vec iterator",
-            "fn main() { let mut m: HashMap<Int32, Int32> = HashMap::new(); m.insert(1, 2); \
-             for v in m.values() { println(*v); } }",
-            Expect::KnownDev("DEV-144"),
-        ),
-        (
-            "L2004 move through a non-field projection of a drop-tracked local",
-            "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); \
-             let a: [String; 1] = [String::from(\"b\")]; let m = a[0u64]; println(m.len()); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L4387 field access on non-struct",
-            "fn main() { let t: (Int32, Int32) = (1, 2); println(t.0); }",
-            Expect::Lowers,
-        ),
-        (
-            "L6450 method on a peeled type outside the slice",
-            "fn main() { let s = String::from(\"abc\"); let u = s.to_uppercase(); println(u.len()); }",
-            Expect::KnownDev("DEV-145"),
-        ),
-        (
-            "L5130 indexing a non-Vec/array base",
-            "fn main() { let s = String::from(\"abc\"); let b = s[0u64]; println(b); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L1884 array length is not a literal count",
-            "const N: UInt64 = 4u64; fn main() { let a: [Int32; 4] = [0; 4]; println(a[0u64]); }",
-            Expect::Lowers,
-        ),
-        (
-            "L8238 HashSet:: reserved for std-full",
-            "fn main() { let mut s: HashSet<Int32> = HashSet::new(); s.insert(1); \
-             let o: HashSet<Int32> = HashSet::new(); let u = s.union(&o); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L4083 unary operator outside the set",
-            "fn main() { let x: Int32 = 1; let y = -x; println(y); }",
-            Expect::Lowers,
-        ),
-        (
-            "L3483 nested item",
-            "fn main() { fn inner() -> Int32 { 1 } println(inner()); }",
-            Expect::FrontEnd,
-        ),
-        (
-            "L6901 Option/Result method outside the slice",
-            "fn main() { let o: Option<Int32> = Some(1); let m = o.map_or(0, 1); println(m); }",
-            Expect::FrontEnd,
-        ),
-    ]
-}
+use support::layer_probes::{probe, probes, Expect, Outcome};
 
 #[test]
 fn layer_audit_matches_its_registered_inventory() {
@@ -242,8 +61,9 @@ fn layer_audit_matches_its_registered_inventory() {
     let (mut frontend, mut lowers) = (0usize, 0usize);
 
     println!("\n=== LAYER AUDIT: front end vs lowering (registered inventory) ===\n");
-    for (label, src, expected) in probes() {
-        let outcome = probe(src);
+    for entry in probes() {
+        let (label, expected) = (entry.label, entry.expect);
+        let outcome = probe(entry.source);
         let actual = match &outcome {
             Outcome::LayerDefect(what) => {
                 println!("LAYER-DEFECT | {label}\n               lowering: {what}");

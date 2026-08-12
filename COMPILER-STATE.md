@@ -5,16 +5,20 @@
 *Charter §2.4 position line. Updated 2026-08-10. **Read this block, not the chronology below.***
 
 ```text
-Gate: POST-C10 (no gate active)  Next: standalone toolchain / C9 Part B second artifact
+Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400) — AC2 MET, AC3 repair
+                                 landed but AC3 exit NOT met (two clean CI runs outstanding)
+                                 Next in order: AC1, the DEV-160 architecture probe
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 10 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-233 (the interpreter loses output written before a trap), DEV-235 (a promotion-gating check that fails on loopback socket timing, so a
-              red check there can carry no information about the tree it gates). DEV-229 RESOLVED
+Population A: 9 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
+              DEV-233 (the interpreter loses output written before a trap). DEV-235 RESOLVED
+              2026-08-12 under WP-ARCH-CLOSE AC3: the promotion-gating check failed because an
+              accepted socket inherited the listener's non-blocking flag on macOS, not because of
+              timing — see CD-400. DEV-229 RESOLVED
               2026-08-11: the prelude spellings are a fallback, not a pre-emption, which the
               namespaces made expressible. DEV-228 RESOLVED 2026-08-11: the
               resolver now carries the module/type/value namespaces NAME-RESOLVE-001 specifies,
@@ -37,7 +41,7 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 
 | | |
 | --- | --- |
-| **Active packet** | **NONE — the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
+| **Active packet** | **WP-ARCH-CLOSE — AUTHORISED AND ACTIVE (CD-400, 2026-08-12)**, `plans/WP-ARCH-CLOSE-ARCHITECTURE-CLOSURE-QUALIFICATION.md`. Three outcomes: PASS / INCOMPLETE / FAIL-ARCHITECTURE. **AC2 MET** — `starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` is generated from a live compiler run and drift-gated in both directions (falsified both ways before being trusted); DEV-140..145 all present as executable boundary probes. **AC3's repair has landed — DEV-235 RESOLVED, population A 10 -> 9 — and AC3's exit is NOT met**: it also requires two complete clean CI runs with no rerun-to-green. Next in execution order is AC1, the DEV-160 architecture probe. The AC7 triage field and the `FINAL_REPAIR_SHA` freshness rule bind from CD-400 onward. *Previously:* **the post-C10 deviation repair programme CLOSED 2026-08-10** (`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`). Baseline `689d26d`, final candidate `5967a42`, **population A 13 -> 8**. RESOLVED: DEV-180, DEV-220, DEV-157, DEV-168, DEV-159, DEV-165 (population B); DEV-120 reclassified as a documented limit, DEV-167 closed by owner decision under CE1. DEV-160's **rustc E0502 leak is SEALED** — a STARK-owned named refusal replaces the generated-Rust error — while its cross-block capability stays OPEN. DEV-140..145 assessed individually and **repair DEFERRED by owner decision**: not one of the six shapes is used by any first-party package, and they continue to define the supported native subset. DEV-221 newly registered (`Display::fmt` on a bounded generic receiver, ergonomic; `x.fmt()` works). CI and C7.8 Native Capabilities both green at the final candidate across Linux, macOS and Windows |
 | **Promotion** | **`develop -> main` AUTHORISED — CD-399 (owner, CE8, 2026-08-11)** for compiler tree `860e33a`, CI `31468998989` 24/24 green. It states the fact the decision turns on: population A is 8 on `main` and 11 here, and the three added were DISCOVERED, not introduced — `main` has DEV-228/229/233 too and has never recorded them, while carrying ten defects this tree closed. Below is the SPENT authorisation it replaces. **`develop -> main` AUTHORISED — CD-398 (owner, CE8, 2026-08-10)**, the separate decision CD-397 said would follow it. Candidate **PR #21**, compiler tree `5967a42`, merge commit preserving history. **Conditional on `main`'s required `CI complete` going green for this tree** — a red required check withdraws the authorisation rather than inviting an override. It promotes a branch and **does not upgrade any claim**: PASS-WITH-DEVIATIONS, unsigned distribution, and all eight open population-A entries survive the merge unchanged |
 | **Superseded packet** | *(historical)* **C10-0, P, A1, A2, B, C, D, E, F ALL COMPLETE**; DEV-012/213/214 all closed. Toolchain branch INTEGRATED (PR #15, develop `eb60dec`); **§8.2a re-run DONE** — 31 stale, 9 re-run, 9/9 reproduced. **ALL ELEVEN EXIT CRITERIA MET** at `076b4dc`. PR #16 merged; E9 (23 A + 5 B + 20 C, all owned), **E10 green in 28/28 jobs**, E11 swept. **C10-Q DECIDED.** Reproduction pass COMPLETE over all of population A (`audits/C10-Q-REPRODUCTION-PASS.md`): **7 of the 23 deviations at the anchor do not reproduce** — DEV-083/122/161/162/177/178/181 — so **population A is 16**, every entry observed at the candidate rather than inherited (DEV-159, a build race, carried conservatively). NO deviation accepts what the spec forbids. **DECIDED: PASS-WITH-DEVIATIONS (owner, CE8, 2026-08-09) — GATE C10 CLOSED.** **DEV-180 SCHEDULED (owner ruling 2026-08-09): its own packet, immediately after C10-Q closes and not before** — binding a genuine reference for `&mut self` changes what the HIR oracle means by a mutable receiver, and the oracle is what every engine-agreement claim is measured against. Its three prerequisite questions are answered in the ledger so the packet does not restart the investigation |
 | **Active branch** | `develop` — Sprint 3 and Sprint 4 both landed as merge commits (`645997d`, `d79ad03`) |
@@ -54,6 +58,8 @@ Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
 ```text
 this file, top             the current position — you are reading it
 this file, CD-398 down     the append-only decision record, newest first
+starkc/docs/conformance/    NATIVE-CONFORMANCE-MATRIX.md — is a construct supported natively?
+                            Generated, drift-gated, and the answer an external developer needs
 AS8-MUTATION-FINDINGS.md   what the mutation trials actually showed
 ENGINE-SHARED-FATE-...     which semantic rules no engine can independently check
 state-archive/             closed gate detail and session records, verbatim
@@ -62,10 +68,15 @@ ROADMAP.md (repo root)     the one live forward plan
 
 ## Known open, at a glance
 
-**SUPERSEDED FOR POPULATION A, 2026-08-10.** The census below is the state at the C10 anchor and
-is kept for provenance. **Population A is now 8** — DEV-140/141/142/143/144/145, DEV-160, DEV-221 —
-per `STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md`, which computed it with
-`python3 starkc/scripts/c10-deviation-populations.py` at every step. Populations B and C below are
+**SUPERSEDED FOR POPULATION A, 2026-08-10; the count moved again on 2026-08-12.** The census below
+is the state at the C10 anchor and is kept for provenance. **Population A is 9 today** —
+DEV-140/141/142/143/144/145, DEV-160, DEV-221, DEV-233 — per the position line at the top of this
+file, which is the authority. It reached **8** through
+`STARKLANG/docs/compiler/audits/POST-C10-DEVIATION-REPAIR-REPORT.md` (2026-08-10), rose to 11 and
+then fell to 10 as the 2026-08-11 resolution audits discovered and closed entries, and fell to 9
+when CD-400 resolved DEV-235. Every one of those figures was computed with
+`python3 starkc/scripts/c10-deviation-populations.py`, which remains the only trustworthy way to
+ask. Populations B and C below are
 unchanged **except** DEV-165, which the repair programme resolved. Read the entries below as history;
 read the report for what is open.
 
@@ -143,6 +154,121 @@ Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-400 — WP-ARCH-CLOSE AUTHORISED as the active packet; AC3's first repair has landed (2026-08-12)
+
+**Owner decision, 2026-08-12.** `WP-ARCH-CLOSE` — the final compiler architecture closure
+qualification — is the **active packet**, executing under
+`STARKLANG/docs/compiler/plans/WP-ARCH-CLOSE-ARCHITECTURE-CLOSURE-QUALIFICATION.md`. Until this
+entry the position line said no packet was active while a closure package was being written, which
+is exactly the state the record exists to prevent.
+
+**This entry authorises the packet and takes none of its verdicts.** WP-ARCH-CLOSE's outcome is a
+CE8 claim — architecture STABILIZED, and a published native conformance contract, are both public
+technical claims requiring an evidence audit. Nothing below upgrades any claim.
+
+```text
+packet             WP-ARCH-CLOSE          AUTHORISED, ACTIVE
+scope              AC1 DEV-160 probe · AC2 executable native conformance contract ·
+                   AC3 qualification reliability · AC4 adversarial authority campaign ·
+                   AC5 patchwork audit · AC6 public wording · AC7 reopen sensor
+not a gate         it is neither a C-gate under COMPILER-ROADMAP.md nor a ROADMAP.md track
+outcome model      PASS | INCOMPLETE | FAIL-ARCHITECTURE  -- three states, not two
+                   difficulty produces INCOMPLETE; only an architecture finding produces
+                   FAIL-ARCHITECTURE, and Architecture Stabilization is NOT reopened by
+                   unfinished work
+execution order    AC3, AC2, [pre-alpha cohort may start], AC1, AC4, AC5, AC6, AC7,
+                   FINAL_REPAIR_SHA, rerun all evidence, decide
+```
+
+### Two rules bind from today, not at closure
+
+- **The AC7 triage sensor is live.** Every new substantive compiler DEV entry carries an
+  `Architecture trigger:` field — `NONE`, `AC7-A`..`AC7-F`, or `PENDING-CLASSIFICATION` — and **may
+  not leave triage still pending**. The twenty-defect observation count is then derived from the
+  ledger mechanically instead of being reconstructed from memory later. DEV-235's resolution entry
+  carries the first one.
+- **Final evidence must postdate `FINAL_REPAIR_SHA`.** No closure evidence may predate the last
+  repair affecting the claim it supports. Evidence generated earlier is historical and cannot close
+  the package. This is what stops closure evidence predating the defects it claims to cover.
+
+### AC3 — DEV-235 RESOLVED, and the exit is NOT yet met
+
+`DEV-235` is **RESOLVED** (ledger, 2026-08-12). The registration blamed "loopback socket timing";
+the cause was a socket flag. `EchoServer`'s listener is non-blocking so its accept loop can poll a
+stop channel, and **on macOS and the BSDs an accepted socket inherits `O_NONBLOCK` where on Linux
+it does not** — so the echo thread's first read returned `WouldBlock` in microseconds, the harness
+discarded the error, and the closed connection reached the client as EOF in place of its echo. A
+standalone probe on macOS arm64 measured the inheritance directly (`READ Err(WouldBlock) after
+3.667µs`); the five-second deadline was never consulted. **No timeout would have repaired this**,
+which is why the package refuses timeout-tuning as a flake response.
+
+`packages/stark-tls`'s peer already carried the fix and a comment describing the same divergence.
+The two harnesses were written from one shape and only one was repaired.
+
+The harness now also **reports its own failures** (`HarnessError::Echo`) instead of discarding
+them, so this class of defect accuses the harness rather than the provider under test. Falsified by
+removing the repair: both the new regression test and the original detach test fail deterministically
+on macOS, the second now naming `WouldBlock` explicitly. Restored: 12/12 green, three consecutive runs.
+
+```text
+population A       10 -> 9      DEV-140..145, DEV-160, DEV-221, DEV-233
+AC3 exit           NOT MET      it additionally requires two complete clean CI runs with no
+                                failed job rerun to green, on all Tier-1 platforms. Neither has
+                                been run at this tree
+```
+
+**This is one mechanism removed from one harness.** It is not a claim that the qualification lanes
+are free of timing dependence: `send_frame`'s call-site deadlines and the TLS peer's remain,
+unexercised and unchanged by this repair.
+
+### AC2 — the native conformance contract is EXECUTABLE and drift-gated
+
+`starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` is **generated from a live compiler run** by
+`starkc/tests/native_conformance_matrix.rs`, which validates it on every CI run on all three Tier-1
+platforms. It answers, without `COMPILER-STATE.md` or the deviation ledger: *is this construct
+supported natively, and if not, what happens when I write it?*
+
+```text
+20 boundary constructs measured
+     6  SUPPORTED           all executed through HIR, MIR, native debug AND native release,
+                            compared on the full normative observation by the same comparator
+                            the C6 differential suites use
+     8  REFUSED-BY-DESIGN   each with the STARK diagnostic that refuses it, by code
+     6  KNOWN-DEVIATION     DEV-140..145, every one present, each a STARK-owned refusal
+                            arriving before any code is emitted
+```
+
+**The drift gate was falsified in both directions before it was trusted**, which is the only reason
+to believe it:
+
+```text
+published matrix hand-edited            -> FAILS, naming the line, published vs measured
+   (DEV-140's row flipped to SUPPORTED)
+
+compiler mutated, matrix untouched      -> FAILS
+   (integer negation made to refuse)       "registered as lowering cleanly, but it was
+                                            refused by MIR lowering"
+```
+
+The mutation was reverted; `git diff` on `lower.rs` is empty.
+
+**No second classifier was created.** The probe inventory moved from `layer_audit.rs` into
+`tests/support/layer_probes.rs`, and the audit's three-way verdict is now *projected from* the same
+staged measurement the matrix renders — one traversal of the compiler, two readings. A matrix built
+beside the audit would have been exactly the duplicate-authority shape AC5 exists to find.
+
+**What the matrix does not claim**, stated in the file itself: it is a boundary inventory, not a
+census of the language; a `KNOWN-DEVIATION` row is valid STARK refused by this compiler rather than
+by the specification; and `SUPPORTED` means the four configurations agreed *on that probe*, with the
+probe's own expectation pinned separately by `layer_audit` so agreement alone cannot carry a row.
+
+```text
+AC2 exit           MET for the boundary inventory. An external developer can determine the
+                   status of these constructs without reading any governance document
+open              the inventory covers the edges; extending it as new boundaries appear is
+                   ordinary maintenance of the generator, not a new packet
+```
 
 ## CD-399 — `develop -> main` PROMOTION AUTHORISED for compiler tree `860e33a`, on a count that went UP (2026-08-11)
 

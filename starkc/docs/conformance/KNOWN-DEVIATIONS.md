@@ -9683,3 +9683,123 @@ The twenty-six spellings remain a string-matched table rather than entries in th
 namespaces. Making them ordinary namespace entries a user declaration shadows by the normal rule
 would delete the special case entirely; the fallback keeps it, in a position where it can no longer
 pre-empt. That is a smaller, later cleanup and is not required for conformance.
+
+## DEV-235 — RESOLVED (2026-08-12): the accepted socket inherited the listener's non-blocking flag
+
+```text
+Architecture trigger:  NONE
+Counts toward AC7's twenty:  NO — test infrastructure, no compiler semantic consequence
+```
+
+The registration said the check "fails on loopback socket timing". That was the symptom. The cause
+is a socket flag, and no timeout would ever have fixed it.
+
+`EchoServer::spawn` puts its listener in non-blocking mode so the accept loop can poll its stop
+channel. **On Linux an accepted socket does not inherit `O_NONBLOCK`; on macOS and the BSDs it
+does.** Inherited, the echo thread's first `read_exact` returns `WouldBlock` the instant it is
+called. `echo_connection` had no arm for `WouldBlock`, so it returned `Err`, the spawned thread ran
+`let _ = echo_connection(...)` and discarded it, the stream dropped, and the connection closed —
+which reaches the client as **EOF in place of its echo**.
+
+That is why the failure was macOS-only, why it was intermittent, and why it passed on re-run: it
+needs the accept and the first read to win the race against the client's first byte. It is also why
+the accusation landed in the wrong place. The panic was at the provider test's `read_exact`, so the
+evidence said *"the detached socket is dead"* when the truth was *"the harness hung up"*.
+
+### Measured, on macOS arm64
+
+A standalone probe, outside the crate, reproducing only the flag question:
+
+```text
+listener.set_nonblocking(true) -> accept() -> set_read_timeout(5s) -> read()
+
+READ Err(WouldBlock) after 3.667µs
+VERDICT: accepted socket INHERITED O_NONBLOCK
+```
+
+The 5-second deadline is not consulted at all. The read fails in microseconds.
+
+### The repair
+
+```text
+packages/stark-net/native/src/lib.rs
+
+1  stream.set_nonblocking(false)? on every accepted socket, before anything reads it
+2  echo_connection classifies: is_peer_gone() ends the connection normally;
+   anything else -- WouldBlock above all -- is a harness DEFECT
+3  EchoServer records those defects and shutdown() reports them as HarnessError::Echo
+4  the client-side deadline is now the named HANG_GUARD constant, documented as a hang
+   guard rather than a synchronisation device
+```
+
+Item 3 is the part that makes red mean red. Under the unrepaired harness the failure arrives as an
+unexplained EOF at an assertion about the provider; under the repaired one it arrives as
+`Echo("Io(Os { code: 35, kind: WouldBlock })")` from the harness, naming itself.
+
+### This was already known one crate away
+
+`packages/stark-tls/native/src/lib.rs` carries `socket.set_nonblocking(false)` with a comment
+stating the same Linux/BSD divergence, and records what it cost there: *"ten failures, all status
+28, the whole suite finishing in 0.33s because nothing ever waited for anything."* The two
+harnesses were written from one shape and **only one of them was repaired**. The net harness kept
+the defect for as long as it took a race to expose it on a promotion-gating lane.
+
+### Falsification
+
+`a_client_that_pauses_before_speaking_still_gets_its_echo` forces the adverse ordering rather than
+waiting for it: the client connects, pauses 250 ms so the harness reaches its first read with
+nothing to read, and only then sends its frame. With the repair removed:
+
+```text
+a_client_that_pauses_before_speaking_still_gets_its_echo
+    panicked: UnexpectedEof "failed to fill whole buffer"
+
+a_detached_socket_is_live_and_this_provider_has_forgotten_it
+    panicked: Echo("Io(Os { code: 35, kind: WouldBlock ... })")     <- named, not mysterious
+```
+
+Both are deterministic on macOS with the repair removed. With it restored, the crate's 12 tests
+pass, run three times consecutively. The lane that registered this deviation — `C7.8 Native
+Capabilities`, step `provider-loopback` — runs the whole crate suite on all three Tier-1 platforms,
+so the new test travels with it.
+
+### What is deliberately not claimed
+
+This removes one mechanism from one harness. It does not establish that the qualification lanes are
+free of timing dependence generally; `send_frame`'s two-second call-site deadlines and the TLS
+peer's ten-second ones remain, unexercised by this repair and unchanged by it. AC3's exit also
+requires two complete clean CI runs with no rerun-to-green, which this entry does not assert.
+
+## The six native-subset boundaries: the external-facing limitation now exists (2026-08-12, WP-ARCH-CLOSE AC2)
+
+*Covers DEV-140, DEV-141, DEV-142, DEV-143, DEV-144 and DEV-145. **Deliberately not titled with a
+`DEV-nnn` heading**: this file is append-only and `c10-deviation-populations.py` reads the LAST
+heading for an id as its status. A `## DEV-140 …` title here would have silently re-dispositioned
+DEV-140 and dropped population A from 9 to 8. It did exactly that on the first attempt.*
+
+```text
+Architecture trigger:  NONE
+Counts toward AC7's twenty:  NO — this changes no compiler behaviour
+```
+
+No status change: all six remain OPEN, and the owner's deferral of their repair stands. What changed
+is that they are now **externally legible without reading this file**.
+
+`starkc/docs/conformance/NATIVE-CONFORMANCE-MATRIX.md` carries a row for each of the six, generated
+from a live compiler run by `starkc/tests/native_conformance_matrix.rs` and validated on all three
+Tier-1 platforms in CI. Each row states the construct in a STARK author's terms rather than by
+lowering line number, names the owning DEV, and — where the deviation has one — names the working
+alternative spelling: `a == b` for DEV-143, `x.fmt()`-style ordinary method calls for the String and
+Vec method sets, printing the parts separately for DEV-142's composite.
+
+That satisfies AC2 §6.4's second form for an unsupported native boundary:
+
+```text
+documented unsupported native boundary       the matrix row
++ deterministic STARK-owned refusal          MIR lowering, before any code is emitted
++ external-facing limitation                 the matrix is the published contract
+```
+
+**The probes are the same ones `layer_audit` enforces.** The inventory moved to
+`starkc/tests/support/layer_probes.rs` and both suites read it, so a matrix row and an audit
+disposition cannot disagree about what a probe does.

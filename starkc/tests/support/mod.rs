@@ -13,4 +13,5 @@
 
 pub mod corpus;
 pub mod differential;
+pub mod layer_probes;
 pub mod paths;
