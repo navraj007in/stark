@@ -14,7 +14,8 @@ Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — *
                                  landed, AC3 exit NOT met — the two-run count is RESET: run 1
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
                                  (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
-                                 probe verdict POSITIVE. Population A 8
+                                 probe verdict POSITIVE. **AC5 COMPLETE — zero Class-D**; F4/F5/F7
+                                 open and owned. AC4/AC6/reopen-rule remain. Population A 8
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
@@ -346,6 +347,41 @@ Unswept categories:        explicitly listed (AC5-PATCHWORK-AUDIT.md §5)
 Acceptable for a controlled pre-alpha cohort, because the cohort is itself discovery evidence.
 **Not** acceptable for declaring WP-ARCH-CLOSE PASS, or for any unconditional public
 architecture-stability claim.
+
+## AC5 COMPLETE — every category swept, zero Class-D (2026-08-12)
+
+`STARKLANG/docs/compiler/audits/AC5-PATCHWORK-AUDIT.md`. Every category on AC5's search list has a
+stated denominator and a classification.
+
+```text
+findings, by disposition
+  DEV-236   left the A/B/C/D scheme entirely -- the spec already settles it. RESOLVED same day
+  F2 F4 F5 F6 F7   Class C. F3 and F6 REPAIRED in the audit; F4, F5, F7 owned and open
+  AS8-DA-002/003/004, has_user_destructor   Class B, deliberate, both copies mutation-killed
+  is_copy, precedence, builtin-keyed dispatch   Class A, legitimate
+  CLASS D                                    ZERO
+```
+
+**Zero Class-D is the condition for AC5 not to force FAIL-ARCHITECTURE. It is not a PASS** — §14
+gates that on AC4's campaign too.
+
+**Two results are worth more than the findings.** The category most likely to hold a Class-D —
+engine-local reconstruction, where AC1 found a genuine instance — came back clean *on measurement*:
+the MIR interpreter has ONE HIR reference in 2,878 lines, and every backend reference is an identity
+payload `MirTy` embeds rather than a lookup. And `packages/`, never previously examined, holds
+eleven historical notes that were correctly updated when their defect was fixed, and exactly one
+live workaround — whose own comment named the condition that had just been met.
+
+**What "complete" does NOT claim**, stated in the audit rather than left to a reader: every category
+was examined, not every instance found. A patchwork using none of the searched vocabulary would not
+appear.
+
+**F7 is the finding most likely to matter next.** `layer_audit.rs` enforces reachability at the
+front end -> lowering boundary; **nothing asks the same question at lowering/verify -> backend**. 109
+refusal sites, nine citing work packages closed long ago, and no test distinguishes "unreachable arm
+with stale text" from "unregistered acceptance boundary missing from the conformance matrix". This
+category already produced a real defect today — F3, DEV-160b's refusal still describing a mechanism
+removed hours earlier.
 
 ## DEV-236 RESOLVED — the architecture test in CD-401's Decision 2 PASSES (2026-08-12)
 

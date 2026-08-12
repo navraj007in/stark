@@ -1,8 +1,9 @@
 # WP-ARCH-CLOSE — Final Compiler Architecture Closure Qualification
 
-**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12).** **AC1, AC2 and AC3 are
-MET, and the §8 pre-alpha cohort gate is OPEN.** AC5 is IN PROGRESS with zero Class-D findings *in
-its swept categories*; AC4, AC6 and AC7 are open. Architecture closure remains **PROVISIONAL**. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
+**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12).** **AC1, AC2, AC3 and AC5 are
+MET, and the §8 pre-alpha cohort gate is OPEN.** AC5 found **zero Class-D**; three Class-C findings
+(F4, F5, F7) are open and owned. **AC4, AC6 and AC7 are not started.** Architecture closure remains
+**PROVISIONAL**. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
 additionally requires two complete clean CI runs with no rerun-to-green, and neither has been run —
 so the §8 cohort gate is **not** open. AC1, AC4, AC5, AC6 and AC7 are untouched.
 **Authored:** 2026-08-12, against `develop` at `2462b80`.
@@ -893,4 +894,5 @@ packet" row both name the packet as of that entry.
 | 2026-08-12 | **AC1 step 2** — cross-block absorption | **DONE. DEV-160 RESOLVED, population A 9 -> 8.** The thunk absorbs the call that produced the borrow; the reported shape and two variants build, run, and agree across all four engine configurations. The cheap repair — laundering the reference through a raw pointer at the call site — was **ruled out on Stacked Borrows grounds**: the thunk's `&'a mut` invalidates tags derived from any earlier borrow, so the reference must be created inside. Miri passes on the new shape under CI's flags; both fixture guards pass and the new one was falsified |
 | — | **AC1 exit** | **MET.** DEV-160 resolved, and the probe's verdict is POSITIVE: no engine-local dispatch, no downstream reconstruction, no duplicated authority, no precedence exception — one backend-specific restriction REMOVED and none added. Residual, stated: DEV-160c and DEV-160d unchanged and still refused by name, and only one producer may be absorbed per thunk |
 | 2026-08-12 | AC3's two-run count, structurally *(superseded by CD-401)* | **It cannot accumulate while repairs land.** `f780bb3` was fully green (24/24 + 4/4, attempt 1, all Tier-1 plus Miri) and is disqualified by §13 the moment DEV-160 lands, exactly as `cd6732f` was. This is the package's own design, not a defect in the runs: §17 step 9 collects the two runs AFTER `FINAL_REPAIR_SHA`. Read the count as "not yet started" until the repair sequence ends |
-| — | AC4, AC5, AC6, AC7 | **NOT STARTED** |
+| 2026-08-12 | **AC5** — patchwork/special-case audit | **COMPLETE. Zero Class-D.** Every category on the §10 search list swept with a stated denominator: 109k lines for markers, all 3,716 fns for duplicate classifiers, 109 backend refusal sites, 102 `.stark` files in `packages/`, 357 builtin-dispatch sites. Findings: DEV-236 (left the scheme — the spec settles it, RESOLVED same day), F2/F4/F5/F6/F7 Class C with F3 and F6 repaired in the audit, AS8-DA-* and `has_user_destructor` Class B, `is_copy`/precedence/builtin-dispatch Class A. **Zero Class-D is the condition for AC5 not to force FAIL-ARCHITECTURE — not a PASS**, which §14 gates on AC4 as well |
+| — | AC4, AC6, AC7 | **NOT STARTED** |

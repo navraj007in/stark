@@ -1,8 +1,8 @@
 # AC5 — patchwork / special-case audit
 
-**Packet:** WP-ARCH-CLOSE AC5, under CD-400. **Status: IN PROGRESS — not complete, and the closure
-criterion is not met.** Categories covered and not covered are listed in §5 so a reader can see the
-boundary rather than infer it.
+**Packet:** WP-ARCH-CLOSE AC5, under CD-400. **Status: COMPLETE — every category on the search list
+swept, zero Class-D findings.** What "complete" claims, and what it does not, is stated in §5; the
+distinction matters more than the verdict.
 
 **Tree:** `develop` at `8ebdaa6`. **Surface:** `starkc/src`, 106 files, 109,401 lines.
 
@@ -345,6 +345,77 @@ all — the same trap AC1 fell into and withdrew.
 the last heading decides, so it is closed. Those six comments explain why a doc comment sits where it
 does, are cosmetic, and are left as written.
 
+### 3.10 AC5-F7 — the backend's refusal boundary has no reachability audit
+
+**Class C.** Owner: compiler track. Denominator: **109 `BackendDiagnostic::Unsupported` sites** across
+ten backend files; 99 carry an inline message this sweep could classify.
+
+```text
+ 83  invariant guards and internal errors     "Param index {j} out of range", "no local declares
+                                              LocalKind::Param" -- unreachable by construction
+  9  ACCEPTANCE BOUNDARIES citing a CLOSED
+     work package                             WP-C5.2c, C5.3a/b/c/d, C7.8.2d
+  5  registered boundaries (cite a DEV)       DEV-160c, DEV-160d, the thunk's own refusals
+  2  explicit internal-invariant guards
+```
+
+**The finding is structural, not any one of the nine.** `layer_audit.rs` exists precisely to ask
+*"does the front end accept the program first?"* at the **front end → lowering** boundary, and it is
+ENFORCING: a new layer defect or a registered one that stops reproducing fails it. **The same
+question at the lowering/verify → backend boundary is not asked by anything.** The four test files
+that mention `BackendDiagnostic` are individual feature tests, not a reachability audit.
+
+The visible symptom is the nine: each says a construct *"has no WP-C5.3a representation yet"* or
+*"enums land in WP-C5.3b"* — work packages that closed long ago. Two readings, and nothing in the
+tree distinguishes them:
+
+```text
+UNREACHABLE   catch-all `other =>` arms over MirTy whose reachable variants are all covered
+              above. Then the messages are stale text, a documentation defect
+REACHABLE     genuine acceptance boundaries, unregistered as DEVs and absent from the native
+              conformance matrix. Then they are a real gap in the published contract
+```
+
+**This category has already produced a real defect today.** DEV-160b's refusal *was* reachable and
+registered, and its message still described a mechanism that had been removed hours earlier — found
+by this audit as F3. That is evidence the boundary rots, not merely that it might.
+
+**Disposition.** Extend the `layer_audit` pattern one boundary further: a probe per reachable backend
+refusal, each pinned to the disposition it is expected to have, failing on an unregistered finding
+*or* on a registered one that stops reproducing. The native conformance matrix (AC2) is the natural
+consumer — a reachable backend refusal is a `KNOWN-DEVIATION` row it does not currently carry.
+
+Not attempted here: building that audit is a work packet, not an audit finding, and it needs an
+owner's scheduling.
+
+### 3.11 Precedence exceptions — swept, **none outstanding**
+
+**Class A.** DEV-228 removed the resolver's precedence exceptions by giving the resolver the
+namespaces `NAME-RESOLVE-001` specifies, and `resolve.rs` states the resulting position in its own
+words rather than leaving it inferred:
+
+> *"`NsHint::Any` searches modules, then types, then values — which is not a precedence rule smuggled
+> back in: it is for positions that legitimately admit any of the three, a path qualifier and an
+> import. A position that KNOWS its namespace never reaches the fallback."*
+
+and, on the repair that removed the last one:
+
+> *"That ordering is now gone, and with it the precedence question: the module maps are not consulted
+> at all here … a different namespace is not a lower-priority candidate, it is not a candidate."*
+
+32 files mention "precedence"; every semantic-ordering hit is either this account, or the parser's
+**operator** precedence table, which is a different thing entirely.
+
+### 3.12 Builtin-keyed special handling — swept, **legitimate**
+
+**Class A.** `Res::Builtin(..)` / `Builtin::X` is matched in 357 places across six files (`interp.rs`
+103, `resolve.rs` 76, tensor 70, `typecheck/body.rs` 67, `hir.rs` 61, `mir/lower.rs` 50).
+
+**All of it dispatches on a RESOLVED closed enum, which is identity, not spelling.** Keying behaviour
+to `Builtin::Println` after resolution is what the specification requires; the defect shape is keying
+to the *string* `"println"* before resolution. Exactly one site does that — `resolve.rs:1033`, the ~26
+hardcoded spellings — and it is already filed as F2 with DEV-229's stated residual.
+
 ## 4. Class-D findings
 
 ```text
@@ -384,17 +455,31 @@ COVERED
   consumer/package workarounds for compiler limitations  102 .stark files, 27,933 lines,
                                                         12 DEVs cited -> F6 (§3.9)
 
+  backend-specific acceptance rules                     109 refusal sites classified -> F7 (§3.10)
+  precedence exceptions                                32 mentions triaged, NONE outstanding (§3.11)
+  special handling keyed to individual builtins        357 sites, all resolved-enum dispatch (§3.12)
+
 NOT YET COVERED
-  backend-specific acceptance rules beyond emit_call_thunk
-  precedence exceptions (DEV-228 removed the resolver's; others not swept)
-  special handling keyed to individual builtins beyond resolve.rs:1033
+  (none — every category on AC5's search list has been swept)
 ```
 
-**AC5 is not complete and must not be reported as complete.** Three categories remain.
+**Every category on AC5's search list has now been swept. AC5 is COMPLETE, and what that does and
+does not mean is worth stating precisely.**
 
-**The category that was most likely to hold a Class-D has now been swept and holds none** (§3.5),
-and so has `packages/` (§3.9). That materially lowers, without eliminating, the chance that AC5 ends
-in FAIL-ARCHITECTURE — the remaining three are narrower surfaces inside the compiler itself.
+```text
+IT MEANS      every category §1 names was examined, with a stated denominator, and every
+              finding was classified A/B/C/D
+IT DOES NOT   that every instance in each category was found. These are mechanical sweeps plus
+   MEAN       triage, not proofs. A patchwork that uses none of the vocabulary searched for --
+              no marker, no duplicated name, no spelling comparison -- would not appear here
+```
+
+**Zero Class-D findings.** Under §2 that is the condition for AC5 not to force FAIL-ARCHITECTURE; it
+is not on its own a PASS, which §14 gates on AC4's campaign as well.
+
+The two categories most likely to hold a Class-D both came back clean on measurement rather than on
+assertion: engine-local reconstruction (§3.5), which AC1 had found a genuine instance of, and
+`packages/` (§3.9), which had never been examined at all.
 
 **A method note, recorded because it nearly produced a false clean result.** The first duplicate-
 classifier scan reported *zero* duplicates across the whole tree. The scan was broken — it resolved
