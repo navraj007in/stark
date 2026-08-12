@@ -1029,6 +1029,13 @@ mod tests {
     pub const GENERATED_THUNK_SHAPE: &[&str] =
         &["field_ref_raw", "move_field_raw", "copy_field_raw"];
 
+    /// DEV-160b's shape: the producing call is performed inside, so the reference it derives is
+    /// anchored by the thunk's own `&'a mut`. Guarded by
+    /// `dev160_call_site_thunk::the_absorbed_producer_fixture_matches_what_the_generator_emits`.
+    // Read as TEXT, as above.
+    #[allow(dead_code)]
+    pub const ABSORBED_PRODUCER_SHAPE: &[&str] = &["field_ref_raw", "move_field_raw"];
+
     /// The callee. Takes exactly what a STARK function with `(&String, String, UInt32)` parameters
     /// would --- `&String` rather than clippy's preferred `&str`, because the generated form is
     /// whatever the STARK signature says and this fixture exists to mirror it.
@@ -1048,6 +1055,70 @@ mod tests {
             let a2: u32 = ValueSlot::copy_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).2));
             callee(a0, a1, a2)
         }
+    }
+
+    /// **DEV-160b's absorbed-producer shape, which the shape above does NOT cover.**
+    ///
+    /// Cross-block absorption (WP-ARCH-CLOSE AC1 step 2) puts a CALL between deriving the shared
+    /// field reference and moving out of a sibling:
+    ///
+    /// ```text
+    /// let a0 = as_str( field_ref_raw(p0) );   // a foreign call, holding a & into the slot
+    /// let a1 = move_field_raw(p0);            // a raw move through the SAME p0, while a0 lives
+    /// callee(a0, a1)
+    /// ```
+    ///
+    /// The primitive SET is unchanged, so `GENERATED_THUNK_SHAPE` and its guard stay green — and
+    /// that is exactly why this fixture is needed. What changed is the interleaving: a reference
+    /// derived from `p0` is now live across a call and across a raw write through `p0` to a
+    /// different field. Whether that retags anything is a Stacked Borrows question, and an argument
+    /// that it does not is not a control.
+    ///
+    /// The absorbed producer is modelled by a real function taking `&String` and returning a
+    /// borrow of it, because that is what `as_str` is: a call that PASSES the derived reference on
+    /// rather than consuming it.
+    // `&String`, not clippy's preferred `&str`: `field_ref_raw` yields a reference to the FIELD,
+    // whose type is `String`. Taking `&str` here would model a conversion the generated thunk does
+    // not perform, and this fixture exists to mirror what is emitted.
+    #[allow(clippy::ptr_arg)]
+    fn producer(s: &String) -> &str {
+        s.as_str()
+    }
+
+    fn absorbing_callee(a: &str, b: String) -> usize {
+        a.len() + b.len()
+    }
+
+    /// The thunk `emit_call_thunk` now renders for a cross-block absorption.
+    fn absorbing_thunk<'a>(s0: &'a mut ValueSlot<(String, String)>) -> usize {
+        let p0: *mut ValueSlot<(String, String)> = s0;
+        // SAFETY: as `thunk` above, with the producing call performed INSIDE — which is the whole
+        // point: the reference it returns is anchored by this `&'a mut`, not by a borrow that
+        // existed before the thunk was entered.
+        unsafe {
+            let a0: &'a str = producer(ValueSlot::field_ref_raw(p0, |p| {
+                core::ptr::addr_of_mut!((*p).0)
+            }));
+            let a1: String = ValueSlot::move_field_raw(p0, |p| core::ptr::addr_of_mut!((*p).1));
+            absorbing_callee(a0, a1)
+        }
+    }
+
+    #[test]
+    fn the_absorbed_producer_shape_is_sound_under_stacked_borrows() {
+        let mut slot = ValueSlot::dead();
+        slot.write((String::from("abc"), String::from("de")));
+
+        assert_eq!(absorbing_thunk(&mut slot), 3 + 2);
+        assert_eq!(slot.state(), SlotState::Partial);
+
+        unsafe {
+            slot.drop_field_with(
+                |p| core::ptr::addr_of_mut!((*p).0),
+                |p: *mut String| core::ptr::drop_in_place(p),
+            );
+        }
+        slot.finish_partial();
     }
 
     #[test]

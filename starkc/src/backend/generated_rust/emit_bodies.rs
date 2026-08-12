@@ -354,8 +354,20 @@ fn emit_one_block(
             Some(plan) => &plan.absorbed,
             None => &[],
         };
+    // DEV-160b: this block's own CALL may have been absorbed by a later block's thunk. Then its
+    // reference-building statements are suppressed here too, and the terminator becomes a plain
+    // jump — the call itself is performed inside the thunk, anchored by the thunk's `&'a mut`.
+    let producer_absorbed = super::emit_call_thunk::producer_absorbed_at(
+        env.thunks,
+        &body.instance.symbol,
+        block_index,
+    );
+    let absorbed_by_producer: &[usize] = match producer_absorbed {
+        Some(a) => &a.statements,
+        None => &[],
+    };
     for (index, (stmt, _)) in block.statements.iter().enumerate() {
-        if absorbed.contains(&index) {
+        if absorbed.contains(&index) || absorbed_by_producer.contains(&index) {
             continue;
         }
         match stmt {
@@ -381,6 +393,14 @@ fn emit_one_block(
                 }
             }
         }
+    }
+    // The absorbed call is gone from here; only the control-flow edge it carried remains.
+    if let Some(producer) = producer_absorbed {
+        out.push_str(&format!(
+            "                {}\n",
+            mode.jump(producer.goto_target)
+        ));
+        return Ok(());
     }
     emit_terminator(
         body,
@@ -2029,6 +2049,16 @@ fn trap_category_token(category: TrapCategory) -> String {
 ///
 /// The `expect` is discharged by V-SRC-1: verified MIR resolves every `SourceInfo` against this
 /// registry, and only verified MIR reaches the backend.
+/// The same resolution, for `emit_call_thunk`'s absorbed producer (DEV-160b). It must render the
+/// PRODUCER's own location, not the consuming call's: a trap inside an absorbed call still has to
+/// report where the user wrote it.
+pub(super) fn source_location_of(
+    sources: &impl crate::source::SourceLookup,
+    info: &SourceInfo,
+) -> (String, u32, u32) {
+    resolve_source_location(sources, info)
+}
+
 fn resolve_source_location(
     sources: &impl crate::source::SourceLookup,
     info: &SourceInfo,

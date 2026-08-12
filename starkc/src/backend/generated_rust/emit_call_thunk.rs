@@ -30,18 +30,31 @@
 //! exists to avoid. Only observationally inert reads (constants, unprojected non-slot `Copy`
 //! locals) may be evaluated at the call site and passed by value.
 //!
-//! # Scope (owner ruling, 2026-08-03)
+//! # Scope (owner ruling, 2026-08-03; b closed 2026-08-12)
 //!
 //! ```text
 //! DEV-160a  same-block direct-call disjoint projections      CLOSED -- this module
-//! DEV-160b  borrow returned by an EARLIER call               refused by name; DEFERRED
+//! DEV-160b  borrow returned by an EARLIER call               CLOSED -- absorbed producer,
+//!                                                            WP-ARCH-CLOSE AC1 step 2
 //! DEV-160c  conflicting provider-call argument sequence      refused by name; DEFERRED
 //! DEV-160d  borrow surviving beyond the sibling move/call    refused by name; DEFERRED
 //! ```
 //!
-//! b, c and d are **over-refusals, not unsound execution**. Each is named before rustc sees the
+//! c and d remain **over-refusals, not unsound execution**. Each is named before rustc sees the
 //! program, because the alternative is `E0502` inside this generated module — a correct compiler
 //! error about code the user never wrote.
+//!
+//! # How b was closed, and why the cheaper repair was rejected
+//!
+//! The borrow reaches the call from an earlier block because a call is a MIR terminator:
+//! `r.url.as_str()` ends one block and `send(…)` begins the next. The small repair would leave the
+//! producing call where it is and launder its result through a raw pointer at the call site.
+//!
+//! **That is unsound**, and `slot.rs` states the reason directly: the thunk's `&'a mut` is *"what
+//! anchors every reference it hands on"*. Under Stacked Borrows, taking that `&mut` invalidates
+//! tags derived from any earlier borrow of the slot, so a reference created before the thunk was
+//! entered is dead inside it however it travelled. It must be created INSIDE — which brings the
+//! producing call with it. See [`absorbable_producer`] for the six admission conditions.
 //!
 //! # Why a plan
 //!
@@ -71,6 +84,33 @@ pub enum ThunkArg {
     /// Evaluated at the CALL SITE and passed by value. Permitted only where the read is
     /// observationally inert, so moving it ahead of the thunk's projections changes nothing.
     ByValue { index: usize },
+    /// **DEV-160b: a value produced by a call the thunk absorbed from an EARLIER block.**
+    ///
+    /// `send(r.url.as_str(), r.body)` lowers with `as_str` as the terminator of the preceding
+    /// block, so its `&str` result is a live borrow of `r` when the thunk takes `&mut`. It cannot
+    /// be laundered through a raw pointer at the call site: under Stacked Borrows the thunk's
+    /// `&'a mut` invalidates tags derived from any earlier borrow of the same slot, so reading it
+    /// inside would be UB. The reference has to be CREATED inside, anchored by the thunk's own
+    /// `&'a mut` — which means the producing call moves in with it.
+    ///
+    /// `expr` is rendered at plan time and already names the thunk's `p{slot}` pointers.
+    Produced { expr: String },
+}
+
+/// A call in an earlier block that a thunk performs itself (DEV-160b).
+///
+/// `emit_bodies` consumes this from the PRODUCER's side: it suppresses the named statements and
+/// emits a plain `goto` in place of the call terminator the thunk has taken over.
+#[derive(Clone, Debug)]
+pub struct AbsorbedProducer {
+    /// The block whose call terminator this thunk performs instead.
+    pub block_index: u32,
+    /// Statement indices in THAT block the thunk performs instead — the `RefOf` seeding the
+    /// producer's reference argument, and any copy carrying it.
+    pub statements: Vec<usize>,
+    /// What that block's terminator becomes. It is the consuming call's own block, because
+    /// absorption is admitted only across a single straight-line edge.
+    pub goto_target: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +151,8 @@ pub struct CallThunkPlan {
     /// suppresses exactly these; emitting them as well would leave a live borrow beside the
     /// thunk's `&mut`, which is the conflict itself.
     pub absorbed: Vec<usize>,
+    /// DEV-160b: a producer call in an earlier block this thunk performs itself.
+    pub absorbed_producer: Option<AbsorbedProducer>,
 }
 
 /// A stable per-body call-site identity. A `Call` is a TERMINATOR, so a block holds at most one —
@@ -135,12 +177,29 @@ pub fn collect_plans(
         let env = emit_places::TyEnv::new(body, &program.types, layout)
             .with_provider_calls(&program.provider_calls);
         for block_index in 0..body.blocks.len() as u32 {
-            if let Some(plan) = plan_for_call(body, block_index, &env)? {
+            if let Some(plan) = plan_for_call(body, block_index, &env, &program.sources)? {
                 plans.push(plan);
             }
         }
     }
     Ok(plans)
+}
+
+/// The producer-side view: is THIS block's call terminator absorbed by some thunk (DEV-160b)?
+///
+/// Looked up by the producer's own block index, because `emit_bodies` asks the question from there
+/// — it is emitting the block whose call has been taken over and needs to know to emit a `goto`
+/// instead. The plan that owns the absorption lives on the CONSUMING block.
+pub fn producer_absorbed_at<'p>(
+    plans: &'p [CallThunkPlan],
+    body_symbol: &str,
+    block_index: u32,
+) -> Option<&'p AbsorbedProducer> {
+    plans.iter().find_map(|p| {
+        p.absorbed_producer
+            .as_ref()
+            .filter(|a| a.block_index == block_index && p.body_symbol == body_symbol)
+    })
 }
 
 /// The plan for one call site, if it has one.
@@ -171,6 +230,7 @@ pub fn plan_for_call(
     body: &crate::mir::MirBody,
     block_index: u32,
     env: &emit_places::TyEnv,
+    sources: &crate::source::SourceTable,
 ) -> Result<Option<CallThunkPlan>, BackendDiagnostic> {
     let block = &body.blocks[block_index as usize];
     let crate::mir::Terminator::Call {
@@ -242,7 +302,7 @@ pub fn plan_for_call(
     let mut absorbed: Vec<usize> = Vec::new();
     // Every by-value argument's source local, so provenance can be checked against the
     // participating slots once they are all known.
-    let mut by_value_provenance: Vec<u32> = Vec::new();
+    let mut by_value_provenance: Vec<(u32, usize, usize)> = Vec::new();
 
     for arg in args {
         let (Operand::Move(place) | Operand::Copy(place)) = arg else {
@@ -281,7 +341,7 @@ pub fn plan_for_call(
             // order, so evaluating it at the call site is inert. Non-slot locals are NOT turned
             // into slots to make them thunk parameters.
             let ty = env.place_ty(place)?;
-            by_value_provenance.push(place.local.0);
+            by_value_provenance.push((place.local.0, plan_args.len(), by_value.len()));
             by_value.push(ThunkByValue {
                 ty,
                 expr: super::emit_bodies::emit_operand(arg, env)?,
@@ -332,7 +392,8 @@ pub fn plan_for_call(
     // That is a larger mechanism than this increment carries, so the case is refused by name.
     let provenance = &call_provenance;
     let participating: std::collections::BTreeSet<u32> = slots.iter().map(|s| s.local).collect();
-    for local in &by_value_provenance {
+    let mut absorbed_producer: Option<AbsorbedProducer> = None;
+    for (local, plan_arg_index, by_value_index) in &by_value_provenance {
         // **No type check here any more, and its absence is the point.** This used to read
         // `if !may_carry_borrow(&by_value[index].ty) { continue; }` — a consumer compensating for
         // an authority that over-approximated, because the heuristic recorded
@@ -343,6 +404,44 @@ pub fn plan_for_call(
             continue;
         };
         if let Some(slot) = borrowed.intersection(&participating).next() {
+            // **DEV-160b: try to absorb the call that produced this reference.** The reference
+            // cannot stay where it is — it is a live borrow of the slot the thunk is about to take
+            // exclusively — and it cannot be laundered through a raw pointer, because Stacked
+            // Borrows invalidates tags derived from an earlier borrow once the `&'a mut` exists.
+            // Creating it inside, anchored by the thunk's own `&mut`, is the only sound placement,
+            // and that means the producing call comes with it.
+            //
+            // Only ONE producer may be absorbed per thunk: two would each need their own edge from
+            // their own predecessor, and a block has one predecessor here by condition 3.
+            if absorbed_producer.is_none() {
+                if let Some((expr, producer)) = absorbable_producer(
+                    body,
+                    block_index,
+                    *local,
+                    &participating,
+                    &mut slots,
+                    &mut helpers,
+                    env,
+                    sources,
+                )? {
+                    plan_args[*plan_arg_index] = ThunkArg::Produced { expr };
+                    // **The by-value entry must go with it.** The thunk's parameter list and its
+                    // call site are both built from `by_value`; leaving the entry behind emits a
+                    // thunk that still TAKES the reference as an argument and a call site that
+                    // still passes it — which is the borrow this absorption exists to remove, and
+                    // it read as `_9.unwrap()` on a local nothing assigns any more.
+                    by_value.remove(*by_value_index);
+                    for arg in plan_args.iter_mut() {
+                        if let ThunkArg::ByValue { index } = arg {
+                            if *index > *by_value_index {
+                                *index -= 1;
+                            }
+                        }
+                    }
+                    absorbed_producer = Some(producer);
+                    continue;
+                }
+            }
             return Err(BackendDiagnostic::Unsupported(format!(
                 "the call in bb{block_index} of `{}` passes a reference (_{local}) that borrows \
                  _{slot} while also moving out of _{slot}'s fields. STARK accepts this -- the \
@@ -367,6 +466,7 @@ pub fn plan_for_call(
         ret_ty,
         helpers: helpers.into_values().collect(),
         absorbed,
+        absorbed_producer,
     }))
 }
 
@@ -482,6 +582,152 @@ fn absorbable_borrows(
         }
     }
     Ok((absorbable, escaping))
+}
+
+/// **DEV-160b's admission test: can this thunk take over the call that produced `local`?**
+///
+/// The conditions are deliberately all-or-nothing. Every one of them is a way the absorbed call
+/// could observe something different from where it was, and a partial absorption that got any of
+/// them wrong would move a side effect rather than a borrow.
+///
+/// ```text
+/// 1  `local` is defined by a Call TERMINATOR, in some other block
+/// 2  that block's call targets THIS block -- one edge, no intervening blocks
+/// 3  this block has exactly ONE predecessor, so the producer always runs immediately before
+/// 4  `local` is read exactly once: by the consuming call. A second read would still need the
+///    value where it was
+/// 5  every producer argument is either inert (a constant) or an absorbable borrow of a
+///    PARTICIPATING slot, read exactly once
+/// 6  the producer's callee is Runtime or a direct Instance -- the two this can render
+/// ```
+///
+/// Condition 3 is what makes "straight-line" true rather than assumed: with one predecessor there
+/// is no path that reaches the consumer without the producer, and none that reaches the producer
+/// twice per consumer.
+///
+/// Returns the inner argument plan and the statements to suppress in the producer's block.
+#[allow(clippy::too_many_arguments)]
+fn absorbable_producer(
+    body: &crate::mir::MirBody,
+    block_index: u32,
+    local: u32,
+    participating: &std::collections::BTreeSet<u32>,
+    slots: &mut Vec<ThunkSlot>,
+    helpers: &mut BTreeMap<String, ProjectionHelper>,
+    env: &emit_places::TyEnv,
+    sources: &crate::source::SourceTable,
+) -> Result<Option<(String, AbsorbedProducer)>, BackendDiagnostic> {
+    use crate::mir::Terminator;
+
+    // 4. Read exactly once — by the call we are planning.
+    if reads_of(body, local) != 1 {
+        return Ok(None);
+    }
+
+    // 1 + 2. The defining call terminator, whose target is this block.
+    let mut producer: Option<u32> = None;
+    for (index, block) in body.blocks.iter().enumerate() {
+        if let Terminator::Call { dest, target, .. } = &block.terminator.0 {
+            if dest.local.0 == local && dest.projection.is_empty() && target.0 == block_index {
+                producer = Some(index as u32);
+            }
+        }
+    }
+    let Some(producer_index) = producer else {
+        return Ok(None);
+    };
+
+    // 3. Exactly one predecessor.
+    let predecessors = body
+        .blocks
+        .iter()
+        .filter(|b| terminator_targets(&b.terminator.0).contains(&block_index))
+        .count();
+    if predecessors != 1 {
+        return Ok(None);
+    }
+
+    let producer_block = &body.blocks[producer_index as usize];
+    let Terminator::Call { callee, args, .. } = &producer_block.terminator.0 else {
+        return Ok(None);
+    };
+
+    // 5. Trace each producer argument. A borrow must resolve to a projection of a PARTICIPATING
+    //    slot, or the thunk has no pointer to rebuild it from.
+    let (borrows, escaping) = absorbable_borrows(body, producer_index, args, env)?;
+    if !escaping.is_empty() {
+        return Ok(None);
+    }
+    let mut inner: Vec<String> = Vec::new();
+    let mut statements: Vec<usize> = Vec::new();
+    for arg in args {
+        let (Operand::Move(place) | Operand::Copy(place)) = arg else {
+            inner.push(super::emit_bodies::emit_operand(arg, env)?);
+            continue;
+        };
+        let Some(borrow) = borrows.get(&place.local.0) else {
+            // Not a borrow this thunk can rebuild. A by-value operand here would be evaluated at
+            // the wrong point relative to the absorbed projections, so absorption is declined
+            // rather than approximated.
+            return Ok(None);
+        };
+        if !participating.contains(&borrow.source.local.0) {
+            return Ok(None);
+        }
+        let slot = slot_index(slots, &borrow.source, env)?;
+        let helper = collect_raw_helper(&borrow.source, env, HelperOp::RefRaw, helpers)?;
+        inner.push(format!("{helper}::<'a>(p{slot})"));
+        for index in &borrow.statements {
+            if !statements.contains(index) {
+                statements.push(*index);
+            }
+        }
+    }
+
+    // 6. Render the producer call itself.
+    let dest_ty = body.locals[local as usize].ty.clone();
+    let (file, line, col) =
+        super::emit_bodies::source_location_of(sources, &producer_block.terminator.1);
+    let site = super::emit_runtime::CallSite { file, line, col };
+    let expr = match callee {
+        Callee::Runtime(rt) => {
+            super::emit_runtime::emit_runtime_call(*rt, &inner, &dest_ty, &site, None)?
+        }
+        Callee::Instance(instance) => {
+            let name = super::mangle::function_name_for_symbol(&instance.symbol);
+            format!("{name}({})", inner.join(", "))
+        }
+        _ => return Ok(None),
+    };
+
+    Ok(Some((
+        expr,
+        AbsorbedProducer {
+            block_index: producer_index,
+            statements,
+            goto_target: block_index,
+        },
+    )))
+}
+
+/// Successor block indices of a terminator. A local twin of `emit_bodies::terminator_successors`,
+/// which is private there; kept tiny and total rather than widening that module's surface.
+fn terminator_targets(t: &crate::mir::Terminator) -> Vec<u32> {
+    use crate::mir::Terminator;
+    match t {
+        Terminator::Goto { target }
+        | Terminator::Call { target, .. }
+        | Terminator::Drop { target, .. }
+        | Terminator::Checked { target, .. } => vec![target.0],
+        Terminator::SwitchInt {
+            arms, otherwise, ..
+        } => {
+            let mut v: Vec<u32> = arms.iter().map(|(_, b)| b.0).collect();
+            v.push(otherwise.0);
+            v
+        }
+        Terminator::Return | Terminator::Unreachable | Terminator::Trap { .. } => Vec::new(),
+    }
 }
 
 /// A borrow of a slot-backed field on its way to a call argument, and the statements that build it.
@@ -685,6 +931,10 @@ pub fn emit_thunk(plan: &CallThunkPlan) -> Result<String, BackendDiagnostic> {
             }
             ThunkArg::Take { slot } => format!("stark_runtime::slot::ValueSlot::take_raw(p{slot})"),
             ThunkArg::ByValue { index } => format!("v{index}"),
+            // DEV-160b. Rendered at plan time and already naming this thunk's `p{slot}` pointers,
+            // so the reference it derives is anchored by the `&'a mut` above rather than by a
+            // borrow that existed before the thunk was entered.
+            ThunkArg::Produced { expr } => expr.clone(),
         };
         evaluated.push_str(&format!("            let {name} = {expr};\n"));
         arg_names.push(name);

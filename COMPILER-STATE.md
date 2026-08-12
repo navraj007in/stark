@@ -8,16 +8,18 @@
 Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400) — AC2 MET, AC3 repair
                                  landed, AC3 exit NOT met — the two-run count is RESET: run 1
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
-                                 (AS2 guard, mine, repaired). AC1 step 1 done (borrow-origin
-                                 analysis moved to MIR, CE3) — POSITIVE, DEV-160 still OPEN
+                                 (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
+                                 probe verdict POSITIVE. Population A 8
 Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 `develop -> main` AUTHORISED (CD-399, compiler tree 860e33a, CI 24/24 green).
                 CD-398's authorisation was SPENT on PR #21 and covered tree 5967a42, 18 commits
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 9 open — DEV-140..145 (the supported-subset boundary), DEV-160, DEV-221,
-              DEV-233 (the interpreter loses output written before a trap). DEV-235 RESOLVED
+Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-221,
+              DEV-233 (the interpreter loses output written before a trap). DEV-160 RESOLVED
+              2026-08-12 under WP-ARCH-CLOSE AC1 step 2 — the thunk absorbs the call that produced
+              the borrow, so the cross-block programs build and run. DEV-235 RESOLVED
               2026-08-12 under WP-ARCH-CLOSE AC3: the promotion-gating check failed because an
               accepted socket inherited the listener's non-blocking flag on macOS, not because of
               timing — see CD-400. DEV-229 RESOLVED
@@ -32,8 +34,9 @@ Population A: 9 open — DEV-140..145 (the supported-subset boundary), DEV-160, 
               audit and RESOLVED the same day.
               DEV-222/223 RESOLVED 2026-08-11, plus DEV-225/226/227 found by the same audit and
               resolved on arrival
-Primary remaining compiler capability: DEV-160 cross-block borrow (rustc leak SEALED,
-                 capability half OPEN). Of the ten, it is now the only one any written code reaches
+Primary remaining compiler capability: NONE. DEV-160 — the only one any written code reached —
+                 is RESOLVED 2026-08-12. The remaining eight are the six supported-subset
+                 boundaries, one ergonomic entry, one interpreter-observation entry
 Next strategic milestone: standalone toolchain / C9 Part B second artifact
 Optional tracks: ArtifactInfra=blocked (C9 Part B, second artifact)
                  TensorExpansion=blocked (Gate 7 DEFER, unchanged)
@@ -387,6 +390,63 @@ run that batch before pushing** — it is seconds of local work against a full C
 **Not counted as a DEV.** No compiler behaviour changed and no program's meaning moved; an
 architecture guard correctly refused an unregistered addition. Under CD-400's §12.3 list this is
 test infrastructure and does not count toward AC7's twenty.
+
+### AC1 step 2 — DEV-160 RESOLVED, and the probe's verdict is POSITIVE
+
+**The capability half is closed.** `send(r.url.as_str(), r.body)` builds, runs, and agrees across
+all four engine configurations, as does the originally reported three-argument shape. The thunk now
+absorbs the call that produced the borrow. **Population A 9 -> 8.**
+
+**The design was decided by a soundness argument that ruled out the cheap repair.** Laundering the
+reference through a raw pointer at the call site would have needed no new plan structure and no
+detector — and it is unsound. `slot.rs` says the thunk's `&'a mut` is *"what anchors every reference
+it hands on"*; under Stacked Borrows, taking that `&mut` invalidates tags derived from any earlier
+borrow of the slot, so a reference created before the thunk was entered is dead inside it however it
+travelled. It must be created INSIDE, which brings the producing call with it.
+
+**AC1's hypothesis is confirmed.** The capability landed inside the existing borrow architecture:
+
+```text
+engine-local semantic dispatch            NONE -- one new ThunkArg variant on the existing plan
+downstream semantic reconstruction        NONE -- the origin relation is MIR's, from step 1
+duplicated ownership authorities          NONE -- one detector, one plan, three consumers
+backend-specific language restrictions    ONE REMOVED (DEV-160b), none added
+precedence/order exceptions               NONE -- MIR argument order is unchanged; CD-007 holds
+```
+
+**Two defects this repair found in itself.** The first attempt built and then panicked at run time —
+the call site still passed `_9.unwrap()` for a local nothing assigned any more, because the
+`by_value` entry survived the `plan_args` replacement. And the Miri fixture for the new shape was
+initially **unguarded**, reintroducing the exact failure the existing guard exists to prevent; worse,
+that guard's extraction took the first token of each line and would have silently dropped the
+`field_ref_raw` nested inside `as_str(...)`. The extraction now scans nested calls, a second guard
+covers the new fixture, and it was falsified.
+
+```text
+Miri, CI's exact flags       27/27, incl. the_absorbed_producer_shape_is_sound_under_stacked_borrows
+fixture guards               both pass; the new one falsified by shortening its declared shape
+dev160_call_site_thunk       9    DEV-160c/d guards UNCHANGED; ordinary_calls_plan_nothing holds
+ac1_dev160_probe             4    incl. both over-refusal controls
+mir_differential           132    three_engine_differential 129
+native ownership/linkage    36    33 first-party APPLICATIONS built natively, 0 failures
+```
+
+**What is NOT closed.** DEV-160c (provider argument sequences) and DEV-160d (a borrow outliving the
+call) are unchanged and still refused by name — deliberately, since a repair that quietly widened
+them would have been invisible. And **only one producer may be absorbed per thunk**: two would each
+need their own predecessor edge, and the admission test allows one.
+
+### AC3's two clean runs cannot be collected while repairs are still landing
+
+`f780bb3`'s CI was **fully green — 24/24 and 4/4, attempt 1, no reruns**, all three Tier-1 platforms
+plus the Miri lane. It still does not count, for the same reason `cd6732f` stopped counting: this
+DEV-160 landing postdates it, and §13 disqualifies evidence predating the repairs it covers.
+
+That is not a defect in the runs. It is the structure of the package: **the two clean runs are
+collectable only once repairs stop**, which is exactly what §17 step 9 prescribes — establish
+`FINAL_REPAIR_SHA`, then rerun all final evidence. Recording a running tally mid-packet and resetting
+it on each landing is motion, not progress, and the count is better read as "not yet started" until
+the repair sequence ends.
 
 ### AC3's run 1 no longer counts toward closure, by the rule this packet wrote
 

@@ -9916,3 +9916,88 @@ so it cannot see this change at all. Only the 33 real builds exercise it.
 The over-refusal control is the one that matters most: the first attempt at touching this relation
 broke `stark_http_client::follow` and was caught by a package build rather than a test. `stark-get`,
 the application that consumes that client, builds.
+
+## DEV-160 — RESOLVED (2026-08-12): the thunk absorbs the call that produced the borrow
+
+```text
+Architecture trigger:  NONE — the capability landed inside the existing borrow architecture
+Counts toward AC7's twenty:  YES — a demonstrated backend correctness defect, now repaired
+```
+
+The capability half, open since the deviation was filed and deferred by owner ruling on 2026-08-03,
+is closed. `send(r.url.as_str(), r.body)` builds, runs, and agrees across all four engine
+configurations. So does the originally reported three-argument shape,
+`send_once(r.url.as_str(), r.headers, r.body)`.
+
+### The design was decided by a soundness argument, and it ruled out the cheap option
+
+The obvious repair is much smaller: leave the producing call where it is and launder its `&str`
+result through a raw pointer at the call site, reconstituting it inside the thunk under `'a`. It
+would have needed no new plan structure, no terminator rewriting, and no detector.
+
+**It is unsound, and the runtime's own comment says why.** `slot.rs` records that the thunk takes
+the slot once through a real `&'a mut ValueSlot<T>`, *"which is what anchors every reference it
+hands on"*. Under Stacked Borrows, taking that `&mut` invalidates tags derived from any earlier
+borrow of the same slot — so a reference created BEFORE the thunk was entered is dead inside it,
+whatever pointer it travelled through. The reference has to be created inside, which means the call
+that produces it comes in too.
+
+### The admission test, all-or-nothing
+
+```text
+1  the value is defined by a Call TERMINATOR in another block
+2  that block's call targets THIS block -- one edge, no intervening blocks
+3  this block has exactly ONE predecessor
+4  the value is read exactly once: by the consuming call
+5  every producer argument is inert, or an absorbable borrow of a PARTICIPATING slot
+6  the producer's callee is Runtime or a direct Instance
+```
+
+Condition 3 is what makes "straight-line" a fact rather than an assumption: with one predecessor
+there is no path reaching the consumer without the producer, and none reaching the producer twice
+per consumer. Every condition is a way the absorbed call could observe something different from
+where it was; a partial absorption that got any of them wrong would move a side effect rather than a
+borrow.
+
+### Two defects found in this repair, by its own controls
+
+**The first attempt built and then panicked at run time.** The call site still passed `_9.unwrap()`
+for a local nothing assigned any more: the `plan_args` entry had been replaced by `Produced`, but
+its `by_value` entry stayed, and the thunk's parameter list and call site are both built from that
+vector. Removing it requires renumbering every later `ByValue` index, which is now done explicitly.
+
+**The Miri fixture for the new shape was initially unguarded**, which is the exact failure the
+existing guard was built to prevent — a green Miri run proving something about code the compiler no
+longer emits. Worse, the guard's extraction took the FIRST token of each `let aN = …` line, so for
+`as_str(stark_refraw_…(p0))` it would have resolved the producer, found no generated wrapper, and
+contributed nothing — hiding the `field_ref_raw` underneath it. The extraction now scans nested
+calls in order, and a second guard covers the new fixture.
+
+### Evidence
+
+```text
+Miri, CI's exact flags (-Zmiri-strict-provenance -Zmiri-ignore-leaks)
+    the_absorbed_producer_shape_is_sound_under_stacked_borrows      PASS
+    27 slot tests total                                             PASS
+
+fixture guards, both falsified
+    shortening ABSORBED_PRODUCER_SHAPE fails with
+    left ["field_ref_raw","move_field_raw"]  right ["move_field_raw"]
+
+dev160_call_site_thunk    9 pass, incl. the DEV-160d boundary UNCHANGED and
+                          `ordinary_calls_plan_nothing` — the detector did not widen
+ac1_dev160_probe          4 pass, incl. BOTH over-refusal controls
+mir_differential        132   three_engine_differential  129
+native_c6_1_ownership    24   native_c5_4_linkage         12
+33 first-party APPLICATIONS built natively, 0 failures
+```
+
+### What is NOT closed
+
+**DEV-160c and DEV-160d are unchanged and still refused by name.** A provider call's argument
+sequence (c) and a borrow outliving the call (d) are separate shapes with separate reasons, and
+their guards still pass — deliberately, because a repair that quietly widened them would have been
+invisible.
+
+**Only ONE producer may be absorbed per thunk.** Two would each need their own edge from their own
+predecessor, and condition 3 admits one. A call with two cross-block borrows is still refused.
