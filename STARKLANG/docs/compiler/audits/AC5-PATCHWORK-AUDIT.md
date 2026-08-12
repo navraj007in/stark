@@ -287,6 +287,64 @@ is_copy               mir/lower.rs and mir/mod.rs are two thin WRAPPERS over one
                       supplies the copy-eligible set. Class A
 ```
 
+### 3.9 AC5-F6 — `packages/` swept; one stale workaround found and REMOVED
+
+**Class C, repaired.** Denominators: **102 `.stark` files, 27,933 lines, 110 marker hits.**
+
+**Twelve distinct DEVs are cited in first-party STARK source, and every one is CLOSED or RESOLVED.**
+That sounds like twelve stale workarounds. It is not — and the distinction is the finding:
+
+```text
+HISTORICAL NOTES, correctly updated when the defect was fixed          11 of 12
+    "unit aborted natively (DEV-158). That is fixed, so this reads
+     from `default_config()` again"
+    "DEV-165 REPAIRED (2026-08-10). This assertion used to require FAILURE"
+    "until DEV-148 was fixed it could not be"
+  -> someone went back and updated the code AND the comment. Not residue. Class A
+
+A LIVE WORKAROUND whose stated expiry condition had just been met           1
+    packages/stark-http-client/src/lib.stark, `send`
+```
+
+The one exception named its own expiry:
+
+> *"CD-374 fixed the in-block form with a generated call thunk. This one is NOT in-block: `as_str()`
+> is itself a call, so the `&str` it returns arrives from an earlier block and the thunk cannot take
+> over its evaluation. … **so this stays until cross-block absorption lands**."*
+
+Cross-block absorption landed the same day (DEV-160 RESOLVED). The four locals were removed and the
+inline form restored:
+
+```stark
+let once = send_once(client, builder.method, builder.url.as_str(),
+                     builder.headers, builder.body)?;
+```
+
+**This function is where DEV-160 was reported from.** Restoring it converts the repair's evidence
+from *"the reproducer works"* to *"the motivating consumer's workaround is gone"*, which is a
+materially stronger claim and the reason this was repaired rather than merely filed.
+
+```text
+stark-get build                       OK -- the application that consumes the client
+33 first-party applications           built, 0 failures
+qualify-first-party-packages.py       EXIT 0: 31 test targets, 1,222 tests, 0 failed,
+                                      ending with a live TLS 1.3/1.2 session verified, used and
+                                      closed, and an untrusted root rejected
+```
+
+**Not every local binding is a workaround, and one was deliberately left alone.** `follow`, in the
+same file, also binds the fields to locals — but it is a redirect *loop* that reassigns them, so the
+bindings are load-bearing. The original comment even says `follow` "already had this shape, which is
+why only this path failed". Removing them there would have been a change dressed as a cleanup.
+
+**Not counted as evidence:** `stark check --target-native` passing on the client. It scans for
+unsupported runtime functions and never reaches `plan_for_call`, so it cannot see this change at
+all — the same trap AC1 fell into and withdrew.
+
+**A note on `DEV-156`'s six citations.** It owns two ledger headings, OPEN (backfilled) then CLOSED;
+the last heading decides, so it is closed. Those six comments explain why a doc comment sits where it
+does, are cosmetic, and are left as written.
+
 ## 4. Class-D findings
 
 ```text
@@ -323,18 +381,20 @@ COVERED
   engine-local reconstruction of type/generic info     swept 2026-08-12, NONE FOUND (§3.5)
   copy/paste semantic tables outside the AS8-DA set    all 3,716 fns scanned -> F4, F5 (§3.6-3.7)
 
+  consumer/package workarounds for compiler limitations  102 .stark files, 27,933 lines,
+                                                        12 DEVs cited -> F6 (§3.9)
+
 NOT YET COVERED
   backend-specific acceptance rules beyond emit_call_thunk
   precedence exceptions (DEV-228 removed the resolver's; others not swept)
-  consumer/package workarounds for compiler limitations (packages/ not swept)
   special handling keyed to individual builtins beyond resolve.rs:1033
 ```
 
-**AC5 is not complete and must not be reported as complete.** Four categories remain.
+**AC5 is not complete and must not be reported as complete.** Three categories remain.
 
-**The category that was most likely to hold a Class-D has now been swept and holds none** (§3.5).
-That materially lowers, without eliminating, the chance that AC5 ends in FAIL-ARCHITECTURE — the
-remaining four are narrower surfaces, and `packages/` in particular has never been swept at all.
+**The category that was most likely to hold a Class-D has now been swept and holds none** (§3.5),
+and so has `packages/` (§3.9). That materially lowers, without eliminating, the chance that AC5 ends
+in FAIL-ARCHITECTURE — the remaining three are narrower surfaces inside the compiler itself.
 
 **A method note, recorded because it nearly produced a false clean result.** The first duplicate-
 classifier scan reported *zero* duplicates across the whole tree. The scan was broken — it resolved

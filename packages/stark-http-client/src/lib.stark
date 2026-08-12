@@ -1218,22 +1218,23 @@ fn send_once(
 pub fn send(client: &Client, builder: RequestBuilder) -> Result<HttpResponse, HttpError> {
     // Not following: one exchange, and a `3xx` comes back as the response it is.
     if !client.config.follow_redirects {
-        // The fields are moved into LOCALS first, rather than passed as `builder.url.as_str()`
-        // alongside `builder.headers`. STARK's borrow checker is place-granular (DEV-154) and
-        // accepts the inline form — those are disjoint fields — but the generated projections take
-        // `&slot` and `&mut slot`, losing that granularity. DEV-160. `follow` below already had
-        // this shape, which is why only this path failed.
+        // Written inline: a `&str` borrowed from one field, beside moves of three siblings.
+        // STARK's borrow checker is place-granular (DEV-154) and always accepted this — the
+        // accesses are disjoint — but the generated projections took `&slot` and `&mut slot` and
+        // lost that granularity, so the native backend could not build it.
         //
-        // CD-374 fixed the in-block form with a generated call thunk. This one is NOT in-block:
-        // `as_str()` is itself a call, so the `&str` it returns arrives from an earlier block and
-        // the thunk cannot take over its evaluation. The compiler now refuses that shape by name
-        // rather than emitting code rustc rejects, so this stays until cross-block absorption
-        // lands.
-        let url = builder.url;
-        let method = builder.method;
-        let headers = builder.headers;
-        let body = builder.body;
-        let once = send_once(client, method, url.as_str(), headers, body)?;
+        // This function is where DEV-160 was reported from. CD-374 fixed the in-block form with a
+        // generated call thunk; the cross-block form — `as_str()` is itself a call, so its `&str`
+        // arrives from an earlier block — was refused by name until the thunk learned to absorb
+        // the producing call (DEV-160 RESOLVED 2026-08-12). The four locals this used to bind
+        // first are gone with it.
+        let once = send_once(
+            client,
+            builder.method,
+            builder.url.as_str(),
+            builder.headers,
+            builder.body,
+        )?;
         return Ok(once.0);
     }
     follow(client, builder)
