@@ -391,6 +391,51 @@ specialization environment) still has no trial, and the shared-fate register has
 reconciled. **Do not read "2 covered, 7 partial" as 82% done** — pattern legality would have counted
 as nearly covered, and its unguarded arm is the argument against counting.
 
+## FINAL_REPAIR_SHA established — 64ec728 (2026-08-12)
+
+**Owner instruction, 2026-08-12.** §13's freshness rule requires every piece of final closure
+evidence to postdate the last repair this packet produced.
+
+```text
+FINAL_REPAIR_SHA = 64ec728
+
+the last commit carrying ANY repair WP-ARCH-CLOSE produced -- semantic, architectural,
+qualification, conformance-contract or AC-required. Read broadly on purpose: tests and
+governance rules are repairs this packet made, and §13 says "any ... repair", not
+"any compiler change"
+```
+
+**The compiler is frozen from here.** No further change unless the final evidence itself exposes a
+contradiction — in which case a NEW `FINAL_REPAIR_SHA` is established and the evidence restarts,
+which is the rule that stops a passing run being assembled from convenient fragments.
+
+**HEAD will not equal `FINAL_REPAIR_SHA`, and that is correct.** Recording the SHA is itself a
+commit, so this entry lands as a descendant of the tree it names. §13 permits exactly that — final
+evidence may come from `FINAL_REPAIR_SHA` *"or a descendant containing no subsequent
+compiler-affecting repair"*. This entry is a record, not a repair.
+
+The rule that matters is therefore not "HEAD == FINAL_REPAIR_SHA" but **"no repair between them"**,
+and that is checkable: `git diff 64ec728..HEAD` must touch nothing but this decision record. Anyone
+auditing the closure should run it rather than compare hashes.
+
+**Everything before `64ec728` is now historical for closure purposes**, including AC3's two clean
+runs on `915e565`. Those remain valid for **cohort entry**, exactly as CD-401 anticipated. The
+final two runs must come from this tree.
+
+### A duplicate trigger, recorded so the run history is not misread
+
+The push produced **two `push`-event runs three seconds apart for the same SHA**, one of which
+GitHub cancelled as superseded:
+
+```text
+31608281706  push  attempt 1  14:42:46Z  CANCELLED (superseded duplicate)
+31608285837  push  attempt 1  14:42:49Z  the run that proceeds
+```
+
+**Nothing was cancelled to discard a result** — the cancelled run never produced one. It is recorded
+because a cancelled run in the history of a closure decision is exactly the thing a later reader
+should be suspicious of, and the answer should be written down rather than reconstructed.
+
 ## CD-402 — AC4 MET on two dispositions; the reopen rule is now a STANDING rule (2026-08-12)
 
 **Owner decisions, 2026-08-12.** Both AC4 residuals are dispositioned rather than repaired, and the
