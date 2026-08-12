@@ -30,7 +30,7 @@ MIR verification                    9            PARTIAL   paths_prefix_related 
 provider/resource ownership         4,4b         PARTIAL   provider_sig::signature only
 borrow / move ownership             9            PARTIAL   -> EXTENDED, see §2.2
 pattern legality                    NONE         -> COVERED, see §2.1. FOUND A GAP
-generic specialization env.         NONE         STILL NONE
+generic specialization env.         NONE         -> COVERED, see §2.3. TWO FINDINGS
 ```
 
 ## 2. Trials added by AC4
@@ -98,6 +98,73 @@ back KILLED is good news and must be re-declared.
 BOR-002 is the rule whose absence over-refused `stark_http_client::follow` on the first DEV-160
 repair attempt; it is now guarded by the module's pinned relation.
 
+### 2.3 Generic specialization environment — `batch ac4-gen`. **Two findings**
+
+The last AC4 authority with no trial at all.
+
+```text
+AC4-MUT-GEN-001  the binder->type map, emptied         SURVIVED   <-- AC4-F2, see below
+AC4-MUT-GEN-002  substitute_ty's Ty::Param never subst  KILLED by 17
+AC4-MUT-GEN-003  ARM-LEVEL: Ty::Fn substitutes params
+                 but not `ret`                          KILLED by 1
+```
+
+**GEN-003 is the arm-level probe pattern legality argued for, and it passed** — killed by a test
+named `substitution_reaches_every_position_a_parameter_can_hide_in`. Someone had already reasoned
+about arm coverage for `substitute_ty`. That is what a covered authority looks like.
+
+#### AC4-F1 — a convenience view with zero callers, and the duplicate it exists to prevent
+
+**Class C.** `GenericEnvironment::substitutions()` states its own purpose:
+
+> *"The name→type view to substitute with — **the same view `CallableInstantiation` publishes**, so a
+> consumer or a test never has to build a second one."*
+
+**It has zero callers**, and `bound_dispatch.rs:253` builds a byte-identical second one inline:
+
+```rust
+// GenericEnvironment::substitutions()        // bound_dispatch.rs:253
+bindings.iter()                               environment.iter()
+    .map(|(binder, ty)|                           .map(|(binder, ty)|
+        (binder.name().to_string(), ty.clone()))      (binder.name().to_string(), ty.clone()))
+    .collect()                                    .collect()
+```
+
+The view provided to prevent a duplicate is unused, and the duplicate exists.
+
+**This finding came out of a mutation that was itself invalid.** GEN-001 first targeted
+`substitutions()` and SURVIVED — because the method is unreached, not because a control is missing.
+Recording that as a clean SURVIVED would have been a false result. The trial was retargeted at the
+copy that IS reached, which produced AC4-F2.
+
+#### AC4-F2 — the bound-specialisation environment has NO independent falsifier
+
+**Class C. The strongest finding of the campaign so far.**
+
+Emptying the substitution map that `specialize_bound_callable` actually uses — so every
+bound-specialised callable keeps `T` instead of its instantiated type — is **not detected by
+anything**:
+
+```text
+--lib (584)   native_c6_2_generics_traits   native_c5_4_generics
+three_engine_differential (129)   mir_differential (132)   conformance
+as3_invocation_authority
+                                                    -> ALL PASS with the map emptied
+```
+
+**And the code is reached.** A probe counted the map built with **non-empty bindings 6 times** in
+`native_c6_2_generics_traits` and `native_c5_4_generics` alone. So this is not an unreachable arm:
+the authority runs, produces a specialised signature, and **nothing checks the result**.
+
+That is precisely the AC4 exit condition failing — *"every critical authority has either an
+independent falsifier, or an explicit shared-fate classification with an identified alternative
+control."* This has neither yet; the trial is declared `SURVIVED` on measurement so the gap is
+tracked mechanically rather than assumed closed.
+
+**Disposition is an owner question, because the two repairs differ in kind.** Either the specialised
+signature is consumed and needs a control, or it is not consumed and the construction is dead — and
+which one it is decides whether the fix is a test or a deletion. Not taken here.
+
 ---
 
 ## 3. What AC4's exit requires, and what is not yet true
@@ -114,11 +181,13 @@ guarded while the third was not.
 ## 4. Remaining work, in priority order
 
 ```text
-1  generic specialization environment    NO trial. The last authority with none
+1  AC4-F2's disposition                  the bound-specialisation environment has no
+                                         falsifier. Owner call: add a control, or delete a
+                                         construction nothing consumes
 2  resolution / NAMESPACES               DEV-228 rebuilt this and AS8 predates it entirely;
                                          the namespaces themselves have never been mutated
 3  the six other PARTIAL authorities     each needs its arms enumerated, as pattern legality's
-                                         were, rather than counted
+                                         and substitute_ty's were, rather than counted
 4  shared-fate register reconciliation   AC4's exit feeds ENGINE-SHARED-FATE-REGISTER.md; the
                                          register has not yet been updated with these results
 ```

@@ -58,6 +58,60 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # The generic specialization environment — the LAST AC4 authority with no trial at all.
+    #
+    # GEN-003 exists because of what pattern legality taught: an authority is not covered because
+    # one of its functions has a trial. `substitute_ty` is a match over ~12 type shapes, and a
+    # regression in ONE arm is the realistic defect. GEN-001/002 break the whole authority loudly;
+    # GEN-003 breaks a single arm, which is the shape that hides.
+    "ac4-gen": [
+        # RETARGETED. The first version mutated `GenericEnvironment::substitutions()` and SURVIVED
+        # -- because that method has ZERO callers, not because a control is missing. Mutating
+        # unreached code and recording SURVIVED would have been a false clean result, which is the
+        # failure this harness's declare-before-running rule exists to expose. The finding it
+        # produced is recorded separately (AC4-F1): the view exists, by its own doc, "so a consumer
+        # or a test never has to build a second one", and `bound_dispatch` builds a byte-identical
+        # second one inline. The trial now mutates the copy that IS reached.
+        dict(id="AC4-MUT-GEN-001", target="generic specialization env", tag="FRONT_END",
+             authority="bound_dispatch::specialize_bound_callable — the binder->type map actually used",
+             # DECLARED SURVIVED, on measurement, and this is AC4-F2 rather than a pass. The map is
+             # REACHED -- a probe counted it built with non-empty bindings 6 times in
+             # native_c6_2_generics_traits and native_c5_4_generics alone -- and emptying it changes
+             # nothing observable across ~850 tests including three_engine_differential,
+             # mir_differential and conformance. The specialised signature it produces therefore has
+             # NO INDEPENDENT FALSIFIER. A run that comes back KILLED is good news and must be
+             # re-declared.
+             expect="SURVIVED",
+             file="src/bound_dispatch.rs",
+             find="        let substitutions: HashMap<String, Ty> = environment\n            .iter()\n            .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))\n            .collect();",
+             repl="        let substitutions: HashMap<String, Ty> = HashMap::new();",
+             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics",
+                    "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "conformance", "--test", "as3_invocation_authority"],
+             note="A bound-specialised callable loses every binding, so its signature keeps `T` "
+                  "instead of the instantiated type. This is the reached copy; the unreached one "
+                  "is AC4-F1."),
+        dict(id="AC4-MUT-GEN-002", target="generic specialization env", tag="FRONT_END",
+             authority="typecheck::substitute_ty — the Ty::Param arm never substitutes",
+             expect="KILLED",
+             file="src/typecheck/types.rs",
+             find="        Ty::Param(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),",
+             repl="        Ty::Param(_name) => ty.clone(),",
+             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics"],
+             note="`T` stays `T` at every instantiation. Same effect as GEN-001 one layer down, "
+                  "and a control that kills one but not the other tells us which layer is watched."),
+        dict(id="AC4-MUT-GEN-003", target="generic specialization env", tag="FRONT_END",
+             authority="typecheck::substitute_ty — ONE arm: Ty::Fn substitutes params, not ret",
+             expect="KILLED",
+             file="src/typecheck/types.rs",
+             find="        Ty::Fn { params, ret } => Ty::Fn {\n            params: params.iter().map(|p| substitute_ty(p, map)).collect(),\n            ret: Box::new(substitute_ty(ret, map)),\n        },",
+             repl="        Ty::Fn { params, ret } => Ty::Fn {\n            params: params.iter().map(|p| substitute_ty(p, map)).collect(),\n            ret: ret.clone(),\n        },",
+             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics",
+                    "--test", "native_c5_4_function_values"],
+             note="ARM-LEVEL. A function-typed value's RETURN type stops being specialised while "
+                  "its parameters still are. This is the shape pattern legality's unguarded arm "
+                  "had: the authority looks covered because its other arms are exercised."),
+    ],
     # `mir::borrows` is the authority AC1 step 1 created (CE3, 2026-08-12). Its own module-level
     # trials found two of four rules UNCONTROLLED; these promote that finding into the harness so it
     # is tracked mechanically rather than in a doc comment.
