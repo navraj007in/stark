@@ -58,6 +58,49 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # Resolution / NAMESPACES. AS8 predates DEV-228 entirely: its only resolver trials are
+    # `item_is_visible_from` (batches 9, 9b), which is visibility, not namespacing. DEV-228 rebuilt
+    # this surface — the resolver now carries the module/type/value namespaces NAME-RESOLVE-001
+    # specifies — and the namespaces themselves have never been mutated.
+    #
+    # All three are ARM-LEVEL, per what pattern legality and substitute_ty both showed: an authority
+    # is covered when its arms are, not when it has a trial.
+    "ac4-ns": [
+        dict(id="AC4-MUT-NS-001", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::namespace_of_item — a TRAIT filed under Value instead of Type",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            | ast::ItemKind::TypeAlias { .. }\n            | ast::ItemKind::Model(_) => Namespace::Type,",
+             repl="            | ast::ItemKind::TypeAlias { .. }\n            | ast::ItemKind::Model(_) => Namespace::Value,",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="Struct, enum, trait, alias and model all move to the VALUE namespace. A type "
+                  "annotation should stop finding them, which is the coarsest possible break of "
+                  "the distinction DEV-228 built."),
+        dict(id="AC4-MUT-NS-002", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::namespace_of_item — a FUNCTION filed under Type instead of Value",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            ast::ItemKind::Fn(_) | ast::ItemKind::Const { .. } => Namespace::Value,",
+             repl="            ast::ItemKind::Fn(_) | ast::ItemKind::Const { .. } => Namespace::Type,",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="DEV-228's motivating case inverted: `struct Pair` alongside `fn Pair()` is legal "
+                  "precisely because they occupy different namespaces. Filing functions under Type "
+                  "makes them collide."),
+        dict(id="AC4-MUT-NS-003", target="resolution / namespaces", tag="FRONT_END",
+             authority="resolve::lookup_ns — NsHint::Type reads the VALUE map",
+             expect="KILLED",
+             file="src/resolve.rs",
+             find="            NsHint::Type => self.ns_map(module, Namespace::Type).get(name).copied(),",
+             repl="            NsHint::Type => self.ns_map(module, Namespace::Value).get(name).copied(),",
+             tests=["--lib", "--test", "dev228_namespaces", "--test", "dev225_227_resolution_namespaces",
+                    "--test", "dev229_builtin_spellings"],
+             note="The READ side rather than the FILE side: a position that knows it wants a type "
+                  "consults the value map. NS-001/002 break where names are put; this breaks where "
+                  "they are looked for, and a control that kills one but not the other tells us "
+                  "which half is watched."),
+    ],
     # The generic specialization environment — the LAST AC4 authority with no trial at all.
     #
     # GEN-003 exists because of what pattern legality taught: an authority is not covered because
@@ -760,7 +803,16 @@ def trial(spec, verbose):
             return dict(spec_id=spec["id"], result="BUILD_FAILED",
                         detail="the mutant does not compile; it is not a semantic mutation",
                         stderr=build.stderr[-800:])
-        cmd = ["cargo", "test", "--quiet", "-p", "starkc"] + spec["tests"]
+        # `--no-fail-fast` is load-bearing for `killer_count`, not tidiness. Without it cargo stops
+        # at the FIRST failing target, so a trial listing `--lib` first reported only the lib's
+        # failures and never ran the dedicated suites. AC4-MUT-NS-002 read as "killed by 1 test",
+        # which was nearly recorded as thin coverage for DEV-228 — while `dev228_namespaces` in
+        # fact kills it with two failures, including its own `struct Pair` / `fn Pair()` case.
+        #
+        # KILLED/SURVIVED verdicts were never affected: a kill is a kill, and a SURVIVED trial ran
+        # every target by definition. Only the COUNT was a lower bound, and a count that understates
+        # coverage invites exactly the wrong conclusion about which authorities are watched.
+        cmd = ["cargo", "test", "--quiet", "--no-fail-fast", "-p", "starkc"] + spec["tests"]
         out = run(cmd)
         killed = out.returncode != 0
         failed, divergence = extract_killers(out.stdout + out.stderr)

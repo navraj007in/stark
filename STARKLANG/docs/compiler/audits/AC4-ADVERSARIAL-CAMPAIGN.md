@@ -20,9 +20,8 @@ AS8 selected its 26 trials under EI5, for a different question. Mapped onto AC4'
                                     trials       state
 type identity and Copy              1,1b,1c,2    COVERED
 runtime-function classification     da           COVERED   both copies killed
-resolution / namespaces             9,9b         PARTIAL   item_is_visible_from only; the
-                                                 NAMESPACES themselves are untested and DEV-228
-                                                 postdates AS8
+resolution / namespaces             9,9b,ac4-ns  COVERED   both halves: where names are filed
+                                                 and where they are looked for (§2.4)
 trait / bound dispatch              3            PARTIAL   core_trait_contract receiver only
 Drop determination                  1            PARTIAL   nominals_with_destructor only
 MIR lowering                        6,7          PARTIAL   trap-category assignment, array_order
@@ -165,6 +164,53 @@ tracked mechanically rather than assumed closed.
 signature is consumed and needs a control, or it is not consumed and the construction is dead — and
 which one it is decides whether the fix is a test or a deletion. Not taken here.
 
+### 2.4 Resolution / namespaces — `batch ac4-ns`. **Well controlled**
+
+AS8's only resolver trials are `item_is_visible_from` (batches 9, 9b), which is *visibility*, not
+namespacing. DEV-228 rebuilt this surface — the resolver now carries the module/type/value
+namespaces `NAME-RESOLVE-001` specifies — and AS8 predates it entirely, so the namespaces themselves
+had never been mutated.
+
+All three trials are arm-level, and all three died:
+
+```text
+AC4-MUT-NS-001  trait/struct/enum/alias/model filed under Value   KILLED by 85
+AC4-MUT-NS-002  a FUNCTION filed under Type                       KILLED by  3
+                first killer: a_type_and_a_value_may_share_a_spelling -- DEV-228's own
+                motivating case, `struct Pair` alongside `fn Pair()`
+AC4-MUT-NS-003  the READ side: NsHint::Type consults the VALUE map KILLED by 83
+```
+
+NS-001/002 break where names are *filed*; NS-003 breaks where they are *looked for*. Both halves are
+watched.
+
+### 2.5 A defect in the INSTRUMENT, found by disbelieving its output
+
+`AC4-MUT-NS-002` first reported **"killed by 1 test"**, and that number was about to be recorded as
+thin coverage for DEV-228 — an authority whose dedicated suite missed its own motivating case.
+
+**That conclusion would have been false.** Applying the mutation and running `dev228_namespaces`
+directly showed **two** of its tests failing, including `a_type_and_a_value_may_share_a_spelling`.
+
+The cause was in the harness: it ran every target in one `cargo test` invocation **without
+`--no-fail-fast`**, so cargo stopped at the first failing target. `--lib` failed first, and the
+dedicated suites never ran at all.
+
+```text
+                     before      after --no-fail-fast
+AC4-MUT-NS-001         76                85
+AC4-MUT-NS-002          1                 3     first killer now DEV-228's own case
+AC4-MUT-NS-003         76                83
+```
+
+**What was and was not affected.** KILLED/SURVIVED **verdicts were never wrong** — a kill is a kill,
+and a SURVIVED trial ran every target by definition, since nothing failed to stop it. Only
+`killer_count` was a lower bound. But a count that understates coverage invites precisely the wrong
+conclusion about which authorities are watched, which is the conclusion this campaign exists to draw.
+
+**Every AC4 trial was re-run under the corrected harness and all eleven CONFIRMED**, including
+`AC4-MUT-GEN-001` still SURVIVING — so AC4-F2 stands on the corrected instrument, not the flawed one.
+
 ---
 
 ## 3. What AC4's exit requires, and what is not yet true
@@ -184,9 +230,7 @@ guarded while the third was not.
 1  AC4-F2's disposition                  the bound-specialisation environment has no
                                          falsifier. Owner call: add a control, or delete a
                                          construction nothing consumes
-2  resolution / NAMESPACES               DEV-228 rebuilt this and AS8 predates it entirely;
-                                         the namespaces themselves have never been mutated
-3  the six other PARTIAL authorities     each needs its arms enumerated, as pattern legality's
+2  the six other PARTIAL authorities     each needs its arms enumerated, as pattern legality's
                                          and substitute_ty's were, rather than counted
 4  shared-fate register reconciliation   AC4's exit feeds ENGINE-SHARED-FATE-REGISTER.md; the
                                          register has not yet been updated with these results
