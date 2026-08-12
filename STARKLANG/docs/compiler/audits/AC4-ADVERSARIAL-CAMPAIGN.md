@@ -28,7 +28,9 @@ trait / bound dispatch              3,ac4-bound  PROBED    5 arms; 2 executed by
 Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. AC4-F4:
                                                  built-in destruction is observable only
                                                  incidentally (§2.7)
-MIR lowering                        6,7          PARTIAL   trap-category assignment, array_order
+MIR lowering                      6,7,ac4-lower  COVERED   language semantics it uniquely
+                                                 owns. AC4-F7 (§2.10) -- CD-007's assignment
+                                                 order had NO control; written, mutation dies
 MIR verification                    9,ac4-verify PROBED    36 rules; 3 named by no test.
                                                  AC4-F5 (§2.8) -- MIR-0035 falsified as
                                                  unenforced
@@ -427,6 +429,43 @@ different CI lane**, so a change to `select_closes` will not be caught by the co
 and a contributor running `cargo test -p starkc` will see green. That is a real gap in feedback
 speed even though the claim itself is covered.
 
+### 2.10 MIR lowering — `batch ac4-lower`. **AC4-F7: a rule enforced only by a comment**
+
+At 13,008 lines this authority cannot be enumerated arm by arm, so selection follows a different
+rule: **the language semantics lowering uniquely owns** — the ones no other phase can restate —
+rather than a sample of its code. `mir/lower.rs`'s own header says evaluation order is *"preserved
+**structurally**"*, by the order operands are lowered into temporaries. Nothing type-checks it and
+no verifier rule restates it.
+
+```text
+AC4-MUT-LOW-001  `&&`/`||` evaluate BOTH sides      KILLED by 1  -> now 4
+AC4-MUT-LOW-002  CD-007's RHS-before-LHS inverted   SURVIVED     -> now KILLED
+```
+
+**AC4-F7, Class C — RESOLVED in the campaign.** LOW-002 was *reached* — every assignment lowers
+through that line — and survived anyway, because **every assignment in the suite has an inert
+left-hand side**. `a = f()` cannot observe an ordering. `a[idx()] = val()` can, and no such case
+existed.
+
+`starkc/tests/cd007_evaluation_order.rs` is the falsifier, four cases:
+
+```text
+an_assignment_evaluates_its_rhs_before_the_lhs_place    both sides print; order is the assertion
+a_false_left_operand_means_the_right_never_runs         && short-circuit, by effect
+a_true_left_operand_of_or_means_the_right_never_runs    || mirror
+a_guarded_index_is_safe_only_because_the_right_side     short-circuiting as a TRAP property:
+    _is_skipped                                         `i < 2 && a[i] == 1` completes only
+                                                        because the right side is skipped
+```
+
+**The failure signal is worth recording.** The inverted lowering fails as **`HIR/MIR DISAGREEMENT on
+stdout_bytes`** — the HIR oracle evaluates in its own order, so a lowering divergence surfaces as
+engines disagreeing. That is a shape a shared-fate defect can never produce, and it is the strongest
+kind of evidence this architecture can generate.
+
+LOW-001 was killed before the new cases, but by a **single** test. A language rule that basic
+deserves a case that states it directly rather than catching it incidentally; it now has three.
+
 ---
 
 ## 3. What AC4's exit requires, and what is not yet true
@@ -443,10 +482,15 @@ guarded while the third was not.
 ## 4. Remaining work, in priority order
 
 ```text
-1  AC4-F2's disposition                  the bound-specialisation environment has no
-                                         falsifier. Owner call: add a control, or delete a
-                                         construction nothing consumes
-2  the six other PARTIAL authorities     each needs its arms enumerated, as pattern legality's
+1  AC4-F3   trait/bound dispatch: three of five arms are never EXECUTED. Not a missing
+            mutation -- live rules with no test that runs them
+2  AC4-F5   MIR-0029 and MIR-0037 censused but not mutated; MIR-0035 falsified as
+            unenforced. One malformed body per rule is the repair
+3  AC4-F4   built-in destruction is unobservable by the drop log. Alternative control
+            named (Miri / a leak harness); not yet built
+4  AC4-F6   resource RELEASE is controlled by the package lane, not by starkc's suite.
+            Covered, but a contributor running `cargo test -p starkc` sees green
+5  the remaining PARTIAL authorities     each needs its arms enumerated, as pattern legality's
                                          and substitute_ty's were, rather than counted
 4  shared-fate register reconciliation   AC4's exit feeds ENGINE-SHARED-FATE-REGISTER.md; the
                                          register has not yet been updated with these results

@@ -58,6 +58,45 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # MIR lowering. AS8's trials are trap-category ASSIGNMENT (batch 6, one-sided, SURVIVED) and
+    # `drop_plan::array_order` (batch 7, KILLED). At 13,008 lines this authority cannot be
+    # enumerated arm by arm, so the selection is by a different rule: the LANGUAGE SEMANTICS
+    # lowering uniquely owns — the ones no other phase can restate — rather than a sample of its
+    # code.
+    #
+    # CD-007 freezes strict left-to-right evaluation, and the module header says it is "preserved
+    # STRUCTURALLY" — by the order operands are lowered into temporaries. A structural guarantee is
+    # exactly the kind that no type or verifier check restates, so if it is wrong only observation
+    # can tell.
+    "ac4-lower": [
+        dict(id="AC4-MUT-LOW-001", target="MIR lowering", tag="MIR",
+             authority="lower::lower_short_circuit — `&&` and `||` evaluate BOTH sides",
+             expect="KILLED",
+             file="src/mir/lower.rs",
+             find="            BinOp::And => (rhs_block, short_block, false),\n            BinOp::Or => (short_block, rhs_block, true),",
+             repl="            BinOp::And => (rhs_block, rhs_block, false),\n            BinOp::Or => (rhs_block, rhs_block, true),",
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "conformance", "--test", "cd007_evaluation_order"],
+             note="Both arms jump to the RHS block, so `a && b` evaluates `b` even when `a` is "
+                  "false. Short-circuiting is observable only through effects and traps -- "
+                  "`i < v.len() && v[i] == x` stops being safe -- so nothing but execution can "
+                  "catch it."),
+        dict(id="AC4-MUT-LOW-002", target="MIR lowering", tag="MIR",
+             authority="lower — assignment evaluates the LHS place before the RHS (CD-007 inverted)",
+             expect="KILLED",
+             file="src/mir/lower.rs",
+             find="                let rhs_op = self.lower_expr_to_operand(*rhs)?;\n                let place = self.lower_place(*lhs)?;",
+             repl="                let place = self.lower_place(*lhs)?;\n                let rhs_op = self.lower_expr_to_operand(*rhs)?;",
+             # SURVIVED on first run: every assignment in the suite had an inert left-hand side,
+             # so no case could observe an ordering. `cd007_evaluation_order` was written as the
+             # falsifier -- `a[idx()] = val()`, both sides printing -- and the mutation now dies
+             # with HIR/MIR DISAGREEMENT on stdout_bytes.
+             tests=["--lib", "--test", "three_engine_differential", "--test", "mir_differential",
+                    "--test", "conformance", "--test", "cd007_evaluation_order"],
+             note="CD-007 fixes RHS before LHS place. Inverting it changes which side effect "
+                  "happens first, and the comment on that very line is the only thing enforcing "
+                  "it -- a structural guarantee with no checker behind it."),
+    ],
     # Provider / resource ownership. AS8's trials are `provider_sig::signature` (batches 4, 4b) --
     # the ABI signature, not the LIFECYCLE. CD-347/348 are explicit that a resource-shaped provider
     # must successfully acquire, use AND release, and that a failure-only path is the weaker claim;
