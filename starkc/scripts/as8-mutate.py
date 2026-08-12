@@ -108,32 +108,26 @@ BATCHES = {
     # regression in ONE arm is the realistic defect. GEN-001/002 break the whole authority loudly;
     # GEN-003 breaks a single arm, which is the shape that hides.
     "ac4-gen": [
-        # RETARGETED. The first version mutated `GenericEnvironment::substitutions()` and SURVIVED
-        # -- because that method has ZERO callers, not because a control is missing. Mutating
-        # unreached code and recording SURVIVED would have been a false clean result, which is the
-        # failure this harness's declare-before-running rule exists to expose. The finding it
-        # produced is recorded separately (AC4-F1): the view exists, by its own doc, "so a consumer
-        # or a test never has to build a second one", and `bound_dispatch` builds a byte-identical
-        # second one inline. The trial now mutates the copy that IS reached.
-        dict(id="AC4-MUT-GEN-001", target="generic specialization env", tag="FRONT_END",
-             authority="bound_dispatch::specialize_bound_callable — the binder->type map actually used",
-             # DECLARED SURVIVED, on measurement, and this is AC4-F2 rather than a pass. The map is
-             # REACHED -- a probe counted it built with non-empty bindings 6 times in
-             # native_c6_2_generics_traits and native_c5_4_generics alone -- and emptying it changes
-             # nothing observable across ~850 tests including three_engine_differential,
-             # mir_differential and conformance. The specialised signature it produces therefore has
-             # NO INDEPENDENT FALSIFIER. A run that comes back KILLED is good news and must be
-             # re-declared.
-             expect="SURVIVED",
-             file="src/bound_dispatch.rs",
-             find="        let substitutions: HashMap<String, Ty> = environment\n            .iter()\n            .map(|(binder, ty)| (binder.name().to_string(), ty.clone()))\n            .collect();",
-             repl="        let substitutions: HashMap<String, Ty> = HashMap::new();",
-             tests=["--lib", "--test", "native_c6_2_generics_traits", "--test", "native_c5_4_generics",
-                    "--test", "three_engine_differential", "--test", "mir_differential",
-                    "--test", "conformance", "--test", "as3_invocation_authority"],
-             note="A bound-specialised callable loses every binding, so its signature keeps `T` "
-                  "instead of the instantiated type. This is the reached copy; the unreached one "
-                  "is AC4-F1."),
+        # RESOLVED BY DELETION (owner, 2026-08-12). This trial has no target any more, and that is
+        # the OUTCOME rather than a gap in the campaign.
+        #
+        # GEN-001 first mutated `GenericEnvironment::substitutions()` and SURVIVED -- because that
+        # method has ZERO callers, not because a control was missing. Retargeted at the copy that IS
+        # reached (`bound_dispatch`'s inline map) it STILL survived, across ~850 tests including the
+        # three-engine differential, while a probe showed the map built with real bindings six times
+        # in two suites. Reached, corrupted, unobserved.
+        #
+        # That is not "a live semantic fact with no falsifier". It is a CONSTRUCTED fact with no
+        # production consumer: the engines read `body` (six sites) and `environment` (one), never
+        # `signature`. The owner ruled deletion rather than a manufactured consumer -- architecture
+        # documentation should describe what execution needs, not make execution consume something
+        # because the documentation promised it. `ResolvedCallable.signature` is gone.
+        #
+        # `declaration` was censused at the same time and KEPT on different grounds: it is a field
+        # copy of an already-made selection, costs nothing, and witnesses the impl-override versus
+        # trait-default distinction `as3_callable_use_keying` asserts.
+        #
+        # A replacement trial belongs here only if the specialiser acquires a new derived fact.
         dict(id="AC4-MUT-GEN-002", target="generic specialization env", tag="FRONT_END",
              authority="typecheck::substitute_ty — the Ty::Param arm never substitutes",
              expect="KILLED",
