@@ -5,7 +5,12 @@
 *Charter §2.4 position line. Updated 2026-08-10. **Read this block, not the chronology below.***
 
 ```text
-Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400) — AC2 MET, AC3 repair
+Gate: POST-C10 (no gate active)  Active packet: WP-ARCH-CLOSE (CD-400/401) — **AC1, AC2 and AC3
+                                 MET**. AC3's two runs are GREEN on frozen SHA 915e565 (attempts 1
+                                 and 2, 24/24 each, no rerun-to-green), so the §8 PRE-ALPHA COHORT
+                                 GATE IS OPEN. AC5 IN PROGRESS, zero Class-D in the swept
+                                 categories. AC4/AC6/AC7 open. AC5-F1 is now DEV-236, RULED under
+                                 CE1. Architecture closure remains PROVISIONAL. Prior: AC2 MET, AC3 repair
                                  landed, AC3 exit NOT met — the two-run count is RESET: run 1
                                  at cd6732f is historical under §13, and CI at d300d3d FAILED
                                  (AS2 guard, mine, repaired). AC1 COMPLETE — DEV-160 RESOLVED,
@@ -16,8 +21,11 @@ Blocked: none — C10 CLOSED PASS-WITH-DEVIATIONS at 076b4dc (CD-397).
                 behind; CD-399 is the new decision that tree change required
 Compiler baseline: Core=done  MIR=done  Native=done — qualified subset, CI 24/24 + C7.8 green
                 at 860e33a
-Population A: 8 open — DEV-140..145 (the supported-subset boundary), DEV-221,
-              DEV-233 (the interpreter loses output written before a trap). DEV-160 RESOLVED
+Population A: 9 open — DEV-140..145 (the supported-subset boundary), DEV-221,
+              DEV-233 (the interpreter loses output written before a trap), DEV-236 (`println`
+              does not enforce its own `T: Display` bound on a generic — a PRINT-DISPLAY-001 and
+              TYPE-METHOD-003 violation found by AC5, RULED under CE1, repair deferred behind
+              AC3's freeze). DEV-160 RESOLVED
               2026-08-12 under WP-ARCH-CLOSE AC1 step 2 — the thunk absorbs the call that produced
               the borrow, so the cross-block programs build and run. DEV-235 RESOLVED
               2026-08-12 under WP-ARCH-CLOSE AC3: the promotion-gating check failed because an
@@ -159,6 +167,185 @@ Gate C9 Part B  DEFERRED, and does NOT block C10 (CD-395, OD-1)
 disagree, the dated record wins and this block is stale — fix it in the same change.
 
 ---
+
+## CD-401 — AC3's two-run protocol fixed on one frozen SHA; AC5-F1 ruled under CE1 (2026-08-12)
+
+Two owner decisions, taken together because the second creates the repair the first must precede.
+
+### Decision 1 — AC3 is a reliability experiment, so the TREE IS HELD CONSTANT
+
+**Same-SHA reruns count. Two distinct trees are NOT required, and requiring them would be
+methodologically weaker.** AC3 asks *does this qualification tree pass reliably, or is there latent
+intermittency?* Holding the code constant isolates that variable; demanding a second landing
+introduces a code-change confound and turns one intermittency test into two unrelated observations.
+
+```text
+AC3 qualification tree = 915e565
+
+RUN 1   complete full CI execution, this SHA, first attempt, must finish SUCCESS
+RUN 2   full CI execution again, same SHA, initiated only AFTER run 1 succeeded,
+        every job executed again, must finish SUCCESS
+
+FORBIDDEN
+        rerunning failed jobs to obtain green
+        selective rerun
+        retrying a failed RUN 2 until two greens exist
+```
+
+A fresh workflow invocation with its own run id is preferred where the workflow can be dispatched at
+a SHA; **a full "rerun all jobs" of the already-successful run 1 is equally valid** — it is not
+rerun-to-green, it is asking a green tree to reproduce its result. The attempt number is recorded
+explicitly either way.
+
+**The failure rule is the part that makes this evidence rather than sampling:**
+
+```text
+run 1 green, run 2 red  ->  AC3 = INCOMPLETE. Investigate the red.
+                            DO NOT run a third hoping for green.
+```
+
+If run 2 exposes a reliability defect whose repair changes the tree, a **new freeze SHA** is
+established and the two-run count resets. That is what stops successful executions being
+cherry-picked.
+
+### Decision 2 — AC5-F1 (now **DEV-236**), under CE1: enforce `Display` at the generic DEFINITION
+
+**The obligation is checked where the generic is written. Interpolation is NOT weakened.** The
+normative text substantially settles it: `PRINT-DISPLAY-001` defines `print`/`println`/`eprint`/
+`eprintln` as ordinary generic functions constrained `T: Display`, **not syntax hooks**; Core states
+interpolation uses ordinary trait resolution and that a generic parameter must carry a bound
+actually supplying `fmt`; and `TYPE-METHOD-003` says a parameter's trait capabilities come from its
+declared bounds *and their resolved identities*.
+
+```text
+fn show<T>(x: T)          { println(x); }   REJECT at the definition
+fn show<T: Clone>(x: T)   { println(x); }   REJECT at the definition
+fn show<T: Display>(x: T) { println(x); }   ACCEPT   -- Core Display identity
+trait Display { ... }                       REJECT unless the bound resolves to
+fn show<T: Display>(x: T) { println(x); }            the CORE Display identity
+```
+
+The current `println` behaviour is not preserved: it lets the front end accept a generic body whose
+declared constraints are insufficient and pushes the failure into monomorphisation, which is the
+acceptance-boundary defect class this programme exists to remove.
+
+**The repair must NOT be a `println` special case.** It belongs in the authority that checks generic
+callee obligations:
+
+```text
+println<T: Display>  --called with U-->  caller environment must prove  U : CoreDisplay
+                                          yes -> publish/use callable
+                                          no  -> FRONT-END diagnostic
+```
+
+If `println` bypasses ordinary generic-bound checking because it is represented as a builtin, it is
+**routed through the existing bound-obligation mechanism** rather than gaining another
+`if callee == println`.
+
+> **This repair is itself an architecture test, and that is deliberate.** If an apparently simple
+> obligation cannot be expressed through the existing generic-call/bound authority, **that is a more
+> serious architecture finding than F1** — and it is exactly §4's "consumer patched because the
+> owning authority cannot express the rule". It would be recorded as such rather than worked around.
+
+**Registered as `DEV-236`, and the AC5 audit's own classification was corrected with it.** F1 was
+first filed Class C on the reasoning that the divergence was a policy choice needing an owner. It is
+not a choice: `PRINT-DISPLAY-001` and `TYPE-METHOD-003` already decide both halves, and both were
+verified verbatim before the correction. **A rule the specification already settles is
+non-conformance, not architectural residue** — it belongs in the deviation ledger with a DEV number,
+not in an A/B/C/D class. Population A 8 -> 9.
+
+Triage records `Architecture trigger: NONE`, with the reason stated rather than assumed: the bounds
+are present, resolved and identity-carrying; the obligation checker is simply not consulted for this
+callee. **One authority not consulted is not a missing authority**, so it is not AC7-D. If a repair
+attempt shows the authority cannot express the obligation, that classification is revisited on the
+evidence — which is Decision 2's own architecture test.
+
+**Blast radius measured before endorsing the breaking change: zero.** No first-party generic function
+prints; every `println` under `packages/` is on a concrete type.
+
+### AC3 RESULT — both runs GREEN on the frozen SHA. The condition is SATISFIED
+
+```text
+AC3 qualification tree      915e565
+
+RUN 1   CI 31575087419   conclusion=success   ATTEMPT 1   24 jobs   0 failed
+        C7.8 31575087391 conclusion=success   ATTEMPT 1    4 jobs   0 failed
+RUN 2   CI 31575087419   conclusion=success   ATTEMPT 2   24 jobs   0 failed
+        full rerun of every job, same SHA, initiated only after run 1 succeeded
+
+no failed job was rerun to obtain either result
+no selective rerun
+no third run
+```
+
+Run 2 shared run 1's concurrency group — the workflow keys it on the tested SHA — so it **queued
+rather than raced**, which is what kept it off the fixed ports 39187-39191 that a parallel run
+collides on. That is why the docs push was held until both runs finished: a push during either run
+would have started a DIFFERENT SHA in a DIFFERENT group, in parallel, and `Address already in use`
+would have reddened a green tree at the cost of the whole freeze.
+
+**What this evidence licenses, stated precisely.** Two greens is a real result and a weak one. At the
+flake rates this repository has actually observed, two samples pass with roughly 64% probability
+*despite* a live intermittency; at 1-in-20 it is 90%. So the claim is **"no intermittency was
+observed in two samples of this tree"** — not "there is no intermittency". Both run ids and both
+attempt numbers are recorded above so a later reader can check rather than trust this summary.
+
+### AC3 EXIT MET, and the cohort gate is OPEN
+
+```text
+AC2   MET   cd6732f -- the generated, drift-gated native conformance matrix
+AC3   MET   DEV-235 repaired, and two clean CI runs on 915e565 with no rerun-to-green
+            -> the §8 pre-alpha cohort gate is OPEN
+```
+
+**The release state must say exactly this while the cohort runs** (CD-401):
+
+```text
+Architecture closure:      PROVISIONAL
+AC5:                       IN PROGRESS
+Class-D findings:          none IN THE SWEPT CATEGORIES
+Unswept categories:        listed in AC5-PATCHWORK-AUDIT.md §5
+Known limitation:          DEV-236 -- `println` on a generic parameter does not enforce its own
+                           `T: Display` bound. `fn show<T>(x: T) { println(x); }` compiles and
+                           then fails at MIR. Workaround: write the bound, `T: Display`
+```
+
+Acceptable for a controlled pre-alpha cohort, because the cohort is itself discovery evidence.
+**Not** acceptable for WP-ARCH-CLOSE PASS or any unconditional public architecture-stability claim.
+
+**DEV-236 belongs in the cohort's known-limitations document before anyone is invited.** It is the
+first generic a newcomer writes, and today it produces a correct compiler error about the wrong
+layer.
+
+### Sequencing, and what today's runs can and cannot be reused for
+
+```text
+1  run 1 at 915e565 completes
+2  if green, full second CI run at the SAME SHA
+3  both green -> AC3's two-run reliability condition SATISFIED
+4  AC2 -- ALREADY MET (cd6732f, the generated drift-gated conformance matrix).
+   The cohort gate waits on AC3 alone
+5  release the freeze; implement F1 at the generic-bound authority
+6  continue AC5's unswept categories, engine-local reconstruction first
+```
+
+**Today's two runs are valid evidence for COHORT ENTRY and cannot be reused as the final
+WP-ARCH-CLOSE freshness runs.** F1 and the remainder of AC5 will land compiler-affecting repairs
+after them, so final closure reruns from the eventual `FINAL_REPAIR_SHA`. This preserves §13 without
+holding the cohort behind work the cohort gate does not require.
+
+### What the release state must say while the cohort runs
+
+```text
+Architecture closure:      PROVISIONAL
+AC5:                       IN PROGRESS
+Class-D findings:          none IN THE SWEPT CATEGORIES
+Unswept categories:        explicitly listed (AC5-PATCHWORK-AUDIT.md §5)
+```
+
+Acceptable for a controlled pre-alpha cohort, because the cohort is itself discovery evidence.
+**Not** acceptable for declaring WP-ARCH-CLOSE PASS, or for any unconditional public
+architecture-stability claim.
 
 ## CD-400 — WP-ARCH-CLOSE AUTHORISED as the active packet; AC3's first repair has landed (2026-08-12)
 

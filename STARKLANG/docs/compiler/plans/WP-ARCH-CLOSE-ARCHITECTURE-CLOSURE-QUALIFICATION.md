@@ -1,7 +1,8 @@
 # WP-ARCH-CLOSE — Final Compiler Architecture Closure Qualification
 
-**Status:** **AUTHORISED AND ACTIVE — CD-400 (owner, 2026-08-12).** **AC1 and AC2 are MET**;
-AC4, AC5, AC6 and AC7 are open. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
+**Status:** **AUTHORISED AND ACTIVE — CD-400/401 (owner, 2026-08-12).** **AC1, AC2 and AC3 are
+MET, and the §8 pre-alpha cohort gate is OPEN.** AC5 is IN PROGRESS with zero Class-D findings *in
+its swept categories*; AC4, AC6 and AC7 are open. Architecture closure remains **PROVISIONAL**. AC3's repair has landed (DEV-235 RESOLVED, population A 10 -> 9) but its *exit*
 additionally requires two complete clean CI runs with no rerun-to-green, and neither has been run —
 so the §8 cohort gate is **not** open. AC1, AC4, AC5, AC6 and AC7 are untouched.
 **Authored:** 2026-08-12, against `develop` at `2462b80`.
@@ -434,10 +435,10 @@ AC2 and AC3 are launch-critical for the external pre-alpha cohort. **WP-ARCH-CLO
 required before cohort entry.**
 
 ```text
-AC2 executable conformance contract       COMPLETE
-AC3 qualification reliability / DEV-235   COMPLETE
+AC2 executable conformance contract       COMPLETE   cd6732f
+AC3 qualification reliability / DEV-235   COMPLETE   915e565, two clean runs
         ↓
-    PRE-ALPHA COHORT MAY START
+    PRE-ALPHA COHORT MAY START              -- REACHED 2026-08-12
 ```
 
 These may continue while the controlled cohort is active:
@@ -885,10 +886,11 @@ packet" row both name the packet as of that entry.
 | 2026-08-12 | **AC2** — executable native conformance contract | **MET.** Generated matrix, drift-gated in both directions and falsified both ways. 20 constructs: 6 SUPPORTED / 8 REFUSED-BY-DESIGN / 6 KNOWN-DEVIATION. DEV-140..145 all present as executable boundary probes. Probe inventory shared with `layer_audit`, so no second classifier |
 | 2026-08-12 | AC3 **exit**, run 1 of 2 | **RECORDED.** `cd6732f` — CI `31563159250` 24/24, C7.8 `31563159221` 4/4, **attempt 1 on both, no rerun-to-green**, all three Tier-1 platforms. First off-machine test of the matrix's platform-independence claim and of the DEV-235 repair on Linux/Windows |
 | 2026-08-12 | CI at `d300d3d` | **FAILED, 7 of 24, attempt 1 — and the failure was ours.** All seven trace to one cause: `mir::borrows`'s inline test module assembles the pipeline by hand and was not registered in AS2's `TEST_ONLY`. Repaired as the guard's own message directs. Local verification had run the targeted suites but not the eleven source-scanning architecture guards, each of which runs in under a second — that batch is now the pre-push step |
-| — | AC3 **exit** | **NOT MET, and the two-run count is RESET.** Under §13 the `cd6732f` run is historical: the AC1 landing and the AS2 repair both postdate it. Both clean runs must come from the qualifying tree, and per §17 step 9 all final evidence is rerun at the end regardless. The §8 cohort gate stays shut |
+| 2026-08-12 | **AC3 exit** | **MET.** Freeze SHA `915e565` (CD-401). RUN 1 `31575087419` attempt 1, 24/24; RUN 2 the same run id at **attempt 2**, same SHA, 24/24 — a full rerun of every job, initiated only after run 1 succeeded. C7.8 `31575087391` green at attempt 1. **No failed job rerun, no selective rerun, no third run.** Claim stated precisely: *no intermittency observed in two samples*, not *no intermittency* — two greens pass with ~64% probability against the flake rate this repo has actually seen |
+| 2026-08-12 | **§8 cohort gate** | **OPEN.** AC2 + AC3 are the only requirements, and both are met. The release state must carry: closure PROVISIONAL, AC5 IN PROGRESS, Class-D none *in swept categories*, unswept categories listed, and DEV-236 named as a known limitation with its `T: Display` workaround |
 | 2026-08-12 | **AC1 step 1** — borrow-origin analysis | **DONE, POSITIVE.** Moved from the native emitter to `starkc/src/mir/borrows.rs` (owner, CE3). Not a §4 finding — the HIR checker answers a different question, so nothing was reconstructed, only misplaced. Two consumer type checks and a `by_value_tys` map deleted because the authority became correct; a fourth copy of AS4's `stores_a_reference` deleted with them. Controls: 5 unit + 4 AC1 probe + 8 DEV-160 + 132 MIR-diff + 129 three-engine + 584 lib, and **33 first-party applications built natively** |
 | 2026-08-12 | AC1 mutation trials | **4 rules mutated; 2 controlled, 2 not.** First trial reported 1 of 3 killed and was wrong — the program did not reach the rules, which masked one another. Adding a `(String, &str)` shape made the move rule falsifiable. The statement dest guard and aggregate filter survived verified-applied mutations and are labelled precautionary in the module rather than counted as verified |
 | 2026-08-12 | **AC1 step 2** — cross-block absorption | **DONE. DEV-160 RESOLVED, population A 9 -> 8.** The thunk absorbs the call that produced the borrow; the reported shape and two variants build, run, and agree across all four engine configurations. The cheap repair — laundering the reference through a raw pointer at the call site — was **ruled out on Stacked Borrows grounds**: the thunk's `&'a mut` invalidates tags derived from any earlier borrow, so the reference must be created inside. Miri passes on the new shape under CI's flags; both fixture guards pass and the new one was falsified |
 | — | **AC1 exit** | **MET.** DEV-160 resolved, and the probe's verdict is POSITIVE: no engine-local dispatch, no downstream reconstruction, no duplicated authority, no precedence exception — one backend-specific restriction REMOVED and none added. Residual, stated: DEV-160c and DEV-160d unchanged and still refused by name, and only one producer may be absorbed per thunk |
-| 2026-08-12 | AC3's two-run count, structurally | **It cannot accumulate while repairs land.** `f780bb3` was fully green (24/24 + 4/4, attempt 1, all Tier-1 plus Miri) and is disqualified by §13 the moment DEV-160 lands, exactly as `cd6732f` was. This is the package's own design, not a defect in the runs: §17 step 9 collects the two runs AFTER `FINAL_REPAIR_SHA`. Read the count as "not yet started" until the repair sequence ends |
+| 2026-08-12 | AC3's two-run count, structurally *(superseded by CD-401)* | **It cannot accumulate while repairs land.** `f780bb3` was fully green (24/24 + 4/4, attempt 1, all Tier-1 plus Miri) and is disqualified by §13 the moment DEV-160 lands, exactly as `cd6732f` was. This is the package's own design, not a defect in the runs: §17 step 9 collects the two runs AFTER `FINAL_REPAIR_SHA`. Read the count as "not yet started" until the repair sequence ends |
 | — | AC4, AC5, AC6, AC7 | **NOT STARTED** |

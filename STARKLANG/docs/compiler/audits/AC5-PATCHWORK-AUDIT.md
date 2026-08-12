@@ -74,9 +74,24 @@ confirmed hypotheses is not reporting its method.
 
 ## 3. Findings
 
-### 3.1 AC5-F1 — `println` and interpolation enforce the `Display` obligation differently
+### 3.1 AC5-F1 — `println` does not enforce its own `T: Display` bound — **NOW DEV-236**
 
-**Class C.** Owner: compiler track. Test: `starkc/tests/ac5_display_entry_points.rs` (3 cases).
+**RECLASSIFIED 2026-08-12. Filed as `DEV-236`, a CONFORMANCE DEFECT, not architecture debt.**
+Test: `starkc/tests/ac5_display_entry_points.rs` (3 cases).
+
+> **The original classification here was wrong, and the correction is worth stating rather than
+> overwriting.** This was filed as *Class C* on the reasoning that *"either policy is defensible;
+> applying one to each entry point is not"* — that the divergence was a policy choice needing an
+> owner. **It was not a choice.** `PRINT-DISPLAY-001` already fixes the policy (the print family are
+> *"implementation-provided generic functions … **not** syntax hooks"*), and `TYPE-METHOD-003`
+> already fixes identity-over-spelling (*"a `TYPE-NOMINAL-001` item identity **and not a
+> spelling**"*). The current behaviour violates both.
+>
+> **The audit reached for a class before checking the normative text.** A/B/C/D classify
+> architectural residue; a rule the specification already decides is not residue, it is
+> non-conformance, and it belongs in the deviation ledger with a DEV number. Both citations were
+> verified verbatim in `06-Standard-Library.md` and `03-Type-System.md` before this correction was
+> made.
 
 `Display` has two entry points, and the repo names them as two — `typecheck/body.rs` calls
 interpolation *"the SECOND `Display` entry point"* (AS3 Boundary 4). They apply different policies to
@@ -113,16 +128,40 @@ MIR         REFUSES -- "Display::fmt not found for printed type"
 That is the **accepted-but-unbuildable** shape this repo tracks as the E0105 class and audits in
 `layer_audit.rs`. The program is valid by the front end's account and cannot be built.
 
-**Why C and not D.** The divergence is a *policy* difference between two implementations of one
-obligation, not a bypassed authority: `println` defers the check to monomorphisation, where it is
-genuinely made, and it fails **safe** — a compile-time refusal, never wrong code. It is filed,
-owned, and now characterised by tests so it cannot drift silently. **It is not, however, benign**:
-the refusal reaches the user from the wrong layer, which is the defect class E0105 was created to
-remove.
+**Why not Class D, having established it is non-conformance.** D is *"patchwork / semantic authority
+violation"*. The bounds here are present, resolved, and carry their identities — the obligation
+checker is simply not consulted for this callee. **One authority, not consulted, is not a bypassed
+authority**, and the same reasoning is why DEV-236's triage records `Architecture trigger: NONE`
+rather than AC7-D. If a repair attempt shows the authority *cannot* express the obligation, both
+classifications are revisited on that evidence.
 
-**Not repaired here.** Choosing the policy is an owner decision — enforce at the definition (matching
-interpolation, and rejecting some programs that build today) or defer both (matching `println`, and
-weakening interpolation's diagnostic). Either changes the accepted set, which is CE1-shaped.
+It fails **safe** — a compile-time refusal, never wrong code — but it is not benign: the refusal
+reaches the user from the wrong layer, which is the E0105 class this programme exists to remove.
+
+**RULED 2026-08-12 under CE1 (CD-401): enforce at the generic DEFINITION; interpolation is not
+weakened.** The normative text substantially settles it — `PRINT-DISPLAY-001` defines the print
+family as ordinary generic functions constrained `T: Display`, **not syntax hooks**, and
+`TYPE-METHOD-003` says a parameter's capabilities come from its declared bounds *and their resolved
+identities*. So `fn show<T>(x: T) { println(x); }` and the `T: Clone` variant are both rejected where
+they are written, and a user trait spelled `Display` satisfies the bound only if it resolves to the
+Core `Display` identity.
+
+**The repair must not be a `println` special case.** It belongs in the authority that checks generic
+callee obligations; if `println` bypasses ordinary bound checking because it is a builtin, it is
+routed through the existing mechanism rather than gaining another `if callee == println`.
+
+> **The repair is itself an architecture test.** If this obligation cannot be expressed through the
+> existing generic-call/bound authority, that is a **more serious finding than F1** — §4's *"consumer
+> patched because the owning authority cannot express the rule"* — and is recorded as such rather
+> than worked around.
+
+**Blast radius, measured: zero.** No first-party generic function prints — every `println` under
+`packages/` is on a concrete type. The repair rejects programs that build today, and none of them
+are in this tree. It will reject `fn show<T>(x: T) { println(x); }`, which a newcomer writes early;
+`E0306` already carries the right remedy and should be reused rather than a new code minted.
+
+Not implemented here: `915e565` is AC3's frozen qualification tree (CD-401) and takes no further
+compiler change until its two runs complete.
 
 ### 3.2 AC5-F2 — the ~26 hardcoded builtin spellings
 
@@ -167,6 +206,20 @@ NONE SO FAR.
 ```
 
 This is a statement about the categories in §5's "covered" list, not about the whole surface.
+
+**Findings by disposition, after the §3.1 correction:**
+
+```text
+DEV-236   conformance defect, left the A/B/C/D scheme entirely   (was filed here as Class C)
+AC5-F2    Class C, owned by DEV-229's stated residual
+AC5-F3    Class C, repaired in this audit
+AS8-DA-*  Class B, re-confirmed deliberate, both copies mutation-killed
+```
+
+**One finding has now moved out of this audit's scheme on inspection**, which is worth watching for
+in the unswept categories: the A/B/C/D classes describe architectural residue, and a behaviour the
+specification already decides is non-conformance instead. The question to ask of each remaining
+finding is *does a normative rule already settle this?* before reaching for a class.
 
 ---
 

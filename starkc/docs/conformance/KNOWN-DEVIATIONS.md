@@ -10001,3 +10001,113 @@ invisible.
 
 **Only ONE producer may be absorbed per thunk.** Two would each need their own edge from their own
 predecessor, and condition 3 admits one. A call with two cross-block borrows is still refused.
+
+## DEV-236 — `println` on a generic parameter does not enforce its own `T: Display` bound (OPEN, registered 2026-08-12)
+
+```text
+Architecture trigger:  NONE — one authority, not consulted. See "why not AC7-D" below
+Counts toward AC7's twenty:  YES — a demonstrated compiler semantic defect
+```
+
+Found by WP-ARCH-CLOSE AC5 as finding **AC5-F1**, where it was first filed as a *policy divergence*
+between two entry points. **That classification was wrong and is corrected here**: the normative text
+already settles the policy, so this is a conformance defect, not architecture debt.
+
+### What the specification requires
+
+**`PRINT-DISPLAY-001`** (`06-Standard-Library.md`):
+
+> `print`, `println`, `eprint`, and `eprintln` are implementation-provided generic functions with the
+> signatures `fn print<T: Display>(value: T)` … They are **not** syntax hooks: printing dispatches
+> through the argument's `Display` implementation by ordinary trait resolution.
+
+**`TYPE-METHOD-003`** (`03-Type-System.md`):
+
+> When the receiver's type, after auto-dereference, is a generic parameter `T`, the candidate set is
+> collected from the traits named by `T`'s declared bounds and from nowhere else … Each bound
+> resolves to exactly one trait identity … which is a `TYPE-NOMINAL-001` item identity **and not a
+> spelling**. Two traits with the same local name in different modules are two identities.
+
+If `println` is an ordinary generic function constrained `T: Display`, then a call to it inside a
+generic body is an ordinary generic call whose obligation the enclosing function's bounds must
+discharge — at the definition, where it is written.
+
+### Measured
+
+```text
+fn show<T>(x: T)          { println(x); }    front end ACCEPTS      spec: must reject
+fn show<T: Clone>(x: T)   { println(x); }    front end ACCEPTS      spec: must reject
+fn show<T: Display>(x: T) { println(x); }    front end ACCEPTS      correct
+fn show<T>(x: T)          { println(f"{x}"); }  REFUSED E0306       correct, and it is the
+                                                                    SAME obligation
+```
+
+Interpolation — the second `Display` entry point, named as such by `typecheck/body.rs` (AS3
+Boundary 4) — enforces the rule. `println` does not. One obligation, two implementations, and only
+one of them consults the bounds.
+
+### The consequence: an accepted program MIR cannot build
+
+```stark
+trait Display { fn unrelated(&self) -> Int32; }     // a USER trait, correctly resolved
+struct P { a: Int32 }
+impl Display for P { fn unrelated(&self) -> Int32 { 7 } }
+fn show<T: Display>(x: T) { println(x); }
+fn main() { show(P { a: 1 }); }
+```
+
+```text
+front end   ACCEPTS -- the written bound is satisfied by the user's trait, which is correct
+MIR         REFUSES -- "Display::fmt not found for printed type"
+```
+
+That is a **`TYPE-METHOD-003` violation too**: the bound admitted a trait by spelling where the rule
+says identity. And it is the accepted-but-unbuildable E0105 class — a correct compiler error about
+the wrong layer, which is precisely what this programme exists to remove.
+
+### Owner ruling (CE1, CD-401, 2026-08-12)
+
+**Enforce the obligation at the generic definition. Do not weaken interpolation.**
+
+```text
+fn show<T>(x: T)          { println(x); }   REJECT at the definition
+fn show<T: Clone>(x: T)   { println(x); }   REJECT at the definition
+fn show<T: Display>(x: T) { println(x); }   ACCEPT -- Core Display IDENTITY
+trait Display { ... }                       REJECT unless the bound resolves to the
+fn show<T: Display>(x: T) { println(x); }          Core Display identity
+```
+
+**The repair must NOT be a `println` special case.** It belongs in the authority that checks generic
+callee obligations. If `println` bypasses ordinary bound checking because it is represented as a
+builtin, it is routed through the existing mechanism rather than gaining another
+`if callee == println`.
+
+> **The repair is an architecture test, deliberately.** If this obligation cannot be expressed
+> through the existing generic-call/bound authority, that is a **more serious finding than this
+> deviation** — §4's *"consumer patched because the owning authority cannot express the rule"* — and
+> is recorded as such rather than worked around.
+
+### Why not an AC7-D trigger
+
+AC7-D is *"an authoritative compiler phase discarded semantic information that downstream phases must
+reconstruct."* Nothing was discarded here: the bounds are present, resolved, and carry their
+identities. The obligation checker simply is not consulted for this callee. **One authority, not
+consulted — not a missing authority.** Recorded as NONE at triage rather than left ambiguous.
+
+If a repair attempt shows the authority *cannot* express the obligation, this classification is
+revisited on that evidence.
+
+### Blast radius, measured
+
+**Zero.** No first-party generic function prints — every `println` in `packages/` is on a concrete
+type. The repair rejects programs that build today, but none of them are in this tree.
+
+It will, however, reject `fn show<T>(x: T) { println(x); }`, which a newcomer writes early. The
+existing `E0306` diagnostic already carries the right remedy (*"add the bound 'T: Display'"*), and
+the repair should reuse it rather than mint a new code.
+
+### Not repaired at registration
+
+`915e565` is AC3's frozen qualification tree under CD-401 and takes no compiler change until its two
+runs complete. Characterised meanwhile by `starkc/tests/ac5_display_entry_points.rs`, whose three
+cases assert the CURRENT behaviour so the defect cannot drift silently before it is fixed.
