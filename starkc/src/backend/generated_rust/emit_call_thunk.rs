@@ -442,14 +442,21 @@ pub fn plan_for_call(
                     continue;
                 }
             }
+            // **The message describes why absorption DECLINED, not a missing mechanism.**
+            // Before DEV-160b closed it said the thunk "can only take over evaluation within the
+            // call's OWN block" and that the case was deferred. Both became false the moment
+            // absorption landed, and a refusal that misdescribes its own cause sends the reader
+            // looking for the wrong thing.
             return Err(BackendDiagnostic::Unsupported(format!(
                 "the call in bb{block_index} of `{}` passes a reference (_{local}) that borrows \
                  _{slot} while also moving out of _{slot}'s fields. STARK accepts this -- the \
-                 accesses are disjoint -- but the reference reaches the call through an earlier \
-                 block (typically an intermediate call such as `.as_str()`), and the call thunk \
-                 can only take over evaluation within the call's OWN block. Bind the fields to \
-                 locals before the call as a workaround. DEV-160b, deferred to its own work \
-                 package",
+                 accesses are disjoint -- and the backend absorbs the producing call where it \
+                 can, but this one does not qualify: absorption needs the reference to come from \
+                 a call in the single immediately-preceding block, to be read exactly once, and \
+                 for every argument of that call to be a borrow of a slot this thunk already \
+                 holds. Only one such producer may be absorbed per call. Binding the fields to \
+                 locals before the call avoids the conflict entirely. See DEV-160's admission \
+                 conditions",
                 body.instance.symbol
             )));
         }
