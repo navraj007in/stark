@@ -58,6 +58,46 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # MIR verification. AS8's only trial is `paths_prefix_related` (batch 9, KILLED) -- one
+    # predicate out of a verifier carrying 36 distinct MIR-nnnn rules across 60 functions.
+    #
+    # This authority needs a different mutation strategy from the others, and the difference is the
+    # point. Removing a CHECK does not break correct programs: it only matters if something feeds
+    # the verifier bad MIR. So a surviving mutation here means "no test constructs the malformed
+    # shape", which is a coverage statement about the verifier's NEGATIVE cases -- exactly what a
+    # verifier is for.
+    #
+    # Selected by measurement: 33 of the 36 rule ids are named by at least one test; MIR-0029,
+    # MIR-0035 and MIR-0037 are named by NONE. VER-001 takes one of those, VER-002 a well-named
+    # rule as the positive control that the method works at all on this authority.
+    "ac4-verify": [
+        dict(id="AC4-MUT-VER-001", target="MIR verification", tag="MIR",
+             authority="mir::verify MIR-0035 — storage_dead on a PROJECTED place is accepted",
+             expect="SURVIVED",
+             file="src/mir/verify.rs",
+             find="                Statement::StorageDead(place, _) => {\n                    if !place.projection.is_empty() {",
+             repl="                Statement::StorageDead(place, _) => {\n                    if false {",
+             tests=["--lib", "--test", "mir_verify", "--test", "mir_differential",
+                    "--test", "a12_storage_end_shapes"],
+             note="A12: storage liveness belongs to a WHOLE local, so a projected `storage_dead` is "
+                  "a lowering defect. Declared SURVIVED on the census -- no test names MIR-0035 -- "
+                  "and a KILLED result is good news requiring re-declaration. A verifier rule no "
+                  "test exercises is a rule nothing proves is enforced."),
+        dict(id="AC4-MUT-VER-002", target="MIR verification", tag="MIR",
+             authority="mir::verify::paths_prefix_related — move-path overlap, AS8's own target",
+             expect="KILLED",
+             file="src/mir/verify.rs",
+             # The anchor first named `&Place` parameters and came back NOT_APPLIED -- the harness
+             # refusing to report a verdict on a mutation that never landed, which is the outcome
+             # that stops a stale anchor being read as a SURVIVED. The real signature takes
+             # `&[MovePathStep]`.
+             find="fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {\n    let n = a.len().min(b.len());\n    a[..n] == b[..n]",
+             repl="fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {\n    let _ = (a, b);\n    false",
+             tests=["--lib", "--test", "mir_verify", "--test", "mir_differential"],
+             note="The positive control: AS8 already killed this one, so a SURVIVED here would "
+                  "mean the method has stopped working on this authority rather than that the "
+                  "rule is unguarded."),
+    ],
     # Drop determination. AS8's only trial is `nominals_with_destructor` (batch 1, SURVIVED) —
     # which answers "does this nominal declare a destructor", one input to the real authority.
     # `requires_drop_glue_with` is the authority, a match over NINE arms, and it is the one the

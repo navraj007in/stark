@@ -29,9 +29,11 @@ Drop determination                  1,ac4-drop   COVERED   4 arms, all killed. A
                                                  built-in destruction is observable only
                                                  incidentally (§2.7)
 MIR lowering                        6,7          PARTIAL   trap-category assignment, array_order
-MIR verification                    9            PARTIAL   paths_prefix_related only
+MIR verification                    9,ac4-verify PROBED    36 rules; 3 named by no test.
+                                                 AC4-F5 (§2.8) -- MIR-0035 falsified as
+                                                 unenforced
 provider/resource ownership         4,4b         PARTIAL   provider_sig::signature only
-borrow / move ownership             9            PARTIAL   -> EXTENDED, see §2.2
+borrow / move ownership             9,ac4-borrow COVERED   mir::borrows, 3 arms (§2.2)
 pattern legality                    NONE         -> COVERED, see §2.1. FOUND A GAP
 generic specialization env.         NONE         -> COVERED, see §2.3. TWO FINDINGS
 ```
@@ -328,6 +330,54 @@ help: the observation channel cannot see built-in destruction at all. An alterna
 needed — the Miri lane already runs the slot primitives under Stacked Borrows and is the natural
 place, or a leak-observing harness. **Naming the alternative control is what AC4's exit requires
 when independent falsification is unavailable**, and this one is named rather than assumed.
+
+### 2.8 MIR verification — `batch ac4-verify`. **AC4-F5: three rules no test exercises**
+
+AS8's only trial here is `paths_prefix_related` (batch 9) — one predicate out of a verifier carrying
+**36 distinct `MIR-nnnn` rules across 60 functions**.
+
+**This authority needs a different mutation strategy, and the difference is the point.** Removing a
+CHECK does not break correct programs; it only matters if something feeds the verifier malformed
+MIR. So a surviving mutation here is a statement about the verifier's **negative** cases — whether
+any test constructs the bad shape the rule exists to reject.
+
+Selected by census rather than by intuition:
+
+```text
+36  MIR-nnnn rule ids in verify.rs
+33  named by at least one test
+ 3  named by NO test    MIR-0029   MIR-0035   MIR-0037
+```
+
+```text
+AC4-MUT-VER-001  MIR-0035: storage_dead on a PROJECTED place accepted   SURVIVED   CONFIRMED
+AC4-MUT-VER-002  paths_prefix_related always false (positive control)   KILLED by 3
+```
+
+**VER-002 is the control that makes VER-001 legible.** AS8 had already killed that predicate, so a
+survival there would have meant the method stopped working on this authority rather than that a rule
+was unguarded. It was killed, first by
+`dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not`.
+
+**AC4-F5, Class C.** MIR-0035 enforces A12's rule that storage liveness belongs to a **whole local**
+— *"ending 'part of' a local's storage is not a thing MIR can mean, so a projection here is a
+lowering defect"*. Disabling the check entirely is not detected by `--lib`, `mir_verify`,
+`mir_differential`, or `a12_storage_end_shapes`. **No test constructs a projected `storage_dead`**,
+so nothing proves the rule is enforced.
+
+Two caveats stated rather than glossed:
+
+```text
+NOT a soundness claim   the rule may be unreachable because lowering never emits the shape.
+                        That is a good reason for it to be a verifier check -- defence in depth --
+                        and a bad reason to believe it works
+MIR-0029 / MIR-0037     named by no test either, and NOT mutated here. The census identifies them;
+                        only MIR-0035 was falsified
+```
+
+**Disposition.** A verifier rule is worth a negative test precisely because its positive path is
+always green: correct MIR passes whether or not the rule exists. The repair is one hand-built
+malformed body per unexercised rule, which is `mir_verify`'s existing shape.
 
 ---
 
