@@ -58,6 +58,74 @@ BATCHES = {
              note="DEV-227's defect: `match n { helper => .., _ => .. }` with `helper` a FUNCTION "
                   "compiles and matches nothing."),
     ],
+    # Trait / bound dispatch. AS8's only trial here is batch 3 (`core_trait_contract` receiver),
+    # which is one function and SURVIVED. `satisfies_bound_identity` is the authority, and it is a
+    # match over FIVE semantic arms — reference forwarding, the primitive matrix, the Core-type
+    # rules, nominal impl witness, and the generic-parameter discharge. One trial on one function
+    # says nothing about the other four, which is the lesson pattern legality and substitute_ty
+    # both taught. One trial per arm.
+    "ac4-bound": [
+        # DECLARED SURVIVED on measurement, and this is AC4-F3 rather than a pass. An arm census
+        # (probe on `satisfies_bound_identity`, whole lib suite) shows the Ref arm executed ZERO
+        # times: the suite reaches this authority 26 times and touches only the Primitive and
+        # Nominal arms, for Eq/Hash/Ord. This mutation is therefore UNREACHABLE by the controls,
+        # and a SURVIVED here means "never run", not "not detected".
+        dict(id="AC4-MUT-BND-001", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Ty::Ref FORWARDING arm drops Display",
+             expect="SURVIVED",
+             file="src/typecheck/traits.rs",
+             find="                    || bound_name == \"Hash\"\n                    || bound_name == \"Display\"\n                {",
+             repl="                    || bound_name == \"Hash\"\n                {",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits"],
+             note="`&T` stops forwarding Display to `T`, so `fn show<T: Display>(v: &T)` -- the "
+                  "shape the file's own comment cites as routine -- loses its bound."),
+        # DECLARED SURVIVED on measurement. The Primitive/Ord arm IS reached -- once, in the whole
+        # lib suite -- but not with `Bool`, so admitting Bool as Ord changes nothing observable.
+        # One reach is not coverage of a matrix with eight primitives in it.
+        dict(id="AC4-MUT-BND-002", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the PRIMITIVE matrix admits Bool as Ord",
+             expect="SURVIVED",
+             file="src/typecheck/traits.rs",
+             find="                    !matches!(p, Primitive::Unit | Primitive::Bool) && !is_float_primitive(*p)",
+             repl="                    !matches!(p, Primitive::Unit) && !is_float_primitive(*p)",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits"],
+             note="DEV-075's matrix says Ord is Eq's set MINUS Bool -- `Char` is ordered, `Bool` is "
+                  "not. This makes `Bool` orderable, which is one token's difference from the "
+                  "Eq arm directly above it."),
+        # DECLARED SURVIVED on measurement, and this is AC4-F3 rather than a pass. An arm census
+        # (probe on `satisfies_bound_identity`, whole lib suite) shows the Core arm executed ZERO
+        # times: the suite reaches this authority 26 times and touches only the Primitive and
+        # Nominal arms, for Eq/Hash/Ord. This mutation is therefore UNREACHABLE by the controls,
+        # and a SURVIVED here means "never run", not "not detected".
+        dict(id="AC4-MUT-BND-003", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Core ITERATOR list drops VecIter",
+             expect="SURVIVED",
+             file="src/typecheck/traits.rs",
+             find="                        || *core_type == CoreType::VecIter\n                        || *core_type == CoreType::KeysIter",
+             repl="                        || *core_type == CoreType::KeysIter",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits"],
+             note="A closed membership list, and the most-used member removed. `for x in v.iter()` "
+                  "should stop satisfying Iterator."),
+        # DECLARED SURVIVED on measurement, and this is AC4-F3 rather than a pass. An arm census
+        # (probe on `satisfies_bound_identity`, whole lib suite) shows the Param arm executed ZERO
+        # times: the suite reaches this authority 26 times and touches only the Primitive and
+        # Nominal arms, for Eq/Hash/Ord. This mutation is therefore UNREACHABLE by the controls,
+        # and a SURVIVED here means "never run", not "not detected".
+        dict(id="AC4-MUT-BND-004", target="trait / bound dispatch", tag="FRONT_END",
+             authority="satisfies_bound_identity — the Ty::Param arm stops discharging DEV-067(a)",
+             expect="SURVIVED",
+             file="src/typecheck/traits.rs",
+             find="            Ty::Param(param_name) => self.param_declares_bound(param_name, &bound_name, bound_res),",
+             repl="            Ty::Param(_param_name) => false,",
+             tests=["--lib", "--test", "three_engine_differential",
+                    "--test", "native_c6_2_generics_traits"],
+             note="DEV-067(a) re-injected: a generic fn calling another with a bounded parameter -- "
+                  "including simple recursion -- fails E0500 although the bound is declared right "
+                  "there. This arm did not exist once, and its absence was a real defect."),
+    ],
     # Resolution / NAMESPACES. AS8 predates DEV-228 entirely: its only resolver trials are
     # `item_is_visible_from` (batches 9, 9b), which is visibility, not namespacing. DEV-228 rebuilt
     # this surface — the resolver now carries the module/type/value namespaces NAME-RESOLVE-001

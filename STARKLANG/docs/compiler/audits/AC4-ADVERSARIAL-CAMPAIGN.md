@@ -22,7 +22,9 @@ type identity and Copy              1,1b,1c,2    COVERED
 runtime-function classification     da           COVERED   both copies killed
 resolution / namespaces             9,9b,ac4-ns  COVERED   both halves: where names are filed
                                                  and where they are looked for (§2.4)
-trait / bound dispatch              3            PARTIAL   core_trait_contract receiver only
+trait / bound dispatch              3,ac4-bound  PROBED    5 arms; 2 executed by any test.
+                                                 AC4-F3 (§2.6) -- Ref, Core and Param arms are
+                                                 never run
 Drop determination                  1            PARTIAL   nominals_with_destructor only
 MIR lowering                        6,7          PARTIAL   trap-category assignment, array_order
 MIR verification                    9            PARTIAL   paths_prefix_related only
@@ -210,6 +212,56 @@ conclusion about which authorities are watched, which is the conclusion this cam
 
 **Every AC4 trial was re-run under the corrected harness and all eleven CONFIRMED**, including
 `AC4-MUT-GEN-001` still SURVIVING — so AC4-F2 stands on the corrected instrument, not the flawed one.
+
+### 2.6 Trait / bound dispatch — `batch ac4-bound`. **AC4-F3: three of five arms are never executed**
+
+AS8's only trial here is batch 3 (`core_trait_contract` receiver) — one function, and it SURVIVED.
+`satisfies_bound_identity` is the authority, and it is a match over **five semantic arms**:
+reference forwarding, the primitive matrix, the Core-type rules, the nominal impl witness, and the
+generic-parameter discharge. One trial on one function says nothing about the other four.
+
+Four arm-level trials were written. **All four survived**, and the campaign rule — challenge the
+measuring path when a result is unexpectedly clean — is what turned that from a coverage claim into
+the real finding.
+
+**The arm census.** A probe on `satisfies_bound_identity`, whole lib suite:
+
+```text
+Primitive Hash   6      Nominal Hash    5
+Primitive Eq     6      Nominal Eq      5
+Primitive Ord    1      Nominal Sz      2      Nominal Source  1
+
+Ref arm          0      Core arm        0      Param arm       0
+```
+
+**The authority is reached 26 times and touches two of its five arms**, for three bound names out of
+the nine it decides. Never executed by any test in the compiler:
+
+```text
+Ty::Ref forwarding      whether `&T` forwards Eq/Ord/Clone/Hash/Display to `T` --
+                        the `fn show<T: Display>(v: &T)` shape the file's own comment calls routine
+Ty::Core rules          Clone/Display/Hash/Eq/Ord/Default over Core types, AND the entire
+                        Iterator membership list (eight core iterator types)
+Ty::Param discharge     DEV-067(a)'s own repair -- a bound on a generic parameter discharged by
+                        the ENCLOSING function's declared bounds. Its absence was a real defect
+                        that failed simple recursion with E0500
+```
+
+The `Primitive/Ord` arm is reached exactly **once**, and not with `Bool` — so admitting `Bool` as
+`Ord`, one token's difference from the `Eq` arm directly above it, changes nothing observable. One
+reach is not coverage of a matrix over eight primitives.
+
+**Also measured: five integration suites reach this authority ZERO times** — `conformance`,
+`three_engine_differential`, `adversarial_trait_impls`, `c46_class_a`, `dev075_operator_bounds`.
+Only `--lib` reaches it at all. Not every suite was swept, and the claim is limited to those six.
+
+**All four trials are now declared SURVIVED on measurement**, so the gap is tracked mechanically. A
+run that comes back KILLED is good news and must be re-declared.
+
+**Why this is worse than "no falsifier".** AC4-F2 was a constructed fact nothing consumed — the
+repair was deletion. This is the opposite: live semantic rules, each one decided on real programs,
+with **no test that runs them**. The difference matters for disposition, and neither is fixed by
+adding a mutation.
 
 ---
 
