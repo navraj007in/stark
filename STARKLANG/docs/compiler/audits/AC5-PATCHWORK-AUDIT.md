@@ -206,6 +206,87 @@ implementations, a stated reason, and a control proving each is load-bearing.
 
 ---
 
+### 3.5 Engine-local reconstruction — swept 2026-08-12, **no reconstruction found**
+
+The category AC1 found a real instance of (the borrow-origin analysis living in the native emitter),
+and therefore the one most likely to hold a Class-D. **It does not, on this sweep.**
+
+```text
+mir/interp.rs        1 reference to HIR or the typecheck tables, in 2,878 lines
+interp.rs          288 -- expected and not reconstruction: reading HIR IS the HIR oracle's job
+backend/*           29 -- ALL of them `hir::ItemId` / `hir::CoreType` IDENTITY payloads that
+                        `MirTy` embeds. The backend matches on MIR variants; it performs no HIR
+                        lookup and re-derives no semantic answer
+```
+
+The MIR interpreter's single HIR reference is the strongest evidence here: an engine that had to
+reconstruct type or generic information could not do it from one.
+
+### 3.6 AC5-F4 — duplicated primitive classifiers with no stated rationale
+
+**Class C.** Owner: compiler track. Found by scanning all 3,716 `fn` definitions across 106 files
+for one name defined in more than one module — 214 such names, 8 semantic-looking.
+
+```text
+is_signed_int    mir/interp.rs:2862   backend/generated_rust/emit_bodies.rs:2115
+                 BYTE-IDENTICAL: matches!(ty, Int8 | Int16 | Int32 | Int64)
+is_integer       interp.rs:9469       typecheck/types.rs:957
+                 same domain (Primitive), same predicate, two implementations
+                 (mir/verify.rs:2824 states the same question over MirTy -- a different IR)
+is_numeric       typecheck/types.rs:913 (Primitive)   mir/verify.rs:2838 (MirTy)
+```
+
+**Why C and not B.** AS8-DA-002/003/004 are duplicates *with a stated reason* — `verify.rs` exists to
+check what `interp.rs` executes, and an independent table is what lets it disagree; both copies were
+mutation-tested and both killed. **These carry no such statement.** They read as copy-paste, and
+nothing enforces their agreement.
+
+**Why C and not D.** The sets are closed `MirTy`/`Primitive` enums, and a divergence in signedness
+or integer-ness changes trap behaviour, which the three-engine differential would catch. Safe, but
+unowned.
+
+**Disposition.** Either give each a stated reason (promoting it to B, as AS8 did) or collapse it to
+one authority. Not repaired here: `is_signed_int` is used by two engines whose independence may be
+deliberate and undocumented, and deciding that is an owner call, not an audit call.
+
+### 3.7 AC5-F5 — one selection predicate written twice, kept in sync by a comment
+
+**Class C.** `interp.rs`'s `find_drop` (9261) and `drop_impl_is_generic` (9243) share the identical
+`Drop`-impl selection:
+
+```rust
+reference.res == Res::CoreTrait(hir::CoreTrait::Drop)
+    && matches!(&self.hir.ty(*self_ty).kind,
+        hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item)
+```
+
+The second's doc comment states the risk itself: *"Matched the same way `find_drop` matches, so the
+two cannot disagree about which impl is in question — a check that looked at a different impl than
+the one about to run would be worse than no check."*
+
+**Nothing enforces that.** This repository's own history is the argument: DEV-162 shipped an `E0425`
+because an emitter named a helper the collector never generated, and the fix was *"a shared structure
+replaces the comment that used to say 'the two must agree'"*. This is the same shape, one comment
+earlier. The repair is a small extraction — one function returning the selected impl, both callers
+reading it — and is deliberately not taken inside the HIR oracle without an owner's word.
+
+### 3.8 Two candidates that are NOT findings, on inspection
+
+Recorded because an audit that lists only its hits is not reporting its method.
+
+```text
+has_user_destructor   drop_rule.rs declares a TRAIT; lower.rs and verify.rs implement it.
+                      Two implementations by design -- the AS8-DA pattern, Class B.
+                      Observation, not a defect: lowering's answer is argument-INDEPENDENT
+                      (`_args`, justified by A1) while verification's is keyed by
+                      `(item, args)`. They agree only because A1 holds; if a `Drop` impl
+                      could ever apply to some instantiations and not others, they would not
+is_copy               mir/lower.rs and mir/mod.rs are two thin WRAPPERS over one authority,
+                      `mir_ty_is_copy`, whose doc says "The one structural Copy rule.
+                      There is no second copy of this match." They differ only in how each
+                      supplies the copy-eligible set. Class A
+```
+
 ## 4. Class-D findings
 
 ```text
@@ -237,19 +318,27 @@ COVERED
   TODO / FIXME / workaround / temporary markers        whole tree, mechanically
   name-based semantic dispatch (match on a spelling)   whole tree, mechanically, then triaged
   spelling-vs-identity in trait/bound handling         typecheck/traits.rs, probed empirically
-  the Display obligation's two entry points            probed across five shapes
+  the Display obligation's two entry points            probed across five shapes -> DEV-236
   known duplicate classifiers (AS8-DA-*)               re-confirmed
+  engine-local reconstruction of type/generic info     swept 2026-08-12, NONE FOUND (§3.5)
+  copy/paste semantic tables outside the AS8-DA set    all 3,716 fns scanned -> F4, F5 (§3.6-3.7)
 
 NOT YET COVERED
-  engine-local reconstruction of type/generic information
   backend-specific acceptance rules beyond emit_call_thunk
   precedence exceptions (DEV-228 removed the resolver's; others not swept)
-  copy/paste semantic tables outside the AS8-DA set
   consumer/package workarounds for compiler limitations (packages/ not swept)
   special handling keyed to individual builtins beyond resolve.rs:1033
 ```
 
-**AC5 is not complete and must not be reported as complete.** The uncovered categories are where a
-Class-D finding is most likely to live — `engine-local reconstruction` in particular, since that is
-the category AC1 step 1 found a real instance of (the borrow-origin analysis living in the native
-emitter) before it was moved to MIR.
+**AC5 is not complete and must not be reported as complete.** Four categories remain.
+
+**The category that was most likely to hold a Class-D has now been swept and holds none** (§3.5).
+That materially lowers, without eliminating, the chance that AC5 ends in FAIL-ARCHITECTURE — the
+remaining four are narrower surfaces, and `packages/` in particular has never been swept at all.
+
+**A method note, recorded because it nearly produced a false clean result.** The first duplicate-
+classifier scan reported *zero* duplicates across the whole tree. The scan was broken — it resolved
+a relative path against a working directory already inside `src`, found **zero files**, and reported
+a clean sweep. It was caught by disbelieving the result, not by the harness. Every mechanical sweep
+in this audit now prints its denominator (files scanned, definitions found) so an empty search cannot
+masquerade as a clean one.
